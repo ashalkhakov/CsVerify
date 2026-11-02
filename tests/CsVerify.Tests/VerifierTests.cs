@@ -154,6 +154,64 @@ namespace CsVerify.Tests
         public void RecursionTermination_Refuted() => Assert.Equal(new[] { "CSV1008" }, Errors("F",
             "static int F(int n) { Spec.Requires(n >= 0); Spec.Decreases(n); return n == 0 ? 0 : F(n + 1); }"));
 
+        private const string Ack =
+            "static int A(int m, int n) { Spec.Requires(m >= 0 && n >= 0); Spec.Ensures<int>(r => r > n); Spec.Decreases(MEASURE); " +
+            "if (m == 0) return n + 1; if (n == 0) return A(m - 1, 1); return A(m - 1, A(m, n - 1)); }";
+
+        [Fact]
+        public void LexicographicMeasure_Proved() => Assert.Empty(Errors("A", Ack.Replace("MEASURE", "m, n")));
+
+        [Fact]
+        public void LexicographicMeasure_Refuted()
+        {
+            Assert.Equal(new[] { "CSV1008" }, Errors("A", Ack.Replace("MEASURE", "m")));
+            Assert.Equal(new[] { "CSV1008", "CSV1008" }, Errors("A", Ack.Replace("MEASURE", "n, m")));
+        }
+
+        [Fact]
+        public void LexicographicLoopMeasure()
+        {
+            const string loop = "static void M(int a, int b) { Spec.Requires(a >= 0 && b >= 0); " +
+                "while (a > 0) { Spec.Invariant(a >= 0 && b >= 0); Spec.Decreases(a, b); if (b > 0) b--; else { a--; b = 100; } STEP } }";
+            Assert.Empty(Errors("M", loop.Replace("STEP", "")));
+            Assert.Equal(new[] { "CSV1007" }, Errors("M", loop.Replace("STEP", "if (a == 1) b = 5;")));
+        }
+
+        private const string EvenOdd =
+            "static bool Even(int n) { Spec.Requires(n >= 0); Spec.Decreases(EVEN); if (n == 0) return true; return Odd(n - 1); } " +
+            "static bool Odd(int n) { Spec.Requires(n >= 0); Spec.Decreases(ODD); return !Even(n); }";
+
+        [Fact]
+        public void MutualRecursion_Proved()
+        {
+            var r = Harness.Verify("public static class C { " + EvenOdd.Replace("EVEN", "2 * n").Replace("ODD", "2 * n + 1") + " }");
+            Assert.Empty(r.Diagnostics);
+        }
+
+        [Fact]
+        public void MutualRecursion_Refuted()
+        {
+            var r = Harness.Verify("public static class C { " + EvenOdd.Replace("EVEN", "n").Replace("ODD", "n") + " }");
+            Assert.Empty(r.Errors("Even"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("Odd"));
+        }
+
+        [Fact]
+        public void MutualRecursion_MeasuresMustHaveTheSameShape()
+        {
+            var r = Harness.Verify("public static class C { " + EvenOdd.Replace("EVEN", "n, 0").Replace("ODD", "n") + " }");
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("Even"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("Odd"));
+        }
+
+        [Fact]
+        public void MutualRecursion_WithoutMeasure_IsAWarning()
+        {
+            var r = Harness.Verify("public static class C { static int F(int n) => n <= 0 ? 0 : G(n - 1); static int G(int n) => F(n); }");
+            Assert.Contains(r["F"].Diagnostics, d => !d.IsError && d.Message.Contains("mutually recursive"));
+            Assert.True(r.Success);
+        }
+
         [Fact]
         public void GhostParameters_AreStaticIndices()
         {
@@ -287,6 +345,8 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1002", "CSV1002" }, r.Errors("FastPowWithoutLemma"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("McCarthyWrongMeasure"));
             Assert.Equal(new[] { "CSV1006", "CSV1007" }, r.Errors("DutchFlagStuck"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("AckermannSingleMeasure"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("Odd"));
         }
     }
 }

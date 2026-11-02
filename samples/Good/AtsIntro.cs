@@ -162,5 +162,42 @@ namespace Samples
             Mem.Free(w, q);
             return r;
         }
+        // ---- termination metrics (INT2PROGINATS, chapter on dependent types: acker, isevn/isodd) ---------------
+
+        /// <summary>
+        /// Ackermann's function. ATS: <c>fun acker {m,n:nat} .&lt;m, n&gt;. (x: int m, y: int n): Nat</c>. No single
+        /// integer measure works; the pair (m, n) goes down lexicographically on every call: the inner call keeps m
+        /// and lowers n, the other two lower m (and may raise n arbitrarily).
+        /// </summary>
+        public static int Ackermann(int m, int n)
+        {
+            Spec.Requires(m >= 0 && n >= 0);
+            Spec.Ensures<int>(r => r > n);
+            Spec.Decreases(m, n);
+            if (m == 0) return n + 1;
+            if (n == 0) return Ackermann(m - 1, 1);
+            return Ackermann(m - 1, Ackermann(m, n - 1));
+        }
+
+        /// <summary>
+        /// Mutual recursion: <c>fun isevn {n:nat} .&lt;2*n&gt;. ... and isodd {n:nat} .&lt;2*n+1&gt;. ...</c>. isodd(n) calls
+        /// isevn(n) with the same argument, so the metrics must tell the two functions apart: 2n &lt; 2n + 1.
+        /// </summary>
+        public static bool IsEven(int n)
+        {
+            Spec.Requires(n >= 0);
+            Spec.Ensures<bool>(r => r == (n % 2 == 0));
+            Spec.Decreases(2 * n);
+            if (n == 0) return true;
+            return IsOdd(n - 1);
+        }
+
+        public static bool IsOdd(int n)
+        {
+            Spec.Requires(n >= 0);
+            Spec.Ensures<bool>(r => r == (n % 2 == 1));
+            Spec.Decreases(2 * n + 1);
+            return !IsEven(n);
+        }
     }
 }

@@ -55,6 +55,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | constraint solving over static terms | the verifier sends the constraints to Z3 (linear and non-linear integer arithmetic, quantifiers) |
 | Xanadu loop invariant at the loop head | `Spec.Invariant(P)` as the first statements of a `while`/`for`/`do` body |
 | termination metric `.<n>.` | `Spec.Decreases(e)` on a recursive method or loop body |
+| lexicographic metric `.<m, n>.` | `Spec.Decreases(m, n)` (up to three components) |
 | `prfun` (proof function, total, erased) | `[Lemma, Conditional("CSVERIFY_SPEC")] void L(...)`: body is the proof, recursion is induction |
 | `prval () = lemma(...)` | a plain call `L(x);` (erased; adds L's postconditions) |
 | static function in constraints | `[Pure]` method: an uninterpreted function whose `return` body is unfolded at each use |
@@ -120,7 +121,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
    - division by zero,
    - `Spec.Assert`,
    - loop invariants (on entry and when maintained),
-   - loop and recursion measures,
+   - loop and recursion measures. A measure goes down lexicographically: some component decreases from a non-negative value, and every component before it is unchanged. A call is recursive when the callee can reach the caller again through source methods (calls inside specifications don't count), so mutually recursive methods are checked against each other's measures. Their measures must have the same number of components.
    - postconditions at each return,
    - overflow (only with `--overflow`).
 4. **Loops.** Each loop is cut at its head. The invariant is checked, the variables and arrays the loop assigns are havocked, and the invariant is assumed. A back edge re-checks the invariant and that the measure decreases while staying ≥ 0.
@@ -217,7 +218,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1004 | verifier | `Spec.Assert` might not hold |
 | CSV1005 / CSV1006 | verifier | loop invariant might not hold on entry / might not be maintained |
 | CSV1007 | verifier | loop measure might not decrease or might be negative |
-| CSV1008 | verifier | recursion measure might not decrease or might be negative |
+| CSV1008 | verifier | recursion measure (own or of a mutually recursive callee) might not decrease or might be negative |
 | CSV1009 | verifier | possible division by zero |
 | CSV1010 | verifier | possible overflow (`--overflow`) |
 | CSV1900 | verifier | warning: construct not modeled, path cut, or spec misplaced |
@@ -252,6 +253,8 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
   - `Mul` by repeated addition (the MUL relation) and the inductive lemma `MulSucc`.
   - Euclid's `GcdIter`.
   - `Swap` of two cells through two borrowed `T @ l` views.
+  - `Ackermann`, with the lexicographic metric `(m, n)`.
+  - `IsEven`/`IsOdd`, mutually recursive, with metrics `2n` and `2n + 1`.
 - `AtsArrays.cs`:
   - DML's `DotProd`: only bounds, the point of the PLDI'98 paper.
   - A view-based `Copy`: `!array_v` × 2, element-wise postcondition.
@@ -268,12 +271,13 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
 - a mirror index off by one;
 - squaring without the lemma;
 - a wrong termination metric;
-- a Dutch flag that forgets `mid++`.
+- a Dutch flag that forgets `mid++`;
+- Ackermann with only `m` as its metric;
+- `Even`/`Odd` both measured by `n`.
 
 **What the ports could not say yet:**
 - **Permutation.** Sorts and partitions don't prove that the output is a permutation of the input. ATS proves it with a dataprop over lists, Dafny with `multiset`.
 - **Dataprops.** `FACT(n, r)` and friends become `[Pure]` functions. That is fine for functional relations. A relation that is not a function, or a proof that is case-analysed, has no counterpart.
-- **Lexicographic metrics.** Ackermann's `.<m, n>.` needs them. `Decreases` takes a single `int`.
 - **Datatypes and dataviews.** List reverse/append with length indices (Xanadu, ICFP'05), singly-linked list segments (`slseg`, PADL'05), red-black trees (DML) and typed evaluators all need user datatypes or dataviews.
 - **Sets and cardinalities.** Pigeonhole proofs like Dafny's TwoDuplicates need them.
 
@@ -281,8 +285,7 @@ Still to port, all feasible today:
 - the array-view `takeout` from INT2PROGINATS `CHAP_DATAVIEW`;
 - row-major matrix indexing with a MUL lemma;
 - Kadane's maximum segment sum (Dafny `SegmentSum`);
-- Dafny's `Cubes`, `SumOfCubes` and `AdditiveFactorial`;
-- `isevn`/`isodd` (needs mutual-recursion termination).
+- Dafny's `Cubes`, `SumOfCubes` and `AdditiveFactorial`.
 
 Sources and licences:
 - The ATS-CodeBook is MIT licensed (its only relevant recipe is binary search, already covered by `Arrays.BinarySearch`).
@@ -305,7 +308,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 76 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 83 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -325,7 +328,7 @@ samples/Good, samples/Buggy
 **Unsupported constructs** (reported as CSV1900 warnings, never silently)
 - `foreach`, `try/finally`, `goto` cycles, shifts and bitwise operators on integers, floating point, strings beyond `Length` and bounds, multi-dimensional arrays.
 - Local functions and lambdas are not verified as separate units.
-- Mutual recursion is not checked for termination.
+- Mutual recursion through delegates, virtual or interface calls is not seen by the call graph, so it is not checked for termination.
 - Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown).
 
 **Precision limits**

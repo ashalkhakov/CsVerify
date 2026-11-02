@@ -23,7 +23,8 @@ namespace CsVerify.Verifier
         public SemanticModel Model;
         public readonly List<IOperation> Requires = new List<IOperation>();
         public readonly List<Postcondition> Ensures = new List<Postcondition>();
-        public IOperation Decreases;
+        /// <summary>The termination measure's components, compared lexicographically; null without Spec.Decreases.</summary>
+        public IReadOnlyList<IOperation> Decreases;
         /// <summary>For [Pure] methods whose body is a single return: the returned expression (the definition).</summary>
         public IOperation PureBody;
         public bool HasSource => Declaration != null;
@@ -69,7 +70,7 @@ namespace CsVerify.Verifier
                     switch (op.TargetMethod.Name)
                     {
                         case "Requires": c.Requires.Add(arg); continue;
-                        case "Decreases": c.Decreases = arg; continue;
+                        case "Decreases": c.Decreases = op.Arguments.Select(a => a.Value).ToList(); continue;
                         case "Ensures": c.Ensures.Add(ReadEnsures(arg, inv)); continue;
                     }
                 }

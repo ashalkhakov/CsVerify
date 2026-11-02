@@ -108,6 +108,42 @@ namespace CsVerify.Verifier
             return _writesHeap[key] = writes;
         }
 
+        private readonly Dictionary<IMethodSymbol, HashSet<IMethodSymbol>> _callees = new Dictionary<IMethodSymbol, HashSet<IMethodSymbol>>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// Is a call from <paramref name="caller"/> to <paramref name="callee"/> recursive: does the callee (directly or
+        /// through other methods) call the caller back? Calls inside specifications are ghost and do not count.
+        /// </summary>
+        internal bool IsRecursiveCall(IMethodSymbol caller, IMethodSymbol callee)
+        {
+            caller = (caller.ReducedFrom ?? caller).OriginalDefinition;
+            callee = (callee.ReducedFrom ?? callee).OriginalDefinition;
+            var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            var work = new Stack<IMethodSymbol>();
+            work.Push(callee);
+            while (work.Count > 0)
+            {
+                var m = work.Pop();
+                if (SymbolEqualityComparer.Default.Equals(m, caller)) return true;
+                if (!seen.Add(m)) continue;
+                foreach (var next in CalleesOf(m)) work.Push(next);
+            }
+            return false;
+        }
+
+        private HashSet<IMethodSymbol> CalleesOf(IMethodSymbol m)
+        {
+            if (_callees.TryGetValue(m, out var known)) return known;
+            var result = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            _callees[m] = result;
+            var c = ContractOf(m);
+            if (!c.HasSource) return result;
+            foreach (var inv in c.Declaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                if (c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee && SpecSymbols.EnclosingSpecCall(inv, c.Model) == null)
+                    result.Add((callee.ReducedFrom ?? callee).OriginalDefinition);
+            return result;
+        }
+
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;

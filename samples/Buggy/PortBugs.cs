@@ -93,5 +93,31 @@ namespace Samples.Buggy
                 else { hi--; int t = a[mid]; a[mid] = a[hi]; a[hi] = t; }
             }
         }
+        // CSV1008: Ackermann with the single measure m; the call Ackermann(m, n - 1) keeps m.
+        public static int AckermannSingleMeasure(int m, int n)
+        {
+            Spec.Requires(m >= 0 && n >= 0);
+            Spec.Ensures<int>(r => r > n);
+            Spec.Decreases(m);
+            if (m == 0) return n + 1;
+            if (n == 0) return AckermannSingleMeasure(m - 1, 1);
+            return AckermannSingleMeasure(m - 1, AckermannSingleMeasure(m, n - 1));
+        }
+
+        // CSV1008: isevn/isodd both measured by n: Odd(n) calls Even(n) and the measure stays put.
+        public static bool Even(int n)
+        {
+            Spec.Requires(n >= 0);
+            Spec.Decreases(n);
+            if (n == 0) return true;
+            return Odd(n - 1);
+        }
+
+        public static bool Odd(int n)
+        {
+            Spec.Requires(n >= 0);
+            Spec.Decreases(n);
+            return !Even(n);
+        }
     }
 }

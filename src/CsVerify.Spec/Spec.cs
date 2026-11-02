@@ -30,6 +30,12 @@ namespace CsVerify
         /// <summary>Termination measure: leading statement of a loop body or of a recursive method's body.</summary>
         [Conditional(Symbol)] public static void Decreases(int measure) { }
 
+        /// <summary>Lexicographic termination measure (ATS's <c>.&lt;m, n&gt;.</c>): the first component that changes must go down.</summary>
+        [Conditional(Symbol)] public static void Decreases(int measure1, int measure2) { }
+
+        /// <summary>Lexicographic termination measure with three components.</summary>
+        [Conditional(Symbol)] public static void Decreases(int measure1, int measure2, int measure3) { }
+
         /// <summary>Proof obligation at this point.</summary>
         [Conditional(Symbol)] public static void Assert(bool condition) { }
 

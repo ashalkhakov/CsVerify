@@ -13,7 +13,7 @@ namespace CsVerify.Verifier
         public Term Heap;
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
         public HashSet<int> ActiveLoops = new HashSet<int>();
-        public Dictionary<int, Term> LoopMeasures = new Dictionary<int, Term>();
+        public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
         public Term Result;
         public SyntaxNode ReturnSyntax;
 
@@ -24,7 +24,7 @@ namespace CsVerify.Verifier
             Heap = Heap,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),
-            LoopMeasures = new Dictionary<int, Term>(LoopMeasures),
+            LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
             Result = Result,
             ReturnSyntax = ReturnSyntax,
         };

@@ -25,7 +25,7 @@ namespace CsVerify.Verifier
             public int Id, Head;
             public SyntaxNode Syntax;
             public List<IOperation> Invariants = new List<IOperation>();
-            public IOperation Decreases;
+            public IReadOnlyList<IOperation> Decreases;
             public HashSet<ISymbol> Havoc = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public HashSet<ISymbol> HavocArrays = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public bool HavocHeap;
@@ -42,7 +42,7 @@ namespace CsVerify.Verifier
         private readonly HashSet<SyntaxNode> _contractStatements = new HashSet<SyntaxNode>();
         private readonly HashSet<(string, TextSpan)> _reported = new HashSet<(string, TextSpan)>();
         private Frame _entry;
-        private Term _entryMeasure;
+        private Term[] _entryMeasure;
         private int _paths, _unfoldDepth, _quantDepth;
         private bool _codeMode; // obligations are only generated for code, not for specification expressions
 
@@ -81,7 +81,7 @@ namespace CsVerify.Verifier
                 _entry = f.Clone();
                 var spec = new SpecEnv { Old = _entry };
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalSpec(req, f, spec)));
-                if (_contract.Decreases != null) _entryMeasure = EvalSpec(_contract.Decreases, f, spec);
+                if (_contract.Decreases != null) _entryMeasure = EvalMeasure(_contract.Decreases, f, spec);
                 _entry = f.Clone();
                 Exec(cfg.Blocks[0], f, new HashSet<int>());
             }
@@ -128,8 +128,8 @@ namespace CsVerify.Verifier
                     if (!(s is ExpressionStatementSyntax es && es.Expression is InvocationExpressionSyntax inv)) break;
                     var name = SpecName(inv);
                     if (name != "Invariant" && name != "Decreases") break;
-                    var arg = ((IInvocationOperation)_model.GetOperation(inv)).Arguments[0].Value;
-                    if (name == "Invariant") loop.Invariants.Add(arg); else loop.Decreases = arg;
+                    var args = ((IInvocationOperation)_model.GetOperation(inv)).Arguments;
+                    if (name == "Invariant") loop.Invariants.Add(args[0].Value); else loop.Decreases = args.Select(a => a.Value).ToList();
                     _loopSpecStatements.Add(inv);
                 }
                 CollectHavoc(stmt, loop);
@@ -266,7 +266,7 @@ namespace CsVerify.Verifier
             foreach (var key in f.Captures.Keys.ToList()) f.Captures.Remove(key);
 
             foreach (var inv in loop.Invariants) _z3.Assume(AsBool(EvalSpec(inv, f, spec)));
-            if (loop.Decreases != null) f.LoopMeasures[loop.Id] = EvalSpec(loop.Decreases, f, spec);
+            if (loop.Decreases != null) f.LoopMeasures[loop.Id] = EvalMeasure(loop.Decreases, f, spec);
             f.ActiveLoops.Add(loop.Id);
         }
 
@@ -278,9 +278,9 @@ namespace CsVerify.Verifier
             if (loop.Decreases != null)
             {
                 var before = f.LoopMeasures[loop.Id];
-                var after = EvalSpec(loop.Decreases, f, spec);
-                Prove(T.And(T.Le(T.Int(0), before), T.Lt(after, before)), "CSV1007", loop.Decreases.Syntax,
-                    $"loop measure '{loop.Decreases.Syntax}' might not decrease or might be negative");
+                var after = EvalMeasure(loop.Decreases, f, spec);
+                Prove(LexDecreases(after, before), "CSV1007", loop.Decreases[0].Parent.Syntax,
+                    $"loop measure '{MeasureText(loop.Decreases)}' might not decrease or might be negative");
             }
         }
 
@@ -782,15 +782,19 @@ namespace CsVerify.Verifier
                 Prove(AsBool(EvalSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
 
-            if (SymbolEqualityComparer.Default.Equals(callee.Method, _method))
+            if (_engine.IsRecursiveCall(_method, callee.Method))
             {
-                if (_entryMeasure != null && callee.Decreases != null)
-                {
-                    var after = EvalSpec(callee.Decreases, pre, preEnv);
-                    Prove(T.And(T.Le(T.Int(0), _entryMeasure), T.Lt(after, _entryMeasure)), "CSV1008", inv.Syntax,
-                        $"cannot prove termination: measure '{callee.Decreases.Syntax}' might not decrease or might be negative");
-                }
-                else Warn(inv.Syntax, $"recursive call without Spec.Decreases in '{_method.Name}'; termination is not checked");
+                bool self = SymbolEqualityComparer.Default.Equals(callee.Method, _method);
+                if (_entryMeasure == null || callee.Decreases == null)
+                    Warn(inv.Syntax, self
+                        ? $"recursive call without Spec.Decreases in '{_method.Name}'; termination is not checked"
+                        : $"mutually recursive call from '{_method.Name}' to '{m.Name}' without Spec.Decreases on both; termination is not checked");
+                else if (callee.Decreases.Count != _entryMeasure.Length)
+                    Prove(T.False, "CSV1008", inv.Syntax,
+                        $"cannot prove termination: '{m.Name}' and '{_method.Name}' call each other but their measures have different numbers of components");
+                else
+                    Prove(LexDecreases(EvalMeasure(callee.Decreases, pre, preEnv), _entryMeasure), "CSV1008", inv.Syntax,
+                        $"cannot prove termination: measure '{MeasureText(callee.Decreases)}' of '{m.Name}' might not decrease or might be negative");
             }
 
             var post = pre.Clone();
@@ -869,6 +873,26 @@ namespace CsVerify.Verifier
                 finally { _unfoldDepth--; _codeMode = wasCode; }
             }
             return T.Coerce(app, sort);
+        }
+
+        private Term[] EvalMeasure(IReadOnlyList<IOperation> measure, Frame f, SpecEnv spec) =>
+            measure.Select(m => EvalSpec(m, f, spec)).ToArray();
+
+        private static string MeasureText(IReadOnlyList<IOperation> measure) => string.Join(", ", measure.Select(m => m.Syntax));
+
+        /// <summary>
+        /// <paramref name="after"/> &lt; <paramref name="before"/> lexicographically: some component goes down, from a
+        /// non-negative value, and every component before it stays the same. Well-founded, as ATS's metrics on nat tuples.
+        /// </summary>
+        private static Term LexDecreases(Term[] after, Term[] before)
+        {
+            var cases = new List<Term>();
+            for (int i = 0; i < before.Length; i++)
+            {
+                var same = Enumerable.Range(0, i).Select(j => T.Eq(after[j], before[j]));
+                cases.Add(T.And(same.Concat(new[] { T.Le(T.Int(0), before[i]), T.Lt(after[i], before[i]) }).ToArray()));
+            }
+            return T.Or(cases.ToArray());
         }
 
         /// <summary>
