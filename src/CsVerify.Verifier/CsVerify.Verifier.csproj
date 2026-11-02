@@ -15,6 +15,6 @@
     <Compile Include="..\CsVerify.Analyzers\SpecSymbols.cs" Link="Shared\SpecSymbols.cs" />
     <!-- The verifier compiles user code against the Spec sources so it can read the library's own contracts (Mem.*). -->
     <EmbeddedResource Include="..\CsVerify.Spec\*.cs" LogicalName="CsVerify.Spec.%(Filename)%(Extension)" />
-    <None Include="build\CsVerify.Verifier.targets" Pack="true" PackagePath="build" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="build\CsVerify.Verifier.targets" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

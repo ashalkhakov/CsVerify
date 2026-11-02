@@ -1,0 +1,23 @@
+<Project>
+  <!--
+    Runs the CsVerify verifier after Build when CsVerifyEnabled is true:
+      dotnet build -p:CsVerifyEnabled=true
+    Its diagnostics use the canonical "file(line,col): error CSVnnnn: ..." format, so MSBuild and IDEs list them
+    like compiler errors. Extra arguments (e.g. overflow checking) go in CsVerifyArgs.
+  -->
+  <PropertyGroup>
+    <CsVerifyEnabled Condition="'$(CsVerifyEnabled)' == ''">false</CsVerifyEnabled>
+    <CsVerifyArgs Condition="'$(CsVerifyArgs)' == ''"></CsVerifyArgs>
+    <CsVerifyCommand Condition="'$(CsVerifyCommand)' == ''">dotnet &quot;$(MSBuildThisFileDirectory)../csverify.dll&quot;</CsVerifyCommand>
+  </PropertyGroup>
+
+  <Target Name="CsVerify" AfterTargets="Build" Condition="'$(CsVerifyEnabled)' == 'true'"
+          Inputs="@(Compile)" Outputs="$(IntermediateOutputPath)csverify.stamp">
+    <ItemGroup>
+      <_CsVerifySource Include="@(Compile)" Exclude="$(IntermediateOutputPath)**" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifySource->'%(FullPath)')" Overwrite="true" />
+    <Exec Command="$(CsVerifyCommand) $(CsVerifyArgs) @&quot;$(IntermediateOutputPath)csverify.rsp&quot;" />
+    <Touch Files="$(IntermediateOutputPath)csverify.stamp" AlwaysCreate="true" />
+  </Target>
+</Project>

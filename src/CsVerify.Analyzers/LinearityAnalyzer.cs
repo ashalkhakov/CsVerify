@@ -278,8 +278,8 @@ namespace CsVerify.Analyzers
         private static void Consume(int i, IOperation at, St[] state, Ctx ctx)
         {
             var name = ctx.Vars[i].Name;
-            if (ctx.Borrowed[i]) ctx.Report(Descriptors.BorrowConsumed, at.Syntax.GetLocation(), name);
-            else if ((state[i] & St.Consumed) != 0) ctx.Report(Descriptors.UsedAfterConsume, at.Syntax.GetLocation(), name);
+            if (ctx.Borrowed[i]) { ctx.Report(Descriptors.BorrowConsumed, at.Syntax.GetLocation(), name); return; }
+            if ((state[i] & St.Consumed) != 0) ctx.Report(Descriptors.UsedAfterConsume, at.Syntax.GetLocation(), name);
             state[i] = St.Consumed;
         }
 

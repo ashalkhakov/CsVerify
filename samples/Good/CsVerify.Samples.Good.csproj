@@ -7,5 +7,9 @@
     <ProjectReference Include="..\..\src\CsVerify.Spec\CsVerify.Spec.csproj" />
     <!-- In a project using the NuGet package this comes with the package; here we reference the analyzer project. -->
     <ProjectReference Include="..\..\src\CsVerify.Analyzers\CsVerify.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <!-- Only so the verifier is built first; `dotnet build -p:CsVerifyEnabled=true` then verifies this project. -->
+    <ProjectReference Include="..\..\src\CsVerify.Verifier\CsVerify.Verifier.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <Import Project="..\..\src\CsVerify.Verifier\bin\$(Configuration)\net8.0\build\CsVerify.Verifier.targets"
+          Condition="Exists('..\..\src\CsVerify.Verifier\bin\$(Configuration)\net8.0\build\CsVerify.Verifier.targets')" />
 </Project>

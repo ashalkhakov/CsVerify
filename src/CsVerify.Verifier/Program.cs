@@ -7,7 +7,7 @@ namespace CsVerify.Verifier
 {
     public static class Program
     {
-        private const string Usage = @"usage: csverify [options] <file.cs | directory | project.csproj>...
+        private const string Usage = @"usage: csverify [options] <file.cs | directory | project.csproj | @paths.rsp>...
 
 Verifies CsVerify specifications (Spec.Requires/Ensures/Invariant/Decreases/Assert, lemmas, views) with Z3.
 Directories are searched recursively for .cs files (bin/ and obj/ are skipped); a .csproj means its directory.
@@ -50,6 +50,8 @@ options:
                 }
                 if (inputs.Count == 0) { Console.Error.WriteLine(Usage); return 2; }
 
+                // @file.rsp: one path per line (what the MSBuild target passes).
+                inputs = inputs.SelectMany(i => i.StartsWith("@") ? File.ReadAllLines(i.Substring(1)).Where(l => l.Trim().Length > 0) : new[] { i }).ToList();
                 var files = inputs.SelectMany(Expand).Distinct().ToList();
                 var result = Engine.VerifyFiles(files, options);
                 if (smtLog != null) File.WriteAllText(smtLog, options.SmtLog.ToString());
