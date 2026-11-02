@@ -70,6 +70,7 @@ namespace CsVerify.Verifier
             _compilation = compilation;
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
+            Solver.Preamble(MethodVerifier.SeqTheory);
         }
 
         public void Dispose() => Solver.Dispose();
@@ -139,6 +140,7 @@ namespace CsVerify.Verifier
                 {
                     if (decl.Body == null && decl.ExpressionBody == null) continue;
                     if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
+                    if (SpecSymbols.IsGhostFunction(method)) continue; // a definition, used by unfolding; nothing to prove
                     var contract = engine.ContractOf(method);
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
                     result.Methods.Add(mr);

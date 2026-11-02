@@ -28,7 +28,7 @@ namespace CsVerify.Analyzers
 
         public static readonly DiagnosticDescriptor BorrowConsumed = Error("CSV0005", Linearity,
             "Borrowed linear value consumed",
-            "'{0}' is borrowed (ref/in) and cannot be consumed");
+            "'{0}' is a read-only borrow (in) and cannot be consumed");
 
         public static readonly DiagnosticDescriptor Forged = Error("CSV0006", Linearity,
             "Linear value created from nothing",

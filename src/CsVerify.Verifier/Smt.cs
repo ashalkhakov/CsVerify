@@ -80,7 +80,8 @@ namespace CsVerify.Verifier
 
         public static Term Select(Term array, Term index, Sort sort) => App("select", sort, array, index);
         public static Term Store(Term array, Term index, Term value) => App("store", array.Sort, array, index, value);
-        public static Term ZeroRow() => new Term("((as const (Array Int Int)) 0)", Sort.Row);
+        public static Term ZeroRow() => ConstRow(Int(0));
+        public static Term ConstRow(Term value) => new Term($"((as const (Array Int Int)) {value.S})", Sort.Row);
 
         /// <summary>Converts between Int and Bool where a generic contract met a concrete sort.</summary>
         public static Term Coerce(Term t, Sort to)
@@ -127,6 +128,16 @@ namespace CsVerify.Verifier
             Send("(set-option :global-declarations true)");
             Send($"(set-option :timeout {timeoutMs})");
             Send("(set-logic ALL)");
+            // Quantifiers are instantiated by e-matching only. Model-based instantiation can search for a
+            // counterexample until the timeout (notably with array lambdas); without it Z3 answers "unknown" at once,
+            // which CsVerify reports exactly like "sat": the obligation is not proved.
+            Send("(set-option :smt.mbqi false)");
+        }
+
+        /// <summary>Adds background declarations and axioms (at the outermost scope).</summary>
+        public void Preamble(string smtLib)
+        {
+            foreach (var line in smtLib.Split('\n')) Send(line);
         }
 
         public static string FindZ3(string explicitPath)

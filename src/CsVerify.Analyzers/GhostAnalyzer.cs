@@ -37,7 +37,8 @@ namespace CsVerify.Analyzers
         private static void CheckGhostRead(OperationAnalysisContext context)
         {
             var op = (IPropertyReferenceOperation)context.Operation;
-            if (op.Property.Name != "Value" || !SpecSymbols.IsGhostType(op.Property.ContainingType)) return;
+            bool ghostRead = op.Property.Name == "Value" && SpecSymbols.IsGhostType(op.Property.ContainingType);
+            if (!ghostRead && !SpecSymbols.IsSeqType(op.Property.ContainingType)) return;
             if (!SpecSymbols.IsInGhostContext(op.Syntax, op.SemanticModel))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.GhostOutsideSpec, op.Syntax.GetLocation(), op.Syntax.ToString()));
         }
@@ -46,6 +47,12 @@ namespace CsVerify.Analyzers
         {
             var op = (IInvocationOperation)context.Operation;
             var m = op.TargetMethod;
+            if (SpecSymbols.IsSeqType(m.ContainingType) || SpecSymbols.IsGhostFunction(m.OriginalDefinition))
+            {
+                if (!SpecSymbols.IsInGhostContext(op.Syntax, op.SemanticModel))
+                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.GhostOutsideSpec, op.Syntax.GetLocation(), m.Name));
+                return;
+            }
             if (!SpecSymbols.IsSpecClass(m.ContainingType)) return;
             if (m.Name == "Forall" || m.Name == "Exists")
             {

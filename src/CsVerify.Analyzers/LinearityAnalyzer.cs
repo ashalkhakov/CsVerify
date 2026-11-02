@@ -105,7 +105,9 @@ namespace CsVerify.Analyzers
             foreach (var p in method.Parameters.Where(p => SpecSymbols.IsLinear(p.Type)))
             {
                 vars.Add(p);
-                borrowed.Add(p.RefKind == RefKind.Ref || p.RefKind == RefKind.In);
+                // `in` is a read-only borrow. A `ref` view may be consumed (split, passed on) as long as it holds a
+                // value again on return, like ATS's !pf; the exit check below enforces that.
+                borrowed.Add(p.RefKind == RefKind.In);
             }
             foreach (var local in CollectLocals(cfg).Where(l => SpecSymbols.IsLinear(l.Type)))
             {
@@ -140,7 +142,7 @@ namespace CsVerify.Analyzers
                 for (int i = 0; i < ctx.Vars.Length; i++)
                 {
                     var v = ctx.Vars[i];
-                    bool mustBeLive = ctx.Borrowed[i] || (v is IParameterSymbol p && p.RefKind == RefKind.Out);
+                    bool mustBeLive = ctx.Borrowed[i] || (v is IParameterSymbol p && (p.RefKind == RefKind.Out || p.RefKind == RefKind.Ref));
                     if (!mustBeLive && (exit[i] & St.Live) != 0)
                         ctx.Report(Descriptors.NotConsumed, v.Locations.FirstOrDefault(), v.Name,
                             (exit[i] & St.Consumed) != 0 ? " (it is consumed on some paths only)" : "");

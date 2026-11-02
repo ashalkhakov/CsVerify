@@ -24,6 +24,13 @@ namespace CsVerify
     public sealed class TrustedAttribute : Attribute { }
 
     /// <summary>
+    /// A specification-only function (ATS static function): pure, callable only from specifications, and its body
+    /// is ghost context, so it may use quantifiers, <see cref="Seq{T}"/> and <c>Ghost.Value</c>.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class GhostFunctionAttribute : Attribute { }
+
+    /// <summary>
     /// A side-effect-free function usable inside specifications. The verifier treats it as a mathematical function
     /// and unfolds a single-<c>return</c> body once at every use.
     /// </summary>

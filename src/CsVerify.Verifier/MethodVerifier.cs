@@ -397,6 +397,7 @@ namespace CsVerify.Verifier
         internal static Sort SortOf(ITypeSymbol t)
         {
             if (SpecSymbols.IsGhostType(t)) return SortOf(((INamedTypeSymbol)t).TypeArguments[0]);
+            if (SpecSymbols.IsSeqType(t)) return Sort.Row;
             return t?.SpecialType == SpecialType.System_Boolean ? Sort.Bool : Sort.Int;
         }
 
@@ -559,7 +560,7 @@ namespace CsVerify.Verifier
         {
             if (b.OperatorMethod != null)
             {
-                if (SpecSymbols.IsGhostType(b.OperatorMethod.ContainingType))
+                if (SpecSymbols.IsGhostType(b.OperatorMethod.ContainingType) || SpecSymbols.IsSeqType(b.OperatorMethod.ContainingType))
                 {
                     var eq = T.Eq(Eval(b.LeftOperand, f, spec), Eval(b.RightOperand, f, spec));
                     return b.OperatorKind == BinaryOperatorKind.NotEquals ? T.Not(eq) : eq;
@@ -683,6 +684,8 @@ namespace CsVerify.Verifier
         {
             var prop = pr.Property;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
+            if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
+                return T.Coerce(T.Select(Eval(pr.Instance, f, spec), Eval(pr.Arguments[0].Value, f, spec), Sort.Int), SortOf(pr.Type));
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
             {
                 if (prop.Name == "Length") return Len(Eval(pr.Instance, f, spec));
@@ -744,6 +747,7 @@ namespace CsVerify.Verifier
                 }
             }
             if (SpecSymbols.IsGhostOf(m)) return Eval(inv.Arguments[0].Value, f, spec);
+            if (SpecSymbols.IsSeqType(m.ContainingType)) return EvalSeq(inv, f, spec);
 
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
@@ -805,6 +809,26 @@ namespace CsVerify.Verifier
                 _z3.Assume(AsBool(EvalSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter })));
             return result ?? T.True;
         }
+
+        /// <summary>Ghost sequences are SMT arrays; Drop and Concat are the array lambdas in <see cref="SeqTheory"/>.</summary>
+        private Term EvalSeq(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            var args = inv.Arguments.Select(a => Eval(a.Value, f, spec)).ToArray();
+            var self = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
+            switch (inv.TargetMethod.Name)
+            {
+                case "Const": return T.ConstRow(T.Coerce(args[0], Sort.Int));
+                case "Update": return T.Store(self, args[0], T.Coerce(args[1], Sort.Int));
+                case "Drop": return new Term($"(cv_drop {self} {args[0]})", Sort.Row);
+                case "Concat": return new Term($"(cv_concat {self} {args[0]} {args[1]})", Sort.Row);
+                default: Unsupported(inv); return _z3.Fresh("seq", Sort.Row);
+            }
+        }
+
+        /// <summary>Drop and Concat as array lambdas: definitions, not quantified axioms, so they cost Z3 nothing until used.</summary>
+        public const string SeqTheory =
+            "(define-fun cv_drop ((a (Array Int Int)) (n Int)) (Array Int Int) (lambda ((i Int)) (select a (+ n i))))\n" +
+            "(define-fun cv_concat ((a (Array Int Int)) (n Int) (b (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (< i n) (select a i) (select b (- i n)))))";
 
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap)
         {

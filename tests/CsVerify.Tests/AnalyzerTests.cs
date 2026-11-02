@@ -59,11 +59,33 @@ namespace CsVerify.Tests
             Assert.Empty(Harness.Analyze("static class C { static PointsTo<int> M(Ptr<int> p) { Mem.Alloc(1, out var v); return v; } }"));
 
         [Fact]
-        public void RefParameter_IsBorrowed()
+        public void RefParameter_IsBorrowed_AndMustBeGivenBack()
         {
             Assert.Empty(Body("Mem.Write(ref v, p, 3);", "ref PointsTo<int> v, Ptr<int> p"));
-            Assert.Equal(new[] { "CSV0005" }, Body("Mem.Free(v, p);", "ref PointsTo<int> v, Ptr<int> p"));
+            Assert.Equal(new[] { "CSV0001" }, Body("Mem.Free(v, p);", "ref PointsTo<int> v, Ptr<int> p"));
         }
+
+        [Fact]
+        public void InParameter_CannotBeConsumed() =>
+            Assert.Equal(new[] { "CSV0005" }, Body("Mem.Free(v, p);", "in PointsTo<int> v, Ptr<int> p"));
+
+        private const string ViewParams = "ref ArrayView<int> v, Ptr<int> p";
+
+        [Fact]
+        public void ArrayView_SplitAndJoinedBack_IsClean() => Assert.Empty(Body(
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Set(ref r, p.Offset(1), 0, 5); Mem.Join(l, r, out v);", ViewParams));
+
+        [Fact]
+        public void ArrayView_NotJoinedBack_LeaksBothHalves() => Assert.Equal(new[] { "CSV0001", "CSV0001", "CSV0001" }, Body(
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r);", ViewParams));
+
+        [Fact]
+        public void ArrayView_HalfUsedAfterJoin_IsReported() => Assert.Equal(new[] { "CSV0002" }, Body(
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Join(l, r, out v); Mem.Set(ref l, p, 0, 1);", ViewParams));
+
+        [Fact]
+        public void FreeArray_ConsumesViewAndToken() =>
+            Assert.Empty(Body("var p = Mem.AllocArray(4, 0, out var v, out var gc); Mem.Set(ref v, p, 3, 1); Mem.FreeArray(gc, v, p);"));
 
         [Fact]
         public void LambdaCapture_IsReported() =>
@@ -131,6 +153,19 @@ namespace CsVerify.Tests
             Assert.Empty(Harness.Analyze("static class C { static int M(int x) { Spec.Ensures(Spec.Result<int>() > Spec.Old(x)); return x + 1; } }"));
             Assert.Equal(new[] { "CSV0012" }, Harness.Analyze("static class C { static void M(int x) { Spec.Assert(Spec.Old(x) == x); } }"));
         }
+
+        [Fact]
+        public void GhostFunction_BodyIsGhost_ButCallsAreSpecOnly()
+        {
+            const string fn = "[GhostFunction] static bool AllZero(Seq<int> s, int n) => Spec.Forall(0, n, j => s[j].Value == 0); ";
+            Assert.Empty(Harness.Analyze("static class C { " + fn + "static void M(ref ArrayView<int> v) { Spec.Requires(AllZero(v.Elems, 2)); } }"));
+            Assert.Equal(new[] { "CSV0010" }, Harness.Analyze("static class C { " + fn + "static bool M(ArrayView<int> v) { var b = AllZero(v.Elems, 2); Mem.LengthIsNatural(in v); return b; } }")
+                .Where(id => id != "CSV0001").ToArray());
+        }
+
+        [Fact]
+        public void SeqOperations_AtRunTime_AreReported() =>
+            Assert.Equal(new[] { "CSV0010", "CSV0010" }, Harness.Analyze("static class C { static void M(Seq<int> s) { var t = s.Drop(1); var x = s[0]; } }"));
 
         [Fact]
         public void Quantifier_AtRunTime_IsReported()

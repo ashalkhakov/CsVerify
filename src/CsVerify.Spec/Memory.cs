@@ -8,6 +8,14 @@ namespace CsVerify
         internal readonly int Handle;
         internal Ptr(int handle) { Handle = handle; }
         public Ghost<int> Addr => default;
+
+        /// <summary>Pointer arithmetic, <c>l + i</c>: the address of the <paramref name="offset"/>-th cell after this one.</summary>
+        [Trusted]
+        public Ptr<T> Offset(int offset)
+        {
+            Spec.Ensures(Spec.Result<Ptr<T>>().Addr.Value == Addr.Value + offset);
+            return new Ptr<T>(Handle + offset);
+        }
     }
 
     /// <summary>
@@ -22,7 +30,7 @@ namespace CsVerify
     }
 
     /// <summary>Manual memory with views. Trusted: the bodies are not verified, the contracts are the axioms.</summary>
-    public static class Mem
+    public static partial class Mem
     {
         private static readonly List<object> Cells = new List<object>();
         private static readonly Stack<int> FreeList = new Stack<int>();

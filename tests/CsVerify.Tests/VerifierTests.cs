@@ -194,6 +194,50 @@ namespace CsVerify.Tests
         public void Views_ValueFlowsThroughGhost() => Assert.Equal(new[] { "CSV1004" }, Errors("M",
             "static void M() { var p = Mem.Alloc(1, out var v); Mem.Write(ref v, p, 2); Spec.Assert(v.Value.Value == 1); Mem.Free(v, p); }"));
 
+        // ---- array views -------------------------------------------------------------------------------------
+
+        private const string ViewParams = "ref ArrayView<int> v, Ptr<int> p, int n";
+        private const string ViewPre = "Spec.Requires(v.Addr == p.Addr && v.Length.Value == n && n >= 2); ";
+
+        [Fact]
+        public void ArrayView_SplitOffsetJoin_Proved() => Assert.Empty(Errors("M",
+            "static void M(" + ViewParams + ") { " + ViewPre +
+            "Spec.Ensures(v.Addr == Spec.Old(v).Addr && v.Length == Spec.Old(v).Length && v.Elems == Spec.Old(v).Elems.Update(1, Ghost.Of(5))); " +
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Set(ref r, p.Offset(1), 0, 5); Mem.Join(l, r, out v); }"));
+
+        [Fact]
+        public void ArrayView_WrongOffset_Refuted() => Assert.Equal(new[] { "CSV1001" }, Errors("M",
+            "static void M(" + ViewParams + ") { " + ViewPre +
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Set(ref r, p.Offset(2), 0, 5); Mem.Join(l, r, out v); }"));
+
+        [Fact]
+        public void ArrayView_WrongContents_Refuted() => Assert.Equal(new[] { "CSV1002" }, Errors("M",
+            "static void M(" + ViewParams + ") { " + ViewPre +
+            "Spec.Ensures(v.Elems == Spec.Old(v).Elems.Update(0, Ghost.Of(5))); " +
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Set(ref r, p.Offset(1), 0, 5); Mem.Join(l, r, out v); }"));
+
+        [Fact]
+        public void ArrayView_JoinNeedsAdjacentHalves() => Assert.Equal(new[] { "CSV1001" }, Errors("M",
+            "static void M(" + ViewParams + ") { " + ViewPre +
+            "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Join(r, l, out v); }"));
+
+        [Fact]
+        public void ArrayView_GetBounds()
+        {
+            Assert.Empty(Errors("M", "static int M(in ArrayView<int> v, Ptr<int> p, int n) { Spec.Requires(v.Addr == p.Addr && v.Length.Value == n && n > 0); return Mem.Get(in v, p, n - 1); }"));
+            Assert.Equal(new[] { "CSV1001" }, Errors("M", "static int M(in ArrayView<int> v, Ptr<int> p, int n) { Spec.Requires(v.Addr == p.Addr && v.Length.Value == n); return Mem.Get(in v, p, n); }"));
+        }
+
+        [Fact]
+        public void ArrayView_FreeNeedsWholeArray() => Assert.Equal(new[] { "CSV1001" }, Errors("M",
+            "static void M() { var p = Mem.AllocArray(4, 0, out var v, out var gc); Mem.Split(v, Ghost.Of(2), out var l, out var r); Mem.FreeArray(gc, l, p); Mem.Join(l, r, out v); }"));
+
+        [Fact]
+        public void GhostFunction_IsUnfolded() => Assert.Empty(Errors("M",
+            "[GhostFunction] static bool AllZero(Seq<int> s, int n) => Spec.Forall(0, n, j => s[j].Value == 0); " +
+            "static int M() { Spec.Ensures<int>(r => r == 0); var p = Mem.AllocArray(3, 0, out var v, out var gc); Spec.Assert(AllZero(v.Elems, 3)); " +
+            "int x = Mem.Get(in v, p, 2); Mem.FreeArray(gc, v, p); return x; }"));
+
         // ---- the samples ---------------------------------------------------------------------------------------
 
         private static VerificationResult VerifySamples(string dir)
@@ -211,7 +255,7 @@ namespace CsVerify.Tests
             var r = VerifySamples("Good");
             Assert.True(r.Success, string.Join("\n", r.Diagnostics));
             Assert.Empty(r.Diagnostics);
-            Assert.True(r.Methods.Count >= 13);
+            Assert.True(r.Methods.Count >= 16);
         }
 
         [Fact]
@@ -225,6 +269,8 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1008" }, r.Errors("Loop"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TriWithoutLemma"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("WrongPointer"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("WrongOffset"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("OnePastEnd"));
         }
     }
 }

@@ -26,7 +26,10 @@ namespace CsVerify.Analyzers
                 a.AttributeClass?.Name == name && a.AttributeClass.ContainingNamespace?.ToDisplayString() == Namespace);
 
         public static bool IsLemma(ISymbol s) => HasAttribute(s, "LemmaAttribute");
-        public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute");
+        public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
+        /// <summary>[Pure] or [GhostFunction]: a mathematical function the verifier may use in specifications.</summary>
+        public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s);
+        public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq");
 
         public static bool IsTrusted(ISymbol s)
         {
@@ -44,7 +47,8 @@ namespace CsVerify.Analyzers
 
         /// <summary>A method whose arguments are ghost: specification statements, Ghost.Of, lemmas.</summary>
         public static bool IsGhostMethod(IMethodSymbol m) =>
-            m != null && (IsSpecClass(m.ContainingType) || IsGhostOf(m) || IsLemma(m.OriginalDefinition));
+            m != null && (IsSpecClass(m.ContainingType) || IsGhostOf(m) || IsLemma(m.OriginalDefinition) ||
+                          IsGhostFunction(m.OriginalDefinition) || IsSeqType(m.ContainingType));
 
         /// <summary>
         /// True when <paramref name="node"/> sits where ghost values are legal: inside the arguments of a ghost
@@ -60,7 +64,8 @@ namespace CsVerify.Analyzers
                         if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && IsGhostMethod(m)) return true;
                         break;
                     case MethodDeclarationSyntax md:
-                        return IsLemma(model.GetDeclaredSymbol(md));
+                        var declared = model.GetDeclaredSymbol(md);
+                        return IsLemma(declared) || IsGhostFunction(declared);
                     case LocalFunctionStatementSyntax lf:
                         if (IsLemma(model.GetDeclaredSymbol(lf))) return true;
                         break;

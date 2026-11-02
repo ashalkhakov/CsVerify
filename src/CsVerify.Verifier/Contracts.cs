@@ -54,7 +54,7 @@ namespace CsVerify.Verifier
 
             if (exprBody != null)
             {
-                if (c.IsPure) c.PureBody = c.Model.GetOperation(exprBody);
+                if (c.IsPure && !c.IsTrusted) c.PureBody = c.Model.GetOperation(exprBody);
                 return c;
             }
             if (block == null) return c;
@@ -75,7 +75,7 @@ namespace CsVerify.Verifier
                 }
                 rest.Add(stmt);
             }
-            if (c.IsPure && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)
+            if (c.IsPure && !c.IsTrusted && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)
                 c.PureBody = c.Model.GetOperation(ret.Expression);
             return c;
         }

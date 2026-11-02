@@ -63,6 +63,13 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | `getVar (pf: a@l \| p: ptr l)` | `Mem.Read(in view, p)`: `in` borrows the view (ATS `!pf`) |
 | `setVar` | `Mem.Write(ref view, p, v)`: `ref` borrows the view and updates it |
 | `allocVar` / `freeVar` | `Mem.Alloc(init, out view)` produces a view; `Mem.Free(view, p)` consumes it |
+| array view `array_v(T, n, l)` | `[Linear] struct ArrayView<T>` with ghost `Addr`, `Length` and contents `Elems : Seq<T>` |
+| `p->[i]`, `p->[i] := x` | `Mem.Get(in view, p, i)`, `Mem.Set(ref view, p, i, x)` (bounds are preconditions on the view) |
+| `array_v_split` / `array_v_unsplit` (`praxi`) | `Mem.Split(whole, Ghost.Of(i), out left, out right)` / `Mem.Join(left, right, out whole)` |
+| pointer arithmetic `l + i` | `p.Offset(i)` (`Addr` of the result is `p.Addr + i`) |
+| `mfree_gc_v(l)` | `[Linear] FreeGc<T>` from `Mem.AllocArray`; `Mem.FreeArray(gc, view, p)` needs it and the whole view |
+| static lists of elements | `Seq<T>`: ghost sequence with `s[i]`, `Update`, `Drop`, `Concat`, `Seq.Const`, `==` |
+| static function | `[GhostFunction]`: specification-only, its body is ghost context (quantifiers, `Seq`), unfolded at each use |
 | linear logic on views (used exactly once) | `[Linear]` types checked by the `LinearityAnalyzer` on Roslyn's control-flow graph |
 | frame rule `(ext)` | calls only change what they receive by `ref`/`out` (and arrays they may write) |
 | `$UNSAFE` | `[Trusted]`: the body is not verified, its contract is taken as an axiom, linearity is not checked |
@@ -80,12 +87,14 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - **States:** each is in a set of states {Unassigned, Live, Consumed}. Sets are joined by union where paths meet, iterated to a fixpoint.
 - **Consumes:** passing by value, `return`, and moving into another variable (`var w = v;`).
 - **Borrows:** `ref`/`in` arguments and member reads. The value must be Live.
+- **`ref` parameters are ATS's `!pf`:** inside the method a `ref` view may be consumed, for example split, as long as it holds a value again on every return (it is joined back). An `in` parameter is read-only and can never be consumed.
 - **Defines:** `out var v` and assignment.
 - **Exceptions:** throw edges are not exits (as in ATS, an exception may leak a view).
 - **Errors:**
   - a borrow or consume where Consumed is possible: CSV0002;
   - Live at the method exit, i.e. not consumed on every path: CSV0001;
-  - consuming a `ref`/`in` parameter: CSV0005;
+  - a `ref` parameter not holding a value on return: CSV0001;
+  - consuming an `in` parameter: CSV0005;
   - capture by a lambda or local function: CSV0003;
   - boxing, or storing in a field of a non-linear type: CSV0004;
   - creating a view with `default`/`new` outside `[Trusted]` (forging a proof): CSV0006.
@@ -121,6 +130,8 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
    - assumes the callee's `Ensures`.
    Lemma calls are the same, so they add their postconditions. `[Pure]` calls are also equal to an uninterpreted function whose single-`return` body is unfolded once. That is what lets a lemma prove `2 * Tri(n) == n * (n + 1)` by induction.
 6. **Trusted bodies** are skipped. Their contracts are still used.
+
+Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
 
 Z3 runs as a separate process speaking SMT-LIB2. Neither the analyzer nor MSBuild loads native code, and any Z3 build for any OS or CPU works. See *Limitations* for why this is not the `Microsoft.Z3` NuGet package.
 
@@ -195,9 +206,9 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV0002 | analyzer | linear value used or consumed after it may have been consumed |
 | CSV0003 | analyzer | linear value captured by a lambda / local function |
 | CSV0004 | analyzer | linear value boxed, or stored in a non-linear type |
-| CSV0005 | analyzer | borrowed (`ref`/`in`) linear value consumed |
+| CSV0005 | analyzer | read-only borrowed (`in`) linear value consumed |
 | CSV0006 | analyzer | linear value created by `default`/`new` outside `[Trusted]` |
-| CSV0010 | analyzer | ghost value (`Ghost.Value`, `Spec.Forall`/`Exists`) outside a specification |
+| CSV0010 | analyzer | ghost value (`Ghost.Value`, `Spec.Forall`/`Exists`, `Seq` members, `[GhostFunction]` calls) outside a specification |
 | CSV0011 | analyzer | `[Lemma]` not `void` + `[Conditional("CSVERIFY_SPEC")]` |
 | CSV0012 | analyzer | `Spec.Result`/`Spec.Old` outside `Spec.Ensures` |
 | CSV1001 | verifier | callee precondition might not hold |
@@ -230,9 +241,12 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 - `Lemmas.TriFormula`: `2·Tri(n) = n(n+1)` by induction, used by `TriFast`.
 - `Lemmas.Power2`: recursion termination.
 - `Memory.*`: alloc / read / write / free with linear `PointsTo` views, including a function that borrows a view and gives it back.
+- `ArrayViews.Fill`: divide-and-conquer fill. It splits `array_v(n, l)` into `array_v(n/2, l) * array_v(n - n/2, l + n/2)`, recurses on each half through its own pointer, and joins them back.
+- `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
+- `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
 - `Linearity.cs` has leak, double free, use-after-free, forging and run-time ghost reads. Its analyzer errors are downgraded to warnings in that project's `.editorconfig` so the solution still builds.
 
 ## Layout
@@ -245,7 +259,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 61 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 75 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -275,8 +289,11 @@ samples/Good, samples/Buggy
 
 **Views versus ATS/SV** (Zhu & Xi, *Safe Programming with Pointers through Stateful Views*)
 - `PointsTo<T>` tracks address and value, so `T @ l` plus more.
-- There are no user-defined dataviews (`arrayView`), no `⊗`/`−◦` view algebra, no pointer arithmetic `L + I`, no type-changing `setVar`, and no uninitialized `top @ l`.
-- A `[Linear]` struct with `[Trusted]` split/join lemmas is the intended route to dataviews, but none ship yet.
+- Array views (`array_v`), split/join, pointer arithmetic and `mfree_gc_v` are provided as library axioms. There is still no way to declare your own `dataview` with checked proof constructors: a `[Linear]` struct plus `[Trusted]` functions is how you would add one, and those functions are trusted, not checked.
+- There is no general `⊗`/`−◦` view algebra, no type-changing `setVar`, and no uninitialized `top @ l`.
+- View-changing proof functions (`Split`, `Join`) cannot be `[Conditional]`, because C# forbids `out` parameters on conditional methods. They are empty, inlined methods on data-less structs instead: proof erasure by the JIT rather than by the compiler.
+- Contents of a view are compared as whole sequences (`Elems == ...`), because C# lambdas cannot capture `ref`/`in` parameters. Element-wise properties go through a `[GhostFunction]` that takes the `Seq<T>` by value (see `ArrayViews.AllEqual`).
+- With e-matching only, a property that needs a cleverer quantifier instantiation may come back "not proved" even though it is true. Add an intermediate `Spec.Assert` or a lemma.
 - The analyzer does not track linear fields inside a linear struct separately: the struct is one resource.
 
 **Packaging**
