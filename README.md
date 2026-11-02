@@ -67,12 +67,14 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | array view `array_v(T, n, l)` | `[Linear] struct ArrayView<T>` with ghost `Addr`, `Length` and contents `Elems : Seq<T>` |
 | `p->[i]`, `p->[i] := x` | `Mem.Get(in view, p, i)`, `Mem.Set(ref view, p, i, x)` (bounds are preconditions on the view) |
 | `array_v_split` / `array_v_unsplit` (`praxi`) | `Mem.Split(whole, Ghost.Of(i), out left, out right)` / `Mem.Join(left, right, out whole)` |
+| `array_v_takeout`: `a @ (l+i)` and a linear function `a @ (l+i) -<lin> array_v(a, n, l)` | `Mem.TakeOut(whole, Ghost.Of(i), out cell, out hole)` gives a `PointsTo<T>` and a `[Linear] ArrayHole<T>` token standing for the linear function; `Mem.PutBack(cell, hole, out whole)` applies it |
 | pointer arithmetic `l + i` | `p.Offset(i)` (`Addr` of the result is `p.Addr + i`) |
 | `mfree_gc_v(l)` | `[Linear] FreeGc<T>` from `Mem.AllocArray`; `Mem.FreeArray(gc, view, p)` needs it and the whole view |
 | static lists of elements | `Seq<T>`: ghost sequence with `s[i]`, `Update`, `Drop`, `Concat`, `Seq.Const`, `==` |
 | static function | `[GhostFunction]`: specification-only, its body is ghost context (quantifiers, `Seq`), unfolded at each use |
 | linear logic on views (used exactly once) | `[Linear]` types checked by the `LinearityAnalyzer` on Roslyn's control-flow graph |
 | frame rule `(ext)` | calls only change what they receive by `ref`/`out` (and arrays they may write) |
+| several results, `[r1, r2: int] (...)` (Dafny `returns (k, m)`) | a C# tuple `(int k, int m)`; `Spec.Ensures<(int k, int m)>(r => ... r.k ... r.m ...)`; callers read `t.k` or deconstruct with `var (k, m) = ...` |
 | `$UNSAFE` | `[Trusted]`: the body is not verified, its contract is taken as an axiom, linearity is not checked |
 | proof erasure | `[Conditional]` erasure: in a normal build no spec, lemma call or argument remains |
 
@@ -255,6 +257,9 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
   - `Swap` of two cells through two borrowed `T @ l` views.
   - `Ackermann`, with the lexicographic metric `(m, n)`.
   - `IsEven`/`IsOdd`, mutually recursive, with metrics `2n` and `2n + 1`.
+- `AtsMatrixAndTakeOut.cs`, from INT2PROGINATS and `matrixSub` in Xi's ICFP'05 paper:
+  - `IncrementAt`, which takes cell i out of an array view as a plain `int @ (l + i)`, updates it with the single-cell `Read`/`Write`, and puts it back.
+  - `MatGet` and `FillRows`, which index an m × n matrix in row-major order. The nonlinear bound `i·n + j < m·n` comes from the lemma `RowMajorInBounds`, which is built on an inductive `MulMonotone`.
 - `AtsArrays.cs`:
   - DML's `DotProd`: only bounds, the point of the PLDI'98 paper.
   - A view-based `Copy`: `!array_v` × 2, element-wise postcondition.
@@ -265,6 +270,11 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
   - `DutchFlag`, sortedness only.
   - `McCarthy91`, whose nested recursion terminates only thanks to the inner call's postcondition.
   - `FindZero`, which skips ahead justified by a lemma containing a loop.
+- `DafnyMore.cs`, from Dafny's test suite:
+  - `MaxSegSum`, Kadane's algorithm. It returns the optimal segment `(k, m)` as a tuple and proves it beats every segment, with doubly quantified invariants over a `[Pure] Sum`.
+  - `Cubes`, which fills `a[i] = i³` with additions only.
+  - `SumOfCubes`, through Nicomachus' theorem `Σ i³ = (Σ i)²`, which uses two inductive lemmas.
+  - `AdditiveFactorial`, nested loops of additions.
 
 `samples/Buggy/PortBugs.cs` holds the same programs with planted bugs:
 - a wrong initial accumulator;
@@ -275,17 +285,20 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
 - Ackermann with only `m` as its metric;
 - `Even`/`Odd` both measured by `n`.
 
+`samples/Buggy/PortBugs2.cs` does the same for the second batch:
+- a taken-out cell written through the wrong pointer;
+- a matrix stride by rows instead of columns;
+- Kadane without the restart;
+- a wrong finite difference in `Cubes`;
+- sum of cubes without the Nicomachus lemma.
+
 **What the ports could not say yet:**
 - **Permutation.** Sorts and partitions don't prove that the output is a permutation of the input. ATS proves it with a dataprop over lists, Dafny with `multiset`.
 - **Dataprops.** `FACT(n, r)` and friends become `[Pure]` functions. That is fine for functional relations. A relation that is not a function, or a proof that is case-analysed, has no counterpart.
 - **Datatypes and dataviews.** List reverse/append with length indices (Xanadu, ICFP'05), singly-linked list segments (`slseg`, PADL'05), red-black trees (DML) and typed evaluators all need user datatypes or dataviews.
 - **Sets and cardinalities.** Pigeonhole proofs like Dafny's TwoDuplicates need them.
 
-Still to port, all feasible today:
-- the array-view `takeout` from INT2PROGINATS `CHAP_DATAVIEW`;
-- row-major matrix indexing with a MUL lemma;
-- Kadane's maximum segment sum (Dafny `SegmentSum`);
-- Dafny's `Cubes`, `SumOfCubes` and `AdditiveFactorial`.
+Of the surveyed programs, the ones that remain need the features above. One exception: Dafny's `MinWindowMax` is feasible but heavy.
 
 Sources and licences:
 - The ATS-CodeBook is MIT licensed (its only relevant recipe is binary search, already covered by `Arrays.BinarySearch`).
@@ -308,7 +321,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 83 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 88 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -322,7 +335,7 @@ samples/Good, samples/Buggy
 - Without `--overflow`, integers are mathematical integers.
 - Partial correctness on exceptions: a path that throws proves nothing and is not checked further. Null dereferences are not checked.
 - Specification expressions are not checked for well-definedness. Indexing in a spec has no bounds obligation, and a `[Pure]` call's precondition is not checked in specs; its definition is only assumed when its precondition holds.
-- Inside a quantifier, side facts (lengths are non-negative, `[Pure]` unfolding) are not added.
+- Side facts about terms under a quantifier (lengths are non-negative, `[Pure]` unfolding) are asserted as a separate axiom, quantified the same way. Z3 instantiates them by e-matching only, so a fact needed at a term that never appears may still be missing; that costs completeness, not soundness.
 - Lemmas are checked for termination, but not for side effects. Keep them ghost.
 
 **Unsupported constructs** (reported as CSV1900 warnings, never silently)
@@ -338,9 +351,10 @@ samples/Good, samples/Buggy
 
 **Views versus ATS/SV** (Zhu & Xi, *Safe Programming with Pointers through Stateful Views*)
 - `PointsTo<T>` tracks address and value, so `T @ l` plus more.
-- Array views (`array_v`), split/join, pointer arithmetic and `mfree_gc_v` are provided as library axioms. There is still no way to declare your own `dataview` with checked proof constructors: a `[Linear]` struct plus `[Trusted]` functions is how you would add one, and those functions are trusted, not checked.
+- Array views (`array_v`), split/join, take-out, pointer arithmetic and `mfree_gc_v` are provided as library axioms. There is still no way to declare your own `dataview` with checked proof constructors: a `[Linear]` struct plus `[Trusted]` functions is how you would add one, and those functions are trusted, not checked.
 - There is no general `⊗`/`−◦` view algebra, no type-changing `setVar`, and no uninitialized `top @ l`.
-- View-changing proof functions (`Split`, `Join`) cannot be `[Conditional]`, because C# forbids `out` parameters on conditional methods. They are empty, inlined methods on data-less structs instead: proof erasure by the JIT rather than by the compiler.
+- Take-out's linear function `a @ (l+i) -<lin> array_v(a, n, l)` is a linear token (`ArrayHole<T>`) that only `Mem.PutBack` consumes; there are no linear proof functions in general.
+- View-changing proof functions (`Split`, `Join`, `TakeOut`, `PutBack`) cannot be `[Conditional]`, because C# forbids `out` parameters on conditional methods. They are empty, inlined methods on data-less structs instead: proof erasure by the JIT rather than by the compiler.
 - Contents of a view are compared as whole sequences (`Elems == ...`), because C# lambdas cannot capture `ref`/`in` parameters. Element-wise properties go through a `[GhostFunction]` that takes the `Seq<T>` by value (see `ArrayViews.AllEqual`).
 - With e-matching only, a property that needs a cleverer quantifier instantiation may come back "not proved" even though it is true. Add an intermediate `Spec.Assert` or a lemma.
 - The analyzer does not track linear fields inside a linear struct separately: the struct is one resource.

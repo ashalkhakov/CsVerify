@@ -213,6 +213,52 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void TupleResults()
+        {
+            const string minMax = "static (int lo, int hi) M(int x, int y) { Spec.Ensures<(int lo, int hi)>(r => r.lo == Math.Min(x, y) && r.Item2 == Math.Max(x, y)); " +
+                "return x <= y ? (x, y) : (y, x); }";
+            Assert.Empty(Errors("M", minMax));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", minMax.Replace("(y, x)", "(x, y)")));
+            Assert.Empty(Errors("U", minMax + " static int U() { Spec.Ensures<int>(r => r == 2); var t = M(5, 3); return t.lo - 1; }"));
+            const string use = " static int D() { Spec.Ensures<int>(r => r == 2); var (a, b) = M(5, 3); (int c, _) = M(b, a); return c - 1 + EXTRA; }";
+            Assert.Empty(Errors("D", minMax + use.Replace("EXTRA", "0")));
+            Assert.Equal(new[] { "CSV1002" }, Errors("D", minMax + use.Replace("EXTRA", "b - a")));
+        }
+
+        private const string SumDef = "[Pure] static int Sum(int[] a, int s, int t) { Spec.Requires(0 <= s && s <= t && t <= a.Length); " +
+            "Spec.Decreases(t - s); return s == t ? 0 : Sum(a, s, t - 1) + a[t - 1]; } ";
+
+        [Fact]
+        public void PureDefinitions_UnfoldInsideQuantifiers()
+        {
+            // needs Sum(a, b, n + 1) = Sum(a, b, n) + a[n] for the bound b, and Sum(a, n, n) = 0 from the hypothesis
+            Assert.Empty(Errors("Step", SumDef + "static void Step(int[] a, int n, int c) { " +
+                "Spec.Requires(0 <= n && n < a.Length && 0 <= c && c <= n); Spec.Requires(Spec.Forall(0, n + 1, b => Sum(a, b, n) <= Sum(a, c, n))); " +
+                "Spec.Ensures(Spec.Forall(0, n + 1, b => Sum(a, b, n + 1) <= Sum(a, c, n) + a[n])); }"));
+        }
+
+        [Fact]
+        public void PureDefinitions_InsideQuantifiers_DoNotProveFalseClaims()
+        {
+            Assert.Equal(new[] { "CSV1002" }, Errors("Bad", SumDef + "static void Bad(int[] a) { Spec.Requires(a.Length > 0); " +
+                "Spec.Ensures(Spec.Forall(0, a.Length, b => Sum(a, b, a.Length) == 0)); }"));
+            // an assumed quantifier cannot hide a definition: Sum(a, n, n) is 0 whatever the hypothesis says
+            Assert.Equal(new[] { "CSV1002" }, Errors("Bad", SumDef + "static void Bad(int[] a, int n) { Spec.Requires(0 <= n && n <= a.Length); " +
+                "Spec.Requires(Spec.Forall(0, n + 1, b => Sum(a, b, n) < 0)); Spec.Ensures(false); }"));
+        }
+
+        [Fact]
+        public void TakeOut_AndPutBack()
+        {
+            const string inc = "static void Inc(ref ArrayView<int> v, Ptr<int> p, int i) { " +
+                "Spec.Requires(v.Addr == p.Addr && 0 <= i && i < v.Length.Value); " +
+                "Spec.Ensures(v.Addr == Spec.Old(v).Addr && v.Length == Spec.Old(v).Length && v.Elems == Spec.Old(v).Elems.Update(i, Ghost.Of(7))); " +
+                "Mem.TakeOut(v, Ghost.Of(i), out var c, out var h); Mem.Write(ref c, p.Offset(OFF), 7); Mem.PutBack(c, h, out v); }";
+            Assert.Empty(Errors("Inc", inc.Replace("OFF", "i")));
+            Assert.Equal(new[] { "CSV1001" }, Errors("Inc", inc.Replace("OFF", "0")));
+        }
+
+        [Fact]
         public void GhostParameters_AreStaticIndices()
         {
             const string last = "static int Last(int[] a, Ghost<int> n) { Spec.Requires(n.Value > 0 && a.Length == n.Value); return a[n.Value - 1]; } ";
@@ -347,6 +393,11 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1006", "CSV1007" }, r.Errors("DutchFlagStuck"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("AckermannSingleMeasure"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("Odd"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("IncrementWrongCell"));
+            Assert.Equal(new[] { "CSV1003" }, r.Errors("MatGetWrongStride"));
+            Assert.Equal(new[] { "CSV1006" }, r.Errors("KadaneForgetsRestart"));
+            Assert.Equal(new[] { "CSV1006" }, r.Errors("CubesWrongStep"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("SumOfCubesWithoutLemma"));
         }
     }
 }

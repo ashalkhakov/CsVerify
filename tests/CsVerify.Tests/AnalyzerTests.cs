@@ -84,6 +84,13 @@ namespace CsVerify.Tests
             "Mem.Split(v, Ghost.Of(1), out var l, out var r); Mem.Join(l, r, out v); Mem.Set(ref l, p, 0, 1);", ViewParams));
 
         [Fact]
+        public void TakeOut_MustBePutBack()
+        {
+            Assert.Empty(Body("Mem.TakeOut(v, Ghost.Of(0), out var c, out var h); Mem.Write(ref c, p, 1); Mem.PutBack(c, h, out v);", ViewParams));
+            Assert.Equal(new[] { "CSV0001", "CSV0001", "CSV0001" }, Body("Mem.TakeOut(v, Ghost.Of(0), out var c, out var h);", ViewParams));
+        }
+
+        [Fact]
         public void FreeArray_ConsumesViewAndToken() =>
             Assert.Empty(Body("var p = Mem.AllocArray(4, 0, out var v, out var gc); Mem.Set(ref v, p, 3, 1); Mem.FreeArray(gc, v, p);"));
 

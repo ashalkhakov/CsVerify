@@ -44,6 +44,14 @@ namespace CsVerify.Verifier
         private Frame _entry;
         private Term[] _entryMeasure;
         private int _paths, _unfoldDepth, _quantDepth;
+        private readonly Stack<List<Term>> _quantFacts = new Stack<List<Term>>();
+
+        /// <summary>Assumes a background fact, or inside a quantifier records it as a hypothesis of the quantifier's body.</summary>
+        private void AssumeSide(Term fact)
+        {
+            if (_quantFacts.Count == 0) _z3.Assume(fact);
+            else _quantFacts.Peek().Add(fact);
+        }
         private bool _codeMode; // obligations are only generated for code, not for specification expressions
 
         public MethodVerifier(Engine engine, Contract contract, MethodResult result)
@@ -418,7 +426,7 @@ namespace CsVerify.Verifier
         private Term Len(Term seq)
         {
             var len = _z3.Apply("length", Sort.Int, new[] { seq });
-            if (_quantDepth == 0) _z3.Assume(T.InRange(len, 0, int.MaxValue));
+            AssumeSide(T.InRange(len, 0, int.MaxValue));
             return len;
         }
 
@@ -477,6 +485,12 @@ namespace CsVerify.Verifier
                     Write(a.Target, v, f, spec);
                     return v;
                 }
+                case IDeconstructionAssignmentOperation da:
+                {
+                    var v = Eval(da.Value, f, spec);
+                    Deconstruct(da.Target, v, f, spec);
+                    return v;
+                }
                 case ICompoundAssignmentOperation ca:
                 {
                     var old = Eval(ca.Target, f, spec);
@@ -501,6 +515,17 @@ namespace CsVerify.Verifier
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type));
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
+                case IFieldReferenceOperation fr when fr.Field.ContainingType?.IsTupleType == true && fr.Instance != null:
+                    return T.Coerce(TupleItem(Eval(fr.Instance, f, spec), fr.Field), SortOf(fr.Type));
+                case ITupleOperation tuple:
+                {
+                    // a tuple is a value: a fresh reference whose items are fixed here and never change
+                    var elems = tuple.Elements.Select(e => Eval(e, f, spec)).ToArray();
+                    var t = _z3.Fresh("tuple", Sort.Int);
+                    var fields = ((INamedTypeSymbol)tuple.Type).TupleElements;
+                    for (int i = 0; i < elems.Length; i++) AssumeSide(T.Eq(TupleItem(t, fields[i]), elems[i]));
+                    return t;
+                }
                 case IFieldReferenceOperation fr:
                 {
                     var args = fr.Instance != null ? new[] { Eval(fr.Instance, f, spec) } : Array.Empty<Term>();
@@ -640,6 +665,32 @@ namespace CsVerify.Verifier
                     Unsupported(u);
                     return Unknown(u.Type);
             }
+        }
+
+        /// <summary><c>(a, b) = t</c> and <c>var (a, b) = t</c>: each target gets the tuple's item at its position.</summary>
+        private void Deconstruct(IOperation target, Term tuple, Frame f, SpecEnv spec)
+        {
+            if (target is IDeclarationExpressionOperation d) target = d.Expression;
+            if (!(target is ITupleOperation targets) || !(targets.Type is INamedTypeSymbol type && type.IsTupleType))
+            {
+                Unsupported(target);
+                return;
+            }
+            var fields = type.TupleElements;
+            for (int i = 0; i < targets.Elements.Length; i++)
+            {
+                var item = TupleItem(tuple, fields[i]);
+                var element = targets.Elements[i] is IDeclarationExpressionOperation de ? de.Expression : targets.Elements[i];
+                if (element is ITupleOperation) Deconstruct(element, item, f, spec);
+                else if (!(element is IDiscardOperation)) Write(element, T.Coerce(item, SortOf(element.Type)), f, spec);
+            }
+        }
+
+        /// <summary>Item n of a tuple, by position: named elements (<c>r.k</c>) and <c>ItemN</c> are the same function.</summary>
+        private Term TupleItem(Term tuple, IFieldSymbol field)
+        {
+            var item = field.CorrespondingTupleField ?? field;
+            return _z3.Apply("tuple." + item.Name, SortOf(item.Type), new[] { tuple });
         }
 
         private void BoundsCheck(Term seq, Term idx, SyntaxNode at)
@@ -856,7 +907,7 @@ namespace CsVerify.Verifier
             if (readsHeap) all.Add(heap);
             var app = _z3.Apply("pure:" + m.ToDisplayString(), SortOf(m.ReturnType), all);
 
-            if (_unfoldDepth == 0 && _quantDepth == 0)
+            if (_unfoldDepth == 0)
             {
                 _unfoldDepth++;
                 bool wasCode = _codeMode;
@@ -866,9 +917,9 @@ namespace CsVerify.Verifier
                     var frame = CalleeFrame(callee, receiver, args, heap);
                     var env = new SpecEnv { Old = frame, Result = app };
                     var pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
-                    if (callee.PureBody != null) _z3.Assume(T.Implies(pre, T.Eq(app, Eval(callee.PureBody, frame, env))));
+                    if (callee.PureBody != null) AssumeSide(T.Implies(pre, T.Eq(app, Eval(callee.PureBody, frame, env))));
                     foreach (var ens in callee.Ensures)
-                        _z3.Assume(T.Implies(pre, AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
+                        AssumeSide(T.Implies(pre, AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
                 }
                 finally { _unfoldDepth--; _codeMode = wasCode; }
             }
@@ -919,13 +970,26 @@ namespace CsVerify.Verifier
             var inner = f.Clone();
             inner.Vars[fn.Symbol.Parameters[0]] = bound;
             _quantDepth++;
+            int factLevels = _quantFacts.Count;
+            _quantFacts.Push(new List<Term>());
             try
             {
                 var body = AsBool(Eval(bodyOp, inner, spec));
                 var range = T.And(T.Le(lo, bound), T.Lt(bound, hi));
-                return forall ? T.Quant("forall", name, T.Implies(range, body)) : T.Quant("exists", name, T.And(range, body));
+                // Side facts about the body's terms (lengths, [Pure] unfoldings) may mention the bound variable. They
+                // become an axiom of their own, quantified the same way, and assumed whether this quantifier is a
+                // hypothesis or a goal. (As a hypothesis of the body they would be useless where the quantifier is
+                // assumed: a model could falsify them and satisfy the implication vacuously.)
+                var facts = T.And(_quantFacts.Pop().ToArray());
+                if (facts != T.True) AssumeSide(T.Quant("forall", name, T.Implies(range, facts)));
+                return forall ? T.Quant("forall", name, T.Implies(range, body))
+                              : T.Quant("exists", name, T.And(range, body));
             }
-            finally { _quantDepth--; }
+            finally
+            {
+                while (_quantFacts.Count > factLevels) _quantFacts.Pop();
+                _quantDepth--;
+            }
         }
 
         private Term Builtin(IInvocationOperation inv, Frame f, SpecEnv spec)

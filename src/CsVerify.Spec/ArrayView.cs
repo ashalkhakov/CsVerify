@@ -27,6 +27,21 @@ namespace CsVerify
         public Ghost<int> Length => default;
     }
 
+    /// <summary>
+    /// An array view with one cell taken out: what is left of <c>array_v(T, n, l)</c> once <c>T @ (l + i)</c> is lent
+    /// out. ATS's <c>array_v_takeout</c> returns the cell's view and a linear function
+    /// <c>T @ (l + i) -&lt;lin&gt; array_v(T, n, l)</c> that puts it back; this token is that function, and
+    /// <see cref="Mem.PutBack{T}"/> applies it.
+    /// </summary>
+    [Linear]
+    public readonly struct ArrayHole<T>
+    {
+        public Ghost<int> Addr => default;
+        public Ghost<int> Length => default;
+        public Ghost<int> Index => default;
+        public Seq<T> Elems => default;
+    }
+
     public static partial class Mem
     {
         private static readonly Dictionary<int, int> ArraySizes = new Dictionary<int, int>();
@@ -99,6 +114,30 @@ namespace CsVerify
             Spec.Ensures(left.Addr == whole.Addr && left.Length == at && left.Elems == whole.Elems && right.Length.Value >= 0);
             Spec.Ensures(right.Addr.Value == whole.Addr.Value + at.Value && right.Length.Value == whole.Length.Value - at.Value);
             Spec.Ensures(right.Elems == whole.Elems.Drop(at.Value));
+        }
+
+        /// <summary>
+        /// ATS's <c>array_v_takeout</c>: lends out cell i of the view as a plain <c>T @ (l + i)</c>, which
+        /// <see cref="Read{T}"/> and <see cref="Write{T}"/> work on; the rest stays behind as a hole.
+        /// </summary>
+        [Trusted, MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void TakeOut<T>(ArrayView<T> whole, Ghost<int> i, out PointsTo<T> cell, out ArrayHole<T> rest)
+        {
+            cell = default;
+            rest = default;
+            Spec.Requires(0 <= i.Value && i.Value < whole.Length.Value);
+            Spec.Ensures(cell.Addr.Value == whole.Addr.Value + i.Value && cell.Value == whole.Elems[i.Value]);
+            Spec.Ensures(rest.Addr == whole.Addr && rest.Length == whole.Length && rest.Index == i && rest.Elems == whole.Elems);
+        }
+
+        /// <summary>Puts a taken-out cell back into its hole, with whatever value it now holds.</summary>
+        [Trusted, MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void PutBack<T>(PointsTo<T> cell, ArrayHole<T> rest, out ArrayView<T> whole)
+        {
+            whole = default;
+            Spec.Requires(cell.Addr.Value == rest.Addr.Value + rest.Index.Value);
+            Spec.Ensures(whole.Addr == rest.Addr && whole.Length == rest.Length);
+            Spec.Ensures(whole.Elems == rest.Elems.Update(rest.Index.Value, cell.Value));
         }
 
         /// <summary><c>array_v(T, i, l) * array_v(T, m, l + i) -o array_v(T, i + m, l)</c>.</summary>
