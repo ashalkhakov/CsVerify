@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CsVerify.Spec\CsVerify.Spec.csproj" />
+    <!-- In a project using the NuGet package this comes with the package; here we reference the analyzer project. -->
+    <ProjectReference Include="..\..\src\CsVerify.Analyzers\CsVerify.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

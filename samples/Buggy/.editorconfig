@@ -1,0 +1,11 @@
+# This project exists to show diagnostics; keep it building.
+[*.cs]
+dotnet_diagnostic.CSV0001.severity = warning
+dotnet_diagnostic.CSV0002.severity = warning
+dotnet_diagnostic.CSV0003.severity = warning
+dotnet_diagnostic.CSV0004.severity = warning
+dotnet_diagnostic.CSV0005.severity = warning
+dotnet_diagnostic.CSV0006.severity = warning
+dotnet_diagnostic.CSV0010.severity = warning
+dotnet_diagnostic.CSV0011.severity = warning
+dotnet_diagnostic.CSV0012.severity = warning

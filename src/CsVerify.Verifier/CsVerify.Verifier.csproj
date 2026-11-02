@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>csverify</AssemblyName>
+    <RootNamespace>CsVerify.Verifier</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>csverify</ToolCommandName>
+    <PackageId>CsVerify.Verifier</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\CsVerify.Analyzers\SpecSymbols.cs" Link="Shared\SpecSymbols.cs" />
+    <!-- The verifier compiles user code against the Spec sources so it can read the library's own contracts (Mem.*). -->
+    <EmbeddedResource Include="..\CsVerify.Spec\*.cs" LogicalName="CsVerify.Spec.%(Filename)%(Extension)" />
+    <None Include="build\CsVerify.Verifier.targets" Pack="true" PackagePath="build" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>CsVerify</RootNamespace>
+    <PackageId>CsVerify</PackageId>
+    <Description>ATS-style specifications for C#: contracts, ghost values, linear views. Ships the CsVerify analyzers.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The analyzer travels inside the package so every consuming IDE shows its diagnostics. -->
+    <ProjectReference Include="..\CsVerify.Analyzers\CsVerify.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <None Include="..\CsVerify.Analyzers\bin\$(Configuration)\netstandard2.0\CsVerify.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+</Project>
