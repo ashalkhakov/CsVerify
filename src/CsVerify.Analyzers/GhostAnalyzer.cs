@@ -62,8 +62,9 @@ namespace CsVerify.Analyzers
             }
             if (m.Name != "Result" && m.Name != "Old") return;
             var call = SpecSymbols.EnclosingSpecCall(op.Syntax, op.SemanticModel);
-            bool inEnsures = call != null && op.SemanticModel.GetSymbolInfo(call).Symbol is IMethodSymbol spec && spec.Name == "Ensures";
-            if (!inEnsures)
+            var where = call != null && op.SemanticModel.GetSymbolInfo(call).Symbol is IMethodSymbol spec ? spec.Name : null;
+            bool allowed = where == "Ensures" || (m.Name == "Old" && (where == "Invariant" || where == "Assert"));
+            if (!allowed)
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ResultOutsideEnsures, op.Syntax.GetLocation(), "Spec." + m.Name));
         }
     }

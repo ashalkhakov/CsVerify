@@ -44,6 +44,6 @@ namespace CsVerify.Analyzers
 
         public static readonly DiagnosticDescriptor ResultOutsideEnsures = Error("CSV0012", Ghosts,
             "Spec.Result/Spec.Old outside a postcondition",
-            "'{0}' can only be used inside Spec.Ensures");
+            "'{0}' can only be used inside Spec.Ensures (Spec.Old also inside Spec.Invariant and Spec.Assert)");
     }
 }

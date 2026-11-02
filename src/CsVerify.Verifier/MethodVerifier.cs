@@ -738,7 +738,7 @@ namespace CsVerify.Verifier
                     case "Result":
                         return spec?.Result != null ? T.Coerce(spec.Result, SortOf(inv.Type)) : Unknown(inv.Type, "result");
                     case "Old":
-                        return spec?.Old != null ? Eval(inv.Arguments[0].Value, spec.Old, spec) : Eval(inv.Arguments[0].Value, f, spec);
+                        return spec?.Old != null ? Eval(inv.Arguments[0].Value, OldFrame(spec.Old, f), spec) : Eval(inv.Arguments[0].Value, f, spec);
                     case "Forall":
                     case "Exists":
                         return Quantifier(inv, f, spec, m.Name == "Forall");
@@ -869,6 +869,18 @@ namespace CsVerify.Verifier
                 finally { _unfoldDepth--; _codeMode = wasCode; }
             }
             return T.Coerce(app, sort);
+        }
+
+        /// <summary>
+        /// The state <c>Spec.Old</c> reads: heap and parameters as on entry; locals and quantifier-bound variables,
+        /// which the entry state does not have, keep their current values (like Dafny's <c>old</c>).
+        /// </summary>
+        private static Frame OldFrame(Frame entry, Frame now)
+        {
+            var old = entry.Clone();
+            foreach (var kv in now.Vars)
+                if (!old.Vars.ContainsKey(kv.Key)) old.Vars[kv.Key] = kv.Value;
+            return old;
         }
 
         private Term Quantifier(IInvocationOperation inv, Frame f, SpecEnv spec, bool forall)

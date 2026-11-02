@@ -148,10 +148,12 @@ namespace CsVerify.Tests
         }
 
         [Fact]
-        public void ResultAndOld_OnlyInEnsures()
+        public void ResultOnlyInEnsures_OldAlsoInInvariantsAndAssertions()
         {
             Assert.Empty(Harness.Analyze("static class C { static int M(int x) { Spec.Ensures(Spec.Result<int>() > Spec.Old(x)); return x + 1; } }"));
-            Assert.Equal(new[] { "CSV0012" }, Harness.Analyze("static class C { static void M(int x) { Spec.Assert(Spec.Old(x) == x); } }"));
+            Assert.Empty(Harness.Analyze("static class C { static void M(int x) { while (x > 0) { Spec.Invariant(x <= Spec.Old(x)); x--; } Spec.Assert(Spec.Old(x) >= x); } }"));
+            Assert.Equal(new[] { "CSV0012" }, Harness.Analyze("static class C { static void M(int x) { Spec.Requires(Spec.Old(x) == x); } }"));
+            Assert.Equal(new[] { "CSV0012" }, Harness.Analyze("static class C { static void M(int x) { Spec.Assert(Spec.Result<int>() == x); } }"));
         }
 
         [Fact]

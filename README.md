@@ -102,7 +102,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 
 **Ghost hygiene** (`GhostAnalyzer`):
 - `Ghost<T>.Value`, `Spec.Forall`/`Exists` only in ghost context: `Spec.*` arguments, lemma arguments, lemma bodies (CSV0010).
-- `Spec.Result`/`Spec.Old` only inside `Spec.Ensures` (CSV0012).
+- `Spec.Result` only inside `Spec.Ensures`; `Spec.Old` inside `Spec.Ensures`, `Spec.Invariant` and `Spec.Assert` (CSV0012). `Old` rewinds the heap and the parameters to method entry; locals keep their current values, as in Dafny.
 - A `[Lemma]` must be `void` and `[Conditional("CSVERIFY_SPEC")]`, so its calls are erased (CSV0011).
 
 ### Layer 2: the verifier (Z3, separate process)
@@ -210,7 +210,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV0006 | analyzer | linear value created by `default`/`new` outside `[Trusted]` |
 | CSV0010 | analyzer | ghost value (`Ghost.Value`, `Spec.Forall`/`Exists`, `Seq` members, `[GhostFunction]` calls) outside a specification |
 | CSV0011 | analyzer | `[Lemma]` not `void` + `[Conditional("CSVERIFY_SPEC")]` |
-| CSV0012 | analyzer | `Spec.Result`/`Spec.Old` outside `Spec.Ensures` |
+| CSV0012 | analyzer | `Spec.Result` outside `Spec.Ensures`; `Spec.Old` outside `Ensures`/`Invariant`/`Assert` |
 | CSV1001 | verifier | callee precondition might not hold |
 | CSV1002 | verifier | postcondition might not hold on a return path |
 | CSV1003 | verifier | index might be out of range / negative array size |
@@ -244,6 +244,52 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 - `ArrayViews.Fill`: divide-and-conquer fill. It splits `array_v(n, l)` into `array_v(n/2, l) * array_v(n - n/2, l + n/2)`, recurses on each half through its own pointer, and joins them back.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
+### Ported from ATS and Dafny
+
+Rewritten in C#, not copied. Each program names its source in its doc comment.
+- `AtsIntro.cs`, from Xi's *Introduction to Programming in ATS* (INT2PROGINATS) and the Stateful Views paper:
+  - `FactIter` and `FibIter` against `[Pure]` versions of the FACT and FIB dataprops.
+  - `Mul` by repeated addition (the MUL relation) and the inductive lemma `MulSucc`.
+  - Euclid's `GcdIter`.
+  - `Swap` of two cells through two borrowed `T @ l` views.
+- `AtsArrays.cs`:
+  - DML's `DotProd`: only bounds, the point of the PLDI'98 paper.
+  - A view-based `Copy`: `!array_v` × 2, element-wise postcondition.
+  - `InsertionSort`, sortedness only.
+- `DafnyClassics.cs`, from the Dafny tutorial and the Dafny test suite:
+  - `FindMax`, `Find`, `Reverse` in place (uses `Spec.Old` inside the loop invariant), `Sqrt`.
+  - `FastPow`, exponentiation by squaring, with the inductive lemma `PowAdd`.
+  - `DutchFlag`, sortedness only.
+  - `McCarthy91`, whose nested recursion terminates only thanks to the inner call's postcondition.
+  - `FindZero`, which skips ahead justified by a lemma containing a loop.
+
+`samples/Buggy/PortBugs.cs` holds the same programs with planted bugs:
+- a wrong initial accumulator;
+- a mirror index off by one;
+- squaring without the lemma;
+- a wrong termination metric;
+- a Dutch flag that forgets `mid++`.
+
+**What the ports could not say yet:**
+- **Permutation.** Sorts and partitions don't prove that the output is a permutation of the input. ATS proves it with a dataprop over lists, Dafny with `multiset`.
+- **Dataprops.** `FACT(n, r)` and friends become `[Pure]` functions. That is fine for functional relations. A relation that is not a function, or a proof that is case-analysed, has no counterpart.
+- **Lexicographic metrics.** Ackermann's `.<m, n>.` needs them. `Decreases` takes a single `int`.
+- **Datatypes and dataviews.** List reverse/append with length indices (Xanadu, ICFP'05), singly-linked list segments (`slseg`, PADL'05), red-black trees (DML) and typed evaluators all need user datatypes or dataviews.
+- **Sets and cardinalities.** Pigeonhole proofs like Dafny's TwoDuplicates need them.
+
+Still to port, all feasible today:
+- the array-view `takeout` from INT2PROGINATS `CHAP_DATAVIEW`;
+- row-major matrix indexing with a MUL lemma;
+- Kadane's maximum segment sum (Dafny `SegmentSum`);
+- Dafny's `Cubes`, `SumOfCubes` and `AdditiveFactorial`;
+- `isevn`/`isodd` (needs mutual-recursion termination).
+
+Sources and licences:
+- The ATS-CodeBook is MIT licensed (its only relevant recipe is binary search, already covered by `Arrays.BinarySearch`).
+- The INT2PROGINATS code carries an MIT-style notice, © Hongwei Xi.
+- Dafny is MIT licensed, © Microsoft.
+- The papers' programs are re-implemented, not copied.
+
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
@@ -259,7 +305,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 75 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 76 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -306,3 +352,6 @@ samples/Good, samples/Buggy
 - H. Xi, *Applied Type System: An Approach to Practical Programming with Theorem-Proving*, arXiv:1703.08683.
 - D. Zhu, H. Xi, *Safe Programming with Pointers through Stateful Views*, PADL 2005.
 - H. Xi, *Imperative Programming with Dependent Types* (Xanadu), LICS 2000.
+- H. Xi, F. Pfenning, *Eliminating Array Bound Checking Through Dependent Types*, PLDI 1998.
+- H. Xi, *Introduction to Programming in ATS*, https://ats-lang.github.io (INT2PROGINATS).
+- K. R. M. Leino et al., Dafny tutorial and test suite, https://github.com/dafny-lang/dafny.

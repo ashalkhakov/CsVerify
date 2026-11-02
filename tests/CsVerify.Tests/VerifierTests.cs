@@ -84,6 +84,17 @@ namespace CsVerify.Tests
             Callee + "static int M(int y) { Spec.Requires(y >= 0 && y < 1000); return Half(2 * y + 1); }"));
 
         [Fact]
+        public void Old_InLoopInvariant_SeesEntryHeap_AndCurrentLocals()
+        {
+            const string body = "{ Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == Spec.Old(a[k]) + 1)); int n = a.Length; " +
+                "for (int i = 0; i < n; i++) { Spec.Invariant(0 <= i && i <= n && n == a.Length); " +
+                "Spec.Invariant(Spec.Forall(0, i, k => a[k] == Spec.Old(a[k]) + 1)); Spec.Invariant(Spec.Forall(i, n, k => a[k] == Spec.Old(a[k]))); " +
+                "Spec.Decreases(n - i); a[i] = a[i] + STEP; } }";
+            Assert.Empty(Errors("Inc", "static void Inc(int[] a) " + body.Replace("STEP", "1")));
+            Assert.Equal(new[] { "CSV1006" }, Errors("Inc", "static void Inc(int[] a) " + body.Replace("STEP", "2")));
+        }
+
+        [Fact]
         public void EnsuresWithResultAndOld_OnRefParameters()
         {
             const string inc = "static void Inc(ref int x) { Spec.Requires(x < 100); Spec.Ensures(x == Spec.Old(x) + 1); x++; } ";
@@ -271,6 +282,11 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1001" }, r.Errors("WrongPointer"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("WrongOffset"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("OnePastEnd"));
+            Assert.Equal(new[] { "CSV1005" }, r.Errors("FibWrongStart"));
+            Assert.Equal(new[] { "CSV1003" }, r.Errors("ReverseOffByOne"));
+            Assert.Equal(new[] { "CSV1002", "CSV1002" }, r.Errors("FastPowWithoutLemma"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("McCarthyWrongMeasure"));
+            Assert.Equal(new[] { "CSV1006", "CSV1007" }, r.Errors("DutchFlagStuck"));
         }
     }
 }
