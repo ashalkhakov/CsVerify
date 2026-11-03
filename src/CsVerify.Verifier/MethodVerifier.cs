@@ -641,6 +641,14 @@ namespace CsVerify.Verifier
             t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String ||
             (t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>"));
 
+        /// <summary>
+        /// A sequence whose elements a holder can change: an array (System.Array too) or a span, not a string or a
+        /// read-only span.
+        /// </summary>
+        internal static bool IsWritableSequence(ITypeSymbol t) =>
+            t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_Array ||
+            t is INamedTypeSymbol n && n.OriginalDefinition.ToDisplayString() == "System.Span<T>";
+
         private static ITypeSymbol TypeOf(ISymbol s) => s is ILocalSymbol l ? l.Type : ((IParameterSymbol)s).Type;
 
         private Term FreshOf(ITypeSymbol type, string hint)
@@ -1281,6 +1289,12 @@ namespace CsVerify.Verifier
             // A new array is distinct from every array the method can already see.
             foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
                 _z3.Assume(T.Not(T.Eq(r, t)));
+            // and from every array a field holds (no field can hold it yet)
+            foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
+            {
+                var map = FieldMap(f, field);
+                _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
+            }
             var row = T.ZeroRow();
             if (ac.Initializer != null)
                 for (int i = 0; i < ac.Initializer.ElementValues.Length; i++)

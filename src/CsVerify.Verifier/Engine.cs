@@ -148,8 +148,8 @@ namespace CsVerify.Verifier
                 return _writesHeap[key] = false;
             // which override runs is not known: any of them may write arrays
             if (IsOverridable(key)) return _writesHeap[key] = true;
-            // a library method: through arrays it is handed, or user code it runs (a delegate writing arrays it captured)
-            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsSequence(p.Type)) || Fields.RunsUserCode(key);
+            // a library method: through arrays (or spans) it is handed, not strings, or user code it runs (a delegate writing arrays it captured)
+            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsWritableSequence(p.Type)) || Fields.RunsUserCode(key);
             _writesHeap[key] = false; // assume no for recursive calls while computing
             bool writes = false;
             foreach (var n in c.Declaration.DescendantNodes())

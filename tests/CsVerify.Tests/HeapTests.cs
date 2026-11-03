@@ -45,6 +45,22 @@ public sealed class Other { public int X; public void Bump() { X++; } }
         }
 
         [Fact]
+        public void NewArrays_AreInNoField()
+        {
+            const string box = "public sealed class Box { public int[] A = new int[0]; } ";
+            Assert.Empty(Harness.Verify(box + "public static class C { static void M(Box b) { var n = new int[1]; Spec.Assert(n != b.A); } }").Errors("M"));
+            Assert.Empty(Harness.Verify(box + "public static class C { static void M(Box b) { b.A = new int[1]; var n = new int[1]; Spec.Assert(n != b.A); } }").Errors("M"));
+        }
+
+        [Fact]
+        public void LibraryCalls_DoNotWriteStrings()
+        {
+            // Debug.Assert takes the condition's text (a string): it writes no array
+            Assert.Empty(Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 1; System.Diagnostics.Debug.Assert(a.Length > 0); Spec.Assert(a[0] == 1); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 1; System.Array.Clear(a); Spec.Assert(a[0] == 1); }"));
+        }
+
+        [Fact]
         public void Aliasing_IsTracked()
         {
             Assert.Empty(Errors("M", "static void M(Counter a, Counter b) { Spec.Requires(a != b); int old = b.Count; a.Count = 10; Spec.Assert(b.Count == old); }"));
