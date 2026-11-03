@@ -225,6 +225,22 @@ namespace Samples.Buggy
             Spec.Fold(PqHeld(h, n));
         }
 
+        /// <summary>dlist's dlfseg_v, over Dn (Prev, Next).</summary>
+        [Predicate]
+        public static bool Fs(int n, Dn? lf, Dn? lfp, Dn? lr, Dn? lrn) =>
+            n == 0 ? lf == lrn && lfp == lr
+                   : n > 0 && lf != null && Spec.Acc(lf) && lf.Prev == lfp && Fs(n - 1, lf.Next, lf, lr, lrn);
+
+        // BUG: dlfseg_lemma3 as dlist.sats states it, without the head's permission in hand: a node pointing at
+        // itself is a segment of one whose leftmost node is the one after its rightmost (CSV1002)
+        public static void Lemma3AsStated(int n, Dn? lf, Dn? lfp, Dn? lr, Dn? lrn)
+        {
+            Spec.Requires(n >= 0 && Fs(n, lf, lfp, lr, lrn));
+            Spec.Ensures(Fs(n, lf, lfp, lr, lrn) && (n == 0 && lf == lrn || n > 0 && lf != lrn));
+            Spec.Unfold(Fs(n, lf, lfp, lr, lrn));
+            Spec.Fold(Fs(n, lf, lfp, lr, lrn));
+        }
+
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
         public static void InsertTwice(Sn head, int n, Sn node)
         {
