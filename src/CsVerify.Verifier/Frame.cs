@@ -11,6 +11,10 @@ namespace CsVerify.Verifier
         public Term This;
         /// <summary>Array contents: reference -> (index -> element).</summary>
         public Term Heap;
+        /// <summary>Heap fields changed on this path: field -> (object -> value). Others are as of the last FieldEpoch.</summary>
+        public Dictionary<ISymbol, Term> Fields = new Dictionary<ISymbol, Term>(SymbolEqualityComparer.Default);
+        /// <summary>0 for the method's entry state; a new number each time every heap field may have changed.</summary>
+        public int FieldEpoch;
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
         public HashSet<int> ActiveLoops = new HashSet<int>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
@@ -22,6 +26,8 @@ namespace CsVerify.Verifier
             Vars = new Dictionary<ISymbol, Term>(Vars, SymbolEqualityComparer.Default),
             This = This,
             Heap = Heap,
+            Fields = new Dictionary<ISymbol, Term>(Fields, SymbolEqualityComparer.Default),
+            FieldEpoch = FieldEpoch,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),

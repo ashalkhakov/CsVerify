@@ -259,7 +259,7 @@ namespace CsVerify.Verifier
             Frame pre = null;
             if (callee?.HasSource == true && _codeMode)
             {
-                pre = CalleeFrame(callee, null, args, f.Heap);
+                pre = CalleeFrame(callee, null, args, f.Heap, f);
                 var preEnv = new SpecEnv { Old = pre };
                 foreach (var req in callee.Requires)
                     Prove(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", oc.Syntax,
@@ -268,11 +268,14 @@ namespace CsVerify.Verifier
             if (ctor == null || _engine.MayWriteHeap(ctor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
             var obj = Unknown(oc.Type, "new");
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
+            SetNewObjectFields(f, obj, oc.Type, ctor);
             if (pre != null)
             {
                 var post = pre.Clone();
                 post.This = obj;
                 post.Heap = f.Heap;
+                post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
+                post.FieldEpoch = f.FieldEpoch;
                 foreach (var ens in callee.Ensures)
                     _z3.Assume(AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = obj, ResultParameter = ens.ResultParameter })));
             }

@@ -76,11 +76,13 @@ namespace CsVerify.Verifier
         private readonly Dictionary<IMethodSymbol, Contract> _contracts = new Dictionary<IMethodSymbol, Contract>(SymbolEqualityComparer.Default);
 
         internal readonly DataTypes Data;
+        internal readonly FieldEffects Fields;
 
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
             _compilation = compilation;
             Data = new DataTypes(compilation, userTrees);
+            Fields = new FieldEffects(this);
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);

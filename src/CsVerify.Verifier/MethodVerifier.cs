@@ -29,6 +29,8 @@ namespace CsVerify.Verifier
             public HashSet<ISymbol> Havoc = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public HashSet<ISymbol> HavocArrays = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public bool HavocHeap;
+            public HashSet<ISymbol> HavocFields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            public bool HavocAllFields;
         }
 
         private readonly Engine _engine;
@@ -158,6 +160,7 @@ namespace CsVerify.Verifier
             {
                 var f = new Frame { Heap = _z3.Fresh("heap", Sort.Heap) };
                 if (!_method.IsStatic) { f.This = _z3.Fresh("this", Sort.Int); _z3.Assume(NotNull(f.This)); }
+                if (_method.MethodKind == MethodKind.Constructor && !_method.IsStatic) EnterConstructor(f);
                 foreach (var p in _method.Parameters)
                 {
                     f.Vars[p] = FreshOf(p.Type, p.Name);
@@ -235,6 +238,11 @@ namespace CsVerify.Verifier
         {
             void Target(ExpressionSyntax e)
             {
+                if ((e is IdentifierNameSyntax || e is MemberAccessExpressionSyntax) && _model.GetSymbolInfo(e).Symbol is ISymbol hs && FieldEffects.IsHeapField(hs))
+                {
+                    loop.HavocFields.Add(FieldEffects.Key(hs));
+                    return;
+                }
                 switch (e)
                 {
                     case IdentifierNameSyntax _:
@@ -258,10 +266,24 @@ namespace CsVerify.Verifier
                     case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression) || pre.IsKind(SyntaxKind.PreDecrementExpression): Target(pre.Operand); break;
                     case PostfixUnaryExpressionSyntax post: Target(post.Operand); break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
-                    case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && HavocsHeap(m): loop.HavocHeap = true; break;
+                    case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
+                        if (HavocsHeap(m)) loop.HavocHeap = true;
+                        if (!SpecSymbols.IsSpecClass(m.ContainingType)) AddFieldWrites(loop, m);
+                        break;
+                    case BaseObjectCreationExpressionSyntax oc when _model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor:
+                        AddFieldWrites(loop, ctor);
+                        loop.HavocFields.UnionWith(FieldEffects.FieldsOf(ctor.ContainingType)); // the new object's fields are set
+                        break;
                 }
             }
             foreach (var a in loop.HavocArrays) if (loop.Havoc.Contains(a)) loop.HavocHeap = true;
+        }
+
+        private void AddFieldWrites(Loop loop, IMethodSymbol m)
+        {
+            var (fields, all) = _engine.Fields.WritesOf(m);
+            loop.HavocFields.UnionWith(fields);
+            loop.HavocAllFields |= all;
         }
 
         // ================================================================================== CFG walk
@@ -361,6 +383,8 @@ namespace CsVerify.Verifier
 
             foreach (var s in loop.Havoc)
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
+            if (loop.HavocAllFields) HavocAllFields(f);
+            foreach (var field in loop.HavocFields) f.Fields[field] = _z3.Fresh(field.Name + "$map", Sort.Row);
             if (loop.HavocHeap) f.Heap = _z3.Fresh("heap", Sort.Heap);
             else
                 foreach (var a in loop.HavocArrays)
@@ -647,6 +671,8 @@ namespace CsVerify.Verifier
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type));
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
+                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
+                    return ReadField(hf.Field, hf.Instance, hf.Type, hf.Syntax, f, spec);
                 case IFieldReferenceOperation fr when fr.Field.ContainingType?.IsTupleType == true && fr.Instance != null:
                     return T.Coerce(TupleItem(Eval(fr.Instance, f, spec), fr.Field), SortOf(fr.Type));
                 case ITupleOperation tuple:
@@ -914,6 +940,12 @@ namespace CsVerify.Verifier
                     break;
                 case IParameterReferenceOperation p: f.Vars[p.Parameter] = v; break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
+                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
+                    WriteField(hf.Field, hf.Instance, v, hf.Syntax, f, spec);
+                    break;
+                case IPropertyReferenceOperation hp when FieldEffects.IsHeapField(hp.Property) && hp.Instance != null:
+                    WriteField(hp.Property, hp.Instance, v, hp.Syntax, f, spec);
+                    break;
                 case IArrayElementReferenceOperation ae when ae.Indices.Length == 1:
                 {
                     var arr = Eval(ae.ArrayReference, f, spec);
@@ -968,6 +1000,8 @@ namespace CsVerify.Verifier
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type));
                 }
             }
+            if (pr.Instance != null && FieldEffects.IsHeapField(prop))
+                return ReadField(prop, pr.Instance, pr.Type, pr.Syntax, f, spec);
             if (pr.Instance != null && DataTypes.IsPositional(prop) && Data.IsData(prop.ContainingType))
             {
                 var o = Eval(pr.Instance, f, spec);
@@ -1076,12 +1110,12 @@ namespace CsVerify.Verifier
 
             if (!_codeMode)
             {
-                if (callee.IsPure) return PureApply(callee, receiver, argTerms, f.Heap, SortOf(inv.Type), inv.Syntax);
+                if (callee.IsPure) return PureApply(callee, receiver, argTerms, f.Heap, SortOf(inv.Type), inv.Syntax, f);
                 Warn(inv.Syntax, $"'{m.Name}' is not [Pure] and cannot be used in a specification; treated as unknown");
                 return Unknown(inv.Type);
             }
 
-            var pre = CalleeFrame(callee, receiver, argTerms, f.Heap);
+            var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
             if (!callee.HasSource)
             {
                 foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
@@ -1091,6 +1125,7 @@ namespace CsVerify.Verifier
                     Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                HavocFields(f, m);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
                 LibraryNullFacts(inv, argTerms, libResult);
                 return libResult;
@@ -1129,11 +1164,14 @@ namespace CsVerify.Verifier
                 Write(a.Value, nv, f, spec);
             }
             if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
+            HavocFields(f, m);
+            post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
+            post.FieldEpoch = f.FieldEpoch;
 
             var result = m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name);
             if (result != null && IsNonNullableReturn(callee.Method)) _z3.Assume(NotNull(result));
             if (result != null && callee.IsPure)
-                _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort)));
+                _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
             foreach (var ens in callee.Ensures)
                 _z3.Assume(AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter })));
             return result ?? T.True;
@@ -1159,9 +1197,15 @@ namespace CsVerify.Verifier
             "(define-fun cv_drop ((a (Array Int Int)) (n Int)) (Array Int Int) (lambda ((i Int)) (select a (+ n i))))\n" +
             "(define-fun cv_concat ((a (Array Int Int)) (n Int) (b (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (< i n) (select a i) (select b (- i n)))))";
 
-        private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap)
+        /// <param name="state">the caller's state, whose heap fields the callee's contract reads</param>
+        private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)
         {
             var frame = new Frame { This = receiver, Heap = heap };
+            if (state != null)
+            {
+                frame.Fields = new Dictionary<ISymbol, Term>(state.Fields, SymbolEqualityComparer.Default);
+                frame.FieldEpoch = state.FieldEpoch;
+            }
             for (int i = 0; i < args.Length && i < callee.Method.Parameters.Length; i++)
                 if (args[i] != null) frame.Vars[callee.Method.Parameters[i]] = args[i];
             return frame;
@@ -1173,7 +1217,7 @@ namespace CsVerify.Verifier
         /// </summary>
         /// <param name="specCall">set for a call inside a specification: its precondition is a well-definedness obligation
         /// there (in code it was already checked as the callee's precondition)</param>
-        private Term PureApply(Contract callee, Term receiver, Term[] args, Term heap, Sort sort, SyntaxNode specCall = null)
+        private Term PureApply(Contract callee, Term receiver, Term[] args, Term heap, Sort sort, SyntaxNode specCall = null, Frame state = null)
         {
             var m = callee.Method;
             var all = new List<Term>();
@@ -1181,6 +1225,9 @@ namespace CsVerify.Verifier
             all.AddRange(args.Select(a => a ?? T.Int(0)));
             bool readsHeap = m.Parameters.Any(p => IsSequence(p.Type));
             if (readsHeap) all.Add(heap);
+            // and the heap fields it reads: its value is a function of them too
+            var stateFrame = state ?? new Frame();
+            foreach (var field in _engine.Fields.ReadsOf(m)) all.Add(FieldMap(stateFrame, field));
             var app = _z3.Apply("pure:" + m.ToDisplayString(), SortOf(m.ReturnType), all);
 
             bool wanted = specCall != null && !_codeMode && _foreignSpec == 0;
@@ -1194,7 +1241,7 @@ namespace CsVerify.Verifier
                 _unfoldDepth++;
                 try
                 {
-                    var frame = CalleeFrame(callee, receiver, args, heap);
+                    var frame = CalleeFrame(callee, receiver, args, heap, stateFrame);
                     var env = new SpecEnv { Old = frame, Result = app };
                     pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
                     if (unfold)

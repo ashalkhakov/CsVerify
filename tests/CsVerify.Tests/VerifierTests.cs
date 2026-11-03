@@ -451,9 +451,10 @@ namespace CsVerify.Tests
         }
 
         [Fact]
-        public void MutableState_FailsVerification()
+        public void UnmodeledState_FailsVerification()
         {
-            Assert.Contains("CSV1901", Harness.Verify("public class C { int f; public int M() => f; }").Errors("M"));
+            // a library type's computed property: its value may change in ways the verifier does not track
+            // (fields of source classes are modeled: see HeapTests)
             Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(System.Collections.Generic.List<int> l) => l.Count; }").Errors("M"));
             Assert.Empty(Harness.Verify("public class C { public int P { get; } public int M() => P; }").Errors("M"));
         }

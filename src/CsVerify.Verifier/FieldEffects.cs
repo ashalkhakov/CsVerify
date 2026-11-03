@@ -1,0 +1,181 @@
+using System.Collections.Generic;
+using System.Linq;
+using CsVerify.Analyzers;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+namespace CsVerify.Verifier
+{
+    /// <summary>
+    /// Mutable object state. An instance field (or auto-property) of a class declared in the sources is a "heap
+    /// field": a map from object to value, which assignments update. A call may change only the heap fields its
+    /// callee (or anything it reaches) writes, an inferred frame condition per field, as for arrays.
+    /// </summary>
+    internal sealed class FieldEffects
+    {
+        /// <summary>What one method does to heap fields, directly (callees are listed, not included).</summary>
+        private sealed class Direct
+        {
+            public readonly HashSet<ISymbol> Reads = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            public readonly HashSet<ISymbol> Writes = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            /// <summary>A constructor's writes to fields of the object it builds (<c>this.F = ...</c>).</summary>
+            public readonly HashSet<ISymbol> SelfWrites = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            public readonly HashSet<IMethodSymbol> Callees = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            /// <summary>May write any heap field (a virtual call, a library call handed a callback or an object).</summary>
+            public bool All;
+        }
+
+        private readonly Engine _engine;
+        private readonly Dictionary<IMethodSymbol, Direct> _direct = new Dictionary<IMethodSymbol, Direct>(SymbolEqualityComparer.Default);
+
+        public FieldEffects(Engine engine) { _engine = engine; }
+
+        /// <summary>A member stored as mutable object state: an instance field or auto-property of a source class.</summary>
+        public static bool IsHeapField(ISymbol s)
+        {
+            if (s == null || s.IsStatic || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class) return false;
+            if (t.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || s.DeclaringSyntaxReferences.Length == 0) return false;
+            switch (s)
+            {
+                case IFieldSymbol f:
+                    return !f.IsConst && !f.IsImplicitlyDeclared;
+                case IPropertySymbol p:
+                    if (p.IsIndexer || p.IsAbstract || p.IsVirtual || p.IsOverride) return false;
+                    // an auto-property: accessors without bodies, declared as a property (positional ones are values)
+                    return p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is PropertyDeclarationSyntax pd && pd.AccessorList != null &&
+                                                               pd.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
+                default:
+                    return false;
+            }
+        }
+
+        public static ISymbol Key(ISymbol s) => s.OriginalDefinition;
+
+        /// <summary>The heap fields of a class and its source base classes.</summary>
+        public static IEnumerable<ISymbol> FieldsOf(ITypeSymbol type)
+        {
+            for (var t = (type as INamedTypeSymbol)?.OriginalDefinition; t != null; t = t.BaseType?.OriginalDefinition)
+                foreach (var m in t.GetMembers())
+                    if (IsHeapField(m)) yield return Key(m);
+        }
+
+        private Direct DirectOf(IMethodSymbol m)
+        {
+            m = (m.ReducedFrom ?? m).OriginalDefinition;
+            if (_direct.TryGetValue(m, out var d)) return d;
+            _direct[m] = d = new Direct();
+            // which body a virtual or interface call runs is not known statically: anything may be written
+            if ((m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
+                !m.IsSealed && m.ContainingType?.IsSealed != true && !m.IsStatic)
+                d.All = true;
+            var c = _engine.ContractOf(m);
+            if (!c.HasSource)
+            {
+                // a library method cannot name user fields; it can reach them only through what it is handed
+                d.All = m.Parameters.Any(p => HandsOver(p.Type)) || (!m.IsStatic && HandsOver(m.ContainingType) && m.ContainingType.DeclaringSyntaxReferences.Length > 0);
+                return d;
+            }
+            bool ctor = m.MethodKind == MethodKind.Constructor;
+            foreach (var node in c.Declaration.DescendantNodes(n => !(n is AnonymousFunctionExpressionSyntax)))
+            {
+                switch (node)
+                {
+                    case SimpleNameSyntax name when c.Model.GetSymbolInfo(name).Symbol is ISymbol s && IsHeapField(s):
+                    {
+                        // the whole access (o.F or F) and whether it is assigned
+                        ExpressionSyntax access = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : (ExpressionSyntax)name;
+                        var (read, write) = Usage(access);
+                        var key = Key(s);
+                        if (read) d.Reads.Add(key);
+                        if (write)
+                        {
+                            bool onThis = access is SimpleNameSyntax || access is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax;
+                            if (ctor && onThis) d.SelfWrites.Add(key); else d.Writes.Add(key);
+                        }
+                        break;
+                    }
+                    case InvocationExpressionSyntax inv when c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
+                        if (!SpecSymbols.IsSpecClass(callee.ContainingType)) AddCallee(d, callee);
+                        break;
+                    case BaseObjectCreationExpressionSyntax oc when c.Model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctorCallee:
+                        AddCallee(d, ctorCallee);
+                        break;
+                    case ConstructorInitializerSyntax ci when c.Model.GetSymbolInfo(ci).Symbol is IMethodSymbol baseCtor:
+                        AddCallee(d, baseCtor);
+                        break;
+                }
+            }
+            return d;
+        }
+
+        private static bool HandsOver(ITypeSymbol t) =>
+            t != null && (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object ||
+                          t.TypeKind == TypeKind.TypeParameter || t.TypeKind == TypeKind.Class && t.DeclaringSyntaxReferences.Length > 0);
+
+        private static void AddCallee(Direct d, IMethodSymbol callee)
+        {
+            d.Callees.Add((callee.ReducedFrom ?? callee).OriginalDefinition);
+        }
+
+        /// <summary>Is the access read, written, or both (<c>o.F += 1</c>, <c>o.F++</c>, <c>ref o.F</c>)?</summary>
+        private static (bool read, bool write) Usage(ExpressionSyntax access)
+        {
+            var e = access;
+            while (e.Parent is ParenthesizedExpressionSyntax p) e = p;
+            switch (e.Parent)
+            {
+                case AssignmentExpressionSyntax a when a.Left == e:
+                    return (!a.IsKind(SyntaxKind.SimpleAssignmentExpression), true);
+                case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression) || pre.IsKind(SyntaxKind.PreDecrementExpression):
+                    return (true, true);
+                case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression):
+                    return (true, true);
+                case ArgumentSyntax arg when arg.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || arg.RefKindKeyword.IsKind(SyntaxKind.OutKeyword):
+                    return (true, true);
+                default:
+                    return (true, false);
+            }
+        }
+
+        /// <summary>The methods a call to <paramref name="m"/> may run (itself included).</summary>
+        private List<IMethodSymbol> Reachable(IMethodSymbol m)
+        {
+            var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            var work = new Stack<IMethodSymbol>();
+            work.Push((m.ReducedFrom ?? m).OriginalDefinition);
+            while (work.Count > 0)
+            {
+                var next = work.Pop();
+                if (!seen.Add(next)) continue;
+                foreach (var callee in DirectOf(next).Callees) work.Push(callee);
+            }
+            return seen.ToList();
+        }
+
+        /// <summary>
+        /// The heap fields a call may change, other than the fields of the object a constructor call builds:
+        /// everything reachable writes (a reachable constructor's own self-writes are to an object built then).
+        /// </summary>
+        public (HashSet<ISymbol> fields, bool all) WritesOf(IMethodSymbol m)
+        {
+            var fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            bool all = false;
+            foreach (var r in Reachable(m))
+            {
+                var d = DirectOf(r);
+                fields.UnionWith(d.Writes);
+                all |= d.All;
+            }
+            return (fields, all);
+        }
+
+        /// <summary>The fields a constructor sets on the object it builds.</summary>
+        public HashSet<ISymbol> SelfWritesOf(IMethodSymbol ctor) => DirectOf(ctor).SelfWrites;
+
+        /// <summary>The heap fields a [Pure] function's value may depend on (all it, or its callees, read), in a fixed order.</summary>
+        public IReadOnlyList<ISymbol> ReadsOf(IMethodSymbol m) =>
+            Reachable(m).SelectMany(r => DirectOf(r).Reads).Distinct(SymbolEqualityComparer.Default)
+                .OrderBy(s => s.ToDisplayString()).ToList();
+    }
+}
