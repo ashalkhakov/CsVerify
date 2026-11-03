@@ -30,6 +30,8 @@ namespace CsVerify.Verifier
         public readonly List<IOperation> Requires = new List<IOperation>();
         /// <summary>The effective postcondition: its own and everything it inherits.</summary>
         public readonly List<Postcondition> Ensures = new List<Postcondition>();
+        /// <summary>Spec.EnsuresOnThrow&lt;E&gt;(cond): what holds if the method exits by throwing an E.</summary>
+        public readonly List<(ITypeSymbol exception, IOperation condition, SyntaxNode syntax)> ThrowEnsures = new List<(ITypeSymbol, IOperation, SyntaxNode)>();
         /// <summary>The preconditions written on this method itself (or its contract class).</summary>
         public readonly List<IOperation> OwnRequires = new List<IOperation>();
         /// <summary>The members it overrides or implements (their effective contracts), which it must honour.</summary>
@@ -93,6 +95,7 @@ namespace CsVerify.Verifier
                         case "Requires": c.Requires.Add(arg); c.OwnRequires.Add(arg); continue;
                         case "Decreases": c.Decreases = op.Arguments.Select(a => a.Value).ToList(); continue;
                         case "Ensures": c.Ensures.Add(ReadEnsures(arg, inv)); continue;
+                        case "EnsuresOnThrow": c.ThrowEnsures.Add((op.TargetMethod.TypeArguments[0], arg, inv)); continue;
                         case "Modifies": c.Modifies = arg; continue;
                         case "Reads": c.Reads = arg; continue;
                     }
@@ -118,6 +121,7 @@ namespace CsVerify.Verifier
                 Requires.AddRange(contractClassMethod.Requires);
                 OwnRequires.AddRange(contractClassMethod.Requires);
                 Ensures.AddRange(contractClassMethod.Ensures);
+                ThrowEnsures.AddRange(contractClassMethod.ThrowEnsures);
                 Modifies ??= contractClassMethod.Modifies;
                 Reads ??= contractClassMethod.Reads;
                 Aliases.Add(contractClassMethod.Method);
@@ -132,6 +136,7 @@ namespace CsVerify.Verifier
                     Ensures.Add(weakened && post.Guard == null
                         ? new Postcondition { Expr = post.Expr, ResultParameter = post.ResultParameter, Syntax = post.Syntax, Guard = b.Requires }
                         : post);
+                ThrowEnsures.AddRange(b.ThrowEnsures); // (what the base promises on a throw, every override does)
                 if (OwnRequires.Count == 0 && Requires.Count == 0) Requires.AddRange(b.Requires);
                 if (b.Modifies != null) BaseModifies.Add((b, b.Modifies));
                 Modifies ??= b.Modifies;

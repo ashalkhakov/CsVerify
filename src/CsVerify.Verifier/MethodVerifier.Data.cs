@@ -280,6 +280,7 @@ namespace CsVerify.Verifier
             HasType(obj, oc.Type, exact: true);
             SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax) : null);
             if (pre != null) AllocAfterCall(f);
+            if (ctor != null) CallMayThrow(callee ?? _engine.ContractOf(ctor), null, args, oc.Arguments, f, pre);
             if (pre != null)
             {
                 var post = pre.Clone();

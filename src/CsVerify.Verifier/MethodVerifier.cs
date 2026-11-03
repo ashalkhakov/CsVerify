@@ -161,8 +161,7 @@ namespace CsVerify.Verifier
                 _engine.Fields.InvariantDependence(_method, !Data.IsData(_method.ContainingType)) is string why)
                 Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
             FindLoops(cfg);
-            if (HasExceptionRegion(cfg.Root))
-                NotModeled(MethodLocationNode(), "try/catch/finally is not supported");
+            _cfg = cfg;
 
             _z3.Push();
             try
@@ -210,7 +209,7 @@ namespace CsVerify.Verifier
             BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body;
             if (block == null) return;
             foreach (var s in block.Statements.OfType<ExpressionStatementSyntax>())
-                if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "Decreases" || n == "Modifies" || n == "Reads"))
+                if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "EnsuresOnThrow" || n == "Decreases" || n == "Modifies" || n == "Reads"))
                     _contractStatements.Add(inv);
         }
 
@@ -341,7 +340,12 @@ namespace CsVerify.Verifier
 
             onPath.Add(block.Ordinal);
             _codeMode = true;
-            foreach (var op in block.Operations) ExecOperation(op, f);
+            foreach (var op in block.Operations)
+            {
+                (_block, _current, _onPath) = (block, f, onPath);
+                ExecOperation(op, f);
+            }
+            (_block, _current, _onPath) = (block, f, onPath);
 
             var fall = block.FallThroughSuccessor;
             var cond = block.ConditionalSuccessor;
@@ -361,6 +365,18 @@ namespace CsVerify.Verifier
                 if (block.BranchValue != null && !InSpec(block.BranchValue))
                 {
                     var v = Eval(block.BranchValue, f);
+                    if (fall?.Semantics == ControlFlowBranchSemantics.Throw && !ProofCode)
+                    {
+                        // throw e: e is the exception (throwing null throws a NullReferenceException instead)
+                        Require(NotNull(v), "CSV1013", block.BranchValue.Syntax, $"'{block.BranchValue.Syntax}' might be null: throwing it would throw a NullReferenceException");
+                        if (ExceptionsObserved)
+                        {
+                            HasType(v, Unconverted(block.BranchValue).Type);
+                            Raise(v, f, block.EnclosingRegion);
+                        }
+                        onPath.Remove(block.Ordinal);
+                        return;
+                    }
                     if (fall?.Semantics == ControlFlowBranchSemantics.Return)
                     {
                         f.Result = v;
@@ -369,6 +385,13 @@ namespace CsVerify.Verifier
                 }
                 else if (fall?.Semantics == ControlFlowBranchSemantics.Return)
                     f.ReturnSyntax = block.Operations.LastOrDefault()?.Syntax;
+                if (fall?.Semantics == ControlFlowBranchSemantics.Rethrow && !ProofCode)
+                {
+                    // throw; in a catch: the exception it handles goes on outward
+                    if (ExceptionsObserved) Raise(f.Exception ?? NewException(null), f, block.EnclosingRegion);
+                    onPath.Remove(block.Ordinal);
+                    return;
+                }
                 Follow(fall, f, onPath);
             }
             onPath.Remove(block.Ordinal);
@@ -384,6 +407,11 @@ namespace CsVerify.Verifier
 
         private void Follow(ControlFlowBranch succ, Frame f, HashSet<int> onPath)
         {
+            if (succ?.Semantics == ControlFlowBranchSemantics.StructuredExceptionHandling)
+            {
+                Resume(f); // the end of a finally, or a filter that does not hold
+                return;
+            }
             if (succ?.Destination == null)
             {
                 // throw, rethrow, program termination: no normal exit on this path (partial correctness), except
@@ -397,10 +425,9 @@ namespace CsVerify.Verifier
             {
                 case ControlFlowBranchSemantics.Regular:
                 case ControlFlowBranchSemantics.Return:
-                    Exec(succ.Destination, f, onPath);
-                    break;
-                case ControlFlowBranchSemantics.StructuredExceptionHandling:
-                    NotModeled(MethodLocationNode(), "try/catch/finally is not supported");
+                    // leaving try regions: their finally blocks run on the way
+                    if (succ.FinallyRegions.Length > 0) ThroughFinally(succ, 0, f, after => Exec(succ.Destination, after, onPath));
+                    else Exec(succ.Destination, f, onPath);
                     break;
             }
         }
@@ -684,6 +711,7 @@ namespace CsVerify.Verifier
                 case IFlowCaptureOperation fc: return f.Captures[fc.Id] = Eval(fc.Value, f, spec);
                 case IBinaryOperation b: return EvalBinary(b, f, spec);
                 case IUnaryOperation u: return EvalUnary(u, f, spec);
+                case ICaughtExceptionOperation _: return f.Exception ?? Unknown(op.Type, "exception");
                 case IConditionalOperation cond when cond.WhenFalse != null:
                 {
                     var c = AsBool(Eval(cond.Condition, f, spec));
@@ -819,7 +847,11 @@ namespace CsVerify.Verifier
             {
                 // a downcast throws unless the object is an instance (or null): code that goes on knows it was
                 var ok = T.Or(T.Eq(v, T.Int(0)), instance);
-                if (_codeMode && !ProofCode) _z3.Assume(ok);
+                if (_codeMode && !ProofCode)
+                {
+                    if (_current != null) MayRaise(T.Not(ok), _current, KnownType("System.InvalidCastException"));
+                    _z3.Assume(ok);
+                }
                 else Require(ok, "CSV1011", c.Syntax, $"cast '{c.Syntax}' might fail");
             }
             if (!c.IsImplicit && c.Conversion.IsReference && Data.IsData(c.Type) && from != null && !DataTypes.Derives(from, c.Type))
@@ -827,7 +859,11 @@ namespace CsVerify.Verifier
                 // a downcast to a case: it throws unless the value is one (or null). Code that goes on knows it
                 // was; a proof or a specification, which may not throw, must show it
                 var ok = T.Or(T.Eq(v, T.Int(0)), TypeTest(v, from, c.Type));
-                if (_codeMode && !ProofCode) _z3.Assume(ok);
+                if (_codeMode && !ProofCode)
+                {
+                    if (_current != null) MayRaise(T.Not(ok), _current, KnownType("System.InvalidCastException"));
+                    _z3.Assume(ok);
+                }
                 else Require(ok, "CSV1011", c.Syntax, $"cast '{c.Syntax}' might fail");
             }
             if (c.OperatorMethod != null)
@@ -940,7 +976,13 @@ namespace CsVerify.Verifier
             var (lo, hi) = RangeOf(type);
             if (ExplicitlyUnchecked(at))
                 return new Term($"(+ (mod (- {v} {T.Int(lo)}) {T.Int(hi - lo + 1)}) {T.Int(lo)})", Sort.Int);
-            if (isChecked && !ProofCode) { _z3.Assume(T.InRange(v, lo, hi)); return v; }
+            if (isChecked && !ProofCode)
+            {
+                // it throws on overflow: a handler, if any, sees that; code that goes on knows it did not
+                if (_current != null) MayRaise(T.Not(T.InRange(v, lo, hi)), _current, KnownType("System.OverflowException"));
+                _z3.Assume(T.InRange(v, lo, hi));
+                return v;
+            }
             Prove(T.InRange(v, lo, hi), "CSV1010", at, message);
             return v;
         }
@@ -1306,6 +1348,7 @@ namespace CsVerify.Verifier
                 FlushTies(f);
                 CalleeModifies(callee, pre, f, inv.Syntax);
                 HavocFields(f, m, touched);
+                CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
                 AllocAfterCall(f, libResult);
                 LibraryNullFacts(inv, argTerms, libResult);
@@ -1386,6 +1429,7 @@ namespace CsVerify.Verifier
             if (!IsMemoryNeutral(callee)) f.Heap = post.Heap = KeepHeldMemory(f.Heap, memoryBefore, heldMemory);
             FlushTies(f);
             HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst, touchedFields);
+            if (!chained) CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
             if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
             else TakeBack(inv, receiver, f, callee);
             post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);

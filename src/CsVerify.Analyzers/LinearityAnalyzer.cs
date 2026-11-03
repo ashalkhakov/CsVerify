@@ -153,7 +153,7 @@ namespace CsVerify.Analyzers
             for (int i = 0; i < entry.Length; i++)
                 entry[i] = ctx.Vars[i] is IParameterSymbol p && p.RefKind != RefKind.Out ? St.Live : St.Unassigned;
 
-            var inStates = Fixpoint(cfg, ctx, entry);
+            var inStates = WithHandlers(cfg, ctx, entry);
 
             ctx.Diags = new List<Diagnostic>();
             foreach (var block in cfg.Blocks)
@@ -192,16 +192,91 @@ namespace CsVerify.Analyzers
             return seen;
         }
 
-        private static St[][] Fixpoint(ControlFlowGraph cfg, Ctx ctx, St[] entry)
+        /// <summary>
+        /// The dataflow, with exception handlers. A catch (or filter) is entered from anywhere in its try: a linear
+        /// value the try may have consumed, or lent by ref (a call that throws gives nothing back), is lost there (as
+        /// in ATS, an exception may leak a view); one the try never touches is as it was. A finally runs on paths
+        /// the flow does not join up (it is the same code for every way out), so it may not touch linear values
+        /// from outside it: they are lost there.
+        /// </summary>
+        private static St[][] WithHandlers(ControlFlowGraph cfg, Ctx ctx, St[] entry)
+        {
+            var seeds = new Dictionary<int, St[]>();
+            St[][] inStates = null;
+            for (int round = 0; round < 16; round++)
+            {
+                inStates = Fixpoint(cfg, ctx, entry, seeds, out var outStates);
+                var next = HandlerSeeds(cfg, ctx, inStates, outStates);
+                if (next.Count == seeds.Count && next.All(kv => seeds.TryGetValue(kv.Key, out var old) && old.SequenceEqual(kv.Value))) break;
+                seeds = next;
+            }
+            return inStates;
+        }
+
+        private static Dictionary<int, St[]> HandlerSeeds(ControlFlowGraph cfg, Ctx ctx, St[][] inStates, St[][] outStates)
+        {
+            var seeds = new Dictionary<int, St[]>();
+            void Visit(ControlFlowRegion r)
+            {
+                foreach (var n in r.NestedRegions) Visit(n);
+                if (r.Kind != ControlFlowRegionKind.TryAndCatch && r.Kind != ControlFlowRegionKind.TryAndFinally) return;
+                var tryRegion = r.NestedRegions[0];
+                if (r.Kind == ControlFlowRegionKind.TryAndFinally)
+                {
+                    var none = new St[ctx.Vars.Length];
+                    for (int i = 0; i < none.Length; i++) none[i] = St.Consumed;
+                    seeds[r.NestedRegions[1].FirstBlockOrdinal] = none;
+                    return;
+                }
+                var seen = new St[ctx.Vars.Length];
+                bool reached = false;
+                for (int b = tryRegion.FirstBlockOrdinal; b <= tryRegion.LastBlockOrdinal; b++)
+                    foreach (var st in new[] { inStates[b], outStates[b] })
+                        if (st != null)
+                        {
+                            reached = true;
+                            for (int i = 0; i < seen.Length; i++) seen[i] |= st[i];
+                        }
+                if (!reached) return;
+                var lent = LentByRef(cfg, tryRegion, ctx);
+                var state = new St[ctx.Vars.Length];
+                for (int i = 0; i < state.Length; i++)
+                    state[i] = (seen[i] & St.Consumed) != 0 || lent.Contains(i) ? St.Consumed : seen[i];
+                foreach (var handler in r.NestedRegions.Skip(1))
+                    seeds[handler.Kind == ControlFlowRegionKind.FilterAndHandler ? handler.NestedRegions[0].FirstBlockOrdinal : handler.FirstBlockOrdinal] = state;
+            }
+            Visit(cfg.Root);
+            return seeds;
+        }
+
+        /// <summary>The linear variables lent by ref somewhere in a region (lost if the call throws).</summary>
+        private static HashSet<int> LentByRef(ControlFlowGraph cfg, ControlFlowRegion region, Ctx ctx)
+        {
+            var lent = new HashSet<int>();
+            for (int b = region.FirstBlockOrdinal; b <= region.LastBlockOrdinal; b++)
+                foreach (var op in cfg.Blocks[b].Operations.Concat(cfg.Blocks[b].BranchValue != null ? new[] { cfg.Blocks[b].BranchValue } : new IOperation[0]))
+                    foreach (var arg in op.DescendantsAndSelf().OfType<IArgumentOperation>())
+                        if (arg.Parameter?.RefKind == RefKind.Ref && TryVar(Unwrap(arg.Value), ctx, out int i)) lent.Add(i);
+            return lent;
+        }
+
+        private static St[][] Fixpoint(ControlFlowGraph cfg, Ctx ctx, St[] entry, Dictionary<int, St[]> seeds, out St[][] outStates)
         {
             var inStates = new St[cfg.Blocks.Length][];
+            outStates = new St[cfg.Blocks.Length][];
             inStates[0] = entry;
             var work = new Queue<int>();
             work.Enqueue(0);
+            foreach (var seed in seeds)
+            {
+                inStates[seed.Key] = (St[])seed.Value.Clone();
+                work.Enqueue(seed.Key);
+            }
             while (work.Count > 0)
             {
                 var block = cfg.Blocks[work.Dequeue()];
                 var outState = Transfer(block, (St[])inStates[block.Ordinal].Clone(), ctx);
+                outStates[block.Ordinal] = outState;
                 foreach (var succ in new[] { block.FallThroughSuccessor, block.ConditionalSuccessor })
                 {
                     if (succ?.Destination == null) continue;

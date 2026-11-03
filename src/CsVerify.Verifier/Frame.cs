@@ -65,6 +65,13 @@ namespace CsVerify.Verifier
         public HashSet<int> ActiveLoops = new HashSet<int>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
         public Term Result;
+        /// <summary>The exception being handled (in a catch or filter), or thrown (in a finally run by it).</summary>
+        public Term Exception;
+        /// <summary>
+        /// What runs when the innermost finally (or filter) on this path ends: the branch it interrupted, or the
+        /// search for a handler, which goes on.
+        /// </summary>
+        public System.Collections.Immutable.ImmutableStack<System.Action<Frame>> Pending = System.Collections.Immutable.ImmutableStack<System.Action<Frame>>.Empty;
         public SyntaxNode ReturnSyntax;
 
         public Frame Clone() => new Frame
@@ -92,6 +99,8 @@ namespace CsVerify.Verifier
             ActiveLoops = new HashSet<int>(ActiveLoops),
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
             Result = Result,
+            Exception = Exception,
+            Pending = Pending,
             ReturnSyntax = ReturnSyntax,
         };
     }

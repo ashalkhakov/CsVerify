@@ -102,7 +102,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - **Borrows:** `ref`/`in` arguments and member reads. The value must be Live.
 - **`ref` parameters are ATS's `!pf`:** inside the method a `ref` view may be consumed, for example split, as long as it holds a value again on every return (it is joined back). An `in` parameter is read-only and can never be consumed.
 - **Defines:** `out var v` and assignment.
-- **Exceptions:** throw edges are not exits (as in ATS, an exception may leak a view).
+- **Exceptions:** a throw is not a normal exit, so views need not be consumed on it (as in ATS, an exception may leak a view). A catch or filter loses the linear values its try may have consumed or lent by `ref`; a `finally` may not use linear values from outside it.
 - **Errors:**
   - a borrow or consume where Consumed is possible: CSV0002;
   - Live at the method exit, i.e. not consumed on every path: CSV0001;
@@ -365,6 +365,17 @@ Run-time integers are C#'s, and specifications are mathematics, as with ACSL's `
   - definitions used only in specifications are `[GhostFunction]` (`Fact`, `Sum`, `Accumulate`, `Length`, `Bh`), mathematical and unbounded;
   - run-time code computes with checked arithmetic or bounds preconditions (ACSL's `AccumulateBounds`), proved to agree with them (`Count` vs `Length`, `Evaluate` vs `Eval`, `BlackHeight` vs `Bh`).
 - **Values from memory are in range:** what is read from a field, an array element, or a run-time `[Pure]` function is within its type's range.
+
+### Exceptions
+
+Methods are verified for partial correctness: any call may throw anything, and a path that throws need not meet the postcondition. `try`/`catch`/`finally` handlers are verified on every path that reaches them, and `Spec.EnsuresOnThrow<E>(condition)` (Code Contracts' `Contract.EnsuresOnThrow`) says what holds if the method exits by throwing an `E`.
+- **Where exceptions come from.** `throw` (throwing `null` is an error, CSV1013); any call to a method that is not `[Pure]` or a lemma; and the operations that throw: `checked` overflow, `MinValue / -1`, `Math.Abs(MinValue)` (`OverflowException`), and a failed downcast (`InvalidCastException`).
+- **Handlers.** An exception is an object of the type thrown, and each `catch (E)` tests its dynamic type, in order; filters (`when`) too. A `finally` runs on every way out of its try: normal, `return`, or an exception, which then goes on outward. `throw;` rethrows. `using` and `lock` are try/finally underneath, and work.
+- **What a throw leaves.** A callee that throws gives nothing back: views it got by `ref` are lost, and its postconditions and the invariants it would have restored are not known. Only its `EnsuresOnThrow` clauses for the exception's type hold. For example, `ExceptionSamples.Update` in samples/Good/Exceptions.cs rolls back a first step in a `catch` and rethrows, promising the array is as it was.
+- **Leaving the method by an exception,** its own `EnsuresOnThrow` clauses for that type must hold (CSV1002).
+- **Proofs** (lemmas, `[Pure]`) may not throw at all (CSV1011): a lemma that escapes by throwing would prove nothing.
+- **Cost.** An exceptional path is explored only where something sees it: inside a try, or in a method with `EnsuresOnThrow`. Elsewhere a throw ends the path, as before.
+- **Not modeled.** Exceptions from property accessors with code, and from operations the verifier proves cannot fail (null dereference, array bounds, division by zero), are not raised. Catching a generic exception type is not supported (CSV1901). Neither are stack overflow and out-of-memory.
 
 ### Null references
 
@@ -692,7 +703,7 @@ samples/Good, samples/Buggy
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers** are bounded by default (see *Bounded integers*). `--no-overflow` makes them mathematical, as ATS's constraint solver does, which is unsound where code can overflow.
-- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014).
+- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws need not meet the postcondition, only `Spec.EnsuresOnThrow` clauses. Handlers are verified (see Exceptions). Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014), and so never reach a handler.
 - **Mutable objects.**
   - **Dynamic frames.**
     - Virtual and interface calls, and library calls handed source objects, can't be checked against `Spec.Modifies`.

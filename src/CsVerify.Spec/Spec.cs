@@ -24,6 +24,13 @@ namespace CsVerify
         /// </summary>
         [Conditional(Symbol)] public static void Ensures(bool condition) { }
 
+        /// <summary>
+        /// Exceptional postcondition (Code Contracts' <c>Contract.EnsuresOnThrow</c>): if the method exits by throwing
+        /// a <typeparamref name="TException"/>, the condition holds then (<see cref="Old{T}"/> for entry values). A
+        /// method may throw any exception (it is verified for partial correctness): this says what holds if it does.
+        /// </summary>
+        [Conditional(Symbol)] public static void EnsuresOnThrow<TException>(bool condition) where TException : System.Exception { }
+
         /// <summary>Loop invariant: the leading statements of a loop body; holds every time the loop condition is tested.</summary>
         [Conditional(Symbol)] public static void Invariant(bool condition) { }
 
