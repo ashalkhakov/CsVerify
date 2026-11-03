@@ -1673,7 +1673,11 @@ namespace CsVerify.Verifier
                 // become an axiom of their own, quantified the same way, and assumed whether this quantifier is a
                 // hypothesis or a goal. (As a hypothesis of the body they would be useless where the quantifier is
                 // assumed: a model could falsify them and satisfy the implication vacuously.)
-                var facts = T.And(_quantFacts.Pop().ToArray());
+                // A fact that does not mention it (a [Pure] call on other arguments) is assumed as it is: quantified,
+                // it would have no term for Z3 to instantiate it with.
+                var collected = _quantFacts.Pop();
+                foreach (var plain in collected.Where(x => !x.S.Contains(name))) AssumeSide(plain);
+                var facts = T.And(collected.Where(x => x.S.Contains(name)).ToArray());
                 if (facts != T.True) AssumeSide(T.Quant("forall", name, T.Implies(range, facts)));
                 // obligations made inside (already guarded by the range) hold for every value of the variable
                 _guards.RemoveAt(guardLevel - 1);

@@ -19,6 +19,19 @@ namespace Samples.Buggy
         public Sn? Next;
     }
 
+    [Owned]
+    public sealed class Vec
+    {
+        public int[] Data;
+        public int Len;
+
+        public Vec(int[] data)
+        {
+            Spec.Ensures(Data == data && Len == 0);
+            Data = data;
+        }
+    }
+
     public static class AtsPortBugs
     {
         [Predicate]
@@ -102,6 +115,29 @@ namespace Samples.Buggy
             }
             a[hole] = last;
             return top;
+        }
+
+        [Predicate]
+        public static bool Grows(Vec d, int n) =>
+            d != null && Spec.Acc(d) && d.Data != null && d.Len == n && 0 <= n && n <= d.Data.Length && Spec.Acc(d.Data);
+
+        [Pure]
+        public static int[] Items(Vec d, int n)
+        {
+            Spec.Requires(Grows(d, n));
+            Spec.Ensures((int[] r) => r != null && 0 <= n && n <= r.Length);
+            Spec.Unfold(Grows(d, n));
+            return d.Data;
+        }
+
+        // BUG: dynarray's recapacitize without the copy (frealloc's memcpy): the items are lost (CSV1002)
+        public static void GrowWithoutCopy(Vec d, int n, int m1)
+        {
+            Spec.Requires(n < m1 && Grows(d, n));
+            Spec.Ensures(Grows(d, n) && Spec.Forall(0, n, j => Items(d, n)[j] == Spec.Old(Items(d, n)[j])));
+            Spec.Unfold(Grows(d, n));
+            d.Data = new int[m1];
+            Spec.Fold(Grows(d, n));
         }
 
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)

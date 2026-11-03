@@ -505,6 +505,17 @@ namespace CsVerify.Verifier
             return new Term($"(lambda ((y Int)) (ite {(parts.Count == 0 ? "false" : $"(or {string.Join(" ", parts)})")} 1 0))", Sort.Row);
         }
 
+        /// <summary>The predicate instances a function's preconditions name are held in the frame's state (its Inst).</summary>
+        private Term FootprintHeld(Contract c, Frame frame)
+        {
+            if (frame.Inst == null) return T.False;
+            var held = new List<Term>();
+            foreach (var req in c.Requires.Where(HasPermissions))
+                Walk(req, frame, new SpecEnv { Old = frame }, T.True, own: false,
+                    atom: a => { if (a.Inst != null) held.Add(T.Implies(a.Guard, Held(frame, a.Inst))); }, fact: null);
+            return T.And(held.ToArray());
+        }
+
         // ------------------------------------------------------------------------------------------ loops
 
         /// <summary>A loop that exchanges permissions: its invariant's permissions go round it, everything else stays outside.</summary>
@@ -513,7 +524,7 @@ namespace CsVerify.Verifier
                 .Any(inv => _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m &&
                             (SpecSymbols.IsSpecClass(m.ContainingType) ? m.Name == "Fold" || m.Name == "Unfold"
                              : SpecSymbols.IsCsVerifyType(m.ContainingType, "Own") ? m.Name == "ToAcc" || m.Name == "FromAcc"
-                             : MentionsPermissions(_engine.ContractOf(m))));
+                             : MentionsPermissions(_engine.ContractOf(m)) && !_engine.ContractOf(m).IsPure)); // (a [Pure] callee gives nothing)
 
         /// <summary>On entry: the invariant's permissions are set apart; at the head, they are what the loop holds besides the rest.</summary>
         private void LoopPermissionsEntry(int loop, IReadOnlyList<IOperation> invariants, Frame f, SpecEnv spec)
@@ -663,7 +674,11 @@ namespace CsVerify.Verifier
                 f.COwner = _z3.Define("cowner", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {fresher} (select (select {_z3.Fresh("cowner", Sort.Heap)} x) i) (select (select {f.COwner} x) i))))", Sort.Heap));
             }
             var old = allocBefore != null ? $"(distinct (select {allocBefore} x) 0)" : "true";
-            return new Term($"(lambda ((x Int)) (ite {old} (lambda ((i Int)) (ite {changed} (select (select {fresh} x) i) (select (select {f.Heap} x) i))) (select {fresh} x)))", Sort.Heap);
+            // a heap of its own, defined cell by cell (not a lambda term: quantified facts about the callee's cells,
+            // its postconditions, are instantiated through select terms of the heap they name)
+            var after = _z3.Fresh("heap", Sort.Heap);
+            _z3.Assume(new Term($"(forall ((x Int) (i Int)) (! (= (select (select {after} x) i) (ite (and {old} (not {changed})) (select (select {f.Heap} x) i) (select (select {fresh} x) i))) :pattern ((select (select {after} x) i))))", Sort.Bool));
+            return after;
         }
 
         /// <summary>Folds the cells of <paramref name="a"/> into instance p: their owner is p.</summary>

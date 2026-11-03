@@ -65,6 +65,18 @@ namespace CsVerify.Verifier
             f.Link = new StateLink { Before = before, Changed = T.Store(T.ZeroRow(), o, T.Int(1)) };
         }
 
+        /// <summary>
+        /// A field map after a call, defined object by object (y): a constant of its own and an axiom, not a lambda
+        /// term. [Pure] applications take field maps as arguments, and two lambda terms for one state that differ
+        /// only in how they were written (1 or 0 + 1 inside) are different arguments to Z3; constants are not.
+        /// </summary>
+        private Term Pointwise(string hint, Sort sort, string body)
+        {
+            var map = _z3.Fresh(hint + "$map", sort);
+            _z3.Assume(new Term($"(forall ((y Int)) (! (= (select {map} y) {body}) :pattern ((select {map} y))))", Sort.Bool));
+            return map;
+        }
+
         /// <summary>Is object y in the footprint of predicate instance q: is its ownership tree's root?</summary>
         private static string InFootprint(Term owner, Term root, string y, Term q) =>
             $"(= (select {owner} (select {root} {y})) {q})";
@@ -164,9 +176,9 @@ namespace CsVerify.Verifier
                 var map = FieldMap(f, field);
                 foreach (var o in touched) map = T.Store(map, o, _z3.Fresh(field.Name, ValueSort(field)));
                 if (touchedInst.Count > 0)
-                    map = new Term($"(lambda ((y Int)) (ite (or {string.Join(" ", touchedInst.Select(q => InFootprint(ownerBefore, before.Root, "y", q)))}) (select {FreshMap(field)} y) (select {map} y)))", MapSort(field));
+                    map = Pointwise(field.Name, MapSort(field), $"(ite (or {string.Join(" ", touchedInst.Select(q => InFootprint(ownerBefore, before.Root, "y", q)))}) (select {FreshMap(field)} y) (select {map} y))");
                 if (FieldTouched(field, "y", fownerBefore, touchedFields, touchedInst) is string single)
-                    map = new Term($"(lambda ((y Int)) (ite {single} (select {FreshMap(field)} y) (select {map} y)))", MapSort(field));
+                    map = Pointwise(field.Name, MapSort(field), $"(ite {single} (select {FreshMap(field)} y) (select {map} y))");
                 f.Fields[field] = map;
             }
             var inTrees = f.Root == null ? new List<ISymbol>() : owned.Where(x => _engine.Fields.CanBeOwned(x.ContainingType)).ToList();
@@ -186,7 +198,7 @@ namespace CsVerify.Verifier
             foreach (var field in inTrees)
             {
                 var changed = FieldTouched(field, "y", fownerBefore, touchedFields, touchedInst) is string single ? $"(or {inTouched("y")} {single})" : inTouched("y");
-                f.Fields[field] = new Term($"(lambda ((y Int)) (ite {changed} (select {FreshMap(field)} y) (select {FieldMap(f, field)} y)))", MapSort(field));
+                f.Fields[field] = Pointwise(field.Name, MapSort(field), $"(ite {changed} (select {FreshMap(field)} y) (select {FieldMap(f, field)} y))");
             }
             f.Root = _z3.Define("root", new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {_z3.Fresh("root", Sort.Row)} y) (select {f.Root} y)))", Sort.Row));
         }

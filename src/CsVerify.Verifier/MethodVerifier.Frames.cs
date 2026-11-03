@@ -149,7 +149,14 @@ namespace CsVerify.Verifier
                 var frame = CalleeFrame(callee, receiver, args, link.Before.Heap, link.Before);
                 var reads = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, frame, new SpecEnv { Old = frame }), Sort.Row)
                     : ReadsItsTree(callee) && receiver != null ? TreeOf(link.Before, receiver) : FootprintOf(callee, frame);
-                AssumeSide(T.Implies(new Term($"(cv_disjoint {reads} {link.Changed})", Sort.Bool), T.Eq(T.Coerce(app, sort), before)));
+                var unchanged = new Term($"(cv_disjoint {reads} {link.Changed})", Sort.Bool);
+                // a predicate's footprint is what it covers only while it is held (unfolded, it covers nothing)
+                if (callee.Reads == null && !(ReadsItsTree(callee) && receiver != null))
+                {
+                    frame.Inst = link.Before.Inst;
+                    unchanged = T.And(unchanged, FootprintHeld(callee, frame));
+                }
+                AssumeSide(T.Implies(unchanged, T.Eq(T.Coerce(app, sort), before)));
             }
             finally { _linkDepth--; }
         }
