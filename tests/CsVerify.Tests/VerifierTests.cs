@@ -402,6 +402,11 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1011" }, r.Errors("Inconsistent"));
             Assert.Equal(new[] { "CSV0013" }, r.Errors("Meddling"));
             Assert.Equal(new[] { "CSV0007" }, r.Errors("Aliased"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Unchecked"));
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Forgiven"));
+            Assert.Equal(new[] { "CSV1014" }, r.Errors("Broken"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("FreshArray"));
+            Assert.Equal(new[] { "CSV1012" }, r.Errors("SpecTooEarly"));
         }
     }
 
@@ -535,6 +540,94 @@ namespace CsVerify.Tests
             const string pos = "[GhostFunction] static bool Pos(int[] a, int n) { REQ return Spec.Forall(0, n, i => a[i] > 0); }";
             Assert.Equal(new[] { "CSV1003" }, Errors("Pos", pos.Replace("REQ", "")));
             Assert.Empty(Errors("Pos", pos.Replace("REQ", "Spec.Requires(n <= a.Length);")));
+        }
+    }
+    /// <summary>
+    /// Null references: every dereference must be proved non-null, and non-nullable reference types (in an enabled
+    /// nullable context) are contracts: callers prove arguments, callees prove results.
+    /// </summary>
+    public class NullTests
+    {
+        private static string[] Errors(string method, string source) =>
+            Harness.Verify("using System.Diagnostics.CodeAnalysis; public static class C { " + source + " }").Errors(method);
+
+        [Fact]
+        public void NullableReference_MustBeCheckedBeforeUse()
+        {
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(int[]? a) => a.Length;"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(int[]? a) { Spec.Requires(a == null || a.Length > 0); return a[0]; }"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static string M(string? s) => s.Substring(1);"));
+            Assert.Empty(Errors("M", "static int M(int[]? a) { if (a == null) return 0; return a.Length; }"));
+            Assert.Empty(Errors("M", "static int M(string? s) { if (s is null) return 0; return s.Length; }"));
+            Assert.Empty(Errors("M", "static int M(string? s) => s is not null ? s.Length : 0;"));
+            Assert.Empty(Errors("M", "static int M(string? s) => s is { } ? s.Length : 0;"));
+            Assert.Empty(Errors("M", "static int M(string? s) => s != null && s.Length > 0 ? 1 : 0;"));
+        }
+
+        [Fact]
+        public void ConditionalAccessAndCoalescing_AreGuards()
+        {
+            Assert.Empty(Errors("M", "static string? M(string? s) => s?.Trim();"));
+            Assert.Empty(Errors("M", "static int M(string? s) => (s ?? \"none\").Length;"));
+            Assert.Empty(Errors("M", "static int M(int[]? a) { int[] b = a ?? new int[3]; return b.Length; }"));
+        }
+
+        [Fact]
+        public void NonNullableParameter_IsAPrecondition()
+        {
+            const string callee = "static int Len(int[] a) => a.Length; ";
+            Assert.Empty(Errors("Len", callee));
+            Assert.Equal(new[] { "CSV1014" }, Errors("M", callee + "static int M(int[]? b) => Len(b);"));
+            Assert.Empty(Errors("M", callee + "static int M(int[]? b) => b == null ? 0 : Len(b);"));
+            Assert.Equal(new[] { "CSV1014" }, Errors("M", callee + "static int M() => Len(null!);")); // ! proves nothing
+            Assert.Empty(Errors("M", callee + "static int M() => Len(new int[2]);"));
+        }
+
+        [Fact]
+        public void NonNullableResult_IsAPostcondition()
+        {
+            Assert.Equal(new[] { "CSV1014" }, Errors("M", "static string M(bool c) { if (c) return \"x\"; return null!; }"));
+            Assert.Empty(Errors("M", "static string M(bool c) { if (c) return \"x\"; return \"\"; }"));
+            Assert.Equal(new[] { "CSV1014" }, Errors("M", "static void M(out string s) { s = null!; }"));
+            // callers rely on it, for results and out parameters
+            Assert.Empty(Errors("Use", "static string Get() => \"abc\"; static int Use() => Get().Length;"));
+            Assert.Empty(Errors("Use", "static void Get(out int[] a) { a = new int[1]; } static int Use() { Get(out var a); return a.Length; }"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("Use", "static string? Get() => null; static int Use() => Get().Length;"));
+        }
+
+        [Fact]
+        public void Specifications_MustNotDereferenceNull()
+        {
+            Assert.Equal(new[] { "CSV1012" }, Errors("M", "static void M(int[]? a) { Spec.Requires(a.Length > 0); }"));
+            Assert.Empty(Errors("M", "static int M(int[]? a) { Spec.Requires(a != null && a.Length > 0); return a[0]; }"));
+            Assert.Empty(Errors("M", "static void M(string? s) { Spec.Requires((s ?? \"\").Length < 10); }"));
+            Assert.Empty(Errors("M", "[Pure] static string Self(this string s) => s; static void M(string? s) { Spec.Requires(s?.Self() == s); }"));
+            // a postcondition is checked on each return path, with that path's result
+            const string ens = "static int[]? M(int n) { Spec.Requires(n >= 0); Spec.Ensures((int[]? r) => r.Length == n); return RET; }";
+            Assert.Empty(Errors("M", ens.Replace("RET", "new int[n]")));
+            Assert.Equal(new[] { "CSV1002", "CSV1012" }, Errors("M", ens.Replace("RET", "null")));
+        }
+
+        [Fact]
+        public void ArrayElements_AreMaybeNull()
+        {
+            // C# lets string[] hold nulls (new string[n] is all nulls): only a specification says otherwise
+            const string m = "static int M(string[] a) { Spec.Requires(a.Length > 0); REQ return a[0].Length; }";
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", m.Replace("REQ", "")));
+            Assert.Empty(Errors("M", m.Replace("REQ", "Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != null));")));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M() { var a = new string[1]; return a[0].Length; }"));
+        }
+
+        [Fact]
+        public void ObliviousTypes_AreMaybeNull() =>
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "\n#nullable disable\n static int M(int[] a) => a.Length;\n#nullable restore\n"));
+
+        [Fact]
+        public void LibraryNullabilityAttributes_AreTrusted()
+        {
+            Assert.Empty(Errors("M", "static int M(string? s) { if (string.IsNullOrEmpty(s)) return 0; return s.Length; }"));
+            Assert.Empty(Errors("M", "static int M(string? s) { ArgumentNullException.ThrowIfNull(s); return s.Length; }"));
+            Assert.Empty(Errors("M", "static int M(string s) => s.Trim().Length;")); // Trim returns string, not string?
         }
     }
 }

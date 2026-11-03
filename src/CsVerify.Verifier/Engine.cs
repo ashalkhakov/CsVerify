@@ -15,6 +15,12 @@ namespace CsVerify.Verifier
     {
         /// <summary>Check that integer arithmetic and narrowing conversions stay in range of their C# type.</summary>
         public bool CheckOverflow;
+        /// <summary>
+        /// The nullable context the sources are compiled in (the project's &lt;Nullable&gt;). Non-nullable reference
+        /// types are contracts; oblivious ones (nullable disabled) are maybe-null, so only an enabled context lets
+        /// the verifier know anything is not null.
+        /// </summary>
+        public NullableContextOptions Nullable = NullableContextOptions.Enable;
         public int TimeoutMs = 10000;
         public int MaxPaths = 5000;
         public string Z3Path;
@@ -165,7 +171,7 @@ namespace CsVerify.Verifier
             var userTrees = sources.Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.path)).ToList();
             var specTrees = SpecSources().Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.name)).ToList();
             var compilation = CSharpCompilation.Create("CsVerifyTarget", userTrees.Concat(specTrees), References(options),
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable));
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: options.Nullable));
 
             var result = new VerificationResult();
             foreach (var d in compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))

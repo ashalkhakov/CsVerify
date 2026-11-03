@@ -138,11 +138,12 @@ The verifier runs all three analyzers over the compilation it verifies: a method
    - callee preconditions,
    - array/span bounds (implicit on every `a[i]`),
    - division by zero,
+   - null references (see *Null references* below),
    - `Spec.Assert`,
    - loop invariants (on entry and when maintained),
    - loop and recursion measures. A measure goes down lexicographically: some component decreases from a non-negative value, and every component before it is unchanged. A call is recursive when the callee can reach the caller again through source methods (calls inside specifications don't count), so mutually recursive methods are checked against each other's measures. Their measures must have the same number of components.
    - postconditions at each return,
-   - well-definedness of the method's own specifications (CSV1012). Every array index in a spec must be in bounds, every `[Pure]` call must be within its precondition, and every divisor must be non-zero. Each condition is guarded by what protects it:
+   - well-definedness of the method's own specifications (CSV1012). Every array index in a spec must be in bounds, every dereference must be of a non-null reference, every `[Pure]` call must be within its precondition, and every divisor must be non-zero. Each condition is guarded by what protects it:
      - the left side of `&&`/`||`;
      - the branch of `?:`;
      - the range of `Spec.Forall`/`Exists` (the obligation becomes `forall i. lo ≤ i < hi ⇒ …`);
@@ -175,7 +176,21 @@ Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas
 
 Z3 is reset before each method (`(reset)`, then the options and theory again), so a method's result never depends on which methods were verified before it. Z3's search is history-dependent, and an "unknown" from e-matching could otherwise come and go with unrelated code.
 
-Z3 runs as a separate process speaking SMT-LIB2. Neither the analyzer nor MSBuild loads native code, and any Z3 build for any OS or CPU works. See *Limitations* for why this is not the `Microsoft.Z3` NuGet package.
+Z3 runs as a separate process speaking SMT-LIB2, by design. Neither the analyzer nor MSBuild loads native code, any Z3 build for any OS or CPU works (including arm64, where the `Microsoft.Z3` NuGet package's x64-only binaries cannot load), you can upgrade Z3 independently of CsVerify, a solver crash or hang cannot take the build down with it, and `--smt-log` shows exactly what was asked.
+
+### Null references
+
+C#'s nullable reference types are only warnings, and deliberately unsound ones: `null!` silences them, `new string[n]` is an array of nulls typed `string[]`, and a field can be read before the constructor sets it. CsVerify takes the annotations as contracts and proves them instead:
+- **Every dereference** (`a.Length`, `a[i]`, `x.F`, `x.M()`) must be of a reference proved not null (CSV1013). `this` and `new` objects and arrays are never null. Conditions guard it as for the other checks: `if (a == null) return`, `a != null && a.Length > 0`, `s is not null`, `s is { }`, `?.` and `??`, in code and in specifications.
+- **A non-nullable parameter** (`int[] a` in an enabled nullable context) is a precondition: the method assumes it, and each caller proves its argument (CSV1014). `int[]? a` promises nothing, so the method must check before use.
+- **A non-nullable return type**, `out` or `ref` parameter is a postcondition: proved at each return (CSV1014), assumed by callers.
+- **`!` proves nothing.** It has no run-time effect, so the verifier ignores it: `Len(null!)` is reported.
+- **Array elements are maybe-null**, whatever the element type says. Say otherwise with a precondition, `Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != null))`.
+- **Oblivious types** (code with nullable disabled) promise nothing, so they are maybe-null too. Only an enabled nullable context lets the verifier know anything is not null. The MSBuild target passes the project's `<Nullable>`, and the command line takes `--nullable` (default `enable`).
+- **Library methods** are trusted for their annotations: a non-nullable return type, `[NotNull]` parameters after the call (`ArgumentNullException.ThrowIfNull`), `[NotNullWhen(b)]` parameters when the call returns `b` (`string.IsNullOrEmpty`), and `[AllowNull]` and `[MaybeNull]`.
+- **Fields and properties of objects** are maybe-null for now. Without object invariants nothing says a constructor set them.
+
+On `samples/Buggy/NullBugs.cs` the C# compiler warns about 3 of the 5 planted bugs. It says nothing about the two `null!` ones and `new string[2]`, and it warns falsely after the precondition that rules null out.
 
 ## Enabling `CSVERIFY_SPEC`
 
@@ -225,6 +240,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 
 | option | meaning |
 |---|---|
+| `--nullable <ctx>` | the nullable context: `enable` (default), `disable`, `annotations`, `warnings`; only non-nullable reference types are known not to be null |
 | `--overflow` | also prove that `int`/`long`/... arithmetic and narrowing conversions stay in range |
 | `--timeout <ms>` | per-query Z3 timeout (default 10000) |
 | `--z3 <path>` | Z3 executable |
@@ -264,7 +280,9 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1008 | verifier | recursion measure (own or of a mutually recursive callee) might not decrease or might be negative |
 | CSV1009 | verifier | possible division by zero |
 | CSV1010 | verifier | possible overflow (`--overflow`) |
-| CSV1012 | verifier | a specification might not be well-defined: index out of range, `[Pure]` call outside its precondition, or division by zero inside a spec |
+| CSV1012 | verifier | a specification might not be well-defined: index out of range, null dereference, `[Pure]` call outside its precondition, or division by zero inside a spec |
+| CSV1013 | verifier | a dereference (`a.Length`, `a[i]`, `x.M()`) of a reference that might be null |
+| CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
@@ -342,6 +360,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 - `Lemmas.Power2`: recursion termination.
 - `Memory.*`: alloc / read / write / free with linear `PointsTo` views, including a function that borrows a view and gives it back.
 - `ArrayViews.Fill`: divide-and-conquer fill. It splits `array_v(n, l)` into `array_v(n/2, l) * array_v(n - n/2, l + n/2)`, recurses on each half through its own pointer, and joins them back.
+- `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
 ### Ported from ATS and Dafny
@@ -405,6 +424,7 @@ Sources and licences:
 
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
+- `NullBugs.cs`: an unchecked `T?`, `null!` passed and returned, an element of `new string[2]`, and a precondition that reads `a.Length` before checking `a`.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
 - `Linearity.cs` has leak, double free, use-after-free, forging and run-time ghost reads. Its analyzer errors are downgraded to warnings in that project's `.editorconfig` so the solution still builds.
 - `ProofBugs.cs` holds proofs that would be unsound if accepted:
@@ -423,16 +443,14 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 116 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 124 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
-**Solver**
-- **Z3 runs as a process, not through the `Microsoft.Z3` NuGet package.** The package's managed `Microsoft.Z3.dll` is built for x64 only, and the package ships x64-only native libraries (checked for 4.11.2–4.12.2). It cannot load in an arm64 .NET process, such as on Apple Silicon. Speaking SMT-LIB2 to a `z3` executable works on every platform and keeps native code out of both the analyzer and MSBuild.
-
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
-- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not checked yet. They are the natural next obligation: `x != null` at every dereference, guarded like the well-definedness checks.
+- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014).
+- **Null and object state.** Fields and properties are maybe-null, since there are no object invariants yet. Library nullability annotations are trusted, not checked.
 - **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
 - **Virtual dispatch.** Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown). Proofs cannot be virtual (CSV0013).
 - **`[Trusted]` and `Spec.Assume`** are axioms by definition.
@@ -462,7 +480,7 @@ samples/Good, samples/Buggy
 - The analyzer does not track linear fields inside a linear struct separately: the struct is one resource.
 
 **Packaging**
-- "Zero-size" types are empty structs. The CLR still gives them one byte, but they carry no data.
+- Views and ghosts cost nothing in an erased build (`-p:CsVerifyErase=true`): the erasure pass deletes the types, parameters and calls, so nothing of them reaches the IL. In a normal build they are still empty structs (one byte each to the CLR, no data) passed to empty, inlined methods.
 - The `CsVerify` package produced by `dotnet pack` is not published. The verifier is a `dotnet tool` (`PackAsTool`) that is not published either.
 
 ## References

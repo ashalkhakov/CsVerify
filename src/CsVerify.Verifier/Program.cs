@@ -14,6 +14,8 @@ Directories are searched recursively for .cs files (bin/ and obj/ are skipped); 
 
 options:
   --overflow          also prove that integer arithmetic does not overflow
+  --nullable <ctx>    nullable context: enable (default), disable, annotations, warnings; only
+                      non-nullable reference types are known not to be null
   --timeout <ms>      per-query Z3 timeout (default 10000)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
@@ -38,6 +40,9 @@ options:
                     switch (args[i])
                     {
                         case "--overflow": options.CheckOverflow = true; break;
+                        case "--nullable":
+                            options.Nullable = (Microsoft.CodeAnalysis.NullableContextOptions)Enum.Parse(typeof(Microsoft.CodeAnalysis.NullableContextOptions), args[++i], ignoreCase: true);
+                            break;
                         case "--timeout": options.TimeoutMs = int.Parse(args[++i]); break;
                         case "--z3": options.Z3Path = args[++i]; break;
                         case "-d": options.Defines.Add(args[++i]); break;

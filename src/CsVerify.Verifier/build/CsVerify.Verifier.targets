@@ -17,7 +17,12 @@
       <_CsVerifySource Include="@(Compile)" Exclude="$(IntermediateOutputPath)**" />
     </ItemGroup>
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifySource->'%(FullPath)')" Overwrite="true" />
-    <Exec Command="$(CsVerifyCommand) $(CsVerifyArgs) @&quot;$(IntermediateOutputPath)csverify.rsp&quot;" />
+    <PropertyGroup>
+      <!-- the project's nullable context: its non-nullable reference types are contracts (unset means disabled) -->
+      <_CsVerifyNullable>$(Nullable)</_CsVerifyNullable>
+      <_CsVerifyNullable Condition="'$(_CsVerifyNullable)' == ''">disable</_CsVerifyNullable>
+    </PropertyGroup>
+    <Exec Command="$(CsVerifyCommand) --nullable $(_CsVerifyNullable) $(CsVerifyArgs) @&quot;$(IntermediateOutputPath)csverify.rsp&quot;" />
     <Touch Files="$(IntermediateOutputPath)csverify.stamp" AlwaysCreate="true" />
   </Target>
 

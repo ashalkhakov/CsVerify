@@ -45,6 +45,7 @@ namespace CsVerify.Verifier
         private Term[] _entryMeasure;
         private int _paths, _unfoldDepth, _quantDepth;
         private readonly Stack<List<Term>> _quantFacts = new Stack<List<Term>>();
+        private readonly Stack<Term> _conditionalInstances = new Stack<Term>(); // the receiver of the a?.b being evaluated
 
         /// <summary>A condition a partial operation needs: an index in bounds, a pure function's precondition, a divisor.</summary>
         private sealed class Obligation
@@ -156,9 +157,13 @@ namespace CsVerify.Verifier
             try
             {
                 var f = new Frame { Heap = _z3.Fresh("heap", Sort.Heap) };
-                if (!_method.IsStatic) f.This = _z3.Fresh("this", Sort.Int);
+                if (!_method.IsStatic) { f.This = _z3.Fresh("this", Sort.Int); _z3.Assume(NotNull(f.This)); }
                 foreach (var p in _method.Parameters)
+                {
                     f.Vars[p] = FreshOf(p.Type, p.Name);
+                    // a non-nullable parameter is a precondition: each caller proves it (an out parameter is not set yet)
+                    if (p.RefKind != RefKind.Out && IsNonNullable(p)) _z3.Assume(NotNull(f.Vars[p]));
+                }
                 _entry = f.Clone();
                 var spec = new SpecEnv { Old = _entry };
                 // each precondition must be well-defined given the ones before it
@@ -385,6 +390,12 @@ namespace CsVerify.Verifier
         private void CheckPostconditions(Frame f)
         {
             var at = f.ReturnSyntax ?? MethodLocationNode();
+            // a non-nullable return type or out/ref parameter is a postcondition the callers assume
+            if (f.Result != null && IsNonNullableReturn(_method))
+                Prove(NotNull(f.Result), "CSV1014", at, $"'{_method.Name}' might return null, but its return type '{_method.ReturnType}' is not nullable");
+            foreach (var p in _method.Parameters.Where(p => p.RefKind == RefKind.Out || p.RefKind == RefKind.Ref))
+                if (IsNonNullable(p) && f.Vars.TryGetValue(p, out var pv))
+                    Prove(NotNull(pv), "CSV1014", at, $"'{p.Name}' might be null on return, but its type '{p.Type}' is not nullable");
             foreach (var post in _contract.Ensures)
             {
                 var spec = new SpecEnv { Old = _entry, Result = f.Result, ResultParameter = post.ResultParameter };
@@ -565,6 +576,13 @@ namespace CsVerify.Verifier
                     case bool b: return T.Bool(b);
                     case char c: return T.Int(c);
                     case null: return T.Int(0);
+                    case string str:
+                    {
+                        var v = _z3.Fresh("str", Sort.Int);
+                        AssumeSide(NotNull(v));
+                        AssumeSide(T.Eq(Len(v), T.Int(str.Length)));
+                        return v;
+                    }
                     case ulong ul: return T.Int(new BigInteger(ul));
                     case object o when IsIntegral(op.Type) || o is int || o is long: return T.Int(Convert.ToInt64(o));
                 }
@@ -624,6 +642,7 @@ namespace CsVerify.Verifier
                     if (ae.Indices.Length != 1) { Unsupported(op); return Unknown(op.Type); }
                     var arr = Eval(ae.ArrayReference, f, spec);
                     var idx = Eval(ae.Indices[0], f, spec);
+                    Deref(ae.ArrayReference, arr, ae.Syntax);
                     BoundsCheck(arr, idx, ae.Syntax);
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type));
                 }
@@ -642,6 +661,7 @@ namespace CsVerify.Verifier
                 case IFieldReferenceOperation fr:
                 {
                     var args = fr.Instance != null ? new[] { Eval(fr.Instance, f, spec) } : Array.Empty<Term>();
+                    if (fr.Instance != null) Deref(fr.Instance, args[0], fr.Syntax);
                     if (!fr.Field.IsReadOnly && !fr.Field.IsConst)
                         NotModeled(fr.Syntax, $"mutable field '{fr.Field.Name}' is not supported (its writes are not tracked)");
                     return T.Coerce(_z3.Apply(fr.Field.OriginalDefinition.ToDisplayString(), SortOf(fr.Field.OriginalDefinition.Type), args), SortOf(fr.Type));
@@ -653,13 +673,44 @@ namespace CsVerify.Verifier
                 case IArgumentOperation arg: return Eval(arg.Value, f, spec);
                 case IExpressionStatementOperation es: return Eval(es.Operation, f, spec);
                 case IObjectCreationOperation oc:
-                    foreach (var a in oc.Arguments) Eval(a.Value, f, spec);
+                {
+                    foreach (var a in oc.Arguments) NonNullArgument(a, Eval(a.Value, f, spec), oc.Constructor);
                     if (oc.Constructor == null || _engine.MayWriteHeap(oc.Constructor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
                     if (oc.Initializer != null) NotModeled(oc.Initializer.Syntax, "object initializers are not supported");
-                    return Unknown(op.Type, "new");
+                    var obj = Unknown(op.Type, "new");
+                    if (MayBeNullType(op.Type)) _z3.Assume(NotNull(obj));
+                    return obj;
+                }
                 case IIsNullOperation isn:
-                    Eval(isn.Operand, f, spec);
-                    return _z3.Fresh("isnull", Sort.Bool);
+                {
+                    // the lowering of ?. and ?? in code
+                    var v = Eval(isn.Operand, f, spec);
+                    return MayBeNullType(isn.Operand.Type) ? T.Eq(v, T.Int(0)) : _z3.Fresh("isnull", Sort.Bool);
+                }
+                case IIsPatternOperation ip when NullPattern(ip.Pattern) is bool isNull && MayBeNullType(ip.Value.Type):
+                {
+                    var eq = T.Eq(Eval(ip.Value, f, spec), T.Int(0));
+                    return isNull ? eq : T.Not(eq);
+                }
+                case IConditionalAccessOperation ca when MayBeNullType(ca.Type):
+                {
+                    // a?.b in a specification (code sees it lowered): b is evaluated, and well-defined, only if a is not null
+                    var r = Eval(ca.Operation, f, spec);
+                    Term v = null;
+                    _conditionalInstances.Push(r);
+                    try { WithGuard(NotNull(r), () => v = Eval(ca.WhenNotNull, f, spec)); }
+                    finally { _conditionalInstances.Pop(); }
+                    return T.Ite(NotNull(r), T.Coerce(v, Sort.Int), T.Int(0));
+                }
+                case IConditionalAccessInstanceOperation _:
+                    return _conditionalInstances.Peek();
+                case ICoalesceOperation co when MayBeNullType(co.Value.Type) && MayBeNullType(co.Type):
+                {
+                    var v = Eval(co.Value, f, spec);
+                    Term w = null;
+                    WithGuard(T.Eq(v, T.Int(0)), () => w = Eval(co.WhenNull, f, spec));
+                    return T.Ite(T.Eq(v, T.Int(0)), T.Coerce(w, Sort.Int), v);
+                }
                 case IFlowAnonymousFunctionOperation _:
                 case IDelegateCreationOperation _:
                 case IAnonymousFunctionOperation _:
@@ -698,6 +749,14 @@ namespace CsVerify.Verifier
 
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
+            if (b.OperatorMethod != null && b.OperatorMethod.ContainingType.SpecialType == SpecialType.System_String &&
+                (b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals) &&
+                (IsNullConstant(b.LeftOperand) || IsNullConstant(b.RightOperand)))
+            {
+                // string's == against null is the reference comparison
+                var eq = T.Eq(Eval(b.LeftOperand, f, spec), Eval(b.RightOperand, f, spec));
+                return b.OperatorKind == BinaryOperatorKind.NotEquals ? T.Not(eq) : eq;
+            }
             if (b.OperatorMethod != null)
             {
                 if (SpecSymbols.IsGhostType(b.OperatorMethod.ContainingType) || SpecSymbols.IsSeqType(b.OperatorMethod.ContainingType))
@@ -834,6 +893,7 @@ namespace CsVerify.Verifier
                 {
                     var arr = Eval(ae.ArrayReference, f, spec);
                     var idx = Eval(ae.Indices[0], f, spec);
+                    Deref(ae.ArrayReference, arr, ae.Syntax);
                     BoundsCheck(arr, idx, ae.Syntax);
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
@@ -842,6 +902,7 @@ namespace CsVerify.Verifier
                 {
                     var arr = Eval(pr.Instance, f, spec);
                     var idx = Eval(pr.Arguments[0].Value, f, spec);
+                    Deref(pr.Instance, arr, pr.Syntax);
                     BoundsCheck(arr, idx, pr.Syntax);
                     if (IsSpan(pr.Instance.Type)) { f.Heap = _z3.Fresh("heap", Sort.Heap); break; } // could be any array's cell
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
@@ -863,11 +924,17 @@ namespace CsVerify.Verifier
                 return T.Coerce(T.Select(Eval(pr.Instance, f, spec), Eval(pr.Arguments[0].Value, f, spec), Sort.Int), SortOf(pr.Type));
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
             {
-                if (prop.Name == "Length") return Len(Eval(pr.Instance, f, spec));
+                if (prop.Name == "Length")
+                {
+                    var seq = Eval(pr.Instance, f, spec);
+                    Deref(pr.Instance, seq, pr.Syntax);
+                    return Len(seq);
+                }
                 if (prop.IsIndexer && pr.Arguments.Length == 1)
                 {
                     var arr = Eval(pr.Instance, f, spec);
                     var idx = Eval(pr.Arguments[0].Value, f, spec);
+                    Deref(pr.Instance, arr, pr.Syntax);
                     BoundsCheck(arr, idx, pr.Syntax);
                     if (pr.Instance.Type.SpecialType == SpecialType.System_String) return Unknown(pr.Type, "char");
                     // a span may view an array at an offset; its contents are not tracked (only its bounds)
@@ -878,7 +945,11 @@ namespace CsVerify.Verifier
             if (!IsStableProperty(prop))
                 NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only get-only auto-properties and properties of immutable types are");
             var args = new List<Term>();
-            if (pr.Instance != null) args.Add(Eval(pr.Instance, f, spec));
+            if (pr.Instance != null)
+            {
+                args.Add(Eval(pr.Instance, f, spec));
+                Deref(pr.Instance, args[0], pr.Syntax);
+            }
             foreach (var a in pr.Arguments) args.Add(Eval(a.Value, f, spec));
             var def = prop.OriginalDefinition;
             return T.Coerce(_z3.Apply(def.ToDisplayString(), SortOf(def.Type), args), SortOf(pr.Type));
@@ -912,6 +983,7 @@ namespace CsVerify.Verifier
             var n = Eval(ac.DimensionSizes[0], f, spec);
             if (_codeMode) Prove(T.Le(T.Int(0), n), "CSV1003", ac.Syntax, $"array size in '{ac.Syntax}' might be negative");
             var r = _z3.Fresh("array", Sort.Int);
+            _z3.Assume(NotNull(r));
             _z3.Assume(T.Eq(Len(r), n));
             // A new array is distinct from every array the method can already see.
             foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
@@ -955,6 +1027,7 @@ namespace CsVerify.Verifier
 
             var callee = _engine.ContractOf(m);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
+            if (receiver != null) Deref(inv.Instance, receiver, inv.Syntax);
             var argTerms = new Term[m.Parameters.Length];
             foreach (var a in inv.Arguments)
             {
@@ -966,6 +1039,7 @@ namespace CsVerify.Verifier
                     a.ArgumentKind == ArgumentKind.Explicit && !SpecSymbols.IsSpecClass(m.ContainingType))
                     NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals and parameters");
                 argTerms[i] = a.Parameter.RefKind == RefKind.Out ? FreshOf(a.Parameter.Type, a.Parameter.Name + "$unset") : Eval(a.Value, f, spec);
+                if (a.Parameter.RefKind != RefKind.Out) NonNullArgument(a, argTerms[i], m);
             }
 
             if (!_codeMode)
@@ -979,9 +1053,15 @@ namespace CsVerify.Verifier
             if (!callee.HasSource)
             {
                 foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
-                    Write(a.Value, FreshOf(a.Parameter.Type, a.Parameter.Name), f, spec);
+                {
+                    var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
+                    if (IsNonNullable(a.Parameter.OriginalDefinition)) _z3.Assume(NotNull(nv));
+                    Write(a.Value, nv, f, spec);
+                }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
-                return m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                LibraryNullFacts(inv, argTerms, libResult);
+                return libResult;
             }
 
             var preEnv = new SpecEnv { Old = pre };
@@ -1012,12 +1092,14 @@ namespace CsVerify.Verifier
             foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
             {
                 var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
+                if (IsNonNullable(callee.Method.Parameters[a.Parameter.Ordinal])) _z3.Assume(NotNull(nv));
                 post.Vars[callee.Method.Parameters[a.Parameter.Ordinal]] = nv;
                 Write(a.Value, nv, f, spec);
             }
             if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
 
             var result = m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name);
+            if (result != null && IsNonNullableReturn(callee.Method)) _z3.Assume(NotNull(result));
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort)));
             foreach (var ens in callee.Ensures)
@@ -1086,6 +1168,7 @@ namespace CsVerify.Verifier
                     if (unfold)
                     {
                         if (callee.PureBody != null) AssumeSide(T.Implies(pre, T.Eq(app, Eval(callee.PureBody, frame, env))));
+                        if (IsNonNullableReturn(m)) AssumeSide(T.Implies(pre, NotNull(app)));
                         foreach (var ens in callee.Ensures)
                             AssumeSide(T.Implies(pre, AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
                     }
@@ -1175,6 +1258,92 @@ namespace CsVerify.Verifier
                 if (_guards.Count >= guardLevel) _guards.RemoveRange(guardLevel - 1, _guards.Count - guardLevel + 1);
                 if (_obligations.Count > 0 && ReferenceEquals(_obligations.Peek(), inside)) _obligations.Pop();
                 _quantDepth--;
+            }
+        }
+
+        // ================================================================================== nullability
+
+        private static Term NotNull(Term r) => T.Not(T.Eq(r, T.Int(0)));
+
+        /// <summary>
+        /// A value of this type may be null at run time: a reference (array, string, class, interface, delegate) or a
+        /// type parameter that is not a value type. Ghosts, sequences and views are values.
+        /// </summary>
+        private static bool MayBeNullType(ITypeSymbol t) =>
+            t != null && !SpecSymbols.IsGhostType(t) && !SpecSymbols.IsSeqType(t) &&
+            (t.IsReferenceType || (t is ITypeParameterSymbol tp && !tp.HasValueTypeConstraint && !tp.HasUnmanagedTypeConstraint));
+
+        /// <summary>
+        /// The declared type promises a value that is not null: a non-nullable reference type in an enabled nullable
+        /// context. An oblivious type (nullable disabled), <c>T?</c> and a type parameter (it may be instantiated with
+        /// a nullable type) promise nothing.
+        /// </summary>
+        private static bool IsNonNullableType(ITypeSymbol t) =>
+            MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
+
+        private static bool IsNonNullable(IParameterSymbol p) =>
+            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute");
+
+        private static bool IsNonNullableReturn(IMethodSymbol m) =>
+            !m.ReturnsVoid && IsNonNullableType(m.OriginalDefinition.ReturnType) &&
+            !HasAttribute(m.OriginalDefinition.GetReturnTypeAttributes(), "MaybeNullAttribute");
+
+        private static bool HasAttribute(IEnumerable<AttributeData> attributes, string name) =>
+            attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis." + name);
+
+        private static bool IsNullConstant(IOperation op) => op.ConstantValue.HasValue && op.ConstantValue.Value == null;
+
+        /// <summary><c>is null</c> (true), <c>is not null</c> and <c>is { }</c> (false); any other pattern: null.</summary>
+        private static bool? NullPattern(IPatternOperation p)
+        {
+            switch (p)
+            {
+                case IConstantPatternOperation c when IsNullConstant(c.Value): return true;
+                case INegatedPatternOperation n: return !NullPattern(n.Pattern);
+                case IRecursivePatternOperation r when r.DeconstructionSubpatterns.IsEmpty && r.PropertySubpatterns.IsEmpty &&
+                                                       r.DeclaredSymbol == null && SymbolEqualityComparer.Default.Equals(r.MatchedType, r.InputType):
+                    return false;
+                default: return null;
+            }
+        }
+
+        /// <summary>Member access, indexing or a call on <paramref name="receiver"/>: defined only if it is not null.</summary>
+        private void Deref(IOperation receiver, Term r, SyntaxNode at)
+        {
+            if (receiver is IInstanceReferenceOperation || !MayBeNullType(receiver.Type)) return;
+            Require(NotNull(r), "CSV1013", at, $"'{receiver.Syntax}' might be null in '{at}'");
+        }
+
+        /// <summary>An argument for a non-nullable parameter: the callee assumes it is not null, so the caller proves it.</summary>
+        private void NonNullArgument(IArgumentOperation a, Term v, IMethodSymbol callee)
+        {
+            if (a.Parameter == null || !IsNonNullable(a.Parameter) || SpecSymbols.IsSpecClass(callee?.ContainingType)) return;
+            Require(NotNull(v), "CSV1014", a.Syntax, (IsNullConstant(a.Value) ? "null is passed" : $"'{a.Value.Syntax}' might be null,") +
+                $" but parameter '{a.Parameter.Name}' of '{callee?.Name}' is not nullable");
+        }
+
+        /// <summary>
+        /// A library method's (trusted) nullability attributes: <c>[NotNull]</c> parameters are not null after the call
+        /// (<c>ArgumentNullException.ThrowIfNull</c>), <c>[NotNullWhen(b)]</c> ones when it returns b
+        /// (<c>string.IsNullOrEmpty</c>), and a non-nullable return type is not null.
+        /// </summary>
+        private void LibraryNullFacts(IInvocationOperation inv, Term[] args, Term result)
+        {
+            var m = inv.TargetMethod;
+            if (IsNonNullableReturn(m)) _z3.Assume(NotNull(result));
+            foreach (var a in inv.Arguments)
+            {
+                var p = a.Parameter;
+                if (p == null || p.RefKind == RefKind.Out || args[p.Ordinal] == null || !MayBeNullType(a.Value.Type)) continue;
+                foreach (var attr in p.OriginalDefinition.GetAttributes())
+                {
+                    var name = attr.AttributeClass?.ToDisplayString();
+                    if (name == "System.Diagnostics.CodeAnalysis.NotNullAttribute")
+                        _z3.Assume(NotNull(args[p.Ordinal]));
+                    else if (name == "System.Diagnostics.CodeAnalysis.NotNullWhenAttribute" && result.Sort == Sort.Bool &&
+                             attr.ConstructorArguments.Length == 1 && attr.ConstructorArguments[0].Value is bool when)
+                        _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(args[p.Ordinal])));
+                }
             }
         }
 

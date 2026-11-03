@@ -51,6 +51,7 @@ namespace CsVerify.Tests
             Assert.Equal(9, Run(asm, "AtsIntro", "Ackermann", 2, 3));
             Assert.Equal(55, Run(asm, "Lemmas", "TriFast", 10));
             Assert.Equal((2, 5), Run(asm, "DafnyMore", "MaxSegSum", new[] { 1, -3, 4, -1, 2, -9, 3 }));
+            Assert.Equal(7 + 2, Run(asm, "Nulls", "Demo"));
         }
 
         [Fact]
