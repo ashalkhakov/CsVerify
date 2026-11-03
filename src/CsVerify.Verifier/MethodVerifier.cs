@@ -163,7 +163,7 @@ namespace CsVerify.Verifier
             try
             {
                 var f = new Frame { Heap = _z3.Fresh("heap", Sort.Heap) };
-                if (!_method.IsStatic) { f.This = _z3.Fresh("this", Sort.Int); _z3.Assume(NotNull(f.This)); }
+                if (!_method.IsStatic) { f.This = _z3.Fresh("this", Sort.Int); _z3.Assume(NotNull(f.This)); HasType(f.This, _method.ContainingType); }
                 if (_engine.UsesOwnership) f.Root = _z3.Fresh("root", Sort.Row);
                 if (_method.MethodKind == MethodKind.Constructor && !_method.IsStatic) EnterConstructor(f);
                 foreach (var p in _method.Parameters)
@@ -172,10 +172,12 @@ namespace CsVerify.Verifier
                     // a non-nullable parameter is a precondition: each caller proves it (an out parameter is not set yet)
                     if (p.RefKind != RefKind.Out && IsNonNullable(p)) _z3.Assume(NotNull(f.Vars[p]));
                 }
+                foreach (var alias in _contract.Aliases) AliasParameters(f, alias, _method.Parameters.Select(p => f.Vars.TryGetValue(p, out var v) ? v : null).ToArray());
                 EnterAlloc(f);
                 EnterOwned(f);
                 _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
+                CheckSubtyping(f, spec);
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
                 EnterFrames(f, spec);
@@ -443,7 +445,8 @@ namespace CsVerify.Verifier
             foreach (var post in _contract.Ensures)
             {
                 var spec = new SpecEnv { Old = _entry, Result = f.Result, ResultParameter = post.ResultParameter };
-                Prove(AsBool(EvalOwnSpec(post.Expr, f, spec)), "CSV1002", at,
+                var goal = AsBool(EvalOwnSpec(post.Expr, f, spec));
+                Prove(GuardedBy(post, _entry, goal), "CSV1002", at,
                     $"postcondition '{post.Syntax}' might not hold on this return path");
             }
         }
@@ -580,6 +583,7 @@ namespace CsVerify.Verifier
             var t = _z3.Fresh(hint, SortOf(type));
             if (IsIntegral(type)) { var (lo, hi) = RangeOf(type); _z3.Assume(T.InRange(t, lo, hi)); }
             if (IsSequence(type)) Len(t);
+            HasType(t, type);
             return t;
         }
 
@@ -766,6 +770,16 @@ namespace CsVerify.Verifier
         {
             var v = Eval(c.Operand, f, spec);
             var from = c.Operand.Type;
+            if (c.IsTryCast && c.Conversion.IsReference && ClassTest(v, c.Type) is Term isInstance)
+                return T.Ite(isInstance, T.Coerce(v, Sort.Int), T.Int(0)); // as: the object, or null
+            if (!c.IsImplicit && c.Conversion.IsReference && from != null && !DataTypes.Derives(from, c.Type) && !Data.IsData(c.Type) &&
+                ClassTest(v, c.Type) is Term instance)
+            {
+                // a downcast throws unless the object is an instance (or null): code that goes on knows it was
+                var ok = T.Or(T.Eq(v, T.Int(0)), instance);
+                if (_codeMode && !ProofCode) _z3.Assume(ok);
+                else Require(ok, "CSV1011", c.Syntax, $"cast '{c.Syntax}' might fail");
+            }
             if (!c.IsImplicit && c.Conversion.IsReference && Data.IsData(c.Type) && from != null && !DataTypes.Derives(from, c.Type))
             {
                 // a downcast to a case: it throws unless the value is one (or null). Code that goes on knows it
@@ -1264,7 +1278,7 @@ namespace CsVerify.Verifier
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
             foreach (var ens in callee.Ensures)
-                _z3.Assume(AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter })));
+                _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }))));
             return result ?? T.True;
         }
 
@@ -1348,9 +1362,49 @@ namespace CsVerify.Verifier
             "(assert (forall ((r (Array Int Int)) (i Int) (v Int) (n Int)) (! (=> (or (< i 0) (<= n i)) (= (cv_bag (store r i v) n) (cv_bag r n))) :pattern ((cv_bag (store r i v) n)))))";
 
         /// <param name="state">the caller's state, whose heap fields the callee's contract reads</param>
+        /// <summary>A base's or contract class's specifications name their own parameters: they stand for these arguments.</summary>
+        private static void AliasParameters(Frame frame, IMethodSymbol alias, Term[] args)
+        {
+            for (int i = 0; i < alias.Parameters.Length && i < args.Length; i++)
+                if (args[i] != null) frame.Vars[alias.Parameters[i]] = args[i];
+        }
+
+        /// <summary>An inherited postcondition is promised only where the base's precondition held on entry.</summary>
+        private Term GuardedBy(Postcondition post, Frame entry, Term goal)
+        {
+            if (post.Guard == null) return goal;
+            var env = new SpecEnv { Old = entry };
+            return T.Implies(T.And(post.Guard.Select(g => AsBool(EvalForeignSpec(g, entry, env))).ToArray()), goal);
+        }
+
+        /// <summary>
+        /// Behavioural subtyping (Liskov): an override or implementation may not require more than a member it
+        /// overrides promises its callers (CSV1018), nor change more than that member's Spec.Modifies allows. Its
+        /// postconditions include every inherited one, checked at each return.
+        /// </summary>
+        private void CheckSubtyping(Frame f, SpecEnv spec)
+        {
+            foreach (var b in _contract.Bases.Where(b => _contract.OwnRequires.Count > 0))
+            {
+                _z3.Push();
+                foreach (var req in b.Requires) _z3.Assume(AsBool(EvalForeignSpec(req, f, spec)));
+                Prove(T.And(_contract.OwnRequires.Select(r => AsBool(EvalForeignSpec(r, f, spec))).ToArray()), "CSV1018", MethodLocationNode(),
+                    $"'{_method.Name}' requires more than {b.Method.ContainingType.Name}.{b.Method.Name}, which it overrides, promises its callers", assume: false);
+                _z3.Pop();
+            }
+            foreach (var (b, frame) in _contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, _contract.Modifies)))
+            {
+                var own = T.Coerce(EvalForeignSpec(_contract.Modifies, f, spec), Sort.Row);
+                var allowed = T.Coerce(EvalForeignSpec(frame, f, spec), Sort.Row);
+                Prove(new Term($"(cv_subset {own} {allowed})", Sort.Bool), "CSV1018", MethodLocationNode(),
+                    $"Spec.Modifies of '{_method.Name}' might not be within that of {b.Method.ContainingType.Name}.{b.Method.Name}, which it overrides", assume: false);
+            }
+        }
+
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)
         {
             var frame = new Frame { This = receiver, Heap = heap };
+            foreach (var alias in callee.Aliases) AliasParameters(frame, alias, args);
             if (state != null)
             {
                 frame.Fields = new Dictionary<ISymbol, Term>(state.Fields, SymbolEqualityComparer.Default);

@@ -126,7 +126,7 @@ namespace CsVerify.Verifier
                 foreach (var c in cases) Eta(c, v);
                 return T.And(NotNull(v), T.Or(cases.Select(c => T.Eq(Tag(v), T.Int(Data.TagOf(c)))).ToArray()));
             }
-            return _z3.Fresh("is", Sort.Bool);
+            return ClassTest(v, matched) ?? _z3.Fresh("is", Sort.Bool);
         }
 
         /// <summary>Does <paramref name="v"/> match the pattern? Its variables are bound in <paramref name="f"/>.</summary>
@@ -266,8 +266,9 @@ namespace CsVerify.Verifier
                         $"precondition '{req.Syntax}' of 'new {type?.Name}' might not hold");
             }
             if (ctor == null || _engine.MayWriteHeap(ctor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
-            var obj = Unknown(oc.Type, "new");
+            var obj = _z3.Fresh("new", Sort.Int);
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
+            HasType(obj, oc.Type, exact: true);
             SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax) : null);
             if (pre != null) AllocAfterCall(f);
             if (pre != null)

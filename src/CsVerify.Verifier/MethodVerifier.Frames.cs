@@ -73,10 +73,10 @@ namespace CsVerify.Verifier
         {
             var (fields, all) = _engine.Fields.WritesOf(callee.Method);
             if (!all && !fields.Any(x => !IsOwnedField(x))) return null;
-            if (callee.Modifies == null || all)
+            if (callee.Modifies == null)
             {
                 if (_modifiesEntry != null && ChecksFrames)
-                    Report("CSV1017", at, $"'{callee.Method.Name}' may write fields but has no Spec.Modifies frame (or is virtual), so this method's Spec.Modifies cannot be checked", isError: true);
+                    Report("CSV1017", at, $"'{callee.Method.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked", isError: true);
                 return null;
             }
             var frame = T.Coerce(EvalForeignSpec(callee.Modifies, pre, new SpecEnv { Old = pre }), Sort.Row);

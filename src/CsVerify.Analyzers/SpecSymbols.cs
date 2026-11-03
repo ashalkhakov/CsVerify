@@ -29,6 +29,12 @@ namespace CsVerify.Analyzers
         public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
         public static bool IsInvariant(ISymbol s) => HasAttribute(s, "InvariantAttribute");
         public static bool IsOwnType(ITypeSymbol type) => IsCsVerifyType(type, "Own`1");
+
+        /// <summary>The interface or abstract class a [ContractClassFor] class gives contracts for; null if it is not one.</summary>
+        public static INamedTypeSymbol ContractClassTarget(ITypeSymbol type) =>
+            type?.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "ContractClassForAttribute" &&
+                                                       a.AttributeClass.ContainingNamespace?.ToDisplayString() == Namespace)
+                ?.ConstructorArguments.FirstOrDefault().Value as INamedTypeSymbol;
         public static bool IsOwnsField(ISymbol field) => field is IFieldSymbol && HasAttribute(field, "OwnsAttribute");
 
         /// <summary>A class marked [Owned], or derived from one.</summary>

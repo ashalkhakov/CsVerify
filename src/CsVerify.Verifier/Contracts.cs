@@ -13,6 +13,11 @@ namespace CsVerify.Verifier
         public IOperation Expr;
         public IParameterSymbol ResultParameter;
         public SyntaxNode Syntax;
+        /// <summary>
+        /// For a postcondition inherited by an override that weakened the precondition: the base's preconditions,
+        /// under which alone the base promised it (evaluated in the entry state).
+        /// </summary>
+        public IReadOnlyList<IOperation> Guard;
     }
 
     /// <summary>A method's contract, read from the Spec.* statements at the top level of its body.</summary>
@@ -21,8 +26,18 @@ namespace CsVerify.Verifier
         public IMethodSymbol Method;
         public SyntaxNode Declaration;
         public SemanticModel Model;
+        /// <summary>The effective precondition: the method's own, or else the one it inherits.</summary>
         public readonly List<IOperation> Requires = new List<IOperation>();
+        /// <summary>The effective postcondition: its own and everything it inherits.</summary>
         public readonly List<Postcondition> Ensures = new List<Postcondition>();
+        /// <summary>The preconditions written on this method itself (or its contract class).</summary>
+        public readonly List<IOperation> OwnRequires = new List<IOperation>();
+        /// <summary>The members it overrides or implements (their effective contracts), which it must honour.</summary>
+        public readonly List<Contract> Bases = new List<Contract>();
+        /// <summary>The frames (Spec.Modifies) of the members it overrides: its own frame must lie within each.</summary>
+        public readonly List<(Contract Base, IOperation Frame)> BaseModifies = new List<(Contract, IOperation)>();
+        /// <summary>Methods whose parameters stand for this one's in the specifications (a contract class's method, bases).</summary>
+        public readonly List<IMethodSymbol> Aliases = new List<IMethodSymbol>();
         /// <summary>The termination measure's components, compared lexicographically; null without Spec.Decreases.</summary>
         public IReadOnlyList<IOperation> Decreases;
         /// <summary>Spec.Modifies: the objects whose fields the method may write (besides those it allocates); null if none given.</summary>
@@ -73,7 +88,7 @@ namespace CsVerify.Verifier
                     var arg = op.Arguments.Length > 0 ? op.Arguments[0].Value : null;
                     switch (op.TargetMethod.Name)
                     {
-                        case "Requires": c.Requires.Add(arg); continue;
+                        case "Requires": c.Requires.Add(arg); c.OwnRequires.Add(arg); continue;
                         case "Decreases": c.Decreases = op.Arguments.Select(a => a.Value).ToList(); continue;
                         case "Ensures": c.Ensures.Add(ReadEnsures(arg, inv)); continue;
                         case "Modifies": c.Modifies = arg; continue;
@@ -85,6 +100,38 @@ namespace CsVerify.Verifier
             if (c.IsPure && !c.IsTrusted && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)
                 c.PureBody = c.Model.GetOperation(ret.Expression);
             return c;
+        }
+
+        /// <summary>
+        /// Adds what a member without a body (interface, abstract) declares in its contract class, and what an override
+        /// or implementation inherits: the base's postconditions always, its precondition when it gives none of its own.
+        /// </summary>
+        internal void Inherit(Contract contractClassMethod, IEnumerable<Contract> bases)
+        {
+            if (contractClassMethod != null)
+            {
+                Requires.AddRange(contractClassMethod.Requires);
+                OwnRequires.AddRange(contractClassMethod.Requires);
+                Ensures.AddRange(contractClassMethod.Ensures);
+                Modifies ??= contractClassMethod.Modifies;
+                Reads ??= contractClassMethod.Reads;
+                Aliases.Add(contractClassMethod.Method);
+            }
+            foreach (var b in bases)
+            {
+                Bases.Add(b);
+                Aliases.Add(b.Method);
+                Aliases.AddRange(b.Aliases);
+                bool weakened = OwnRequires.Count > 0 && b.Requires.Count > 0;
+                foreach (var post in b.Ensures)
+                    Ensures.Add(weakened && post.Guard == null
+                        ? new Postcondition { Expr = post.Expr, ResultParameter = post.ResultParameter, Syntax = post.Syntax, Guard = b.Requires }
+                        : post);
+                if (OwnRequires.Count == 0 && Requires.Count == 0) Requires.AddRange(b.Requires);
+                if (b.Modifies != null) BaseModifies.Add((b, b.Modifies));
+                Modifies ??= b.Modifies;
+                Reads ??= b.Reads;
+            }
         }
 
         private static Postcondition ReadEnsures(IOperation arg, SyntaxNode syntax)

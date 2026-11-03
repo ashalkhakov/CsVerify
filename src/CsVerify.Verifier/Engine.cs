@@ -116,6 +116,8 @@ namespace CsVerify.Verifier
             if (_writesHeap.TryGetValue(key, out var known)) return known;
             var c = ContractOf(key);
             if (c.IsPure || c.IsLemma) return _writesHeap[key] = false;
+            // which override runs is not known: any of them may write arrays
+            if (IsOverridable(key)) return _writesHeap[key] = true;
             if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsSequence(p.Type));
             _writesHeap[key] = false; // assume no for recursive calls while computing
             bool writes = false;
@@ -211,9 +213,53 @@ namespace CsVerify.Verifier
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
-            if (!_contracts.TryGetValue(key, out var c)) _contracts[key] = c = Contract.Read(key, _compilation);
+            if (_contracts.TryGetValue(key, out var c)) return c;
+            _contracts[key] = c = Contract.Read(key, _compilation);
+            // behavioural subtyping: an abstract or interface member's contract comes from its contract class, and
+            // an override or implementation inherits the contracts of what it overrides or implements
+            var spec = ContractClassMethod(key);
+            c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, BaseMembers(key).Select(ContractOf));
             return c;
         }
+
+        private Dictionary<INamedTypeSymbol, INamedTypeSymbol> _contractClasses;
+
+        /// <summary>The [ContractClassFor] class of an interface or abstract class, if any.</summary>
+        internal INamedTypeSymbol ContractClassOf(INamedTypeSymbol type)
+        {
+            if (_contractClasses == null)
+            {
+                _contractClasses = new Dictionary<INamedTypeSymbol, INamedTypeSymbol>(SymbolEqualityComparer.Default);
+                foreach (var t in SourceTypes)
+                    if (SpecSymbols.ContractClassTarget(t) is INamedTypeSymbol target) _contractClasses[target.OriginalDefinition] = t;
+            }
+            return type != null && _contractClasses.TryGetValue(type.OriginalDefinition, out var cc) ? cc : null;
+        }
+
+        /// <summary>The contract-class method that specifies an interface or abstract member.</summary>
+        private IMethodSymbol ContractClassMethod(IMethodSymbol m)
+        {
+            if (!(m.IsAbstract || m.ContainingType?.TypeKind == TypeKind.Interface) || !(ContractClassOf(m.ContainingType) is INamedTypeSymbol cc)) return null;
+            if (m.ContainingType.TypeKind == TypeKind.Interface)
+                return cc.FindImplementationForInterfaceMember(m) as IMethodSymbol;
+            return cc.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(o => SymbolEqualityComparer.Default.Equals(o.OverriddenMethod?.OriginalDefinition, m));
+        }
+
+        /// <summary>The members a method overrides or implements (one level: their own contracts carry the rest).</summary>
+        internal IEnumerable<IMethodSymbol> BaseMembers(IMethodSymbol m)
+        {
+            if (m.IsStatic || m.ContainingType == null || SpecSymbols.ContractClassTarget(m.ContainingType) != null) yield break;
+            if (m.OverriddenMethod != null) yield return m.OverriddenMethod.OriginalDefinition;
+            foreach (var iface in m.ContainingType.AllInterfaces)
+                foreach (var im in iface.GetMembers().OfType<IMethodSymbol>())
+                    if (SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(im)?.OriginalDefinition, m))
+                        yield return im.OriginalDefinition;
+        }
+
+        /// <summary>A member whose body is not known at the call: virtual, abstract, an interface member (not sealed).</summary>
+        internal static bool IsOverridable(IMethodSymbol m) =>
+            (m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
+            !m.IsSealed && m.ContainingType?.IsSealed != true && !m.IsStatic;
 
         public static VerificationResult VerifyFiles(IEnumerable<string> paths, VerifierOptions options) =>
             VerifySources(paths.Select(p => (p, File.ReadAllText(p))), options);
@@ -241,6 +287,7 @@ namespace CsVerify.Verifier
                 {
                     if (decl.Body == null && decl.ExpressionBody == null) continue;
                     if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
+                    if (SpecSymbols.ContractClassTarget(method.ContainingType) != null) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
                     result.Methods.Add(mr);

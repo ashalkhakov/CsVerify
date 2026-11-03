@@ -46,6 +46,7 @@ namespace CsVerify.Verifier
             // what an [Owns] field refers to is in the same ownership tree, and is not its root (it is owned)
             if (f.Root != null && SpecSymbols.IsOwnsField(field))
                 AssumeSide(T.Implies(NotNull(v), T.And(T.Eq(RootOf(f, v), RootOf(f, o)), T.Not(T.Eq(RootOf(f, v), v)))));
+            HasType(v, type);
             // a field of an allocated object refers to an allocated object
             if (f.Alloc != null && MayBeNullType(type))
                 AssumeSide(T.Implies(T.And(InSet(f.Alloc, o), NotNull(v)), InSet(f.Alloc, v)));
@@ -75,6 +76,13 @@ namespace CsVerify.Verifier
             if (fields.Count == 0 && !all) return;
             var owned = all ? _engine.Fields.OwnedFields() : fields.Where(IsOwnedField).ToList();
             var before = f.Clone();
+            if (all && modifiable != null)
+            {
+                // a virtual call with a declared frame: whichever override runs writes only within it
+                fields = new HashSet<ISymbol>(_engine.Fields.AllFields().Where(x => !IsOwnedField(x)), SymbolEqualityComparer.Default);
+                owned = touched == null ? _engine.Fields.OwnedFields() : owned;
+                all = false;
+            }
             if (all) HavocAllFields(f, keepOwned: touched != null);
             foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
                 f.Fields[field] = modifiable != null && !all && !IsOwnedField(field)

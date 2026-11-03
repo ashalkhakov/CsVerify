@@ -58,4 +58,17 @@ namespace CsVerify
     /// </summary>
     [AttributeUsage(AttributeTargets.Field)]
     public sealed class OwnsAttribute : Attribute { }
+
+    /// <summary>
+    /// Marks a class whose methods hold the specifications of an interface's or abstract class's members, which have
+    /// no body to write them in (the .NET Code Contracts pattern): the class implements the interface (or derives
+    /// from the abstract class), and each method's leading Spec.Requires/Ensures/Modifies/Reads statements are that
+    /// member's contract. Its bodies are never run or verified; the erasure pass removes the class.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class ContractClassForAttribute : Attribute
+    {
+        public ContractClassForAttribute(Type type) { Type = type; }
+        public Type Type { get; }
+    }
 }
