@@ -37,13 +37,24 @@ namespace CsVerify.Verifier
             return map;
         }
 
+        /// <summary>The statics object, whose fields are the static fields (<see cref="FieldEffects.IsStaticField"/>).</summary>
+        private static Term Statics => T.Int(0);
+
         private Term ReadField(ISymbol field, IOperation instance, ITypeSymbol type, SyntaxNode at, Frame f, SpecEnv spec)
         {
+            if (FieldEffects.IsStaticField(field))
+            {
+                var sv = T.Select(FieldMap(f, field), Statics, ValueSort(field));
+                AssumeNonNullRead(field, null, sv);
+                HasType(sv, type);
+                return ValueSort(field) == Sort.Row ? sv : InRangeOf(T.Coerce(sv, SortOf(type)), type);
+            }
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
             CheckRead(field, o, at);
             CheckFraming(o, field, f, at);
             var v = T.Select(FieldMap(f, field), o, ValueSort(field));
+            AssumeNonNullRead(field, instance, v);
             // what an [Owns] field refers to is in the same ownership tree, and is not its root (it is owned)
             if (f.Root != null && SpecSymbols.IsOwnsField(field))
                 AssumeSide(T.Implies(NotNull(v), T.And(T.Eq(RootOf(f, v), RootOf(f, o)), T.Not(T.Eq(RootOf(f, v), v)))));
@@ -57,9 +68,14 @@ namespace CsVerify.Verifier
 
         private void WriteField(ISymbol field, IOperation instance, Term v, SyntaxNode at, Frame f, SpecEnv spec)
         {
-            var o = Eval(instance, f, spec);
-            Deref(instance, o, at);
-            RequireWritePermission(field, o, f, at);
+            bool isStatic = FieldEffects.IsStaticField(field);
+            var o = isStatic ? Statics : Eval(instance, f, spec);
+            if (!isStatic)
+            {
+                Deref(instance, o, at);
+                RequireWritePermission(field, o, f, at);
+            }
+            CheckNonNullWrite(field, v, at);
             var before = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), o, T.Coerce(v, ValueSort(field)));
             f.Link = new StateLink { Before = before, Changed = T.Store(T.ZeroRow(), o, T.Int(1)) };
@@ -140,7 +156,7 @@ namespace CsVerify.Verifier
             }
             if (all) HavocAllFields(f, keepOwned: touched != null);
             foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
-                f.Fields[field] = modifiable != null && !all && !IsOwnedField(field)
+                f.Fields[field] = modifiable != null && !all && !IsOwnedField(field) && !field.IsStatic
                     ? new Term($"({(MapSort(field) == Sort.Heap ? "cv_frameh" : "cv_frame")} {modifiable} {FieldMap(before, field)} {FreshMap(field)})", MapSort(field))
                     : FreshMap(field);
             // owned fields change at the objects whose views moved, which the link does not describe
@@ -153,6 +169,7 @@ namespace CsVerify.Verifier
             {
                 var parts = new List<string>();
                 if (modifiable != null) parts.Add($"(distinct (select {modifiable} y) 0)");
+                if (fields.Any(x => x.IsStatic)) parts.Add($"(= y {Statics})"); // (the statics object)
                 if (owned.Count > 0 && touched != null)
                 {
                     foreach (var t in touched) parts.Add(before.Root != null ? $"(= (select {before.Root} y) {t})" : $"(= y {t})");
@@ -282,6 +299,7 @@ namespace CsVerify.Verifier
         {
             foreach (var field in FieldEffects.FieldsOf(ctor.ContainingType))
                 f.Fields[field] = T.Store(FieldMap(f, field), obj, _z3.Fresh(field.Name, ValueSort(field)));
+            AssumeChainedSetFields(f, ctor, obj);
             f.Link = null;
         }
 
@@ -308,7 +326,8 @@ namespace CsVerify.Verifier
             bool chains = ctor != null && ChainedInitializer(ctor, _model) != null;
             foreach (var field in FieldEffects.FieldsOf(type))
             {
-                bool unknown = chains || set.Contains(field) || HasInitializer(field) || !DeclaredIn(field, type);
+                // (a non-null field is set somewhere: by the constructor, possibly through a callee, or the initializer)
+                bool unknown = chains || set.Contains(field) || HasInitializer(field) || !DeclaredIn(field, type) || IsNonNullField(field);
                 var value = unknown ? _z3.Fresh(field.Name, ValueSort(field)) : DefaultValue(field);
                 f.Fields[field] = T.Store(FieldMap(f, field), obj, value);
             }

@@ -31,11 +31,15 @@ namespace CsVerify.Verifier
 
         public FieldEffects(Engine engine) { _engine = engine; }
 
-        /// <summary>A member stored as mutable object state: an instance field or auto-property of a source class.</summary>
+        /// <summary>
+        /// A member stored as mutable object state: an instance field or auto-property of a source class, or a mutable
+        /// static field of one (the field of a single object, <see cref="IsStaticField"/>).
+        /// </summary>
         public static bool IsHeapField(ISymbol s)
         {
-            if (s == null || s.IsStatic || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class) return false;
+            if (s == null || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class) return false;
             if (t.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || s.DeclaringSyntaxReferences.Length == 0) return false;
+            if (s.IsStatic) return s is IFieldSymbol sf && !sf.IsConst && !sf.IsReadOnly && !sf.IsImplicitlyDeclared;
             switch (s)
             {
                 case IFieldSymbol f:
@@ -49,6 +53,12 @@ namespace CsVerify.Verifier
                     return false;
             }
         }
+
+        /// <summary>
+        /// A mutable static field: a heap field of the statics object, the null reference (no object is null, so it
+        /// aliases none). It needs no permission; a call changes it if the callee (or anything it reaches) writes it.
+        /// </summary>
+        public static bool IsStaticField(ISymbol s) => s.IsStatic && IsHeapField(s);
 
         public static ISymbol Key(ISymbol s) => s.OriginalDefinition;
 
@@ -75,7 +85,7 @@ namespace CsVerify.Verifier
 
         /// <summary>Every heap field of an [Owned] class in the sources.</summary>
         public IReadOnlyList<ISymbol> OwnedFields() => _owned ??= _engine.SourceTypes
-            .Where(SpecSymbols.IsOwned).SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key)
+            .Where(SpecSymbols.IsOwned).SelectMany(t => t.GetMembers()).Where(m => !m.IsStatic && IsHeapField(m)).Select(Key)
             .Distinct(SymbolEqualityComparer.Default).ToList();
 
         /// <summary>The heap fields of a class and its source base classes.</summary>
@@ -83,28 +93,41 @@ namespace CsVerify.Verifier
         {
             for (var t = (type as INamedTypeSymbol)?.OriginalDefinition; t != null; t = t.BaseType?.OriginalDefinition)
                 foreach (var m in t.GetMembers())
-                    if (IsHeapField(m)) yield return Key(m);
+                    if (!m.IsStatic && IsHeapField(m)) yield return Key(m);
+        }
+
+        /// <summary>
+        /// A method as effects are keyed: a source method by its definition, a library method as called (what a
+        /// generic one may do depends on its type arguments).
+        /// </summary>
+        private IMethodSymbol Normal(IMethodSymbol m)
+        {
+            m = m.ReducedFrom ?? m;
+            return m.DeclaringSyntaxReferences.Length > 0 || m.OriginalDefinition.DeclaringSyntaxReferences.Length > 0 ? m.OriginalDefinition : m;
         }
 
         private Direct DirectOf(IMethodSymbol m)
         {
-            m = (m.ReducedFrom ?? m).OriginalDefinition;
+            m = Normal(m);
             if (_direct.TryGetValue(m, out var d)) return d;
             _direct[m] = d = new Direct();
             // which body a virtual or interface call runs is not known statically: anything may be written
             if ((m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
                 !m.IsSealed && m.ContainingType?.IsSealed != true && !m.IsStatic)
                 d.All = true;
+            // a data value's constructor builds a value: it changes no state (its header's computed base arguments are pure)
+            if (m.MethodKind == MethodKind.Constructor && _engine.Data.IsData(m.ContainingType)) return d;
             // a source class's implicit constructor only sets the new object's fields (defaults, initializers)
             if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0) return d;
             // a virtual member may run any override: they are all reachable from it
             if (Engine.IsOverridable(m))
                 foreach (var o in Overrides(m)) d.Callees.Add(o);
-            var c = _engine.ContractOf(m);
+            var c = _engine.ContractOf(m.OriginalDefinition);
             if (!c.HasSource)
             {
-                // a library method cannot name user fields; it can reach them only through what it is handed
-                d.All = m.Parameters.Any(p => HandsOver(p.Type)) || (!m.IsStatic && HandsOver(m.ContainingType) && m.ContainingType.DeclaringSyntaxReferences.Length > 0);
+                // a library method cannot name user fields; it can reach them only by running user code it is handed
+                // (its receiver included: a delegate's Invoke)
+                d.All = RunsUserCode(m);
                 return d;
             }
             bool ctor = m.MethodKind == MethodKind.Constructor;
@@ -158,13 +181,41 @@ namespace CsVerify.Verifier
             return found;
         }
 
-        private static bool HandsOver(ITypeSymbol t) =>
-            t != null && (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object ||
-                          t.TypeKind == TypeKind.TypeParameter || t.TypeKind == TypeKind.Class && t.DeclaringSyntaxReferences.Length > 0);
+        /// <summary>
+        /// May a call of this library method run user code: is it handed (as an argument, its receiver, or a type
+        /// argument) a value through which it can (a delegate's Invoke, a key's Equals)?
+        /// </summary>
+        public bool RunsUserCode(IMethodSymbol m) =>
+            m.Parameters.Any(p => HandsOver(p.Type)) ||
+            (!m.IsStatic && HandsOver(m.ContainingType) && !(m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object)) ||
+            m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
 
-        private static void AddCallee(Direct d, IMethodSymbol callee)
+        /// <summary>
+        /// Can a library method run user code through a value of this type: a delegate, an object of unknown class, or
+        /// an object of a source class that overrides something (Equals, GetHashCode, ToString) or implements an
+        /// interface (IComparable), or of a library class that a source class derives from?
+        /// </summary>
+        private bool HandsOver(ITypeSymbol t)
         {
-            d.Callees.Add((callee.ReducedFrom ?? callee).OriginalDefinition);
+            switch (t)
+            {
+                case null: return false;
+                case IArrayTypeSymbol a: return HandsOver(a.ElementType);
+                case ITypeParameterSymbol _: return true;
+            }
+            if (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object) return true;
+            if (t.TypeKind != TypeKind.Class) return t is INamedTypeSymbol v && v.TypeArguments.Any(HandsOver); // a struct holding them
+            return _engine.SourceTypes.Any(s => DataTypes.Derives(s, t) && RunsUserCode(s)) || ((INamedTypeSymbol)t).TypeArguments.Any(HandsOver);
+        }
+
+        /// <summary>Code a library could run on an object of this source class: an override, or an interface it implements.</summary>
+        private static bool RunsUserCode(INamedTypeSymbol s) =>
+            s.AllInterfaces.Length > 0 || s.GetMembers().Any(m => m.IsOverride) || s.IsRecord ||
+            s.BaseType != null && s.BaseType.SpecialType != SpecialType.System_Object && s.BaseType.DeclaringSyntaxReferences.Length == 0;
+
+        private void AddCallee(Direct d, IMethodSymbol callee)
+        {
+            d.Callees.Add(Normal(callee));
         }
 
         /// <summary>Is the access read, written, or both (<c>o.F += 1</c>, <c>o.F++</c>, <c>ref o.F</c>)?</summary>
@@ -192,7 +243,7 @@ namespace CsVerify.Verifier
         {
             var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             var work = new Stack<IMethodSymbol>();
-            work.Push((m.ReducedFrom ?? m).OriginalDefinition);
+            work.Push(Normal(m));
             while (work.Count > 0)
             {
                 var next = work.Pop();

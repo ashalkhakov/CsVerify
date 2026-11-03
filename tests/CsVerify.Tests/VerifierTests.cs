@@ -272,6 +272,18 @@ namespace CsVerify.Tests
             "[Lemma, Conditional(\"CSVERIFY_SPEC\")] static void TriFormula(int n) { Spec.Requires(n >= 0); Spec.Ensures(2 * Tri(n) == n * (n + 1)); Spec.Decreases(n); if (n > 0) TriFormula(n - 1); } ";
 
         [Fact]
+        public void PureFunction_WithStatements_IsDefined()
+        {
+            // ifs, returns and local declarations define the function as well as a single expression does
+            const string clamp = "[Pure] static int Clamp(int x, int lo) { int m = lo; if (x < m) return m; if (x > 100) { return 100; } return x; } ";
+            Assert.Empty(Errors("M", clamp + "static void M() { Spec.Assert(Clamp(-5, 0) == 0 && Clamp(7, 0) == 7 && Clamp(500, 0) == 100); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", clamp + "static void M() { Spec.Assert(Clamp(7, 0) == 8); }"));
+            // a body with anything else (here a loop) gives no definition: the function is known by its contract only
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "[Pure] static int Z(int n) { int k = 0; while (k < n) { Spec.Invariant(k <= n || n < 0); k++; } return 0; } " +
+                "static void M() { Spec.Assert(Z(3) == 0); }"));
+        }
+
+        [Fact]
         public void Lemma_ProvedByInduction() => Assert.Empty(Errors("TriFormula", Tri));
 
         [Fact]
@@ -512,10 +524,27 @@ namespace CsVerify.Tests
         [Fact]
         public void UnmodeledState_FailsVerification()
         {
-            // a library type's computed property: its value may change in ways the verifier does not track
-            // (fields of source classes are modeled: see HeapTests)
-            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(System.Collections.Generic.List<int> l) => l.Count; }").Errors("M"));
+            // a library type's computed property: its value may change in ways the verifier does not track, so each
+            // read in code is a value of its own (fields of source classes are modeled: see HeapTests), and a
+            // specification cannot mention it
+            const string list = "System.Collections.Generic.List<int>";
+            Assert.Empty(Harness.Verify("public static class C { public static int M(" + list + " l) => l.Count; }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify("public static class C { public static void M(" + list + " l) { int a = l.Count, b = l.Count; Spec.Assert(a == b); } }").Errors("M"));
+            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(" + list + " l) { Spec.Ensures((int r) => r == l.Count); return l.Count; } }").Errors("M"));
+            // as the library declares it: Console.Out is not null
+            Assert.Empty(Harness.Verify("public static class C { public static void M() { System.Console.Out.Write(1); } }").Errors("M"));
             Assert.Empty(Harness.Verify("public class C { public int P { get; } public int M() => P; }").Errors("M"));
+        }
+
+        [Fact]
+        public void AssignmentsOfInitializedObjects_AreWritten()
+        {
+            // the flow graph captures the target of x = new C { ... } before the value: the write must still happen
+            const string sym = "public sealed class Sym { public int K; public Sym? Next; } ";
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(sym + "public static class C { static void M() { Sym? s = null; s = new Sym { K = 1 }; Spec.Assert(s == null); } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(sym + "public static class C { static void M(Sym c) { var old = c.Next; c.Next = new Sym { K = 1 }; Spec.Assert(c.Next == old); } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(sym + "public static class C { static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 5; a[0] = new Sym { K = 1 }.K; Spec.Assert(a[0] == 5); } }").Errors("M"));
+            Assert.Empty(Harness.Verify(sym + "public static class C { static int M(Sym? s) { if (s == null) s = new Sym { K = 1 }; return s.K; } }").Errors("M"));
         }
 
         [Fact]
@@ -675,6 +704,59 @@ namespace CsVerify.Tests
             const string ens = "static int[]? M(int n) { Spec.Requires(n >= 0); Spec.Ensures((int[]? r) => r.Length == n); return RET; }";
             Assert.Empty(Errors("M", ens.Replace("RET", "new int[n]")));
             Assert.Equal(new[] { "CSV1002", "CSV1012" }, Errors("M", ens.Replace("RET", "null")));
+        }
+
+        [Fact]
+        public void NonNullableFields_AreNeverNullOnceBuilt()
+        {
+            static string[] Of(string method, string source) => Harness.Verify(source).Errors(method);
+            // writes prove it, reads assume it
+            const string node = "public sealed class Node { public string Name; public Node? Next; public Node(string n) { Name = n; } } ";
+            Assert.Empty(Of("Node..ctor", node));
+            Assert.Empty(Of("M", node + "public static class C { static int M(Node n) => n.Name.Length; }"));
+            Assert.Equal(new[] { "CSV1013" }, Of("M", node + "public static class C { static Node? M(Node n) => n.Next.Next; }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("M", node + "public static class C { static void M(Node n, string? s) { n.Name = s!; } }"));
+            Assert.Empty(Of("M", node + "public static class C { static void M(Node n, string? s) { if (s != null) n.Name = s; } }"));
+            // a constructor must set them
+            Assert.Equal(new[] { "CSV1014" }, Of("Node..ctor", "public sealed class Node { public string Name; public Node(bool b) { if (b) Name = \"x\"; } }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("Node..ctor", "public sealed class Node { public string Name = null!; public Node() { } }"));
+            Assert.Empty(Of("Node..ctor", "public sealed class Node { public string Name = \"\"; public Node() { } }"));
+            // ... except required ones, which every object initializer sets
+            const string req = "public sealed class R { public required string Name; public int K; } ";
+            Assert.Empty(Of("M", req + "public static class C { static int M() { var r = new R { Name = \"ab\" }; return r.Name.Length; } }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("M", req + "public static class C { static R M(string? s) => new R { Name = s! }; }"));
+            // and this may not escape before they are set
+            Assert.Equal(new[] { "CSV1015" }, Of("Node..ctor", "public sealed class Node { public string Name; public Node() { C.Use(this); Name = \"\"; } } " +
+                "public static class C { public static int Use(Node n) => n.Name.Length; }"));
+            // a static field starting with an object stays one
+            const string st = "public static class S { public static string Text = \"\"; public static string? Maybe; ";
+            Assert.Empty(Of("M", st + "static int M() => Text.Length; }"));
+            Assert.Equal(new[] { "CSV1013" }, Of("M", st + "static int M() => Maybe.Length; }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("M", st + "static void M() { Text = Maybe!; } }"));
+        }
+
+        [Fact]
+        public void NonNullableLocals_StayNotNullThroughLoops()
+        {
+            const string node = "public sealed class Node { public Node? Next; } ";
+            Assert.Empty(Harness.Verify(node + "public static class C { static Node M(Node n) { Node p = n; while (p.Next != null) p = p.Next; return p; } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1014" }, Harness.Verify(node + "public static class C { static void M(Node n) { Node p = n; p = n.Next!; } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1013" }, Harness.Verify(node + "public static class C { static int M(Node n) { var p = n.Next; while (p != null) p = p.Next; return p.GetHashCode(); } }").Errors("M"));
+        }
+
+        [Fact]
+        public void LibraryNullness_IsKnown()
+        {
+            // a concatenation is never null; a static readonly field made with an object is not; TryGetValue's out
+            // value is not null when it returns true
+            Assert.Empty(Errors("M", "static int M(string a) => (a + \"x\").Length;"));
+            Assert.Empty(Errors("M", "static readonly int[] T = new int[4]; static int M() => T.Length;"));
+            Assert.Empty(Errors("M", "static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? s.Length : 0;"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? 0 : s.Length;"));
+            // a method group made a delegate is not null; a list of strings holds strings
+            Assert.Empty(Errors("M", "static int Cmp(int a, int b) => 0; static void M(int[] a) { System.Array.Sort(a, Cmp); }"));
+            Assert.Empty(Errors("M", "static int M(System.Collections.Generic.List<string> l) { Spec.Requires(l != null); return l.Count > 0 ? l[0].Length : 0; }"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(System.Collections.Generic.List<string?> l) => l.Count > 0 ? l[0].Length : 0;"));
         }
 
         [Fact]

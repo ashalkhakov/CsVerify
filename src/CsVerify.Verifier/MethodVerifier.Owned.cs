@@ -42,7 +42,7 @@ namespace CsVerify.Verifier
             if (f.Root != null) _z3.Assume(T.Eq(RootOf(f, o), o));
         }
 
-        private static bool IsOwnedField(ISymbol field) => FieldEffects.IsHeapField(field) && SpecSymbols.IsOwned(field.ContainingType);
+        private static bool IsOwnedField(ISymbol field) => !field.IsStatic && FieldEffects.IsHeapField(field) && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>Inside a (non-[Pure]) instance method of an owned class, <c>this</c> is held like a <c>ref</c> view.</summary>
         private bool ThisIsView => !_method.IsStatic && SpecSymbols.IsOwned(_method.ContainingType) && !_contract.IsPure;

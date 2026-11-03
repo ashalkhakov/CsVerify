@@ -23,6 +23,7 @@ options:
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
   --smt-log <file>    write the SMT-LIB2 conversation with Z3
+  --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
   -v                  list every method with its proved obligations
   -h, --help          this text
 
@@ -51,6 +52,7 @@ options:
                         case "-d": options.Defines.Add(args[++i]); break;
                         case "-r": options.References.Add(args[++i]); break;
                         case "--smt-log": smtLog = args[++i]; options.SmtLog = new System.Text.StringBuilder(); break;
+                        case "--only": options.Only.Add(args[++i]); break;
                         case "-v": verbose = true; break;
                         case "-h": case "--help": Console.WriteLine(Usage); return 0;
                         default:

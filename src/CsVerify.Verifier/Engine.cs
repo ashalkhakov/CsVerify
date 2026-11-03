@@ -27,6 +27,9 @@ namespace CsVerify.Verifier
         public NullableContextOptions Nullable = NullableContextOptions.Enable;
         public int TimeoutMs = 10000;
         public int MaxPaths = 5000;
+        /// <summary>Verify only the methods whose name (Type.Method) contains one of these; all, if empty.</summary>
+        public List<string> Only = new List<string>();
+        internal bool Selects(string method) => Only.Count == 0 || Only.Any(o => method.Contains(o, StringComparison.Ordinal));
         public string Z3Path;
         public List<string> Defines = new List<string>();
         public List<string> References = new List<string>();
@@ -135,15 +138,18 @@ namespace CsVerify.Verifier
         internal bool MayWriteHeap(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
+            // a library method as called: what a generic one may do depends on its type arguments
+            if (key.DeclaringSyntaxReferences.Length == 0) key = m.ReducedFrom ?? m;
             if (_writesHeap.TryGetValue(key, out var known)) return known;
-            var c = ContractOf(key);
+            var c = ContractOf(key.OriginalDefinition);
             if (c.IsPure || c.IsLemma) return _writesHeap[key] = false;
             // Mem and Ptr change only Mem's memory, whose cells change by their own rule (MethodVerifier.KeepHeldMemory)
             if (SpecSymbols.IsCsVerifyType(key.ContainingType, "Mem") || SpecSymbols.IsCsVerifyType(key.ContainingType, "Ptr`1"))
                 return _writesHeap[key] = false;
             // which override runs is not known: any of them may write arrays
             if (IsOverridable(key)) return _writesHeap[key] = true;
-            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsSequence(p.Type));
+            // a library method: through arrays (or spans) it is handed, not strings, or user code it runs (a delegate writing arrays it captured)
+            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsWritableSequence(p.Type)) || Fields.RunsUserCode(key);
             _writesHeap[key] = false; // assume no for recursive calls while computing
             bool writes = false;
             foreach (var n in c.Declaration.DescendantNodes())
@@ -151,8 +157,11 @@ namespace CsVerify.Verifier
                 ExpressionSyntax target = n switch
                 {
                     AssignmentExpressionSyntax a => a.Left,
-                    PrefixUnaryExpressionSyntax pre => pre.Operand,
-                    PostfixUnaryExpressionSyntax post => post.Operand,
+                    // (only ++ and --: !a[i], -a[i] and a[i]! read)
+                    PrefixUnaryExpressionSyntax pre when pre.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreIncrementExpression) ||
+                                                         pre.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreDecrementExpression) => pre.Operand,
+                    PostfixUnaryExpressionSyntax post when post.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PostIncrementExpression) ||
+                                                           post.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PostDecrementExpression) => post.Operand,
                     ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) => arg.Expression,
                     _ => null,
                 };
@@ -329,6 +338,7 @@ namespace CsVerify.Verifier
                     if (SpecSymbols.ContractClassTarget(method.ContainingType) != null) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
+                    if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
                     engine.Solver.Reset();
@@ -358,6 +368,7 @@ namespace CsVerify.Verifier
                     if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.ContractClassTarget(accessor.ContainingType) != null ||
                         accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
                     var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name };
+                    if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
                     engine.Solver.Reset();

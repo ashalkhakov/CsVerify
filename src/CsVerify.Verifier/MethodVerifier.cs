@@ -292,7 +292,7 @@ namespace CsVerify.Verifier
                 {
                     case AssignmentExpressionSyntax asg: Target(asg.Left); break;
                     case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression) || pre.IsKind(SyntaxKind.PreDecrementExpression): Target(pre.Operand); break;
-                    case PostfixUnaryExpressionSyntax post: Target(post.Operand); break;
+                    case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression): Target(post.Operand); break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
                     case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
                         if (HavocsHeap(m)) loop.HavocHeap = true;
@@ -447,6 +447,7 @@ namespace CsVerify.Verifier
                 bool liveView = IsMemView(TypeOf(s)) && f.LiveMemViews.Contains(s);
                 if (liveView) ReleaseMemView(f, s);
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
+                if (IsNonNullVariable(s)) _z3.Assume(NotNull(f.Vars[s])); // (every write proves it)
                 if (liveView) MemViewAlive(f, s, f.Vars[s]);
             }
             if (loop.HavocAllFields) HavocAllFields(f);
@@ -488,6 +489,7 @@ namespace CsVerify.Verifier
             var at = f.ReturnSyntax ?? MethodLocationNode();
             ExitOwned(f, at);
             ProveImmutableInvariants(f, at);
+            ProveConstructorSetFields(f, at);
             // a non-nullable return type or out/ref parameter is a postcondition the callers assume
             if (f.Result != null && IsNonNullableReturn(_method))
                 Prove(NotNull(f.Result), "CSV1014", at, $"'{_method.Name}' might return null, but its return type '{_method.ReturnType}' is not nullable");
@@ -639,6 +641,14 @@ namespace CsVerify.Verifier
             t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String ||
             (t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>"));
 
+        /// <summary>
+        /// A sequence whose elements a holder can change: an array (System.Array too) or a span, not a string or a
+        /// read-only span.
+        /// </summary>
+        internal static bool IsWritableSequence(ITypeSymbol t) =>
+            t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_Array ||
+            t is INamedTypeSymbol n && n.OriginalDefinition.ToDisplayString() == "System.Span<T>";
+
         private static ITypeSymbol TypeOf(ISymbol s) => s is ILocalSymbol l ? l.Type : ((IParameterSymbol)s).Type;
 
         private Term FreshOf(ITypeSymbol type, string hint)
@@ -712,7 +722,9 @@ namespace CsVerify.Verifier
                     return Read(f, p.Parameter);
                 case IInstanceReferenceOperation _: return f.This ?? (f.This = _z3.Fresh("this", Sort.Int));
                 case IFlowCaptureReferenceOperation r: return f.Captures.TryGetValue(r.Id, out var cv) ? cv : Unknown(r.Type, "capture");
-                case IFlowCaptureOperation fc: return f.Captures[fc.Id] = Eval(fc.Value, f, spec);
+                case IFlowCaptureOperation fc:
+                    _captured[fc.Id] = fc.Value;
+                    return f.Captures[fc.Id] = Eval(fc.Value, f, spec);
                 case IBinaryOperation b: return EvalBinary(b, f, spec);
                 case IUnaryOperation u: return EvalUnary(u, f, spec);
                 case ICaughtExceptionOperation _: return f.Exception ?? Unknown(op.Type, "exception");
@@ -771,7 +783,7 @@ namespace CsVerify.Verifier
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
-                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
+                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && (hf.Instance != null || hf.Field.IsStatic):
                     return ReadField(hf.Field, hf.Instance, hf.Type, hf.Syntax, f, spec);
                 case IFieldReferenceOperation fr when fr.Field.ContainingType?.IsTupleType == true && fr.Instance != null:
                     return T.Coerce(TupleItem(Eval(fr.Instance, f, spec), fr.Field), SortOf(fr.Type));
@@ -790,7 +802,9 @@ namespace CsVerify.Verifier
                     if (fr.Instance != null) Deref(fr.Instance, args[0], fr.Syntax);
                     if (!fr.Field.IsReadOnly && !fr.Field.IsConst)
                         NotModeled(fr.Syntax, $"mutable field '{fr.Field.Name}' is not supported (its writes are not tracked)");
-                    return T.Coerce(_z3.Apply(fr.Field.OriginalDefinition.ToDisplayString(), SortOf(fr.Field.OriginalDefinition.Type), args), SortOf(fr.Type));
+                    var fv = T.Coerce(_z3.Apply(fr.Field.OriginalDefinition.ToDisplayString(), SortOf(fr.Field.OriginalDefinition.Type), args), SortOf(fr.Type));
+                    if (IsNonNullReadonlyStatic(fr.Field)) AssumeSide(NotNull(fv));
+                    return fv;
                 }
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
@@ -830,7 +844,11 @@ namespace CsVerify.Verifier
                 case IFlowAnonymousFunctionOperation _:
                 case IDelegateCreationOperation _:
                 case IAnonymousFunctionOperation _:
-                    return _z3.Fresh("delegate", Sort.Int);
+                {
+                    var d = _z3.Fresh("delegate", Sort.Int);
+                    AssumeSide(NotNull(d)); // a lambda, or a method group made a delegate, is never null
+                    return d;
+                }
                 case ILiteralOperation _:
                     return Unknown(op.Type, "literal");
                 default:
@@ -1029,7 +1047,10 @@ namespace CsVerify.Verifier
                     if (kind == BinaryOperatorKind.ExclusiveOr) return T.Xor(l, r);
                 }
                 if (_codeMode) Warn(at, $"operator on {type?.Name ?? "?"} is not modeled; result is unknown");
-                return Unknown(type);
+                var unknown = Unknown(type);
+                if (!userDefined && type?.SpecialType == SpecialType.System_String && kind == BinaryOperatorKind.Add)
+                    AssumeSide(NotNull(unknown)); // a concatenation is never null
+                return unknown;
             }
             Term v;
             switch (kind)
@@ -1098,25 +1119,34 @@ namespace CsVerify.Verifier
             Require(T.And(T.Le(T.Int(0), idx), T.Lt(idx, len)), "CSV1003", at, $"index in '{at}' might be out of range");
         }
 
+        /// <summary>What each flow capture captured (the flow graph is the method's, so one map serves every path).</summary>
+        private readonly Dictionary<CaptureId, IOperation> _captured = new Dictionary<CaptureId, IOperation>();
+
+        private static bool IsVariableReference(IOperation op) =>
+            op is ILocalReferenceOperation || op is IParameterReferenceOperation || op is IFieldReferenceOperation ||
+            op is IPropertyReferenceOperation || op is IArrayElementReferenceOperation;
+
         private void Write(IOperation target, Term v, Frame f, SpecEnv spec)
         {
             switch (target)
             {
                 case ILocalReferenceOperation l:
                     if (l.Local.RefKind != RefKind.None) NotModeled(l.Syntax, $"ref local '{l.Local.Name}' is not supported (it may alias the heap)");
+                    CheckNonNullVariable(l.Local, v, l.Syntax.Parent ?? l.Syntax);
                     f.Vars[l.Local] = v;
                     if (IsViewVariable(l.Local)) ViewAlive(l.Local, v, f);
                     if (SpecSymbols.IsLinearPackage(l.Local.Type)) f.LivePackages.Add(l.Local);
                     if (IsMemView(l.Local.Type)) MemViewAlive(f, l.Local, v);
                     break;
                 case IParameterReferenceOperation p:
+                    CheckNonNullVariable(p.Parameter, v, p.Syntax.Parent ?? p.Syntax);
                     f.Vars[p.Parameter] = v;
                     if (IsViewVariable(p.Parameter) && p.Parameter.RefKind != RefKind.In) ViewAlive(p.Parameter, v, f);
                     if (SpecSymbols.IsLinearPackage(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) f.LivePackages.Add(p.Parameter);
                     if (IsMemView(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) MemViewAlive(f, p.Parameter, v);
                     break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
-                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
+                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && (hf.Instance != null || hf.Field.IsStatic):
                     WriteField(hf.Field, hf.Instance, v, hf.Syntax, f, spec);
                     break;
                 case IPropertyReferenceOperation hp when FieldEffects.IsHeapField(hp.Property) && hp.Instance != null:
@@ -1135,6 +1165,11 @@ namespace CsVerify.Verifier
                 case IPropertyReferenceOperation ps when IsComputed(ps.Property.SetMethod):
                     CallAccessor(ps.Property.SetMethod, ps.Instance, ps.Arguments.Select(a => a.Value), v, null, ps.Syntax, f, spec);
                     break;
+                case IPropertyReferenceOperation ls when _codeMode && ls.Property.SetMethod != null && ls.Property.DeclaringSyntaxReferences.Length == 0 &&
+                                                        ls.Property.ContainingType.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace && !IsSequence(ls.Instance?.Type):
+                    // a library setter (a dictionary's indexer): a call of a library method
+                    CallAccessor(ls.Property.SetMethod, ls.Instance, ls.Arguments.Select(a => a.Value), v, null, ls.Syntax, f, spec);
+                    break;
                 case IPropertyReferenceOperation pr when pr.Property.IsIndexer && IsSequence(pr.Instance?.Type) && pr.Arguments.Length == 1:
                 {
                     var arr = Eval(pr.Instance, f, spec);
@@ -1152,6 +1187,10 @@ namespace CsVerify.Verifier
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
                 }
+                case IFlowCaptureReferenceOperation r when _captured.TryGetValue(r.Id, out var captured) && IsVariableReference(captured):
+                    // the flow graph captures an assignment's target before its value (x = new C { ... }): write the target
+                    Write(captured, v, f, spec);
+                    break;
                 case IFlowCaptureReferenceOperation _:
                 case IDiscardOperation _:
                     break;
@@ -1198,6 +1237,18 @@ namespace CsVerify.Verifier
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
             if (IsComputed(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
+            if (!IsStableProperty(prop) && _codeMode && prop.DeclaringSyntaxReferences.Length == 0)
+            {
+                // a library property that may change (Console.Out, a list's Count): each read in code is a value of its own
+                if (pr.Instance != null) Deref(pr.Instance, Eval(pr.Instance, f, spec), pr.Syntax);
+                foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
+                Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
+                var lv = Unknown(pr.Type, prop.Name);
+                // as the library declares it, a type parameter as instantiated (a List<string>'s items are strings)
+                if (IsNonNullableType(prop.OriginalDefinition.Type) ||
+                    prop.OriginalDefinition.Type is ITypeParameterSymbol && IsNonNullableType(prop.Type)) AssumeSide(NotNull(lv));
+                return lv;
+            }
             if (!IsStableProperty(prop))
                 NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only auto-properties, properties with code, and properties of immutable types are");
             var args = new List<Term>();
@@ -1244,6 +1295,12 @@ namespace CsVerify.Verifier
             // A new array is distinct from every array the method can already see.
             foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
                 _z3.Assume(T.Not(T.Eq(r, t)));
+            // and from every array a field holds (no field can hold it yet)
+            foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
+            {
+                var map = FieldMap(f, field);
+                _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
+            }
             var row = T.ZeroRow();
             if (ac.Initializer != null)
                 for (int i = 0; i < ac.Initializer.ElementValues.Length; i++)
@@ -1357,10 +1414,16 @@ namespace CsVerify.Verifier
                 var libraryMemory = f.Heap;
                 var libraryHeld = f.ArrPerm;
                 DeferTies();
+                var whenNotNull = new List<(Term value, bool when)>();
                 foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
                 {
                     var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
                     if (IsNonNullable(a.Parameter.OriginalDefinition)) _z3.Assume(NotNull(nv));
+                    // [MaybeNullWhen(false)] out TValue value, with TValue a non-nullable type: not null when it returns true
+                    else if (IsNonNullableType(a.Parameter.Type) && a.Parameter.OriginalDefinition.GetAttributes().FirstOrDefault(x =>
+                                 x.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute") is AttributeData mnw &&
+                             mnw.ConstructorArguments.Length == 1 && mnw.ConstructorArguments[0].Value is bool maybeNullWhen)
+                        whenNotNull.Add((nv, !maybeNullWhen));
                     Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
@@ -1370,6 +1433,8 @@ namespace CsVerify.Verifier
                 HavocFields(f, m, touched);
                 CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                foreach (var (value, when) in whenNotNull)
+                    if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                 AllocAfterCall(f, libResult);
                 LibraryNullFacts(inv, argTerms, libResult);
                 return libResult;
@@ -1668,8 +1733,10 @@ namespace CsVerify.Verifier
                     pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
                     if (unfold)
                     {
-                        if (callee.PureBody != null && bodyRuns)
-                            AssumeSide(T.Implies(T.And(instance, pre), T.Eq(app, Eval(callee.PureBody, frame, env))));
+                        var body = callee.PureBody != null ? Eval(callee.PureBody, frame, env)
+                                 : callee.PureStatements != null ? PureStatementsTerm(callee.PureStatements, 0, frame, env) : null;
+                        if (body != null && bodyRuns)
+                            AssumeSide(T.Implies(T.And(instance, pre), T.Eq(app, T.Coerce(body, app.Sort))));
                         if (IsNonNullableReturn(m)) AssumeSide(T.Implies(pre, NotNull(app)));
                         foreach (var ens in callee.Ensures)
                             AssumeSide(T.Implies(T.And(instance, pre), AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
@@ -1856,6 +1923,49 @@ namespace CsVerify.Verifier
                              attr.ConstructorArguments.Length == 1 && attr.ConstructorArguments[0].Value is bool when)
                         _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(args[p.Ordinal])));
                 }
+            }
+        }
+
+        /// <summary>
+        /// The value of a [Pure] function's statements from the i-th on, as a term: local declarations bind their
+        /// variables, an if is a conditional (each branch followed by the statements after it), a return is its value;
+        /// specification statements and lemma calls are skipped. Null for anything else (the function is then known by
+        /// its contract only).
+        /// </summary>
+        private Term PureStatementsTerm(IReadOnlyList<IOperation> ops, int i, Frame f, SpecEnv spec)
+        {
+            if (i >= ops.Count) return null;
+            var op = ops[i];
+            IReadOnlyList<IOperation> Then(IOperation first) =>
+                (first is IBlockOperation b ? b.Operations : (IEnumerable<IOperation>)new[] { first }).Concat(ops.Skip(i + 1)).ToList();
+            switch (op)
+            {
+                case IReturnOperation ret when ret.ReturnedValue != null:
+                    return Eval(ret.ReturnedValue, f, spec);
+                case IBlockOperation block:
+                    return PureStatementsTerm(Then(block), 0, f, spec);
+                case IVariableDeclarationGroupOperation group:
+                    foreach (var decl in group.Declarations)
+                        foreach (var v in decl.Declarators)
+                        {
+                            var init = v.Initializer?.Value ?? decl.Initializer?.Value;
+                            if (init == null) return null;
+                            f.Vars[v.Symbol] = Eval(init, f, spec);
+                        }
+                    return PureStatementsTerm(ops, i + 1, f, spec);
+                case IConditionalOperation cond when cond.Type == null || cond.Type.SpecialType == SpecialType.System_Void:
+                {
+                    var c = AsBool(Eval(cond.Condition, f, spec));
+                    var yes = PureStatementsTerm(Then(cond.WhenTrue), 0, f, spec);
+                    var no = cond.WhenFalse != null ? PureStatementsTerm(Then(cond.WhenFalse), 0, f, spec) : PureStatementsTerm(ops, i + 1, f, spec);
+                    if (yes == null || no == null) return null;
+                    return T.Ite(c, yes, T.Coerce(no, yes.Sort));
+                }
+                case IExpressionStatementOperation es when es.Operation is IInvocationOperation inv &&
+                                                          (SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _engine.ContractOf(inv.TargetMethod).IsLemma):
+                    return PureStatementsTerm(ops, i + 1, f, spec);
+                default:
+                    return null;
             }
         }
 
