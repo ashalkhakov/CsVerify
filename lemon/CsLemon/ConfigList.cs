@@ -1,6 +1,8 @@
 // Routines to processing a configuration list and building a state in the LEMON parser generator (configlist.c).
 // The free list of configurations is gone (the collector frees them). C's "pointer to the last next/bp field"
 // (currentend, basisend) becomes the last configuration on the list, null standing for "&current" / "&basis".
+using CsVerify;
+
 namespace CsLemon
 {
     public static class ConfigList
@@ -106,23 +108,24 @@ namespace CsLemon
                 rp = cfp.rp;
                 dot = cfp.dot;
                 if (dot >= rp.nrhs) continue;
-                sp = rp.rhs[dot];
+                sp = rp.Rhs(dot);
                 if (sp.type == SymbolType.NONTERMINAL)
                 {
                     if (sp.rule == null && sp != lemp.errsym)
                     {
                         Errors.ErrorMsg(lemp.filename, rp.line, "Nonterminal \"" + sp.name + "\" has no rules.");
-                        lemp.errorcnt++;
+                        lemp.errorcnt = checked(lemp.errorcnt + 1);
                     }
                     for (newrp = sp.rule; newrp != null; newrp = newrp.nextlhs)
                     {
                         newcfp = Configlist_add(newrp, 0);
                         for (i = dot + 1; i < rp.nrhs; i++)
                         {
-                            xsp = rp.rhs[i];
+                            Spec.Invariant(dot + 1 <= i && i <= rp.nrhs);
+                            xsp = rp.Rhs(i);
                             if (xsp.type == SymbolType.TERMINAL)
                             {
-                                Sets.SetAdd(newcfp.fws!, xsp.index);
+                                Sets.SetAdd(newcfp.Fws(), xsp.index);
                                 break;
                             }
                             else if (xsp.type == SymbolType.MULTITERMINAL)
@@ -130,13 +133,14 @@ namespace CsLemon
                                 int k;
                                 for (k = 0; k < xsp.nsubsym; k++)
                                 {
-                                    Sets.SetAdd(newcfp.fws!, xsp.subsym![k].index);
+                                    Spec.Invariant(0 <= k);
+                                    Sets.SetAdd(newcfp.Fws(), xsp.Sub(k).index);
                                 }
                                 break;
                             }
                             else
                             {
-                                Sets.SetUnion(newcfp.fws!, xsp.firstset!);
+                                Sets.SetUnion(newcfp.Fws(), xsp.FirstSet());
                                 if (xsp.lambda == false) break;
                             }
                         }

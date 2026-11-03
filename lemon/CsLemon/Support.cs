@@ -25,7 +25,7 @@ namespace CsLemon
         /// <summary>Add a new element to the set.  Return true if the element was added and false if it was already there.</summary>
         public static bool SetAdd(bool[] s, int e)
         {
-            Spec.Requires(0 <= e && e < s.Length);
+            Checks.That(0 <= e && e < s.Length); /* (the elements of sets are terminals, below the set size) */
             bool rv = s[e];
             s[e] = true;
             return !rv;
@@ -51,7 +51,7 @@ namespace CsLemon
         /// <summary>SetFind: true if e is in s.</summary>
         public static bool SetFind(bool[] s, int e)
         {
-            Spec.Requires(0 <= e && e < s.Length);
+            Checks.That(0 <= e && e < s.Length); /* (the elements of sets are terminals, below the set size) */
             return s[e];
         }
     }

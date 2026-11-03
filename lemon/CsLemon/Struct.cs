@@ -1,6 +1,8 @@
 // Principal data structures for the LEMON parser generator (struct.h).
 // The C struct fields keep their names, so this port reads side by side with the C original; pointers are
 // nullable references, char* sets are bool[] (see Sets).
+using CsVerify;
+
 namespace CsLemon
 {
     public enum SymbolType { TERMINAL, NONTERMINAL, MULTITERMINAL }
@@ -28,6 +30,22 @@ namespace CsLemon
         /* The following fields are used by MULTITERMINALs only */
         public int nsubsym;               /* Number of constituent symbols in the MULTI */
         public Symbol[]? subsym;          /* Array of constituent symbols */
+
+        /* (checked accessors for what C takes for granted: Checks) */
+
+        /// <summary>The k-th constituent of a MULTITERMINAL (subsym holds nsubsym symbols).</summary>
+        public Symbol Sub(int k)
+        {
+            Checks.That(subsym != null && 0 <= k && k < subsym.Length && subsym[k] != null);
+            return subsym![k];
+        }
+
+        /// <summary>The first-set, once FindFirstSets has made one for every symbol.</summary>
+        public bool[] FirstSet()
+        {
+            Checks.That(firstset != null);
+            return firstset!;
+        }
     }
 
     /// <summary>Each production rule in the grammar.</summary>
@@ -54,6 +72,17 @@ namespace CsLemon
         public bool neverReduce;          /* Reduce is theoretically possible, but prevented */
         public Rule? nextlhs;             /* Next rule with the same LHS */
         public Rule? next;                /* Next rule in the global list */
+
+        /// <summary>
+        /// The i-th right-hand-side symbol: rhs holds nrhs symbols (the parser fills every slot), and a dot is never
+        /// negative.
+        /// </summary>
+        public Symbol Rhs(int i)
+        {
+            Spec.Requires(i < nrhs);
+            Checks.That(0 <= i && i < rhs.Length && rhs[i] != null);
+            return rhs[i];
+        }
     }
 
     public enum CfgStatus { COMPLETE, INCOMPLETE }
@@ -70,6 +99,13 @@ namespace CsLemon
         public CfgStatus status;          /* used during followset and shift computations */
         public Config? next;              /* Next configuration in the state */
         public Config? bp;                /* The next basis configuration */
+
+        /// <summary>The follow-set, made with the configuration (only Configlist_eat frees it).</summary>
+        public bool[] Fws()
+        {
+            Checks.That(fws != null);
+            return fws!;
+        }
     }
 
     public enum ActionType
@@ -98,6 +134,13 @@ namespace CsLemon
         public LemonAction? next;         /* Next action for this state */
         public LemonAction? collide;      /* Next action with the same hash */
         public int seq;                   /* Allocation order: C compares addresses, which grow with it (actioncmp) */
+
+        /// <summary>The rule of a REDUCE (or SHIFTREDUCE, ...) action: every such action has one.</summary>
+        public Rule Rp()
+        {
+            Checks.That(rp != null);
+            return rp!;
+        }
     }
 
     /// <summary>Each state of the generated parser's finite state machine.</summary>
@@ -172,5 +215,26 @@ namespace CsLemon
         public bool has_fallback;         /* True if any %fallback is seen in the grammar */
         public bool nolinenosflag;        /* True if #line statements should not be printed */
         public string argv0 = "";         /* Name of the program */
+
+        /// <summary>The i-th symbol: the symbol table is full (every slot below its length holds a symbol).</summary>
+        public Symbol Sym(int i)
+        {
+            Checks.That(0 <= i && i < symbols.Length && symbols[i] != null);
+            return symbols[i];
+        }
+
+        /// <summary>The i-th state: sorted holds every state.</summary>
+        public State Sorted(int i)
+        {
+            Checks.That(0 <= i && i < sorted.Length && sorted[i] != null);
+            return sorted[i];
+        }
+
+        /// <summary>The first rule: the grammar has rules (main stops on an empty one).</summary>
+        public Rule StartRule()
+        {
+            Checks.That(startRule != null);
+            return startRule!;
+        }
     }
 }

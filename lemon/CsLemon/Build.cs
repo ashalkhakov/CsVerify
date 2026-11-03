@@ -1,4 +1,6 @@
 // Routines to construction the finite state machine for the LEMON parser generator (build.c).
+using CsVerify;
+
 namespace CsLemon
 {
     public static class Build
@@ -20,21 +22,21 @@ namespace CsLemon
                     int i, j;
                     for (i = 0; i < rp.nrhs && rp.precsym == null; i++)
                     {
-                        Symbol sp = rp.rhs[i];
+                        Symbol sp = rp.Rhs(i);
                         if (sp.type == SymbolType.MULTITERMINAL)
                         {
                             for (j = 0; j < sp.nsubsym; j++)
                             {
-                                if (sp.subsym![j].prec >= 0)
+                                if (sp.Sub(j).prec >= 0)
                                 {
-                                    rp.precsym = sp.subsym[j];
+                                    rp.precsym = sp.Sub(j);
                                     break;
                                 }
                             }
                         }
                         else if (sp.prec >= 0)
                         {
-                            rp.precsym = rp.rhs[i];
+                            rp.precsym = rp.Rhs(i);
                         }
                     }
                 }
@@ -53,11 +55,11 @@ namespace CsLemon
 
             for (i = 0; i < lemp.nsymbol; i++)
             {
-                lemp.symbols[i].lambda = false;
+                lemp.Sym(i).lambda = false;
             }
             for (i = lemp.nterminal; i < lemp.nsymbol; i++)
             {
-                lemp.symbols[i].firstset = Sets.SetNew();
+                lemp.Sym(i).firstset = Sets.SetNew();
             }
 
             /* First compute all lambdas */
@@ -69,7 +71,7 @@ namespace CsLemon
                     if (rp.lhs.lambda) continue;
                     for (i = 0; i < rp.nrhs; i++)
                     {
-                        Symbol sp = rp.rhs[i];
+                        Symbol sp = rp.Rhs(i);
                         System.Diagnostics.Debug.Assert(sp.type == SymbolType.NONTERMINAL || sp.lambda == false);
                         if (sp.lambda == false) break;
                     }
@@ -91,17 +93,17 @@ namespace CsLemon
                     s1 = rp.lhs;
                     for (i = 0; i < rp.nrhs; i++)
                     {
-                        s2 = rp.rhs[i];
+                        s2 = rp.Rhs(i);
                         if (s2.type == SymbolType.TERMINAL)
                         {
-                            if (Sets.SetAdd(s1.firstset!, s2.index)) progress = true;
+                            if (Sets.SetAdd(s1.FirstSet(), s2.index)) progress = true;
                             break;
                         }
                         else if (s2.type == SymbolType.MULTITERMINAL)
                         {
                             for (j = 0; j < s2.nsubsym; j++)
                             {
-                                if (Sets.SetAdd(s1.firstset!, s2.subsym![j].index)) progress = true;
+                                if (Sets.SetAdd(s1.FirstSet(), s2.Sub(j).index)) progress = true;
                             }
                             break;
                         }
@@ -111,7 +113,7 @@ namespace CsLemon
                         }
                         else
                         {
-                            if (Sets.SetUnion(s1.firstset!, s2.firstset!)) progress = true;
+                            if (Sets.SetUnion(s1.FirstSet(), s2.FirstSet())) progress = true;
                             if (s2.lambda == false) break;
                         }
                     }
@@ -137,15 +139,15 @@ namespace CsLemon
                 {
                     Errors.ErrorMsg(lemp.filename, 0,
                       "The specified start symbol \"" + lemp.start + "\" is not " +
-                      "in a nonterminal of the grammar.  \"" + lemp.startRule!.lhs.name + "\" will be used as the start " +
+                      "in a nonterminal of the grammar.  \"" + lemp.StartRule().lhs.name + "\" will be used as the start " +
                       "symbol instead.");
-                    lemp.errorcnt++;
-                    sp = lemp.startRule.lhs;
+                    lemp.errorcnt = checked(lemp.errorcnt + 1);
+                    sp = lemp.StartRule().lhs;
                 }
             }
             else if (lemp.startRule != null)
             {
-                sp = lemp.startRule.lhs;
+                sp = lemp.StartRule().lhs;
             }
             else
             {
@@ -161,13 +163,13 @@ namespace CsLemon
                 int i;
                 for (i = 0; i < rp.nrhs; i++)
                 {
-                    if (rp.rhs[i] == sp)
+                    if (rp.Rhs(i) == sp)
                     {   /* FIX ME:  Deal with multiterminals */
                         Errors.ErrorMsg(lemp.filename, 0,
                           "The start symbol \"" + sp.name + "\" occurs on the " +
                           "right-hand side of a rule. This will result in a parser which " +
                           "does not work properly.");
-                        lemp.errorcnt++;
+                        lemp.errorcnt = checked(lemp.errorcnt + 1);
                     }
                 }
             }
@@ -179,7 +181,7 @@ namespace CsLemon
                 Config newcfp;
                 rp.lhsStart = true;
                 newcfp = ConfigList.Configlist_addbasis(rp, 0);
-                Sets.SetAdd(newcfp.fws!, 0);
+                Sets.SetAdd(newcfp.Fws(), 0);
             }
 
             /* Compute the first state.  All other states will be computed automatically during the computation of
@@ -227,7 +229,7 @@ namespace CsLemon
                 stp = new State();                      /* A new state structure */
                 stp.bp = bp;                            /* Remember the configuration basis */
                 stp.cfp = cfp;                          /* Remember the configuration closure */
-                stp.statenum = lemp.nstate++;           /* Every state gets a sequence number */
+                stp.statenum = checked(lemp.nstate++);           /* Every state gets a sequence number */
                 stp.ap = null;                          /* No actions, yet. */
                 Tables.State_insert(stp, stp.bp);       /* Add to the state table */
                 buildshifts(lemp, stp);                 /* Recursively compute successor states */
@@ -247,7 +249,7 @@ namespace CsLemon
             if (a.nsubsym != b.nsubsym) return false;
             for (i = 0; i < a.nsubsym; i++)
             {
-                if (a.subsym![i] != b.subsym![i]) return false;
+                if (a.Sub(i) != b.Sub(i)) return false;
             }
             return true;
         }
@@ -274,7 +276,7 @@ namespace CsLemon
                 if (cfp.status == CfgStatus.COMPLETE) continue;    /* Already used by inner loop */
                 if (cfp.dot >= cfp.rp.nrhs) continue;              /* Can't shift this config */
                 ConfigList.Configlist_reset();                     /* Reset the new config set */
-                sp = cfp.rp.rhs[cfp.dot];                          /* Symbol after the dot */
+                sp = cfp.rp.Rhs(cfp.dot);                          /* Symbol after the dot */
 
                 /* For every configuration in the state "stp" which has the symbol "sp" following its dot, add the
                 ** same configuration to the basis set under construction but with the dot shifted one symbol to
@@ -283,7 +285,7 @@ namespace CsLemon
                 {
                     if (bcfp.status == CfgStatus.COMPLETE) continue;    /* Already used */
                     if (bcfp.dot >= bcfp.rp.nrhs) continue;             /* Can't shift this one */
-                    bsp = bcfp.rp.rhs[bcfp.dot];                        /* Get symbol after dot */
+                    bsp = bcfp.rp.Rhs(bcfp.dot);                        /* Get symbol after dot */
                     if (!same_symbol(bsp, sp)) continue;                /* Must be same as for "cfp" */
                     bcfp.status = CfgStatus.COMPLETE;                   /* Mark this config as used */
                     newcfg = ConfigList.Configlist_addbasis(bcfp.rp, bcfp.dot + 1);
@@ -300,7 +302,7 @@ namespace CsLemon
                     int i;
                     for (i = 0; i < sp.nsubsym; i++)
                     {
-                        stp.ap = Actions.Action_add(stp.ap, ActionType.SHIFT, sp.subsym![i], newstp, null);
+                        stp.ap = Actions.Action_add(stp.ap, ActionType.SHIFT, sp.Sub(i), newstp, null);
                     }
                 }
                 else
@@ -325,7 +327,7 @@ namespace CsLemon
             ** attached. */
             for (i = 0; i < lemp.nstate; i++)
             {
-                stp = lemp.sorted[i];
+                stp = lemp.Sorted(i);
                 for (cfp = stp != null ? stp.cfp : null; cfp != null; cfp = cfp.next)
                 {
                     cfp.stp = stp;
@@ -336,7 +338,7 @@ namespace CsLemon
             ** computation. */
             for (i = 0; i < lemp.nstate; i++)
             {
-                stp = lemp.sorted[i];
+                stp = lemp.Sorted(i);
                 for (cfp = stp != null ? stp.cfp : null; cfp != null; cfp = cfp.next)
                 {
                     for (plp = cfp.bplp; plp != null; plp = plp.next)
@@ -362,8 +364,8 @@ namespace CsLemon
 
             for (i = 0; i < lemp.nstate; i++)
             {
-                System.Diagnostics.Debug.Assert(lemp.sorted[i] != null);
-                for (cfp = lemp.sorted[i].cfp; cfp != null; cfp = cfp.next)
+                System.Diagnostics.Debug.Assert(lemp.Sorted(i) != null);
+                for (cfp = lemp.Sorted(i).cfp; cfp != null; cfp = cfp.next)
                 {
                     cfp.status = CfgStatus.INCOMPLETE;
                 }
@@ -374,13 +376,13 @@ namespace CsLemon
                 progress = false;
                 for (i = 0; i < lemp.nstate; i++)
                 {
-                    System.Diagnostics.Debug.Assert(lemp.sorted[i] != null);
-                    for (cfp = lemp.sorted[i].cfp; cfp != null; cfp = cfp.next)
+                    System.Diagnostics.Debug.Assert(lemp.Sorted(i) != null);
+                    for (cfp = lemp.Sorted(i).cfp; cfp != null; cfp = cfp.next)
                     {
                         if (cfp.status == CfgStatus.COMPLETE) continue;
                         for (plp = cfp.fplp; plp != null; plp = plp.next)
                         {
-                            change = Sets.SetUnion(plp.cfp.fws!, cfp.fws!);
+                            change = Sets.SetUnion(plp.cfp.Fws(), cfp.Fws());
                             if (change)
                             {
                                 plp.cfp.status = CfgStatus.INCOMPLETE;
@@ -409,18 +411,18 @@ namespace CsLemon
             */
             for (i = 0; i < lemp.nstate; i++)
             {   /* Loop over all states */
-                stp = lemp.sorted[i];
+                stp = lemp.Sorted(i);
                 for (cfp = stp.cfp; cfp != null; cfp = cfp.next)
                 {   /* Loop over all configurations */
                     if (cfp.rp.nrhs == cfp.dot)
                     {   /* Is dot at extreme right? */
                         for (j = 0; j < lemp.nterminal; j++)
                         {
-                            if (Sets.SetFind(cfp.fws!, j))
+                            if (Sets.SetFind(cfp.Fws(), j))
                             {
                                 /* Add a reduce action to the state "stp" which will reduce by the rule "cfp->rp" if
                                 ** the lookahead symbol is "lemp->symbols[j]" */
-                                stp.ap = Actions.Action_add(stp.ap, ActionType.REDUCE, lemp.symbols[j], null, cfp.rp);
+                                stp.ap = Actions.Action_add(stp.ap, ActionType.REDUCE, lemp.Sym(j), null, cfp.rp);
                             }
                         }
                     }
@@ -439,22 +441,22 @@ namespace CsLemon
                         System.Environment.Exit(1);
                         return;
                     }
-                    sp = lemp.startRule.lhs;
+                    sp = lemp.StartRule().lhs;
                 }
             }
             else
             {
-                sp = lemp.startRule!.lhs;
+                sp = lemp.StartRule().lhs;
             }
             /* Add to the first state (which is always the starting state of the finite state machine) an action to
             ** ACCEPT if the lookahead is the start nonterminal.  */
-            lemp.sorted[0].ap = Actions.Action_add(lemp.sorted[0].ap, ActionType.ACCEPT, sp, null, null);
+            lemp.Sorted(0).ap = Actions.Action_add(lemp.Sorted(0).ap, ActionType.ACCEPT, sp, null, null);
 
             /* Resolve conflicts */
             for (i = 0; i < lemp.nstate; i++)
             {
                 LemonAction? ap, nap;
-                stp = lemp.sorted[i];
+                stp = lemp.Sorted(i);
                 /* assert( stp->ap ); */
                 stp.ap = Actions.Action_sort(stp.ap);
                 for (ap = stp.ap; ap != null && ap.next != null; ap = ap.next)
@@ -463,7 +465,7 @@ namespace CsLemon
                     {
                         /* The two actions "ap" and "nap" have the same lookahead.  Figure out which one should be
                         ** used */
-                        lemp.nconflict += resolve_conflict(ap, nap);
+                        lemp.nconflict = checked(lemp.nconflict + resolve_conflict(ap, nap));
                     }
                 }
             }
@@ -473,16 +475,16 @@ namespace CsLemon
             for (i = 0; i < lemp.nstate; i++)
             {
                 LemonAction? ap;
-                for (ap = lemp.sorted[i].ap; ap != null; ap = ap.next)
+                for (ap = lemp.Sorted(i).ap; ap != null; ap = ap.next)
                 {
-                    if (ap.type == ActionType.REDUCE) ap.rp!.canReduce = true;
+                    if (ap.type == ActionType.REDUCE) ap.Rp().canReduce = true;
                 }
             }
             for (rp = lemp.rule; rp != null; rp = rp.next)
             {
                 if (rp.canReduce) continue;
                 Errors.ErrorMsg(lemp.filename, rp.ruleline, "This rule can not be reduced.\n");
-                lemp.errorcnt++;
+                lemp.errorcnt = checked(lemp.errorcnt + 1);
             }
         }
 
@@ -509,7 +511,7 @@ namespace CsLemon
             if (apx.type == ActionType.SHIFT && apy.type == ActionType.REDUCE)
             {
                 spx = apx.sp;
-                spy = apy.rp!.precsym;
+                spy = apy.Rp().precsym;
                 if (spy == null || spx.prec < 0 || spy.prec < 0)
                 {
                     /* Not enough precedence information. */
@@ -540,8 +542,8 @@ namespace CsLemon
             }
             else if (apx.type == ActionType.REDUCE && apy.type == ActionType.REDUCE)
             {
-                spx = apx.rp!.precsym;
-                spy = apy.rp!.precsym;
+                spx = apx.Rp().precsym;
+                spy = apy.Rp().precsym;
                 if (spx == null || spy == null || spx.prec < 0 ||
                 spy.prec < 0 || spx.prec == spy.prec)
                 {
