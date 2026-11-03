@@ -187,6 +187,7 @@ Z3 runs as a separate process speaking SMT-LIB2, by design. Neither the analyzer
 
 A **data record** is a record class whose whole state is its positional properties. A hierarchy of them is **closed** when the abstract root can't be extended from outside: its constructors are private (cases nested inside it), or the type isn't visible outside the assembly. The verifier then treats it as an algebraic data type:
 - **Construction** `new Cons(h, t)` is the term `Cons(h, t)`. Its fields read back, it is not null, its tag is `Cons`'s, and its size is one more than its parts'. A case's base fields are computed from its header (`Ind(Prev) : Fact(Prev.N + 1, ...)` gives `N == Prev.N + 1`).
+- **Downcasts.** `(Cons)xs` throws unless `xs` is a `Cons`. Ordinary code that goes on may assume it was. A lemma, a `[Pure]` function or a specification may not throw, so there the cast must be proved (CSV1011, or CSV1012 in a specification).
 - **Case analysis.** `is`, `switch` statements and switch expressions test the tag. A value of a closed type is one of its cases, and on each branch it is that case's constructor applied to its own fields. A switch that misses a case throws, which a `[Pure]` function or lemma may not do (CSV1011), and a specification may not do either (CSV1012).
 - **Equality.** The synthesized record `==` is equality of values, as long as every field compares the way the verifier models it (integers, booleans, arrays by reference, data records).
 - **No identity.** A data value is its contents, so reference identity (`ReferenceEquals`, or `==` at type `object` or an interface) is not modeled. Only comparisons with `null` are known.
@@ -388,6 +389,10 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - `Eval` and constant folding `Fold` on expressions, with `FoldPreservesEval`.
   - The dataprop `FACT` as a closed record (`Bas`, `Ind`), with its `nat` index as an invariant. `FactIsFunctional` is ATS's `fact_isfun`, by induction on one proof and case analysis on the other. `Factorial` returns `r` together with a `Ghost<Fact>` proof of `FACT(n, r)` built in its loop; the erased program never builds it.
   - `Interval`, a record with the invariant `Lo <= Hi`, and `Widen`, which keeps it.
+- `Trees.cs`, after ATS's verified AVL and red-black trees. ATS indexes the types, `avltree(h)` and `rbtree(color, bh, violation)`, so an unbalanced tree does not type-check. Here those indices are invariants of the node records, so no unbalanced node can be built:
+  - **AVL:** `Node`, both rotations (single and double), and `Insert`, proved to raise the height by at most one.
+  - **Red-black, after Okasaki:** `BalanceL` and `BalanceR` handle the four rotation cases as nested C# patterns, such as `Ins.Viol(Rb.T { Red: true } a, var y, var c)`. `Ins` keeps the black height. `Insert` raises it by at most one. ATS's violation index becomes a type of its own, `Ins = Fine(Rb) | Viol(l, k, r)`: an intermediate tree that may have a red-red violation at its root cannot be an `Rb`.
+  - **Hints and dead branches:** `Spec.Assert(Bh(a) == Bh(a.L))` hints play the part of ATS's `prval` steps, because definitions unfold one level per use. Unreachable branches carry a `Spec.Assert(false)` that the verifier checks.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
@@ -452,6 +457,7 @@ Sources and licences:
 
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
+- `TreeBugs.cs`: an AVL insert that never rotates, a single rotation where a double one is needed, and a red-black rebalance that leaves a red node over a red child.
 - `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, and an assertion that two equal values are the same object.
 - `NullBugs.cs`: an unchecked `T?`, `null!` passed and returned, an element of `new string[2]`, and a precondition that reads `a.Length` before checking `a`.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
@@ -472,7 +478,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 139 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 140 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 

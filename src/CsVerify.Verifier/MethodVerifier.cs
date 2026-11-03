@@ -718,6 +718,14 @@ namespace CsVerify.Verifier
         {
             var v = Eval(c.Operand, f, spec);
             var from = c.Operand.Type;
+            if (!c.IsImplicit && c.Conversion.IsReference && Data.IsData(c.Type) && from != null && !DataTypes.Derives(from, c.Type))
+            {
+                // a downcast to a case: it throws unless the value is one (or null). Code that goes on knows it
+                // was; a proof or a specification, which may not throw, must show it
+                var ok = T.Or(T.Eq(v, T.Int(0)), TypeTest(v, from, c.Type));
+                if (_codeMode && !ProofCode) _z3.Assume(ok);
+                else Require(ok, "CSV1011", c.Syntax, $"cast '{c.Syntax}' might fail");
+            }
             if (c.OperatorMethod != null)
             {
                 // T[] -> Span<T> / ReadOnlySpan<T> keeps the same storage.

@@ -413,6 +413,9 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1006" }, r.Errors("DataBugs.Factorial"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Backwards"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("SameObject"));
+            Assert.Equal(new[] { "CSV1001", "CSV1001" }, r.Errors("InsertNoRotation"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("RotRSingleOnly"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("BalanceLRecolorWrong"));
         }
     }
 

@@ -64,6 +64,15 @@ public abstract record List
         }
 
         [Fact]
+        public void Downcasts_InProofs_MustBeShown()
+        {
+            // in code a failed cast throws, so what follows may assume it; a definition or lemma may not throw
+            Assert.Equal(new[] { "CSV1011" }, Errors("Head", "[Pure] static int Head(List xs) => ((List.Cons)xs).Head;"));
+            Assert.Empty(Errors("Head", "[Pure] static int Head(List xs) { Spec.Requires(xs is List.Cons); return ((List.Cons)xs).Head; }"));
+            Assert.Empty(Errors("M", "static int M(List xs) { var c = (List.Cons)xs; Spec.Assert(xs is List.Cons); return c.Head; }"));
+        }
+
+        [Fact]
         public void Construction_IsAValue()
         {
             Assert.Empty(Errors("M", @"static void M() {

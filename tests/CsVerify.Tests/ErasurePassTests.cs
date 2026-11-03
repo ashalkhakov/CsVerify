@@ -53,6 +53,7 @@ namespace CsVerify.Tests
             Assert.Equal((2, 5), Run(asm, "DafnyMore", "MaxSegSum", new[] { 1, -3, 4, -1, 2, -9, 3 }));
             Assert.Equal(7 + 2, Run(asm, "Nulls", "Demo"));
             Assert.Equal(3 + 4 + 7 + 6, Run(asm, "DataTypes", "Demo")); // a proof-carrying factorial: its Ghost<Fact> is gone
+            Assert.Equal(10 * 3 + 3, Run(asm, "Trees", "Demo")); // 1..7 inserted: AVL height 3, black height 3
         }
 
         [Fact]
