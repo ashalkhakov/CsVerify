@@ -584,6 +584,11 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
 - `AtsMatrixAndTakeOut.cs`, from INT2PROGINATS and `matrixSub` in Xi's ICFP'05 paper:
   - `IncrementAt`, which takes cell i out of an array view as a plain `int @ (l + i)`, updates it with the single-cell `Read`/`Write`, and puts it back.
   - `MatGet` and `FillRows`, which index an m × n matrix in row-major order. The nonlinear bound `i·n + j < m·n` comes from the lemma `RowMajorInBounds`, which is built on an inductive `MulMonotone`.
+- From the author's own ATS repositories (github.com/ashalkhakov), using permissions and predicates:
+  - `AtsDlSeg.cs`, from ats-miscellanea/dlseg (2010): doubly-linked list segments with forward and backward views (`dlseg_v`, `rdlseg_v`), the four proof functions as recursive lemmas (two appends, two direction conversions), cons, uncons, snoc, length, concat (through the backward view of the first list), and the zipper `dllst_v_zipper` (make first, move right/left, write the focus, back to a list).
+  - `AtsCircList.cs`, from ats-miscellanea/hacks/circlist.dats (2011): a circular list as a head node and a segment back round to it; `printcirc`'s walk once round shows the segment is empty when the head comes back, because the head's permission is in hand.
+  - `AtsQueue.cs`, from tfc's `queue_sllist2` (Hongwei Xi's "Effective ATS" amortized queue): a front list and a reversed rear list, with `f + r = n`.
+  - `AtsBinHeap.cs`, from ATS-playground/binheap.dats: a binary max-heap over `Spec.Acc(a)` cells. The original proves memory safety with the index arithmetic taken on trust. Here the arithmetic is checked and the heap order is proved too: push and pop keep it, a pushed value is in the heap, and the root is the maximum.
 - `AtsArrays.cs`:
   - DML's `DotProd`: only bounds, the point of the PLDI'98 paper.
   - A view-based `Copy`: `!array_v` × 2, element-wise postcondition.
