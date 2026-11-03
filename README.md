@@ -599,6 +599,10 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 
 ### Ported from ATS and Dafny
 
+- `DafnyLemon.cs`, from github.com/ashalkhakov/dafny-lemon (2024), a Dafny translation of Lemon's data structures, ported and cleaned up:
+  - **The hash table.** dafny-lemon's `hashset.dfy` and `hashmap.dfy`, near-copies as Lemon's x1..x4 are, build the table from linked node objects with ghost lists and sets, and leave resize commented out (`assume false` in `resize_aux`, and a FIXME that keeping the count timed out). Here one table goes back to Lemon's own layout: entries in an array in arrival order, bucket heads and next links as indices, so chains run to smaller indices. The invariant is a few quantifiers over arrays. Find is complete (not found means absent), and insert grows the table by doubling, keeping every entry at its index, so Nth and arrayof are stable.
+  - **The rest.** `struct.dfy`'s two tables (their disjointness, asserted by hand in Dafny, now holds by construction), `set.dfy`'s sets, and `option.dfy`'s ISOPT.
+
 Rewritten in C#, not copied. Each program names its source in its doc comment.
 - `AtsIntro.cs`, from Xi's *Introduction to Programming in ATS* (INT2PROGINATS) and the Stateful Views paper:
   - `FactIter` and `FibIter` against `[Pure]` versions of the FACT and FIB dataprops.

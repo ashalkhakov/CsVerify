@@ -258,6 +258,22 @@ namespace Samples.Buggy
             return checked(SplitWithoutFallback(key, lo, mid, d) + SplitWithoutFallback(key, mid, hi, d));
         }
 
+        /// <summary>dafny-lemon's table, its keys only: distinct.</summary>
+        [Predicate]
+        public static bool DistinctKeys(int[] keys, int count) =>
+            keys != null && 0 <= count && count <= keys.Length && Spec.Acc(keys) &&
+            Spec.Forall(0, count, i => Spec.Forall(0, i, j => keys[j] != keys[i]));
+
+        // BUG: x2insert without the x2find first: a key already there goes in a second time (CSV1019)
+        public static void InsertWithoutFind(int[] keys, int count, int key)
+        {
+            Spec.Requires(DistinctKeys(keys, count) && count < keys.Length);
+            Spec.Ensures(DistinctKeys(keys, count + 1));
+            Spec.Unfold(DistinctKeys(keys, count));
+            keys[count] = key;
+            Spec.Fold(DistinctKeys(keys, count + 1));
+        }
+
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
         public static void InsertTwice(Sn head, int n, Sn node)
         {

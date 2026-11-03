@@ -1322,6 +1322,16 @@ namespace CsVerify.Verifier
                 if (a.Parameter.RefKind != RefKind.Out) NonNullArgument(a, argTerms[i], m);
             }
 
+            if (_codeMode && callee.IsPure && _quantDepth > 0)
+            {
+                // inside a quantifier (a ghost function's body): the application itself, whose facts and
+                // obligations are closed over the quantifier's variable (a fresh result would not be)
+                var qpre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
+                foreach (var req in callee.Requires)
+                    Require(AsBool(EvalForeignSpec(req, qpre, new SpecEnv { Old = qpre })), "CSV1001", inv.Syntax,
+                        $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
+                return PureApply(callee, receiver, argTerms, f.Heap, SortOf(inv.Type), null, f);
+            }
             if (!_codeMode)
             {
                 if (callee.IsPure) return PureApply(callee, receiver, argTerms, f.Heap, SortOf(inv.Type), inv.Syntax, f);
@@ -1356,9 +1366,10 @@ namespace CsVerify.Verifier
             }
 
             var preEnv = new SpecEnv { Old = pre };
-            // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`)
+            // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
+            // quantifier, the obligation is closed over its variable with the others made there)
             foreach (var req in callee.Requires)
-                Prove(T.Implies(T.And(_guards.ToArray()), AsBool(EvalForeignSpec(req, pre, preEnv))), "CSV1001", inv.Syntax,
+                Require(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
             if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
             if (callee.IsPure && _codeMode) CheckPurePermissions(callee, pre, preEnv, f, inv.Syntax);
