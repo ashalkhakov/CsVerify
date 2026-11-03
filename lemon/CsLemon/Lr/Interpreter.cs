@@ -50,6 +50,22 @@ namespace CsLemon.Lr
         public sealed record InternalError() : Result;
     }
 
+    /// <summary>Between steps: running, with a stack and an input position, or stopped with a result.</summary>
+    public abstract record Run
+    {
+        private Run() { }
+        public sealed record Going(Stack S, int Pos) : Run;
+        public sealed record Stopped(Result R) : Run;
+    }
+
+    /// <summary>What popping a rule's cells gives: the stack left and the popped trees, or a failed check.</summary>
+    public abstract record Popped
+    {
+        private Popped() { }
+        public sealed record Fail() : Popped;
+        public sealed record Ok(Stack Rest, Forest Kids) : Popped;
+    }
+
     /// <summary>
     /// A grammar: terminals 0 .. NTerm-1 (0 is the end of input), nonterminals NTerm .. NSym-1, and rules r with a
     /// left-hand side Lhs[r] and a right-hand side Rhs[r]. Symbols from NSym on are Lemon's multiterminals (A|B): the
@@ -152,20 +168,25 @@ namespace CsLemon.Lr
             (a == x || 0 <= g.NSym && g.NSym <= x && x - g.NSym < g.Multi.Length && g.Multi[x - g.NSym] != null && Spec.Exists(0, g.Multi[x - g.NSym].Length, k => g.Multi[x - g.NSym][k] == a));
 
         /// <summary>Matches, at run time.</summary>
+        [Pure]
         public static bool Match(Grammar g, int x, int a)
         {
             Spec.Ensures((bool r) => r == Matches(g, x, a));
             if (a < 0 || a >= g.NTerm) return false;
             if (a == x) return true;
-            if (x < g.NSym || g.NSym < 0 || x - g.NSym >= g.Multi.Length) return false;
+            if (g.NSym < 0 || x < g.NSym || x - g.NSym >= g.Multi.Length) return false;
             int[]? m = g.Multi[x - g.NSym];
-            if (m == null) return false;
-            for (int k = 0; k < m.Length; k++)
-            {
-                Spec.Invariant(0 <= k && k <= m.Length && Spec.Forall(0, k, j => m[j] != a));
-                if (m[k] == a) return true;
-            }
-            return false;
+            return m != null && MemberFrom(m, a, 0);
+        }
+
+        /// <summary>a is one of m[k..].</summary>
+        [Pure]
+        public static bool MemberFrom(int[] m, int a, int k)
+        {
+            Spec.Requires(0 <= k);
+            Spec.Decreases(m.Length - k);
+            Spec.Ensures((bool r) => r == Spec.Exists(k, m.Length, j => m[j] == a));
+            return k < m.Length && (m[k] == a || MemberFrom(m, a, k + 1));
         }
 
         /// <summary>ts are parse trees for the symbols rhs[i..], one each.</summary>
@@ -212,9 +233,271 @@ namespace CsLemon.Lr
 
         // ------------------------------------------------------------------------------------------ the interpreter
 
+        /// <summary>The top state of a stack: its top cell's, or 0 for the empty stack.</summary>
+        [Pure]
+        public static int Top(Stack s) => s is Stack.Cell c ? c.State : 0;
+
+        /// <summary>
+        /// Pops i cells of rule rhs, checking that each one's incoming symbol is the rule's (rhs[i-1] on top); kids are
+        /// the trees popped so far (of rhs[i..]).
+        /// </summary>
+        [Pure]
+        public static Popped Pop(Automaton a, Stack s, int[] rhs, int i, Forest kids)
+        {
+            Spec.Requires(0 <= i && i <= rhs.Length);
+            Spec.Decreases(i);
+            if (i == 0) return new Popped.Ok(s, kids);
+            if (s is Stack.Cell c && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == rhs[i - 1])
+                return Pop(a, c.Below, rhs, i - 1, new Forest.Cons(c.T, kids));
+            return new Popped.Fail();
+        }
+
+        /// <summary>Reduces rule r: pops its cells, and pushes the node over their trees with the goto state. Null: an internal error.</summary>
+        [Pure]
+        public static Stack? Reduce(Grammar g, Automaton a, Stack s, int r)
+        {
+            if (r < 0 || r >= g.Lhs.Length || r >= g.Rhs.Length || g.NTerm < 0) return null;
+            int[]? rhs = g.Rhs[r];
+            if (rhs == null) return null;
+            Popped p = Pop(a, s, rhs, rhs.Length, new Forest.Nil());
+            if (!(p is Popped.Ok ok)) return null;
+            int lhs = g.Lhs[r], from = Top(ok.Rest);
+            if (lhs < g.NTerm || from < 0 || from >= a.Goto.Length) return null;
+            int[]? gotos = a.Goto[from];
+            if (gotos == null || lhs - g.NTerm >= gotos.Length) return null;
+            int next = gotos[lhs - g.NTerm];
+            if (next < 0 || next >= a.Incoming.Length || a.Incoming[next] != lhs) return null;
+            return new Stack.Cell(next, new Tree.Node(r, ok.Kids), ok.Rest);
+        }
+
+        /// <summary>
+        /// One action of the automaton, in the top state on the lookahead (the terminal at pos, or 0 past the end of
+        /// the input).
+        /// </summary>
+        [Pure]
+        public static Run Step(Grammar g, Automaton a, int[] w, Stack s, int pos)
+        {
+            Spec.Requires(0 <= pos && pos <= w.Length);
+            int state = Top(s);
+            int la = pos < w.Length ? w[pos] : 0;
+            if (la < 0 || la >= g.NTerm) return new Run.Stopped(new Result.Rejected(pos)); // (not a terminal)
+            if (state < 0 || state >= a.Kind.Length || state >= a.Arg.Length) return new Run.Stopped(new Result.InternalError());
+            int[]? kinds = a.Kind[state], args = a.Arg[state];
+            if (kinds == null || args == null || la >= kinds.Length || la >= args.Length) return new Run.Stopped(new Result.InternalError());
+            int kind = kinds[la];
+            if (kind == Automaton.Shift)
+            {
+                int next = args[la];
+                if (pos == w.Length || next < 0 || next >= a.Incoming.Length || !Match(g, a.Incoming[next], la))
+                    return new Run.Stopped(new Result.InternalError());
+                return new Run.Going(new Stack.Cell(next, new Tree.Leaf(la), s), pos + 1);
+            }
+            if (kind == Automaton.Reduce)
+            {
+                Stack? red = Reduce(g, a, s, args[la]);
+                return red == null ? new Run.Stopped(new Result.InternalError()) : new Run.Going(red, pos);
+            }
+            if (kind == Automaton.Accept)
+            {
+                if (s is Stack.Cell c && c.Below is Stack.Empty && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == g.Start)
+                    return new Run.Stopped(new Result.Accepted(c.T, pos));
+                return new Run.Stopped(new Result.InternalError());
+            }
+            return new Run.Stopped(new Result.Rejected(pos));
+        }
+
+        /// <summary>n steps from r (a stopped run stays stopped).</summary>
+        [GhostFunction]
+        public static Run Steps(Grammar g, Automaton a, int[] w, int n, Run r)
+        {
+            Spec.Decreases(n);
+            if (n <= 0 || !(r is Run.Going go)) return r;
+            if (go.Pos < 0 || go.Pos > w.Length) return new Run.Stopped(new Result.InternalError());
+            return Steps(g, a, w, n - 1, Step(g, a, w, go.S, go.Pos));
+        }
+
+        /// <summary>The start: the empty stack, at the start of the input.</summary>
+        [GhostFunction]
+        public static Run Start() => new Run.Going(new Stack.Empty(), 0);
+
+        /// <summary>One more step, at the end: Steps(n + 1) is a step after Steps(n), if that is still going.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void StepsLast(Grammar g, Automaton a, int[] w, int n, Run r)
+        {
+            Spec.Requires(0 <= n);
+            Spec.Decreases(n);
+            Spec.Ensures(!(Steps(g, a, w, n, r) is Run.Going go) || go.Pos < 0 || go.Pos > w.Length ||
+                         Steps(g, a, w, n + 1, r) == Step(g, a, w, go.S, go.Pos));
+            Spec.Ensures(!(Steps(g, a, w, n, r) is Run.Stopped) || Steps(g, a, w, n + 1, r) == Steps(g, a, w, n, r));
+            if (r is Run.Going r0 && 0 <= r0.Pos && r0.Pos <= w.Length)
+            {
+                Spec.Assert(Steps(g, a, w, n + 1, r) == Steps(g, a, w, n, Step(g, a, w, r0.S, r0.Pos)));
+                if (n > 0)
+                {
+                    Spec.Assert(Steps(g, a, w, n, r) == Steps(g, a, w, n - 1, Step(g, a, w, r0.S, r0.Pos)));
+                    StepsLast(g, a, w, n - 1, Step(g, a, w, r0.S, r0.Pos));
+                }
+                else
+                {
+                    Spec.Assert(Steps(g, a, w, 0, r) == r);
+                    Spec.Assert(Steps(g, a, w, 0, Step(g, a, w, r0.S, r0.Pos)) == Step(g, a, w, r0.S, r0.Pos));
+                }
+            }
+            else
+            {
+                Spec.Assert(Steps(g, a, w, n + 1, r) == Steps(g, a, w, n, r) || r is Run.Going);
+            }
+        }
+
+        /// <summary>What a successful Reduce pushes: the goto state, entered on the left-hand side, over the node of the popped trees.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void ReduceShape(Grammar g, Automaton a, Stack s, int r)
+        {
+            Spec.Ensures(Reduce(g, a, s, r) == null ||
+                         0 <= r && r < g.Lhs.Length && r < g.Rhs.Length && g.Rhs[r] != null &&
+                         Pop(a, s, g.Rhs[r], g.Rhs[r].Length, new Forest.Nil()) is Popped.Ok ok &&
+                         Reduce(g, a, s, r) is Stack.Cell c && c.T == new Tree.Node(r, ok.Kids) && c.Below == ok.Rest &&
+                         0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == g.Lhs[r] &&
+                         g.NTerm <= g.Lhs[r] && 0 <= Top(ok.Rest) && Top(ok.Rest) < a.Goto.Length && a.Goto[Top(ok.Rest)] != null &&
+                         g.Lhs[r] - g.NTerm < a.Goto[Top(ok.Rest)].Length && c.State == a.Goto[Top(ok.Rest)][g.Lhs[r] - g.NTerm]);
+        }
+
+        // ------------------------------------------------------------------------------------------ soundness
+
+        /// <summary>Popping keeps the invariant: the stack and the trees popped make up the input consumed.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void PopSound(Grammar g, Automaton a, Stack s, int[] rhs, int i, Forest kids, Word consumed)
+        {
+            Spec.Requires(0 <= i && i <= rhs.Length && StackOk(g, a, s) && Kids(g, kids, rhs, i) &&
+                          Append(StackFringe(s), Fringes(kids)) == consumed);
+            Spec.Decreases(i);
+            Spec.Ensures(!(Pop(a, s, rhs, i, kids) is Popped.Ok ok) ||
+                         StackOk(g, a, ok.Rest) && Kids(g, ok.Kids, rhs, 0) && Append(StackFringe(ok.Rest), Fringes(ok.Kids)) == consumed);
+            if (i > 0 && s is Stack.Cell c && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == rhs[i - 1])
+            {
+                var more = new Forest.Cons(c.T, kids);
+                Spec.Assert(Kids(g, more, rhs, i - 1));
+                Spec.Assert(Fringes(more) == Append(Fringe(c.T), Fringes(kids)));
+                Spec.Assert(StackFringe(c) == Append(StackFringe(c.Below), Fringe(c.T)));
+                AppendAssoc(StackFringe(c.Below), Fringe(c.T), Fringes(kids));
+                Spec.Assert(Pop(a, s, rhs, i, kids) == Pop(a, c.Below, rhs, i - 1, more));
+                PopSound(g, a, c.Below, rhs, i - 1, more, consumed);
+            }
+        }
+
+        /// <summary>A step keeps the invariant, and what it accepts is a parse tree of the start symbol for the input consumed.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void StepSound(Grammar g, Automaton a, int[] w, Stack s, int pos)
+        {
+            Spec.Requires(0 <= pos && pos <= w.Length && StackOk(g, a, s) && StackFringe(s) == Prefix(w, pos));
+            Spec.Ensures(Step(g, a, w, s, pos) is Run.Going go
+                ? 0 <= go.Pos && go.Pos <= w.Length && StackOk(g, a, go.S) && StackFringe(go.S) == Prefix(w, go.Pos)
+                : !(Step(g, a, w, s, pos) is Run.Stopped st && st.R is Result.Accepted acc) ||
+                  0 <= acc.Consumed && acc.Consumed <= w.Length && Valid(g, acc.T, g.Start) && Fringe(acc.T) == Prefix(w, acc.Consumed));
+            int state = Top(s);
+            int la = pos < w.Length ? w[pos] : 0;
+            if (la < 0 || la >= g.NTerm || state < 0 || state >= a.Kind.Length || state >= a.Arg.Length) return;
+            int[]? kinds = a.Kind[state], args = a.Arg[state];
+            if (kinds == null || args == null || la >= kinds.Length || la >= args.Length) return;
+            if (kinds[la] == Automaton.Shift)
+            {
+                int next = args[la];
+                if (pos == w.Length || next < 0 || next >= a.Incoming.Length || !Match(g, a.Incoming[next], la)) return;
+                var shifted = new Stack.Cell(next, new Tree.Leaf(la), s);
+                Spec.Assert(Valid(g, shifted.T, a.Incoming[next]));
+                Spec.Assert(StackOk(g, a, shifted));
+                Spec.Assert(Fringe(shifted.T) == new Word.Cons(la, new Word.Nil()));
+                Spec.Assert(StackFringe(shifted) == Append(StackFringe(s), Fringe(shifted.T)));
+                Spec.Assert(Prefix(w, pos + 1) == Append(Prefix(w, pos), new Word.Cons(w[pos], new Word.Nil())));
+            }
+            else if (kinds[la] == Automaton.Reduce)
+            {
+                int r = args[la];
+                if (r < 0 || r >= g.Lhs.Length || r >= g.Rhs.Length || g.NTerm < 0) return;
+                int[]? rhs = g.Rhs[r];
+                if (rhs == null) return;
+                Spec.Assert(Fringes(new Forest.Nil()) == new Word.Nil() && Kids(g, new Forest.Nil(), rhs, rhs.Length));
+                AppendNil(StackFringe(s));
+                PopSound(g, a, s, rhs, rhs.Length, new Forest.Nil(), Prefix(w, pos));
+                ReduceShape(g, a, s, r);
+                if (Pop(a, s, rhs, rhs.Length, new Forest.Nil()) is Popped.Ok ok && Reduce(g, a, s, r) is Stack.Cell pushed)
+                {
+                    var node = new Tree.Node(r, ok.Kids);
+                    Spec.Assert(Valid(g, node, g.Lhs[r]));
+                    Spec.Assert(Fringe(node) == Fringes(ok.Kids));
+                    Spec.Assert(StackFringe(pushed) == Append(StackFringe(ok.Rest), Fringe(node)));
+                }
+            }
+            else if (kinds[la] == Automaton.Accept && s is Stack.Cell c && c.Below is Stack.Empty)
+            {
+                Spec.Assert(StackFringe(c) == Append(StackFringe(c.Below), Fringe(c.T)));
+                Spec.Assert(StackFringe(c.Below) == new Word.Nil());
+            }
+        }
+
+        // ------------------------------------------------------------------------------------------ safety
+
+        /// <summary>
+        /// Reducing rule r in σ, i cells still to pop on a safe stack whose top σ's annotation still describes: the
+        /// checks pass, and what is left is safe and described by the rest of the annotation.
+        /// </summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void PopSafe(Grammar g, Automaton a, Annotations ann, int σ, int r, Stack s, int i, Forest kids)
+        {
+            Spec.Requires(Safety.SafetyOk(g, a, ann) && Safety.Shape(g, a, ann) && 0 <= σ && σ < a.NState &&
+                          Safety.RuleOk(g, a, ann, σ, r) && Safety.Safe(a, ann, s) && 0 <= i && i <= g.Rhs[r].Length &&
+                          Safety.SymsOf(a, ann.Syms[σ], ann.Syms[σ].Length - g.Rhs[r].Length + i, s) &&
+                          Safety.StatesOf(ann.States[σ], ann.States[σ].Length - g.Rhs[r].Length + i, s));
+            Spec.Decreases(i);
+            Spec.Ensures(Pop(a, s, g.Rhs[r], i, kids) is Popped.Ok ok && Safety.Safe(a, ann, ok.Rest) &&
+                         Safety.StatesOf(ann.States[σ], ann.States[σ].Length - g.Rhs[r].Length, ok.Rest));
+            if (i > 0)
+            {
+                Safety.PopIfSafe(g, a, ann, σ, r, i, s);
+                var c = (Stack.Cell)s;
+                Spec.Assert(Pop(a, s, g.Rhs[r], i, kids) == Pop(a, c.Below, g.Rhs[r], i - 1, new Forest.Cons(c.T, kids)));
+                PopSafe(g, a, ann, σ, r, c.Below, i - 1, new Forest.Cons(c.T, kids));
+            }
+            else Spec.Assert(Pop(a, s, g.Rhs[r], 0, kids) == new Popped.Ok(s, kids));
+        }
+
+        /// <summary>With annotations that pass the safety validator, a step on a safe stack is no internal error, and keeps it safe.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void StepSafe(Grammar g, Automaton a, Annotations ann, int[] w, Stack s, int pos)
+        {
+            Spec.Requires(0 <= pos && pos <= w.Length);
+            Spec.Ensures(!Safety.SafetyOk(g, a, ann) || !Safety.Safe(a, ann, s) ||
+                         !(Step(g, a, w, s, pos) is Run.Stopped st && st.R is Result.InternalError) &&
+                         (!(Step(g, a, w, s, pos) is Run.Going go) || Safety.Safe(a, ann, go.S)));
+            if (!Safety.SafetyOk(g, a, ann) || !Safety.Safe(a, ann, s)) return;
+            Safety.AtStateIfSafe(g, a, ann, s);
+            int state = Top(s);
+            Spec.Assert(state == Safety.TopState(s));
+            int la = pos < w.Length ? w[pos] : 0;
+            if (la < 0 || la >= g.NTerm) return;
+            Spec.Assert(Safety.ShiftOk(g, a, ann, state, la) && Safety.ReduceOk(g, a, ann, state, la) && Safety.AcceptOk(g, a, ann, state, la));
+            int[]? kinds = a.Kind[state], args = a.Arg[state];
+            if (kinds![la] == Automaton.Shift)
+            {
+                Safety.PushIfSafe(g, a, ann, s, args![la], new Tree.Leaf(la));
+            }
+            else if (kinds[la] == Automaton.Reduce)
+            {
+                int r = args![la];
+                Spec.Assert(Safety.RuleOk(g, a, ann, state, r));
+                PopSafe(g, a, ann, state, r, s, g.Rhs[r]!.Length, new Forest.Nil());
+                var ok = (Popped.Ok)Pop(a, s, g.Rhs[r]!, g.Rhs[r]!.Length, new Forest.Nil());
+                Safety.GotoIfSafe(g, a, ann, state, r, ok.Rest);
+                Spec.Assert(Top(ok.Rest) == Safety.TopState(ok.Rest));
+                Safety.PushIfSafe(g, a, ann, ok.Rest, a.Goto[Top(ok.Rest)]![g.Lhs[r] - g.NTerm], new Tree.Node(r, ok.Kids));
+            }
+        }
+
+        // ------------------------------------------------------------------------------------------ the interpreter
+
         /// <summary>
         /// Runs the automaton on the input w (terminals; past its end, the lookahead is 0, the end of input) for at
-        /// most fuel steps.
+        /// most fuel steps: the result is what Steps(fuel) comes to (out of fuel if it is still going).
         /// Soundness: an accepted prefix of the input has, as parse tree for the start symbol, the tree returned.
         /// Safety: with annotations that pass the safety validator (ann is ghost: it only names them), there is no
         /// internal error.
@@ -225,122 +508,46 @@ namespace CsLemon.Lr
                 ? 0 <= acc.Consumed && acc.Consumed <= w.Length && Valid(g, acc.T, g.Start) && Fringe(acc.T) == Prefix(w, acc.Consumed)
                 : true);
             Spec.Ensures((Result r) => !Safety.SafetyOk(g, a, ann.Value) || !(r is Result.InternalError));
+            Spec.Ensures((Result r) => Steps(g, a, w, fuel, Start()) is Run.Stopped st ? r == st.R : r is Result.OutOfFuel);
             Stack s = new Stack.Empty();
             int pos = 0;
             Safety.StartIfSafe(g, a, ann.Value);
+            Spec.Assert(StackFringe(s) == new Word.Nil() && Prefix(w, 0) == new Word.Nil());
+            Spec.Assert(Start() == new Run.Going(s, pos) && Steps(g, a, w, 0, Start()) == Start());
             for (int step = 0; step < fuel; step++)
             {
-                Spec.Invariant(0 <= pos && pos <= w.Length);
-                Spec.Invariant(StackOk(g, a, s));
-                Spec.Invariant(StackFringe(s) == Prefix(w, pos));
+                Spec.Invariant(0 <= step && 0 <= pos && pos <= w.Length);
+                Spec.Invariant(StackOk(g, a, s) && StackFringe(s) == Prefix(w, pos));
                 Spec.Invariant(!Safety.SafetyOk(g, a, ann.Value) || Safety.Safe(a, ann.Value, s));
-                int state = s is Stack.Cell top ? top.State : 0;
-                Spec.Assert(state == Safety.TopState(s));
-                Safety.AtStateIfSafe(g, a, ann.Value, s);
-                int la = pos < w.Length ? w[pos] : 0;
-                if (la < 0 || la >= g.NTerm) return new Result.Rejected(pos); // (not a terminal)
-                if (state < 0 || state >= a.Kind.Length || state >= a.Arg.Length) return new Result.InternalError();
-                int[]? kinds = a.Kind[state], args = a.Arg[state];
-                if (kinds == null || args == null || la >= kinds.Length || la >= args.Length) return new Result.InternalError();
-                Spec.Assert(!Safety.SafetyOk(g, a, ann.Value) || Safety.ShiftOk(g, a, ann.Value, state, la) &&
-                            Safety.ReduceOk(g, a, ann.Value, state, la) && Safety.AcceptOk(g, a, ann.Value, state, la));
-                int kind = kinds[la];
-                if (kind == Automaton.Shift)
+                Spec.Invariant(Steps(g, a, w, step, Start()) == new Run.Going(s, pos));
+                StepSound(g, a, w, s, pos);
+                StepSafe(g, a, ann.Value, w, s, pos);
+                StepsLast(g, a, w, step, Start());
+                Run next = Step(g, a, w, s, pos);
+                if (next is Run.Stopped stop)
                 {
-                    int next = args[la];
-                    if (pos == w.Length || next < 0 || next >= a.Incoming.Length || !Match(g, a.Incoming[next], la)) return new Result.InternalError();
-                    var shifted = new Stack.Cell(next, new Tree.Leaf(la), s);
-                    Spec.Assert(Valid(g, shifted.T, a.Incoming[next]));
-                    Spec.Assert(StackOk(g, a, shifted));
-                    Spec.Assert(Fringe(shifted.T) == new Word.Cons(la, new Word.Nil()));
-                    Spec.Assert(StackFringe(shifted) == Append(StackFringe(s), Fringe(shifted.T)));
-                    Spec.Assert(Prefix(w, pos + 1) == Append(Prefix(w, pos), new Word.Cons(w[pos], new Word.Nil())));
-                    Safety.PushIfSafe(g, a, ann.Value, s, next, shifted.T);
-                    s = shifted;
-                    pos++;
+                    StepsRest(g, a, w, step + 1, fuel, Start());
+                    return stop.R;
                 }
-                else if (kind == Automaton.Reduce)
-                {
-                    var red = ReduceStep(g, a, s, args[la], w, pos, ann);
-                    if (red == null) return new Result.InternalError();
-                    s = red;
-                }
-                else if (kind == Automaton.Accept)
-                {
-                    if (s is Stack.Cell c && c.Below is Stack.Empty && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == g.Start)
-                    {
-                        Spec.Assert(StackFringe(c) == Append(StackFringe(c.Below), Fringe(c.T)));
-                        Spec.Assert(StackFringe(c.Below) == new Word.Nil());
-                        return new Result.Accepted(c.T, pos);
-                    }
-                    return new Result.InternalError();
-                }
-                else return new Result.Rejected(pos);
+                var go = (Run.Going)next;
+                s = go.S;
+                pos = go.Pos;
             }
             return new Result.OutOfFuel();
         }
 
-        /// <summary>
-        /// Reduces rule r: pops one cell per right-hand-side symbol (checking each cell's incoming symbol), and pushes
-        /// the node over their trees with the goto state. Null for an internal error, which a validated automaton never
-        /// reaches.
-        /// </summary>
-        public static Stack? ReduceStep(Grammar g, Automaton a, Stack s, int r, int[] w, int pos, Ghost<Annotations> ann)
+        /// <summary>Once stopped, more steps change nothing.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void StepsRest(Grammar g, Automaton a, int[] w, int n, int m, Run r)
         {
-            Spec.Requires(0 <= pos && pos <= w.Length && StackOk(g, a, s) && StackFringe(s) == Prefix(w, pos));
-            Spec.Requires(!Safety.SafetyOk(g, a, ann.Value) ||
-                          Safety.Safe(a, ann.Value, s) && 0 <= Safety.TopState(s) && Safety.TopState(s) < a.NState &&
-                          Safety.RuleOk(g, a, ann.Value, Safety.TopState(s), r));
-            Spec.Ensures((Stack? res) => res == null || StackOk(g, a, res) && StackFringe(res) == Prefix(w, pos));
-            Spec.Ensures((Stack? res) => !Safety.SafetyOk(g, a, ann.Value) || res != null && Safety.Safe(a, ann.Value, res));
-            int sigma = s is Stack.Cell t0 ? t0.State : 0;
-            Spec.Assert(sigma == Safety.TopState(s));
-            Safety.AtStateIfSafe(g, a, ann.Value, s);
-            if (r < 0 || r >= g.Lhs.Length || r >= g.Rhs.Length) return null;
-            int[]? rhs = g.Rhs[r];
-            if (rhs == null || g.NTerm < 0) return null;
-            Forest kids = new Forest.Nil();
-            Spec.Assert(Fringes(kids) == new Word.Nil() && Kids(g, kids, rhs, rhs.Length));
-            AppendNil(StackFringe(s));
-            for (int i = rhs.Length; i > 0; i--)
+            Spec.Requires(0 <= n && n <= m);
+            Spec.Decreases(m - n);
+            Spec.Ensures(!(Steps(g, a, w, n, r) is Run.Stopped) || Steps(g, a, w, m, r) == Steps(g, a, w, n, r));
+            if (n < m)
             {
-                Spec.Invariant(0 <= i && i <= rhs.Length);
-                Spec.Invariant(StackOk(g, a, s));
-                Spec.Invariant(Kids(g, kids, rhs, i));
-                Spec.Invariant(Append(StackFringe(s), Fringes(kids)) == Prefix(w, pos));
-                Spec.Invariant(0 <= r && r < g.Lhs.Length && r < g.Rhs.Length && g.Rhs[r] == rhs && g.NTerm >= 0);
-                /* (safety: the cells left to pop are those σ's annotation describes) */
-                Spec.Invariant(!Safety.SafetyOk(g, a, ann.Value) ||
-                               Safety.Shape(g, a, ann.Value) && Safety.Safe(a, ann.Value, s) && 0 <= sigma && sigma < a.NState &&
-                               Safety.RuleOk(g, a, ann.Value, sigma, r) &&
-                               Safety.SymsOf(a, ann.Value.Syms[sigma], ann.Value.Syms[sigma].Length - rhs.Length + i, s) &&
-                               Safety.StatesOf(ann.Value.States[sigma], ann.Value.States[sigma].Length - rhs.Length + i, s));
-                Safety.PopIfSafe(g, a, ann.Value, sigma, r, i, s);
-                if (!(s is Stack.Cell c) || c.State < 0 || c.State >= a.Incoming.Length || a.Incoming[c.State] != rhs[i - 1]) return null;
-                var more = new Forest.Cons(c.T, kids);
-                Spec.Assert(Kids(g, more, rhs, i - 1));
-                Spec.Assert(Fringes(more) == Append(Fringe(c.T), Fringes(kids)));
-                Spec.Assert(StackFringe(c) == Append(StackFringe(c.Below), Fringe(c.T)));
-                AppendAssoc(StackFringe(c.Below), Fringe(c.T), Fringes(kids));
-                kids = more;
-                s = c.Below;
+                StepsLast(g, a, w, n, r);
+                StepsRest(g, a, w, n + 1, m, r);
             }
-            int lhs = g.Lhs[r];
-            int from = s is Stack.Cell top ? top.State : 0;
-            Spec.Assert(from == Safety.TopState(s));
-            Safety.GotoIfSafe(g, a, ann.Value, sigma, r, s);
-            if (lhs < g.NTerm || from < 0 || from >= a.Goto.Length) return null;
-            int[]? gotos = a.Goto[from];
-            if (gotos == null || lhs - g.NTerm >= gotos.Length) return null;
-            int next = gotos[lhs - g.NTerm];
-            if (next < 0 || next >= a.Incoming.Length || a.Incoming[next] != lhs) return null;
-            var node = new Tree.Node(r, kids);
-            Spec.Assert(Valid(g, node, lhs));
-            Spec.Assert(Fringe(node) == Fringes(kids));
-            var pushed = new Stack.Cell(next, node, s);
-            Spec.Assert(StackFringe(pushed) == Append(StackFringe(s), Fringe(node)));
-            Safety.PushIfSafe(g, a, ann.Value, s, next, node);
-            return pushed;
         }
     }
 }
