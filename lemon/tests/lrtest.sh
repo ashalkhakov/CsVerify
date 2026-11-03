@@ -1,6 +1,7 @@
 #!/bin/sh
 # The verified LR interpreter (lemon/CsLemon/Lr) on Lemon's automata: each tests/lr/<grammar>.<name>.tok is a
-# sequence of terminals; "ok" files must be accepted whole, "bad" ones rejected (never an internal error).
+# sequence of terminals; "ok" files must be accepted whole, "bad" ones rejected (never an internal error); and the
+# safety validator must accept each grammar's automaton and reject corruptions of it (not all: some keep it safe).
 # Usage: lrtest.sh [cslemon dll]
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -13,13 +14,24 @@ for t in "$HERE"/lr/*.tok; do
   out="$(cd "$WORK" && CSLEMON_PARSE="$base.tok" dotnet "$CS" -q "$g.y" 2>&1)"
   n="$(wc -w < "$t" | tr -d ' ')"
   case "$kind" in
-    ok*) expect="accepted $n of $n:" ;;
-    *) expect="rejected at" ;;
+    ok*) expect="(safe) accepted $n of $n:" ;;
+    *) expect="(safe) rejected at" ;;
   esac
   case "$out" in
     "$expect"*) pass=$((pass + 1)) ;;
     *) fail=$((fail + 1)); echo "FAIL: $base: $out" | cut -c1-200 ;;
   esac
+done
+# the safety validator accepts every grammar's automaton, and rejects corrupted ones
+for g in "$HERE"/grammars/*.y; do
+  name="$(basename "$g" .y)"; [ "$name" = errors ] && continue
+  rm -rf "$WORK"; mkdir -p "$WORK"; cp "$g" "$HERE/../CsLemon/lempar.c" "$WORK/"
+  out="$(cd "$WORK" && CSLEMON_VALIDATE=mutate dotnet "$CS" -q "$name.y" 2>/dev/null | grep -E '^(safety|mutations)')"
+  if echo "$out" | grep -q '^safety: validated' && echo "$out" | grep -Eq '^mutations rejected: [1-9]'; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1)); echo "FAIL: $name: $out"
+  fi
 done
 rm -rf "$WORK"
 echo "lrtest: $pass passed, $fail failed"

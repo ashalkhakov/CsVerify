@@ -214,27 +214,36 @@ namespace CsLemon.Lr
 
         /// <summary>
         /// Runs the automaton on the input w (terminals; past its end, the lookahead is 0, the end of input) for at
-        /// most fuel steps. Soundness: an accepted prefix of the input has, as parse tree for the start symbol, the
-        /// tree returned.
+        /// most fuel steps.
+        /// Soundness: an accepted prefix of the input has, as parse tree for the start symbol, the tree returned.
+        /// Safety: with annotations that pass the safety validator (ann is ghost: it only names them), there is no
+        /// internal error.
         /// </summary>
-        public static Result Parse(Grammar g, Automaton a, int[] w, int fuel)
+        public static Result Parse(Grammar g, Automaton a, int[] w, int fuel, Ghost<Annotations> ann)
         {
             Spec.Ensures((Result r) => r is Result.Accepted acc
                 ? 0 <= acc.Consumed && acc.Consumed <= w.Length && Valid(g, acc.T, g.Start) && Fringe(acc.T) == Prefix(w, acc.Consumed)
                 : true);
+            Spec.Ensures((Result r) => !Safety.SafetyOk(g, a, ann.Value) || !(r is Result.InternalError));
             Stack s = new Stack.Empty();
             int pos = 0;
+            Safety.StartIfSafe(g, a, ann.Value);
             for (int step = 0; step < fuel; step++)
             {
                 Spec.Invariant(0 <= pos && pos <= w.Length);
                 Spec.Invariant(StackOk(g, a, s));
                 Spec.Invariant(StackFringe(s) == Prefix(w, pos));
+                Spec.Invariant(!Safety.SafetyOk(g, a, ann.Value) || Safety.Safe(a, ann.Value, s));
                 int state = s is Stack.Cell top ? top.State : 0;
+                Spec.Assert(state == Safety.TopState(s));
+                Safety.AtStateIfSafe(g, a, ann.Value, s);
                 int la = pos < w.Length ? w[pos] : 0;
                 if (la < 0 || la >= g.NTerm) return new Result.Rejected(pos); // (not a terminal)
                 if (state < 0 || state >= a.Kind.Length || state >= a.Arg.Length) return new Result.InternalError();
                 int[]? kinds = a.Kind[state], args = a.Arg[state];
                 if (kinds == null || args == null || la >= kinds.Length || la >= args.Length) return new Result.InternalError();
+                Spec.Assert(!Safety.SafetyOk(g, a, ann.Value) || Safety.ShiftOk(g, a, ann.Value, state, la) &&
+                            Safety.ReduceOk(g, a, ann.Value, state, la) && Safety.AcceptOk(g, a, ann.Value, state, la));
                 int kind = kinds[la];
                 if (kind == Automaton.Shift)
                 {
@@ -246,12 +255,13 @@ namespace CsLemon.Lr
                     Spec.Assert(Fringe(shifted.T) == new Word.Cons(la, new Word.Nil()));
                     Spec.Assert(StackFringe(shifted) == Append(StackFringe(s), Fringe(shifted.T)));
                     Spec.Assert(Prefix(w, pos + 1) == Append(Prefix(w, pos), new Word.Cons(w[pos], new Word.Nil())));
+                    Safety.PushIfSafe(g, a, ann.Value, s, next, shifted.T);
                     s = shifted;
                     pos++;
                 }
                 else if (kind == Automaton.Reduce)
                 {
-                    var red = ReduceStep(g, a, s, args[la], w, pos);
+                    var red = ReduceStep(g, a, s, args[la], w, pos, ann);
                     if (red == null) return new Result.InternalError();
                     s = red;
                 }
@@ -272,12 +282,20 @@ namespace CsLemon.Lr
 
         /// <summary>
         /// Reduces rule r: pops one cell per right-hand-side symbol (checking each cell's incoming symbol), and pushes
-        /// the node over their trees with the goto state. Null for an internal error.
+        /// the node over their trees with the goto state. Null for an internal error, which a validated automaton never
+        /// reaches.
         /// </summary>
-        public static Stack? ReduceStep(Grammar g, Automaton a, Stack s, int r, int[] w, int pos)
+        public static Stack? ReduceStep(Grammar g, Automaton a, Stack s, int r, int[] w, int pos, Ghost<Annotations> ann)
         {
             Spec.Requires(0 <= pos && pos <= w.Length && StackOk(g, a, s) && StackFringe(s) == Prefix(w, pos));
+            Spec.Requires(!Safety.SafetyOk(g, a, ann.Value) ||
+                          Safety.Safe(a, ann.Value, s) && 0 <= Safety.TopState(s) && Safety.TopState(s) < a.NState &&
+                          Safety.RuleOk(g, a, ann.Value, Safety.TopState(s), r));
             Spec.Ensures((Stack? res) => res == null || StackOk(g, a, res) && StackFringe(res) == Prefix(w, pos));
+            Spec.Ensures((Stack? res) => !Safety.SafetyOk(g, a, ann.Value) || res != null && Safety.Safe(a, ann.Value, res));
+            int sigma = s is Stack.Cell t0 ? t0.State : 0;
+            Spec.Assert(sigma == Safety.TopState(s));
+            Safety.AtStateIfSafe(g, a, ann.Value, s);
             if (r < 0 || r >= g.Lhs.Length || r >= g.Rhs.Length) return null;
             int[]? rhs = g.Rhs[r];
             if (rhs == null || g.NTerm < 0) return null;
@@ -291,6 +309,13 @@ namespace CsLemon.Lr
                 Spec.Invariant(Kids(g, kids, rhs, i));
                 Spec.Invariant(Append(StackFringe(s), Fringes(kids)) == Prefix(w, pos));
                 Spec.Invariant(0 <= r && r < g.Lhs.Length && r < g.Rhs.Length && g.Rhs[r] == rhs && g.NTerm >= 0);
+                /* (safety: the cells left to pop are those σ's annotation describes) */
+                Spec.Invariant(!Safety.SafetyOk(g, a, ann.Value) ||
+                               Safety.Shape(g, a, ann.Value) && Safety.Safe(a, ann.Value, s) && 0 <= sigma && sigma < a.NState &&
+                               Safety.RuleOk(g, a, ann.Value, sigma, r) &&
+                               Safety.SymsOf(a, ann.Value.Syms[sigma], ann.Value.Syms[sigma].Length - rhs.Length + i, s) &&
+                               Safety.StatesOf(ann.Value.States[sigma], ann.Value.States[sigma].Length - rhs.Length + i, s));
+                Safety.PopIfSafe(g, a, ann.Value, sigma, r, i, s);
                 if (!(s is Stack.Cell c) || c.State < 0 || c.State >= a.Incoming.Length || a.Incoming[c.State] != rhs[i - 1]) return null;
                 var more = new Forest.Cons(c.T, kids);
                 Spec.Assert(Kids(g, more, rhs, i - 1));
@@ -302,6 +327,8 @@ namespace CsLemon.Lr
             }
             int lhs = g.Lhs[r];
             int from = s is Stack.Cell top ? top.State : 0;
+            Spec.Assert(from == Safety.TopState(s));
+            Safety.GotoIfSafe(g, a, ann.Value, sigma, r, s);
             if (lhs < g.NTerm || from < 0 || from >= a.Goto.Length) return null;
             int[]? gotos = a.Goto[from];
             if (gotos == null || lhs - g.NTerm >= gotos.Length) return null;
@@ -312,6 +339,7 @@ namespace CsLemon.Lr
             Spec.Assert(Fringe(node) == Fringes(kids));
             var pushed = new Stack.Cell(next, node, s);
             Spec.Assert(StackFringe(pushed) == Append(StackFringe(s), Fringe(node)));
+            Safety.PushIfSafe(g, a, ann.Value, s, next, node);
             return pushed;
         }
     }
