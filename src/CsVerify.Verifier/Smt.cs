@@ -157,6 +157,7 @@ namespace CsVerify.Verifier
             Send("(reset)");
             _declared.Clear();
             Depth = 0;
+            Scope = ++_scopes;
             Start();
             foreach (var line in _preamble) Send(line);
         }
@@ -207,8 +208,12 @@ namespace CsVerify.Verifier
             Send($"(assert {t.S})");
         }
 
-        public void Push() { Depth++; Send("(push 1)"); }
-        public void Pop() { Depth--; Send("(pop 1)"); }
+        public void Push() { Depth++; Scope = ++_scopes; Send("(push 1)"); }
+        public void Pop() { Depth--; Scope = ++_scopes; Send("(pop 1)"); }
+
+        /// <summary>Changes whenever an assertion scope is entered or left: a fact asserted under one Scope value is still there.</summary>
+        public long Scope { get; private set; }
+        private long _scopes;
 
         /// <summary>Is <paramref name="t"/> satisfiable together with everything assumed so far?</summary>
         public string Check(Term t)

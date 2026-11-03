@@ -36,6 +36,12 @@ namespace CsVerify
         /// <summary>Lexicographic termination measure with three components.</summary>
         [Conditional(Symbol)] public static void Decreases(int measure1, int measure2, int measure3) { }
 
+        /// <summary>
+        /// Structural termination measure: <paramref name="structure"/>, a value of a data type (a closed positional
+        /// record hierarchy), is smaller at every recursive call, as when recursing on a sub-term (ATS's datatype metrics).
+        /// </summary>
+        [Conditional(Symbol)] public static void Decreases<T>(T structure) where T : class { }
+
         /// <summary>Proof obligation at this point.</summary>
         [Conditional(Symbol)] public static void Assert(bool condition) { }
 

@@ -92,6 +92,8 @@ namespace CsVerify.Analyzers
         {
             var op = context.Operation;
             if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel)) return;
+            // building an immutable value (a positional record) is not an effect: it is a data constructor
+            if (op is IObjectCreationOperation oc && oc.Initializer == null && SpecSymbols.IsValueRecord(oc.Type)) return;
             Report(context, op, $"allocation '{op.Syntax}'");
         }
     }

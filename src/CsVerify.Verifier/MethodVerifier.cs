@@ -18,7 +18,7 @@ namespace CsVerify.Verifier
     /// assertion, invariant, termination measure, postcondition) becomes the query "path condition and not goal",
     /// which Z3 must find unsatisfiable. Loops are cut at their head with Spec.Invariant; calls are modular.
     /// </summary>
-    internal sealed class MethodVerifier
+    internal sealed partial class MethodVerifier
     {
         private sealed class Loop
         {
@@ -168,7 +168,7 @@ namespace CsVerify.Verifier
                 var spec = new SpecEnv { Old = _entry };
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
-                if (_contract.Decreases != null) _entryMeasure = _contract.Decreases.Select(m => EvalOwnSpec(m, f, spec)).ToArray();
+                if (_contract.Decreases != null) _entryMeasure = _contract.Decreases.Select(m => ToMeasure(m, EvalOwnSpec(m, f, spec))).ToArray();
                 _entry = f.Clone();
                 Exec(cfg.Blocks[0], f, new HashSet<int>());
             }
@@ -369,7 +369,7 @@ namespace CsVerify.Verifier
 
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
             foreach (var inv in loop.Invariants) _z3.Assume(AsBool(EvalOwnSpec(inv, f, spec)));
-            if (loop.Decreases != null) f.LoopMeasures[loop.Id] = loop.Decreases.Select(m => EvalOwnSpec(m, f, spec)).ToArray();
+            if (loop.Decreases != null) f.LoopMeasures[loop.Id] = loop.Decreases.Select(m => ToMeasure(m, EvalOwnSpec(m, f, spec))).ToArray();
             f.ActiveLoops.Add(loop.Id);
         }
 
@@ -672,26 +672,16 @@ namespace CsVerify.Verifier
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
                 case IArgumentOperation arg: return Eval(arg.Value, f, spec);
                 case IExpressionStatementOperation es: return Eval(es.Operation, f, spec);
-                case IObjectCreationOperation oc:
-                {
-                    foreach (var a in oc.Arguments) NonNullArgument(a, Eval(a.Value, f, spec), oc.Constructor);
-                    if (oc.Constructor == null || _engine.MayWriteHeap(oc.Constructor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
-                    if (oc.Initializer != null) NotModeled(oc.Initializer.Syntax, "object initializers are not supported");
-                    var obj = Unknown(op.Type, "new");
-                    if (MayBeNullType(op.Type)) _z3.Assume(NotNull(obj));
-                    return obj;
-                }
+                case IObjectCreationOperation oc: return NewObject(oc, f, spec);
                 case IIsNullOperation isn:
                 {
                     // the lowering of ?. and ?? in code
                     var v = Eval(isn.Operand, f, spec);
                     return MayBeNullType(isn.Operand.Type) ? T.Eq(v, T.Int(0)) : _z3.Fresh("isnull", Sort.Bool);
                 }
-                case IIsPatternOperation ip when NullPattern(ip.Pattern) is bool isNull && MayBeNullType(ip.Value.Type):
-                {
-                    var eq = T.Eq(Eval(ip.Value, f, spec), T.Int(0));
-                    return isNull ? eq : T.Not(eq);
-                }
+                case IIsPatternOperation ip: return Pattern(ip.Pattern, Eval(ip.Value, f, spec), f, spec);
+                case IIsTypeOperation it when !it.IsNegated: return TypeTest(Eval(it.ValueOperand, f, spec), it.ValueOperand.Type, it.TypeOperand);
+                case ISwitchExpressionOperation sw: return SwitchExpression(sw, f, spec);
                 case IConditionalAccessOperation ca when MayBeNullType(ca.Type):
                 {
                     // a?.b in a specification (code sees it lowered): b is evaluated, and well-defined, only if a is not null
@@ -749,6 +739,7 @@ namespace CsVerify.Verifier
 
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
+            if (IsRecordEquality(b)) return RecordEquality(b, f, spec);
             if (b.OperatorMethod != null && b.OperatorMethod.ContainingType.SpecialType == SpecialType.System_String &&
                 (b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals) &&
                 (IsNullConstant(b.LeftOperand) || IsNullConstant(b.RightOperand)))
@@ -783,8 +774,8 @@ namespace CsVerify.Verifier
             bool boolean = l.Sort == Sort.Bool && r.Sort == Sort.Bool;
             switch (b.OperatorKind)
             {
-                case BinaryOperatorKind.Equals: return numeric || boolean || opType?.IsReferenceType == true || SpecSymbols.IsLinear(opType) ? T.Eq(l, r) : Unknown(b.Type);
-                case BinaryOperatorKind.NotEquals: return numeric || boolean || opType?.IsReferenceType == true ? T.Not(T.Eq(l, r)) : Unknown(b.Type);
+                case BinaryOperatorKind.Equals: return numeric || boolean || IsModeledReferenceEquality(b) || SpecSymbols.IsLinear(opType) ? T.Eq(l, r) : Unknown(b.Type);
+                case BinaryOperatorKind.NotEquals: return numeric || boolean || IsModeledReferenceEquality(b) ? T.Not(T.Eq(l, r)) : Unknown(b.Type);
                 case BinaryOperatorKind.LessThan: return numeric ? T.Lt(l, r) : Unknown(b.Type);
                 case BinaryOperatorKind.LessThanOrEqual: return numeric ? T.Le(l, r) : Unknown(b.Type);
                 case BinaryOperatorKind.GreaterThan: return numeric ? T.Gt(l, r) : Unknown(b.Type);
@@ -794,6 +785,25 @@ namespace CsVerify.Verifier
                 case BinaryOperatorKind.ExclusiveOr when boolean: return T.Xor(l, r);
                 default: return Arith(b.OperatorKind, l, r, b.Type, b.Syntax, false);
             }
+        }
+
+        /// <summary>
+        /// Reference <c>==</c> is the verifier's equality of references, except where one side may be a data value:
+        /// data values have no identity of their own (a value is its contents), so only a comparison with null is known.
+        /// </summary>
+        private bool IsModeledReferenceEquality(IBinaryOperation b)
+        {
+            var t = b.LeftOperand.Type;
+            if (t?.IsReferenceType != true) return false;
+            if (IsNullConstant(b.LeftOperand) || IsNullConstant(b.RightOperand)) return true;
+            return !Data.MayHoldData(Unconverted(b.LeftOperand).Type) && !Data.MayHoldData(Unconverted(b.RightOperand).Type);
+        }
+
+        /// <summary>The operand under implicit reference conversions (reference == converts both sides to object).</summary>
+        private static IOperation Unconverted(IOperation op)
+        {
+            while (op is IConversionOperation c && c.IsImplicit && c.Conversion.IsReference) op = c.Operand;
+            return op;
         }
 
         private Term Arith(BinaryOperatorKind kind, Term l, Term r, ITypeSymbol type, SyntaxNode at, bool userDefined)
@@ -941,6 +951,12 @@ namespace CsVerify.Verifier
                     if (IsSpan(pr.Instance.Type)) return Unknown(pr.Type, "spanElem");
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type));
                 }
+            }
+            if (pr.Instance != null && DataTypes.IsPositional(prop) && Data.IsData(prop.ContainingType))
+            {
+                var o = Eval(pr.Instance, f, spec);
+                Deref(pr.Instance, o, pr.Syntax);
+                return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
             if (!IsStableProperty(prop))
                 NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only get-only auto-properties and properties of immutable types are");
@@ -1181,7 +1197,7 @@ namespace CsVerify.Verifier
         }
 
         private Term[] EvalMeasure(IReadOnlyList<IOperation> measure, Frame f, SpecEnv spec) =>
-            measure.Select(m => EvalForeignSpec(m, f, spec)).ToArray();
+            measure.Select(m => ToMeasure(m, EvalForeignSpec(m, f, spec))).ToArray();
 
         private static string MeasureText(IReadOnlyList<IOperation> measure) => string.Join(", ", measure.Select(m => m.Syntax));
 
@@ -1292,20 +1308,6 @@ namespace CsVerify.Verifier
             attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis." + name);
 
         private static bool IsNullConstant(IOperation op) => op.ConstantValue.HasValue && op.ConstantValue.Value == null;
-
-        /// <summary><c>is null</c> (true), <c>is not null</c> and <c>is { }</c> (false); any other pattern: null.</summary>
-        private static bool? NullPattern(IPatternOperation p)
-        {
-            switch (p)
-            {
-                case IConstantPatternOperation c when IsNullConstant(c.Value): return true;
-                case INegatedPatternOperation n: return !NullPattern(n.Pattern);
-                case IRecursivePatternOperation r when r.DeconstructionSubpatterns.IsEmpty && r.PropertySubpatterns.IsEmpty &&
-                                                       r.DeclaredSymbol == null && SymbolEqualityComparer.Default.Equals(r.MatchedType, r.InputType):
-                    return false;
-                default: return null;
-            }
-        }
 
         /// <summary>Member access, indexing or a call on <paramref name="receiver"/>: defined only if it is not null.</summary>
         private void Deref(IOperation receiver, Term r, SyntaxNode at)

@@ -27,6 +27,22 @@ namespace CsVerify.Analyzers
 
         public static bool IsLemma(ISymbol s) => HasAttribute(s, "LemmaAttribute");
         public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
+        public static bool IsInvariant(ISymbol s) => HasAttribute(s, "InvariantAttribute");
+
+        /// <summary>A record class whose whole state (its own and its bases') is init-only positional properties.</summary>
+        public static bool IsValueRecord(ITypeSymbol type)
+        {
+            for (var t = type as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+            {
+                if (!t.IsRecord || t.TypeKind != TypeKind.Class) return false;
+                foreach (var f in t.GetMembers().OfType<IFieldSymbol>())
+                    if (!f.IsStatic && !(f.AssociatedSymbol is IPropertySymbol p && p.SetMethod?.IsInitOnly != false &&
+                                         p.DeclaringSyntaxReferences.Length > 0 &&
+                                         p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax)))
+                        return false;
+            }
+            return true;
+        }
         /// <summary>[Pure] or [GhostFunction]: a mathematical function the verifier may use in specifications.</summary>
         public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s);
         public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq");

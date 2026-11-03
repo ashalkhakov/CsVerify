@@ -36,4 +36,11 @@ namespace CsVerify
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class PureAttribute : Attribute { }
+
+    /// <summary>
+    /// An object invariant: a [Pure] parameterless bool method of an immutable positional record. It is proved at
+    /// every construction (<c>new</c>) and assumed of every object of the type, which can never change afterwards.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class InvariantAttribute : Attribute { }
 }

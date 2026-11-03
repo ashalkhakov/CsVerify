@@ -75,9 +75,12 @@ namespace CsVerify.Verifier
         private readonly Compilation _compilation;
         private readonly Dictionary<IMethodSymbol, Contract> _contracts = new Dictionary<IMethodSymbol, Contract>(SymbolEqualityComparer.Default);
 
-        private Engine(Compilation compilation, VerifierOptions options)
+        internal readonly DataTypes Data;
+
+        private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
             _compilation = compilation;
+            Data = new DataTypes(compilation, userTrees);
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);
@@ -154,6 +157,41 @@ namespace CsVerify.Verifier
             return result;
         }
 
+        internal SemanticModel ModelOf(SyntaxTree tree) => _compilation.GetSemanticModel(tree);
+
+        private HashSet<IMethodSymbol> _underInvariants;
+
+        /// <summary>
+        /// Does an [Invariant] method depend on this one (calls it, in code or specifications, directly or not)? Then
+        /// verifying it may not assume invariants: the invariant would be proved at construction with facts that
+        /// were themselves derived from it.
+        /// </summary>
+        internal bool IsUnderInvariant(IMethodSymbol m)
+        {
+            if (_underInvariants == null)
+            {
+                _underInvariants = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+                var work = new Stack<IMethodSymbol>();
+                foreach (var tree in _compilation.SyntaxTrees)
+                {
+                    var model = _compilation.GetSemanticModel(tree);
+                    foreach (var decl in tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
+                        if (model.GetDeclaredSymbol(decl) is IMethodSymbol im && SpecSymbols.IsInvariant(im)) work.Push(im);
+                }
+                while (work.Count > 0)
+                {
+                    var next = work.Pop();
+                    if (!_underInvariants.Add(next)) continue;
+                    var c = ContractOf(next);
+                    if (!c.HasSource) continue;
+                    foreach (var inv in c.Declaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                        if (c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)
+                            work.Push((callee.ReducedFrom ?? callee).OriginalDefinition);
+                }
+            }
+            return _underInvariants.Contains((m.ReducedFrom ?? m).OriginalDefinition);
+        }
+
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
@@ -179,7 +217,7 @@ namespace CsVerify.Verifier
             if (result.CompilationErrors.Count > 0) return result;
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
-            using var engine = new Engine(compilation, options);
+            using var engine = new Engine(compilation, options, userTrees);
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
