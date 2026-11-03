@@ -5,5 +5,10 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Authors>Artyom Shalkhakov</Authors>
     <Version>0.1.0</Version>
+    <Copyright>Copyright (c) 2026 Artyom Shalkhakov</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ashalkhakov/CsVerify</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ashalkhakov/CsVerify</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 </Project>

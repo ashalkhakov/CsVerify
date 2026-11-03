@@ -755,6 +755,10 @@ samples/Good, samples/Buggy
 - Views and ghosts cost nothing in an erased build (`-p:CsVerifyErase=true`): the erasure pass deletes the types, parameters and calls, so nothing of them reaches the IL. In a normal build they are still empty structs (one byte each to the CLR, no data) passed to empty, inlined methods.
 - The `CsVerify` package produced by `dotnet pack` is not published. The verifier is a `dotnet tool` (`PackAsTool`) that is not published either.
 
+## Licence
+
+MIT: see [LICENSE](LICENSE). The ported samples are rewritten, not copied, from the sources named under Samples. Those that carry a licence are MIT or MIT-style (Dafny, *ACSL by Example*, the INT2PROGINATS code, the ATS-CodeBook), and the rest are the author's own ATS repositories.
+
 ## References
 
 - H. Xi, *Applied Type System* (extended abstract), TYPES 2003.
