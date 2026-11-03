@@ -447,6 +447,7 @@ namespace CsVerify.Verifier
                 bool liveView = IsMemView(TypeOf(s)) && f.LiveMemViews.Contains(s);
                 if (liveView) ReleaseMemView(f, s);
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
+                if (IsNonNullVariable(s)) _z3.Assume(NotNull(f.Vars[s])); // (every write proves it)
                 if (liveView) MemViewAlive(f, s, f.Vars[s]);
             }
             if (loop.HavocAllFields) HavocAllFields(f);
@@ -791,7 +792,9 @@ namespace CsVerify.Verifier
                     if (fr.Instance != null) Deref(fr.Instance, args[0], fr.Syntax);
                     if (!fr.Field.IsReadOnly && !fr.Field.IsConst)
                         NotModeled(fr.Syntax, $"mutable field '{fr.Field.Name}' is not supported (its writes are not tracked)");
-                    return T.Coerce(_z3.Apply(fr.Field.OriginalDefinition.ToDisplayString(), SortOf(fr.Field.OriginalDefinition.Type), args), SortOf(fr.Type));
+                    var fv = T.Coerce(_z3.Apply(fr.Field.OriginalDefinition.ToDisplayString(), SortOf(fr.Field.OriginalDefinition.Type), args), SortOf(fr.Type));
+                    if (IsNonNullReadonlyStatic(fr.Field)) AssumeSide(NotNull(fv));
+                    return fv;
                 }
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
@@ -1030,7 +1033,10 @@ namespace CsVerify.Verifier
                     if (kind == BinaryOperatorKind.ExclusiveOr) return T.Xor(l, r);
                 }
                 if (_codeMode) Warn(at, $"operator on {type?.Name ?? "?"} is not modeled; result is unknown");
-                return Unknown(type);
+                var unknown = Unknown(type);
+                if (!userDefined && type?.SpecialType == SpecialType.System_String && kind == BinaryOperatorKind.Add)
+                    AssumeSide(NotNull(unknown)); // a concatenation is never null
+                return unknown;
             }
             Term v;
             switch (kind)
@@ -1105,12 +1111,14 @@ namespace CsVerify.Verifier
             {
                 case ILocalReferenceOperation l:
                     if (l.Local.RefKind != RefKind.None) NotModeled(l.Syntax, $"ref local '{l.Local.Name}' is not supported (it may alias the heap)");
+                    CheckNonNullVariable(l.Local, v, l.Syntax.Parent ?? l.Syntax);
                     f.Vars[l.Local] = v;
                     if (IsViewVariable(l.Local)) ViewAlive(l.Local, v, f);
                     if (SpecSymbols.IsLinearPackage(l.Local.Type)) f.LivePackages.Add(l.Local);
                     if (IsMemView(l.Local.Type)) MemViewAlive(f, l.Local, v);
                     break;
                 case IParameterReferenceOperation p:
+                    CheckNonNullVariable(p.Parameter, v, p.Syntax.Parent ?? p.Syntax);
                     f.Vars[p.Parameter] = v;
                     if (IsViewVariable(p.Parameter) && p.Parameter.RefKind != RefKind.In) ViewAlive(p.Parameter, v, f);
                     if (SpecSymbols.IsLinearPackage(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) f.LivePackages.Add(p.Parameter);
@@ -1373,10 +1381,16 @@ namespace CsVerify.Verifier
                 var libraryMemory = f.Heap;
                 var libraryHeld = f.ArrPerm;
                 DeferTies();
+                var whenNotNull = new List<(Term value, bool when)>();
                 foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
                 {
                     var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
                     if (IsNonNullable(a.Parameter.OriginalDefinition)) _z3.Assume(NotNull(nv));
+                    // [MaybeNullWhen(false)] out TValue value, with TValue a non-nullable type: not null when it returns true
+                    else if (IsNonNullableType(a.Parameter.Type) && a.Parameter.OriginalDefinition.GetAttributes().FirstOrDefault(x =>
+                                 x.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute") is AttributeData mnw &&
+                             mnw.ConstructorArguments.Length == 1 && mnw.ConstructorArguments[0].Value is bool maybeNullWhen)
+                        whenNotNull.Add((nv, !maybeNullWhen));
                     Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
@@ -1386,6 +1400,8 @@ namespace CsVerify.Verifier
                 HavocFields(f, m, touched);
                 CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                foreach (var (value, when) in whenNotNull)
+                    if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                 AllocAfterCall(f, libResult);
                 LibraryNullFacts(inv, argTerms, libResult);
                 return libResult;

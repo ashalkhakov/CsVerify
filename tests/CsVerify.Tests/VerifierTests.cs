@@ -713,6 +713,26 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void NonNullableLocals_StayNotNullThroughLoops()
+        {
+            const string node = "public sealed class Node { public Node? Next; } ";
+            Assert.Empty(Harness.Verify(node + "public static class C { static Node M(Node n) { Node p = n; while (p.Next != null) p = p.Next; return p; } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1014" }, Harness.Verify(node + "public static class C { static void M(Node n) { Node p = n; p = n.Next!; } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1013" }, Harness.Verify(node + "public static class C { static int M(Node n) { var p = n.Next; while (p != null) p = p.Next; return p.GetHashCode(); } }").Errors("M"));
+        }
+
+        [Fact]
+        public void LibraryNullness_IsKnown()
+        {
+            // a concatenation is never null; a static readonly field made with an object is not; TryGetValue's out
+            // value is not null when it returns true
+            Assert.Empty(Errors("M", "static int M(string a) => (a + \"x\").Length;"));
+            Assert.Empty(Errors("M", "static readonly int[] T = new int[4]; static int M() => T.Length;"));
+            Assert.Empty(Errors("M", "static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? s.Length : 0;"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? 0 : s.Length;"));
+        }
+
+        [Fact]
         public void ArrayElements_AreMaybeNull()
         {
             // C# lets string[] hold nulls (new string[n] is all nulls): only a specification says otherwise

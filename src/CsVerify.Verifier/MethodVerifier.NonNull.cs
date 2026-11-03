@@ -23,7 +23,12 @@ namespace CsVerify.Verifier
         internal static bool IsNonNullField(ISymbol field)
         {
             if (!FieldEffects.IsHeapField(field) || !IsNonNullableType(FieldType(field))) return false;
-            if (!field.IsStatic) return true;
+            return !field.IsStatic || StartsWithObject(field);
+        }
+
+        /// <summary>A static field whose initializer makes an object (or is a string literal): not null to begin with.</summary>
+        internal static bool StartsWithObject(ISymbol field)
+        {
             return field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().Any(v =>
                 v.Initializer?.Value is BaseObjectCreationExpressionSyntax || v.Initializer?.Value is ArrayCreationExpressionSyntax ||
                 v.Initializer?.Value is ImplicitArrayCreationExpressionSyntax || v.Initializer?.Value is CollectionExpressionSyntax ||
@@ -46,6 +51,28 @@ namespace CsVerify.Verifier
             if (instance is IInstanceReferenceOperation && _method.MethodKind == MethodKind.Constructor) return;
             AssumeSide(NotNull(v));
         }
+
+        /// <summary>
+        /// A static readonly field (not a heap field: it is set once) that starts with an object never changes, so it
+        /// is never null (a static constructor could set it again, but only to what it then proves).
+        /// </summary>
+        private static bool IsNonNullReadonlyStatic(IFieldSymbol field) =>
+            field.IsStatic && field.IsReadOnly && IsNonNullableType(field.OriginalDefinition.Type) && StartsWithObject(field) &&
+            !(field.ContainingType.StaticConstructors.Any(c => c.DeclaringSyntaxReferences.Length > 0));
+
+        /// <summary>
+        /// A local or parameter of non-nullable type (<c>Config ptr</c>; not <c>var</c>, whose type is nullable): every
+        /// write proves the value is not null, so it stays not null where a loop forgets its value.
+        /// </summary>
+        private void CheckNonNullVariable(ISymbol variable, Term v, SyntaxNode at)
+        {
+            if (!_codeMode || v.Sort != Sort.Int) return;
+            if (IsNonNullVariable(variable)) Prove(NotNull(v), "CSV1014", at, $"'{at}' might store null, but '{variable.Name}' is not nullable");
+        }
+
+        private static bool IsNonNullVariable(ISymbol variable) =>
+            variable is ILocalSymbol l ? IsNonNullableType(l.Type) && l.RefKind == RefKind.None
+            : variable is IParameterSymbol p && p.RefKind == RefKind.None && IsNonNullable(p);
 
         private void CheckNonNullWrite(ISymbol field, Term v, SyntaxNode at)
         {
