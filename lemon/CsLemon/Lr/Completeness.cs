@@ -554,5 +554,72 @@ namespace CsLemon.Lr
                 Spec.Assert(Interpreter.Pop(a, s, rhs, i, i, new Forest.Nil()) == new Popped.Ok(s, new Forest.Nil()));
             }
         }
+
+        // ------------------------------------------------------------------------------------------ completeness
+
+        /// <summary>
+        /// Completeness (the paper's Theorem 3): with items that pass the completeness validator, for a parse tree t of
+        /// the start symbol whose leaves are the input w, Size(t) + 1 steps from the start accept t itself.
+        /// </summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void Accepts(Grammar g, Automaton a, Items it, int[] w, Tree t)
+        {
+            Spec.Requires(CompleteOk(g, a, it) && Wf(g, a, it) && ItemShape(g, a, it) && Interpreter.Valid(g, t, g.Start) &&
+                          WordAt(w, 0, Interpreter.Fringe(t)) && Len(Interpreter.Fringe(t)) == w.Length);
+            Spec.Ensures(Interpreter.Steps(g, a, w, Size(t) + 1, Interpreter.Start()) == new Run.Stopped(new Result.Accepted(t, w.Length)));
+            Spec.Assert(RootOk(g, a, it));
+            int acc = a.Goto[0]![g.Start - g.NTerm];
+            Spec.Assert(0 < acc && acc < a.NState && a.Incoming[acc] == g.Start && a.Kind[acc]![0] == Automaton.Accept);
+            if (t is Tree.Leaf l0)
+                Spec.Assert(Interpreter.Matches(g, g.Start, l0.Term) && l0.Term < g.NTerm && g.NTerm <= g.Start && g.Start < g.NSym);
+            Spec.Assert(!(t is Tree.Leaf));
+            var node = (Tree.Node)t;
+            int r = node.Rule;
+            int[] rhs = g.Rhs[r]!;
+            Spec.Assert(0 <= r && r < g.Lhs.Length && g.Lhs[r] == g.Start && Interpreter.Kids(g, node.Kids, rhs, 0));
+            Spec.Assert(Has(g, a, it, 0, r, 0, 0));
+            Spec.Assert(Interpreter.Fringe(t) == Interpreter.Fringes(node.Kids));
+            Spec.Assert(La(w, w.Length) == 0);
+            var empty = new Stack.Empty();
+            Spec.Assert(Interpreter.Top(empty) == 0 && Interpreter.Start() == new Run.Going(empty, 0));
+            WalkKids(g, a, it, w, node.Kids, r, 0, empty, 0, 0);
+            var mid = (Run.Going)Interpreter.Steps(g, a, w, SizeF(node.Kids), Interpreter.Start());
+            int σ1 = Interpreter.Top(mid.S);
+            Spec.Assert(mid.Pos == w.Length);
+            /* the reduce of the root's rule, at the end of input */
+            AtItem(g, a, it, σ1, r, rhs.Length);
+            int k1 = FindItem(g, a, it, σ1, r, rhs.Length, 0);
+            Spec.Assert(ItemActsOk(g, a, it, σ1, r, rhs.Length, it.La[σ1]![k1]!));
+            Spec.Assert(Safety.In(it.La[σ1]![k1]!, 0));
+            Spec.Assert(a.Kind[σ1]![0] == Automaton.Reduce && a.Arg[σ1]![0] == r);
+            Interpreter.ReduceShape(g, a, mid.S, r);
+            Spec.Assert(Interpreter.Pop(a, mid.S, rhs, 0, rhs.Length, new Forest.Nil()) == new Popped.Ok(empty, node.Kids));
+            var top = new Stack.Cell(acc, t, empty);
+            Spec.Assert(Interpreter.Reduce(g, a, mid.S, r) == top);
+            Spec.Assert(Interpreter.Step(g, a, w, mid.S, mid.Pos) == new Run.Going(top, w.Length));
+            /* the accept */
+            Spec.Assert(Interpreter.Top(top) == acc);
+            Spec.Assert(Interpreter.Step(g, a, w, top, w.Length) == new Run.Stopped(new Result.Accepted(t, w.Length)));
+            StepsOne(g, a, w, mid.S, mid.Pos);
+            StepsOne(g, a, w, top, w.Length);
+            StepsAdd(g, a, w, 1, 1, mid);
+            StepsAdd(g, a, w, SizeF(node.Kids), 2, Interpreter.Start());
+            Spec.Assert(Size(t) + 1 == SizeF(node.Kids) + 2);
+        }
+
+        /// <summary>
+        /// Completeness for Parse: with more fuel than the tree's size, Steps(fuel) accepts t, so (Parse's
+        /// postcondition) Parse returns Accepted(t, |w|): a validated grammar is unambiguous, and every sentence is
+        /// parsed, into its one parse tree.
+        /// </summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void ParseAccepts(Grammar g, Automaton a, Items it, int[] w, Tree t, int fuel)
+        {
+            Spec.Requires(CompleteOk(g, a, it) && Wf(g, a, it) && ItemShape(g, a, it) && Interpreter.Valid(g, t, g.Start) &&
+                          WordAt(w, 0, Interpreter.Fringe(t)) && Len(Interpreter.Fringe(t)) == w.Length && fuel > Size(t));
+            Spec.Ensures(Interpreter.Steps(g, a, w, fuel, Interpreter.Start()) == new Run.Stopped(new Result.Accepted(t, w.Length)));
+            Accepts(g, a, it, w, t);
+            Interpreter.StepsRest(g, a, w, Size(t) + 1, fuel, Interpreter.Start());
+        }
     }
 }
