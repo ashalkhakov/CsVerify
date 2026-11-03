@@ -43,8 +43,11 @@ namespace CsLemon.Lr
         private Result() { }
         /// <summary>The first <c>Consumed</c> terminals of the input are a sentence; T is its parse tree.</summary>
         public sealed record Accepted(Tree T, int Consumed) : Result;
-        /// <summary>The input is not a sentence: no action at this terminal.</summary>
-        public sealed record Rejected(int At) : Result;
+        /// <summary>
+        /// The input is not a sentence: no action at the terminal At. S is the stack then: its trees are the
+        /// reductions made so far (a parser that runs actions as it reduces has run theirs).
+        /// </summary>
+        public sealed record Rejected(int At, Stack S) : Result;
         public sealed record OutOfFuel() : Result;
         /// <summary>The automaton does not fit the grammar (a validated one never gets here).</summary>
         public sealed record InternalError() : Result;
@@ -297,7 +300,7 @@ namespace CsLemon.Lr
             Spec.Requires(0 <= pos && pos <= w.Length);
             int state = Top(s);
             int la = pos < w.Length ? w[pos] : 0;
-            if (la < 0 || la >= g.NTerm) return new Run.Stopped(new Result.Rejected(pos)); // (not a terminal)
+            if (la < 0 || la >= g.NTerm) return new Run.Stopped(new Result.Rejected(pos, s)); // (not a terminal)
             if (state < 0 || state >= a.Kind.Length || state >= a.Arg.Length) return new Run.Stopped(new Result.InternalError());
             int[]? kinds = a.Kind[state], args = a.Arg[state];
             if (kinds == null || args == null || la >= kinds.Length || la >= args.Length) return new Run.Stopped(new Result.InternalError());
@@ -320,7 +323,7 @@ namespace CsLemon.Lr
                     return new Run.Stopped(new Result.Accepted(c.T, pos));
                 return new Run.Stopped(new Result.InternalError());
             }
-            return new Run.Stopped(new Result.Rejected(pos));
+            return new Run.Stopped(new Result.Rejected(pos, s));
         }
 
         /// <summary>n steps from r (a stopped run stays stopped).</summary>

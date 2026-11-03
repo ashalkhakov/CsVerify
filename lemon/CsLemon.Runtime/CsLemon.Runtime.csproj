@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The run time of the parsers CsLemon generates in C# (-C): the verified LR interpreter, and the validators
+       CsLemon runs on each automaton before it writes one (see ../Lr/DESIGN.md). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <RootNamespace>CsLemon.Lr</RootNamespace>
+    <AssemblyName>CsLemon.Runtime</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CsVerify.Spec\CsVerify.Spec.csproj" />
+    <ProjectReference Include="..\..\src\CsVerify.Analyzers\CsVerify.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

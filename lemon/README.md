@@ -26,6 +26,19 @@ dotnet run --project lemon/CsLemon -- [options] grammar.y
 The options are Lemon's (`-x` for the version, `-g` to reprint the grammar, `-s` for statistics, `-D` for `%ifdef`
 macros, and so on). It writes `grammar.c`, `grammar.h` and the report `grammar.out` as Lemon does.
 
+### C# parsers
+
+`cslemon -C grammar.y` writes `grammar.cs` instead of `grammar.c` and `grammar.h`: a parser that runs the verified LR
+interpreter (`CsLemon.Runtime`, which it references) on the automaton CsLemon built, once that passes the safety
+validator. The grammar's actions are C#: each rule's code runs with its aliases as variables of their symbols'
+`%type`s (`%token_type` for terminals); `%include` goes at the top of the file, `%code` into the parser class,
+`%extra_argument` becomes a parameter, and `%syntax_error`, `%parse_accept`, `%parse_failure` run as in Lemon. The
+parser class is `<%name>Parser` (`ParseParser` by default), with the token codes Lemon's header has as constants, and
+`Parse(int[] tokens, object?[] values[, extra])`. The actions run after the interpreter has parsed the input, on the
+parse tree, in the order an LR parser reduces; on a syntax error, those of the reductions made before it run first,
+as in Lemon's C parsers. Unlike them, it does not recover from an error inside the input (by dropping tokens): the
+error is reported and parsing stops.
+
 ## Testing
 
 `tests/difftest.sh <C lemon>` runs CsLemon and the C lemon it was ported from on every grammar in `tests/grammars`
@@ -34,10 +47,15 @@ rules and unambiguous ones), with each of 14 option sets, and compares every out
 exit code byte for byte.
 The C lemon is built from lemon-grove's `lemon.c`: `cc -o lemon lemon.c`.
 
+`tests/parsertest.sh <C lemon>` compares the parsers themselves: each grammar in `tests/parsers` is there twice, with
+C actions (built by the C lemon and cc) and with C# actions (built by `cslemon -C` and dotnet), and both parsers run
+on the same token files and must print the same. `tests/lrtest.sh` runs the interpreter and the validators on the
+test grammars (below).
+
 ## Verification
 
 ```
-dotnet run --project src/CsVerify.Verifier -- lemon/CsLemon
+dotnet run --project src/CsVerify.Verifier -- lemon/CsLemon lemon/CsLemon.Runtime
 ```
 
 verifies every method (310 of 310, the validated parser of the next section included). What that proves, beyond what C# already guarantees (no memory corruption):
@@ -62,7 +80,7 @@ That the generated parser is right is checked per grammar, by validation (next s
 ## A validated LR(1) parser
 
 Following Jourdan, Pottier and Leroy, *Validating LR(1) Parsers* (ESOP 2012), written from the paper (see
-`Lr/DESIGN.md`), `CsLemon/Lr` has an LR interpreter and two validators, all verified:
+`Lr/DESIGN.md`), `CsLemon.Runtime` has an LR interpreter and two validators, all verified:
 
 - **Soundness** (`Interpreter.cs`): for any automaton, what the interpreter accepts comes with a parse tree of the
   start symbol whose leaves are exactly the input consumed.

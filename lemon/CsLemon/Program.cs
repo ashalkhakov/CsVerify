@@ -94,6 +94,7 @@ namespace CsLemon
         {
             new Opt { label = "b", isFlag = true, message = "Print only the basis in report." },
             new Opt { label = "c", isFlag = true, message = "Don't compress the action table." },
+            new Opt { label = "C", isFlag = true, message = "Write a C# parser (grammar.cs, actions in C#) instead of C." },
             new Opt { label = "d", message = "Output directory.  Default '.'" },
             new Opt { label = "D", message = "Define an %ifdef macro." },
             new Opt { label = "E", isFlag = true, message = "Print input file after preprocessing." },
@@ -199,6 +200,58 @@ namespace CsLemon
             return args;
         }
 
+        /// <summary>
+        /// Builds the parser of the grammar read into lem (its symbols counted and numbered) and writes its outputs: the
+        /// report, and the parser (in C, or with -C in C#). False if the C# parser could not be written.
+        /// </summary>
+        private static bool Generate(Lemon lem)
+        {
+            Spec.Requires(0 <= lem.nterminal);
+            /* Initialize the size for all follow and first sets */
+            Sets.SetSize(checked(lem.nterminal + 1));
+            /* Find the precedence for every production rule (that has one) */
+            Build.FindRulePrecedences(lem);
+            /* Compute the lambda-nonterminals and the first-sets for every nonterminal */
+            Build.FindFirstSets(lem);
+            /* Compute all LR(0) states.  Also record follow-set propagation links so that the follow-set can be
+            ** computed later */
+            lem.nstate = 0;
+            Build.FindStates(lem);
+            lem.sorted = Tables.State_arrayof();
+            /* Tie up loose ends on the propagation links */
+            Build.FindLinks(lem);
+            /* Compute the follow set of every reducible configuration */
+            Build.FindFollowSets(lem);
+            /* Compute the action tables */
+            Build.FindActions(lem);
+            /* (testing the verified LR interpreter: CSLEMON_PARSE names a file of terminals to parse) */
+            string? parseFile = System.Environment.GetEnvironmentVariable("CSLEMON_PARSE");
+            if (parseFile != null) Lr.Export.ParseFile(lem, parseFile);
+            if (System.Environment.GetEnvironmentVariable("CSLEMON_VALIDATE") != null) Lr.Export.ValidateAll(lem);
+            /* the C# parser (CsLemon only): the automaton as built, before compression renumbers its states */
+            if (Flag("C") && !Lr.CSharp.Write(lem, CSharpPath(lem.filename))) return false;
+            /* Compress the action tables */
+            if (!Flag("c")) Report.CompressTables(lem);
+            /* Reorder and renumber the states so that states with fewer choices occur at the end. */
+            if (!Flag("r")) Report.ResortStates(lem);
+            /* Generate a report of the parser generated.  (the "y.output" file) */
+            if (!Flag("q")) Report.ReportOutput(lem);
+            /* Generate the source code for the parser */
+            if (!Flag("C")) Report.ReportTable(lem, Flag("m"), Flag("S"));
+            /* Produce a header file for use by the scanner.  (This step is omitted if the "-m" option is used
+            ** because makeheaders will generate the file for us.) */
+            if (!Flag("m") && !Flag("C")) Report.ReportHeader(lem);
+            return true;
+        }
+
+        /// <summary>grammar.cs for grammar.y, in the -d directory if there is one (as Lemon names its outputs).</summary>
+        private static string CSharpPath(string filename)
+        {
+            int dot = filename.LastIndexOf('.');
+            string stem = dot > 0 ? filename.Substring(0, dot) : filename;
+            return outputDir != null ? System.IO.Path.Combine(outputDir, System.IO.Path.GetFileName(stem) + ".cs") : stem + ".cs";
+        }
+
         /// <summary>A symbol named with a capital: a terminal.</summary>
         private static bool StartsUpper(Symbol sp) => sp.name.Length > 0 && Chars.ISUPPER(sp.name[0]);
 
@@ -288,38 +341,7 @@ namespace CsLemon
             }
             else
             {
-                /* Initialize the size for all follow and first sets */
-                Sets.SetSize(lem.nterminal + 1);
-                /* Find the precedence for every production rule (that has one) */
-                Build.FindRulePrecedences(lem);
-                /* Compute the lambda-nonterminals and the first-sets for every nonterminal */
-                Build.FindFirstSets(lem);
-                /* Compute all LR(0) states.  Also record follow-set propagation links so that the follow-set can be
-                ** computed later */
-                lem.nstate = 0;
-                Build.FindStates(lem);
-                lem.sorted = Tables.State_arrayof();
-                /* Tie up loose ends on the propagation links */
-                Build.FindLinks(lem);
-                /* Compute the follow set of every reducible configuration */
-                Build.FindFollowSets(lem);
-                /* Compute the action tables */
-                Build.FindActions(lem);
-                /* (testing the verified LR interpreter: CSLEMON_PARSE names a file of terminals to parse) */
-                string? parseFile = System.Environment.GetEnvironmentVariable("CSLEMON_PARSE");
-                if (parseFile != null) Lr.Export.ParseFile(lem, parseFile);
-                if (System.Environment.GetEnvironmentVariable("CSLEMON_VALIDATE") != null) Lr.Export.ValidateAll(lem);
-                /* Compress the action tables */
-                if (!Flag("c")) Report.CompressTables(lem);
-                /* Reorder and renumber the states so that states with fewer choices occur at the end. */
-                if (!Flag("r")) Report.ResortStates(lem);
-                /* Generate a report of the parser generated.  (the "y.output" file) */
-                if (!Flag("q")) Report.ReportOutput(lem);
-                /* Generate the source code for the parser */
-                Report.ReportTable(lem, Flag("m"), Flag("S"));
-                /* Produce a header file for use by the scanner.  (This step is omitted if the "-m" option is used
-                ** because makeheaders will generate the file for us.) */
-                if (!Flag("m")) Report.ReportHeader(lem);
+                if (!Generate(lem)) return 1;
             }
             if (Flag("s"))
             {
