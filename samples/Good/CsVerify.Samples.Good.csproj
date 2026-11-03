@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <!-- non-nullable reference types are contracts the verifier checks -->
     <Nullable>enable</Nullable>
@@ -12,6 +12,6 @@
     <!-- Only so the verifier is built first; `dotnet build -p:CsVerifyEnabled=true` then verifies this project. -->
     <ProjectReference Include="..\..\src\CsVerify.Verifier\CsVerify.Verifier.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
-  <Import Project="..\..\src\CsVerify.Verifier\bin\$(Configuration)\net8.0\build\CsVerify.Verifier.targets"
-          Condition="Exists('..\..\src\CsVerify.Verifier\bin\$(Configuration)\net8.0\build\CsVerify.Verifier.targets')" />
+  <Import Project="..\..\src\CsVerify.Verifier\bin\$(Configuration)\net10.0\build\CsVerify.Verifier.targets"
+          Condition="Exists('..\..\src\CsVerify.Verifier\bin\$(Configuration)\net10.0\build\CsVerify.Verifier.targets')" />
 </Project>
