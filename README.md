@@ -59,6 +59,11 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | lexicographic metric `.<m, n>.` | `Spec.Decreases(m, n)` (up to three components) |
 | `prfun` (proof function, total, erased) | `[Lemma, Conditional("CSVERIFY_SPEC")] void L(...)`: body is the proof, recursion is induction |
 | `prval () = lemma(...)` | a plain call `L(x);` (erased; adds L's postconditions) |
+| `datatype` (ATS), `datatype` (Dafny) | a closed positional record hierarchy: `abstract record List { private List() { } public sealed record Nil() : List; public sealed record Cons(int Head, List Tail) : List; }` |
+| `case`/`match` on constructors | `switch` and `is` patterns (`Cons c`, `Cons(var h, Nil)`, `{ Head: > 0 }`), exhaustiveness proved |
+| metric on a datatype (structural recursion) | `Spec.Decreases(xs)`: the size of a data value |
+| `dataprop` (proof as data: `FACT(n, r)`) | a closed record hierarchy whose cases are the proof rules (`record Ind(Fact Prev) : Fact(Prev.N + 1, ...)`), passed as `Ghost<Fact>` in run-time code; case analysis is `switch`, induction is recursion |
+| an index's sort `{n:nat}` on a dataprop or datatype | an object invariant: `[Invariant, Pure] bool Natural() => N >= 0;` |
 | static function in constraints | `[Pure]` method: an uninterpreted function whose `return` body is unfolded at each use |
 | view `T @ l` | `[Linear] struct PointsTo<T>` with ghost `Addr` (the `l`) and `Value` |
 | `ptr(l)` | `Ptr<T>` with ghost `Addr` |
@@ -178,6 +183,20 @@ Z3 is reset before each method (`(reset)`, then the options and theory again), s
 
 Z3 runs as a separate process speaking SMT-LIB2, by design. Neither the analyzer nor MSBuild loads native code, any Z3 build for any OS or CPU works (including arm64, where the `Microsoft.Z3` NuGet package's x64-only binaries cannot load), you can upgrade Z3 independently of CsVerify, a solver crash or hang cannot take the build down with it, and `--smt-log` shows exactly what was asked.
 
+### Data types and object invariants
+
+A **data record** is a non-generic record class whose whole state is its positional properties. A hierarchy of them is **closed** when the abstract root can't be extended from outside: its constructors are private (cases nested inside it), or the type isn't visible outside the assembly. The verifier then treats it as an algebraic data type:
+- **Construction** `new Cons(h, t)` is the term `Cons(h, t)`. Its fields read back, it is not null, its tag is `Cons`'s, and its size is one more than its parts'. A case's base fields are computed from its header (`Ind(Prev) : Fact(Prev.N + 1, ...)` gives `N == Prev.N + 1`).
+- **Case analysis.** `is`, `switch` statements and switch expressions test the tag. A value of a closed type is one of its cases, and on each branch it is that case's constructor applied to its own fields. A switch that misses a case throws, which a `[Pure]` function or lemma may not do (CSV1011), and a specification may not do either (CSV1012).
+- **Equality.** The synthesized record `==` is equality of values, as long as every field compares the way the verifier models it (integers, booleans, arrays by reference, data records).
+- **No identity.** A data value is its contents, so reference identity (`ReferenceEquals`, or `==` at type `object` or an interface) is not modeled. Only comparisons with `null` are known.
+- **Structural recursion.** `Spec.Decreases(xs)` measures the value's size, so recursion on a sub-value terminates, and a lemma recursing that way is a proof by structural induction.
+- **Fields keep their nullability.** A positional field of a non-nullable type is not null, because the constructor's argument was proved not null.
+
+An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invariant]` on a data record or its base. It is proved at every `new` (CSV1015) and assumed of every object of the type, since the fields never change afterwards. While verifying the invariant itself, or anything it calls, it is not assumed: otherwise a helper could be "proved" from the very invariant it defines. Invariants may read fields and their lengths but not array contents, which can change.
+
+**Constructors** of other classes are calls: `new C(args)` checks the constructor's `Spec.Requires` and assumes its `Spec.Ensures`, about the new object as `this`.
+
 ### Null references
 
 C#'s nullable reference types are only warnings, and deliberately unsound ones: `null!` silences them, `new string[n]` is an array of nulls typed `string[]`, and a field can be read before the constructor sets it. CsVerify takes the annotations as contracts and proves them instead:
@@ -188,7 +207,7 @@ C#'s nullable reference types are only warnings, and deliberately unsound ones: 
 - **Array elements are maybe-null**, whatever the element type says. Say otherwise with a precondition, `Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != null))`.
 - **Oblivious types** (code with nullable disabled) promise nothing, so they are maybe-null too. Only an enabled nullable context lets the verifier know anything is not null. The MSBuild target passes the project's `<Nullable>`, and the command line takes `--nullable` (default `enable`).
 - **Library methods** are trusted for their annotations: a non-nullable return type, `[NotNull]` parameters after the call (`ArgumentNullException.ThrowIfNull`), `[NotNullWhen(b)]` parameters when the call returns `b` (`string.IsNullOrEmpty`), and `[AllowNull]` and `[MaybeNull]`.
-- **Fields and properties of objects** are maybe-null for now. Without object invariants nothing says a constructor set them.
+- **Fields and properties of objects** are maybe-null, except positional fields of data records (above). For other classes, nothing says a constructor set them.
 
 On `samples/Buggy/NullBugs.cs` the C# compiler warns about 3 of the 5 planted bugs. It says nothing about the two `null!` ones and `new string[2]`, and it warns falsely after the precondition that rules null out.
 
@@ -283,6 +302,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1012 | verifier | a specification might not be well-defined: index out of range, null dereference, `[Pure]` call outside its precondition, or division by zero inside a spec |
 | CSV1013 | verifier | a dereference (`a.Length`, `a[i]`, `x.M()`) of a reference that might be null |
 | CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
+| CSV1015 | verifier | an object invariant might not hold for a new object |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
@@ -360,6 +380,11 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 - `Lemmas.Power2`: recursion termination.
 - `Memory.*`: alloc / read / write / free with linear `PointsTo` views, including a function that borrows a view and gives it back.
 - `ArrayViews.Fill`: divide-and-conquer fill. It splits `array_v(n, l)` into `array_v(n/2, l) * array_v(n - n/2, l + n/2)`, recurses on each half through its own pointer, and joins them back.
+- `DataTypes.cs` (lists after ATS and Dafny, expressions after Dafny's tutorial, FACT from INT2PROGINATS):
+  - `Length`, `Append` and `Reverse` on a `List` data type, with `AppendLength` and `ReverseLength` proved by structural induction, and `Countdown`, which builds a list whose length is proved.
+  - `Eval` and constant folding `Fold` on expressions, with `FoldPreservesEval`.
+  - The dataprop `FACT` as a closed record (`Bas`, `Ind`), with its `nat` index as an invariant. `FactIsFunctional` is ATS's `fact_isfun`, by induction on one proof and case analysis on the other. `Factorial` returns `r` together with a `Ghost<Fact>` proof of `FACT(n, r)` built in its loop; the erased program never builds it.
+  - `Interval`, a record with the invariant `Lo <= Hi`, and `Widen`, which keeps it.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
@@ -410,8 +435,9 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
 
 **What the ports could not say yet:**
 - **Permutation.** Sorts and partitions don't prove that the output is a permutation of the input. ATS proves it with a dataprop over lists, Dafny with `multiset`.
-- **Dataprops.** `FACT(n, r)` and friends become `[Pure]` functions. That is fine for functional relations. A relation that is not a function, or a proof that is case-analysed, has no counterpart.
-- **Datatypes and dataviews.** List reverse/append with length indices (Xanadu, ICFP'05), singly-linked list segments (`slseg`, PADL'05), red-black trees (DML) and typed evaluators all need user datatypes or dataviews.
+- **Generic data types.** `List<T>` is not a data type yet: data records must be non-generic.
+- **Dataviews.** Singly-linked list segments (`slseg`, PADL'05) need views defined by cases over mutable memory. That is stage 2: mutable objects, owned through views.
+- **Proofs returned by lemmas.** ATS's `fact_istot` returns a proof. A lemma is a `[Conditional]` void method, which can't have `out` parameters, so only run-time functions can return a `Ghost<T>` proof (`Factorial`).
 - **Sets and cardinalities.** Pigeonhole proofs like Dafny's TwoDuplicates need them.
 
 Of the surveyed programs, the ones that remain need the features above. One exception: Dafny's `MinWindowMax` is feasible but heavy.
@@ -424,6 +450,7 @@ Sources and licences:
 
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
+- `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, and an assertion that two equal values are the same object.
 - `NullBugs.cs`: an unchecked `T?`, `null!` passed and returned, an element of `new string[2]`, and a precondition that reads `a.Length` before checking `a`.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
 - `Linearity.cs` has leak, double free, use-after-free, forging and run-time ghost reads. Its analyzer errors are downgraded to warnings in that project's `.editorconfig` so the solution still builds.
@@ -443,14 +470,16 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 124 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 135 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014).
-- **Null and object state.** Fields and properties are maybe-null, since there are no object invariants yet. Library nullability annotations are trusted, not checked.
+- **Null and object state.** Fields and properties are maybe-null, except positional fields of data records. Library nullability annotations are trusted, not checked.
+- **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
+- **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.
 - **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
 - **Virtual dispatch.** Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown). Proofs cannot be virtual (CSV0013).
 - **`[Trusted]` and `Spec.Assume`** are axioms by definition.

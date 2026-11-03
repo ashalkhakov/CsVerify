@@ -407,6 +407,12 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1014" }, r.Errors("Broken"));
             Assert.Equal(new[] { "CSV1013" }, r.Errors("FreshArray"));
             Assert.Equal(new[] { "CSV1012" }, r.Errors("SpecTooEarly"));
+            Assert.Equal(new[] { "CSV1011" }, r.Errors("Key"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("DataBugs.Size"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("DataBugs.FoldPreservesEval"));
+            Assert.Equal(new[] { "CSV1006" }, r.Errors("DataBugs.Factorial"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Backwards"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("SameObject"));
         }
     }
 

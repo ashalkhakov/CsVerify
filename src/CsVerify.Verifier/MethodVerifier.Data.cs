@@ -18,6 +18,7 @@ namespace CsVerify.Verifier
         private readonly HashSet<string> _sideFactsDone = new HashSet<string>();
         private readonly HashSet<string> _invariantsInProgress = new HashSet<string>();
         private Term _invariantHeap;
+        private int _etaDepth;
 
         private DataTypes Data => _engine.Data;
 
@@ -45,7 +46,14 @@ namespace CsVerify.Verifier
         {
             var def = p.OriginalDefinition;
             var v = _z3.Apply(def.ToDisplayString(), SortOf(def.Type), new[] { o });
-            AssumeInvariants(staticType, o);
+            // what every object of the type satisfies, and that it is one of the type's cases (not from inside a
+            // definition being unfolded, where nested definitions are not unfolded and the facts would be empty, nor
+            // from inside another case's facts, which would not end)
+            if (_unfoldDepth == 0)
+            {
+                AssumeInvariants(staticType, o);
+                if (_etaDepth == 0) Closed(o, staticType);
+            }
             // the constructor's non-nullable parameter was proved non-null where the value was built
             if (IsNonNullableType(def.Type)) AssumeSide(T.Implies(NotNull(o), NotNull(v)));
             return v;
@@ -75,10 +83,26 @@ namespace CsVerify.Verifier
             return o;
         }
 
-        /// <summary>If <paramref name="v"/> is a <paramref name="c"/>, it is c applied to its own fields.</summary>
+        /// <summary>
+        /// If <paramref name="v"/> is a <paramref name="c"/>, it is c's constructor applied to its own positional
+        /// fields, and the fields c gives its base are what its header computes from them (<c>Ind(Prev)</c> has
+        /// <c>N == Prev.N + 1</c>). That was checked where the value was built, so here it is a fact.
+        /// </summary>
         private void Eta(INamedTypeSymbol c, Term v)
         {
-            var mk = Construct(c, Data.Fields(c).Select(p => Selector(p, v)).ToList());
+            var primary = DataTypes.PrimaryConstructor(c);
+            var args = Enumerable.Range(0, primary?.Parameters.Length ?? 0)
+                .Select(i => DataTypes.PositionalProperty(c, i) is IPropertySymbol p ? Selector(p, v) : Unknown(primary.Parameters[i].Type)).ToArray();
+            foreach (var p in Data.Fields(c).Where(p => IsNonNullableType(p.OriginalDefinition.Type)))
+                AssumeSide(T.Implies(NotNull(v), NotNull(Selector(p, v))));
+            List<Term> values;
+            _foreignSpec++;
+            _etaDepth++;
+            bool wasCode = _codeMode;
+            _codeMode = false;
+            try { values = FieldValues(c, args, new Frame { Heap = InvariantHeap }, null); }
+            finally { _foreignSpec--; _etaDepth--; _codeMode = wasCode; }
+            var mk = Construct(c, values);
             AssumeOnce("eta:" + c.ToDisplayString() + ":" + v.S, () => T.Implies(T.Eq(Tag(v), T.Int(Data.TagOf(c))), T.Eq(v, mk)));
         }
 

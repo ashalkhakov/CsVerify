@@ -919,6 +919,7 @@ namespace CsVerify.Verifier
                     break;
                 }
                 case IFlowCaptureReferenceOperation _:
+                case IDiscardOperation _:
                     break;
                 default:
                     NotModeled(target.Syntax, $"assignment to {target.Kind} is not supported");
@@ -1295,7 +1296,8 @@ namespace CsVerify.Verifier
         /// a nullable type) promise nothing.
         /// </summary>
         private static bool IsNonNullableType(ITypeSymbol t) =>
-            MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
+            SpecSymbols.IsGhostType(t) ? IsNonNullableType(((INamedTypeSymbol)t).TypeArguments[0]) // Ghost<T>: T's
+            : MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
         private static bool IsNonNullable(IParameterSymbol p) =>
             IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute");
