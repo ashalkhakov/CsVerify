@@ -525,6 +525,17 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void AssignmentsOfInitializedObjects_AreWritten()
+        {
+            // the flow graph captures the target of x = new C { ... } before the value: the write must still happen
+            const string sym = "public sealed class Sym { public int K; public Sym? Next; } ";
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(sym + "public static class C { static void M() { Sym? s = null; s = new Sym { K = 1 }; Spec.Assert(s == null); } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(sym + "public static class C { static void M(Sym c) { var old = c.Next; c.Next = new Sym { K = 1 }; Spec.Assert(c.Next == old); } }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(sym + "public static class C { static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 5; a[0] = new Sym { K = 1 }.K; Spec.Assert(a[0] == 5); } }").Errors("M"));
+            Assert.Empty(Harness.Verify(sym + "public static class C { static int M(Sym? s) { if (s == null) s = new Sym { K = 1 }; return s.K; } }").Errors("M"));
+        }
+
+        [Fact]
         public void HeapAliases_FailVerification()
         {
             Assert.Contains("CSV1901", Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 0); ref int x = ref a[0]; x = 1; }"));

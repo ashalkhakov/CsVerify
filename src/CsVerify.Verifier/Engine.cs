@@ -27,6 +27,9 @@ namespace CsVerify.Verifier
         public NullableContextOptions Nullable = NullableContextOptions.Enable;
         public int TimeoutMs = 10000;
         public int MaxPaths = 5000;
+        /// <summary>Verify only the methods whose name (Type.Method) contains one of these; all, if empty.</summary>
+        public List<string> Only = new List<string>();
+        internal bool Selects(string method) => Only.Count == 0 || Only.Any(o => method.Contains(o, StringComparison.Ordinal));
         public string Z3Path;
         public List<string> Defines = new List<string>();
         public List<string> References = new List<string>();
@@ -332,6 +335,7 @@ namespace CsVerify.Verifier
                     if (SpecSymbols.ContractClassTarget(method.ContainingType) != null) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
+                    if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
                     engine.Solver.Reset();
@@ -361,6 +365,7 @@ namespace CsVerify.Verifier
                     if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.ContractClassTarget(accessor.ContainingType) != null ||
                         accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
                     var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name };
+                    if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
                     engine.Solver.Reset();

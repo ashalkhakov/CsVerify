@@ -714,7 +714,9 @@ namespace CsVerify.Verifier
                     return Read(f, p.Parameter);
                 case IInstanceReferenceOperation _: return f.This ?? (f.This = _z3.Fresh("this", Sort.Int));
                 case IFlowCaptureReferenceOperation r: return f.Captures.TryGetValue(r.Id, out var cv) ? cv : Unknown(r.Type, "capture");
-                case IFlowCaptureOperation fc: return f.Captures[fc.Id] = Eval(fc.Value, f, spec);
+                case IFlowCaptureOperation fc:
+                    _captured[fc.Id] = fc.Value;
+                    return f.Captures[fc.Id] = Eval(fc.Value, f, spec);
                 case IBinaryOperation b: return EvalBinary(b, f, spec);
                 case IUnaryOperation u: return EvalUnary(u, f, spec);
                 case ICaughtExceptionOperation _: return f.Exception ?? Unknown(op.Type, "exception");
@@ -1105,6 +1107,13 @@ namespace CsVerify.Verifier
             Require(T.And(T.Le(T.Int(0), idx), T.Lt(idx, len)), "CSV1003", at, $"index in '{at}' might be out of range");
         }
 
+        /// <summary>What each flow capture captured (the flow graph is the method's, so one map serves every path).</summary>
+        private readonly Dictionary<CaptureId, IOperation> _captured = new Dictionary<CaptureId, IOperation>();
+
+        private static bool IsVariableReference(IOperation op) =>
+            op is ILocalReferenceOperation || op is IParameterReferenceOperation || op is IFieldReferenceOperation ||
+            op is IPropertyReferenceOperation || op is IArrayElementReferenceOperation;
+
         private void Write(IOperation target, Term v, Frame f, SpecEnv spec)
         {
             switch (target)
@@ -1166,6 +1175,10 @@ namespace CsVerify.Verifier
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
                 }
+                case IFlowCaptureReferenceOperation r when _captured.TryGetValue(r.Id, out var captured) && IsVariableReference(captured):
+                    // the flow graph captures an assignment's target before its value (x = new C { ... }): write the target
+                    Write(captured, v, f, spec);
+                    break;
                 case IFlowCaptureReferenceOperation _:
                 case IDiscardOperation _:
                     break;
