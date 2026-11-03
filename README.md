@@ -81,6 +81,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | linear logic on views (used exactly once) | `[Linear]` types checked by the `LinearityAnalyzer` on Roslyn's control-flow graph |
 | frame rule `(ext)` | calls only change what they receive by `ref`/`out`, and the arrays and fields they may write (inferred) |
 | nested views: a node's view holding the rest of the list's | `[Owns] Node? Next` in an `[Owned]` class; `Own.Take(ref n.Next, out var v)` unfolds, `Own.Give(ref n.Next, x, v)` folds |
+| Dafny's `multiset(a[..n])`, ACSL's `MultisetReorder` | `Spec.Multiset(a, n)`, a ghost `Bag` (`Count`, `Add`, `Union`, `==`); a permutation is `Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n))` |
 | Dafny's `ghost var Repr: set<object>`, `Valid()`, `modifies`, `reads`, `fresh` | `Ghost<ObjSet> Repr` field, `[GhostFunction] bool Valid()`, `Spec.Modifies(Repr.Value)`, `Spec.Reads(Repr.Value.Add(this))`, `Spec.Fresh(Repr.Value)` |
 | a view of an object's fields, `(pf \| p)` | `[Owned]` class; `Own.New(new C(...), out Own<C> view)`; pass `(C obj, ref Own<C> view)` with `Spec.Requires(view.Obj.Value == obj)` |
 | several results, `[r1, r2: int] (...)` (Dafny `returns (k, m)`) | a C# tuple `(int k, int m)`; `Spec.Ensures<(int k, int m)>(r => ... r.k ... r.m ...)`; callers read `t.k` or deconstruct with `var (k, m) = ...` |
@@ -180,6 +181,13 @@ The verifier runs all three analyzers over the compilation it verifies: a method
    - `ref` locals, and passing array elements or fields by `ref`/`in` (aliases of the heap);
    - object initializers and other unsupported operations.
    Constructors are calls (see *Mutable objects*). Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
+
+Multisets (`Bag`) are SMT arrays from value to count. `Spec.Multiset(a, n)` is a function of the array's contents and `n`, and three axioms say what a write does to it:
+- the empty prefix is the empty multiset;
+- writing `v` at `i` inside the prefix trades the old element for `v`;
+- a write outside the prefix changes nothing.
+
+So a swap keeps the multiset with no lemma. Each axiom is triggered only by the multiset of a written array, so they can't loop. A use unfolds one element, and all of them when `n` is a small constant (a concrete array).
 
 Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
 
@@ -450,11 +458,9 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **Min/max and search:** `max_element`, `clamp`, and `lower_bound`, `upper_bound` and `binary_search` on sorted arrays.
   - **Mutating:** `fill`, `copy`, `swap_ranges`, `replace`, `remove_copy` and `reverse`, each with ACSL's `assigns` and `Unchanged` as explicit postconditions.
   - **Numeric:** `iota`, `accumulate` and `partial_sum` against the logic function `Accumulate`, and `is_sorted`.
+  - **Sorting:** `selection_sort`, `bubble_sort` and `insertion_sort` (with adjacent swaps; the book's version uses `rotate`), each proved to sort and to permute: `MultisetReorder` becomes `Spec.Multiset(a, n) == Spec.Old(...)`.
   - **The translation:** `\valid_read(a + (0..n-1))` becomes `n <= a.Length`, `\separated` becomes `a != b`, `Unchanged{Old,Here}` becomes `Spec.Old` under a `Forall`, and logic functions become recursive `[Pure]` definitions.
-  - **Not ported:**
-    - the sorting chapter, which proves permutations with multisets, not expressible yet;
-    - the heap chapter;
-    - the stack, an ADT with axioms.
+  - **Not ported:** the heap chapter, the `rotate`-based insertion sort, and the stack (an ADT with axioms).
   - **Overflow:** integers are mathematical unless you run `--overflow`. ACSL states explicit bounds instead.
 - `AtsViewtypes.cs`, from INT2PROGINATS part IV ("Programming with Views and Viewtypes"):
   - **Linear lists `list_vt(a, n)` (ch. 15):** `insord` and an insertion sort that only relinks nodes. The length index is preserved, and sortedness is proved too, which the book's version does not prove.
@@ -528,7 +534,7 @@ Sources and licences:
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
 - `FrameBugs.cs`: a `Valid()`-style function reading outside its `Spec.Reads`, a write outside `Spec.Modifies`, and two objects whose constructor promises no freshness, so updating one says nothing about the other.
-- `AcslBugs.cs`: a `lower_bound` comparing with `<=` (so it is really `upper_bound`), a `find` that returns the last match, and a `copy` whose contract lets the ranges overlap.
+- `AcslBugs.cs`: a `lower_bound` comparing with `<=` (so it is really `upper_bound`), a `find` that returns the last match, a `copy` whose contract lets the ranges overlap, and a selection sort that copies the minimum instead of swapping (sorted, but not a permutation).
 - `ViewtypeBugs.cs`: a ring buffer that forgets to wrap around, one that can go below empty, and a tree that adds a leaf but not to its size.
 - `TreeOwnershipBugs.cs`: appending a smaller node to a sorted list, writing an owned node in place, setting an `[Owns]` field directly, a node made to own itself, and assuming an inner node unchanged after the list was handed to a method.
 - `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
@@ -553,7 +559,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 165 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 169 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 

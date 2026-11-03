@@ -1004,7 +1004,7 @@ namespace CsVerify.Verifier
         {
             var prop = pr.Property;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
-            if (SpecSymbols.IsObjSet(prop.ContainingType) && prop.Name == "Empty") return T.ZeroRow();
+            if ((SpecSymbols.IsObjSet(prop.ContainingType) || SpecSymbols.IsBag(prop.ContainingType)) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
                 return T.Coerce(T.Select(Eval(pr.Instance, f, spec), Eval(pr.Arguments[0].Value, f, spec), Sort.Int), SortOf(pr.Type));
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
@@ -1111,6 +1111,8 @@ namespace CsVerify.Verifier
                         return Quantifier(inv, f, spec, m.Name == "Forall");
                     case "Fresh":
                         return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
+                    case "Multiset":
+                        return MultisetOf(inv, f, spec);
                     default:
                         return T.True;
                 }
@@ -1227,6 +1229,16 @@ namespace CsVerify.Verifier
         {
             var args = inv.Arguments.Select(a => Eval(a.Value, f, spec)).ToArray();
             var self = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
+            if (SpecSymbols.IsBag(inv.TargetMethod.ContainingType))
+                switch (inv.TargetMethod.Name)
+                {
+                    case "Of": return new Term($"(cv_badd {T.ZeroRow()} {T.Coerce(args[0], Sort.Int)})", Sort.Row);
+                    case "Count": return T.Select(self, T.Coerce(args[0], Sort.Int), Sort.Int);
+                    case "Contains": return T.Lt(T.Int(0), T.Select(self, T.Coerce(args[0], Sort.Int), Sort.Int));
+                    case "Add": return new Term($"(cv_badd {self} {T.Coerce(args[0], Sort.Int)})", Sort.Row);
+                    case "Union": return new Term($"(cv_bunion {self} {args[0]})", Sort.Row);
+                    default: Unsupported(inv); return _z3.Fresh("bag", Sort.Row);
+                }
             switch (inv.TargetMethod.Name)
             {
                 case "Const": return T.ConstRow(T.Coerce(args[0], Sort.Int));
@@ -1243,6 +1255,31 @@ namespace CsVerify.Verifier
             }
         }
 
+        /// <summary>
+        /// <c>Spec.Multiset(a, n)</c>: the multiset of <c>a[0..n)</c>, well-defined for 0 &lt;= n &lt;= a.Length, and
+        /// unfolded one element (the last) where it is used.
+        /// </summary>
+        private Term MultisetOf(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            var a = Eval(inv.Arguments[0].Value, f, spec);
+            var n = Eval(inv.Arguments[1].Value, f, spec);
+            Deref(inv.Arguments[0].Value, a, inv.Syntax);
+            Require(T.And(T.Le(T.Int(0), n), T.Le(n, Len(a))), "CSV1003", inv.Syntax, $"'{inv.Syntax}' might not be within the array");
+            var row = T.Select(f.Heap, a, Sort.Row);
+            var bag = new Term($"(cv_bag {row} {n})", Sort.Row);
+            // one element per use; all of them when the length is a small constant (a concrete array)
+            int levels = inv.Arguments[1].Value.ConstantValue.Value is int k && k >= 0 && k <= 32 ? k : 1;
+            var top = n;
+            for (int level = 0; level < levels; level++)
+            {
+                var prev = T.Sub(top, T.Int(1));
+                AssumeSide(T.Implies(T.Lt(T.Int(0), top), T.Eq(new Term($"(cv_bag {row} {top})", Sort.Row),
+                    new Term($"(cv_badd (cv_bag {row} {prev}) {T.Select(row, prev, Sort.Int)})", Sort.Row))));
+                top = prev;
+            }
+            return bag;
+        }
+
         /// <summary>Drop and Concat as array lambdas: definitions, not quantified axioms, so they cost Z3 nothing until used.</summary>
         public const string SeqTheory =
             "(define-fun cv_drop ((a (Array Int Int)) (n Int)) (Array Int Int) (lambda ((i Int)) (select a (+ n i))))\n" +
@@ -1254,7 +1291,17 @@ namespace CsVerify.Verifier
             // what a call with Spec.Modifies(w) may change: objects in w, and objects not allocated before it
             "(define-fun cv_mod ((w (Array Int Int)) (alloc (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (or (distinct (select w i) 0) (= (select alloc i) 0)) 1 0)))\n" +
             "(define-fun cv_frame ((m (Array Int Int)) (old (Array Int Int)) (new (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (distinct (select m i) 0) (select new i) (select old i))))\n" +
-            "(define-fun cv_frameh ((m (Array Int Int)) (old (Array Int (Array Int Int))) (new (Array Int (Array Int Int)))) (Array Int (Array Int Int)) (lambda ((i Int)) (ite (distinct (select m i) 0) (select new i) (select old i))))";
+            "(define-fun cv_frameh ((m (Array Int Int)) (old (Array Int (Array Int Int))) (new (Array Int (Array Int Int)))) (Array Int (Array Int Int)) (lambda ((i Int)) (ite (distinct (select m i) 0) (select new i) (select old i))))\n" +
+            // multisets (Bag): arrays from value to count. cv_bag(r, n) is the multiset of r[0..n); writing r[i]
+            // inside the prefix trades the old element for the new one, outside it changes nothing. Each axiom is
+            // triggered only by the multiset of a written array, so they cannot loop.
+            "(define-fun cv_badd ((m (Array Int Int)) (x Int)) (Array Int Int) (store m x (+ (select m x) 1)))\n" +
+            "(define-fun cv_bremove ((m (Array Int Int)) (x Int)) (Array Int Int) (store m x (- (select m x) 1)))\n" +
+            "(define-fun cv_bunion ((a (Array Int Int)) (b (Array Int Int))) (Array Int Int) (lambda ((i Int)) (+ (select a i) (select b i))))\n" +
+            "(declare-fun cv_bag ((Array Int Int) Int) (Array Int Int))\n" +
+            "(assert (forall ((r (Array Int Int))) (! (= (cv_bag r 0) ((as const (Array Int Int)) 0)) :pattern ((cv_bag r 0)))))\n" +
+            "(assert (forall ((r (Array Int Int)) (i Int) (v Int) (n Int)) (! (=> (and (<= 0 i) (< i n)) (= (cv_bag (store r i v) n) (cv_badd (cv_bremove (cv_bag r n) (select r i)) v))) :pattern ((cv_bag (store r i v) n)))))\n" +
+            "(assert (forall ((r (Array Int Int)) (i Int) (v Int) (n Int)) (! (=> (or (< i 0) (<= n i)) (= (cv_bag (store r i v) n) (cv_bag r n))) :pattern ((cv_bag (store r i v) n)))))";
 
         /// <param name="state">the caller's state, whose heap fields the callee's contract reads</param>
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)

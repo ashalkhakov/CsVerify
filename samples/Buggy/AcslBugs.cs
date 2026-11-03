@@ -53,5 +53,23 @@ namespace Samples.Buggy
                 b[i] = a[i];
             }
         }
-    }
+    
+        // BUG: copies the minimum over a[i] instead of swapping: sorted, but an element is lost (CSV1006)
+        public static void SelectionSortCopies(int[] a)
+        {
+            Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length)));
+            int n = a.Length;
+            for (int i = 0; i < n; i++)
+            {
+                Spec.Invariant(0 <= i && i <= n && Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)));
+                int sel = i;
+                for (int j = i + 1; j < n; j++)
+                {
+                    Spec.Invariant(i < j && j <= n && i <= sel && sel < j);
+                    if (a[j] < a[sel]) sel = j;
+                }
+                a[i] = a[sel];
+            }
+        }
+}
 }

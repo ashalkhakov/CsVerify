@@ -70,6 +70,9 @@ namespace CsVerify
         /// <summary>Bounded existential quantifier: <paramref name="body"/> holds for some i with from &lt;= i &lt; to.</summary>
         public static bool Exists(int from, int to, Func<int, bool> body) => throw GhostException.Instance;
 
+        /// <summary>The multiset of <c>items[0..count)</c> (Dafny's <c>multiset(a[..n])</c>).</summary>
+        public static Bag Multiset(int[] items, int count) => throw GhostException.Instance;
+
         /// <summary>In a postcondition: the object was allocated by the method (Dafny's <c>fresh</c>).</summary>
         public static bool Fresh(object item) => throw GhostException.Instance;
 

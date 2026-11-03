@@ -9,7 +9,7 @@ namespace Samples
     /// <c>assigns</c> is the inferred frame plus explicit "unchanged" postconditions (<c>Unchanged{Old,Here}</c>);
     /// <c>\separated</c> is <c>a != b</c>; logic functions (<c>Count</c>, <c>Accumulate</c>) are recursive [Pure]
     /// definitions. Integers are mathematical here (run csverify --overflow for ACSL's bounds); permutation
-    /// properties of the sorting chapter (multisets) are not expressible yet, so it is not ported.
+    /// the sorting chapter's MultisetReorder is Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)).
     /// </summary>
     public static class AcslByExample
     {
@@ -334,6 +334,102 @@ namespace Samples
                 if (a[i] > a[i + 1]) return false;
             }
             return true;
+        }
+
+        // ------------------------------------------------------------------------------- sorting (with permutation)
+
+        /// <summary>Exchanges a[i] and a[j]: the multiset of the array is unchanged, with no lemma (the write axioms).</summary>
+        private static void Swap(int[] a, int i, int j)
+        {
+            Spec.Requires(0 <= i && i < a.Length && 0 <= j && j < a.Length);
+            Spec.Ensures(a[i] == Spec.Old(a[j]) && a[j] == Spec.Old(a[i]));
+            Spec.Ensures(Spec.Forall(0, a.Length, k => k == i || k == j || a[k] == Spec.Old(a[k])));
+            Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length)));
+            int t = a[i];
+            a[i] = a[j];
+            a[j] = t;
+        }
+
+        /// <summary>selection_sort: MultisetReorder{Old,Here}(a, n) and Increasing(a, n).</summary>
+        public static void SelectionSort(int[] a)
+        {
+            Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length)));
+            Spec.Ensures(Increasing(a, a.Length));
+            int n = a.Length;
+            for (int i = 0; i < n; i++)
+            {
+                Spec.Invariant(0 <= i && i <= n && Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)));
+                Spec.Invariant(Spec.Forall(0, i, k => Spec.Forall(k, i, l => a[k] <= a[l])));
+                Spec.Invariant(Spec.Forall(0, i, k => Spec.Forall(i, n, l => a[k] <= a[l])));
+                int sel = i;
+                for (int j = i + 1; j < n; j++)
+                {
+                    Spec.Invariant(i < j && j <= n && i <= sel && sel < j && Spec.Forall(i, j, k => a[sel] <= a[k]));
+                    if (a[j] < a[sel]) sel = j;
+                }
+                Swap(a, i, sel);
+            }
+        }
+
+        /// <summary>bubble_sort: each pass carries the largest of a[0..i) to the end.</summary>
+        public static void BubbleSort(int[] a)
+        {
+            Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length)));
+            Spec.Ensures(Increasing(a, a.Length));
+            int n = a.Length;
+            for (int i = n; i > 0; i--)
+            {
+                Spec.Invariant(0 <= i && i <= n && Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)));
+                Spec.Invariant(Spec.Forall(i, n, k => Spec.Forall(k, n, l => a[k] <= a[l])));
+                Spec.Invariant(Spec.Forall(0, i, k => Spec.Forall(i, n, l => a[k] <= a[l])));
+                for (int j = 0; j + 1 < i; j++)
+                {
+                    Spec.Invariant(0 <= j && j < i && Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)));
+                    Spec.Invariant(Spec.Forall(0, j, k => a[k] <= a[j]));
+                    Spec.Invariant(Spec.Forall(i, n, k => Spec.Forall(k, n, l => a[k] <= a[l])));
+                    Spec.Invariant(Spec.Forall(0, i, k => Spec.Forall(i, n, l => a[k] <= a[l])));
+                    if (a[j] > a[j + 1]) Swap(a, j, j + 1);
+                }
+            }
+        }
+
+        /// <summary>
+        /// insertion_sort, with adjacent swaps (the book's version moves a block with rotate): a[i] sinks into the
+        /// sorted prefix.
+        /// </summary>
+        public static void InsertionSort(int[] a)
+        {
+            Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length)));
+            Spec.Ensures(Increasing(a, a.Length));
+            int n = a.Length;
+            for (int i = 0; i < n; i++)
+            {
+                Spec.Invariant(0 <= i && i <= n && Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)));
+                Spec.Invariant(Spec.Forall(0, i, k => Spec.Forall(k, i, l => a[k] <= a[l])));
+                int j = i;
+                while (j > 0 && a[j - 1] > a[j])
+                {
+                    // sorted except that a[j] may be smaller than what is before it
+                    Spec.Invariant(0 <= j && j <= i && Spec.Multiset(a, n) == Spec.Old(Spec.Multiset(a, n)));
+                    Spec.Invariant(Spec.Forall(0, i + 1, k => Spec.Forall(k, i + 1, l => k == j || l == j || a[k] <= a[l])));
+                    Spec.Invariant(Spec.Forall(j, i + 1, l => a[j] <= a[l]));
+                    Spec.Decreases(j);
+                    Swap(a, j - 1, j);
+                    j--;
+                }
+            }
+        }
+
+        /// <summary>3 1 2 sorted three ways: 123 123 123.</summary>
+        public static int SortDemo()
+        {
+            var x = new[] { 3, 1, 2 };
+            var y = new[] { 3, 1, 2 };
+            var z = new[] { 3, 1, 2 };
+            SelectionSort(x);
+            BubbleSort(y);
+            InsertionSort(z);
+            return (x[0] * 100 + x[1] * 10 + x[2]) * 1000000 + (y[0] * 100 + y[1] * 10 + y[2]) * 1000 + z[0] * 100 + z[1] * 10 + z[2];
         }
 
         public static int Demo()

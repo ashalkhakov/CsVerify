@@ -61,6 +61,7 @@ namespace CsVerify.Tests
             Assert.Equal(54311L * 10000 + 78 * 100 + 40 + 4 * 1000, Run(asm, "AtsViewtypes", "Demo"));
             // ACSL by Example on 1 3 3 5 8: find 5 at 3, lower/upper bound of 3 at 1/3, two 3s, three kept, sum 20
             Assert.Equal(20 * 100000 + 3 * 10000 + 1 * 1000 + 3 * 100 + 2 * 10 + 3, Run(asm, "AcslByExample", "Demo"));
+            Assert.Equal(123123123, Run(asm, "AcslByExample", "SortDemo")); // selection, bubble and insertion sort
         }
 
         [Fact]
