@@ -85,13 +85,13 @@ namespace CsLemon
             return ap;
         }
 
-        /* Add an action to the front of the list *app.  C's char* arg is stp for a SHIFT and rp otherwise. */
-        public static void Action_add(ref LemonAction? app, ActionType type, Symbol sp, State? stp, Rule? rp)
+        /* Add an action to the front of the list app; returns the new list (C writes it through *app).  C's char* arg
+        ** is stp for a SHIFT and rp otherwise. */
+        public static LemonAction Action_add(LemonAction? app, ActionType type, Symbol sp, State? stp, Rule? rp)
         {
             LemonAction newaction;
             newaction = Action_new();
             newaction.next = app;
-            app = newaction;
             newaction.type = type;
             newaction.sp = sp;
             newaction.spOpt = null;
@@ -103,6 +103,7 @@ namespace CsLemon
             {
                 newaction.rp = rp;
             }
+            return newaction;
         }
 
         /********************** New code to implement the "acttab" module ***********/

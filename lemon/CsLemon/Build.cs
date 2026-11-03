@@ -210,7 +210,7 @@ namespace CsLemon
                 Config? x, y;
                 for (x = bp, y = stp.bp; x != null && y != null; x = x.bp, y = y.bp)
                 {
-                    Plinks.Plink_copy(ref y.bplp, x.bplp);
+                    y.bplp = Plinks.Plink_copy(y.bplp, x.bplp);
                     Plinks.Plink_delete(x.fplp);
                     x.fplp = null;
                     x.bplp = null;
@@ -287,7 +287,7 @@ namespace CsLemon
                     if (!same_symbol(bsp, sp)) continue;                /* Must be same as for "cfp" */
                     bcfp.status = CfgStatus.COMPLETE;                   /* Mark this config as used */
                     newcfg = ConfigList.Configlist_addbasis(bcfp.rp, bcfp.dot + 1);
-                    Plinks.Plink_add(ref newcfg.bplp, bcfp);
+                    newcfg.bplp = Plinks.Plink_add(newcfg.bplp, bcfp);
                 }
 
                 /* Get a pointer to the state described by the basis configuration set constructed in the preceding
@@ -300,12 +300,12 @@ namespace CsLemon
                     int i;
                     for (i = 0; i < sp.nsubsym; i++)
                     {
-                        Actions.Action_add(ref stp.ap, ActionType.SHIFT, sp.subsym![i], newstp, null);
+                        stp.ap = Actions.Action_add(stp.ap, ActionType.SHIFT, sp.subsym![i], newstp, null);
                     }
                 }
                 else
                 {
-                    Actions.Action_add(ref stp.ap, ActionType.SHIFT, sp, newstp, null);
+                    stp.ap = Actions.Action_add(stp.ap, ActionType.SHIFT, sp, newstp, null);
                 }
             }
         }
@@ -342,7 +342,7 @@ namespace CsLemon
                     for (plp = cfp.bplp; plp != null; plp = plp.next)
                     {
                         other = plp.cfp;
-                        Plinks.Plink_add(ref other.fplp, cfp);
+                        other.fplp = Plinks.Plink_add(other.fplp, cfp);
                     }
                 }
             }
@@ -420,7 +420,7 @@ namespace CsLemon
                             {
                                 /* Add a reduce action to the state "stp" which will reduce by the rule "cfp->rp" if
                                 ** the lookahead symbol is "lemp->symbols[j]" */
-                                Actions.Action_add(ref stp.ap, ActionType.REDUCE, lemp.symbols[j], null, cfp.rp);
+                                stp.ap = Actions.Action_add(stp.ap, ActionType.REDUCE, lemp.symbols[j], null, cfp.rp);
                             }
                         }
                     }
@@ -448,7 +448,7 @@ namespace CsLemon
             }
             /* Add to the first state (which is always the starting state of the finite state machine) an action to
             ** ACCEPT if the lookahead is the start nonterminal.  */
-            Actions.Action_add(ref lemp.sorted[0].ap, ActionType.ACCEPT, sp, null, null);
+            lemp.sorted[0].ap = Actions.Action_add(lemp.sorted[0].ap, ActionType.ACCEPT, sp, null, null);
 
             /* Resolve conflicts */
             for (i = 0; i < lemp.nstate; i++)

@@ -53,15 +53,15 @@ namespace CsLemon
     /// <summary>plink.c: follow-set propagation links (the free list is the collector's).</summary>
     public static class Plinks
     {
-        /// <summary>Add a plink to a plink list.</summary>
-        public static void Plink_add(ref Plink? plpp, Config cfp)
+        /// <summary>Add a plink to a plink list; returns the new list (C writes it through Plink **plpp).</summary>
+        public static Plink Plink_add(Plink? plp, Config cfp)
         {
-            var newlink = new Plink { cfp = cfp, next = plpp };
-            plpp = newlink;
+            var newlink = new Plink { cfp = cfp, next = plp };
+            return newlink;
         }
 
-        /// <summary>Transfer every plink on the list "from" to the list "to".</summary>
-        public static void Plink_copy(ref Plink? to, Plink? from)
+        /// <summary>Transfer every plink on the list "from" to the list "to"; returns the new "to" list.</summary>
+        public static Plink? Plink_copy(Plink? to, Plink? from)
         {
             while (from != null)
             {
@@ -70,6 +70,7 @@ namespace CsLemon
                 to = from;
                 from = nextpl;
             }
+            return to;
         }
 
         /// <summary>Delete every plink on the list (the collector frees them).</summary>

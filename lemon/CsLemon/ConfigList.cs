@@ -142,7 +142,7 @@ namespace CsLemon
                                 if (xsp.lambda == false) break;
                             }
                         }
-                        if (i == rp.nrhs) Plinks.Plink_add(ref cfp.fplp, newcfp);
+                        if (i == rp.nrhs) cfp.fplp = Plinks.Plink_add(cfp.fplp, newcfp);
                     }
                 }
             }
