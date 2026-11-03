@@ -283,6 +283,14 @@ public static bool Seg(SNode? from, SNode? to, int n) =>
 - **The sample.** samples/Good/ListSegments.cs has cons, length (walking with a segment from the head to the cursor), in-place reverse, and a ghost sum.
 - **Limits.** Permission is per object, not per field. Two copies of one instance are allowed only when its footprint is empty. A `[Pure]` callee's predicate preconditions are not checked as "in hand" at the call; its facts are.
 
+**Array cells.** `Spec.Acc(a, from, to)` is permission to write the cells `a[from..to)`, and `Spec.Acc(a)` is the whole array (Viper's quantified permissions over a range). Array permissions are opt-in per method: they apply in a method whose contract mentions them.
+- **Such a method writes only cells in hand** (CSV1016). Its permissions come from its preconditions and from arrays it creates.
+- **Calls to it change only the cells it gets,** plus arrays it allocates. Every other array keeps its contents, so `Halves` in samples/Good/ArrayPermissions.cs fills `a` twice and still knows `other` and the first half.
+- **Disjointness.** Two permissions to one cell cannot both be in hand. So `SwapCells(a, i, j)`, given `Spec.Acc(a, i, i + 1) && Spec.Acc(a, j, j + 1)`, knows `i != j`, and `SwapCells(a, 1, 1)` is rejected at the call.
+- **Calls from it.** It may not call a method that could write any array without saying which cells.
+- **Methods without array permissions** behave as before. Their array writes are unchecked, they hold every cell, and they hand cells out at calls.
+- **Limits.** Cells cannot yet appear in predicate bodies. `ArrayView<T>` stays as it was: ATS's linear views over `Mem`/`Ptr` memory, a separate layer from C# arrays.
+
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;
 - or `o` is in the method's `Spec.Modifies` frame;

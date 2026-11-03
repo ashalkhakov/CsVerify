@@ -443,6 +443,10 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("UnfoldMissing"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("UseUp"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("KeepLent"));
+            // array cells (ArrayPermissionBugs.cs)
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("ExchangeSame"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("PastTheEnd"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("CallsUnframed"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
             Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));

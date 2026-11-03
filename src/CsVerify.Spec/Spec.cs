@@ -85,6 +85,14 @@ namespace CsVerify
         /// </summary>
         public static bool Acc(object obj) => throw GhostException.Instance;
 
+        /// <summary>
+        /// Permission to write the cells <paramref name="from"/> (inclusive) to <paramref name="to"/> (exclusive) of
+        /// an array, in a method's contract and loop invariants (<c>Spec.Acc(array)</c> is the whole array). A method
+        /// whose contract gives it array permissions writes only cells it has permission to, and calls to it change
+        /// only those cells (and arrays it allocates).
+        /// </summary>
+        public static bool Acc<T>(T[] array, int from, int to) => throw GhostException.Instance;
+
         /// <summary>Folds a predicate instance: its body's permissions go into it, and its facts must hold.</summary>
         [Conditional(Symbol)] public static void Fold(bool predicate) { }
 

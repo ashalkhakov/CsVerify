@@ -41,8 +41,14 @@ namespace CsVerify.Verifier
         /// ownership tree is in the footprint its root is in.
         /// </summary>
         public Term Owner;
+        /// <summary>
+        /// Permissions to array cells: array -> (index -> amount). In a method whose contract gives it array
+        /// permissions, writes need them; elsewhere every cell is held (arrays are not checked there). Null when the
+        /// program has no Spec.Acc.
+        /// </summary>
+        public Term ArrPerm;
         /// <summary>Loops whose body exchanges permissions: the permissions held outside them (not their invariants'), on entry.</summary>
-        public Dictionary<int, (Term perm, Term inst)> LoopPermFrames = new Dictionary<int, (Term, Term)>();
+        public Dictionary<int, (Term perm, Term inst, Term arr)> LoopPermFrames = new Dictionary<int, (Term, Term, Term)>();
         /// <summary>The Own&lt;T&gt; view variables in hand (not consumed, not read-only borrows).</summary>
         public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
@@ -64,7 +70,8 @@ namespace CsVerify.Verifier
             Perm = Perm,
             Inst = Inst,
             Owner = Owner,
-            LoopPermFrames = new Dictionary<int, (Term, Term)>(LoopPermFrames),
+            ArrPerm = ArrPerm,
+            LoopPermFrames = new Dictionary<int, (Term, Term, Term)>(LoopPermFrames),
             Link = Link,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),

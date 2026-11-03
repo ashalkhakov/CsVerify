@@ -181,6 +181,7 @@ namespace CsVerify.Verifier
                 EnterAlloc(f);
                 EnterOwned(f);
                 EnterPredicates(f);
+                EnterCells(f);
                 _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
                 CheckSubtyping(f, spec);
@@ -1053,6 +1054,7 @@ namespace CsVerify.Verifier
                     var idx = Eval(ae.Indices[0], f, spec);
                     Deref(ae.ArrayReference, arr, ae.Syntax);
                     BoundsCheck(arr, idx, ae.Syntax);
+                    CheckCellWrite(arr, idx, f, ae.Syntax);
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
                 }
@@ -1065,7 +1067,14 @@ namespace CsVerify.Verifier
                     var idx = Eval(pr.Arguments[0].Value, f, spec);
                     Deref(pr.Instance, arr, pr.Syntax);
                     BoundsCheck(arr, idx, pr.Syntax);
-                    if (IsSpan(pr.Instance.Type)) { f.Heap = _z3.Fresh("heap", Sort.Heap); break; } // could be any array's cell
+                    if (IsSpan(pr.Instance.Type))
+                    {
+                        if (_arrayMode && _codeMode)
+                            Report("CSV1016", pr.Syntax, $"'{pr.Syntax}' writes through a span, which could be any array's cells: this method's array permissions cannot cover it", isError: true);
+                        f.Heap = _z3.Fresh("heap", Sort.Heap); // could be any array's cell
+                        break;
+                    }
+                    CheckCellWrite(arr, idx, f, pr.Syntax);
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
                 }
@@ -1166,6 +1175,7 @@ namespace CsVerify.Verifier
                 for (int i = 0; i < ac.Initializer.ElementValues.Length; i++)
                     row = T.Store(row, T.Int(i), T.Coerce(Eval(ac.Initializer.ElementValues[i], f, spec), Sort.Int));
             f.Heap = T.Store(f.Heap, r, row);
+            NewCells(f, r);
             return r;
         }
 
@@ -1195,6 +1205,14 @@ namespace CsVerify.Verifier
                     case "Acc":
                     {
                         var o = Eval(inv.Arguments[0].Value, f, spec);
+                        if (Unconverted(inv.Arguments[0].Value).Type is IArrayTypeSymbol)
+                        {
+                            // cells: each in hand
+                            var lo = inv.Arguments.Length == 3 ? Eval(inv.Arguments[1].Value, f, spec) : T.Int(0);
+                            var hi = inv.Arguments.Length == 3 ? Eval(inv.Arguments[2].Value, f, spec) : Len(o);
+                            return _atomsTrue > 0 || f.ArrPerm == null ? T.True
+                                : new Term($"(forall ((i Int)) (=> (and (<= {lo} i) (< i {hi})) (>= (select (select {f.ArrPerm} {o}) i) 1.0)))", Sort.Bool);
+                        }
                         return _atomsTrue > 0 || f.Perm == null ? T.True : CanWrite(f, o);
                     }
                     default:
@@ -1280,8 +1298,9 @@ namespace CsVerify.Verifier
                 }
             // the permissions its preconditions ask for are given to it: what they cover may change
             var touchedInst = new List<Term>();
-            if (!callee.IsPure && f.Inst != null && _codeMode)
-                foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst);
+            var touchedCells = new List<Atom>();
+            if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null) && _codeMode)
+                foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst, touchedCells);
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {
@@ -1311,7 +1330,14 @@ namespace CsVerify.Verifier
                 Write(a.Value, nv, f, spec);
                 if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
             }
-            if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
+            if (f.ArrPerm != null && MentionsCells(callee))
+                f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc); // it writes only the cells it got
+            else if (HavocsHeap(m))
+            {
+                if (_arrayMode && _codeMode)
+                    Report("CSV1016", inv.Syntax, $"'{m.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes", isError: true);
+                f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
+            }
             HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst);
             if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
             else TakeBack(inv, receiver, f, callee);
@@ -1329,7 +1355,7 @@ namespace CsVerify.Verifier
             }
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
-            if (!callee.IsPure && f.Inst != null)
+            if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null))
                 foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
             foreach (var ens in callee.Ensures)
                 _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }))));
