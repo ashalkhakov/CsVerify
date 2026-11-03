@@ -433,7 +433,7 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("OwnedBugs.Forge"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("OwnedBugs.Peek"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("AfterDrop"));
-            Assert.Equal(new[] { "CSV1017" }, r.Errors("Positive"));
+            Assert.Equal(new[] { "CSV1017" }, r.Errors("Holder.Positive"));
             Assert.Equal(new[] { "CSV1017" }, r.Errors("Sneaky"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Independent"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Reading.Positive"));
