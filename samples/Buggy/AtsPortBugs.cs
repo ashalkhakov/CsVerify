@@ -168,6 +168,22 @@ namespace Samples.Buggy
             Spec.Fold(Region(r));
         }
 
+        /// <summary>strbuf_v: n non-NUL chars and a NUL after them.</summary>
+        [Predicate]
+        public static bool Cstr(char[] buf, int n) =>
+            buf != null && 0 <= n && n < buf.Length && Spec.Acc(buf) && Spec.Forall(0, n, i => buf[i] != '\0') && buf[n] == '\0';
+
+        // BUG: strbuf_set_char_at without its c1har (non-NUL) argument: a NUL inside cuts the string short, and its
+        // length is no longer n (CSV1019)
+        public static void SetAnyChar(char[] buf, int n, int i, char c)
+        {
+            Spec.Requires(0 <= i && i < n && Cstr(buf, n));
+            Spec.Ensures(Cstr(buf, n));
+            Spec.Unfold(Cstr(buf, n));
+            buf[i] = c;
+            Spec.Fold(Cstr(buf, n));
+        }
+
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
         public static void InsertTwice(Sn head, int n, Sn node)
         {
