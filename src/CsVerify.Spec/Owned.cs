@@ -23,6 +23,30 @@ namespace CsVerify
             return obj;
         }
 
+        /// <summary>
+        /// Unfolds one level of an ownership tree: takes the object an <see cref="OwnsAttribute"/> field owns out of
+        /// it, with its view (ATS: getting the view of a node out of its parent's). The field becomes null. Needs the
+        /// container's view; the field must not be null.
+        /// </summary>
+        [Trusted]
+        public static T Take<T>(ref T? slot, out Own<T> view) where T : class
+        {
+            var obj = slot!;
+            slot = null;
+            view = default;
+            return obj;
+        }
+
+        /// <summary>
+        /// Folds back: gives an object and its view to an empty <see cref="OwnsAttribute"/> field, which then owns it
+        /// (its invariant is proved, as at any hand-over). The object may not be the container or own it.
+        /// </summary>
+        [Trusted]
+        public static void Give<T>(ref T? slot, T obj, Own<T> view) where T : class
+        {
+            slot = obj;
+        }
+
         /// <summary>Gives the view up for good: nobody can write the object any more.</summary>
         [Trusted]
         public static void Drop<T>(Own<T> view) where T : class { }

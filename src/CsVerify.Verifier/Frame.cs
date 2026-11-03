@@ -19,6 +19,11 @@ namespace CsVerify.Verifier
         public Dictionary<ISymbol, Term> Fields = new Dictionary<ISymbol, Term>(SymbolEqualityComparer.Default);
         /// <summary>0 for the method's entry state; a new number each time every heap field may have changed.</summary>
         public int FieldEpoch;
+        /// <summary>
+        /// Ownership trees: each [Owned] object's tree root (the object whose view is in someone's hand); null when
+        /// the program has no [Owned] classes.
+        /// </summary>
+        public Term Root;
         /// <summary>Dynamic frames: the set of objects allocated so far (null when the program uses no dynamic frames).</summary>
         public Term Alloc;
         /// <summary>How the heap fields came to be: the state before the last change and what it may have touched.</summary>
@@ -40,6 +45,7 @@ namespace CsVerify.Verifier
             FieldEpoch = FieldEpoch,
             LiveViews = new HashSet<ISymbol>(LiveViews, SymbolEqualityComparer.Default),
             Alloc = Alloc,
+            Root = Root,
             Link = Link,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),

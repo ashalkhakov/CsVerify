@@ -29,6 +29,7 @@ namespace CsVerify.Analyzers
         public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
         public static bool IsInvariant(ISymbol s) => HasAttribute(s, "InvariantAttribute");
         public static bool IsOwnType(ITypeSymbol type) => IsCsVerifyType(type, "Own`1");
+        public static bool IsOwnsField(ISymbol field) => field is IFieldSymbol && HasAttribute(field, "OwnsAttribute");
 
         /// <summary>A class marked [Owned], or derived from one.</summary>
         public static bool IsOwned(ITypeSymbol type)

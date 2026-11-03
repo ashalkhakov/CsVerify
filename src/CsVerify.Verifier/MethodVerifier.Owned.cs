@@ -21,6 +21,14 @@ namespace CsVerify.Verifier
     /// </summary>
     internal sealed partial class MethodVerifier
     {
+        private static Term RootOf(Frame f, Term o) => T.Select(f.Root, T.Coerce(o, Sort.Int), Sort.Int);
+
+        /// <summary>An object whose view is in hand is the root of its ownership tree (no [Owns] field holds it).</summary>
+        private void IsRoot(Frame f, Term o)
+        {
+            if (f.Root != null) _z3.Assume(T.Eq(RootOf(f, o), o));
+        }
+
         private static bool IsOwnedField(ISymbol field) => FieldEffects.IsHeapField(field) && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>Inside a (non-[Pure]) instance method of an owned class, <c>this</c> is held like a <c>ref</c> view.</summary>
@@ -35,6 +43,68 @@ namespace CsVerify.Verifier
             foreach (var other in f.LiveViews.Where(o => !SymbolEqualityComparer.Default.Equals(o, view)).ToList())
                 if (f.Vars.TryGetValue(other, out var ov)) _z3.Assume(T.Not(T.Eq(ov, v)));
             f.LiveViews.Add(view);
+        }
+
+        /// <summary>The [Owns] field an Own.Take/Own.Give slot names, and its container; null if it is something else.</summary>
+        private (IFieldSymbol field, Term container)? OwnsSlot(IOperation slot, Frame f, SpecEnv spec, SyntaxNode at)
+        {
+            if (Unconverted(slot) is IFieldReferenceOperation fr && SpecSymbols.IsOwnsField(fr.Field) && fr.Instance != null &&
+                SpecSymbols.IsOwned(fr.Field.ContainingType))
+            {
+                var c = Eval(fr.Instance, f, spec);
+                Deref(fr.Instance, c, at);
+                RequireWriteView(c, f, at, fr.Field.ContainingType);
+                return (fr.Field, c);
+            }
+            Report("CSV1016", at, "Own.Take and Own.Give work on an [Owns] field of an [Owned] object", isError: true);
+            return null;
+        }
+
+        /// <summary>
+        /// <c>Own.Take(ref c.F, out var v)</c>: unfold. The object c.F owns comes out with its view (its invariant held
+        /// at rest), c.F becomes null, and c's tree splits: what was below the object is now in its own tree.
+        /// </summary>
+        private Term OwnTake(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            if (!(OwnsSlot(inv.Arguments[0].Value, f, spec, inv.Syntax) is (IFieldSymbol field, Term c))) return Unknown(inv.Type);
+            var x = T.Select(FieldMap(f, field), c, Sort.Int);
+            Require(NotNull(x), "CSV1016", inv.Syntax, $"'{inv.Arguments[0].Value.Syntax}' might be null: there is nothing to take");
+            var before = f.Root;
+            f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), c, T.Int(0));
+            f.Link = null;
+            if (before != null)
+            {
+                // each object of c's tree other than c now belongs to c's or to x's tree (which, the verifier does not track)
+                var choice = _z3.Fresh("split", Sort.Row);
+                var cRoot = RootOf(f, c);
+                f.Root = new Term($"(lambda ((y Int)) (ite (= y {x}) {x} (ite (and (= (select {before} y) {cRoot}) (distinct y {c}) (distinct (select {choice} y) 0)) {x} (select {before} y))))", Sort.Row);
+            }
+            AssumeOwnedInvariant(field.Type, x, f);
+            Write(inv.Arguments[1].Value, x, f, spec);
+            return x;
+        }
+
+        /// <summary>
+        /// <c>Own.Give(ref c.F, x, v)</c>: fold. x and its tree join c's tree under c.F, which must be empty; v (x's
+        /// view) is handed over, so x's invariant is proved. x may not be c's tree root, or c would own itself.
+        /// </summary>
+        private Term OwnGive(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            if (!(OwnsSlot(inv.Arguments[0].Value, f, spec, inv.Syntax) is (IFieldSymbol field, Term c))) return T.True;
+            var x = Eval(inv.Arguments[1].Value, f, spec);
+            var view = Eval(inv.Arguments[2].Value, f, spec);
+            Require(T.Eq(T.Select(FieldMap(f, field), c, Sort.Int), T.Int(0)), "CSV1016", inv.Syntax,
+                $"'{inv.Arguments[0].Value.Syntax}' might still own an object: take it first");
+            Require(T.Eq(view, x), "CSV1016", inv.Syntax, $"'{inv.Arguments[2].Value.Syntax}' might not be the view of '{inv.Arguments[1].Value.Syntax}'");
+            if (f.Root != null)
+                Require(T.Not(T.Eq(RootOf(f, c), x)), "CSV1016", inv.Syntax, $"'{inv.Arguments[1].Value.Syntax}' might own the container: ownership would be a cycle");
+            ProveOwnedInvariant(field.Type, x, f, inv.Syntax, "when it is given to its owner");
+            if (VariableOf(inv.Arguments[2].Value) is ISymbol consumed) f.LiveViews.Remove(consumed);
+            f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), c, x);
+            f.Link = null;
+            if (f.Root != null)
+                f.Root = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {x}) {RootOf(f, c)} (select {f.Root} y)))", Sort.Row);
+            return T.True;
         }
 
         /// <summary>The local or parameter an operand names, if it is one.</summary>
@@ -84,11 +154,13 @@ namespace CsVerify.Verifier
             {
                 if (p.RefKind != RefKind.In) f.LiveViews.Add(p);
                 AssumeOwnedInvariant(OwnedType(p.Type), f.Vars[p], f);
+                IsRoot(f, f.Vars[p]);
                 // views are linear: two in hand at once own two different objects
                 foreach (var other in received) _z3.Assume(T.Not(T.Eq(other, f.Vars[p])));
                 received.Add(f.Vars[p]);
             }
             if (ThisIsView && _method.MethodKind != MethodKind.Constructor) AssumeOwnedInvariant(_method.ContainingType, f.This, f);
+            if (ThisIsView || _method.MethodKind == MethodKind.Constructor && SpecSymbols.IsOwned(_method.ContainingType)) IsRoot(f, f.This);
         }
 
         /// <summary>At a return: views given back (<c>ref</c>, <c>out</c>, and <c>this</c>) satisfy their invariants again.</summary>
@@ -131,7 +203,11 @@ namespace CsVerify.Verifier
             var m = callee.Method;
             foreach (var a in inv.Arguments.Where(a => a.Parameter != null && SpecSymbols.IsOwnType(a.Parameter.Type) &&
                                                        (a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out)))
-                AssumeOwnedInvariant(OwnedType(a.Parameter.Type), Eval(a.Value, f), f);
+            {
+                var v = Eval(a.Value, f);
+                AssumeOwnedInvariant(OwnedType(a.Parameter.Type), v, f);
+                IsRoot(f, v);
+            }
             if (receiver != null && SpecSymbols.IsOwned(m.ContainingType) && !callee.IsPure && !m.IsStatic)
                 AssumeOwnedInvariant(m.ContainingType, receiver, f);
         }
@@ -140,6 +216,8 @@ namespace CsVerify.Verifier
         private Term OwnCall(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
+            if (m.Name == "Take") return OwnTake(inv, f, spec);
+            if (m.Name == "Give") return OwnGive(inv, f, spec);
             if (m.Name == "Drop")
             {
                 var view = inv.Arguments[0].Value;
@@ -156,6 +234,7 @@ namespace CsVerify.Verifier
             }
             var obj = Eval(arg, f, spec);
             ProveOwnedInvariant(arg.Type, obj, f, inv.Syntax, "when its view is made");
+            if (f.Root != null) f.Root = T.Store(f.Root, obj, obj); // a new tree of its own
             var outArg = inv.Arguments[1].Value;
             Write(outArg, obj, f, spec);
             return obj;

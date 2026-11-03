@@ -80,6 +80,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | static function | `[GhostFunction]`: specification-only, its body is ghost context (quantifiers, `Seq`), unfolded at each use |
 | linear logic on views (used exactly once) | `[Linear]` types checked by the `LinearityAnalyzer` on Roslyn's control-flow graph |
 | frame rule `(ext)` | calls only change what they receive by `ref`/`out`, and the arrays and fields they may write (inferred) |
+| nested views: a node's view holding the rest of the list's | `[Owns] Node? Next` in an `[Owned]` class; `Own.Take(ref n.Next, out var v)` unfolds, `Own.Give(ref n.Next, x, v)` folds |
 | Dafny's `ghost var Repr: set<object>`, `Valid()`, `modifies`, `reads`, `fresh` | `Ghost<ObjSet> Repr` field, `[GhostFunction] bool Valid()`, `Spec.Modifies(Repr.Value)`, `Spec.Reads(Repr.Value.Add(this))`, `Spec.Fresh(Repr.Value)` |
 | a view of an object's fields, `(pf \| p)` | `[Owned]` class; `Own.New(new C(...), out Own<C> view)`; pass `(C obj, ref Own<C> view)` with `Spec.Requires(view.Obj.Value == obj)` |
 | several results, `[r1, r2: int] (...)` (Dafny `returns (k, m)`) | a C# tuple `(int k, int m)`; `Spec.Ensures<(int k, int m)>(r => ... r.k ... r.m ...)`; callers read `t.k` or deconstruct with `var (k, m) = ...` |
@@ -225,6 +226,19 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 - **Reads need no view.** Objects are garbage-collected, and while a method runs nobody else holds a view it lent.
 - **Giving up.** `Own.Drop(view)` gives the object up for good.
 - **The ATS idiom.** Methods take the object and its view side by side, `Transfer(Account from, ref Own<Account> fromView, ...)`, tied by `Spec.Requires(fromView.Obj.Value == from)`.
+
+**Ownership trees (ATS's nested views).** A field of an `[Owned]` class marked `[Owns]` owns the object it refers to: that object's view is inside the container.
+- **Unfold and fold.** To work on an owned object, take it out with `Own.Take(ref c.F, out var view)`, which leaves the field null. Give it back with `Own.Give(ref c.F, x, view)`. Both need the container's view and are real run-time helpers; erasure keeps them without the view argument.
+- **What is rejected (CSV1016):** writing an owned object in place, setting an `[Owns]` field directly, giving into a field that still owns something, and giving an object to its own descendant (a cycle).
+- **Invariants.** An owned object at rest can't change, so its invariant held when it went in still holds when it comes out. The container's invariant may read its children's fields, one level down. A sorted list is then every node's `Next == null || Val <= Next.Val`.
+- **Frames.** The verifier tracks each object's tree root, a ghost map maintained exactly by `Own.New`, `Take` and `Give`. A call that gets a root's view may change that root's whole tree and nothing else, so two lists stay independent. For classes no `[Owns]` field can hold, every object is its own root and only the objects whose views go in change.
+
+**One write rule.** A write of `o.F` is allowed if:
+- `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;
+- or `o` is in the method's `Spec.Modifies` frame;
+- or `o` was allocated in the method.
+
+The styles mix: a method can have a `Spec.Modifies` frame and hold views, and an `[Owned]` class's methods can call framed methods.
 
 **Dafny-style objects (dynamic frames).** For ordinary mutable classes, Dafny's `Valid()`/`Repr` idiom is available:
 - **The pieces.** An object keeps a ghost set of the objects it is made of, `Ghost<ObjSet> Repr`, which is erased like every ghost. `ObjSet` has `Empty`, `Of`, `Add`, `Union`, `Contains`, `IsSubsetOf` and `IsDisjointFrom`. A ghost `[GhostFunction] bool Valid()` states the object's invariant over `Repr`.
@@ -430,6 +444,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **Red-black, after Okasaki:** `BalanceL` and `BalanceR` handle the four rotation cases as nested C# patterns, such as `Ins.Viol(Rb.T { Red: true } a, var y, var c)`. `Ins` keeps the black height. `Insert` raises it by at most one. ATS's violation index becomes a type of its own, `Ins = Fine(Rb) | Viol(l, k, r)`: an intermediate tree that may have a red-red violation at its root cannot be an `Rb`.
   - **Hints and dead branches:** `Spec.Assert(Bh(a) == Bh(a.L))` hints play the part of ATS's `prval` steps, because definitions unfold one level per use. Unreachable branches carry a `Spec.Assert(false)` that the verifier checks.
 - `DynamicFrames.cs`: Dafny's `Valid()`/`Repr` idiom. A `Pair` of two cells has a ghost representation set, a ghost `Valid()` that reads only it, and `IncA`/`Swap` that modify only it. `Demo` builds two pairs, updates one, and proves the other unchanged and still valid.
+- `OwnedList.cs`: a sorted linked list whose nodes own the rest of the list. A ghost length `Len`, ATS's index, also measures the recursion. `InsertAfter` unfolds, inserts and folds back, and the list is proved sorted because every node is. `Independent` shows that inserting into one list leaves another's whole tree as it was.
 - `Owned.cs`: an `[Owned]` bank `Account` whose invariant (never overdrawn) travels with its view. `Bank.Transfer` takes two accounts with their views, and `Demo` calls unknown `IAudit` code between updates and still knows both balances.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
@@ -496,6 +511,7 @@ Sources and licences:
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
 - `FrameBugs.cs`: a `Valid()`-style function reading outside its `Spec.Reads`, a write outside `Spec.Modifies`, and two objects whose constructor promises no freshness, so updating one says nothing about the other.
+- `TreeOwnershipBugs.cs`: appending a smaller node to a sorted list, writing an owned node in place, setting an `[Owns]` field directly, a node made to own itself, and assuming an inner node unchanged after the list was handed to a method.
 - `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
 - `TreeBugs.cs`: an AVL insert that never rotates, a single rotation where a double one is needed, and a red-black rebalance that leaves a red node over a red child.
 - `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, an assertion that two equal values are the same object, and a record invariant that reads a mutable `Gauge`, which anyone holding it could change after the record is built.
@@ -518,7 +534,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 161 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 164 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -531,7 +547,9 @@ samples/Good, samples/Buggy
     - The frame rule for `[Pure]` functions follows at most 16 changes back.
     - Loops forget the fields they write for every object; restate what is kept in the invariant.
   - **`[Invariant]` on an ordinary mutable class** (neither a data record nor `[Owned]`) is not used: it is neither assumed nor proved.
-  - **Loops** that write owned fields forget them for every object, not just the ones whose views they hold.
+  - **Loops** that write owned fields, or move views, forget those fields and the tree roots for every object.
+  - **`Own.Take` splits a tree imprecisely.** Which of the container's descendants went with the taken object is not tracked, so a call that touches either part forgets both.
+  - **`[Pure]` functions get no view.** They can't assume an owned object's invariant, so recursion over an ownership tree (a measure from the invariant) is done in ordinary methods that take and give.
   - **Library code** is trusted not to write source objects' fields except through what it is handed, so reflection is not covered.
 - **Null and object state.** Fields and properties are maybe-null, except positional fields of data records. Library nullability annotations are trusted, not checked.
 - **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.

@@ -425,6 +425,11 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1017" }, r.Errors("Sneaky"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Independent"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Reading.Positive"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("AppendSmaller"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Reach"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Bypass"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Cycle"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
         }
     }
 

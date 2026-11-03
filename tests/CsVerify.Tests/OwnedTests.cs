@@ -77,5 +77,59 @@ public interface IAudit { void Record(int amount); }
         [Fact]
         public void MovingAView_IsNotAContradiction() =>
             Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M() { var a = Own.New(new Account(0), out var v); var w = v; Spec.Assert(false); Own.Drop(w); }"));
+    
+        private const string Node = @"
+[Owned]
+public sealed class Node
+{
+    public int Val;
+    [Owns] public Node? Next;
+    [Invariant, Pure] public bool Sorted() => Next == null || Val <= Next.Val;
+    public Node(int v) { Spec.Ensures(Val == v && Next == null); Val = v; }
+    public void Push(int v)
+    {
+        Spec.Requires(Val <= v);
+        Spec.Ensures(Val == Spec.Old(Val));
+        if (Next != null) { var rest = Own.Take(ref Next, out var rv); var n = Own.New(new Node(v), out var nv);
+            if (v <= rest.Val) { Own.Give(ref n.Next, rest, rv); Own.Give(ref Next, n, nv); }
+            else { Own.Drop(nv); rest.Push(v); Own.Give(ref Next, rest, rv); } }
+        else Own.Give(ref Next, Own.New(new Node(v), out var nv2), nv2);
     }
+}
+";
+
+        private static string[] TreeErrors(string method, string body) =>
+            Harness.Verify(Node + "public static class C { " + body + " }").Errors(method);
+
+        [Fact]
+        public void OwnershipTrees_UnfoldAndFold()
+        {
+            Assert.Empty(Harness.Verify(Node).Errors("Push"));
+            // what is owned is reached by taking it out; writing it in place, or setting the field, is not allowed
+            Assert.Equal(new[] { "CSV1016" }, TreeErrors("M", "static void M(Node a, ref Own<Node> av) { Spec.Requires(av.Obj.Value == a && a.Next != null); a.Next.Val = 0; }"));
+            Assert.Equal(new[] { "CSV1016" }, TreeErrors("M", "static void M(Node a, ref Own<Node> av) { Spec.Requires(av.Obj.Value == a); a.Next = null; }"));
+            Assert.Equal(new[] { "CSV1016" }, TreeErrors("M", "static void M() { var a = Own.New(new Node(0), out var av); Own.Give(ref a.Next, a, av); }"));
+        }
+
+        [Fact]
+        public void OwnershipTrees_AreFramesOfTheirOwn()
+        {
+            // a call that gets one list's root may change that whole list, and nothing in another
+            Assert.Empty(TreeErrors("M", @"static void M(Node a, ref Own<Node> av, Node b, ref Own<Node> bv) {
+                Spec.Requires(av.Obj.Value == a && bv.Obj.Value == b && a.Val <= 10 && b.Next != null);
+                var inner = b.Next; var after = inner.Next;
+                a.Push(10);
+                Spec.Assert(b.Next == inner && inner.Next == after); }"));
+            Assert.Equal(new[] { "CSV1004" }, TreeErrors("M", @"static void M(Node a, ref Own<Node> av) {
+                Spec.Requires(av.Obj.Value == a && a.Val <= 10 && a.Next != null);
+                var inner = a.Next; var after = inner.Next;
+                a.Push(10);
+                Spec.Assert(inner.Next == after); }"));
+        }
+
+        [Fact]
+        public void OwnedChildren_MayBeReadByTheInvariant_OneLevelDown() =>
+            Assert.Equal("CSV1015", string.Join(",", Harness.Verify(
+                "[Owned] public sealed class N { public int V; [Owns] public N? Next; [Invariant, Pure] public bool I() => Next == null || Next.Next == null || V <= Next.Next.V; }").Errors("I")));
+}
 }

@@ -31,6 +31,7 @@ namespace CsVerify.Verifier
             public bool HavocHeap;
             public HashSet<ISymbol> HavocFields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public bool HavocAllFields;
+            public bool HavocRoot; // ownership changes hands in the loop (Own.New/Take/Give)
         }
 
         private readonly Engine _engine;
@@ -163,6 +164,7 @@ namespace CsVerify.Verifier
             {
                 var f = new Frame { Heap = _z3.Fresh("heap", Sort.Heap) };
                 if (!_method.IsStatic) { f.This = _z3.Fresh("this", Sort.Int); _z3.Assume(NotNull(f.This)); }
+                if (_engine.UsesOwnership) f.Root = _z3.Fresh("root", Sort.Row);
                 if (_method.MethodKind == MethodKind.Constructor && !_method.IsStatic) EnterConstructor(f);
                 foreach (var p in _method.Parameters)
                 {
@@ -282,6 +284,7 @@ namespace CsVerify.Verifier
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
                     case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
                         if (HavocsHeap(m)) loop.HavocHeap = true;
+                        if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) loop.HavocRoot = true;
                         if (!SpecSymbols.IsSpecClass(m.ContainingType)) AddFieldWrites(loop, m);
                         break;
                     case BaseObjectCreationExpressionSyntax oc when _model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor:
@@ -400,6 +403,7 @@ namespace CsVerify.Verifier
             if (loop.HavocAllFields) HavocAllFields(f);
             foreach (var field in loop.HavocFields) f.Fields[field] = FreshMap(field);
             if (loop.HavocAllFields || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
+            if (f.Root != null && (loop.HavocRoot || loop.HavocAllFields || loop.HavocFields.Any(IsOwnedField))) f.Root = _z3.Fresh("root", Sort.Row);
             if (loop.HavocHeap) f.Heap = _z3.Fresh("heap", Sort.Heap);
             else
                 foreach (var a in loop.HavocArrays)
@@ -1261,6 +1265,7 @@ namespace CsVerify.Verifier
                 frame.Fields = new Dictionary<ISymbol, Term>(state.Fields, SymbolEqualityComparer.Default);
                 frame.FieldEpoch = state.FieldEpoch;
                 frame.Alloc = state.Alloc;
+                frame.Root = state.Root;
                 frame.Link = state.Link;
             }
             for (int i = 0; i < args.Length && i < callee.Method.Parameters.Length; i++)

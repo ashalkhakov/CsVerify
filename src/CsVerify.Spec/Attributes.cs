@@ -50,4 +50,12 @@ namespace CsVerify
     /// </summary>
     [AttributeUsage(AttributeTargets.Class)]
     public sealed class OwnedAttribute : Attribute { }
+
+    /// <summary>
+    /// A field of an [Owned] class that owns the object it refers to: that object's view is inside the container,
+    /// so only code holding the container can get at it (with Own.Take / Own.Give), and the container's invariant
+    /// may read its fields. Ownership forms trees (ATS's nested views).
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class OwnsAttribute : Attribute { }
 }

@@ -80,6 +80,8 @@ namespace CsVerify.Verifier
         internal readonly IReadOnlyList<INamedTypeSymbol> SourceTypes;
         /// <summary>Does the program use dynamic frames (Spec.Modifies/Reads/Fresh, ObjSet)? Allocation is tracked only then.</summary>
         internal readonly bool UsesDynamicFrames;
+        /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
+        internal readonly bool UsesOwnership;
 
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
@@ -90,6 +92,7 @@ namespace CsVerify.Verifier
                 .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"));
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
+            UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned);
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);

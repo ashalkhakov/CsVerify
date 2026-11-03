@@ -52,6 +52,19 @@ namespace CsVerify.Verifier
 
         public static ISymbol Key(ISymbol s) => s.OriginalDefinition;
 
+        private List<INamedTypeSymbol> _ownable;
+
+        /// <summary>
+        /// Can an object of this type sit inside an ownership tree (some [Owns] field holds it)? If not, every such
+        /// object is the root of its own tree, and a call changes only the ones whose views it gets.
+        /// </summary>
+        public bool CanBeOwned(ITypeSymbol type)
+        {
+            _ownable ??= _engine.SourceTypes.SelectMany(t => t.GetMembers().OfType<IFieldSymbol>())
+                .Where(SpecSymbols.IsOwnsField).Select(f => (f.Type as INamedTypeSymbol)?.OriginalDefinition).Where(t => t != null).ToList();
+            return _ownable.Any(o => DataTypes.Derives(type, o) || DataTypes.Derives(o, type));
+        }
+
         private List<ISymbol> _owned;
 
         /// <summary>Every heap field of an [Owned] class in the sources.</summary>
@@ -76,6 +89,8 @@ namespace CsVerify.Verifier
             if ((m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
                 !m.IsSealed && m.ContainingType?.IsSealed != true && !m.IsStatic)
                 d.All = true;
+            // a source class's implicit constructor only sets the new object's fields (defaults, initializers)
+            if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0) return d;
             var c = _engine.ContractOf(m);
             if (!c.HasSource)
             {
@@ -202,7 +217,8 @@ namespace CsVerify.Verifier
                         if (!owned) return $"it reads '{access ?? (SyntaxNode)name}', a mutable field";
                         if (!SpecSymbols.IsOwned(s.ContainingType)) return $"it reads '{access ?? (SyntaxNode)name}', which code without this object's view can change";
                         if (m.IsStatic) return $"'{m.Name}' reads '{access ?? (SyntaxNode)name}' of whatever object it is given; read owned fields through this";
-                        if (onOther) return $"it reads '{access ?? (SyntaxNode)name}' of another object, whose view someone else may hold";
+                        if (onOther && !OwnedChild(access.Expression, c.Model))
+                            return $"it reads '{access ?? (SyntaxNode)name}' of another object, whose view someone else may hold";
                     }
                     else if (s is IMethodSymbol callee && !callee.IsStatic && access != null && !(access.Expression is ThisExpressionSyntax) &&
                              ReadsOf(callee).Count > 0)
@@ -210,6 +226,16 @@ namespace CsVerify.Verifier
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// <c>F</c> or <c>this.F</c> for an [Owns] field F: an object this one owns. Its fields change only through
+        /// Own.Take from this object, so this object's invariant may read them (one level down).
+        /// </summary>
+        private static bool OwnedChild(ExpressionSyntax e, SemanticModel model)
+        {
+            if (!(e is IdentifierNameSyntax || e is MemberAccessExpressionSyntax m && m.Expression is ThisExpressionSyntax)) return false;
+            return model.GetSymbolInfo(e).Symbol is ISymbol s && SpecSymbols.IsOwnsField(s);
         }
 
         /// <summary>The heap fields a [Pure] function's value may depend on (all it, or its callees, read), in a fixed order.</summary>

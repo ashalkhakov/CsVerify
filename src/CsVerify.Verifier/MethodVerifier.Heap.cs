@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
@@ -42,6 +43,9 @@ namespace CsVerify.Verifier
             Deref(instance, o, at);
             CheckRead(field, o, at);
             var v = T.Select(FieldMap(f, field), o, ValueSort(field));
+            // what an [Owns] field refers to is in the same ownership tree, and is not its root (it is owned)
+            if (f.Root != null && SpecSymbols.IsOwnsField(field))
+                AssumeSide(T.Implies(NotNull(v), T.And(T.Eq(RootOf(f, v), RootOf(f, o)), T.Not(T.Eq(RootOf(f, v), v)))));
             // a field of an allocated object refers to an allocated object
             if (f.Alloc != null && MayBeNullType(type))
                 AssumeSide(T.Implies(T.And(InSet(f.Alloc, o), NotNull(v)), InSet(f.Alloc, v)));
@@ -52,8 +56,7 @@ namespace CsVerify.Verifier
         {
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
-            if (IsOwnedField(field)) RequireWriteView(o, f, at, field.ContainingType);
-            else CheckWrite(o, at);
+            RequireWritePermission(field, o, f, at);
             var before = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), o, T.Coerce(v, ValueSort(field)));
             f.Link = new StateLink { Before = before, Changed = T.Store(T.ZeroRow(), o, T.Int(1)) };
@@ -79,13 +82,36 @@ namespace CsVerify.Verifier
                     : FreshMap(field);
             // owned fields change at the objects whose views moved, which the link does not describe
             f.Link = modifiable != null && !all && owned.Count == 0 ? new StateLink { Before = before, Changed = modifiable } : null;
-            if (touched == null) return;
-            foreach (var field in owned)
+            if (touched == null)
+            {
+                if (owned.Count > 0 && f.Root != null) f.Root = _z3.Fresh("root", Sort.Row);
+                return;
+            }
+            if (owned.Count == 0) return;
+            // the call may change the whole ownership trees whose roots it got (their subtrees), nothing else; an
+            // object that can never be owned is always a root, so for its fields that is just the objects it got
+            foreach (var field in owned.Where(x => f.Root == null || !_engine.Fields.CanBeOwned(x.ContainingType)))
             {
                 var map = FieldMap(f, field);
-                foreach (var o in touched) map = T.Store(map, o, _z3.Fresh(field.Name, Sort.Int));
+                foreach (var o in touched) map = T.Store(map, o, _z3.Fresh(field.Name, ValueSort(field)));
                 f.Fields[field] = map;
             }
+            var inTrees = f.Root == null ? new List<ISymbol>() : owned.Where(x => _engine.Fields.CanBeOwned(x.ContainingType)).ToList();
+            if (inTrees.Count == 0) return;
+            if (f.Root == null)
+            {
+                foreach (var field in inTrees)
+                {
+                    var map = FieldMap(f, field);
+                    foreach (var o in touched) map = T.Store(map, o, _z3.Fresh(field.Name, ValueSort(field)));
+                    f.Fields[field] = map;
+                }
+                return;
+            }
+            string inTouched(string y) => touched.Count == 0 ? "false" : "(or " + string.Join(" ", touched.Select(t => $"(= (select {f.Root} {y}) {t})")) + ")";
+            foreach (var field in inTrees)
+                f.Fields[field] = new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {FreshMap(field)} y) (select {FieldMap(f, field)} y)))", MapSort(field));
+            f.Root = new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {_z3.Fresh("root", Sort.Row)} y) (select {f.Root} y)))", Sort.Row);
         }
 
         private void HavocAllFields(Frame f, bool keepOwned = false)
@@ -95,6 +121,20 @@ namespace CsVerify.Verifier
             f.Fields.Clear();
             f.FieldEpoch = ++_fieldEpochs;
             if (kept != null) foreach (var kv in kept) f.Fields[kv.Key] = kv.Value;
+        }
+
+        /// <summary>
+        /// The one rule for writing <c>o.F</c>. An [Owned] object: its view must be in hand (a live view, or
+        /// <c>this</c> in its class's methods); nothing else will do, since whoever holds the view relies on it
+        /// (CSV1016). Any other object: within the method's Spec.Modifies frame or allocated since entry, if the
+        /// method has a frame (CSV1017); with no frame, the write is part of the method's inferred effect.
+        /// </summary>
+        private void RequireWritePermission(ISymbol field, Term o, Frame f, SyntaxNode at)
+        {
+            if (SpecSymbols.IsOwnsField(field) && _codeMode)
+                Report("CSV1016", at, $"'{at}': an [Owns] field changes hands only through Own.Take and Own.Give", isError: true);
+            if (IsOwnedField(field)) RequireWriteView(o, f, at, field.ContainingType);
+            else CheckWrite(o, at);
         }
 
         private static bool HasInitializer(ISymbol field) =>
