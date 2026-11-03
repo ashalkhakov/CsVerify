@@ -142,6 +142,13 @@ The verifier runs all three analyzers over the compilation it verifies: a method
    - loop invariants (on entry and when maintained),
    - loop and recursion measures. A measure goes down lexicographically: some component decreases from a non-negative value, and every component before it is unchanged. A call is recursive when the callee can reach the caller again through source methods (calls inside specifications don't count), so mutually recursive methods are checked against each other's measures. Their measures must have the same number of components.
    - postconditions at each return,
+   - well-definedness of the method's own specifications (CSV1012). Every array index in a spec must be in bounds, every `[Pure]` call must be within its precondition, and every divisor must be non-zero. Each condition is guarded by what protects it:
+     - the left side of `&&`/`||`;
+     - the branch of `?:`;
+     - the range of `Spec.Forall`/`Exists` (the obligation becomes `forall i. lo ≤ i < hi ⇒ …`);
+     - earlier preconditions and invariants.
+
+     So `a.Length > 0 && a[0] > 0` is fine, and `a[0] > 0` alone is not. Outside its precondition a pure function's value is unspecified, so a spec using it there could be proved vacuously. Preconditions are checked at entry, invariants and measures at an arbitrary iteration, and postconditions at each return. A callee's contract is not re-checked at the call site, since it is checked when the callee is verified.
    - overflow (only with `--overflow`).
 4. **Loops.** Each loop is cut at its head. The invariant is checked, the variables and arrays the loop assigns are havocked, and the invariant is assumed. A back edge re-checks the invariant and that the measure decreases while staying ≥ 0.
 5. **Calls are modular.** At a call the verifier:
@@ -165,6 +172,8 @@ The verifier runs all three analyzers over the compilation it verifies: a method
    Constructors are calls: the heap is havocked if they may write arrays. Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
 
 Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
+
+Z3 is reset before each method (`(reset)`, then the options and theory again), so a method's result never depends on which methods were verified before it. Z3's search is history-dependent, and an "unknown" from e-matching could otherwise come and go with unrelated code.
 
 Z3 runs as a separate process speaking SMT-LIB2. Neither the analyzer nor MSBuild loads native code, and any Z3 build for any OS or CPU works. See *Limitations* for why this is not the `Microsoft.Z3` NuGet package.
 
@@ -255,6 +264,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1008 | verifier | recursion measure (own or of a mutually recursive callee) might not decrease or might be negative |
 | CSV1009 | verifier | possible division by zero |
 | CSV1010 | verifier | possible overflow (`--overflow`) |
+| CSV1012 | verifier | a specification might not be well-defined: index out of range, `[Pure]` call outside its precondition, or division by zero inside a spec |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
@@ -413,7 +423,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 108 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 116 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -422,9 +432,8 @@ samples/Good, samples/Buggy
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
-- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Null dereferences are not checked; enable C#'s nullable reference types for that. Proofs may not throw (CSV1011).
+- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not checked yet. They are the natural next obligation: `x != null` at every dereference, guarded like the well-definedness checks.
 - **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
-- **Well-definedness of specifications.** An out-of-range `a[i]` or a `[Pure]` call outside its precondition inside a spec denotes an unspecified value; it is not reported. A spec that relies on such a value cannot be proved, but a vacuous one can.
 - **Virtual dispatch.** Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown). Proofs cannot be virtual (CSV0013).
 - **`[Trusted]` and `Spec.Assume`** are axioms by definition.
 

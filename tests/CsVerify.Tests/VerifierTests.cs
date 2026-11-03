@@ -378,7 +378,7 @@ namespace CsVerify.Tests
         {
             var r = VerifySamples("Buggy");
             Assert.Equal(new[] { "CSV1003" }, r.Errors("SumOffByOne"));
-            Assert.Equal(new[] { "CSV1002" }, r.Errors("First"));
+            Assert.Equal(new[] { "CSV1002", "CSV1012" }, r.Errors("First"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("Average"));
             Assert.Equal(new[] { "CSV1005", "CSV1006" }, r.Errors("CountUp"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("Loop"));
@@ -461,6 +461,80 @@ namespace CsVerify.Tests
             var r = Harness.Verify("public class B { public B(int[] a) { a[0] = 5; } } " +
                 "public static class C { public static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 1; new B(a); Spec.Assert(a[0] == 1); } }");
             Assert.Equal(new[] { "CSV1004" }, r.Errors("M"));
+        }
+    }
+
+    /// <summary>Specifications must mean something: indexes in bounds, pure functions within their preconditions (CSV1012).</summary>
+    public class WellDefinednessTests
+    {
+        private static string[] Errors(string method, string source) =>
+            Harness.Verify("public static class C { " + source + " }").Errors(method);
+
+        private static string[] Requires(string condition) => Errors("M", "static void M(int[] a, int x) { Spec.Requires(" + condition + "); }");
+
+        [Fact]
+        public void Indexing_IsGuardedByShortCircuitOperators()
+        {
+            Assert.Equal(new[] { "CSV1012" }, Requires("a[0] > 0"));
+            Assert.Empty(Requires("a.Length > 0 && a[0] > 0"));
+            Assert.Empty(Requires("a.Length == 0 || a[0] > 0"));
+            Assert.Empty(Requires("(a.Length > 0 ? a[0] : 1) > 0"));
+            Assert.Equal(new[] { "CSV1012" }, Requires("a[0] > 0 && a.Length > 0")); // the guard comes too late
+        }
+
+        [Fact]
+        public void EarlierPreconditions_GuardLaterOnes() =>
+            Assert.Empty(Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 2); Spec.Requires(a[2] > 0); }"));
+
+        [Fact]
+        public void QuantifierRanges_AreGuards()
+        {
+            Assert.Empty(Requires("Spec.Forall(0, a.Length, i => a[i] > 0)"));
+            Assert.Equal(new[] { "CSV1012" }, Requires("Spec.Forall(0, a.Length + 1, i => a[i] > 0)"));
+            Assert.Empty(Requires("Spec.Forall(0, a.Length, i => Spec.Forall(i + 1, a.Length, j => a[i] <= a[j]))"));
+            Assert.Equal(new[] { "CSV1012" }, Requires("Spec.Exists(0, a.Length, i => a[i + 1] == x)"));
+        }
+
+        [Fact]
+        public void DivisionInSpecifications()
+        {
+            Assert.Equal(new[] { "CSV1012" }, Requires("100 / x > 1"));
+            Assert.Empty(Requires("x != 0 && 100 / x > 1"));
+        }
+
+        private const string Sum = "[Pure] static int Sum(int[] a, int n) { Spec.Requires(0 <= n && n <= a.Length); Spec.Decreases(n); " +
+                                   "return n == 0 ? 0 : Sum(a, n - 1) + a[n - 1]; } ";
+
+        [Fact]
+        public void PureFunctions_AreUsedWithinTheirPreconditions()
+        {
+            Assert.Empty(Errors("M", Sum + "static int M(int[] a) { Spec.Ensures<int>(r => r == Sum(a, a.Length)); return Sum(a, a.Length); }"));
+            Assert.Equal(new[] { "CSV1012" }, Errors("M", Sum + "static void M(int[] a) { Spec.Ensures(Sum(a, a.Length + 1) >= 0 || true); }"));
+            Assert.Empty(Errors("M", Sum + "static void M(int[] a, int n) { Spec.Requires(n < 0 || n > a.Length || Sum(a, n) >= 0); }"));
+        }
+
+        [Fact]
+        public void InvariantsAndAssertions_AreChecked()
+        {
+            Assert.Equal(new[] { "CSV1012" }, Errors("M", "static void M(int[] a) { for (int i = 0; i < a.Length; i++) { Spec.Invariant(a[i] >= 0 || true); } }"));
+            Assert.Empty(Errors("M", "static void M(int[] a) { for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length); Spec.Invariant(i == a.Length || a[i] >= 0 || true); } }"));
+            Assert.Equal(new[] { "CSV1012" }, Errors("M", "static void M(int[] a) { Spec.Assert(a[0] >= 0 || true); }"));
+        }
+
+        [Fact]
+        public void CalleeSpecifications_AreTheCalleesConcern()
+        {
+            var r = Harness.Verify("public static class C { static void Bad(int[] a) { Spec.Requires(a[0] == 0 || true); } static void M() { Bad(new int[0]); } }");
+            Assert.Equal(new[] { "CSV1012" }, r.Errors("Bad"));
+            Assert.Empty(r.Errors("M"));
+        }
+
+        [Fact]
+        public void GhostFunctionBodies_CheckBoundsForEveryValue()
+        {
+            const string pos = "[GhostFunction] static bool Pos(int[] a, int n) { REQ return Spec.Forall(0, n, i => a[i] > 0); }";
+            Assert.Equal(new[] { "CSV1003" }, Errors("Pos", pos.Replace("REQ", "")));
+            Assert.Empty(Errors("Pos", pos.Replace("REQ", "Spec.Requires(n <= a.Length);")));
         }
     }
 }

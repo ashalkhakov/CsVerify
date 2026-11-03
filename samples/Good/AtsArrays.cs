@@ -1,3 +1,4 @@
+using System;
 using CsVerify;
 
 namespace Samples
@@ -73,7 +74,7 @@ namespace Samples
             Spec.Ensures(Spec.Forall(0, a.Length, k => Spec.Forall(k + 1, a.Length, l => a[k] <= a[l])));
             for (int i = 1; i < a.Length; i++)
             {
-                Spec.Invariant(1 <= i && (i <= a.Length || a.Length == 0));
+                Spec.Invariant(1 <= i && i <= Math.Max(a.Length, 1));
                 Spec.Invariant(Spec.Forall(0, i, k => Spec.Forall(k + 1, i, l => a[k] <= a[l])));
                 Spec.Decreases(a.Length - i);
                 int x = a[i];

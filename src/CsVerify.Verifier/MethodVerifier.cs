@@ -46,6 +46,71 @@ namespace CsVerify.Verifier
         private int _paths, _unfoldDepth, _quantDepth;
         private readonly Stack<List<Term>> _quantFacts = new Stack<List<Term>>();
 
+        /// <summary>A condition a partial operation needs: an index in bounds, a pure function's precondition, a divisor.</summary>
+        private sealed class Obligation
+        {
+            public Term Condition;
+            public string Id, Message;
+            public SyntaxNode At;
+        }
+
+        // Well-definedness: obligations collected while an expression is evaluated, under the guards (&&, ||, ?:,
+        // quantifier ranges) that protect them. A quantifier closes the obligations made inside it over its variable.
+        private readonly Stack<List<Obligation>> _obligations = new Stack<List<Obligation>>();
+        private readonly List<Term> _guards = new List<Term>();
+        private int _foreignSpec; // > 0 while evaluating a callee's contract or definition: checked when the callee is
+
+        /// <summary>
+        /// The operation at <paramref name="at"/> is defined only if <paramref name="condition"/> holds. In code it is
+        /// an obligation of its own (bounds, division, precondition); in one of this method's specifications it is a
+        /// well-definedness obligation (CSV1012).
+        /// </summary>
+        private void Require(Term condition, string codeId, SyntaxNode at, string what)
+        {
+            if (!_codeMode && _foreignSpec > 0) return;
+            var ob = new Obligation
+            {
+                Condition = T.Implies(T.And(_guards.ToArray()), condition),
+                Id = _codeMode ? codeId : "CSV1012",
+                At = at,
+                Message = _codeMode ? what : $"specification might not be well-defined: {what}",
+            };
+            Emit(ob);
+        }
+
+        private void Emit(Obligation ob)
+        {
+            if (_obligations.Count > 0) _obligations.Peek().Add(ob);
+            else if (_codeMode) Prove(ob.Condition, ob.Id, ob.At, ob.Message);
+        }
+
+        private void WithGuard(Term guard, Action action)
+        {
+            _guards.Add(guard);
+            try { action(); }
+            finally { _guards.RemoveAt(_guards.Count - 1); }
+        }
+
+        /// <summary>One of this method's own specifications: its well-definedness is proved before it is used.</summary>
+        private Term EvalOwnSpec(IOperation op, Frame f, SpecEnv spec)
+        {
+            var obligations = new List<Obligation>();
+            _obligations.Push(obligations);
+            Term t;
+            try { t = EvalSpec(op, f, spec); }
+            finally { _obligations.Pop(); }
+            foreach (var ob in obligations) Prove(ob.Condition, ob.Id, ob.At, ob.Message, assume: false);
+            return t;
+        }
+
+        /// <summary>A callee's contract or definition, or a specification already checked elsewhere: no obligations.</summary>
+        private Term EvalForeignSpec(IOperation op, Frame f, SpecEnv spec)
+        {
+            _foreignSpec++;
+            try { return EvalSpec(op, f, spec); }
+            finally { _foreignSpec--; }
+        }
+
         /// <summary>Assumes a background fact, or inside a quantifier records it as a hypothesis of the quantifier's body.</summary>
         private void AssumeSide(Term fact)
         {
@@ -96,8 +161,9 @@ namespace CsVerify.Verifier
                     f.Vars[p] = FreshOf(p.Type, p.Name);
                 _entry = f.Clone();
                 var spec = new SpecEnv { Old = _entry };
-                foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalSpec(req, f, spec)));
-                if (_contract.Decreases != null) _entryMeasure = EvalMeasure(_contract.Decreases, f, spec);
+                // each precondition must be well-defined given the ones before it
+                foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
+                if (_contract.Decreases != null) _entryMeasure = _contract.Decreases.Select(m => EvalOwnSpec(m, f, spec)).ToArray();
                 _entry = f.Clone();
                 Exec(cfg.Blocks[0], f, new HashSet<int>());
             }
@@ -286,7 +352,7 @@ namespace CsVerify.Verifier
         {
             var spec = new SpecEnv { Old = _entry };
             foreach (var inv in loop.Invariants)
-                Prove(AsBool(EvalSpec(inv, f, spec)), "CSV1005", inv.Syntax, $"loop invariant '{inv.Syntax}' might not hold on entry");
+                Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1005", inv.Syntax, $"loop invariant '{inv.Syntax}' might not hold on entry");
 
             foreach (var s in loop.Havoc)
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
@@ -296,8 +362,9 @@ namespace CsVerify.Verifier
                     f.Heap = T.Store(f.Heap, Read(f, a), _z3.Fresh(a.Name + "$elems", Sort.Row));
             foreach (var key in f.Captures.Keys.ToList()) f.Captures.Remove(key);
 
-            foreach (var inv in loop.Invariants) _z3.Assume(AsBool(EvalSpec(inv, f, spec)));
-            if (loop.Decreases != null) f.LoopMeasures[loop.Id] = EvalMeasure(loop.Decreases, f, spec);
+            // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
+            foreach (var inv in loop.Invariants) _z3.Assume(AsBool(EvalOwnSpec(inv, f, spec)));
+            if (loop.Decreases != null) f.LoopMeasures[loop.Id] = loop.Decreases.Select(m => EvalOwnSpec(m, f, spec)).ToArray();
             f.ActiveLoops.Add(loop.Id);
         }
 
@@ -305,7 +372,7 @@ namespace CsVerify.Verifier
         {
             var spec = new SpecEnv { Old = _entry };
             foreach (var inv in loop.Invariants)
-                Prove(AsBool(EvalSpec(inv, f, spec)), "CSV1006", inv.Syntax, $"loop invariant '{inv.Syntax}' might not be maintained by the loop");
+                Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1006", inv.Syntax, $"loop invariant '{inv.Syntax}' might not be maintained by the loop");
             if (loop.Decreases != null)
             {
                 var before = f.LoopMeasures[loop.Id];
@@ -321,7 +388,7 @@ namespace CsVerify.Verifier
             foreach (var post in _contract.Ensures)
             {
                 var spec = new SpecEnv { Old = _entry, Result = f.Result, ResultParameter = post.ResultParameter };
-                Prove(AsBool(EvalSpec(post.Expr, f, spec)), "CSV1002", at,
+                Prove(AsBool(EvalOwnSpec(post.Expr, f, spec)), "CSV1002", at,
                     $"postcondition '{post.Syntax}' might not hold on this return path");
             }
         }
@@ -346,10 +413,10 @@ namespace CsVerify.Verifier
             switch (inv.TargetMethod.Name)
             {
                 case "Assert":
-                    Prove(AsBool(EvalSpec(arg, f, spec)), "CSV1004", specCall, $"assertion '{arg.Syntax}' might not hold");
+                    Prove(AsBool(EvalOwnSpec(arg, f, spec)), "CSV1004", specCall, $"assertion '{arg.Syntax}' might not hold");
                     break;
                 case "Assume":
-                    _z3.Assume(AsBool(EvalSpec(arg, f, spec)));
+                    _z3.Assume(AsBool(EvalOwnSpec(arg, f, spec)));
                     break;
                 case "Invariant":
                 case "Decreases":
@@ -364,7 +431,9 @@ namespace CsVerify.Verifier
 
         // ================================================================================== obligations
 
-        private void Prove(Term goal, string id, SyntaxNode at, string message)
+        /// <param name="assume">continue as if the goal held; well-definedness checks need not (their quantified
+        /// facts would only crowd the solver's instantiation)</param>
+        private void Prove(Term goal, string id, SyntaxNode at, string message, bool assume = true)
         {
             bool wasCode = _codeMode;
             _result.Obligations++;
@@ -375,7 +444,7 @@ namespace CsVerify.Verifier
                 if (r != "sat") message += $" (solver: {r})";
                 Report(id, at, message, isError: true);
             }
-            _z3.Assume(goal); // continue as if it held, so one failure does not cascade
+            if (assume) _z3.Assume(goal); // continue as if it held, so one failure does not cascade
             _codeMode = wasCode;
         }
 
@@ -516,7 +585,13 @@ namespace CsVerify.Verifier
                 case IBinaryOperation b: return EvalBinary(b, f, spec);
                 case IUnaryOperation u: return EvalUnary(u, f, spec);
                 case IConditionalOperation cond when cond.WhenFalse != null:
-                    return T.Ite(AsBool(Eval(cond.Condition, f, spec)), Eval(cond.WhenTrue, f, spec), Eval(cond.WhenFalse, f, spec));
+                {
+                    var c = AsBool(Eval(cond.Condition, f, spec));
+                    Term whenTrue = null, whenFalse = null;
+                    WithGuard(c, () => whenTrue = Eval(cond.WhenTrue, f, spec));
+                    WithGuard(T.Not(c), () => whenFalse = Eval(cond.WhenFalse, f, spec));
+                    return T.Ite(c, whenTrue, whenFalse);
+                }
                 case ISimpleAssignmentOperation a:
                 {
                     var v = T.Coerce(Eval(a.Value, f, spec), SortOf(a.Target.Type));
@@ -635,8 +710,14 @@ namespace CsVerify.Verifier
                 return Unknown(b.Type);
             }
             var l = Eval(b.LeftOperand, f, spec);
-            if (b.OperatorKind == BinaryOperatorKind.ConditionalAnd) return T.And(AsBool(l), AsBool(Eval(b.RightOperand, f, spec)));
-            if (b.OperatorKind == BinaryOperatorKind.ConditionalOr) return T.Or(AsBool(l), AsBool(Eval(b.RightOperand, f, spec)));
+            if (b.OperatorKind == BinaryOperatorKind.ConditionalAnd || b.OperatorKind == BinaryOperatorKind.ConditionalOr)
+            {
+                // the right operand is evaluated only when the left one did not decide: that is its guard
+                bool and = b.OperatorKind == BinaryOperatorKind.ConditionalAnd;
+                Term right = null;
+                WithGuard(and ? AsBool(l) : T.Not(AsBool(l)), () => right = AsBool(Eval(b.RightOperand, f, spec)));
+                return and ? T.And(AsBool(l), right) : T.Or(AsBool(l), right);
+            }
             var r = Eval(b.RightOperand, f, spec);
             var opType = b.LeftOperand.Type;
             bool numeric = IsIntegral(opType) || IsIntegral(b.RightOperand.Type) || SpecSymbols.IsGhostType(opType);
@@ -677,7 +758,7 @@ namespace CsVerify.Verifier
                 case BinaryOperatorKind.Multiply: v = T.Mul(l, r); break;
                 case BinaryOperatorKind.Divide:
                 case BinaryOperatorKind.Remainder:
-                    if (_codeMode) Prove(T.Not(T.Eq(r, T.Int(0))), "CSV1009", at, $"possible division by zero in '{at}'");
+                    Require(T.Not(T.Eq(r, T.Int(0))), "CSV1009", at, $"possible division by zero in '{at}'");
                     v = kind == BinaryOperatorKind.Divide ? T.Div(l, r) : T.Rem(l, r);
                     break;
                 default:
@@ -736,8 +817,7 @@ namespace CsVerify.Verifier
         private void BoundsCheck(Term seq, Term idx, SyntaxNode at)
         {
             var len = Len(seq);
-            if (_codeMode)
-                Prove(T.And(T.Le(T.Int(0), idx), T.Lt(idx, len)), "CSV1003", at, $"index in '{at}' might be out of range");
+            Require(T.And(T.Le(T.Int(0), idx), T.Lt(idx, len)), "CSV1003", at, $"index in '{at}' might be out of range");
         }
 
         private void Write(IOperation target, Term v, Frame f, SpecEnv spec)
@@ -890,7 +970,7 @@ namespace CsVerify.Verifier
 
             if (!_codeMode)
             {
-                if (callee.IsPure) return PureApply(callee, receiver, argTerms, f.Heap, SortOf(inv.Type));
+                if (callee.IsPure) return PureApply(callee, receiver, argTerms, f.Heap, SortOf(inv.Type), inv.Syntax);
                 Warn(inv.Syntax, $"'{m.Name}' is not [Pure] and cannot be used in a specification; treated as unknown");
                 return Unknown(inv.Type);
             }
@@ -906,7 +986,7 @@ namespace CsVerify.Verifier
 
             var preEnv = new SpecEnv { Old = pre };
             foreach (var req in callee.Requires)
-                Prove(AsBool(EvalSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
+                Prove(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
@@ -941,7 +1021,7 @@ namespace CsVerify.Verifier
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort)));
             foreach (var ens in callee.Ensures)
-                _z3.Assume(AsBool(EvalSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter })));
+                _z3.Assume(AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter })));
             return result ?? T.True;
         }
 
@@ -977,7 +1057,9 @@ namespace CsVerify.Verifier
         /// A [Pure] method is a mathematical function: an uninterpreted function whose definition (single return
         /// expression) and postconditions are unfolded once, guarded by its preconditions.
         /// </summary>
-        private Term PureApply(Contract callee, Term receiver, Term[] args, Term heap, Sort sort)
+        /// <param name="specCall">set for a call inside a specification: its precondition is a well-definedness obligation
+        /// there (in code it was already checked as the callee's precondition)</param>
+        private Term PureApply(Contract callee, Term receiver, Term[] args, Term heap, Sort sort, SyntaxNode specCall = null)
         {
             var m = callee.Method;
             var all = new List<Term>();
@@ -987,27 +1069,36 @@ namespace CsVerify.Verifier
             if (readsHeap) all.Add(heap);
             var app = _z3.Apply("pure:" + m.ToDisplayString(), SortOf(m.ReturnType), all);
 
-            if (_unfoldDepth == 0)
+            bool wanted = specCall != null && !_codeMode && _foreignSpec == 0;
+            if (_unfoldDepth == 0 || wanted)
             {
-                _unfoldDepth++;
+                Term pre;
                 bool wasCode = _codeMode;
                 _codeMode = false;
+                _foreignSpec++; // the callee's own contract and definition: no obligations of ours
+                bool unfold = _unfoldDepth == 0;
+                _unfoldDepth++;
                 try
                 {
                     var frame = CalleeFrame(callee, receiver, args, heap);
                     var env = new SpecEnv { Old = frame, Result = app };
-                    var pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
-                    if (callee.PureBody != null) AssumeSide(T.Implies(pre, T.Eq(app, Eval(callee.PureBody, frame, env))));
-                    foreach (var ens in callee.Ensures)
-                        AssumeSide(T.Implies(pre, AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
+                    pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
+                    if (unfold)
+                    {
+                        if (callee.PureBody != null) AssumeSide(T.Implies(pre, T.Eq(app, Eval(callee.PureBody, frame, env))));
+                        foreach (var ens in callee.Ensures)
+                            AssumeSide(T.Implies(pre, AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
+                    }
                 }
-                finally { _unfoldDepth--; _codeMode = wasCode; }
+                finally { _unfoldDepth--; _foreignSpec--; _codeMode = wasCode; }
+                // outside its precondition a pure function's value is unspecified: using it there is ill-defined
+                if (wanted) Require(pre, "CSV1001", specCall, $"precondition of '{m.Name}' might not hold in '{specCall}'");
             }
             return T.Coerce(app, sort);
         }
 
         private Term[] EvalMeasure(IReadOnlyList<IOperation> measure, Frame f, SpecEnv spec) =>
-            measure.Select(m => EvalSpec(m, f, spec)).ToArray();
+            measure.Select(m => EvalForeignSpec(m, f, spec)).ToArray();
 
         private static string MeasureText(IReadOnlyList<IOperation> measure) => string.Join(", ", measure.Select(m => m.Syntax));
 
@@ -1056,6 +1147,10 @@ namespace CsVerify.Verifier
             _quantDepth++;
             int factLevels = _quantFacts.Count;
             _quantFacts.Push(new List<Term>());
+            var inside = new List<Obligation>();
+            _obligations.Push(inside);
+            _guards.Add(T.And(T.Le(lo, bound), T.Lt(bound, hi)));
+            int guardLevel = _guards.Count;
             try
             {
                 var body = AsBool(Eval(bodyOp, inner, spec));
@@ -1066,12 +1161,19 @@ namespace CsVerify.Verifier
                 // assumed: a model could falsify them and satisfy the implication vacuously.)
                 var facts = T.And(_quantFacts.Pop().ToArray());
                 if (facts != T.True) AssumeSide(T.Quant("forall", name, T.Implies(range, facts)));
+                // obligations made inside (already guarded by the range) hold for every value of the variable
+                _guards.RemoveAt(guardLevel - 1);
+                _obligations.Pop();
+                foreach (var ob in inside)
+                    Emit(new Obligation { Condition = T.Quant("forall", name, ob.Condition), Id = ob.Id, At = ob.At, Message = ob.Message });
                 return forall ? T.Quant("forall", name, T.Implies(range, body))
                               : T.Quant("exists", name, T.And(range, body));
             }
             finally
             {
                 while (_quantFacts.Count > factLevels) _quantFacts.Pop();
+                if (_guards.Count >= guardLevel) _guards.RemoveRange(guardLevel - 1, _guards.Count - guardLevel + 1);
+                if (_obligations.Count > 0 && ReferenceEquals(_obligations.Peek(), inside)) _obligations.Pop();
                 _quantDepth--;
             }
         }

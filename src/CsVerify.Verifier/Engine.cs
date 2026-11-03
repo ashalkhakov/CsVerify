@@ -185,6 +185,7 @@ namespace CsVerify.Verifier
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
+                    engine.Solver.Reset();
                     try { new MethodVerifier(engine, contract, mr).Run(); }
                     catch (Exception e)
                     {

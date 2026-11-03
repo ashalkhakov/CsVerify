@@ -108,6 +108,8 @@ namespace CsVerify.Verifier
         private readonly StreamWriter _in;
         private readonly StreamReader _out;
         private readonly HashSet<string> _declared = new HashSet<string>();
+        private readonly List<string> _preamble = new List<string>();
+        private readonly int _timeoutMs;
         private int _fresh;
         public int Depth { get; private set; }
         public readonly List<string> Errors = new List<string>();
@@ -125,8 +127,14 @@ namespace CsVerify.Verifier
             _z3 = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + z3Path);
             _in = _z3.StandardInput;
             _out = _z3.StandardOutput;
+            _timeoutMs = timeoutMs;
+            Start();
+        }
+
+        private void Start()
+        {
             Send("(set-option :global-declarations true)");
-            Send($"(set-option :timeout {timeoutMs})");
+            Send($"(set-option :timeout {_timeoutMs})");
             Send("(set-logic ALL)");
             // Quantifiers are instantiated by e-matching only. Model-based instantiation can search for a
             // counterexample until the timeout (notably with array lambdas); without it Z3 answers "unknown" at once,
@@ -137,7 +145,20 @@ namespace CsVerify.Verifier
         /// <summary>Adds background declarations and axioms (at the outermost scope).</summary>
         public void Preamble(string smtLib)
         {
-            foreach (var line in smtLib.Split('\n')) Send(line);
+            foreach (var line in smtLib.Split('\n')) { _preamble.Add(line); Send(line); }
+        }
+
+        /// <summary>
+        /// Starts over: no declarations or assertions, as in a fresh process. Each method is verified from this state,
+        /// so a result never depends on which methods were verified before it (Z3's search is history-dependent).
+        /// </summary>
+        public void Reset()
+        {
+            Send("(reset)");
+            _declared.Clear();
+            Depth = 0;
+            Start();
+            foreach (var line in _preamble) Send(line);
         }
 
         public static string FindZ3(string explicitPath)

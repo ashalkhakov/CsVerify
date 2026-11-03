@@ -17,7 +17,8 @@ namespace Samples.Buggy
             return sum;
         }
 
-        // CSV1002: the postcondition promises more than the code does (empty arrays).
+        // CSV1002 + CSV1012: the postcondition promises more than the code does, and for an empty array a[0] in it
+        // means nothing at all.
         public static int First(int[] a)
         {
             Spec.Ensures<int>(r => r == a[0]);
