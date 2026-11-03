@@ -387,6 +387,7 @@ Methods are verified for partial correctness: any call may throw anything, and a
 - **Library.** `Math`/`MathF` `Min` and `Max` (with .NET's NaN and -0.0 rules), `Abs`, `Sqrt`, `Floor`, `Ceiling`, `Truncate`, `Round` and `FusedMultiplyAdd` are exact, and so are `double`/`float` `IsNaN`, `IsInfinity`, `IsFinite`, `IsPositiveInfinity`, `IsNegativeInfinity`, `IsNormal` and `IsSubnormal`. `Sin`, `Exp`, `Pow` and the like are unknown values.
 - **Storage.** Floats live in fields, array cells, sequences and data records (stored through an injective encoding; a new array's cells are +0.0).
 - **What proves well.** Comparisons, min and max, and casts to integers within constant bounds prove quickly: the bounding-box code of samples/Good/Floats.cs does. Proofs about rounded arithmetic (`lo + (hi - lo) / 2` stays within `[lo, hi]`) are bit-precise and can be slow, or beyond the solver. Relating a float to a symbolic integer (`x < n` for an `int n`) often is.
+- **`Ieee` lemmas.** The monotonicity of rounded operations, which the solver decides only by bit-blasting whole multipliers (minutes, for one `x * z <= y * z`), is a trusted library of lemmas: `Ieee.MulMonotone`, `AddMonotone`, `SubMonotone`, `DivMonotone` and `SqrtMonotone`, for `float` and `double`. Each states exactly when it holds: finite operands, since an infinity times zero is NaN. Call one where a proof needs it.
 
 ### Null references
 

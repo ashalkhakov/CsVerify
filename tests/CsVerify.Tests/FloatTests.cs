@@ -52,5 +52,22 @@ public static class C {
             Assert.Empty(r.Errors("InRange"));
             Assert.Empty(r.Errors("Checked"));
         }
-    }
+    
+        [Fact]
+        public void MonotonicityLemmas_ProveWhatBitBlastingCannotQuickly()
+        {
+            var r = Harness.Verify(@"public static class C {
+    static float Scaled(float lo, float hi, float s) {
+        Spec.Requires(lo <= hi && s >= 0 && float.IsFinite(lo) && float.IsFinite(hi) && float.IsFinite(s));
+        Spec.Ensures((float r) => lo * s <= r);
+        Ieee.MulMonotone(lo, hi, s);
+        return hi * s; }
+    static void Needs(float x, float z) {
+        Spec.Requires(z >= 0 && float.IsFinite(z));
+        Ieee.MulMonotone(x, x, z); }
+}");
+            Assert.Empty(r.Errors("Scaled"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Needs")); // x may be infinite (an infinity times 0 is NaN)
+        }
+}
 }
