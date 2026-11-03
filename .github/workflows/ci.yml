@@ -38,9 +38,11 @@ jobs:
       - run: bash samples/e2e.sh
         shell: bash
 
-  # CsLemon: verified, and against the C lemon it was ported from (its outputs, its parsers)
+  # CsLemon: verified, and against the C lemon it was ported from (its outputs, its parsers). On macOS: the C lemon
+  # breaks its last tie between actions by their addresses (actioncmp's ap2 - ap1), and CsLemon models them as
+  # growing with allocation order, as macOS's malloc gives them; glibc's doesn't always (sqlite_parse -p differs)
   lemon:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

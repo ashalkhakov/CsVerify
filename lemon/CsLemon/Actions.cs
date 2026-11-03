@@ -43,8 +43,9 @@ namespace CsLemon
     {
         /*
         ** C breaks the last tie of actioncmp by the actions' addresses (ap2 - ap1).  Lemon allocates actions in
-        ** order from blocks of 100, so the addresses grow with allocation order; here each action gets its
-        ** allocation sequence number instead.
+        ** order from blocks of 100, so the addresses grow with allocation order, as long as malloc hands out
+        ** the blocks in increasing order (macOS's does; glibc's not always, so there the C lemon's -p report
+        ** can order two dropped actions differently); here each action gets its allocation sequence number.
         */
         private static int nextSeq = 0;
 

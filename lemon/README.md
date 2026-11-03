@@ -46,6 +46,9 @@ error is reported and parsing stops.
 rules and unambiguous ones), with each of 14 option sets, and compares every output file, stdout, stderr and the
 exit code byte for byte.
 The C lemon is built from lemon-grove's `lemon.c`: `cc -o lemon lemon.c`.
+Run it on macOS: the C lemon breaks its last tie between two actions by their addresses, which CsLemon takes to
+grow with allocation order, as macOS's malloc gives them. With glibc they don't always, and the `-p` report on
+SQLite's grammar lists a few dropped actions in another order.
 
 `tests/parsertest.sh <C lemon>` compares the parsers themselves: each grammar in `tests/parsers` is there twice, with
 C actions (built by the C lemon and cc) and with C# actions (built by `cslemon -C` and dotnet), and both parsers run

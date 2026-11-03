@@ -1,5 +1,5 @@
 name: Set up Z3
-description: Puts Z3 (the verifier's solver) on PATH, from its GitHub release (Linux and Windows, x64).
+description: Puts Z3 (the verifier's solver) on PATH, from its GitHub release (Linux and Windows x64, macOS x64 and arm64).
 inputs:
   version:
     description: The Z3 release
@@ -12,6 +12,15 @@ runs:
       shell: bash
       run: |
         name=z3-${{ inputs.version }}-x64-glibc-2.39
+        curl -sSL -o "$RUNNER_TEMP/z3.zip" "https://github.com/Z3Prover/z3/releases/download/z3-${{ inputs.version }}/$name.zip"
+        unzip -q "$RUNNER_TEMP/z3.zip" -d "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/$name/bin" >> "$GITHUB_PATH"
+    - name: Z3 (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        arch=$([ "$(uname -m)" = arm64 ] && echo arm64 || echo x64)
+        name=z3-${{ inputs.version }}-$arch-osx-13.3
         curl -sSL -o "$RUNNER_TEMP/z3.zip" "https://github.com/Z3Prover/z3/releases/download/z3-${{ inputs.version }}/$name.zip"
         unzip -q "$RUNNER_TEMP/z3.zip" -d "$RUNNER_TEMP"
         echo "$RUNNER_TEMP/$name/bin" >> "$GITHUB_PATH"
