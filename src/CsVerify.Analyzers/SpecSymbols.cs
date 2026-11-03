@@ -74,6 +74,34 @@ namespace CsVerify.Analyzers
             return false;
         }
 
+        /// <summary>The method whose body contains <paramref name="node"/> (not a lambda or local function's).</summary>
+        public static IMethodSymbol EnclosingMember(SyntaxNode node, SemanticModel model)
+        {
+            for (var cur = node; cur != null; cur = cur.Parent)
+                if (cur is BaseMethodDeclarationSyntax || cur is AccessorDeclarationSyntax || cur is LocalFunctionStatementSyntax)
+                    return model.GetDeclaredSymbol(cur) as IMethodSymbol;
+            return null;
+        }
+
+        /// <summary>Lemmas, [Pure] and [GhostFunction] methods: code that must be side-effect free and total.</summary>
+        public static bool IsProofMethod(ISymbol m) => m != null && (IsLemma(m) || IsPure(m));
+
+        /// <summary>
+        /// Code that must not have side effects: specification arguments, and the bodies of lemmas, [Pure] and
+        /// [GhostFunction] methods ([Trusted] ones excepted: their bodies are not part of the proof).
+        /// </summary>
+        public static bool MustBePure(SyntaxNode node, SemanticModel model)
+        {
+            if (node.AncestorsAndSelf().OfType<AttributeListSyntax>().Any()) return false;
+            var member = EnclosingMember(node, model);
+            if (member != null && IsTrusted(member)) return false;
+            return IsProofMethod(member) || IsInGhostContext(node, model);
+        }
+
+        /// <summary>Methods ghost and pure code may call: the spec library's ghost members, lemmas, pure functions, System.Math.</summary>
+        public static bool IsPureCallee(IMethodSymbol m) =>
+            m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math");
+
         /// <summary>The outermost Spec statement (void Spec.* call) that is <paramref name="node"/> or contains it in its arguments.</summary>
         public static InvocationExpressionSyntax EnclosingSpecCall(SyntaxNode node, SemanticModel model)
         {

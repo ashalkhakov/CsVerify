@@ -19,7 +19,7 @@ namespace CsVerify.Analyzers
     {
         public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics => ImmutableArray.Create(
             Descriptors.NotConsumed, Descriptors.UsedAfterConsume, Descriptors.Captured,
-            Descriptors.Copied, Descriptors.BorrowConsumed, Descriptors.Forged);
+            Descriptors.Copied, Descriptors.BorrowConsumed, Descriptors.Forged, Descriptors.PassedTwice);
 
         public override void Initialize(AnalysisContext context)
         {
@@ -29,9 +29,31 @@ namespace CsVerify.Analyzers
             context.RegisterOperationAction(CheckCapture, OperationKind.LocalReference, OperationKind.ParameterReference);
             context.RegisterOperationAction(CheckForge, OperationKind.DefaultValue, OperationKind.ObjectCreation);
             context.RegisterSymbolAction(CheckStorage, SymbolKind.Field, SymbolKind.Property);
+            context.RegisterOperationAction(CheckAliasing, OperationKind.Invocation, OperationKind.ObjectCreation);
         }
 
         // ---- declaration-level rules -------------------------------------------------------------------------
+
+        /// <summary>
+        /// One linear value, two parameters: <c>Swap(ref v, ref v, p, p)</c> would hand a callee that believes it holds
+        /// two views of distinct cells a single one. C# allows the aliasing; linearity does not.
+        /// </summary>
+        private static void CheckAliasing(OperationAnalysisContext context)
+        {
+            var args = context.Operation is IInvocationOperation inv ? inv.Arguments : ((IObjectCreationOperation)context.Operation).Arguments;
+            var uses = args
+                .Select(a => (arg: a, symbol: Unwrap(a.Value is IDeclarationExpressionOperation d ? d.Expression : a.Value) switch
+                {
+                    ILocalReferenceOperation l => (ISymbol)l.Local,
+                    IParameterReferenceOperation p => p.Parameter,
+                    _ => null,
+                }))
+                .Where(u => u.symbol != null && SpecSymbols.IsLinear(u.arg.Value.Type) && !SpecSymbols.IsInGhostContext(u.arg.Syntax, context.Operation.SemanticModel))
+                .GroupBy(u => u.symbol, SymbolEqualityComparer.Default);
+            foreach (var g in uses)
+                if (g.Count() > 1 && g.Any(u => u.arg.Parameter?.RefKind != RefKind.In))
+                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.PassedTwice, g.Last().arg.Syntax.GetLocation(), g.Key.Name));
+        }
 
         private static void CheckStorage(SymbolAnalysisContext context)
         {

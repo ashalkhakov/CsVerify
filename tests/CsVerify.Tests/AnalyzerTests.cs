@@ -218,3 +218,51 @@ namespace CsVerify.Tests
         }
     }
 }
+
+namespace CsVerify.Tests
+{
+    /// <summary>Proofs and specifications have no side effects (CSV0013); one linear value is one argument (CSV0007).</summary>
+    public class PurityTests
+    {
+        private const string LemmaAttrs = "[Lemma, Conditional(\"CSVERIFY_SPEC\")] ";
+
+        [Fact]
+        public void ProofScratchSpace_IsAllowed() => Assert.Empty(Harness.Analyze(
+            "static class C { " + LemmaAttrs + "static void L(int n) { int k = 0; while (k < n) { Spec.Decreases(n - k); k++; } n = 0; } " +
+            "[Pure] static int F(int[] a, int i) { int j = i; j++; return Math.Max(a.Length, j); } }"));
+
+        [Fact]
+        public void LemmaWritingTheHeap_IsReported() => Assert.Equal(new[] { "CSV0013" }, Harness.Analyze(
+            "static class C { " + LemmaAttrs + "static void L(int[] a) { a[0] = 1; } }"));
+
+        [Fact]
+        public void PureCallingImpureCode_IsReported() => Assert.Equal(new[] { "CSV0013" }, Harness.Analyze(
+            "static class C { static int G() => 1; [Pure] static int F() => G(); }"));
+
+        [Fact]
+        public void PureAllocating_IsReported() => Assert.Equal(new[] { "CSV0013" }, Harness.Analyze(
+            "static class C { [Pure] static int[] F() => new int[1]; }"));
+
+        [Fact]
+        public void SideEffectInSpecification_IsReported() => Assert.Equal(new[] { "CSV0013" }, Harness.Analyze(
+            "static class C { static void M(int x) { Spec.Assert(x++ > 0); } }"));
+
+        [Fact]
+        public void ProofSignatures()
+        {
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("static class C { [Pure] static int F(ref int x) => x; }"));
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("class C { [Pure] public virtual int F(int x) => x; }"));
+        }
+
+        [Fact]
+        public void LinearValue_PassedTwice_IsReported()
+        {
+            const string swap = "static void Swap(ref PointsTo<int> a, ref PointsTo<int> b, Ptr<int> p, Ptr<int> q) { } " +
+                                "static int Peek(in PointsTo<int> a, in PointsTo<int> b, Ptr<int> p) => 0; ";
+            Assert.Equal(new[] { "CSV0007" }, Harness.Analyze("static class C { " + swap +
+                "static void M() { var p = Mem.Alloc(1, out var v); Swap(ref v, ref v, p, p); Mem.Free(v, p); } }"));
+            Assert.Empty(Harness.Analyze("static class C { " + swap +
+                "static void M() { var p = Mem.Alloc(1, out var v); Peek(in v, in v, p); Mem.Free(v, p); } }"));
+        }
+    }
+}

@@ -100,13 +100,29 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
   - consuming an `in` parameter: CSV0005;
   - capture by a lambda or local function: CSV0003;
   - boxing, or storing in a field of a non-linear type: CSV0004;
-  - creating a view with `default`/`new` outside `[Trusted]` (forging a proof): CSV0006.
+  - creating a view with `default`/`new` outside `[Trusted]` (forging a proof): CSV0006;
+  - one linear value passed to two parameters of a call (`Swap(ref v, ref v, ...)`): CSV0007. C# allows the aliasing; ATS's linearity does not. Several `in` borrows may share a value.
 - **Ghost uses don't count:** a use inside a `Spec.*` argument is ghost, like a proof term.
 
 **Ghost hygiene** (`GhostAnalyzer`):
 - `Ghost<T>.Value`, `Spec.Forall`/`Exists` only in ghost context: `Spec.*` arguments, lemma arguments, lemma bodies (CSV0010).
 - `Spec.Result` only inside `Spec.Ensures`; `Spec.Old` inside `Spec.Ensures`, `Spec.Invariant` and `Spec.Assert` (CSV0012). `Old` rewinds the heap and the parameters to method entry; locals keep their current values, as in Dafny.
 - A `[Lemma]` must be `void` and `[Conditional("CSVERIFY_SPEC")]`, so its calls are erased (CSV0011).
+
+**Purity** (`PurityAnalyzer`, CSV0013). Proofs and specifications have no side effects. The rule covers the bodies of lemmas, `[Pure]` and `[GhostFunction]` methods, and every `Spec.*` argument; the verifier relies on it.
+- **What's allowed:** a proof may assign only its own locals and value parameters, and may call only lemmas, pure functions, the spec library and `System.Math`.
+- **What's not:**
+  - writing an array element, field or property;
+  - calling ordinary code, a delegate or a virtual method;
+  - allocating;
+  - `ref`/`out` parameters on a pure function;
+  - a virtual, abstract or interface proof.
+- **Why each matters:**
+  - A lemma call is erased from the program, so a write inside it would happen only in the verifier's model.
+  - A pure function is an SMT function of its arguments, so an allocation would make `f() == f()` false.
+  - An override could have a different body from the one the verifier unfolds.
+
+The verifier runs all three analyzers over the compilation it verifies: a method with an analyzer error is not verified.
 
 ### Layer 2: the verifier (Z3, separate process)
 
@@ -133,6 +149,19 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
    - assumes the callee's `Ensures`.
    Lemma calls are the same, so they add their postconditions. `[Pure]` calls are also equal to an uninterpreted function whose single-`return` body is unfolded once. That is what lets a lemma prove `2 * Tri(n) == n * (n + 1)` by induction.
 6. **Trusted bodies** are skipped. Their contracts are still used.
+7. **Proofs are total** (CSV1011). Ordinary methods are verified for partial correctness: a path that loops forever or throws proves nothing, and doesn't need to. A lemma or a `[Pure]`/`[GhostFunction]` definition must terminate, though. A lemma that loops forever would "prove" its postcondition, and `f(x) = f(x) + 1` has no solution, so assuming it would prove anything. So in proof code:
+   - every recursive call, including mutual recursion, needs `Spec.Decreases` on both ends;
+   - every loop needs `Spec.Decreases`;
+   - a `throw` is an error.
+   `[GhostFunction]` bodies are verified too, for this.
+8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
+   - `foreach`, `goto` cycles, `try`/`catch`/`finally` (including `using` and `lock`), and hitting the path limit;
+   - mutable fields;
+   - properties other than get-only/init-only auto-properties and members of strings, readonly structs and the spec library (`List<T>.Count` changes, so it is not a function of its object);
+   - assignments to anything but locals, parameters and array elements;
+   - `ref` locals, and passing array elements or fields by `ref`/`in` (aliases of the heap);
+   - object initializers and other unsupported operations.
+   Constructors are calls: the heap is havocked if they may write arrays. Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
 
 Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
 
@@ -213,7 +242,9 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV0006 | analyzer | linear value created by `default`/`new` outside `[Trusted]` |
 | CSV0010 | analyzer | ghost value (`Ghost.Value`, `Spec.Forall`/`Exists`, `Seq` members, `[GhostFunction]` calls) outside a specification |
 | CSV0011 | analyzer | `[Lemma]` not `void` + `[Conditional("CSVERIFY_SPEC")]` |
+| CSV0007 | analyzer | one linear value passed to two parameters of a call |
 | CSV0012 | analyzer | `Spec.Result` outside `Spec.Ensures`; `Spec.Old` outside `Ensures`/`Invariant`/`Assert` |
+| CSV0013 | analyzer | side effect in a proof (lemma, `[Pure]`, `[GhostFunction]`) or a specification argument |
 | CSV1001 | verifier | callee precondition might not hold |
 | CSV1002 | verifier | postcondition might not hold on a return path |
 | CSV1003 | verifier | index might be out of range / negative array size |
@@ -223,7 +254,9 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1008 | verifier | recursion measure (own or of a mutually recursive callee) might not decrease or might be negative |
 | CSV1009 | verifier | possible division by zero |
 | CSV1010 | verifier | possible overflow (`--overflow`) |
-| CSV1900 | verifier | warning: construct not modeled, path cut, or spec misplaced |
+| CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
+| CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
+| CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1999 | verifier | internal or solver error |
 
 ## Specification rules
@@ -310,6 +343,11 @@ Sources and licences:
 - `Bugs.cs` has one verifier error per method.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
 - `Linearity.cs` has leak, double free, use-after-free, forging and run-time ghost reads. Its analyzer errors are downgraded to warnings in that project's `.editorconfig` so the solution still builds.
+- `ProofBugs.cs` holds proofs that would be unsound if accepted:
+  - a circular lemma that "proves" `n != n` (CSV1011);
+  - an inconsistent definition `f(x) = f(x) + 1` (CSV1011);
+  - a lemma that writes an array (CSV0013);
+  - one view passed as two `ref` arguments, so the contract says +1 while the cell gets +2 (CSV0007).
 
 ## Layout
 
@@ -321,28 +359,29 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 88 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 103 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
 **Solver**
 - **Z3 runs as a process, not through the `Microsoft.Z3` NuGet package.** The package's managed `Microsoft.Z3.dll` is built for x64 only, and the package ships x64-only native libraries (checked for 4.11.2–4.12.2). It cannot load in an arm64 .NET process, such as on Apple Silicon. Speaking SMT-LIB2 to a `z3` executable works on every platform and keeps native code out of both the analyzer and MSBuild.
 
-**Soundness gaps in the verifier** (each is a place where it may say "proved" too eagerly)
-- Mutable fields and properties are modeled as functions of their object. Writes to them are not tracked (a CSV1900 warning is reported).
-- Only arrays of integer-like elements are modeled precisely.
-- A new array is known to differ only from the arrays visible in local variables at the point of creation.
-- Without `--overflow`, integers are mathematical integers.
-- Partial correctness on exceptions: a path that throws proves nothing and is not checked further. Null dereferences are not checked.
-- Specification expressions are not checked for well-definedness. Indexing in a spec has no bounds obligation, and a `[Pure]` call's precondition is not checked in specs; its definition is only assumed when its precondition holds.
-- Side facts about terms under a quantifier (lengths are non-negative, `[Pure]` unfolding) are asserted as a separate axiom, quantified the same way. Z3 instantiates them by e-matching only, so a fact needed at a term that never appears may still be missing; that costs completeness, not soundness.
-- Lemmas are checked for termination, but not for side effects. Keep them ghost.
+**What "verified" does not cover** (deliberate choices, documented rather than hidden)
+- **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
+- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Null dereferences are not checked; enable C#'s nullable reference types for that. Proofs may not throw (CSV1011).
+- **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
+- **Well-definedness of specifications.** An out-of-range `a[i]` or a `[Pure]` call outside its precondition inside a spec denotes an unspecified value; it is not reported. A spec that relies on such a value cannot be proved, but a vacuous one can.
+- **Virtual dispatch.** Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown). Proofs cannot be virtual (CSV0013).
+- **`[Trusted]` and `Spec.Assume`** are axioms by definition.
 
-**Unsupported constructs** (reported as CSV1900 warnings, never silently)
-- `foreach`, `try/finally`, `goto` cycles, shifts and bitwise operators on integers, floating point, strings beyond `Length` and bounds, multi-dimensional arrays.
-- Local functions and lambdas are not verified as separate units.
-- Mutual recursion through delegates, virtual or interface calls is not seen by the call graph, so it is not checked for termination.
-- Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown).
+**Unsupported constructs**
+- Rejected as CSV1901 (the method is not verified): see "What it cannot model, it rejects" above.
+- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating point, string characters, non-pure calls in specifications.
+- Not verified as separate units: local functions and lambdas.
+
+**Completeness limits** (true things that may not be proved)
+- A new array is known to differ only from the arrays visible in local variables where it is created.
+- Side facts under a quantifier (non-negative lengths, `[Pure]` unfolding) are a separate quantified axiom, instantiated by e-matching only. A fact needed at a term that never appears may be missing.
 
 **Precision limits**
 - `[Pure]` definitions are unfolded one level per use. Deeper facts need a lemma, as in ATS.

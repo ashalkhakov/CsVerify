@@ -54,6 +54,12 @@ namespace CsVerify.Verifier
         }
         private bool _codeMode; // obligations are only generated for code, not for specification expressions
 
+        /// <summary>
+        /// Lemmas and [Pure]/[GhostFunction] methods are proofs and definitions: they must terminate on every path,
+        /// or a lemma that loops forever would "prove" anything and a definition f(x) = f(x) + 1 would be false.
+        /// </summary>
+        private bool ProofCode => (_contract.IsLemma || _contract.IsPure) && !_contract.IsTrusted;
+
         public MethodVerifier(Engine engine, Contract contract, MethodResult result)
         {
             _engine = engine;
@@ -78,6 +84,8 @@ namespace CsVerify.Verifier
             }
             FindContractStatements();
             FindLoops(cfg);
+            if (HasExceptionRegion(cfg.Root))
+                NotModeled(MethodLocationNode(), "try/catch/finally is not supported");
 
             _z3.Push();
             try
@@ -108,6 +116,11 @@ namespace CsVerify.Verifier
         private string SpecName(InvocationExpressionSyntax inv) =>
             _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && SpecSymbols.IsSpecClass(m.ContainingType) ? m.Name : null;
 
+        private static bool HasExceptionRegion(ControlFlowRegion region) =>
+            region.Kind == ControlFlowRegionKind.Try || region.Kind == ControlFlowRegionKind.Catch ||
+            region.Kind == ControlFlowRegionKind.Finally || region.Kind == ControlFlowRegionKind.Filter ||
+            region.NestedRegions.Any(HasExceptionRegion);
+
         private void FindLoops(ControlFlowGraph cfg)
         {
             foreach (var stmt in _contract.Declaration.DescendantNodes().OfType<StatementSyntax>())
@@ -119,7 +132,7 @@ namespace CsVerify.Verifier
                     case ForStatementSyntax fs: loopBody = fs.Statement; cond = fs.Condition; break;
                     case DoStatementSyntax d: loopBody = d.Statement; cond = null; break;
                     case CommonForEachStatementSyntax fe:
-                        Warn(fe.ForEachKeyword, "foreach loops are not supported; the body is checked for one iteration only");
+                        NotModeled(fe.ForEachKeyword, "foreach loops are not supported; use for/while with Spec.Invariant");
                         continue;
                     default: continue;
                 }
@@ -140,6 +153,8 @@ namespace CsVerify.Verifier
                     if (name == "Invariant") loop.Invariants.Add(args[0].Value); else loop.Decreases = args.Select(a => a.Value).ToList();
                     _loopSpecStatements.Add(inv);
                 }
+                if (ProofCode && loop.Decreases == null)
+                    NotTotal(stmt, "a loop in a lemma or [Pure] function needs Spec.Decreases");
                 CollectHavoc(stmt, loop);
                 _loops[loop.Head] = loop;
             }
@@ -157,7 +172,7 @@ namespace CsVerify.Verifier
                         break;
                     case ElementAccessExpressionSyntax ea when ea.Expression is IdentifierNameSyntax:
                         var a = _model.GetSymbolInfo(ea.Expression).Symbol;
-                        if (a is ILocalSymbol || a is IParameterSymbol) loop.HavocArrays.Add(a); else loop.HavocHeap = true;
+                        if ((a is ILocalSymbol || a is IParameterSymbol) && !IsSpan(TypeOf(a))) loop.HavocArrays.Add(a); else loop.HavocHeap = true;
                         break;
                     case ParenthesizedExpressionSyntax p: Target(p.Expression); break;
                     case DeclarationExpressionSyntax _: break;
@@ -185,7 +200,7 @@ namespace CsVerify.Verifier
             if (++_paths > _engine.Options.MaxPaths)
             {
                 if (_paths == _engine.Options.MaxPaths + 1)
-                    Warn(MethodLocationNode(), $"path limit ({_engine.Options.MaxPaths}) reached; the rest of '{_method.Name}' is not verified");
+                    NotModeled(MethodLocationNode(), $"path limit ({_engine.Options.MaxPaths}) reached; the rest of '{_method.Name}' is not verified");
                 return;
             }
             if (block.Kind == BasicBlockKind.Exit) { CheckPostconditions(f); return; }
@@ -197,7 +212,7 @@ namespace CsVerify.Verifier
             }
             else if (onPath.Contains(block.Ordinal))
             {
-                Warn(block.Operations.FirstOrDefault()?.Syntax ?? MethodLocationNode(), "unstructured cycle (goto/foreach) is not supported; path cut");
+                NotModeled(block.Operations.FirstOrDefault()?.Syntax ?? MethodLocationNode(), "unstructured cycle (goto) is not supported");
                 return;
             }
 
@@ -246,7 +261,15 @@ namespace CsVerify.Verifier
 
         private void Follow(ControlFlowBranch succ, Frame f, HashSet<int> onPath)
         {
-            if (succ?.Destination == null) return; // throw, rethrow, program termination: no normal exit on this path
+            if (succ?.Destination == null)
+            {
+                // throw, rethrow, program termination: no normal exit on this path (partial correctness), except
+                // that a proof may not escape its obligations by throwing
+                if (ProofCode && succ != null)
+                    NotTotal(succ.Source.BranchValue?.Syntax ?? succ.Source.Operations.LastOrDefault()?.Syntax ?? MethodLocationNode(),
+                        "a lemma or [Pure] function must not throw");
+                return;
+            }
             switch (succ.Semantics)
             {
                 case ControlFlowBranchSemantics.Regular:
@@ -254,7 +277,7 @@ namespace CsVerify.Verifier
                     Exec(succ.Destination, f, onPath);
                     break;
                 case ControlFlowBranchSemantics.StructuredExceptionHandling:
-                    Warn(MethodLocationNode(), "try/finally is not supported; paths through finally are not verified");
+                    NotModeled(MethodLocationNode(), "try/catch/finally is not supported");
                     break;
             }
         }
@@ -363,11 +386,21 @@ namespace CsVerify.Verifier
         }
 
         private void Warn(SyntaxNode at, string message) => Report("CSV1900", at, message, isError: false);
+
+        /// <summary>
+        /// Something the verifier cannot model soundly: a path it does not follow, an effect it does not track. The
+        /// method is then not verified (an error), instead of reporting "ok" for what was not checked.
+        /// </summary>
+        private void NotModeled(SyntaxNode at, string message) => Report("CSV1901", at, message, isError: true);
+        private void NotModeled(SyntaxToken at, string message) => NotModeled(at.Parent, message);
+
+        /// <summary>A proof (lemma, [Pure], [GhostFunction]) that might not terminate.</summary>
+        private void NotTotal(SyntaxNode at, string message) => Report("CSV1011", at, message, isError: true);
         private void Warn(SyntaxToken at, string message) => Warn(at.Parent, message);
 
         private void Unsupported(IOperation op)
         {
-            Warn(op.Syntax, $"unsupported construct ({op.Kind}); treated as an unknown value");
+            NotModeled(op.Syntax, $"unsupported construct ({op.Kind})");
         }
 
         // ================================================================================== values
@@ -408,6 +441,9 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsSeqType(t)) return Sort.Row;
             return t?.SpecialType == SpecialType.System_Boolean ? Sort.Bool : Sort.Int;
         }
+
+        private static bool IsSpan(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>");
 
         internal static bool IsSequence(ITypeSymbol t) =>
             t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String ||
@@ -467,7 +503,9 @@ namespace CsVerify.Verifier
             switch (op)
             {
                 case IConversionOperation c: return EvalConversion(c, f, spec);
-                case ILocalReferenceOperation l: return Read(f, l.Local);
+                case ILocalReferenceOperation l:
+                    if (l.Local.RefKind != RefKind.None) NotModeled(l.Syntax, $"ref local '{l.Local.Name}' is not supported (it may alias the heap)");
+                    return Read(f, l.Local);
                 case IParameterReferenceOperation p:
                     if (spec?.ResultParameter != null && SymbolEqualityComparer.Default.Equals(p.Parameter, spec.ResultParameter))
                         return spec.Result ?? Unknown(p.Type, "result");
@@ -529,8 +567,8 @@ namespace CsVerify.Verifier
                 case IFieldReferenceOperation fr:
                 {
                     var args = fr.Instance != null ? new[] { Eval(fr.Instance, f, spec) } : Array.Empty<Term>();
-                    if (!fr.Field.IsReadOnly && !fr.Field.IsConst && _codeMode)
-                        Warn(fr.Syntax, $"mutable field '{fr.Field.Name}' is modeled as a function of its object; writes to it are not tracked");
+                    if (!fr.Field.IsReadOnly && !fr.Field.IsConst)
+                        NotModeled(fr.Syntax, $"mutable field '{fr.Field.Name}' is not supported (its writes are not tracked)");
                     return T.Coerce(_z3.Apply(fr.Field.OriginalDefinition.ToDisplayString(), SortOf(fr.Field.OriginalDefinition.Type), args), SortOf(fr.Type));
                 }
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
@@ -541,6 +579,8 @@ namespace CsVerify.Verifier
                 case IExpressionStatementOperation es: return Eval(es.Operation, f, spec);
                 case IObjectCreationOperation oc:
                     foreach (var a in oc.Arguments) Eval(a.Value, f, spec);
+                    if (oc.Constructor == null || _engine.MayWriteHeap(oc.Constructor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                    if (oc.Initializer != null) NotModeled(oc.Initializer.Syntax, "object initializers are not supported");
                     return Unknown(op.Type, "new");
                 case IIsNullOperation isn:
                     Eval(isn.Operand, f, spec);
@@ -704,7 +744,10 @@ namespace CsVerify.Verifier
         {
             switch (target)
             {
-                case ILocalReferenceOperation l: f.Vars[l.Local] = v; break;
+                case ILocalReferenceOperation l:
+                    if (l.Local.RefKind != RefKind.None) NotModeled(l.Syntax, $"ref local '{l.Local.Name}' is not supported (it may alias the heap)");
+                    f.Vars[l.Local] = v;
+                    break;
                 case IParameterReferenceOperation p: f.Vars[p.Parameter] = v; break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
                 case IArrayElementReferenceOperation ae when ae.Indices.Length == 1:
@@ -720,13 +763,14 @@ namespace CsVerify.Verifier
                     var arr = Eval(pr.Instance, f, spec);
                     var idx = Eval(pr.Arguments[0].Value, f, spec);
                     BoundsCheck(arr, idx, pr.Syntax);
+                    if (IsSpan(pr.Instance.Type)) { f.Heap = _z3.Fresh("heap", Sort.Heap); break; } // could be any array's cell
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
                 }
                 case IFlowCaptureReferenceOperation _:
                     break;
                 default:
-                    Warn(target.Syntax, $"assignment to {target.Kind} is not tracked by the verifier");
+                    NotModeled(target.Syntax, $"assignment to {target.Kind} is not supported");
                     break;
             }
         }
@@ -746,14 +790,40 @@ namespace CsVerify.Verifier
                     var idx = Eval(pr.Arguments[0].Value, f, spec);
                     BoundsCheck(arr, idx, pr.Syntax);
                     if (pr.Instance.Type.SpecialType == SpecialType.System_String) return Unknown(pr.Type, "char");
+                    // a span may view an array at an offset; its contents are not tracked (only its bounds)
+                    if (IsSpan(pr.Instance.Type)) return Unknown(pr.Type, "spanElem");
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type));
                 }
             }
+            if (!IsStableProperty(prop))
+                NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only get-only auto-properties and properties of immutable types are");
             var args = new List<Term>();
             if (pr.Instance != null) args.Add(Eval(pr.Instance, f, spec));
             foreach (var a in pr.Arguments) args.Add(Eval(a.Value, f, spec));
             var def = prop.OriginalDefinition;
             return T.Coerce(_z3.Apply(def.ToDisplayString(), SortOf(def.Type), args), SortOf(pr.Type));
+        }
+
+        /// <summary>
+        /// A property the verifier may model as a function of its object: its value never changes. The spec library's
+        /// ghost members, members of strings and readonly structs, and get-only (or init-only) auto-properties.
+        /// A computed getter (List.Count) or a settable property is not.
+        /// </summary>
+        private static bool IsStableProperty(IPropertySymbol prop)
+        {
+            var type = prop.ContainingType;
+            if (type == null) return false;
+            if (type.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) return true;
+            if (type.SpecialType == SpecialType.System_String || (type.IsValueType && type.IsReadOnly)) return true;
+            if (prop.SetMethod != null && !prop.SetMethod.IsInitOnly) return false;
+            foreach (var syntax in prop.DeclaringSyntaxReferences.Select(r => r.GetSyntax()))
+            {
+                if (syntax is ParameterSyntax) continue; // a record's positional property: init-only, auto
+                if (!(syntax is PropertyDeclarationSyntax pd) || pd.AccessorList == null ||
+                    pd.AccessorList.Accessors.Any(a => a.Body != null || a.ExpressionBody != null))
+                    return false;
+            }
+            return prop.DeclaringSyntaxReferences.Length > 0;
         }
 
         private Term EvalArrayCreation(IArrayCreationOperation ac, Frame f, SpecEnv spec)
@@ -809,6 +879,12 @@ namespace CsVerify.Verifier
             foreach (var a in inv.Arguments)
             {
                 int i = a.Parameter.Ordinal;
+                // a callee's ref/in parameter is a variable of its own; aliasing an array element or a field would
+                // let writes through the heap and through the parameter disagree
+                if (a.Parameter.RefKind != RefKind.None && !(a.Value is ILocalReferenceOperation || a.Value is IParameterReferenceOperation ||
+                                                             a.Value is IDeclarationExpressionOperation || a.Value is IDiscardOperation) &&
+                    a.ArgumentKind == ArgumentKind.Explicit && !SpecSymbols.IsSpecClass(m.ContainingType))
+                    NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals and parameters");
                 argTerms[i] = a.Parameter.RefKind == RefKind.Out ? FreshOf(a.Parameter.Type, a.Parameter.Name + "$unset") : Eval(a.Value, f, spec);
             }
 
@@ -836,7 +912,11 @@ namespace CsVerify.Verifier
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {
                 bool self = SymbolEqualityComparer.Default.Equals(callee.Method, _method);
-                if (_entryMeasure == null || callee.Decreases == null)
+                if ((_entryMeasure == null || callee.Decreases == null) && ProofCode)
+                    NotTotal(inv.Syntax, self
+                        ? $"recursive lemma or [Pure] function '{_method.Name}' needs Spec.Decreases"
+                        : $"mutually recursive call from '{_method.Name}' to '{m.Name}' needs Spec.Decreases on both");
+                else if (_entryMeasure == null || callee.Decreases == null)
                     Warn(inv.Syntax, self
                         ? $"recursive call without Spec.Decreases in '{_method.Name}'; termination is not checked"
                         : $"mutually recursive call from '{_method.Name}' to '{m.Name}' without Spec.Decreases on both; termination is not checked");
@@ -960,6 +1040,10 @@ namespace CsVerify.Verifier
 
         private Term Quantifier(IInvocationOperation inv, Frame f, SpecEnv spec, bool forall)
         {
+            // in a control-flow graph (a [GhostFunction] body) the lambda is lowered; read the original tree instead
+            if (!((inv.Arguments[2].Value as IDelegateCreationOperation)?.Target is IAnonymousFunctionOperation) &&
+                _model.GetOperation(inv.Syntax) is IInvocationOperation original)
+                inv = original;
             var lo = Eval(inv.Arguments[0].Value, f, spec);
             var hi = Eval(inv.Arguments[1].Value, f, spec);
             var fn = (inv.Arguments[2].Value as IDelegateCreationOperation)?.Target as IAnonymousFunctionOperation;

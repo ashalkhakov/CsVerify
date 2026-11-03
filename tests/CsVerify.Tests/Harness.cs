@@ -37,7 +37,7 @@ namespace CsVerify.Tests
             var compilation = Compile(source);
             var errors = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
             if (errors.Count > 0) throw new InvalidOperationException("test source does not compile: " + string.Join("\n", errors));
-            var analyzers = ImmutableArray.Create<DiagnosticAnalyzer>(new LinearityAnalyzer(), new GhostAnalyzer());
+            var analyzers = ImmutableArray.Create<DiagnosticAnalyzer>(new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer());
             return compilation.WithAnalyzers(analyzers).GetAnalyzerDiagnosticsAsync().Result
                 .Select(d => d.Id).OrderBy(x => x).ToArray();
         }

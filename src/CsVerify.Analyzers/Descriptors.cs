@@ -34,6 +34,10 @@ namespace CsVerify.Analyzers
             "Linear value created from nothing",
             "A value of linear type '{0}' can only be created by [Trusted] code");
 
+        public static readonly DiagnosticDescriptor PassedTwice = Error("CSV0007", Linearity,
+            "Linear value passed twice in one call",
+            "Linear value '{0}' is passed to more than one parameter of this call; only several read-only (in) borrows may share it");
+
         public static readonly DiagnosticDescriptor GhostOutsideSpec = Error("CSV0010", Ghosts,
             "Ghost value read outside a specification",
             "'{0}' is ghost and can only be used inside Spec.* arguments, lemma arguments or lemma bodies");
@@ -45,5 +49,9 @@ namespace CsVerify.Analyzers
         public static readonly DiagnosticDescriptor ResultOutsideEnsures = Error("CSV0012", Ghosts,
             "Spec.Result/Spec.Old outside a postcondition",
             "'{0}' can only be used inside Spec.Ensures (Spec.Old also inside Spec.Invariant and Spec.Assert)");
+
+        public static readonly DiagnosticDescriptor ImpureGhost = Error("CSV0013", Ghosts,
+            "Side effect in ghost or pure code",
+            "{0}: lemmas, [Pure] and [GhostFunction] bodies and specification arguments must not have side effects");
     }
 }

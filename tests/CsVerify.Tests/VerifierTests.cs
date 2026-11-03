@@ -261,7 +261,7 @@ namespace CsVerify.Tests
         [Fact]
         public void GhostParameters_AreStaticIndices()
         {
-            const string last = "static int Last(int[] a, Ghost<int> n) { Spec.Requires(n.Value > 0 && a.Length == n.Value); return a[n.Value - 1]; } ";
+            const string last = "static int Last(int[] a, Ghost<int> n) { Spec.Requires(n.Value > 0 && a.Length == n.Value); return a[a.Length - 1]; } ";
             Assert.Empty(Errors("Last", last));
             Assert.Empty(Errors("M", last + "static int M() => Last(new int[4], Ghost.Of(4));"));
             Assert.Equal(new[] { "CSV1001" }, Errors("M", last + "static int M() => Last(new int[4], Ghost.Of(5));"));
@@ -344,7 +344,7 @@ namespace CsVerify.Tests
         }
 
         [Fact]
-        public void ArrayView_FreeNeedsWholeArray() => Assert.Equal(new[] { "CSV1001" }, Errors("M",
+        public void ArrayView_FreeNeedsWholeArray() => Assert.Contains("CSV1001", Errors("M", // also a linearity error: l is used after it was freed
             "static void M() { var p = Mem.AllocArray(4, 0, out var v, out var gc); Mem.Split(v, Ghost.Of(2), out var l, out var r); Mem.FreeArray(gc, l, p); Mem.Join(l, r, out v); }"));
 
         [Fact]
@@ -398,6 +398,69 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1006" }, r.Errors("KadaneForgetsRestart"));
             Assert.Equal(new[] { "CSV1006" }, r.Errors("CubesWrongStep"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("SumOfCubesWithoutLemma"));
+            Assert.Equal(new[] { "CSV1011" }, r.Errors("Circular"));
+            Assert.Equal(new[] { "CSV1011" }, r.Errors("Inconsistent"));
+            Assert.Equal(new[] { "CSV0013" }, r.Errors("Meddling"));
+            Assert.Equal(new[] { "CSV0007" }, r.Errors("Aliased"));
+        }
+    }
+
+    /// <summary>Where the verifier cannot model something soundly it fails (CSV1901); proofs must terminate (CSV1011).</summary>
+    public class SoundnessTests
+    {
+        private static string[] Errors(string method, string source) =>
+            Harness.Verify("public static class C { " + source + " }").Errors(method);
+
+        private const string LemmaAttrs = "[Lemma, Conditional(\"CSVERIFY_SPEC\")] ";
+
+        [Fact]
+        public void NonTerminatingLemma_DoesNotProveFalse()
+        {
+            Assert.Equal(new[] { "CSV1011" }, Errors("L", LemmaAttrs + "static void L(int n) { Spec.Ensures(false); L(n); }"));
+            Assert.Equal(new[] { "CSV1011" }, Errors("L", LemmaAttrs + "static void L(int n) { Spec.Ensures(false); while (true) { } }"));
+            Assert.Contains("CSV1011", Errors("L", LemmaAttrs + "static void L(int n) { Spec.Ensures(false); throw new System.Exception(); }"));
+        }
+
+        [Fact]
+        public void NonTerminatingDefinition_IsReported() =>
+            Assert.Equal(new[] { "CSV1011" }, Errors("F", "[Pure] static int F(int x) => F(x) + 1;"));
+
+        [Fact]
+        public void NormalCode_IsPartialCorrectness() =>
+            Assert.Empty(Errors("M", "static int M(int n) { Spec.Ensures<int>(r => r == 0); while (true) { } }"));
+
+        [Fact]
+        public void UnmodeledControlFlow_FailsVerification()
+        {
+            Assert.Contains("CSV1901", Errors("M", "static int M(int[] a) { int s = 0; foreach (var x in a) s += x; return s; }"));
+            Assert.Contains("CSV1901", Errors("M", "static int M(int x) { try { x = 1; } finally { x = 2; } return x; }"));
+        }
+
+        [Fact]
+        public void MutableState_FailsVerification()
+        {
+            Assert.Contains("CSV1901", Harness.Verify("public class C { int f; public int M() => f; }").Errors("M"));
+            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(System.Collections.Generic.List<int> l) => l.Count; }").Errors("M"));
+            Assert.Empty(Harness.Verify("public class C { public int P { get; } public int M() => P; }").Errors("M"));
+        }
+
+        [Fact]
+        public void HeapAliases_FailVerification()
+        {
+            Assert.Contains("CSV1901", Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 0); ref int x = ref a[0]; x = 1; }"));
+            Assert.Equal(new[] { "CSV1901" }, Errors("M", "static void Set(ref int x) { x = 1; } static void M(int[] a) { Spec.Requires(a.Length > 0); Set(ref a[0]); }"));
+        }
+
+        [Fact]
+        public void SpanWrites_MayChangeAnyArray() => Assert.Equal(new[] { "CSV1004" }, Errors("M",
+            "static void M(int[] a, System.Span<int> s) { Spec.Requires(a.Length > 0 && s.Length > 0); a[0] = 1; s[0] = 2; Spec.Assert(a[0] == 1); }"));
+
+        [Fact]
+        public void Constructors_MayWriteArrays()
+        {
+            var r = Harness.Verify("public class B { public B(int[] a) { a[0] = 5; } } " +
+                "public static class C { public static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 1; new B(a); Spec.Assert(a[0] == 1); } }");
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("M"));
         }
     }
 }

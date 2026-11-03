@@ -7,6 +7,7 @@ using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
 
 namespace CsVerify.Verifier
 {
@@ -52,7 +53,10 @@ namespace CsVerify.Verifier
     {
         public readonly List<MethodResult> Methods = new List<MethodResult>();
         public readonly List<VerificationDiagnostic> CompilationErrors = new List<VerificationDiagnostic>();
-        public IEnumerable<VerificationDiagnostic> Diagnostics => CompilationErrors.Concat(Methods.SelectMany(m => m.Diagnostics));
+        /// <summary>Analyzer errors outside any method body (a linear field in a non-linear type, say).</summary>
+        public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
+        public IEnumerable<VerificationDiagnostic> Diagnostics =>
+            CompilationErrors.Concat(AnalyzerErrors).Concat(Methods.SelectMany(m => m.Diagnostics));
         public bool Success => !Diagnostics.Any(d => d.IsError);
         public MethodResult this[string name] => Methods.FirstOrDefault(m => m.Name == name || m.Name.EndsWith("." + name));
     }
@@ -168,6 +172,7 @@ namespace CsVerify.Verifier
                 result.CompilationErrors.Add(new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan()));
             if (result.CompilationErrors.Count > 0) return result;
 
+            var declarations = new List<(SyntaxNode decl, MethodResult result)>();
             using var engine = new Engine(compilation, options);
             foreach (var tree in userTrees)
             {
@@ -176,10 +181,10 @@ namespace CsVerify.Verifier
                 {
                     if (decl.Body == null && decl.ExpressionBody == null) continue;
                     if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
-                    if (SpecSymbols.IsGhostFunction(method)) continue; // a definition, used by unfolding; nothing to prove
                     var contract = engine.ContractOf(method);
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
                     result.Methods.Add(mr);
+                    declarations.Add((decl, mr));
                     try { new MethodVerifier(engine, contract, mr).Run(); }
                     catch (Exception e)
                     {
@@ -191,7 +196,27 @@ namespace CsVerify.Verifier
                     engine.Solver.Errors.Clear();
                 }
             }
+            AddAnalyzerErrors(compilation, userTrees, declarations, result);
             return result;
+        }
+
+        /// <summary>
+        /// Runs the CsVerify analyzers over the same compilation. Their checks (linearity, ghost hygiene, purity of
+        /// proofs) are premises of the verification, so their errors count against the method they are in.
+        /// </summary>
+        private static void AddAnalyzerErrors(Compilation compilation, List<SyntaxTree> userTrees,
+            List<(SyntaxNode decl, MethodResult result)> declarations, VerificationResult result)
+        {
+            var analyzers = System.Collections.Immutable.ImmutableArray.Create<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer>(
+                new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer());
+            var diagnostics = compilation.WithAnalyzers(analyzers).GetAnalyzerDiagnosticsAsync().GetAwaiter().GetResult();
+            foreach (var d in diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error && userTrees.Contains(d.Location.SourceTree)))
+            {
+                var vd = new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan());
+                var owner = declarations.FirstOrDefault(x => x.decl.SyntaxTree == d.Location.SourceTree && x.decl.FullSpan.Contains(d.Location.SourceSpan));
+                if (owner.result != null) owner.result.Diagnostics.Add(vd);
+                else result.AnalyzerErrors.Add(vd);
+            }
         }
 
         private static IEnumerable<(string name, string text)> SpecSources()
