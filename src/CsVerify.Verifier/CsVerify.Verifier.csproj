@@ -25,6 +25,8 @@
     <ProjectReference Include="..\CsVerify.Analyzers\CsVerify.Analyzers.csproj" />
     <!-- The verifier compiles user code against the Spec sources so it can read the library's own contracts (Mem.*). -->
     <EmbeddedResource Include="..\CsVerify.Spec\*.cs" LogicalName="CsVerify.Spec.%(Filename)%(Extension)" />
+    <!-- and the contracts it ships for the BCL ([ContractsFor] stubs, CsVerify.Bcl) -->
+    <EmbeddedResource Include="..\CsVerify.Spec\Bcl\*.cs" LogicalName="CsVerify.Spec.Bcl.%(Filename)%(Extension)" />
     <None Include="build\CsVerify.Verifier.targets" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

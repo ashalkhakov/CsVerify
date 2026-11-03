@@ -129,7 +129,7 @@ The styles mix: a method can have a `Spec.Modifies` frame and hold views, and an
 ## Object-oriented code
 
 Verification is modular, with behavioural subtyping (Liskov), as in Dafny, Spec# and JML. A call through a base type is checked against the base's contract, and every override is checked against that contract too.
-- **Contracts of abstract and interface members.** They have no body, so their `Spec` statements go in a *contract class*, the .NET Code Contracts pattern: `[ContractClassFor(typeof(IShape))] internal abstract class ShapeContract : IShape { ... }`. Its methods carry only specifications. It is not verified or run, and inside it a member's name means the member it specifies.
+- **Contracts of abstract and interface members.** They have no body, so their `Spec` statements go in a *contract class*, the .NET Code Contracts pattern: `[ContractClassFor(typeof(IShape))] internal abstract class ShapeContract : IShape { ... }`. Its methods carry only specifications. It is not verified or run, and inside it a member's name means the member it specifies. For types without sources (the BCL, other assemblies) use a `[ContractsFor]` stub instead (see [Contracts for code without sources](library-contracts.md)).
 - **Overrides inherit.** An override or implementation inherits its base's postconditions and frame, and its precondition unless it states its own.
   - **Preconditions:** it may require less, not more (CSV1018). If it weakens the precondition, the inherited postconditions are promised only where the base's precondition held.
   - **Postconditions:** it may promise more.

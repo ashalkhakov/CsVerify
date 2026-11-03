@@ -13,7 +13,7 @@
   - **`Own.Take` splits a tree imprecisely.** The container's other children stay with it, but which of their descendants went with the taken object is not tracked, so a call that touches either part may forget those.
   - **Proofs about trees can need a hint,** much like an ATS `prval` step: the unfolded fact stated where a child is taken out (`Spec.Assert(Size.Value == 1 + l.Size.Value + ...)`).
   - **`[Pure]` functions get no view.** They can't assume an owned object's invariant, so recursion over an ownership tree (a measure from the invariant) is done in ordinary methods that take and give.
-  - **Library code** is trusted not to write source objects' fields except by running user code it is handed, so reflection is not covered.
+  - **Library code** is trusted not to write source objects' fields except by running user code it is handed, so reflection is not covered. A library method without a stub that is handed an object with `[Model]` functions (or an `object`, interface or type parameter that may be one) may change any model state, and can't be checked against `Spec.Modifies`.
 - **Null and object state.** Fields and auto-properties of nullable type are maybe-null; array elements are maybe-null whatever their type. Library nullability annotations are trusted, not checked.
 - **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
 - **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.
@@ -23,11 +23,17 @@
   - **Non-sealed overrides:** a `[Pure]` override's body defines the query only if the override is final.
   - **Lemmas and ghost functions** cannot be virtual (CSV0013).
 - **`[Trusted]` and `Spec.Assume`** are axioms by definition.
+- **Library contracts** (`[ContractsFor]` stubs, CsVerify's and yours) are trusted: their postconditions, the frames they declare, and the facts their `[Model]` functions state are assumed, not checked against the library. The summary line counts the ones a run used, and `-v` lists them. In particular (see [Contracts for code without sources](library-contracts.md)):
+  - a stub without `Spec.Modifies` is taken to change no model state, and a `[Pure]` one to have no effects at all;
+  - `Dictionary` keys are compared as the verifier compares values of their type. That is the dictionary's own comparison for integers, enums and other values, and for classes with reference equality, but not for strings (compared by contents in .NET, by reference here) or for classes that override `Equals`, nor with a custom comparer;
+  - running out of memory is not modelled: a list can grow without bound (its `Size()` is a mathematical integer), as in Dafny;
+  - model state over strings never changes (they are immutable).
 
 **Unsupported constructs**
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
-- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, non-pure calls in specifications, the elements of a `foreach` over a library collection, a string or a span.
+- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, library properties without a `[Pure]` stub, non-pure calls in specifications, the elements of a `foreach` over a library collection, a string or a span.
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
+- Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
 - Not verified as separate units: local functions and lambdas.
 
 **Completeness limits** (true things that may not be proved)

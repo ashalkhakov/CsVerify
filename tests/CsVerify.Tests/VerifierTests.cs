@@ -418,6 +418,12 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1014" }, r.Errors("Forgiven"));
             Assert.Equal(new[] { "CSV1014" }, r.Errors("Broken"));
             Assert.Equal(new[] { "CSV1013" }, r.Errors("FreshArray"));
+            // library contracts (CsVerify.Bcl's stubs)
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("FirstOrZero"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Lookup"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("AddTwice"));
+            Assert.Equal(new[] { "CSV1017" }, r.Errors("AddOutsideFrame"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Tail"));
             Assert.Equal(new[] { "CSV1012" }, r.Errors("SpecTooEarly"));
             Assert.Equal(new[] { "CSV1011" }, r.Errors("Key"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("DataBugs.Size"));
@@ -524,13 +530,13 @@ namespace CsVerify.Tests
         [Fact]
         public void UnmodeledState_FailsVerification()
         {
-            // a library type's computed property: its value may change in ways the verifier does not track, so each
-            // read in code is a value of its own (fields of source classes are modeled: see HeapTests), and a
-            // specification cannot mention it
-            const string list = "System.Collections.Generic.List<int>";
-            Assert.Empty(Harness.Verify("public static class C { public static int M(" + list + " l) => l.Count; }").Errors("M"));
-            Assert.Equal(new[] { "CSV1004" }, Harness.Verify("public static class C { public static void M(" + list + " l) { int a = l.Count, b = l.Count; Spec.Assert(a == b); } }").Errors("M"));
-            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(" + list + " l) { Spec.Ensures((int r) => r == l.Count); return l.Count; } }").Errors("M"));
+            // a library type's computed property without a contract (a stub, see StubTests): its value may change in
+            // ways the verifier does not track, so each read in code is a value of its own (fields of source classes
+            // are modeled: see HeapTests), and a specification cannot mention it
+            const string sb = "System.Text.StringBuilder";
+            Assert.Empty(Harness.Verify("public static class C { public static int M(" + sb + " b) => b.Length; }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify("public static class C { public static void M(" + sb + " s) { int a = s.Length, b = s.Length; Spec.Assert(a == b); } }").Errors("M"));
+            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(" + sb + " b) { Spec.Ensures((int r) => r == b.Length); return b.Length; } }").Errors("M"));
             // as the library declares it: Console.Out is not null
             Assert.Empty(Harness.Verify("public static class C { public static void M() { System.Console.Out.Write(1); } }").Errors("M"));
             Assert.Empty(Harness.Verify("public class C { public int P { get; } public int M() => P; }").Errors("M"));
@@ -655,7 +661,7 @@ namespace CsVerify.Tests
         {
             Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(int[]? a) => a.Length;"));
             Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(int[]? a) { Spec.Requires(a == null || a.Length > 0); return a[0]; }"));
-            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static string M(string? s) => s.Substring(1);"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static string M(string? s) => s.Substring(0);"));
             Assert.Empty(Errors("M", "static int M(int[]? a) { if (a == null) return 0; return a.Length; }"));
             Assert.Empty(Errors("M", "static int M(string? s) { if (s is null) return 0; return s.Length; }"));
             Assert.Empty(Errors("M", "static int M(string? s) => s is not null ? s.Length : 0;"));

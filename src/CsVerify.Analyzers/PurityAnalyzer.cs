@@ -86,7 +86,7 @@ namespace CsVerify.Analyzers
         {
             var op = (IInvocationOperation)context.Operation;
             if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel)) return;
-            if (!SpecSymbols.IsPureCallee(op.TargetMethod))
+            if (!SpecSymbols.IsPureCallee(op.TargetMethod) && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod))
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
         }
 

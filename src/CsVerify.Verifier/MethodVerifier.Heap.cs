@@ -17,9 +17,12 @@ namespace CsVerify.Verifier
         private readonly Dictionary<string, Term> _fieldStates = new Dictionary<string, Term>();
         private int _fieldEpochs;
 
-        /// <summary>A field's map: object to Int (to a set, for an ObjSet-valued ghost field such as Repr).</summary>
+        /// <summary>
+        /// A field's map: object to Int (to a set, for an ObjSet-valued ghost field such as Repr). A [Model] function
+        /// is a field too: with a key, object to (key to value).
+        /// </summary>
         private static Sort ValueSort(ISymbol field) =>
-            SortOf(field is IFieldSymbol fd ? fd.Type : ((IPropertySymbol)field).Type) == Sort.Row ? Sort.Row : Sort.Int;
+            field is IMethodSymbol model && model.Parameters.Length == 2 ? Sort.Row : SortOf(FieldType(field)) == Sort.Row ? Sort.Row : Sort.Int;
 
         private static Sort MapSort(ISymbol field) => ValueSort(field) == Sort.Row ? Sort.Heap : Sort.Row;
 
@@ -156,7 +159,7 @@ namespace CsVerify.Verifier
             }
             if (all) HavocAllFields(f, keepOwned: touched != null);
             foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
-                f.Fields[field] = modifiable != null && !all && !IsOwnedField(field) && !field.IsStatic
+                f.Fields[field] = modifiable != null && !all && !IsOwnedField(field) && !FieldEffects.IsStaticField(field)
                     ? new Term($"({(MapSort(field) == Sort.Heap ? "cv_frameh" : "cv_frame")} {modifiable} {FieldMap(before, field)} {FreshMap(field)})", MapSort(field))
                     : FreshMap(field);
             // owned fields change at the objects whose views moved, which the link does not describe
@@ -169,7 +172,7 @@ namespace CsVerify.Verifier
             {
                 var parts = new List<string>();
                 if (modifiable != null) parts.Add($"(distinct (select {modifiable} y) 0)");
-                if (fields.Any(x => x.IsStatic)) parts.Add($"(= y {Statics})"); // (the statics object)
+                if (fields.Any(FieldEffects.IsStaticField)) parts.Add($"(= y {Statics})"); // (the statics object)
                 if (owned.Count > 0 && touched != null)
                 {
                     foreach (var t in touched) parts.Add(before.Root != null ? $"(= (select {before.Root} y) {t})" : $"(= y {t})");

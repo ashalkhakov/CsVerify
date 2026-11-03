@@ -39,6 +39,15 @@ namespace CsVerify.Analyzers
             type?.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "ContractClassForAttribute" &&
                                                        a.AttributeClass.ContainingNamespace?.ToDisplayString() == Namespace)
                 ?.ConstructorArguments.FirstOrDefault().Value as INamedTypeSymbol;
+        /// <summary>The external type a [ContractsFor] stub gives contracts for; null if it is not one.</summary>
+        public static INamedTypeSymbol ContractsForTarget(ITypeSymbol type) =>
+            type?.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "ContractsForAttribute" &&
+                                                       a.AttributeClass.ContainingNamespace?.ToDisplayString() == Namespace)
+                ?.ConstructorArguments.FirstOrDefault().Value as INamedTypeSymbol;
+        /// <summary>A class of contracts, not code: a [ContractClassFor] or [ContractsFor] class.</summary>
+        public static bool IsContractsClass(ITypeSymbol type) => ContractClassTarget(type) != null || ContractsForTarget(type) != null;
+        /// <summary>A [Model] function: ghost state of an external object.</summary>
+        public static bool IsModel(ISymbol s) => s is IMethodSymbol && HasAttribute(s, "ModelAttribute");
         public static bool IsOwnsField(ISymbol field) => field is IFieldSymbol && HasAttribute(field, "OwnsAttribute");
 
         /// <summary>A class marked [Owned], or derived from one.</summary>
@@ -72,8 +81,9 @@ namespace CsVerify.Analyzers
                 m.OverriddenMethod != null && IsPure(m.OverriddenMethod) ||
                 !m.IsStatic && m.ContainingType != null && m.ContainingType.AllInterfaces.SelectMany(i => i.GetMembers().OfType<IMethodSymbol>())
                     .Any(im => SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(im), m) && IsPure(im)));
-        /// <summary>A ghost collection: Seq&lt;T&gt; (and its static class Seq), ObjSet or Bag.</summary>
-        public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq") || IsObjSet(type) || IsBag(type);
+        /// <summary>A ghost collection: Seq&lt;T&gt; (and its static class Seq), Map&lt;K, V&gt; (and Map), ObjSet or Bag.</summary>
+        public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq") ||
+            IsCsVerifyType(type, "Map`2") || IsCsVerifyType(type, "Map") || IsObjSet(type) || IsBag(type);
         public static bool IsBag(ITypeSymbol type) => IsCsVerifyType(type, "Bag");
         public static bool IsObjSet(ITypeSymbol type) => IsCsVerifyType(type, "ObjSet");
 
@@ -102,7 +112,8 @@ namespace CsVerify.Analyzers
         /// <summary>A method whose arguments are ghost: specification statements, Ghost.Of, lemmas.</summary>
         public static bool IsGhostMethod(IMethodSymbol m) =>
             m != null && (IsSpecClass(m.ContainingType) || IsGhostOf(m) || IsLemma(m.OriginalDefinition) ||
-                          IsGhostFunction(m.OriginalDefinition) || IsPredicate(m.OriginalDefinition) || IsSeqType(m.ContainingType));
+                          IsGhostFunction(m.OriginalDefinition) || IsPredicate(m.OriginalDefinition) || IsModel(m.ReducedFrom ?? m.OriginalDefinition) ||
+                          IsSeqType(m.ContainingType));
 
         /// <summary>
         /// True when <paramref name="node"/> sits where ghost values are legal: inside the arguments of a ghost
@@ -119,7 +130,9 @@ namespace CsVerify.Analyzers
                         break;
                     case MethodDeclarationSyntax md:
                         var declared = model.GetDeclaredSymbol(md);
-                        return IsLemma(declared) || IsGhostFunction(declared) || IsPredicate(declared);
+                        // (a stub's bodies are contracts, never run)
+                        return IsLemma(declared) || IsGhostFunction(declared) || IsPredicate(declared) || IsModel(declared) ||
+                               declared != null && IsContractsClass(declared.ContainingType);
                     case LocalFunctionStatementSyntax lf:
                         if (IsLemma(model.GetDeclaredSymbol(lf))) return true;
                         break;

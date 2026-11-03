@@ -257,6 +257,7 @@ namespace CsVerify.Verifier
             }
 
             var callee = ctor != null ? _engine.ContractOf(ctor) : null;
+            if (callee?.IsStub == true && _codeMode) Assumed(callee);
             Frame pre = null;
             if (callee?.HasSource == true && _codeMode)
             {
@@ -278,7 +279,7 @@ namespace CsVerify.Verifier
             var obj = _z3.Fresh("new", Sort.Int);
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
             HasType(obj, oc.Type, exact: true);
-            SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax) : null);
+            SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax, ctor) : null);
             if (pre != null) AllocAfterCall(f);
             if (ctor != null) CallMayThrow(callee ?? _engine.ContractOf(ctor), null, args, oc.Arguments, f, pre);
             if (pre != null)

@@ -56,6 +56,7 @@ namespace CsVerify.Tests
             Assert.Equal(10 * 3 + 3, Run(asm, "Trees", "Demo")); // 1..7 inserted: AVL height 3, black height 3
             Assert.Equal(30 + 20, Run(asm, "Bank", "Demo", Activator.CreateInstance(asm.GetType("Samples.NullAudit")))); // owned accounts: views gone
             Assert.Equal(10, Run(asm, "DynamicFrames", "Demo")); // Dafny-style pairs: Repr and Valid() gone
+            Assert.Equal(4 + 9 + 2 + 1, Run(asm, "Library.LibraryContracts", "Demo")); // List, Dictionary, string: the BCL's own code runs
             Assert.Equal(5431, Run(asm, "OwnedList", "Demo")); // 1, 5, 3, 4 inserted: 1 3 4 5, last digit first; Take/Give run
             // INT2PROGINATS ch. 15-16: 3 1 4 1 5 sorted (54311), buffer 7 then 8, timer 40 ticks, tree of size 4
             Assert.Equal(54311L * 10000 + 78 * 100 + 40 + 4 * 1000, Run(asm, "AtsViewtypes", "Demo"));

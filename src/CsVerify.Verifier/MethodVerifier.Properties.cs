@@ -28,6 +28,7 @@ namespace CsVerify.Verifier
                                   SyntaxNode at, Frame f, SpecEnv spec)
         {
             var callee = _engine.ContractOf(accessor);
+            if (callee.IsStub && _codeMode) Assumed(callee);
             Term receiver = null;
             if (instance != null)
             {
@@ -60,7 +61,7 @@ namespace CsVerify.Verifier
                 ProveOwnedInvariant(accessor.ContainingType, receiver, f, at, $"when '{accessor.Name}' is called on it");
                 touched.Add(receiver);
             }
-            var modifiable = callee.IsPure ? null : CalleeModifies(callee, pre, f, at);
+            var modifiable = callee.IsPure ? null : CalleeModifies(callee, pre, f, at, accessor);
             var post = pre.Clone();
             if (HavocsHeap(accessor)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
             HavocFields(f, accessor, touched, modifiable);
@@ -69,7 +70,7 @@ namespace CsVerify.Verifier
             post.Link = f.Link;
 
             var result = resultType != null ? FreshOf(resultType, accessor.Name) : null;
-            if (result != null && IsNonNullableReturn(callee.Method)) _z3.Assume(NotNull(result));
+            if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(accessor))) _z3.Assume(NotNull(result));
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
             if (!callee.IsPure)

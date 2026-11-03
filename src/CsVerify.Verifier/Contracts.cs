@@ -55,8 +55,67 @@ namespace CsVerify.Verifier
         public IReadOnlyList<IOperation> PureStatements;
         public bool HasSource => Declaration != null;
         public bool IsTrusted, IsLemma, IsPure;
+        /// <summary>
+        /// For an external member with a [ContractsFor] stub: the stub method, whose contract this is (trusted: assumed
+        /// at calls, never proved). Its parameters are an alias of the member's, after <c>@this</c> if it has one.
+        /// </summary>
+        public IMethodSymbol Stub;
+        public bool IsStub => Stub != null;
+        /// <summary>The stub's <c>@this</c> parameter, which stands for the receiver; null for a static member.</summary>
+        public IParameterSymbol StubReceiver;
+        /// <summary>
+        /// For a [Pure] stub with a postcondition <c>r == E</c> (or <c>Ghost.Of(r) == E</c>, or a conjunct of one): E,
+        /// the member's value, used in its place (list[i] is the model's element itself, not a function of it).
+        /// </summary>
+        public IOperation StubDefinition;
 
-        public static Contract Read(IMethodSymbol method, Compilation compilation)
+        /// <summary>The contract an external member gets from its stub.</summary>
+        public static Contract ReadStub(IMethodSymbol member, IMethodSymbol stub, Compilation compilation)
+        {
+            var c = Read(stub, compilation, isStub: true);
+            c.Method = member.OriginalDefinition;
+            c.Stub = stub.OriginalDefinition;
+            if (ContractStubs.TakesReceiver(stub)) c.StubReceiver = c.Stub.Parameters[0];
+            c.Aliases.Add(c.Stub);
+            if (c.IsPure)
+                c.StubDefinition = c.Ensures.Select(e => Definition(e.Expr, e.ResultParameter)).FirstOrDefault(d => d != null);
+            return c;
+        }
+
+        /// <summary>E, if <paramref name="post"/> is (a conjunction with) <c>r == E</c>, r the result.</summary>
+        private static IOperation Definition(IOperation post, IParameterSymbol result)
+        {
+            post = Unwrap(post);
+            if (!(post is IBinaryOperation b)) return null;
+            if (b.OperatorKind == BinaryOperatorKind.ConditionalAnd)
+                return Definition(b.LeftOperand, result) ?? Definition(b.RightOperand, result);
+            if (b.OperatorKind != BinaryOperatorKind.Equals) return null;
+            bool IsResult(IOperation o)
+            {
+                o = Unwrap(o);
+                if (o is IInvocationOperation g && SpecSymbols.IsGhostOf(g.TargetMethod)) o = Unwrap(g.Arguments[0].Value);
+                return o is IParameterReferenceOperation p && result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result) ||
+                       o is IInvocationOperation r && SpecSymbols.IsSpecClass(r.TargetMethod.ContainingType) && r.TargetMethod.Name == "Result";
+            }
+            if (IsResult(b.LeftOperand) && !Mentions(b.RightOperand, result)) return b.RightOperand;
+            if (IsResult(b.RightOperand) && !Mentions(b.LeftOperand, result)) return b.LeftOperand;
+            return null;
+        }
+
+        private static IOperation Unwrap(IOperation o)
+        {
+            while (o is IConversionOperation conv && conv.IsImplicit) o = conv.Operand;
+            while (o is IParenthesizedOperation p) o = p.Operand;
+            return o;
+        }
+
+        private static bool Mentions(IOperation o, IParameterSymbol result) =>
+            o.DescendantsAndSelf().Any(x => x is IParameterReferenceOperation p && SymbolEqualityComparer.Default.Equals(p.Parameter, result) ||
+                                            x is IInvocationOperation r && SpecSymbols.IsSpecClass(r.TargetMethod.ContainingType) && r.TargetMethod.Name == "Result");
+
+        public static Contract Read(IMethodSymbol method, Compilation compilation) => Read(method, compilation, isStub: false);
+
+        private static Contract Read(IMethodSymbol method, Compilation compilation, bool isStub)
         {
             method = method.OriginalDefinition;
             if (method.ReducedFrom != null) method = method.ReducedFrom;
@@ -83,6 +142,7 @@ namespace CsVerify.Verifier
 
             if (exprBody != null)
             {
+                if (isStub) return c; // (a stub's body is not a definition)
                 if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted) c.PureBody = c.Model.GetOperation(exprBody);
                 return c;
             }
@@ -108,6 +168,7 @@ namespace CsVerify.Verifier
                 rest.Add(stmt);
             }
             // (Spec.Unfold statements before the return only give the definition's checks the predicate's facts)
+            if (isStub) return c;
             rest.RemoveAll(s => s is ExpressionStatementSyntax es && es.Expression is InvocationExpressionSyntax inv &&
                                 c.Model.GetOperation(inv) is IInvocationOperation op && SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && op.TargetMethod.Name == "Unfold");
             if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)

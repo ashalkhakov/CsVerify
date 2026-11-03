@@ -161,6 +161,8 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [Data types and objects](docs/objects.md): data types and invariants, mutable and owned objects, predicates,
   dynamic frames, object-oriented code.
 - [Integers, exceptions, floating point and null](docs/semantics.md).
+- [Contracts for code without sources](docs/library-contracts.md): `[ContractsFor]` stubs and `[Model]` functions for
+  the BCL and other assemblies, and the BCL contracts CsVerify ships.
 - [Proof erasure](docs/erasure.md).
 - [Running the verifier](docs/running.md): the command line, MSBuild, diagnostics.
 - [CI](docs/ci.md): GitHub Actions, Azure DevOps, with Tarp; building and releasing CsVerify.

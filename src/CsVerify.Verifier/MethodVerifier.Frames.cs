@@ -78,10 +78,14 @@ namespace CsVerify.Verifier
         /// A call to a method that may write fields: within this method's Spec.Modifies (if it has one). Returns what
         /// the call may change (its Spec.Modifies and what it allocates), or null if that is not known.
         /// </summary>
-        private Term CalleeModifies(Contract callee, Frame pre, Frame f, SyntaxNode at)
+        /// <param name="called">the member as called: what a library one may do depends on its type arguments</param>
+        private Term CalleeModifies(Contract callee, Frame pre, Frame f, SyntaxNode at, IMethodSymbol called = null)
         {
-            var (fields, all) = _engine.Fields.WritesOf(callee.Method);
+            var (fields, all) = _engine.Fields.WritesOf(called ?? callee.Method);
             if (!all && !fields.Any(x => !IsOwnedField(x))) return null;
+            // a stub without Spec.Modifies changes no model state that exists before the call (a constructor sets up its object's)
+            if (callee.Modifies == null && callee.IsStub && !all)
+                return f.Alloc != null ? new Term($"(cv_mod {T.ZeroRow()} {f.Alloc})", Sort.Row) : T.ZeroRow();
             if (callee.Modifies == null)
             {
                 if (_modifiesEntry != null && ChecksFrames)

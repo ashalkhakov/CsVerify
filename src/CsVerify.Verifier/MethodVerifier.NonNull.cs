@@ -17,7 +17,7 @@ namespace CsVerify.Verifier
     internal sealed partial class MethodVerifier
     {
         private static ITypeSymbol FieldType(ISymbol field) =>
-            field.OriginalDefinition is IFieldSymbol fd ? fd.Type : ((IPropertySymbol)field.OriginalDefinition).Type;
+            field.OriginalDefinition is IFieldSymbol fd ? fd.Type : field.OriginalDefinition is IMethodSymbol model ? model.ReturnType : ((IPropertySymbol)field.OriginalDefinition).Type;
 
         /// <summary>A heap field whose value, once its object is built, is never null.</summary>
         internal static bool IsNonNullField(ISymbol field)

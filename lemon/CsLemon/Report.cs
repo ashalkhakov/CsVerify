@@ -573,7 +573,7 @@ namespace CsLemon
                 {
                     for (i = 0; i < line.Length; i++)
                     {
-                        Spec.Invariant(0 <= iStart && iStart <= i);
+                        Spec.Invariant(0 <= iStart && iStart <= i && i <= line.Length);
                         if (line[i] == 'P' && i <= line.Length - 5
                           && string.CompareOrdinal(line, i, "Parse", 0, 5) == 0
                           && (i == 0 || !Chars.ISALPHA(line[i - 1])))

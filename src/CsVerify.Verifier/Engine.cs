@@ -60,6 +60,8 @@ namespace CsVerify.Verifier
         public string Name;
         public int Obligations, Proved;
         public readonly List<VerificationDiagnostic> Diagnostics = new List<VerificationDiagnostic>();
+        /// <summary>The external members whose (trusted) stub contracts the proof of this method assumed.</summary>
+        public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
         public bool Verified => Diagnostics.All(d => !d.IsError);
     }
 
@@ -69,6 +71,8 @@ namespace CsVerify.Verifier
         public readonly List<VerificationDiagnostic> CompilationErrors = new List<VerificationDiagnostic>();
         /// <summary>Analyzer errors outside any method body (a linear field in a non-linear type, say).</summary>
         public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
+        /// <summary>The external members whose (trusted) stub contracts some proof assumed.</summary>
+        public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
         public IEnumerable<VerificationDiagnostic> Diagnostics =>
             CompilationErrors.Concat(AnalyzerErrors).Concat(Methods.SelectMany(m => m.Diagnostics));
         public bool Success => !Diagnostics.Any(d => d.IsError);
@@ -106,13 +110,28 @@ namespace CsVerify.Verifier
         /// <summary>The [Predicate] methods of the program.</summary>
         internal readonly List<IMethodSymbol> Predicates;
 
+        /// <summary>The [ContractsFor] stubs: contracts for members without sources, and [Model] functions.</summary>
+        internal readonly ContractStubs Stubs;
+
+        /// <summary>
+        /// The [Model] functions the program may use: ghost fields of external objects (empty unless the sources
+        /// mention a type some stub specifies, or a model function, so nothing changes for programs that do not).
+        /// </summary>
+        internal readonly IReadOnlyList<IMethodSymbol> Models;
+
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
             _compilation = compilation;
+            Stubs = ContractStubs.For(compilation);
+            var names = new HashSet<string>(Stubs.Models.Select(m => m.Name)
+                .Concat(Stubs.Models.Select(m => m.Parameters[0].Type.Name)));
+            Models = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Any(n => names.Contains(n.Identifier.Text)))
+                ? Stubs.Models : new List<IMethodSymbol>();
             Data = new DataTypes(compilation, userTrees);
             Fields = new FieldEffects(this);
             UsesDynamicFrames = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
-                .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"));
+                .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"))
+                || Models.Count > 0; // (stubs frame model state with Spec.Modifies)
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
@@ -152,7 +171,7 @@ namespace CsVerify.Verifier
             // which override runs is not known: any of them may write arrays
             if (IsOverridable(key)) return _writesHeap[key] = true;
             // a library method: through arrays (or spans) it is handed, not strings, or user code it runs (a delegate writing arrays it captured)
-            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsWritableSequence(p.Type)) || Fields.RunsUserCode(key);
+            if (!c.HasSource || c.IsStub) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsWritableSequence(p.Type)) || Fields.RunsUserCode(key);
             _writesHeap[key] = false; // assume no for recursive calls while computing
             bool writes = false;
             foreach (var n in c.Declaration.DescendantNodes())
@@ -318,6 +337,9 @@ namespace CsVerify.Verifier
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
             if (_contracts.TryGetValue(key, out var c)) return c;
+            // a member without sources, specified by a stub
+            if (key.DeclaringSyntaxReferences.Length == 0 && Stubs.StubOf(key) is IMethodSymbol stub)
+                return _contracts[key] = Contract.ReadStub(key, stub, _compilation);
             // a contract class's member, named in its own specifications, stands for the member it specifies
             if (SpecSymbols.ContractClassTarget(key.ContainingType) != null && SpecifiedMember(key) is IMethodSymbol target)
                 return _contracts[key] = ContractOf(target);
@@ -405,7 +427,7 @@ namespace CsVerify.Verifier
                 {
                     if (decl.Body == null && decl.ExpressionBody == null) continue;
                     if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
-                    if (SpecSymbols.ContractClassTarget(method.ContainingType) != null) continue; // contracts, not code
+                    if (SpecSymbols.IsContractsClass(method.ContainingType) || SpecSymbols.IsModel(method)) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
                     if (!options.Selects(mr.Name)) continue;
@@ -435,7 +457,7 @@ namespace CsVerify.Verifier
                         ArrowExpressionClauseSyntax arrow when arrow.Parent is BasePropertyDeclarationSyntax prop => (model.GetDeclaredSymbol(prop) as IPropertySymbol)?.GetMethod,
                         _ => null,
                     };
-                    if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.ContractClassTarget(accessor.ContainingType) != null ||
+                    if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.IsContractsClass(accessor.ContainingType) ||
                         accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
                     var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name };
                     if (!options.Selects(mr.Name)) continue;
@@ -452,6 +474,14 @@ namespace CsVerify.Verifier
                     engine.Solver.Errors.Clear();
                 }
             }
+            // a stub that specifies nothing (a typo in a name or a parameter type) would silently leave a member unspecified
+            foreach (var (stubMethod, message) in engine.Stubs.Errors)
+            {
+                var location = stubMethod?.Locations.FirstOrDefault();
+                if (location == null || !userTrees.Contains(location.SourceTree) && !(location.SourceTree?.FilePath.StartsWith("<CsVerify.Spec>") == true)) continue;
+                result.AnalyzerErrors.Add(new VerificationDiagnostic("CSV1021", true, message, location.GetLineSpan()));
+            }
+            result.Assumptions.UnionWith(result.Methods.SelectMany(mr => mr.Assumptions));
             AddAnalyzerErrors(compilation, userTrees, declarations, result);
             return result;
         }

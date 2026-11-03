@@ -64,9 +64,41 @@ namespace CsVerify.Verifier
 
         private List<ISymbol> _allFields;
 
-        /// <summary>Every heap field in the sources.</summary>
+        /// <summary>Every heap field in the sources, and the [Model] functions (ghost fields of external objects).</summary>
         public IReadOnlyList<ISymbol> AllFields() => _allFields ??= _engine.SourceTypes
-            .SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key).Distinct(SymbolEqualityComparer.Default).ToList();
+            .SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key).Concat(_engine.Models).Distinct(SymbolEqualityComparer.Default).ToList();
+
+        /// <summary>
+        /// The [Model] functions a call of a library member may change: all of them (within its Spec.Modifies, if its
+        /// stub has one), except those over strings, which never change. A stub without Spec.Modifies changes none,
+        /// except a constructor, which sets up the new object's.
+        /// </summary>
+        private IEnumerable<ISymbol> MutableModels() =>
+            _engine.Models.Where(m => m.Parameters[0].Type.SpecialType != SpecialType.System_String);
+
+        /// <summary>
+        /// May a library method without a stub change model state: is it handed (as its receiver, an argument or a
+        /// type argument) something that may be, or lead to, an object with [Model] functions?
+        /// </summary>
+        private bool MayTouchModels(IMethodSymbol m)
+        {
+            if (_engine.Models.Count == 0) return false;
+            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(t => t != null).ToList();
+            bool Reaches(ITypeSymbol t)
+            {
+                switch (t)
+                {
+                    case null: return false;
+                    case IArrayTypeSymbol a: return Reaches(a.ElementType);
+                    case ITypeParameterSymbol _: return true;
+                }
+                if (t.SpecialType == SpecialType.System_String || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.Delegate) return t.SpecialType != SpecialType.System_String;
+                if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t))) return true;
+                return t is INamedTypeSymbol n && n.TypeArguments.Any(Reaches);
+            }
+            return m.Parameters.Any(p => Reaches(p.Type)) || !m.IsStatic && m.MethodKind != MethodKind.Constructor && Reaches(m.ContainingType) ||
+                   m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(Reaches);
+        }
 
         private List<INamedTypeSymbol> _ownable;
 
@@ -123,11 +155,14 @@ namespace CsVerify.Verifier
             if (Engine.IsOverridable(m))
                 foreach (var o in Overrides(m)) d.Callees.Add(o);
             var c = _engine.ContractOf(m.OriginalDefinition);
-            if (!c.HasSource)
+            if (!c.HasSource || c.IsStub)
             {
                 // a library method cannot name user fields; it can reach them only by running user code it is handed
                 // (its receiver included: a delegate's Invoke)
-                d.All = RunsUserCode(m);
+                d.All = RunsUserCode(m) && !c.IsPure; // (a [Pure] stub says it has no effects: trusted, like all it says)
+                // model state: a stub says what it changes (Spec.Modifies, or nothing); without one, anything it reaches
+                if (c.IsStub ? c.Modifies != null || m.MethodKind == MethodKind.Constructor : MayTouchModels(m)) d.Writes.UnionWith(MutableModels());
+                if (c.IsStub) AddModelReads(d, c);
                 return d;
             }
             bool ctor = m.MethodKind == MethodKind.Constructor;
@@ -149,8 +184,19 @@ namespace CsVerify.Verifier
                         }
                         break;
                     }
+                    // a stubbed property or indexer (list.Count, list[i]): its accessors run
+                    case ExpressionSyntax pe when (pe is SimpleNameSyntax || pe is ElementAccessExpressionSyntax) &&
+                                                  c.Model.GetSymbolInfo(pe).Symbol is IPropertySymbol sp && sp.DeclaringSyntaxReferences.Length == 0:
+                    {
+                        ExpressionSyntax access = pe.Parent is MemberAccessExpressionSyntax pm && pm.Name == pe ? pm : pe;
+                        var (read, write) = Usage(access);
+                        if (read && sp.GetMethod != null && _engine.Stubs.StubOf(sp.GetMethod) != null) AddCallee(d, sp.GetMethod);
+                        if (write && sp.SetMethod != null) AddCallee(d, sp.SetMethod);
+                        break;
+                    }
                     case InvocationExpressionSyntax inv when c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
-                        if (!SpecSymbols.IsSpecClass(callee.ContainingType)) AddCallee(d, callee);
+                        if (SpecSymbols.IsModel(callee.ReducedFrom ?? callee.OriginalDefinition)) d.Reads.Add((callee.ReducedFrom ?? callee).OriginalDefinition);
+                        else if (!SpecSymbols.IsSpecClass(callee.ContainingType)) AddCallee(d, callee);
                         break;
                     case BaseObjectCreationExpressionSyntax oc when c.Model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctorCallee:
                         AddCallee(d, ctorCallee);
@@ -161,6 +207,22 @@ namespace CsVerify.Verifier
                 }
             }
             return d;
+        }
+
+        /// <summary>The [Model] functions a stub's contract reads: a [Pure] stubbed member's value depends on them.</summary>
+        private void AddModelReads(Direct d, Contract stub)
+        {
+            foreach (var inv in stub.Declaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                if (stub.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)
+                {
+                    var key = (callee.ReducedFrom ?? callee).OriginalDefinition;
+                    if (SpecSymbols.IsModel(key)) d.Reads.Add(key);
+                    else if (!SpecSymbols.IsSpecClass(callee.ContainingType) && !SpecSymbols.IsSeqType(callee.ContainingType)) AddCallee(d, callee);
+                }
+            // (and the stubbed members its contract names: list.Count)
+            foreach (var name in stub.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
+                if (stub.Model.GetSymbolInfo(name).Symbol is IPropertySymbol p && p.GetMethod != null && _engine.Stubs.StubOf(p.GetMethod) != null)
+                    AddCallee(d, p.GetMethod);
         }
 
         /// <summary>The source methods that override or implement <paramref name="m"/>.</summary>

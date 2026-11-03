@@ -119,7 +119,8 @@ namespace CsLemon
         /// <summary>The i-th option (the table is full).</summary>
         private static Opt Option(int i)
         {
-            Checks.That(0 <= i && i < options.Length && options[i] != null);
+            Spec.Ensures<Opt>(r => r.label.Length > 0);
+            Checks.That(0 <= i && i < options.Length && options[i] != null && options[i].label.Length > 0);
             return options[i];
         }
 
@@ -164,7 +165,7 @@ namespace CsLemon
                     int j;
                     for (j = 0; j < options.Length; j++)
                     {
-                        Spec.Invariant(0 <= j);
+                        Spec.Invariant(0 <= j && j <= options.Length);
                         if (a.Length - 1 >= Option(j).label.Length && string.CompareOrdinal(a, 1, Option(j).label, 0, Option(j).label.Length) == 0) break;
                     }
                     bool v = a[0] == '-';
@@ -269,6 +270,7 @@ namespace CsLemon
                 System.Console.Error.Write("Exactly one filename argument is required.\n");
                 return 1;
             }
+            string filename = args[0]; // (before the calls below, which may change any list for all the verifier knows)
             showPrecedenceConflict = Flag("p");
             var lem = new Lemon();
             lem.errorcnt = 0;
@@ -277,7 +279,7 @@ namespace CsLemon
             Tables.Symbol_init();
             Tables.State_init();
             lem.argv0 = "lemon";
-            lem.filename = args[0];
+            lem.filename = filename;
             lem.basisflag = Flag("b");
             lem.nolinenosflag = Flag("l");
             lem.printPreprocessed = Flag("E");

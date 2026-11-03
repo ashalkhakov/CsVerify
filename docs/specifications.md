@@ -43,6 +43,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | a view of an object's fields, `(pf \| p)` | `[Owned]` class; `Own.New(new C(...), out Own<C> view)`; pass `(C obj, ref Own<C> view)` with `Spec.Requires(view.Obj.Value == obj)` |
 | several results, `[r1, r2: int] (...)` (Dafny `returns (k, m)`) | a C# tuple `(int k, int m)`; `Spec.Ensures<(int k, int m)>(r => ... r.k ... r.m ...)`; callers read `t.k` or deconstruct with `var (k, m) = ...` |
 | `$UNSAFE` | `[Trusted]`: the body is not verified, its contract is taken as an axiom, linearity is not checked |
+| contracts for code without sources (ATS's `extern fun` with a type; Dafny's `{:extern}` with a spec) | a `[ContractsFor(typeof(X))]` stub, with `[Model]` functions for X's state; CsVerify ships stubs for `List<T>`, `Dictionary<K, V>`, `string`, `int.Parse` and `Math` (see [Contracts for code without sources](library-contracts.md)) |
 | proof erasure | `[Conditional]` erasure: in a normal build no spec, lemma call or argument remains |
 
 ## Specification rules
@@ -52,7 +53,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - `Spec.Index(x)` is the index of `x`, the iteration variable of a `foreach` over an array. In the loop's invariants it is the number of elements gone through.
 - `Spec.Ensures<R>(r => …)` binds `r` to the return value. Lambdas cannot capture `ref`/`in` parameters, so for those use `Spec.Ensures(bool)` with `Spec.Result<R>()` and `Spec.Old(x)`.
 - `Spec.Forall(lo, hi, i => P)` / `Spec.Exists(...)` are bounded integer quantifiers.
-- Specification expressions should be side-effect free. Calls in them must be `[Pure]`.
+- Specification expressions should be side-effect free. Calls in them must be `[Pure]`: a source method, or a library member whose stub is (`l.Count`, `string.IsNullOrEmpty(s)`; see [Contracts for code without sources](library-contracts.md)).
 
 ## Enabling `CSVERIFY_SPEC`
 

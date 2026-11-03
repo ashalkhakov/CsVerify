@@ -14,7 +14,8 @@ dotnet csverify erase --out erased/ src/    # or write it out to look at
 
 **What it removes:**
 - Specification statements.
-- Lemmas and `[GhostFunction]`s, with their calls.
+- Lemmas, `[GhostFunction]`s and `[Model]` functions, with their calls.
+- Classes of contracts: `[ContractsFor]` stubs and `[ContractClassFor]` classes.
 - Every parameter, argument, local, field and property of a **proof type**: `Ghost<T>`, `Seq<T>`, and data-less `[Linear]` structs (views such as `PointsTo<T>`, `ArrayView<T>` and `FreeGc<T>`, or your own tokens).
 - Trusted view functions that only consume and produce proofs (`Mem.Split`, `Join`, `TakeOut`, `PutBack`), with their calls.
 - Proof results: a method returning a view returns `void`.
@@ -35,7 +36,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 }
 ```
 
-**The runtime.** The Spec library goes through the same pass and becomes a small runtime that is compiled into the program in place of the CsVerify assembly. It keeps `Ptr<T>`, `Mem.Read(p)`, `Mem.AllocArray(n, fill)` and the like, and has no `Spec`, `Ghost`, `Seq` or view types at all.
+**The runtime.** The Spec library goes through the same pass and becomes a small runtime that is compiled into the program in place of the CsVerify assembly. It keeps `Ptr<T>`, `Mem.Read(p)`, `Mem.AllocArray(n, fill)` and the like, and has no `Spec`, `Ghost`, `Seq`, `Map` or view types, nor the BCL contracts, at all.
 
 **The check.** If the erased program does not compile, run-time code still depends on a proof, for example a view hidden in a tuple or a `Ghost` boxed into an `object`. That is error CSV2001, reported at the original line.
 

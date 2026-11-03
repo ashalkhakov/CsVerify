@@ -30,7 +30,8 @@ namespace CsVerify.Verifier
     /// still compiles. Normally <c>[Conditional]</c> removes specifications and lemma calls, and the JIT inlines the
     /// empty view functions; this pass removes the rest too, so the build carries no proofs at all:
     /// <list type="bullet">
-    /// <item>specification statements, lemmas and [GhostFunction]s, and calls to them;</item>
+    /// <item>specification statements, lemmas, [GhostFunction]s and [Model] functions, and calls to them;</item>
+    /// <item>classes of contracts: [ContractsFor] stubs and [ContractClassFor] classes;</item>
     /// <item>proof types: <c>Ghost&lt;T&gt;</c>, <c>Seq&lt;T&gt;</c>, and data-less <c>[Linear]</c> structs (views such as
     /// <c>PointsTo&lt;T&gt;</c>, <c>ArrayView&lt;T&gt;</c>): their parameters, arguments, locals, fields and properties;
     /// a method returning one returns <c>void</c>;</item>
@@ -130,7 +131,7 @@ namespace CsVerify.Verifier
         {
             if (m == null) return false;
             m = m.ReducedFrom ?? m.OriginalDefinition;
-            if (SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m) || SpecSymbols.IsPredicate(m) || SpecSymbols.IsSpecClass(m.ContainingType) ||
+            if (SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m) || SpecSymbols.IsPredicate(m) || SpecSymbols.IsModel(m) || SpecSymbols.IsSpecClass(m.ContainingType) ||
                 SpecSymbols.IsGhostOf(m) || SpecSymbols.IsSeqType(m.ContainingType))
                 return true;
             if (!SpecSymbols.IsTrusted(m)) return false;
@@ -183,6 +184,8 @@ namespace CsVerify.Verifier
                 // a package keeps its run-time parts: its proof-typed positional parameters go
                 if (type is RecordDeclarationSyntax record && record.ParameterList != null && _model.GetDeclaredSymbol(type) is INamedTypeSymbol rt && !IsProofType(rt))
                     RemoveFromList(record.ParameterList.Parameters, p => p.Type != null && _model.GetTypeInfo(p.Type).Type is ITypeSymbol pt && IsProofType(pt));
+                // contracts, not code: [ContractsFor] stubs and [ContractClassFor] classes
+                if (_model.GetDeclaredSymbol(type) is INamedTypeSymbol ct && SpecSymbols.IsContractsClass(ct)) { Delete(type.FullSpan); return; }
                 if (!_library) return;
                 // the runtime keeps no ghost types: a leftover use of one in the program is a compile error
                 if (_model.GetDeclaredSymbol(type) is INamedTypeSymbol t &&
