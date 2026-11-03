@@ -4,7 +4,8 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <Authors>Artyom Shalkhakov</Authors>
-    <Version>0.1.0</Version>
+    <!-- releases set Version from the tag (see .github/workflows/release.yml) -->
+    <Version>0.1.0-dev</Version>
     <Copyright>Copyright (c) 2026 Artyom Shalkhakov</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/ashalkhakov/CsVerify</PackageProjectUrl>
