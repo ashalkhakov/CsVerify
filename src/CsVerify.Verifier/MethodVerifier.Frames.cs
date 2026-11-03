@@ -50,7 +50,7 @@ namespace CsVerify.Verifier
                 foreach (var root in LentTrees(_contract, f, spec))
                 {
                     _lentRoots.Add(root);
-                    f.Perm = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {root}) 1.0 (select {f.Perm} y)))", Sort.Perm);
+                    f.Perm = _z3.Define("perm", new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {root}) 1.0 (select {f.Perm} y)))", Sort.Perm));
                 }
             if (_contract.Reads != null) _readsEntry = EvalOwnSpec(_contract.Reads, f, spec);
             else if (ReadsItsTree(_contract) && f.This != null) _readsEntry = TreeOf(f, f.This);

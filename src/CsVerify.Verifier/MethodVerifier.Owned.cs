@@ -97,7 +97,7 @@ namespace CsVerify.Verifier
                 var siblings = string.Concat(FieldEffects.FieldsOf(field.ContainingType)
                     .Where(g => SpecSymbols.IsOwnsField(g) && !SymbolEqualityComparer.Default.Equals(g, FieldEffects.Key(field)))
                     .Select(g => $" (distinct y {T.Select(FieldMap(f, g), c, Sort.Int)})"));
-                f.Root = new Term($"(lambda ((y Int)) (ite (= y {x}) {x} (ite (and (= (select {before} y) {cRoot}) (distinct y {c}){siblings} (distinct (select {choice} y) 0)) {x} (select {before} y))))", Sort.Row);
+                f.Root = _z3.Define("root", new Term($"(lambda ((y Int)) (ite (= y {x}) {x} (ite (and (= (select {before} y) {cRoot}) (distinct y {c}){siblings} (distinct (select {choice} y) 0)) {x} (select {before} y))))", Sort.Row));
             }
             AssumeOwnedInvariant(field.Type, x, f);
             Write(inv.Arguments[1].Value, x, f, spec);
@@ -126,7 +126,7 @@ namespace CsVerify.Verifier
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), c, x);
             f.Link = new StateLink { Before = state, Changed = TreeOf(state, c) }; // only c's tree changed (x joins it)
             if (f.Root != null)
-                f.Root = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {x}) {RootOf(f, c)} (select {f.Root} y)))", Sort.Row);
+                f.Root = _z3.Define("root", new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {x}) {RootOf(f, c)} (select {f.Root} y)))", Sort.Row));
             return T.True;
         }
 
@@ -170,15 +170,15 @@ namespace CsVerify.Verifier
         private static Term CanWrite(Frame f, Term o) => new Term($"(>= (select {f.Perm} {T.Coerce(o, Sort.Int)}) 1.0)", Sort.Bool);
 
         /// <summary>Permissions add up: what is held here of o is the sum of the views and shares of o in hand.</summary>
-        private static void Grant(Frame f, Term o, string amount = FullAmount) => Add(f, o, "+", amount);
+        private void Grant(Frame f, Term o, string amount = FullAmount) => Add(f, o, "+", amount);
 
-        private static void Revoke(Frame f, Term o, string amount = FullAmount) => Add(f, o, "-", amount);
+        private void Revoke(Frame f, Term o, string amount = FullAmount) => Add(f, o, "-", amount);
 
-        private static void Add(Frame f, Term o, string op, string amount)
+        private void Add(Frame f, Term o, string op, string amount)
         {
             if (f.Perm == null) return;
             var i = T.Coerce(o, Sort.Int);
-            f.Perm = new Term($"(store {f.Perm} {i} ({op} (select {f.Perm} {i}) {amount}))", Sort.Perm);
+            f.Perm = _z3.Define("perm", new Term($"(store {f.Perm} {i} ({op} (select {f.Perm} {i}) {amount}))", Sort.Perm));
         }
 
         /// <summary>A view or share variable goes (consumed, moved, dropped): so does the permission it held.</summary>

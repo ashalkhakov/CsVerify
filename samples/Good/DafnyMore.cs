@@ -38,9 +38,13 @@ namespace Samples
                 Spec.Invariant(Spec.Forall(0, n + 1, p => Spec.Forall(p, n + 1, q => Sum(a, p, q) <= Sum(a, k, m))));
                 Spec.Decreases(a.Length - n);
                 t = checked(t + a[n]);
+                // (the step: every segment ending at n + 1 is one ending at n, plus a[n])
+                Spec.Assert(Sum(a, 0, 0) <= s && Spec.Forall(0, n + 1, b => Sum(a, b, n + 1) <= t));
                 n = n + 1;
                 if (t < 0) { c = n; t = 0; }
                 else if (s < t) { k = c; m = n; s = t; }
+                // (so the segments ending here are no better than the best, nor were the others)
+                Spec.Assert(Spec.Forall(0, n + 1, p => Sum(a, p, n) <= s));
             }
             return (k, m);
         }

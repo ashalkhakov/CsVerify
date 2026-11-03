@@ -80,7 +80,7 @@ namespace CsVerify.Verifier
             var parts = touched.Select(t => $"(= (select {f.Root} y) {t})").Concat(touchedInst.Select(q => InFootprint(f.Owner, f.Root, "y", q))).ToList();
             if (f.Alloc != null) parts.Add($"(= (select {f.Alloc} y) 0)");
             if (parts.Count == 0) return;
-            f.Owner = new Term($"(lambda ((y Int)) (ite (or {string.Join(" ", parts)}) (select {_z3.Fresh("owner", Sort.Row)} y) (select {f.Owner} y)))", Sort.Row);
+            f.Owner = _z3.Define("owner", new Term($"(lambda ((y Int)) (ite (or {string.Join(" ", parts)}) (select {_z3.Fresh("owner", Sort.Row)} y) (select {f.Owner} y)))", Sort.Row));
         }
 
         /// <summary>
@@ -94,6 +94,8 @@ namespace CsVerify.Verifier
         private void HavocFields(Frame f, IMethodSymbol callee, IReadOnlyList<Term> touched = null, Term modifiable = null, IReadOnlyList<Term> touchedInst = null)
         {
             touchedInst ??= System.Array.Empty<Term>();
+            if (f.Owner != null) f.Owner = _z3.Define("owner", f.Owner);
+            if (f.Root != null) f.Root = _z3.Define("root", f.Root);
             var ownerBefore = f.Owner; // (footprints as they were when the call began)
             HavocOwners(f, touched, touchedInst);
             var (fields, all) = _engine.Fields.WritesOf(callee);
@@ -165,7 +167,7 @@ namespace CsVerify.Verifier
                 : "(or " + string.Join(" ", touched.Select(t => $"(= (select {f.Root} {y}) {t})").Concat(touchedInst.Select(q => InFootprint(ownerBefore, before.Root, y, q)))) + ")";
             foreach (var field in inTrees)
                 f.Fields[field] = new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {FreshMap(field)} y) (select {FieldMap(f, field)} y)))", MapSort(field));
-            f.Root = new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {_z3.Fresh("root", Sort.Row)} y) (select {f.Root} y)))", Sort.Row);
+            f.Root = _z3.Define("root", new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {_z3.Fresh("root", Sort.Row)} y) (select {f.Root} y)))", Sort.Row));
         }
 
         private void HavocAllFields(Frame f, bool keepOwned = false)

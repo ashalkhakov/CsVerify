@@ -113,6 +113,7 @@ namespace CsVerify.Verifier
         private readonly List<string> _preamble = new List<string>();
         private readonly int _timeoutMs;
         private int _fresh;
+        private int _defined;
         public int Depth { get; private set; }
         public readonly List<string> Errors = new List<string>();
         public StringBuilder Log; // set to capture the whole SMT-LIB2 conversation
@@ -158,6 +159,7 @@ namespace CsVerify.Verifier
         {
             Send("(reset)");
             _declared.Clear();
+            _defined = 0;
             _fresh = 0; // the same names for the same method, whatever was verified before: Z3's search depends on them
             Depth = 0;
             Scope = ++_scopes;
@@ -193,6 +195,19 @@ namespace CsVerify.Verifier
             var name = T.Quote(hint + "!" + (_fresh++));
             Send($"(declare-const {name} {T.SortName(sort)})");
             return new Term(name, sort);
+        }
+
+        /// <summary>
+        /// Names a long term (define-fun), so that a state built from it, which mentions it more than once, is written
+        /// with the name: chains of updates (masks, ownership maps) stay linear in size instead of doubling.
+        /// </summary>
+        public Term Define(string hint, Term t)
+        {
+            if (t.S.Length < 4000) return t; // (only where it matters: a name changes Z3's search a little)
+            // (a counter of its own: the fresh constants keep their names, and Z3's search, which depends on them)
+            var name = T.Quote(hint + "#" + (_defined++));
+            Send($"(define-fun {name} () {T.SortName(t.Sort)} {t.S})");
+            return new Term(name, t.Sort);
         }
 
         public string FreshName(string hint) => T.Quote(hint + "!" + (_fresh++));

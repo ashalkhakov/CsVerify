@@ -58,10 +58,10 @@ namespace CsVerify.Verifier
         private static Term OwnerOf(Frame f, Term o) => T.Select(f.Owner, T.Coerce(o, Sort.Int), Sort.Int);
         private static Term BelowWhole(Frame f, Term o) => new Term($"(< (select {f.Perm} {T.Coerce(o, Sort.Int)}) 1.0)", Sort.Bool);
 
-        private static Term Change(Term mask, Term at, Term guard, string op)
+        private Term Change(Term mask, Term at, Term guard, string op)
         {
             var i = T.Coerce(at, Sort.Int);
-            return new Term($"(store {mask} {i} ({op} (select {mask} {i}) (ite {guard} 1.0 0.0)))", Sort.Perm);
+            return _z3.Define("perm", new Term($"(store {mask} {i} ({op} (select {mask} {i}) (ite {guard} 1.0 0.0)))", Sort.Perm));
         }
 
         /// <summary>At entry: no instances held yet (the preconditions bring them); who owns what is unknown.</summary>
@@ -73,9 +73,11 @@ namespace CsVerify.Verifier
             _z3.Assume(T.Not(T.Eq(NoInstance(), T.Int(0))));
             // instances are not 0 (no owner), and two are the same only if they are of one predicate with the same arguments
             int kind = 0;
+            var relevant = RelevantPredicates();
             foreach (var p in _engine.Predicates)
             {
                 kind++;
+                if (!relevant.Contains(p)) continue; // (axioms nobody needs would only change Z3's search elsewhere)
                 var xs = p.Parameters.Select((_, i) => new Term("x" + i, Sort.Int)).ToArray();
                 var app = Instance(p, xs);
                 var facts = new List<string> { $"(distinct {app} 0)", $"(distinct {app} {NoInstance()})", $"(= {_z3.Apply("inst-kind", Sort.Int, new[] { app })} {kind})" };
@@ -85,6 +87,35 @@ namespace CsVerify.Verifier
                 _z3.Assume(new Term(xs.Length == 0 ? body
                     : $"(forall ({string.Join(" ", xs.Select(x => $"({x.S} Int)"))}) (! {body} :pattern ({app.S})))", Sort.Bool));
             }
+        }
+
+        /// <summary>
+        /// The predicates this method can meet: named in its own declaration, or in the contracts of what it calls,
+        /// and those named in their bodies, transitively.
+        /// </summary>
+        private HashSet<IMethodSymbol> RelevantPredicates()
+        {
+            var found = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            var work = new Stack<IMethodSymbol>();
+            void Named(IOperation op)
+            {
+                if (op == null) return;
+                foreach (var inv in op.DescendantsAndSelf().OfType<IInvocationOperation>())
+                    if (SpecSymbols.IsPredicate(inv.TargetMethod.OriginalDefinition) && found.Add(inv.TargetMethod.OriginalDefinition))
+                        work.Push(inv.TargetMethod.OriginalDefinition);
+            }
+            foreach (var inv in _contract.Declaration.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>())
+            {
+                if (!(_model.GetSymbolInfo(inv).Symbol is IMethodSymbol m)) continue;
+                if (SpecSymbols.IsPredicate(m.OriginalDefinition)) { if (found.Add(m.OriginalDefinition)) work.Push(m.OriginalDefinition); continue; }
+                if (SpecSymbols.IsSpecClass(m.ContainingType) || !m.OriginalDefinition.DeclaringSyntaxReferences.Any()) continue;
+                var c = _engine.ContractOf(m);
+                foreach (var r in c.Requires) Named(r);
+                foreach (var e in c.Ensures) Named(e.Expr);
+            }
+            if (SpecSymbols.IsPredicate(_method) && found.Add(_method.OriginalDefinition)) work.Push(_method.OriginalDefinition);
+            while (work.Count > 0) Named(_engine.ContractOf(work.Pop()).PureBody);
+            return found;
         }
 
         // ------------------------------------------------------------------------------------------ walking assertions
@@ -226,13 +257,13 @@ namespace CsVerify.Verifier
                         if (DataTypes.Invariants(a.Type).Any())
                             Prove(T.Implies(a.Guard, OwnedInvariant(a.Type, a.Obj, f)), "CSV1015", at, $"invariant of {a.Type.Name} might not hold when it is folded into '{stmt.Arguments[0].Value.Syntax}'");
                         f.Perm = Change(f.Perm, a.Obj, a.Guard, "-");
-                        f.Owner = T.Store(f.Owner, T.Coerce(a.Obj, Sort.Int), T.Ite(a.Guard, p, OwnerOf(f, a.Obj)));
+                        f.Owner = _z3.Define("owner", T.Store(f.Owner, T.Coerce(a.Obj, Sort.Int), T.Ite(a.Guard, p, OwnerOf(f, a.Obj))));
                     }
                     else
                     {
                         Require(T.Implies(a.Guard, Held(f, a.Inst)), "CSV1016", at, $"folding needs '{a.At}', which is not held here");
                         f.Inst = Change(f.Inst, a.Inst, a.Guard, "-");
-                        f.Owner = new Term($"(lambda ((y Int)) (ite (and {a.Guard} (= (select {f.Owner} y) {a.Inst})) {p} (select {f.Owner} y)))", Sort.Row);
+                        f.Owner = _z3.Define("owner", new Term($"(lambda ((y Int)) (ite (and {a.Guard} (= (select {f.Owner} y) {a.Inst})) {p} (select {f.Owner} y)))", Sort.Row));
                     }
                 },
                 fact: (g, v, node) => Require(T.Implies(g, v), "CSV1019", at, $"'{node}' might not hold when folding '{stmt.Arguments[0].Value.Syntax}'"));
@@ -285,7 +316,7 @@ namespace CsVerify.Verifier
             // objects in it is not held twice, and was in p)
             var elsewhere = nested.Count == 0 ? $"(select {footprint} y)"
                 : $"(ite (or {string.Join(" ", nested.Select(n => $"(= (select {footprint} y) {n.inst})"))}) 0 (select {footprint} y))";
-            f.Owner = new Term($"(lambda ((y Int)) (ite (= (select {footprint} y) {p}) {to} {elsewhere}))", Sort.Row);
+            f.Owner = _z3.Define("owner", new Term($"(lambda ((y Int)) (ite (= (select {footprint} y) {p}) {to} {elsewhere}))", Sort.Row));
         }
 
         // ------------------------------------------------------------------------------------------ contracts
@@ -449,8 +480,8 @@ namespace CsVerify.Verifier
         private static string CellPerm(Frame f, Term arr, Term i) =>
             $"(select (select {f.ArrPerm} {T.Coerce(arr, Sort.Int)}) {T.Coerce(i, Sort.Int)})";
 
-        private static void ChangeCells(Frame f, Atom a, string op) =>
-            f.ArrPerm = new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {InCells(a, "x", "i")} ({op} (select (select {f.ArrPerm} x) i) 1.0) (select (select {f.ArrPerm} x) i))))", Sort.PermHeap);
+        private void ChangeCells(Frame f, Atom a, string op) =>
+            f.ArrPerm = _z3.Define("cells", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {InCells(a, "x", "i")} ({op} (select (select {f.ArrPerm} x) i) 1.0) (select (select {f.ArrPerm} x) i))))", Sort.PermHeap));
 
         private void InhaleCells(Frame f, Atom a)
         {
