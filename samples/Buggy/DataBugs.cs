@@ -29,6 +29,14 @@ namespace Samples.Buggy
         [Invariant, Pure] public bool Valid() => Lo <= Hi;
     }
 
+    public sealed class Gauge { public int Level; }
+
+    // BUG: the invariant reads a mutable gauge, which anyone holding it can change after the reading is built (CSV1015)
+    public sealed record Reading(Gauge G)
+    {
+        [Invariant, Pure] public bool Positive() => G.Level > 0;
+    }
+
     public static class DataBugs
     {
         // BUG: forgets the Leaf case, so the definition throws on it (CSV1011)

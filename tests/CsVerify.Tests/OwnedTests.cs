@@ -50,6 +50,16 @@ public interface IAudit { void Record(int amount); }
         }
 
         [Fact]
+        public void OwnedInvariants_ReadOnlyTheirOwnFields()
+        {
+            string Check(string cls) => string.Join(",", Harness.Verify("public sealed class Cell { public int Val; }\n" + cls).Errors("V"));
+            Assert.Equal("CSV1015", Check("[Owned] public sealed class A { public Cell? Peer; [Invariant, Pure] public bool V() => Peer == null || Peer.Val > 0; }"));
+            Assert.Equal("CSV1015", Check("[Owned] public sealed class A { public int N; public A? Other; [Invariant, Pure] public bool V() => Other == null || Other.N >= 0; }"));
+            Assert.Equal("CSV1015", Check("[Owned] public sealed class A { public int N; [Invariant, Pure] public bool V() => Ok(this); [Pure] static bool Ok(A a) => a.N >= 0; }"));
+            Assert.Equal("", Check("[Owned] public sealed class A { public int N; [Invariant, Pure] public bool V() => N >= 0 && this.N < 100; }"));
+        }
+
+        [Fact]
         public void UnknownCode_CannotChangeWhatItHasNoViewOf() =>
             Assert.Empty(Errors("M", @"static void M(IAudit audit) {
                 var a = Own.New(new Account(50), out var va);

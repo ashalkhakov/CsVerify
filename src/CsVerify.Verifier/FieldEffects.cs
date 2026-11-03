@@ -180,6 +180,38 @@ namespace CsVerify.Verifier
         /// <summary>The fields a constructor sets on the object it builds.</summary>
         public HashSet<ISymbol> SelfWritesOf(IMethodSymbol ctor) => DirectOf(ctor).SelfWrites;
 
+        /// <summary>
+        /// An invariant is assumed of objects nobody re-checks, so it may depend only on state that cannot change
+        /// behind its back: for a data record, nothing mutable at all (its positional fields never change); for an
+        /// [Owned] class, only owned fields of <c>this</c>, which no one can write without this object's view.
+        /// Returns why the invariant might depend on other state, or null.
+        /// </summary>
+        public string InvariantDependence(IMethodSymbol invariant, bool owned)
+        {
+            foreach (var m in Reachable(invariant))
+            {
+                var c = _engine.ContractOf(m);
+                if (!c.HasSource) continue;
+                foreach (var name in c.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
+                {
+                    var s = c.Model.GetSymbolInfo(name).Symbol;
+                    var access = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : null;
+                    bool onOther = m.IsStatic || access != null && !(access.Expression is ThisExpressionSyntax);
+                    if (s != null && IsHeapField(s))
+                    {
+                        if (!owned) return $"it reads '{access ?? (SyntaxNode)name}', a mutable field";
+                        if (!SpecSymbols.IsOwned(s.ContainingType)) return $"it reads '{access ?? (SyntaxNode)name}', which code without this object's view can change";
+                        if (m.IsStatic) return $"'{m.Name}' reads '{access ?? (SyntaxNode)name}' of whatever object it is given; read owned fields through this";
+                        if (onOther) return $"it reads '{access ?? (SyntaxNode)name}' of another object, whose view someone else may hold";
+                    }
+                    else if (s is IMethodSymbol callee && !callee.IsStatic && access != null && !(access.Expression is ThisExpressionSyntax) &&
+                             ReadsOf(callee).Count > 0)
+                        return $"it calls '{access}', which reads the mutable state of another object";
+                }
+            }
+            return null;
+        }
+
         /// <summary>The heap fields a [Pure] function's value may depend on (all it, or its callees, read), in a fixed order.</summary>
         public IReadOnlyList<ISymbol> ReadsOf(IMethodSymbol m) =>
             Reachable(m).SelectMany(r => DirectOf(r).Reads).Distinct(SymbolEqualityComparer.Default)

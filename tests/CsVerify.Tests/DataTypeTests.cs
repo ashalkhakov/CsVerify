@@ -146,6 +146,19 @@ public sealed record Range(int Lo, int Hi)
         }
 
         [Fact]
+        public void Invariants_MayNotReadMutableState()
+        {
+            // a mutable cell can be changed after the record is built, by anyone holding it: the invariant would lie
+            var r = Harness.Verify(@"
+public sealed class Cell { public int Val; }
+public sealed record Holder(Cell C) { [Invariant, Pure] public bool Pos() => C.Val > 0; }
+public static class C { static void Use(Holder h) { Spec.Assert(h.C.Val > 0); } }");
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Pos"));
+            // positional fields and pure functions of them are fine (the trees, Interval, FACT rely on it)
+            Assert.Empty(Harness.Verify(Range).Errors("Valid"));
+        }
+
+        [Fact]
         public void ConstructorPreconditions_AreCheckedAtNew()
         {
             const string box = "public sealed class Box { public Box(int x) { Spec.Requires(x > 0); } } public static class C { BODY }";

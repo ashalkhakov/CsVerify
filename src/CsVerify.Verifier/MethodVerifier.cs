@@ -151,6 +151,9 @@ namespace CsVerify.Verifier
                 default: return;
             }
             FindContractStatements();
+            if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType)) &&
+                _engine.Fields.InvariantDependence(_method, SpecSymbols.IsOwned(_method.ContainingType)) is string why)
+                Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
             FindLoops(cfg);
             if (HasExceptionRegion(cfg.Root))
                 NotModeled(MethodLocationNode(), "try/catch/finally is not supported");
