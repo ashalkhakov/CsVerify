@@ -1135,6 +1135,11 @@ namespace CsVerify.Verifier
                 case IPropertyReferenceOperation ps when IsComputed(ps.Property.SetMethod):
                     CallAccessor(ps.Property.SetMethod, ps.Instance, ps.Arguments.Select(a => a.Value), v, null, ps.Syntax, f, spec);
                     break;
+                case IPropertyReferenceOperation ls when _codeMode && ls.Property.SetMethod != null && ls.Property.DeclaringSyntaxReferences.Length == 0 &&
+                                                        ls.Property.ContainingType.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace && !IsSequence(ls.Instance?.Type):
+                    // a library setter (a dictionary's indexer): a call of a library method
+                    CallAccessor(ls.Property.SetMethod, ls.Instance, ls.Arguments.Select(a => a.Value), v, null, ls.Syntax, f, spec);
+                    break;
                 case IPropertyReferenceOperation pr when pr.Property.IsIndexer && IsSequence(pr.Instance?.Type) && pr.Arguments.Length == 1:
                 {
                     var arr = Eval(pr.Instance, f, spec);

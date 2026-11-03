@@ -135,15 +135,18 @@ namespace CsVerify.Verifier
         internal bool MayWriteHeap(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
+            // a library method as called: what a generic one may do depends on its type arguments
+            if (key.DeclaringSyntaxReferences.Length == 0) key = m.ReducedFrom ?? m;
             if (_writesHeap.TryGetValue(key, out var known)) return known;
-            var c = ContractOf(key);
+            var c = ContractOf(key.OriginalDefinition);
             if (c.IsPure || c.IsLemma) return _writesHeap[key] = false;
             // Mem and Ptr change only Mem's memory, whose cells change by their own rule (MethodVerifier.KeepHeldMemory)
             if (SpecSymbols.IsCsVerifyType(key.ContainingType, "Mem") || SpecSymbols.IsCsVerifyType(key.ContainingType, "Ptr`1"))
                 return _writesHeap[key] = false;
             // which override runs is not known: any of them may write arrays
             if (IsOverridable(key)) return _writesHeap[key] = true;
-            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsSequence(p.Type));
+            // a library method: through arrays it is handed, or user code it runs (a delegate writing arrays it captured)
+            if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsSequence(p.Type)) || Fields.RunsUserCode(key);
             _writesHeap[key] = false; // assume no for recursive calls while computing
             bool writes = false;
             foreach (var n in c.Declaration.DescendantNodes())
