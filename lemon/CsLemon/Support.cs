@@ -396,6 +396,21 @@ namespace CsLemon
         }
     }
 
+    /// <summary>
+    /// Run-time checks for what C asserts, or takes for granted, about Lemon's linked structures (a rule's symbols are
+    /// in the symbol table, a reduce action has its rule): facts the verifier is not shown, since they hold across the
+    /// whole grammar graph. Each use names the fact; failing one is a bug in Lemon, reported instead of undefined
+    /// behaviour. lemon/README.md lists them.
+    /// </summary>
+    public static class Checks
+    {
+        public static void That(bool condition)
+        {
+            Spec.Ensures(condition);
+            if (!condition) throw new System.InvalidOperationException("lemon: internal error (a broken invariant)");
+        }
+    }
+
     /// <summary>The ctype.h tests Lemon uses (ISSPACE, ISDIGIT, ISALNUM, ISALPHA, ISUPPER, ISLOWER), on ASCII as C's do in the "C" locale.</summary>
     public static class Chars
     {
