@@ -314,7 +314,8 @@ namespace CsVerify.Verifier
         /// loop invariant): each must be in hand. What is given may change: its objects join <paramref name="touched"/>,
         /// its instances <paramref name="touchedInst"/>.
         /// </summary>
-        private void Exhale(IOperation e, Frame ef, SpecEnv spec, Frame f, SyntaxNode at, List<Term> touched, List<Term> touchedInst, List<Atom> touchedCells = null)
+        /// <param name="checkOnly">only check they are in hand (a [Pure] callee reads them: nothing is given)</param>
+        private void Exhale(IOperation e, Frame ef, SpecEnv spec, Frame f, SyntaxNode at, List<Term> touched, List<Term> touchedInst, List<Atom> touchedCells = null, bool checkOnly = false)
         {
             if (f.Inst == null && f.ArrPerm == null || !HasPermissions(e)) return;
             bool wasCode = _codeMode;
@@ -328,9 +329,12 @@ namespace CsVerify.Verifier
                     if (a.Obj != null)
                     {
                         Require(T.Implies(a.Guard, CanWrite(f, a.Obj)), "CSV1016", at, $"'{a.At}' is needed here, but that permission is not in hand");
-                        NotLent(a.Obj, a.Guard, f, at);
-                        if (DataTypes.Invariants(a.Type).Any())
-                            Prove(T.Implies(a.Guard, OwnedInvariant(a.Type, a.Obj, f)), "CSV1015", at, $"invariant of {a.Type.Name} might not hold when '{a.At}' is given up");
+                        if (!checkOnly)
+                        {
+                            NotLent(a.Obj, a.Guard, f, at);
+                            if (DataTypes.Invariants(a.Type).Any())
+                                Prove(T.Implies(a.Guard, OwnedInvariant(a.Type, a.Obj, f)), "CSV1015", at, $"invariant of {a.Type.Name} might not hold when '{a.At}' is given up");
+                        }
                         f.Perm = Change(f.Perm, a.Obj, a.Guard, "-");
                         touched?.Add(a.Obj);
                     }
@@ -345,6 +349,17 @@ namespace CsVerify.Verifier
                 }, fact: null);
             }
             finally { _codeMode = wasCode; }
+        }
+
+        /// <summary>
+        /// A [Pure] callee whose preconditions name permissions reads what they cover: the caller must hold them
+        /// (nothing is given). In a specification, where the state has them.
+        /// </summary>
+        private void CheckPurePermissions(Contract callee, Frame calleeFrame, SpecEnv env, Frame state, SyntaxNode at)
+        {
+            if (state?.Inst == null && state?.ArrPerm == null || !callee.Requires.Any(HasPermissions)) return;
+            var probe = state.Clone();
+            foreach (var req in callee.Requires) Exhale(req, calleeFrame, env, probe, at, null, null, null, checkOnly: true);
         }
 
         /// <summary>An object lent to this method (through Spec.Modifies(Own.Tree(..))) goes back to its lender: it cannot be folded or given away.</summary>

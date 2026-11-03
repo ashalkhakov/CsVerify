@@ -1287,6 +1287,7 @@ namespace CsVerify.Verifier
                 Prove(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
             if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
+            if (callee.IsPure && _codeMode) CheckPurePermissions(callee, pre, preEnv, f, inv.Syntax);
             var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax);
             // lending trees through Spec.Modifies(Own.Tree(x)): the caller must hold them; the call may change them
             if (!callee.IsPure && f.Perm != null)
@@ -1575,6 +1576,11 @@ namespace CsVerify.Verifier
                 finally { _unfoldDepth--; _foreignSpec--; _codeMode = wasCode; }
                 // outside its precondition a pure function's value is unspecified: using it there is ill-defined
                 if (wanted) Require(pre, "CSV1001", specCall, $"precondition of '{m.Name}' might not hold in '{specCall}'");
+                if (wanted && state != null)
+                {
+                    var frame = CalleeFrame(callee, receiver, args, heap, stateFrame);
+                    CheckPurePermissions(callee, frame, new SpecEnv { Old = frame }, state, specCall);
+                }
             }
             LinkPure(callee, receiver, args, sort, state, app);
             // a run-time function returns a value of its type (a ghost function's integers are mathematical)
