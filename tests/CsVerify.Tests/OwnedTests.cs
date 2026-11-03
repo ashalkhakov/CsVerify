@@ -280,5 +280,34 @@ public static class C
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Other"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Lost"));
         }
+
+        [Fact]
+        public void CellsInPredicates_AreFramed()
+        {
+            var r = Harness.Verify(@"
+[Owned]
+public sealed class Box { public int[] Cells; }
+public static class C
+{
+    [Predicate] static bool Held(Box b) => Spec.Acc(b) && b.Cells != null && Spec.Acc(b.Cells) && b.Cells.Length > 0;
+    [Predicate] static bool Peeks(Box b) => Spec.Acc(b) && b.Cells != null && b.Cells.Length > 0 && b.Cells[0] > 0;
+    static void Set(Box b) { Spec.Requires(Held(b)); Spec.Ensures(Held(b)); Spec.Unfold(Held(b)); b.Cells[0] = 1; Spec.Fold(Held(b)); }
+    static void Other(Box a, Box b) {
+        Spec.Requires(Held(a) && Held(b));
+        Spec.Unfold(Held(a)); int v = a.Cells[0]; Spec.Fold(Held(a));
+        Set(b);
+        Spec.Unfold(Held(a)); Spec.Assert(a.Cells[0] == v); Spec.Fold(Held(a)); }
+    static void Folded(Box b) {
+        Spec.Requires(Held(b));
+        Spec.Unfold(Held(b)); var cells = b.Cells; Spec.Fold(Held(b));
+        cells[0] = 2; }
+}");
+            // a predicate holds its array's cells: a call that gets it changes only them, and nobody writes them while folded
+            Assert.Empty(r.Errors("Held"));
+            Assert.Empty(r.Errors("Set"));
+            Assert.Empty(r.Errors("Other"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Peeks"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Folded"));
+        }
 }
 }

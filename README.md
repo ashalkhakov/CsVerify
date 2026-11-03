@@ -301,8 +301,10 @@ public static bool Seg(SNode? from, SNode? to, int n) =>
 - **Calls to it change only the cells it gets,** plus arrays it allocates. Every other array keeps its contents, so `Halves` in samples/Good/ArrayPermissions.cs fills `a` twice and still knows `other` and the first half.
 - **Disjointness.** Two permissions to one cell cannot both be in hand. So `SwapCells(a, i, j)`, given `Spec.Acc(a, i, i + 1) && Spec.Acc(a, j, j + 1)`, knows `i != j`, and `SwapCells(a, 1, 1)` is rejected at the call.
 - **Calls from it.** It may not call a method that could write any array without saying which cells.
-- **Methods without array permissions** behave as before. Their array writes are unchecked, they hold every cell, and they hand cells out at calls.
-- **Limits.** Cells cannot yet appear in predicate bodies. `ArrayView<T>` stays as it was: ATS's linear views over `Mem`/`Ptr` memory, a separate layer from C# arrays.
+- **Methods without array permissions** hold every cell and hand cells out at calls. Their writes are checked too, but only cells they gave away (to a callee, or folded into a predicate) are missing.
+- **In predicates.** A predicate's body may hold cells: ATS's viewtypes whose view includes an `array_v`. `CellStacks.Stack(s, n)` in samples/Good/CellStacks.cs holds the stack object and its array's cells. Folding gives the cells up into the instance, so nobody writes them while folded. A body may read only cells it has permission to. A call that gets the instance changes only its cells. A method that folds, unfolds or receives such a predicate starts with no cells but those it is given.
+- **Constructors** exchange permissions like any call, so `new` can hand back the cells of an array it creates.
+- **Limits.** `ArrayView<T>` stays as it was: ATS's linear views over `Mem`/`Ptr` memory, a separate layer from C# arrays.
 
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;

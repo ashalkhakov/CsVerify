@@ -266,7 +266,13 @@ namespace CsVerify.Verifier
                     Prove(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", oc.Syntax,
                         $"precondition '{req.Syntax}' of 'new {type?.Name}' might not hold");
             }
-            if (ctor == null || _engine.MayWriteHeap(ctor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+            // a constructor, like any call, is given the permissions its preconditions name
+            var givenCells = new List<Atom>();
+            var givenInst = new List<Term>();
+            if (pre != null && (f.Inst != null || f.ArrPerm != null))
+                foreach (var req in callee.Requires) Exhale(req, pre, new SpecEnv { Old = pre }, f, oc.Syntax, new List<Term>(), givenInst, givenCells);
+            if (pre != null && f.ArrPerm != null && MentionsCells(callee)) f.Heap = HavocCells(f, givenCells, f.Alloc, givenInst);
+            else if (ctor == null || _engine.MayWriteHeap(ctor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
             var obj = _z3.Fresh("new", Sort.Int);
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
             HasType(obj, oc.Type, exact: true);
@@ -281,6 +287,8 @@ namespace CsVerify.Verifier
                 post.FieldEpoch = f.FieldEpoch;
                 post.Alloc = f.Alloc;
                 post.Link = f.Link;
+                if (f.Inst != null || f.ArrPerm != null)
+                    foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = obj, ResultParameter = ens.ResultParameter }, f);
                 foreach (var ens in callee.Ensures)
                     _z3.Assume(AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = obj, ResultParameter = ens.ResultParameter })));
             }

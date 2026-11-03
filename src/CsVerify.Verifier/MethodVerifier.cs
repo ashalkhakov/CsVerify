@@ -724,6 +724,7 @@ namespace CsVerify.Verifier
                     var idx = Eval(ae.Indices[0], f, spec);
                     Deref(ae.ArrayReference, arr, ae.Syntax);
                     BoundsCheck(arr, idx, ae.Syntax);
+                    CheckCellFraming(arr, idx, f, ae.Syntax);
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
@@ -1353,7 +1354,7 @@ namespace CsVerify.Verifier
                 touched.AddRange(ViewsIn(packageResult, m.ReturnType));
             }
             if (f.ArrPerm != null && MentionsCells(callee))
-                f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc); // it writes only the cells it got
+                f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
             else if (HavocsHeap(m))
             {
                 if (_arrayMode && _codeMode)

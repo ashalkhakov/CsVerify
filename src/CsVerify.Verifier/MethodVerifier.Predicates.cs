@@ -263,7 +263,13 @@ namespace CsVerify.Verifier
             Walk(pred.PureBody, pf, new SpecEnv { Old = pf }, T.True, own: false,
                 atom: a =>
                 {
-                    if (a.Arr != null) { NoCellsInPredicates(a); return; }
+                    if (a.Arr != null)
+                    {
+                        if (f.ArrPerm == null) return;
+                        ExhaleCells(f, a, at);
+                        FoldCells(f, a, p);
+                        return;
+                    }
                     if (a.Field != null)
                     {
                         NotLent(a.Obj, a.Guard, f, at);
@@ -307,6 +313,8 @@ namespace CsVerify.Verifier
             f.Inst = Change(f.Inst, p, T.True, "-");
             var footprint = f.Owner;
             var fieldFootprint = f.FOwner;
+            var cellFootprint = f.COwner;
+            var ownCells = new List<Atom>();
             var ownFields = new List<(Term guard, Term obj, int field)>();
             var own = new List<(Term guard, Term obj)>();
             var nested = new List<(Term guard, Term inst)>();
@@ -314,7 +322,13 @@ namespace CsVerify.Verifier
             Walk(pred.PureBody, pf, new SpecEnv { Old = pf }, T.True, own: false,
                 atom: a =>
                 {
-                    if (a.Arr != null) { NoCellsInPredicates(a); return; }
+                    if (a.Arr != null)
+                    {
+                        if (f.ArrPerm == null) return;
+                        InhaleCells(f, a);
+                        ownCells.Add(a);
+                        return;
+                    }
                     if (a.Field != null)
                     {
                         _z3.Assume(T.Implies(a.Guard, new Term($"(= (select (select {fieldFootprint} {T.Coerce(a.Obj, Sort.Int)}) {FieldId(a.Field)}) {p})", Sort.Bool)));
@@ -350,6 +364,21 @@ namespace CsVerify.Verifier
             var elsewhere = nested.Count == 0 ? $"(select {footprint} y)"
                 : $"(ite (or {string.Join(" ", nested.Select(n => $"(= (select {footprint} y) {n.inst})"))}) 0 (select {footprint} y))";
             f.Owner = _z3.Define("owner", new Term($"(lambda ((y Int)) (ite (= (select {footprint} y) {p}) {to} {elsewhere}))", Sort.Row));
+            // cells likewise: the body's own are free, the rest go to its instances
+            if (cellFootprint != null)
+            {
+                var cchoice = nested.Count > 1 ? _z3.Fresh("unfold", Sort.Heap) : null;
+                var cto = "0";
+                for (int k = nested.Count - 1; k >= 0; k--)
+                {
+                    var pick = cchoice == null ? nested[k].guard.S : $"(and {nested[k].guard} (= (select (select {cchoice} x) i) {k}))";
+                    cto = $"(ite {pick} {nested[k].inst} {cto})";
+                }
+                foreach (var a in ownCells) cto = $"(ite {InCells(a, "x", "i")} 0 {cto})";
+                var cold = $"(select (select {cellFootprint} x) i)";
+                var celsewhere = nested.Count == 0 ? cold : $"(ite (or {string.Join(" ", nested.Select(n => $"(= {cold} {n.inst})"))}) 0 {cold})";
+                f.COwner = _z3.Define("cowner", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite (= {cold} {p}) {cto} {celsewhere})))", Sort.Heap));
+            }
             // single fields likewise: the body's own are free, the rest go to its instances
             if (fieldFootprint == null) return;
             var fchoice = nested.Count > 1 ? _z3.Fresh("unfold", Sort.Heap) : null;
@@ -433,6 +462,7 @@ namespace CsVerify.Verifier
                         var given = T.Ite(Held(f, a.Inst), NoInstance(), a.Inst);
                         touchedInst?.Add(given);
                         if (a.Pred != null && PredicateHasFields(a.Pred)) _instancesWithFields.Add(given.S);
+                        if (a.Pred != null && PredicateHasCells(a.Pred)) _instancesWithCells.Add(given.S);
                     }
                 }, fact: null);
             }
@@ -491,6 +521,7 @@ namespace CsVerify.Verifier
             foreach (var inv in invariants) Exhale(inv, f, spec, f, inv.Syntax, null, null);
             f.LoopPermFrames[loop] = (f.Perm, f.Inst, f.ArrPerm, f.FPerm);
             if (f.FOwner != null) f.FOwner = _z3.Fresh("fowner", Sort.Heap);
+            if (f.COwner != null) f.COwner = _z3.Fresh("cowner", Sort.Heap);
             f.Owner = _z3.Fresh("owner", Sort.Row);
         }
 
@@ -516,14 +547,40 @@ namespace CsVerify.Verifier
 
         // ------------------------------------------------------------------------------------------ array cells
 
-        private bool _arrayMode; // this method's contract gives it array permissions: its array writes are checked
+        private bool _arrayMode; // this method's contract gives it array permissions: it holds no cells but those
+        private readonly HashSet<string> _instancesWithCells = new HashSet<string>();
+        private readonly Dictionary<IMethodSymbol, bool> _predicateHasCells = new Dictionary<IMethodSymbol, bool>(SymbolEqualityComparer.Default);
 
         private static bool IsCellAcc(IOperation op) =>
             IsAccCall(op, out var acc) && Unconverted(acc.Arguments[0].Value).Type is IArrayTypeSymbol;
 
-        /// <summary>Does a contract give or take array cells (Spec.Acc of an array in a pre- or postcondition)?</summary>
-        private static bool MentionsCells(Contract c) =>
-            c.Requires.Concat(c.Ensures.Select(e => e.Expr)).Any(e => e != null && e.DescendantsAndSelf().Any(IsCellAcc));
+        /// <summary>Does a contract give or take array cells (Spec.Acc of an array, or a predicate holding some, in a pre- or postcondition)?</summary>
+        private bool MentionsCells(Contract c) =>
+            c.Requires.Concat(c.Ensures.Select(e => e.Expr)).Any(e => e != null && e.DescendantsAndSelf().Any(o =>
+                IsCellAcc(o) || IsPredicateCall(o, out var pc) && PredicateHasCells(pc.TargetMethod)));
+
+        /// <summary>
+        /// Does this method fold or unfold a predicate holding cells, or get one from a call? Then it holds no cells but
+        /// those it is given: holding every cell, as other methods do, it would hold the instance's twice.
+        /// </summary>
+        private bool HandlesCellPredicates() =>
+            _contract.Declaration.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Any(inv =>
+                _model.GetOperation(inv) is IInvocationOperation op &&
+                (SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && (op.TargetMethod.Name == "Fold" || op.TargetMethod.Name == "Unfold") &&
+                 op.Arguments.Length == 1 && IsPredicateCall(op.Arguments[0].Value, out var pc) && PredicateHasCells(pc.TargetMethod) ||
+                 !SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && _engine.ContractOf(op.TargetMethod).Ensures.Any(e =>
+                     e.Expr != null && e.Expr.DescendantsAndSelf().Any(o => IsPredicateCall(o, out var q) && PredicateHasCells(q.TargetMethod)))));
+
+        /// <summary>Does a predicate's body (or one it names, transitively) hold array cells?</summary>
+        private bool PredicateHasCells(IMethodSymbol pred)
+        {
+            pred = pred.OriginalDefinition;
+            if (_predicateHasCells.TryGetValue(pred, out var known)) return known;
+            _predicateHasCells[pred] = false;
+            var body = _engine.ContractOf(pred).PureBody;
+            bool has = body != null && body.DescendantsAndSelf().Any(o => IsCellAcc(o) || IsPredicateCall(o, out var inner) && PredicateHasCells(inner.TargetMethod));
+            return _predicateHasCells[pred] = has;
+        }
 
         private static string InCells(Atom a, string arr, string i) =>
             $"(and {a.Guard} (= {arr} {a.Arr}) (<= {a.Lo} {i}) (< {i} {a.Hi}))";
@@ -532,7 +589,8 @@ namespace CsVerify.Verifier
         private void EnterCells(Frame f)
         {
             if (!_engine.UsesPermissions) return;
-            _arrayMode = MentionsCells(_contract);
+            _arrayMode = MentionsCells(_contract) || HandlesCellPredicates();
+            f.COwner = _z3.Fresh("cowner", Sort.Heap);
             f.ArrPerm = new Term($"((as const (Array Int (Array Int Real))) ((as const (Array Int Real)) {(_arrayMode ? "0.0" : "1.0")}))", Sort.PermHeap);
         }
 
@@ -562,10 +620,13 @@ namespace CsVerify.Verifier
             ChangeCells(f, a, "-");
         }
 
-        /// <summary>A write of a[i] in a method with array permissions: the cell must be in hand (CSV1016).</summary>
+        /// <summary>
+        /// A write of a[i]: the cell must be in hand (CSV1016). A method without array permissions holds every cell,
+        /// except those it gave away (to a callee, or folded into a predicate).
+        /// </summary>
         private void CheckCellWrite(Term arr, Term i, Frame f, SyntaxNode at)
         {
-            if (!_arrayMode || !_codeMode || _foreignSpec > 0 || f.ArrPerm == null) return;
+            if (!_codeMode || _foreignSpec > 0 || f.ArrPerm == null) return;
             Require(new Term($"(>= {CellPerm(f, arr, i)} 1.0)", Sort.Bool), "CSV1016", at, $"'{at}' writes a cell this method has no Spec.Acc for");
         }
 
@@ -584,16 +645,41 @@ namespace CsVerify.Verifier
         /// After a call to a method with array permissions: the cells it got may have changed, and arrays it allocated
         /// are unknown; every other cell is as it was.
         /// </summary>
-        private Term HavocCells(Frame f, IReadOnlyList<Atom> cells, Term allocBefore)
+        private Term HavocCells(Frame f, IReadOnlyList<Atom> cells, Term allocBefore, IReadOnlyList<Term> touchedInst)
         {
             var fresh = _z3.Fresh("heap", Sort.Heap);
-            var changed = cells.Count == 0 ? "false" : $"(or {string.Join(" ", cells.Select(a => InCells(a, "x", "i")))})";
+            var parts = cells.Select(a => InCells(a, "x", "i")).ToList();
+            // and the cells folded into the instances it got
+            if (f.COwner != null)
+                parts.AddRange(touchedInst.Where(q => _instancesWithCells.Contains(q.S)).Select(q => $"(= (select (select {f.COwner} x) i) {q})"));
+            var changed = parts.Count == 0 ? "false" : $"(or {string.Join(" ", parts)})";
+            // (a cell still in hand was given to nobody, nor folded anywhere)
+            if (parts.Count > 0) changed = $"(and {changed} (< (select (select {f.ArrPerm} x) i) 1.0))";
+            if (f.COwner != null)
+            {
+                // which instance owns a cell may change where the call got it, and in arrays it allocates
+                var owned = parts.Count == 0 ? "false" : changed;
+                var fresher = allocBefore != null ? $"(or {owned} (= (select {allocBefore} x) 0))" : owned;
+                f.COwner = _z3.Define("cowner", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {fresher} (select (select {_z3.Fresh("cowner", Sort.Heap)} x) i) (select (select {f.COwner} x) i))))", Sort.Heap));
+            }
             var old = allocBefore != null ? $"(distinct (select {allocBefore} x) 0)" : "true";
             return new Term($"(lambda ((x Int)) (ite {old} (lambda ((i Int)) (ite {changed} (select (select {fresh} x) i) (select (select {f.Heap} x) i))) (select {fresh} x)))", Sort.Heap);
         }
 
-        private void NoCellsInPredicates(Atom a) =>
-            Report("CSV1016", a.At, "array cells in a predicate's body are not supported yet: give them in contracts and loop invariants", isError: true);
+        /// <summary>Folds the cells of <paramref name="a"/> into instance p: their owner is p.</summary>
+        private void FoldCells(Frame f, Atom a, Term p)
+        {
+            if (f.COwner == null) return;
+            f.COwner = _z3.Define("cowner", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {InCells(a, "x", "i")} {p} (select (select {f.COwner} x) i))))", Sort.Heap));
+        }
+
+        /// <summary>In a predicate's body: a read of a[i] needs a permission to the cell to its left.</summary>
+        private void CheckCellFraming(Term arr, Term i, Frame f, SyntaxNode at)
+        {
+            if (!_framingCheck || f.ArrPerm == null) return;
+            Require(new Term($"(> {CellPerm(f, arr, i)} 0.0)", Sort.Bool), "CSV1016", at,
+                $"'{at}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded");
+        }
 
         // ------------------------------------------------------------------------------------------ declarations
 
@@ -618,6 +704,8 @@ namespace CsVerify.Verifier
                     Root = _z3.Fresh("root", Sort.Row),
                     Perm = new Term("((as const (Array Int Real)) 0.0)", Sort.Perm),
                 };
+                if (_engine.UsesPermissions)
+                    f.ArrPerm = new Term("((as const (Array Int (Array Int Real))) ((as const (Array Int Real)) 0.0))", Sort.PermHeap);
                 EnterPredicates(f);
                 foreach (var p in _method.Parameters) f.Vars[p] = FreshOf(p.Type, p.Name);
                 _codeMode = true;
@@ -627,7 +715,7 @@ namespace CsVerify.Verifier
                     {
                         // (no permission to null is ever held)
                         if (a.Obj != null) _z3.Assume(T.Implies(a.Guard, NotNull(a.Obj)));
-                        if (a.Arr != null) NoCellsInPredicates(a);
+                        if (a.Arr != null) { if (f.ArrPerm != null) ChangeCells(f, a, "+"); }
                         else if (a.Field != null) ChangeField(f, a.Obj, FieldId(a.Field), a.Guard, "+");
                         else if (a.Obj != null) f.Perm = Change(f.Perm, a.Obj, a.Guard, "+");
                     }, fact: null);

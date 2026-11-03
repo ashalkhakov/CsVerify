@@ -47,6 +47,8 @@ namespace CsVerify.Verifier
         /// program has no Spec.Acc.
         /// </summary>
         public Term ArrPerm;
+        /// <summary>The predicate instance an array cell is folded into: array -> index -> instance, 0 for none.</summary>
+        public Term COwner;
         /// <summary>Permissions to single fields of owned objects: object -> field -> amount (the whole object's are in Perm).</summary>
         public Term FPerm;
         /// <summary>The predicate instance a single field is folded into: object -> field -> instance, 0 for none.</summary>
@@ -78,6 +80,7 @@ namespace CsVerify.Verifier
             Inst = Inst,
             Owner = Owner,
             ArrPerm = ArrPerm,
+            COwner = COwner,
             FPerm = FPerm,
             FOwner = FOwner,
             LoopPermFrames = new Dictionary<int, (Term, Term, Term, Term)>(LoopPermFrames),
