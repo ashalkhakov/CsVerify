@@ -48,6 +48,11 @@ namespace CsVerify.Verifier
         public IOperation Reads;
         /// <summary>For [Pure] methods whose body is a single return: the returned expression (the definition).</summary>
         public IOperation PureBody;
+        /// <summary>
+        /// For other [Pure] methods: the body's statements (contract calls removed), from which a definition is read if
+        /// they are local declarations, ifs and returns (MethodVerifier.PureStatementsTerm).
+        /// </summary>
+        public IReadOnlyList<IOperation> PureStatements;
         public bool HasSource => Declaration != null;
         public bool IsTrusted, IsLemma, IsPure;
 
@@ -107,6 +112,8 @@ namespace CsVerify.Verifier
                                 c.Model.GetOperation(inv) is IInvocationOperation op && SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && op.TargetMethod.Name == "Unfold");
             if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)
                 c.PureBody = c.Model.GetOperation(ret.Expression);
+            else if (c.IsPure && !c.IsTrusted && rest.Count > 0)
+                c.PureStatements = rest.Select(st => c.Model.GetOperation(st)).ToList();
             return c;
         }
 

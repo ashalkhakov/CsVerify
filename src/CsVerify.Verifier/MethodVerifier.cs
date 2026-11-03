@@ -1733,8 +1733,10 @@ namespace CsVerify.Verifier
                     pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
                     if (unfold)
                     {
-                        if (callee.PureBody != null && bodyRuns)
-                            AssumeSide(T.Implies(T.And(instance, pre), T.Eq(app, Eval(callee.PureBody, frame, env))));
+                        var body = callee.PureBody != null ? Eval(callee.PureBody, frame, env)
+                                 : callee.PureStatements != null ? PureStatementsTerm(callee.PureStatements, 0, frame, env) : null;
+                        if (body != null && bodyRuns)
+                            AssumeSide(T.Implies(T.And(instance, pre), T.Eq(app, T.Coerce(body, app.Sort))));
                         if (IsNonNullableReturn(m)) AssumeSide(T.Implies(pre, NotNull(app)));
                         foreach (var ens in callee.Ensures)
                             AssumeSide(T.Implies(T.And(instance, pre), AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
@@ -1921,6 +1923,49 @@ namespace CsVerify.Verifier
                              attr.ConstructorArguments.Length == 1 && attr.ConstructorArguments[0].Value is bool when)
                         _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(args[p.Ordinal])));
                 }
+            }
+        }
+
+        /// <summary>
+        /// The value of a [Pure] function's statements from the i-th on, as a term: local declarations bind their
+        /// variables, an if is a conditional (each branch followed by the statements after it), a return is its value;
+        /// specification statements and lemma calls are skipped. Null for anything else (the function is then known by
+        /// its contract only).
+        /// </summary>
+        private Term PureStatementsTerm(IReadOnlyList<IOperation> ops, int i, Frame f, SpecEnv spec)
+        {
+            if (i >= ops.Count) return null;
+            var op = ops[i];
+            IReadOnlyList<IOperation> Then(IOperation first) =>
+                (first is IBlockOperation b ? b.Operations : (IEnumerable<IOperation>)new[] { first }).Concat(ops.Skip(i + 1)).ToList();
+            switch (op)
+            {
+                case IReturnOperation ret when ret.ReturnedValue != null:
+                    return Eval(ret.ReturnedValue, f, spec);
+                case IBlockOperation block:
+                    return PureStatementsTerm(Then(block), 0, f, spec);
+                case IVariableDeclarationGroupOperation group:
+                    foreach (var decl in group.Declarations)
+                        foreach (var v in decl.Declarators)
+                        {
+                            var init = v.Initializer?.Value ?? decl.Initializer?.Value;
+                            if (init == null) return null;
+                            f.Vars[v.Symbol] = Eval(init, f, spec);
+                        }
+                    return PureStatementsTerm(ops, i + 1, f, spec);
+                case IConditionalOperation cond when cond.Type == null || cond.Type.SpecialType == SpecialType.System_Void:
+                {
+                    var c = AsBool(Eval(cond.Condition, f, spec));
+                    var yes = PureStatementsTerm(Then(cond.WhenTrue), 0, f, spec);
+                    var no = cond.WhenFalse != null ? PureStatementsTerm(Then(cond.WhenFalse), 0, f, spec) : PureStatementsTerm(ops, i + 1, f, spec);
+                    if (yes == null || no == null) return null;
+                    return T.Ite(c, yes, T.Coerce(no, yes.Sort));
+                }
+                case IExpressionStatementOperation es when es.Operation is IInvocationOperation inv &&
+                                                          (SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _engine.ContractOf(inv.TargetMethod).IsLemma):
+                    return PureStatementsTerm(ops, i + 1, f, spec);
+                default:
+                    return null;
             }
         }
 

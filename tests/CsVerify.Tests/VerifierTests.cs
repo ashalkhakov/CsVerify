@@ -272,6 +272,18 @@ namespace CsVerify.Tests
             "[Lemma, Conditional(\"CSVERIFY_SPEC\")] static void TriFormula(int n) { Spec.Requires(n >= 0); Spec.Ensures(2 * Tri(n) == n * (n + 1)); Spec.Decreases(n); if (n > 0) TriFormula(n - 1); } ";
 
         [Fact]
+        public void PureFunction_WithStatements_IsDefined()
+        {
+            // ifs, returns and local declarations define the function as well as a single expression does
+            const string clamp = "[Pure] static int Clamp(int x, int lo) { int m = lo; if (x < m) return m; if (x > 100) { return 100; } return x; } ";
+            Assert.Empty(Errors("M", clamp + "static void M() { Spec.Assert(Clamp(-5, 0) == 0 && Clamp(7, 0) == 7 && Clamp(500, 0) == 100); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", clamp + "static void M() { Spec.Assert(Clamp(7, 0) == 8); }"));
+            // a body with anything else (here a loop) gives no definition: the function is known by its contract only
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "[Pure] static int Z(int n) { int k = 0; while (k < n) { Spec.Invariant(k <= n || n < 0); k++; } return 0; } " +
+                "static void M() { Spec.Assert(Z(3) == 0); }"));
+        }
+
+        [Fact]
         public void Lemma_ProvedByInduction() => Assert.Empty(Errors("TriFormula", Tri));
 
         [Fact]
