@@ -142,7 +142,7 @@ The verifier runs all three analyzers over the compilation it verifies: a method
 2. **Symbolic execution.** Walk the method's `IOperation` control-flow graph from an entry state where the parameters are fresh SMT constants and the preconditions are assumed. This is forward verification-condition generation, equivalent to weakest precondition per path.
    - `int`-like values are SMT integers, `bool`s are SMT booleans, and `Ghost<T>` is its `T`.
    - Arrays and spans are references with an uninterpreted `length` and contents in a heap `Array Int (Array Int Int)`.
-   - Other properties and fields are uninterpreted functions of their object, so `view.Addr == p.Addr` is a constraint about addresses, as in ATS.
+   - Fields of source classes, and their auto-properties, are heap fields (see *Mutable objects*). Other fields and properties that never change (readonly ones, properties of immutable types) are uninterpreted functions of their object, so `view.Addr == p.Addr` is a constraint about addresses, as in ATS.
 3. **Obligations.** Every proof obligation is a query to Z3: "path condition ∧ ¬goal" must be unsatisfiable. Obligations are:
    - callee preconditions,
    - array/span bounds (implicit on every `a[i]`),
@@ -163,9 +163,9 @@ The verifier runs all three analyzers over the compilation it verifies: a method
 4. **Loops.** Each loop is cut at its head. The invariant is checked, the variables and arrays the loop assigns are havocked, and the invariant is assumed. A back edge re-checks the invariant and that the measure decreases while staying ≥ 0.
 5. **Calls are modular.** At a call the verifier:
    - checks the callee's `Requires`;
-   - havocs `ref`/`out` arguments, and the heap if the callee (transitively) writes array elements (an inferred frame condition);
+   - havocs `ref`/`out` arguments, and the heap if the callee (transitively) writes array elements (an inferred frame condition). A library method writes only the arrays (or spans) it is handed, and reaches fields and other arrays only by running user code it is handed: a delegate, an interface, or an object whose class overrides something (a dictionary's key with its own `Equals`). Strings are never written;
    - assumes the callee's `Ensures`.
-   Lemma calls are the same, so they add their postconditions. `[Pure]` calls are also equal to an uninterpreted function whose single-`return` body is unfolded once. That is what lets a lemma prove `2 * Tri(n) == n * (n + 1)` by induction.
+   Lemma calls are the same, so they add their postconditions. `[Pure]` calls are also equal to an uninterpreted function whose body is unfolded once: a single expression or `return`, or local declarations, `if`s and `return`s (as a conditional term). That is what lets a lemma prove `2 * Tri(n) == n * (n + 1)` by induction.
 6. **Trusted bodies** are skipped. Their contracts are still used.
 7. **Proofs are total** (CSV1011). Ordinary methods are verified for partial correctness: a path that loops forever or throws proves nothing, and doesn't need to. A lemma or a `[Pure]`/`[GhostFunction]` definition must terminate, though. A lemma that loops forever would "prove" its postcondition, and `f(x) = f(x) + 1` has no solution, so assuming it would prove anything. So in proof code:
    - every recursive call, including mutual recursion, needs `Spec.Decreases` on both ends;
@@ -173,12 +173,12 @@ The verifier runs all three analyzers over the compilation it verifies: a method
    - a `throw` is an error.
    `[GhostFunction]` bodies are verified too, for this.
 8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
-   - `foreach`, `goto` cycles, `try`/`catch`/`finally` (including `using` and `lock`), and hitting the path limit;
-   - static fields, mutable fields of structs, and fields of library classes;
-   - library properties other than members of strings and readonly structs (`List<T>.Count` changes, so it is not a function of its object); properties with code in the sources are calls (see *Object-oriented code*);
+   - `foreach`, `goto` cycles, and hitting the path limit;
+   - mutable fields of structs, and fields of library classes;
+   - in specifications, library properties that may change (`List<T>.Count` is not a function of its object). Read in code, each is a value of its own, of its declared type (a CSV1900 warning); properties with code in the sources are calls (see *Object-oriented code*);
    - assignments to anything but locals, parameters, array elements and heap fields;
    - `ref` locals, and passing array elements or fields by `ref`/`in` (aliases of the heap);
-   - object initializers and other unsupported operations.
+   - other unsupported operations.
    Constructors are calls (see *Mutable objects*). Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
 
 Multisets (`Bag`) are SMT arrays from value to count. `Spec.Multiset(a, n)` is a function of the array's contents and `n`, and three axioms say what a write does to it:
@@ -214,15 +214,15 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 
 ### Mutable objects
 
-**Heap fields.** An instance field or auto-property of a class in the sources is a map from object to value:
+**Heap fields.** An instance field or auto-property of a class in the sources is a map from object to value, and so is a mutable static field (a field of one statics object, which no reference aliases):
 - **Reads, writes and aliasing.** `o.F` reads the map and `o.F = v` updates it, so two references to the same object see each other's writes, and different objects don't.
-- **Calls.** A call forgets only the fields its callee, or anything it reaches, may write: an inferred frame condition per field. A virtual or interface call forgets only what its declared member's `Spec.Modifies` allows, which every override is checked against. Without one, any field may have changed, as after a library call handed a callback or a source object.
+- **Calls.** A call forgets only the fields its callee, or anything it reaches, may write: an inferred frame condition per field. A virtual or interface call forgets only what its declared member's `Spec.Modifies` allows, which every override is checked against. Without one, any field may have changed, as after a library call that can run user code (see *Calls are modular*). Building a data value writes nothing.
 - **Loops** forget only the fields they write.
 - **`[Pure]` functions** take the field maps they read as arguments, so their value is never stale after a write. The same goes for arrays: a function that reads array elements only through its own array parameters depends on those arrays' contents, so writing another array leaves it as it was. A function that reaches arrays any other way (through a field, say) depends on the whole array heap.
 - **Constructors.**
   - Verifying one: the new object's fields start at their defaults and the field initializers run.
   - At `new C(...)`: the constructor's preconditions are checked and its postconditions assumed about the new object. That object is distinct from every reference in scope, and its fields are their defaults unless the constructor or an initializer sets them.
-- **Nullability.** Heap fields are maybe-null.
+- **Nullability.** A field of non-nullable type is never null once its object is built. Every write proves it (CSV1014); a constructor must set it before returning, except a `required` one, which every object initializer sets; and `this` may not escape a constructor of such a class (CSV1015). A static field is not null when its initializer makes an object.
 
 **Owned objects (ATS style).** A class marked `[Owned]` is written only through its object's **view**, `Own<C>`. That is a zero-size `[Linear]` token, so the linearity analyzer ensures at most one exists per object. Views erase like the other proof types.
 - **Making a view.** `Own.New(new C(...), out var view)` takes ownership of a new object, and only a new one (CSV1016).
@@ -398,8 +398,10 @@ C#'s nullable reference types are only warnings, and deliberately unsound ones: 
 - **`!` proves nothing.** It has no run-time effect, so the verifier ignores it: `Len(null!)` is reported.
 - **Array elements are maybe-null**, whatever the element type says. Say otherwise with a precondition, `Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != null))`.
 - **Oblivious types** (code with nullable disabled) promise nothing, so they are maybe-null too. Only an enabled nullable context lets the verifier know anything is not null. The MSBuild target passes the project's `<Nullable>`, and the command line takes `--nullable` (default `enable`).
-- **Library methods** are trusted for their annotations: a non-nullable return type, `[NotNull]` parameters after the call (`ArgumentNullException.ThrowIfNull`), `[NotNullWhen(b)]` parameters when the call returns `b` (`string.IsNullOrEmpty`), and `[AllowNull]` and `[MaybeNull]`.
-- **Fields and properties of objects** are maybe-null, except positional fields of data records (above). For other classes, nothing says a constructor set them.
+- **Library methods** are trusted for their annotations: a non-nullable return type, `[NotNull]` parameters after the call (`ArgumentNullException.ThrowIfNull`), `[NotNullWhen(b)]` parameters when the call returns `b` (`string.IsNullOrEmpty`), `[MaybeNullWhen(b)]` out parameters when it returns `!b` (`TryGetValue`), and `[AllowNull]` and `[MaybeNull]`; a type parameter as instantiated (a `List<string>`'s items).
+- **Fields** of non-nullable type are not null once their object is built (see *Mutable objects*), and positional fields of data records are not null either (above). Fields and auto-properties of nullable type are maybe-null.
+- **Locals** declared with a non-nullable type (`Config p`, not `var p`, whose type is nullable) have every write checked, so they stay not null through loops.
+- **Never null:** `this`, `new` objects and arrays, string concatenations, lambdas and method groups made delegates.
 
 On `samples/Buggy/NullBugs.cs` the C# compiler warns about 3 of the 5 planted bugs. It says nothing about the two `null!` ones and `new string[2]`, and it warns falsely after the precondition that rules null out.
 
@@ -457,6 +459,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--z3 <path>` | Z3 executable |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
 | `--smt-log <file>` | dump the whole SMT-LIB2 conversation |
+| `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
 | `-v` | list every method with its proved/total obligations |
 
 **From MSBuild:** import `CsVerify.Verifier.targets`, copied next to `csverify.dll` under `build/` (the sample projects show how), then build with:
@@ -606,6 +609,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **Accounts.** A `BankAccount` hierarchy whose abstract members have contracts and frames (`Spec.Modifies(ObjSet.Of(this))`). `Overdraft` is built with `base(...)` and overrides to allow more withdrawals. `Transfer` keeps the sum of two accounts of any kinds.
 - `Owned.cs`: an `[Owned]` bank `Account` whose invariant (never overdrawn) travels with its view. `Bank.Transfer` takes two accounts with their views, and `Demo` calls unknown `IAudit` code between updates and still knows both balances.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
+- `StaticFields.cs`: a counter in static fields; a call forgets only the static fields its callee writes.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
 ### Ported from ATS and Dafny
@@ -705,6 +709,15 @@ Sources and licences:
   - a lemma that writes an array (CSV0013);
   - one view passed as two `ref` arguments, so the contract says +1 while the cell gets +2 (CSV0007).
 
+## CsLemon
+
+`lemon/` holds a larger example: the LEMON LALR(1) parser generator (SQLite's), ported from C to C# and verified
+completely (no unexpected exceptions or silent overflow, non-null fields, invariants of its data structures; proving
+one found an out-of-bounds write in C Lemon). Its output is byte-identical to C Lemon's on SQLite's grammar and the
+others tested. It comes with an LR(1) interpreter proved sound, and validators for safety and completeness after
+Jourdan, Pottier and Leroy's *Validating LR(1) Parsers*, and can generate C# parsers that run the verified
+interpreter. See [lemon/README.md](lemon/README.md).
+
 ## Layout
 
 ```
@@ -713,9 +726,12 @@ src/CsVerify.Analyzers   LinearityAnalyzer, GhostAnalyzer, PurityAnalyzer      (
 src/CsVerify.Verifier    csverify: contracts, CFG symbolic execution, SMT-LIB/Z3, erasure, MSBuild targets (net10.0)
 tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted per feature, samples
 samples/Good, samples/Buggy
+lemon/CsLemon            cslemon: Lemon ported to C# and verified
+lemon/CsLemon.Runtime    the verified LR interpreter and validators, the run time of its C# parsers
+lemon/tests              differential tests against C Lemon and its parsers, grammars
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 184 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 208 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -724,7 +740,7 @@ samples/Good, samples/Buggy
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws need not meet the postcondition, only `Spec.EnsuresOnThrow` clauses. Handlers are verified (see Exceptions). Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014), and so never reach a handler.
 - **Mutable objects.**
   - **Dynamic frames.**
-    - Virtual and interface calls, and library calls handed source objects, can't be checked against `Spec.Modifies`.
+    - Virtual and interface calls, and library calls that can run user code, can't be checked against `Spec.Modifies`.
     - The frame rule for `[Pure]` functions follows at most 16 changes back.
     - Loops forget the fields they write for every object; restate what is kept in the invariant.
   - **`[Invariant]` on an ordinary mutable class** (neither a data record, immutable nor `[Owned]`) is not used, with a warning.
@@ -732,8 +748,8 @@ samples/Good, samples/Buggy
   - **`Own.Take` splits a tree imprecisely.** The container's other children stay with it, but which of their descendants went with the taken object is not tracked, so a call that touches either part may forget those.
   - **Proofs about trees can need a hint,** much like an ATS `prval` step: the unfolded fact stated where a child is taken out (`Spec.Assert(Size.Value == 1 + l.Size.Value + ...)`).
   - **`[Pure]` functions get no view.** They can't assume an owned object's invariant, so recursion over an ownership tree (a measure from the invariant) is done in ordinary methods that take and give.
-  - **Library code** is trusted not to write source objects' fields except through what it is handed, so reflection is not covered.
-- **Null and object state.** Fields and properties are maybe-null, except positional fields of data records. Library nullability annotations are trusted, not checked.
+  - **Library code** is trusted not to write source objects' fields except by running user code it is handed, so reflection is not covered.
+- **Null and object state.** Fields and auto-properties of nullable type are maybe-null; array elements are maybe-null whatever their type. Library nullability annotations are trusted, not checked.
 - **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
 - **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.
 - **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
@@ -749,7 +765,7 @@ samples/Good, samples/Buggy
 - Not verified as separate units: local functions and lambdas.
 
 **Completeness limits** (true things that may not be proved)
-- A new array is known to differ only from the arrays visible in local variables where it is created.
+- A new array is known to differ from the arrays in local variables and fields where it is created, not from arrays held elsewhere (inside other arrays).
 - Side facts under a quantifier (non-negative lengths, `[Pure]` unfolding) are a separate quantified axiom, instantiated by e-matching only. A fact needed at a term that never appears may be missing.
 
 **Precision limits**
