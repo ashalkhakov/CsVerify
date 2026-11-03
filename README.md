@@ -258,7 +258,13 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 
 It's revoked when the view goes: consumed, moved, dropped, or lent by `ref`. Writes check it (CSV1016).
 - **Lending.** A Dafny-style method with `Spec.Modifies(Own.Tree(x))` borrows `x`'s whole ownership tree for the call. Its caller must hold that tree (its root's view), the method may then write any object in it without a view, and afterwards the caller knows that tree, and nothing else, may have changed. That bridges ATS-style ownership and Dafny-style frames: framed code works on owned data without threading views through its signature.
-- **What stays.** This is the Carbon-style encoding of permissions (Viper's VC-generating backend): the heap stays a map per field, so reads remain free, and the ownership `Root` map and the frame links stay. Fractions below 1 (shared read access) and user-defined predicates are the next steps.
+- **What stays.** This is the Carbon-style encoding of permissions (Viper's VC-generating backend): the heap stays a map per field, so reads remain free, and the ownership `Root` map and the frame links stay. User-defined predicates are the next step.
+
+**Read shares (fractions).** `Own.Share(ref v, out Shared<T> s)` splits a read share off a view, and `Own.Unshare(ref v, s)` joins it back. This is the fractional permission of ATS's early prototype, in its counting form: every share holds the same small fraction ε, so a view with k shares out holds 1 − kε and is whole again only when all k are back.
+- **Holding a share.** A `Shared<T>` is linear: it is passed, returned or dropped (`Own.Drop(s)`), never copied. Its holder relies on the object's invariant, which is proved when the share is handed over, and on nobody writing the object while the share is out. It cannot write the object itself.
+- **The view while shares are out.** It cannot write the object, hand it to code that may (by `ref` or by value), or give it to an owner (`Own.Give`). A share given away for good leaves the object read-only for good.
+- **Aliasing.** Shares may alias: two shares of one object are fine, as in `Within(in s1, g, in s2, g)` (samples/Good/Shares.cs).
+- **`in Own<T>`.** A view lent `in` is a share for the call. Two `in` views may be the same view, and the invariant is proved when it is lent. Both used to be assumed, which was unsound.
 
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;

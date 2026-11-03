@@ -48,11 +48,12 @@ namespace CsVerify.Verifier
         private bool ThisIsView => !_method.IsStatic && SpecSymbols.IsOwned(_method.ContainingType) && !_contract.IsPure;
 
         private static bool IsViewVariable(ISymbol s) =>
-            (s is ILocalSymbol || s is IParameterSymbol) && SpecSymbols.IsOwnType(TypeOf(s));
+            (s is ILocalSymbol || s is IParameterSymbol) && SpecSymbols.IsViewType(TypeOf(s));
 
-        /// <summary>A view variable comes alive: it owns an object no other live view owns.</summary>
+        /// <summary>A view variable comes alive: it owns an object no other live view owns. A share just adds its fraction.</summary>
         private void ViewAlive(ISymbol view, Term v, Frame f)
         {
+            if (SpecSymbols.IsSharedType(TypeOf(view))) { Grant(f, v, ShareAmount); return; }
             foreach (var other in f.LiveViews.Where(o => !SymbolEqualityComparer.Default.Equals(o, view)).ToList())
                 if (f.Vars.TryGetValue(other, out var ov)) _z3.Assume(T.Not(T.Eq(ov, v)));
             f.LiveViews.Add(view);
@@ -115,6 +116,8 @@ namespace CsVerify.Verifier
             Require(T.Eq(T.Select(FieldMap(f, field), c, Sort.Int), T.Int(0)), "CSV1016", inv.Syntax,
                 $"'{inv.Arguments[0].Value.Syntax}' might still own an object: take it first");
             Require(T.Eq(view, x), "CSV1016", inv.Syntax, $"'{inv.Arguments[2].Value.Syntax}' might not be the view of '{inv.Arguments[1].Value.Syntax}'");
+            if (_codeMode && f.Perm != null)
+                Require(CanWrite(f, x), "CSV1016", inv.Syntax, $"'{inv.Arguments[1].Value.Syntax}' might have read shares out: join them back (Own.Unshare) first");
             if (f.Root != null)
                 Require(T.Not(T.Eq(RootOf(f, c), x)), "CSV1016", inv.Syntax, $"'{inv.Arguments[1].Value.Syntax}' might own the container: ownership would be a cycle");
             ProveOwnedInvariant(field.Type, x, f, inv.Syntax, "when it is given to its owner");
@@ -154,23 +157,35 @@ namespace CsVerify.Verifier
 
         private static ITypeSymbol OwnedType(ITypeSymbol ownType) => ((INamedTypeSymbol)ownType).TypeArguments[0];
 
+        /// <summary>
+        /// The fraction a read share holds (counting permissions): every share holds the same one, so a view with k
+        /// shares out holds 1 - k·ε, and only with all of them back is it whole. Any positive amount would do.
+        /// </summary>
+        private const string ShareAmount = "0.000001";
+        private const string FullAmount = "1.0";
+
+        private static string AmountOf(ITypeSymbol viewType) => SpecSymbols.IsSharedType(viewType) ? ShareAmount : FullAmount;
+
         /// <summary>Full (write) permission to <paramref name="o"/> in state f.</summary>
-        private static Term CanWrite(Frame f, Term o) => new Term($"(= (select {f.Perm} {T.Coerce(o, Sort.Int)}) 1.0)", Sort.Bool);
+        private static Term CanWrite(Frame f, Term o) => new Term($"(>= (select {f.Perm} {T.Coerce(o, Sort.Int)}) 1.0)", Sort.Bool);
 
-        private static void Grant(Frame f, Term o)
+        /// <summary>Permissions add up: what is held here of o is the sum of the views and shares of o in hand.</summary>
+        private static void Grant(Frame f, Term o, string amount = FullAmount) => Add(f, o, "+", amount);
+
+        private static void Revoke(Frame f, Term o, string amount = FullAmount) => Add(f, o, "-", amount);
+
+        private static void Add(Frame f, Term o, string op, string amount)
         {
-            if (f.Perm != null) f.Perm = new Term($"(store {f.Perm} {T.Coerce(o, Sort.Int)} 1.0)", Sort.Perm);
+            if (f.Perm == null) return;
+            var i = T.Coerce(o, Sort.Int);
+            f.Perm = new Term($"(store {f.Perm} {i} ({op} (select {f.Perm} {i}) {amount}))", Sort.Perm);
         }
 
-        private static void Revoke(Frame f, Term o)
-        {
-            if (f.Perm != null) f.Perm = new Term($"(store {f.Perm} {T.Coerce(o, Sort.Int)} 0.0)", Sort.Perm);
-        }
-
-        /// <summary>A view variable goes (consumed, moved, dropped): so does the permission it held.</summary>
+        /// <summary>A view or share variable goes (consumed, moved, dropped): so does the permission it held.</summary>
         private void Release(Frame f, ISymbol view)
         {
-            if (f.Vars.TryGetValue(view, out var o)) Revoke(f, o);
+            if (f.Vars.TryGetValue(view, out var o) && (f.LiveViews.Contains(view) || SpecSymbols.IsSharedType(TypeOf(view))))
+                Revoke(f, o, AmountOf(TypeOf(view)));
             f.LiveViews.Remove(view);
         }
 
@@ -179,7 +194,7 @@ namespace CsVerify.Verifier
         {
             if (!_codeMode || _foreignSpec > 0 || f.Perm == null) return;
             Require(CanWrite(f, o), "CSV1016", at,
-                $"'{at}' changes an [Owned] {type.Name} without holding its view (Own<{type.Name}>) or a frame lent to it");
+                $"'{at}' changes an [Owned] {type.Name} without holding its view (Own<{type.Name}>, with no read shares out) or a frame lent to it");
         }
 
         private Term OwnedInvariant(ITypeSymbol type, Term o, Frame f) =>
@@ -205,15 +220,20 @@ namespace CsVerify.Verifier
             var received = new List<Term>();
             if (_engine.UsesOwnership) f.Perm = new Term("((as const (Array Int Real)) 0.0)", Sort.Perm);
             if (ThisIsView || _method.MethodKind == MethodKind.Constructor && SpecSymbols.IsOwned(_method.ContainingType)) Grant(f, f.This);
-            foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsOwnType(p.Type) && p.RefKind != RefKind.Out))
+            foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsViewType(p.Type) && p.RefKind != RefKind.Out))
             {
-                if (p.RefKind != RefKind.In) { f.LiveViews.Add(p); Grant(f, f.Vars[p]); }
                 AssumeOwnedInvariant(OwnedType(p.Type), f.Vars[p], f);
+                // a share, or a view lent read-only (in), holds a fraction: it may alias other shares of the object
+                if (SpecSymbols.IsSharedType(p.Type) || p.RefKind == RefKind.In) { Grant(f, f.Vars[p], ShareAmount); continue; }
+                f.LiveViews.Add(p);
+                Grant(f, f.Vars[p]);
                 IsRoot(f, f.Vars[p]);
-                // views are linear: two in hand at once own two different objects
+                // views are linear: two in hand at once own two different objects (and neither is lent read-only)
                 foreach (var other in received) _z3.Assume(T.Not(T.Eq(other, f.Vars[p])));
                 received.Add(f.Vars[p]);
             }
+            foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsOwnType(p.Type) && p.RefKind == RefKind.In))
+                foreach (var other in received) _z3.Assume(T.Not(T.Eq(other, f.Vars[p])));
             if (ThisIsView && _method.MethodKind != MethodKind.Constructor) AssumeOwnedInvariant(_method.ContainingType, f.This, f);
             if (ThisIsView || _method.MethodKind == MethodKind.Constructor && SpecSymbols.IsOwned(_method.ContainingType)) IsRoot(f, f.This);
         }
@@ -221,7 +241,7 @@ namespace CsVerify.Verifier
         /// <summary>At a return: views given back (<c>ref</c>, <c>out</c>, and <c>this</c>) satisfy their invariants again.</summary>
         private void ExitOwned(Frame f, SyntaxNode at)
         {
-            foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsOwnType(p.Type) && (p.RefKind == RefKind.Ref || p.RefKind == RefKind.Out)))
+            foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsViewType(p.Type) && (p.RefKind == RefKind.Ref || p.RefKind == RefKind.Out)))
                 if (f.Vars.TryGetValue(p, out var v)) ProveOwnedInvariant(OwnedType(p.Type), v, f, at, $"when the view '{p.Name}' is given back");
             if (ThisIsView && _method.MethodKind != MethodKind.Constructor)
                 ProveOwnedInvariant(_method.ContainingType, f.This, f, at, $"when '{_method.Name}' returns");
@@ -244,10 +264,18 @@ namespace CsVerify.Verifier
             foreach (var a in inv.Arguments)
             {
                 var p = a.Parameter;
-                if (p == null || !SpecSymbols.IsOwnType(p.Type) || p.RefKind == RefKind.Out || p.RefKind == RefKind.In) continue;
+                if (p == null || !SpecSymbols.IsViewType(p.Type) || p.RefKind == RefKind.Out) continue;
+                // whoever receives a view or a share relies on the invariant, even if lent read-only
                 ProveOwnedInvariant(OwnedType(p.Type), args[p.Ordinal], f, a.Syntax, $"when its view is handed to '{m.Name}'");
-                touched.Add(args[p.Ordinal]);
-                if (p.RefKind == RefKind.Ref) Revoke(f, args[p.Ordinal]); // lent: what comes back is granted again
+                if (p.RefKind == RefKind.In) continue;
+                if (SpecSymbols.IsOwnType(p.Type))
+                {
+                    // a view goes whole, so the callee may write: every share must be back
+                    if (_codeMode && f.Perm != null)
+                        Require(CanWrite(f, args[p.Ordinal]), "CSV1016", a.Syntax, $"'{a.Value.Syntax}' might have read shares out: join them back (Own.Unshare) before handing the view over");
+                    touched.Add(args[p.Ordinal]);
+                }
+                if (p.RefKind == RefKind.Ref) Revoke(f, args[p.Ordinal], AmountOf(p.Type)); // lent: what comes back is granted again
                 if (p.RefKind == RefKind.None && VariableOf(a.Value) is ISymbol consumed) Release(f, consumed);
             }
             return touched;
@@ -257,12 +285,12 @@ namespace CsVerify.Verifier
         private void TakeBack(IInvocationOperation inv, Term receiver, Frame f, Contract callee)
         {
             var m = callee.Method;
-            foreach (var a in inv.Arguments.Where(a => a.Parameter != null && SpecSymbols.IsOwnType(a.Parameter.Type) &&
+            foreach (var a in inv.Arguments.Where(a => a.Parameter != null && SpecSymbols.IsViewType(a.Parameter.Type) &&
                                                        (a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out)))
             {
                 var v = Eval(a.Value, f);
                 AssumeOwnedInvariant(OwnedType(a.Parameter.Type), v, f);
-                IsRoot(f, v);
+                if (SpecSymbols.IsOwnType(a.Parameter.Type)) IsRoot(f, v);
             }
             if (receiver != null && SpecSymbols.IsOwned(m.ContainingType) && !callee.IsPure && !m.IsStatic)
                 AssumeOwnedInvariant(m.ContainingType, receiver, f);
@@ -275,6 +303,23 @@ namespace CsVerify.Verifier
             if (m.Name == "Tree") return TreeOf(f, Eval(inv.Arguments[0].Value, f, spec));
             if (m.Name == "Take") return OwnTake(inv, f, spec);
             if (m.Name == "Give") return OwnGive(inv, f, spec);
+            if (m.Name == "Share")
+            {
+                // the view keeps 1 - ε, the share gets ε: nothing changes in sum
+                var v = Eval(inv.Arguments[0].Value, f, spec);
+                Revoke(f, v, ShareAmount);
+                Write(inv.Arguments[1].Value, v, f, spec);
+                return T.True;
+            }
+            if (m.Name == "Unshare")
+            {
+                var v = Eval(inv.Arguments[0].Value, f, spec);
+                var share = Eval(inv.Arguments[1].Value, f, spec);
+                Require(T.Eq(share, v), "CSV1016", inv.Syntax, $"'{inv.Arguments[1].Value.Syntax}' might not be a share of '{inv.Arguments[0].Value.Syntax}'");
+                if (VariableOf(inv.Arguments[1].Value) is ISymbol joined) Release(f, joined);
+                Grant(f, v, ShareAmount);
+                return T.True;
+            }
             if (m.Name == "Drop")
             {
                 var view = inv.Arguments[0].Value;

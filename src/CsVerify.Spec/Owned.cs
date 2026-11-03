@@ -13,6 +13,20 @@ namespace CsVerify
         public Ghost<T> Obj => default;
     }
 
+    /// <summary>
+    /// A read share of an owned object's view (counting permissions, a form of fractional permission): a linear
+    /// token split off a view by <see cref="Own.Share{T}"/> and joined back by <see cref="Own.Unshare{T}"/>. Any
+    /// number may be out at once, and two may share one object. A share lets its holder rely on the object's
+    /// [Invariant] and on nobody writing the object while it holds the share; the view it came from cannot write
+    /// the object (or be lent to code that does) until every share is back.
+    /// </summary>
+    [Linear]
+    public readonly struct Shared<T> where T : class
+    {
+        /// <summary>The object this share reads.</summary>
+        public Ghost<T> Obj => default;
+    }
+
     public static class Own
     {
         /// <summary>Takes ownership of a new object: <c>var c = Own.New(new Counter(), out var view);</c> (only of a <c>new</c>).</summary>
@@ -53,6 +67,24 @@ namespace CsVerify
         /// </summary>
         [GhostFunction]
         public static ObjSet Tree(object obj) => throw GhostException.Instance;
+
+        /// <summary>
+        /// Splits a read share off a view (ATS: a fraction of the view). The view keeps the rest; it may write the
+        /// object again once every share split off it is back.
+        /// </summary>
+        [Trusted]
+        public static void Share<T>(ref Own<T> view, out Shared<T> share) where T : class
+        {
+            share = default;
+        }
+
+        /// <summary>Joins a share back into the view of the same object.</summary>
+        [Trusted]
+        public static void Unshare<T>(ref Own<T> view, Shared<T> share) where T : class { }
+
+        /// <summary>Gives a share up for good: its view can no longer get the object back whole.</summary>
+        [Trusted]
+        public static void Drop<T>(Shared<T> share) where T : class { }
 
         /// <summary>Gives the view up for good: nobody can write the object any more.</summary>
         [Trusted]

@@ -666,7 +666,7 @@ namespace CsVerify.Verifier
                 {
                     var v = T.Coerce(Eval(a.Value, f, spec), SortOf(a.Target.Type));
                     // moving a view (w = v) retires the variable it came from
-                    if (SpecSymbols.IsOwnType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) Release(f, moved);
+                    if (SpecSymbols.IsViewType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) Release(f, moved);
                     Write(a.Target, v, f, spec);
                     return v;
                 }
@@ -1086,7 +1086,7 @@ namespace CsVerify.Verifier
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type)), pr.Type);
                 }
             }
-            if (SpecSymbols.IsOwnType(prop.ContainingType) && prop.Name == "Obj") return Eval(pr.Instance, f, spec); // a view is its object
+            if (SpecSymbols.IsViewType(prop.ContainingType) && prop.Name == "Obj") return Eval(pr.Instance, f, spec); // a view is its object
             if (pr.Instance != null && FieldEffects.IsHeapField(prop))
                 return ReadField(prop, pr.Instance, pr.Type, pr.Syntax, f, spec);
             if (pr.Instance != null && DataTypes.IsPositional(prop) && Data.IsData(prop.ContainingType))

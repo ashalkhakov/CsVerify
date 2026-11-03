@@ -429,6 +429,13 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Reach"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Bypass"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Cycle"));
+            // read shares (ShareBugs.cs)
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("WriteWhileShared"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("LendWhileShared"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("WriteThroughShare"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("WrongJoin"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("LendBroken"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("ShareBugs.Distinct"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
             Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));

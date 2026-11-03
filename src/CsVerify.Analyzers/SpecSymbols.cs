@@ -29,6 +29,9 @@ namespace CsVerify.Analyzers
         public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
         public static bool IsInvariant(ISymbol s) => HasAttribute(s, "InvariantAttribute");
         public static bool IsOwnType(ITypeSymbol type) => IsCsVerifyType(type, "Own`1");
+        public static bool IsSharedType(ITypeSymbol type) => IsCsVerifyType(type, "Shared`1");
+        /// <summary>A view or a read share of one: Own&lt;T&gt; or Shared&lt;T&gt;.</summary>
+        public static bool IsViewType(ITypeSymbol type) => IsOwnType(type) || IsSharedType(type);
 
         /// <summary>The interface or abstract class a [ContractClassFor] class gives contracts for; null if it is not one.</summary>
         public static INamedTypeSymbol ContractClassTarget(ITypeSymbol type) =>
