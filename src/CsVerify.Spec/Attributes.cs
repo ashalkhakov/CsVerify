@@ -43,4 +43,11 @@ namespace CsVerify
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class InvariantAttribute : Attribute { }
+
+    /// <summary>
+    /// A class whose objects are owned through a linear <see cref="Own{T}"/> view (ATS style): only code holding the
+    /// view may write their fields, and the class's [Invariant] travels with the view.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class OwnedAttribute : Attribute { }
 }

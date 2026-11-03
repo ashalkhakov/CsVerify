@@ -167,6 +167,7 @@ namespace CsVerify.Verifier
                     // a non-nullable parameter is a precondition: each caller proves it (an out parameter is not set yet)
                     if (p.RefKind != RefKind.Out && IsNonNullable(p)) _z3.Assume(NotNull(f.Vars[p]));
                 }
+                EnterOwned(f);
                 _entry = f.Clone();
                 var spec = new SpecEnv { Old = _entry };
                 // each precondition must be well-defined given the ones before it
@@ -414,6 +415,7 @@ namespace CsVerify.Verifier
         private void CheckPostconditions(Frame f)
         {
             var at = f.ReturnSyntax ?? MethodLocationNode();
+            ExitOwned(f, at);
             // a non-nullable return type or out/ref parameter is a postcondition the callers assume
             if (f.Result != null && IsNonNullableReturn(_method))
                 Prove(NotNull(f.Result), "CSV1014", at, $"'{_method.Name}' might return null, but its return type '{_method.ReturnType}' is not nullable");
@@ -637,6 +639,8 @@ namespace CsVerify.Verifier
                 case ISimpleAssignmentOperation a:
                 {
                     var v = T.Coerce(Eval(a.Value, f, spec), SortOf(a.Target.Type));
+                    // moving a view (w = v) retires the variable it came from
+                    if (SpecSymbols.IsOwnType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) f.LiveViews.Remove(moved);
                     Write(a.Target, v, f, spec);
                     return v;
                 }
@@ -937,8 +941,12 @@ namespace CsVerify.Verifier
                 case ILocalReferenceOperation l:
                     if (l.Local.RefKind != RefKind.None) NotModeled(l.Syntax, $"ref local '{l.Local.Name}' is not supported (it may alias the heap)");
                     f.Vars[l.Local] = v;
+                    if (IsViewVariable(l.Local)) ViewAlive(l.Local, v, f);
                     break;
-                case IParameterReferenceOperation p: f.Vars[p.Parameter] = v; break;
+                case IParameterReferenceOperation p:
+                    f.Vars[p.Parameter] = v;
+                    if (IsViewVariable(p.Parameter) && p.Parameter.RefKind != RefKind.In) ViewAlive(p.Parameter, v, f);
+                    break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
                 case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
                     WriteField(hf.Field, hf.Instance, v, hf.Syntax, f, spec);
@@ -1000,6 +1008,7 @@ namespace CsVerify.Verifier
                     return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type));
                 }
             }
+            if (SpecSymbols.IsOwnType(prop.ContainingType) && prop.Name == "Obj") return Eval(pr.Instance, f, spec); // a view is its object
             if (pr.Instance != null && FieldEffects.IsHeapField(prop))
                 return ReadField(prop, pr.Instance, pr.Type, pr.Syntax, f, spec);
             if (pr.Instance != null && DataTypes.IsPositional(prop) && Data.IsData(prop.ContainingType))
@@ -1087,6 +1096,7 @@ namespace CsVerify.Verifier
             }
             if (SpecSymbols.IsGhostOf(m)) return Eval(inv.Arguments[0].Value, f, spec);
             if (SpecSymbols.IsSeqType(m.ContainingType)) return EvalSeq(inv, f, spec);
+            if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) return OwnCall(inv, f, spec);
 
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
@@ -1115,6 +1125,7 @@ namespace CsVerify.Verifier
                 return Unknown(inv.Type);
             }
 
+            var touched = HandOver(inv, receiver, argTerms, f, callee);
             var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
             if (!callee.HasSource)
             {
@@ -1125,7 +1136,7 @@ namespace CsVerify.Verifier
                     Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
-                HavocFields(f, m);
+                HavocFields(f, m, touched);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
                 LibraryNullFacts(inv, argTerms, libResult);
                 return libResult;
@@ -1162,9 +1173,11 @@ namespace CsVerify.Verifier
                 if (IsNonNullable(callee.Method.Parameters[a.Parameter.Ordinal])) _z3.Assume(NotNull(nv));
                 post.Vars[callee.Method.Parameters[a.Parameter.Ordinal]] = nv;
                 Write(a.Value, nv, f, spec);
+                if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
             }
             if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
-            HavocFields(f, m);
+            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched);
+            TakeBack(inv, receiver, f, callee);
             post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
             post.FieldEpoch = f.FieldEpoch;
 

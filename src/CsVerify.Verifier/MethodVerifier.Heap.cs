@@ -37,21 +37,37 @@ namespace CsVerify.Verifier
         {
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
+            if (IsOwnedField(field)) RequireWriteView(o, f, at, field.ContainingType);
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), o, T.Coerce(v, Sort.Int));
         }
 
-        /// <summary>After a call: the heap fields it may write have unknown values (an inferred frame condition).</summary>
-        private void HavocFields(Frame f, IMethodSymbol callee)
+        /// <summary>
+        /// After a call: the heap fields it may write have unknown values (an inferred frame condition). An owned
+        /// field changes only at the objects whose views the call got or gave (<paramref name="touched"/>; null when
+        /// that is not known), whatever the callee is.
+        /// </summary>
+        private void HavocFields(Frame f, IMethodSymbol callee, IReadOnlyList<Term> touched = null)
         {
             var (fields, all) = _engine.Fields.WritesOf(callee);
-            if (all) HavocAllFields(f);
-            foreach (var field in fields) f.Fields[field] = _z3.Fresh(field.Name + "$map", Sort.Row);
+            var owned = all ? _engine.Fields.OwnedFields() : fields.Where(IsOwnedField).ToList();
+            if (all) HavocAllFields(f, keepOwned: touched != null);
+            foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
+                f.Fields[field] = _z3.Fresh(field.Name + "$map", Sort.Row);
+            if (touched == null) return;
+            foreach (var field in owned)
+            {
+                var map = FieldMap(f, field);
+                foreach (var o in touched) map = T.Store(map, o, _z3.Fresh(field.Name, Sort.Int));
+                f.Fields[field] = map;
+            }
         }
 
-        private void HavocAllFields(Frame f)
+        private void HavocAllFields(Frame f, bool keepOwned = false)
         {
+            var kept = keepOwned ? _engine.Fields.OwnedFields().ToDictionary(x => x, x => FieldMap(f, x), SymbolEqualityComparer.Default) : null;
             f.Fields.Clear();
             f.FieldEpoch = ++_fieldEpochs;
+            if (kept != null) foreach (var kv in kept) f.Fields[kv.Key] = kv.Value;
         }
 
         private static bool HasInitializer(ISymbol field) =>

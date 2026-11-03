@@ -79,7 +79,8 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | static lists of elements | `Seq<T>`: ghost sequence with `s[i]`, `Update`, `Drop`, `Concat`, `Seq.Const`, `==` |
 | static function | `[GhostFunction]`: specification-only, its body is ghost context (quantifiers, `Seq`), unfolded at each use |
 | linear logic on views (used exactly once) | `[Linear]` types checked by the `LinearityAnalyzer` on Roslyn's control-flow graph |
-| frame rule `(ext)` | calls only change what they receive by `ref`/`out` (and arrays they may write) |
+| frame rule `(ext)` | calls only change what they receive by `ref`/`out`, and the arrays and fields they may write (inferred) |
+| a view of an object's fields, `(pf \| p)` | `[Owned]` class; `Own.New(new C(...), out Own<C> view)`; pass `(C obj, ref Own<C> view)` with `Spec.Requires(view.Obj.Value == obj)` |
 | several results, `[r1, r2: int] (...)` (Dafny `returns (k, m)`) | a C# tuple `(int k, int m)`; `Spec.Ensures<(int k, int m)>(r => ... r.k ... r.m ...)`; callers read `t.k` or deconstruct with `var (k, m) = ...` |
 | `$UNSAFE` | `[Trusted]`: the body is not verified, its contract is taken as an axiom, linearity is not checked |
 | proof erasure | `[Conditional]` erasure: in a normal build no spec, lemma call or argument remains |
@@ -170,12 +171,13 @@ The verifier runs all three analyzers over the compilation it verifies: a method
    `[GhostFunction]` bodies are verified too, for this.
 8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
    - `foreach`, `goto` cycles, `try`/`catch`/`finally` (including `using` and `lock`), and hitting the path limit;
-   - mutable fields;
-   - properties other than get-only/init-only auto-properties and members of strings, readonly structs and the spec library (`List<T>.Count` changes, so it is not a function of its object);
-   - assignments to anything but locals, parameters and array elements;
+   - static fields, mutable fields of structs, and fields of library classes;
+   - computed properties other than members of strings, readonly structs and the spec library (`List<T>.Count` changes, so it is not a function of its object);
+   - assignments to anything but locals, parameters, array elements and heap fields;
+   - constructor chaining (`this(...)`, or `base(...)` of a source class);
    - `ref` locals, and passing array elements or fields by `ref`/`in` (aliases of the heap);
    - object initializers and other unsupported operations.
-   Constructors are calls: the heap is havocked if they may write arrays. Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
+   Constructors are calls (see *Mutable objects*). Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
 
 Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
 
@@ -200,6 +202,28 @@ A **data record** is a record class whose whole state is its positional properti
 An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invariant]` on a data record or its base. It is proved at every `new` (CSV1015) and assumed of every object of the type, since the fields never change afterwards. While verifying the invariant itself, or anything it calls, it is not assumed: otherwise a helper could be "proved" from the very invariant it defines. Invariants may read fields and their lengths but not array contents, which can change.
 
 **Constructors** of other classes are calls: `new C(args)` checks the constructor's `Spec.Requires` and assumes its `Spec.Ensures`, about the new object as `this`.
+
+### Mutable objects
+
+**Heap fields.** An instance field or auto-property of a class in the sources is a map from object to value:
+- **Reads, writes and aliasing.** `o.F` reads the map and `o.F = v` updates it, so two references to the same object see each other's writes, and different objects don't.
+- **Calls.** A call forgets only the fields its callee, or anything it reaches, may write: an inferred frame condition per field. After a virtual or interface call, or a library call handed a callback or a source object, any field may have changed.
+- **Loops** forget only the fields they write.
+- **`[Pure]` functions** take the field maps they read as arguments, so their value is never stale after a write.
+- **Constructors.**
+  - Verifying one: the new object's fields start at their defaults and the field initializers run.
+  - At `new C(...)`: the constructor's preconditions are checked and its postconditions assumed about the new object. That object is distinct from every reference in scope, and its fields are their defaults unless the constructor or an initializer sets them.
+- **Nullability.** Heap fields are maybe-null.
+
+**Owned objects (ATS style).** A class marked `[Owned]` is written only through its object's **view**, `Own<C>`. That is a zero-size `[Linear]` token, so the linearity analyzer ensures at most one exists per object. Views erase like the other proof types.
+- **Making a view.** `Own.New(new C(...), out var view)` takes ownership of a new object, and only a new one (CSV1016).
+- **Writing.** Writing an owned field needs a live view of the object in hand (CSV1016): a local, a `ref` parameter (an `in` parameter is read-only), or `this` inside the class's own methods. Calling a method of the class needs the receiver's view.
+- **Exact frames for free.** A call can change an owned object only if its view goes in (by `ref` or by value), comes out, or the object is the receiver. So even unknown code, such as an interface call, leaves every other owned object as it was, with no frame annotations.
+- **Distinctness.** Two views in hand own two different objects, so `(a, ref va, b, ref vb)` needs no `a != b` precondition.
+- **The class's `[Invariant]` travels with the view.** It is assumed where a view is received (a parameter, a call's result, and `this` at entry to the class's methods). It is proved where the view is handed over or given back (CSV1015): a call's `ref` or by-value argument, a `ref`/`out` parameter or `this` at return, and `Own.New`. In between, the holder may break it temporarily. Without the view nothing is assumed, because whoever holds it may be mid-update.
+- **Reads need no view.** Objects are garbage-collected, and while a method runs nobody else holds a view it lent.
+- **Giving up.** `Own.Drop(view)` gives the object up for good.
+- **The ATS idiom.** Methods take the object and its view side by side, `Transfer(Account from, ref Own<Account> fromView, ...)`, tied by `Spec.Requires(fromView.Obj.Value == from)`.
 
 ### Null references
 
@@ -307,6 +331,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1013 | verifier | a dereference (`a.Length`, `a[i]`, `x.M()`) of a reference that might be null |
 | CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
 | CSV1015 | verifier | an object invariant might not hold for a new object |
+| CSV1016 | verifier | an [Owned] object written without its view in hand, or a view made for an object that is not new |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
@@ -393,6 +418,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **AVL:** `Node`, both rotations (single and double), and `Insert`, proved to raise the height by at most one.
   - **Red-black, after Okasaki:** `BalanceL` and `BalanceR` handle the four rotation cases as nested C# patterns, such as `Ins.Viol(Rb.T { Red: true } a, var y, var c)`. `Ins` keeps the black height. `Insert` raises it by at most one. ATS's violation index becomes a type of its own, `Ins = Fine(Rb) | Viol(l, k, r)`: an intermediate tree that may have a red-red violation at its root cannot be an `Rb`.
   - **Hints and dead branches:** `Spec.Assert(Bh(a) == Bh(a.L))` hints play the part of ATS's `prval` steps, because definitions unfold one level per use. Unreachable branches carry a `Spec.Assert(false)` that the verifier checks.
+- `Owned.cs`: an `[Owned]` bank `Account` whose invariant (never overdrawn) travels with its view. `Bank.Transfer` takes two accounts with their views, and `Demo` calls unknown `IAudit` code between updates and still knows both balances.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
@@ -457,6 +483,7 @@ Sources and licences:
 
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
+- `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
 - `TreeBugs.cs`: an AVL insert that never rotates, a single rotation where a double one is needed, and a red-black rebalance that leaves a red node over a red child.
 - `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, and an assertion that two equal values are the same object.
 - `NullBugs.cs`: an unchecked `T?`, `null!` passed and returned, an element of `new string[2]`, and a precondition that reads `a.Length` before checking `a`.
@@ -478,13 +505,18 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 140 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 153 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014).
+- **Mutable objects.**
+  - **Dafny-style objects** (`Valid()` plus `Repr` and `Modifies`/`Reads` frames) are not there yet. A class can't be both styles.
+  - **`[Invariant]` on an ordinary mutable class** (neither a data record nor `[Owned]`) is not used: it is neither assumed nor proved.
+  - **Loops** that write owned fields forget them for every object, not just the ones whose views they hold.
+  - **Library code** is trusted not to write source objects' fields except through what it is handed, so reflection is not covered.
 - **Null and object state.** Fields and properties are maybe-null, except positional fields of data records. Library nullability annotations are trusted, not checked.
 - **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
 - **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.

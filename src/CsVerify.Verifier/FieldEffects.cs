@@ -52,6 +52,13 @@ namespace CsVerify.Verifier
 
         public static ISymbol Key(ISymbol s) => s.OriginalDefinition;
 
+        private List<ISymbol> _owned;
+
+        /// <summary>Every heap field of an [Owned] class in the sources.</summary>
+        public IReadOnlyList<ISymbol> OwnedFields() => _owned ??= _engine.SourceTypes
+            .Where(SpecSymbols.IsOwned).SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key)
+            .Distinct(SymbolEqualityComparer.Default).ToList();
+
         /// <summary>The heap fields of a class and its source base classes.</summary>
         public static IEnumerable<ISymbol> FieldsOf(ITypeSymbol type)
         {

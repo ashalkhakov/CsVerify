@@ -416,6 +416,11 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1001", "CSV1001" }, r.Errors("InsertNoRotation"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("RotRSingleOnly"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("BalanceLRecolorWrong"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Spend"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Steal"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Forge"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("OwnedBugs.Peek"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("AfterDrop"));
         }
     }
 

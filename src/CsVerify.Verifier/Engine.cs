@@ -77,12 +77,15 @@ namespace CsVerify.Verifier
 
         internal readonly DataTypes Data;
         internal readonly FieldEffects Fields;
+        internal readonly IReadOnlyList<INamedTypeSymbol> SourceTypes;
 
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
             _compilation = compilation;
             Data = new DataTypes(compilation, userTrees);
             Fields = new FieldEffects(this);
+            SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
+                .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);

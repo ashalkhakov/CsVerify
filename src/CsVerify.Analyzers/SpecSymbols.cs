@@ -28,6 +28,15 @@ namespace CsVerify.Analyzers
         public static bool IsLemma(ISymbol s) => HasAttribute(s, "LemmaAttribute");
         public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
         public static bool IsInvariant(ISymbol s) => HasAttribute(s, "InvariantAttribute");
+        public static bool IsOwnType(ITypeSymbol type) => IsCsVerifyType(type, "Own`1");
+
+        /// <summary>A class marked [Owned], or derived from one.</summary>
+        public static bool IsOwned(ITypeSymbol type)
+        {
+            for (var t = type as INamedTypeSymbol; t != null; t = t.BaseType)
+                if (HasAttribute(t, "OwnedAttribute")) return true;
+            return false;
+        }
 
         /// <summary>A record class whose whole state (its own and its bases') is init-only positional properties.</summary>
         public static bool IsValueRecord(ITypeSymbol type)

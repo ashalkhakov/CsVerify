@@ -15,6 +15,8 @@ namespace CsVerify.Verifier
         public Dictionary<ISymbol, Term> Fields = new Dictionary<ISymbol, Term>(SymbolEqualityComparer.Default);
         /// <summary>0 for the method's entry state; a new number each time every heap field may have changed.</summary>
         public int FieldEpoch;
+        /// <summary>The Own&lt;T&gt; view variables in hand (not consumed, not read-only borrows).</summary>
+        public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
         public HashSet<int> ActiveLoops = new HashSet<int>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
@@ -28,6 +30,7 @@ namespace CsVerify.Verifier
             Heap = Heap,
             Fields = new Dictionary<ISymbol, Term>(Fields, SymbolEqualityComparer.Default),
             FieldEpoch = FieldEpoch,
+            LiveViews = new HashSet<ISymbol>(LiveViews, SymbolEqualityComparer.Default),
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
