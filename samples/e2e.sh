@@ -21,6 +21,8 @@ else
     dotnet pack "$repo/src/CsVerify.Spec" -c Release -o "$nupkg" -p:Version=$version
     dotnet pack "$repo/src/CsVerify.Verifier" -c Release -o "$nupkg" -p:Version=$version
 fi
+# NuGet.config needs a path dotnet can read: on Windows (Git Bash), /tmp/... is not one
+if command -v cygpath > /dev/null; then nupkg=$(cygpath -m "$nupkg"); fi
 version=$(ls "$nupkg" | sed -n 's/^dotnet-csverify\.\(.*\)\.nupkg$/\1/p' | head -1)
 
 cp -R "$repo/samples/Shop" "$work/Shop"
