@@ -1,5 +1,6 @@
 // Main program file for the LEMON parser generator (main.c), with the command-line options of option.c.
 using System.Collections.Generic;
+using CsVerify;
 
 namespace CsLemon
 {
@@ -46,11 +47,13 @@ namespace CsLemon
             var x = new Rule?[32];
             while (rp != null)
             {
+                Spec.Invariant(x.Length == 32);
                 Rule? pNext = rp.next;
                 rp.next = null;
                 int i;
                 for (i = 0; i < x.Length - 1 && x[i] != null; i++)
                 {
+                    Spec.Invariant(0 <= i && i < x.Length && x.Length == 32);
                     rp = Rule_merge(x[i], rp);
                     x[i] = null;
                 }
@@ -58,7 +61,11 @@ namespace CsLemon
                 rp = pNext;
             }
             rp = null;
-            for (int i = 0; i < x.Length; i++) rp = Rule_merge(x[i], rp);
+            for (int i = 0; i < x.Length; i++)
+            {
+                Spec.Invariant(0 <= i);
+                rp = Rule_merge(x[i], rp);
+            }
             return rp;
         }
 
@@ -108,6 +115,13 @@ namespace CsLemon
 
         private static readonly Dictionary<string, bool> flags = new Dictionary<string, bool>();
 
+        /// <summary>The i-th option (the table is full).</summary>
+        private static Opt Option(int i)
+        {
+            Checks.That(0 <= i && i < options.Length && options[i] != null);
+            return options[i];
+        }
+
         private static bool Flag(string label) => flags.TryGetValue(label, out bool v) && v;
 
         private static bool ISOPT(string x) => x.Length > 0 && (x[0] == '-' || x[0] == '+' || x.IndexOf('=') >= 0);
@@ -117,17 +131,18 @@ namespace CsLemon
             int max = 0;
             for (int i = 0; i < options.Length; i++)
             {
-                int len = options[i].label.Length + 1;
-                if (!options[i].isFlag) len += 8; // length of "<string>"
+                int len = checked(Option(i).label.Length + 1);
+                if (!Option(i).isFlag) len = checked(len + 8); // length of "<string>"
                 if (len > max) max = len;
             }
             var err = System.Console.Error;
             for (int i = 0; i < options.Length; i++)
             {
-                if (options[i].isFlag)
-                    err.Write("  -" + options[i].label.PadRight(max) + "  " + options[i].message + "\n");
+                Opt o = Option(i);
+                if (o.isFlag)
+                    err.Write("  -" + o.label.PadRight(max) + "  " + o.message + "\n");
                 else
-                    err.Write("  -" + options[i].label + "<string>" + new string(' ', System.Math.Max(0, max - options[i].label.Length - 8)) + "  " + options[i].message + "\n");
+                    err.Write("  -" + o.label + "<string>" + new string(' ', System.Math.Max(0, checked(max - o.label.Length - 8))) + "  " + o.message + "\n");
             }
         }
 
@@ -139,32 +154,38 @@ namespace CsLemon
             bool dashdash = false;
             for (int i = 0; i < argv.Length; i++)
             {
-                string a = argv[i];
+                Spec.Invariant(0 <= i);
+                string? ai = argv[i];
+                Checks.That(ai != null); /* (C's argv holds strings) */
+                string a = ai!;
                 if (!dashdash && a.Length > 0 && (a[0] == '-' || a[0] == '+'))
                 {
                     int j;
                     for (j = 0; j < options.Length; j++)
-                        if (a.Length - 1 >= options[j].label.Length && string.CompareOrdinal(a, 1, options[j].label, 0, options[j].label.Length) == 0) break;
+                    {
+                        Spec.Invariant(0 <= j);
+                        if (a.Length - 1 >= Option(j).label.Length && string.CompareOrdinal(a, 1, Option(j).label, 0, Option(j).label.Length) == 0) break;
+                    }
                     bool v = a[0] == '-';
                     if (j == options.Length)
                     {
                         System.Console.Error.Write("Command line syntax error: undefined option.\n");
-                        errcnt++;
+                        errcnt = checked(errcnt + 1);
                     }
-                    else if (options[j].ignored) { }
-                    else if (options[j].isFlag) flags[options[j].label] = v;
+                    else if (Option(j).ignored) { }
+                    else if (Option(j).isFlag) flags[Option(j).label] = v;
                     else
                     {
                         string arg = a.Substring(2);
-                        if (options[j].label == "d") outputDir = arg;
-                        else if (options[j].label == "D") handle_D_option(arg);
-                        else if (options[j].label == "T") user_templatename = arg;
+                        if (Option(j).label == "d") outputDir = arg;
+                        else if (Option(j).label == "D") handle_D_option(arg);
+                        else if (Option(j).label == "T") user_templatename = arg;
                     }
                 }
                 else if (!dashdash && a.IndexOf('=') >= 0)
                 {
                     System.Console.Error.Write("Command line syntax error: undefined option.\n");
-                    errcnt++;
+                    errcnt = checked(errcnt + 1);
                 }
                 else args.Add(a);
                 if (a == "--") dashdash = true;
@@ -177,6 +198,9 @@ namespace CsLemon
             }
             return args;
         }
+
+        /// <summary>A symbol named with a capital: a terminal.</summary>
+        private static bool StartsUpper(Symbol sp) => sp.name.Length > 0 && Chars.ISUPPER(sp.name[0]);
 
         /// <summary>The main program.  Parse the command line and do it...</summary>
         public static int Main(string[] argv)
@@ -221,12 +245,28 @@ namespace CsLemon
             lem.nsymbol = Tables.Symbol_count();
             lem.symbols = Tables.Symbol_arrayof();
             int i;
-            for (i = 0; i < lem.nsymbol; i++) lem.symbols[i].index = i;
+            for (i = 0; i < lem.nsymbol; i++)
+            {
+                Spec.Invariant(0 <= i);
+                lem.Sym(i).index = i;
+            }
             System.Array.Sort(lem.symbols, Tables.Symbolcmpp);
-            for (i = 0; i < lem.nsymbol; i++) lem.symbols[i].index = i;
-            while (lem.symbols[i - 1].type == SymbolType.MULTITERMINAL) i--;
+            for (i = 0; i < lem.nsymbol; i++)
+            {
+                Spec.Invariant(0 <= i);
+                lem.Sym(i).index = i;
+            }
+            while (lem.Sym(i - 1).type == SymbolType.MULTITERMINAL)
+            {
+                Spec.Invariant(0 <= i);
+                i--;
+            }
             lem.nsymbol = i - 1;
-            for (i = 1; Chars.ISUPPER(lem.symbols[i].name[0]); i++) { }
+            /* (C reads name[0] of "" as the terminating '\0') */
+            for (i = 1; StartsUpper(lem.Sym(i)); i++)
+            {
+                Spec.Invariant(1 <= i);
+            }
             lem.nterminal = i;
 
             /* Assign sequential rule numbers.  Start with 0.  Put rules that have no reduce action C-code associated
@@ -234,10 +274,10 @@ namespace CsLemon
             ** jump table. */
             Rule? rp;
             for (i = 0, rp = lem.rule; rp != null; rp = rp.next)
-                rp.iRule = rp.code != null ? i++ : -1;
+                rp.iRule = rp.code != null ? checked(i++) : -1;
             lem.nruleWithAction = i;
             for (rp = lem.rule; rp != null; rp = rp.next)
-                if (rp.iRule < 0) rp.iRule = i++;
+                if (rp.iRule < 0) rp.iRule = checked(i++);
             lem.startRule = lem.rule;
             lem.rule = Rule_sort(lem.rule);
 
@@ -281,7 +321,7 @@ namespace CsLemon
             {
                 System.Console.Out.Write("Parser statistics:\n");
                 stats_line("terminal symbols", lem.nterminal);
-                stats_line("non-terminal symbols", lem.nsymbol - lem.nterminal);
+                stats_line("non-terminal symbols", checked(lem.nsymbol - lem.nterminal));
                 stats_line("total symbols", lem.nsymbol);
                 stats_line("rules", lem.nrule);
                 stats_line("states", lem.nxstate);

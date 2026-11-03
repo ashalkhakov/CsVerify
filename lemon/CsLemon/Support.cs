@@ -12,8 +12,8 @@ namespace CsLemon
         /// <summary>Set the set size (n terminals and one more).</summary>
         public static void SetSize(int n)
         {
-            Spec.Requires(0 <= n && n < int.MaxValue);
-            size = (uint)(n + 1);
+            Spec.Requires(0 <= n);
+            size = (uint)checked(n + 1);
         }
 
         /// <summary>Allocate a new set.</summary>

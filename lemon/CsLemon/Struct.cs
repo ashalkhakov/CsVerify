@@ -36,6 +36,7 @@ namespace CsLemon
         /// <summary>The k-th constituent of a MULTITERMINAL (subsym holds nsubsym symbols).</summary>
         public Symbol Sub(int k)
         {
+            Spec.Ensures(0 <= k);
             Checks.That(subsym != null && 0 <= k && k < subsym.Length && subsym[k] != null);
             return subsym![k];
         }
@@ -80,6 +81,7 @@ namespace CsLemon
         public Symbol Rhs(int i)
         {
             Spec.Requires(i < nrhs);
+            Spec.Ensures(0 <= i && i < rhs.Length);
             Checks.That(0 <= i && i < rhs.Length && rhs[i] != null);
             return rhs[i];
         }
@@ -219,6 +221,7 @@ namespace CsLemon
         /// <summary>The i-th symbol: the symbol table is full (every slot below its length holds a symbol).</summary>
         public Symbol Sym(int i)
         {
+            Spec.Ensures(0 <= i && i < symbols.Length);
             Checks.That(0 <= i && i < symbols.Length && symbols[i] != null);
             return symbols[i];
         }
@@ -226,6 +229,7 @@ namespace CsLemon
         /// <summary>The i-th state: sorted holds every state.</summary>
         public State Sorted(int i)
         {
+            Spec.Ensures(0 <= i && i < sorted.Length);
             Checks.That(0 <= i && i < sorted.Length && sorted[i] != null);
             return sorted[i];
         }
