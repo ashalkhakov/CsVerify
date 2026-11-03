@@ -61,6 +61,15 @@ public sealed class Other { public int X; public void Bump() { X++; } }
         }
 
         [Fact]
+        public void DataValues_ChangeNoState()
+        {
+            // building a data value (a record of a closed hierarchy) writes no field
+            const string data = "public abstract record W { private W() { } public sealed record Nil() : W; public sealed record Cons(int H, W T) : W; } ";
+            Assert.Empty(Harness.Verify(Classes + data + "public static class C { static W Make() => new W.Cons(1, new W.Nil()); " +
+                "static void M(Counter c) { int old = c.Count; var w = Make(); Spec.Assert(c.Count == old); } }").Errors("M"));
+        }
+
+        [Fact]
         public void Aliasing_IsTracked()
         {
             Assert.Empty(Errors("M", "static void M(Counter a, Counter b) { Spec.Requires(a != b); int old = b.Count; a.Count = 10; Spec.Assert(b.Count == old); }"));

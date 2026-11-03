@@ -115,6 +115,8 @@ namespace CsVerify.Verifier
             if ((m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
                 !m.IsSealed && m.ContainingType?.IsSealed != true && !m.IsStatic)
                 d.All = true;
+            // a data value's constructor builds a value: it changes no state (its header's computed base arguments are pure)
+            if (m.MethodKind == MethodKind.Constructor && _engine.Data.IsData(m.ContainingType)) return d;
             // a source class's implicit constructor only sets the new object's fields (defaults, initializers)
             if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0) return d;
             // a virtual member may run any override: they are all reachable from it
