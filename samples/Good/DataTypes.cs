@@ -5,13 +5,14 @@ namespace Samples
 {
     /// <summary>
     /// A list as an algebraic data type (ATS <c>datatype list</c>, Dafny <c>datatype List</c>): a closed record
-    /// hierarchy. The private constructor and nested sealed cases mean Nil and Cons are the only cases.
+    /// hierarchy. The private constructor and nested sealed cases mean Nil and Cons are the only cases. It is generic:
+    /// one data type for every element type, so <c>Length&lt;T&gt;</c> takes apart the <c>List&lt;int&gt;</c> a caller built.
     /// </summary>
-    public abstract record List
+    public abstract record List<T>
     {
         private List() { }
-        public sealed record Nil() : List;
-        public sealed record Cons(int Head, List Tail) : List;
+        public sealed record Nil() : List<T>;
+        public sealed record Cons(T Head, List<T> Tail) : List<T>;
     }
 
     /// <summary>
@@ -57,66 +58,76 @@ namespace Samples
         // ---------------------------------------------------------------- lists
 
         [Pure]
-        public static int Length(List xs)
+        public static int Length<T>(List<T> xs)
         {
             Spec.Decreases(xs);
             Spec.Ensures((int r) => r >= 0);
-            return xs switch { List.Nil => 0, List.Cons c => 1 + Length(c.Tail) };
+            return xs switch { List<T>.Nil => 0, List<T>.Cons c => 1 + Length(c.Tail) };
         }
 
         [Pure]
-        public static List Append(List xs, List ys)
+        public static List<T> Append<T>(List<T> xs, List<T> ys)
         {
             Spec.Decreases(xs);
-            return xs switch { List.Nil => ys, List.Cons c => new List.Cons(c.Head, Append(c.Tail, ys)) };
+            return xs switch { List<T>.Nil => ys, List<T>.Cons c => new List<T>.Cons(c.Head, Append(c.Tail, ys)) };
         }
 
         [Pure]
-        public static List Reverse(List xs)
+        public static List<T> Reverse<T>(List<T> xs)
         {
             Spec.Decreases(xs);
-            return xs switch { List.Nil => xs, List.Cons c => Append(Reverse(c.Tail), new List.Cons(c.Head, new List.Nil())) };
+            return xs switch { List<T>.Nil => xs, List<T>.Cons c => Append(Reverse(c.Tail), new List<T>.Cons(c.Head, new List<T>.Nil())) };
         }
 
         /// <summary>|xs ++ ys| = |xs| + |ys|, by induction on xs.</summary>
         [Lemma, Conditional(Spec.Symbol)]
-        public static void AppendLength(List xs, List ys)
+        public static void AppendLength<T>(List<T> xs, List<T> ys)
         {
             Spec.Decreases(xs);
             Spec.Ensures(Length(Append(xs, ys)) == Length(xs) + Length(ys));
-            if (xs is List.Cons c) AppendLength(c.Tail, ys);
+            if (xs is List<T>.Cons c) AppendLength(c.Tail, ys);
         }
 
         /// <summary>|reverse xs| = |xs|, using the append lemma at each step.</summary>
         [Lemma, Conditional(Spec.Symbol)]
-        public static void ReverseLength(List xs)
+        public static void ReverseLength<T>(List<T> xs)
         {
             Spec.Decreases(xs);
             Spec.Ensures(Length(Reverse(xs)) == Length(xs));
-            if (xs is List.Cons c)
+            if (xs is List<T>.Cons c)
             {
                 ReverseLength(c.Tail);
-                var one = new List.Cons(c.Head, new List.Nil());
+                var one = new List<T>.Cons(c.Head, new List<T>.Nil());
                 AppendLength(Reverse(c.Tail), one);
                 Spec.Assert(Length(one.Tail) == 0);
             }
         }
 
         /// <summary>Builds [n-1, ..., 1, 0] at run time; its length is proved, not tested.</summary>
-        public static List Countdown(int n)
+        public static List<int> Countdown(int n)
         {
             Spec.Requires(n >= 0);
-            Spec.Ensures((List r) => Length(r) == n);
-            List xs = new List.Nil();
+            Spec.Ensures((List<int> r) => Length(r) == n);
+            List<int> xs = new List<int>.Nil();
             Spec.Assert(Length(xs) == 0);
             for (int i = 0; i < n; i++)
             {
                 Spec.Invariant(0 <= i && i <= n && xs != null && Length(xs) == i); // a reassigned local is only what the invariant says
-                var next = new List.Cons(i, xs);
+                var next = new List<int>.Cons(i, xs);
                 Spec.Assert(Length(next) == Length(next.Tail) + 1);
                 xs = next;
             }
             return xs;
+        }
+
+        /// <summary>Reversing what Countdown built keeps its length: the generic lemma used at List&lt;int&gt;.</summary>
+        public static int ReversedCount(int n)
+        {
+            Spec.Requires(n >= 0);
+            Spec.Ensures((int r) => r == n);
+            var xs = Countdown(n);
+            ReverseLength(xs);
+            return Length(Reverse(xs));
         }
 
         // ---------------------------------------------------------------- expressions
@@ -191,7 +202,7 @@ namespace Samples
 
         public static int Demo()
         {
-            int known = Length(Countdown(3)) + Widen(new Interval(0, 2), 1).Width();
+            int known = ReversedCount(3) + Widen(new Interval(0, 2), 1).Width();
             Spec.Assert(known == 3 + 4);
             var e = new Exp.Mul(new Exp.Num(1), new Exp.Add(new Exp.Num(3), new Exp.Num(4)));
             FoldPreservesEval(e);

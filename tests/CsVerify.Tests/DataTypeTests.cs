@@ -143,5 +143,67 @@ public sealed record Range(int Lo, int Hi)
             Assert.Equal(new[] { "CSV1001" }, Harness.Verify(box.Replace("BODY", "static Box M() => new Box(0);")).Errors("M"));
             Assert.Empty(Harness.Verify(box.Replace("BODY", "static Box M() => new Box(1);")).Errors("M"));
         }
-    }
+    
+        private const string Generic = @"
+public abstract record List<T>
+{
+    private List() { }
+    public sealed record Nil() : List<T>;
+    public sealed record Cons(T Head, List<T> Tail) : List<T>;
+}
+internal abstract record Option<T>;
+internal sealed record None<T>() : Option<T>;
+internal sealed record Some<T>(T Value) : Option<T>;
+internal static class C {
+    [Pure] public static int Length<T>(List<T> xs) { Spec.Decreases(xs); Spec.Ensures((int r) => r >= 0); return xs switch { List<T>.Nil => 0, List<T>.Cons c => 1 + Length(c.Tail) }; }
+    [Pure] public static List<T> Append<T>(List<T> xs, List<T> ys) { Spec.Decreases(xs); return xs switch { List<T>.Nil => ys, List<T>.Cons c => new List<T>.Cons(c.Head, Append(c.Tail, ys)) }; }
+    [Lemma, Conditional(""CSVERIFY_SPEC"")] static void AppendLength<T>(List<T> xs, List<T> ys) { Spec.Decreases(xs); Spec.Ensures(Length(Append(xs, ys)) == Length(xs) + Length(ys)); if (xs is List<T>.Cons c) AppendLength(c.Tail, ys); }
+    [Pure] static Option<T> Nth<T>(List<T> xs, int n) { Spec.Decreases(xs); return xs switch { List<T>.Cons c => n == 0 ? new Some<T>(c.Head) : Nth(c.Tail, n - 1), _ => new None<T>() }; }
+    BODY
+}";
+
+        private static string[] GenericErrors(string method, string body) => Harness.Verify(Generic.Replace("BODY", body)).Errors(method);
+
+        [Fact]
+        public void GenericDataTypes_AreOneTypeForAllInstantiations()
+        {
+            var r = Harness.Verify(Generic.Replace("BODY", ""));
+            Assert.Empty(r.Errors("Length"));
+            Assert.Empty(r.Errors("Append"));
+            Assert.Empty(r.Errors("AppendLength"));
+            // a List<int> built here is what the generic functions and lemmas take apart
+            Assert.Empty(GenericErrors("M", @"static void M() {
+                var l = new List<int>.Cons(5, new List<int>.Nil());
+                Spec.Assert(Length(l.Tail) == 0 && Length(l) == 1);
+                AppendLength(l, l);
+                Spec.Assert(Length(Append(l, l)) == 2); }"));
+        }
+
+        [Fact]
+        public void GenericCases_NeedNotBeNested()
+        {
+            Assert.Empty(GenericErrors("NthInRange", @"[Lemma, Conditional(""CSVERIFY_SPEC"")] static void NthInRange<T>(List<T> xs, int n) {
+                Spec.Requires(0 <= n && n < Length(xs)); Spec.Decreases(xs); Spec.Ensures(Nth(xs, n) is Some<T>);
+                if (xs is List<T>.Cons c && n > 0) NthInRange(c.Tail, n - 1); }"));
+            Assert.Empty(GenericErrors("Get", "static int Get(Option<int> o) => o switch { Some<int> s => s.Value, None<int> => 0 };"));
+        }
+
+        [Fact]
+        public void GenericEquality_FollowsTheTypeArgument()
+        {
+            Assert.Empty(GenericErrors("M", @"static void M() {
+                Spec.Assert(new List<int>.Cons(5, new List<int>.Nil()) == new List<int>.Cons(5, new List<int>.Nil()));
+                Spec.Assert(new List<int>.Cons(5, new List<int>.Nil()) != new List<int>.Cons(6, new List<int>.Nil())); }"));
+            // strings compare by contents, which the verifier does not model: unknown, not wrong
+            Assert.Equal(new[] { "CSV1002" }, GenericErrors("M", "static bool M(List<string> a, List<string> b) { Spec.Ensures((bool r) => r == (a == b)); return a == b; }"));
+        }
+
+        [Fact]
+        public void GenericElements_AreMaybeNull()
+        {
+            // generic code can build a List<string> holding null (T is unconstrained), so Head is not known non-null
+            Assert.Equal(new[] { "CSV1013" }, GenericErrors("M", "static int M(List<string>.Cons c) => c.Head.Length;"));
+            Assert.Empty(GenericErrors("M", "static int M(List<string?>.Cons c) => c.Head == null ? 0 : c.Head.Length;"));
+        }
+}
 }

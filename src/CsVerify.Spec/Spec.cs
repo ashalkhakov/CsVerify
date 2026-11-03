@@ -1,8 +1,8 @@
-using System;
-using System.Diagnostics;
-
 namespace CsVerify
 {
+    using System;
+    using System.Diagnostics;
+
     /// <summary>
     /// Specification statements. Every method is <c>[Conditional("CSVERIFY_SPEC")]</c>: in a normal build the
     /// compiler removes the call <em>and the evaluation of its arguments</em>, so specifications cost nothing at

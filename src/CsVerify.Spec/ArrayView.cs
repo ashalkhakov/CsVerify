@@ -1,8 +1,8 @@
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-
 namespace CsVerify
 {
+    using System.Collections.Generic;
+    using System.Runtime.CompilerServices;
+
     /// <summary>
     /// The array view <c>array_v(T, n, l)</c>: a linear token proving that the <see cref="Length"/> cells starting at
     /// <see cref="Addr"/> hold the elements <see cref="Elems"/>. Split it to hand parts of an array to different code,

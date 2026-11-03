@@ -1,7 +1,7 @@
-using System.Collections.Generic;
-
 namespace CsVerify
 {
+    using System.Collections.Generic;
+
     /// <summary>A pointer (ATS <c>ptr l</c>). Its ghost <see cref="Addr"/> is the static address <c>l</c>.</summary>
     public readonly struct Ptr<T>
     {

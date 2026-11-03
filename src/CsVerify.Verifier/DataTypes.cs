@@ -7,11 +7,13 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Positional records as algebraic data types. A data record is a non-generic record class whose whole state is
+    /// Positional records as algebraic data types. A data record is a record class whose whole state is
     /// its positional properties: a value is its constructor applied to them. A hierarchy is closed (its cases are
     /// known) when the abstract root cannot be derived from outside this compilation: every constructor is private,
     /// or the type is not visible outside the assembly. Each case gets a tag, so type tests and <c>switch</c> are
-    /// case analysis.
+    /// case analysis. A generic record is one data type for all its instantiations: tags, constructors and fields
+    /// are those of its definition (<c>List&lt;T&gt;.Cons</c>), so a <c>List&lt;int&gt;</c> built by a caller and the
+    /// <c>List&lt;T&gt;</c> a generic function takes apart are the same values. Every method here takes either form.
     /// </summary>
     internal sealed class DataTypes
     {
@@ -33,7 +35,7 @@ namespace CsVerify.Verifier
             {
                 changed = false;
                 foreach (var t in candidates)
-                    if (!data.Contains(t) && HasDataShape(t) && (t.BaseType?.SpecialType == SpecialType.System_Object || data.Contains(t.BaseType)))
+                    if (!data.Contains(t) && HasDataShape(t) && (t.BaseType?.SpecialType == SpecialType.System_Object || data.Contains(Def(t.BaseType))))
                         changed = data.Add(t) || changed;
             }
             int tag = 1;
@@ -42,7 +44,7 @@ namespace CsVerify.Verifier
 
         private static bool HasDataShape(INamedTypeSymbol t)
         {
-            if (t.IsGenericType || !(t.IsSealed || t.IsAbstract)) return false;
+            if (!(t.IsSealed || t.IsAbstract)) return false;
             foreach (var m in t.GetMembers())
             {
                 if (m.IsStatic || m.IsImplicitlyDeclared && !(m is IFieldSymbol)) continue;
@@ -68,21 +70,26 @@ namespace CsVerify.Verifier
         private static bool IsPrimary(IMethodSymbol ctor) =>
             ctor.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is RecordDeclarationSyntax);
 
-        public bool IsData(ITypeSymbol t) => t is INamedTypeSymbol n && _tags.ContainsKey(n);
+        /// <summary>The generic definition of a (possibly constructed, possibly nested in a constructed) type.</summary>
+        public static INamedTypeSymbol Def(ITypeSymbol t) => (t as INamedTypeSymbol)?.OriginalDefinition;
 
-        public int TagOf(INamedTypeSymbol t) => _tags[t];
+        public bool IsData(ITypeSymbol t) => Def(t) is INamedTypeSymbol n && _tags.ContainsKey(n);
+
+        public int TagOf(INamedTypeSymbol t) => _tags[Def(t)];
 
         /// <summary>Could a value of this static type be a data value (so its reference identity is not modeled)?</summary>
         public bool MayHoldData(ITypeSymbol t) =>
             t != null && (IsData(t) || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.TypeParameter ||
                           t.TypeKind == TypeKind.Interface && _tags.Keys.Any(r => r.AllInterfaces.Contains(t, SymbolEqualityComparer.Default)));
 
-        public static IMethodSymbol PrimaryConstructor(INamedTypeSymbol t) => t.InstanceConstructors.FirstOrDefault(IsPrimary);
+        /// <summary>The primary constructor of the definition (its parameters are what the record header's base arguments refer to).</summary>
+        public static IMethodSymbol PrimaryConstructor(INamedTypeSymbol t) => Def(t).InstanceConstructors.FirstOrDefault(IsPrimary);
 
-        /// <summary>The positional properties of a record, its bases' first: the arguments of its value constructor.</summary>
+        /// <summary>The positional properties (of the definition), its bases' first: the arguments of its value constructor.</summary>
         public IReadOnlyList<IPropertySymbol> Fields(INamedTypeSymbol t)
         {
-            var result = IsData(t.BaseType) ? Fields(t.BaseType).ToList() : new List<IPropertySymbol>();
+            t = Def(t);
+            var result = IsData(t.BaseType) ? Fields(Def(t.BaseType)).ToList() : new List<IPropertySymbol>();
             result.AddRange(t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && IsPositional(p)));
             return result;
         }
@@ -90,9 +97,10 @@ namespace CsVerify.Verifier
         /// <summary>The property a primary-constructor parameter initializes (its own, or a base's of the same name).</summary>
         public static IPropertySymbol PositionalProperty(INamedTypeSymbol t, int ordinal)
         {
+            t = Def(t);
             var name = PrimaryConstructor(t)?.Parameters[ordinal].Name;
-            for (var s = t; s != null; s = s.BaseType)
-                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p) return p;
+            for (var s = t; s != null; s = Def(s.BaseType))
+                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p) return p.OriginalDefinition;
             return null;
         }
 
@@ -100,6 +108,7 @@ namespace CsVerify.Verifier
         public IReadOnlyList<INamedTypeSymbol> Cases(INamedTypeSymbol t)
         {
             if (!IsData(t)) return null;
+            t = Def(t);
             if (!t.IsAbstract) return new[] { t };
             if (!IsClosed(t)) return null;
             return _tags.Keys.Where(c => !c.IsAbstract && Derives(c, t)).ToList();
@@ -118,10 +127,11 @@ namespace CsVerify.Verifier
             return false;
         }
 
+        /// <summary>Is <paramref name="t"/> <paramref name="from"/> or derived from it (generic definitions compared)?</summary>
         public static bool Derives(ITypeSymbol t, ITypeSymbol from)
         {
             for (var s = t; s != null; s = s.BaseType)
-                if (SymbolEqualityComparer.Default.Equals(s, from)) return true;
+                if (SymbolEqualityComparer.Default.Equals(s, from) || from is INamedTypeSymbol && SymbolEqualityComparer.Default.Equals(Def(s), Def(from))) return true;
             return false;
         }
 
@@ -138,24 +148,75 @@ namespace CsVerify.Verifier
         /// <summary>
         /// Record equality is equality of values (the synthesized <c>==</c> compares the runtime type and each
         /// field) when every field compares the way the verifier models it: integers, booleans, arrays (by
-        /// reference, as EqualityComparer does) and data records of the same kind.
+        /// reference, as EqualityComparer does) and data records of the same kind. A field of a type parameter
+        /// compares as the type argument does: <c>List&lt;int&gt;</c> has value equality, <c>List&lt;string&gt;</c> not.
         /// </summary>
-        public bool HasValueEquality(INamedTypeSymbol t, HashSet<INamedTypeSymbol> seen = null)
+        public bool HasValueEquality(INamedTypeSymbol t, HashSet<string> seen = null)
         {
-            seen ??= new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-            if (!seen.Add(t)) return true;
+            seen ??= new HashSet<string>();
+            if (!seen.Add(t.ToDisplayString())) return true;
             var cases = Cases(t);
             if (cases == null) return false;
+            var rootArgs = Arguments(t);
             foreach (var c in cases)
+            {
+                var subst = CaseArguments(c, Def(t), rootArgs);
                 foreach (var p in Fields(c))
-                {
-                    var ft = p.Type;
-                    bool ok = ft.SpecialType == SpecialType.System_Boolean || ft.TypeKind == TypeKind.Enum || ft is IArrayTypeSymbol ||
-                              ft.SpecialType >= SpecialType.System_Char && ft.SpecialType <= SpecialType.System_UInt64 ||
-                              ft is INamedTypeSymbol n && IsData(n) && HasValueEquality(n, seen);
-                    if (!ok) return false;
-                }
+                    if (!(Substitute(p.Type, subst) is ITypeSymbol ft) || !ComparesAsModeled(ft, seen)) return false;
+            }
             return true;
+        }
+
+        private bool ComparesAsModeled(ITypeSymbol ft, HashSet<string> seen) =>
+            ft.SpecialType == SpecialType.System_Boolean || ft.TypeKind == TypeKind.Enum || ft is IArrayTypeSymbol ||
+            ft.SpecialType >= SpecialType.System_Char && ft.SpecialType <= SpecialType.System_UInt64 ||
+            ft is INamedTypeSymbol n && IsData(n) && HasValueEquality(n, seen);
+
+        /// <summary>Type parameter to type argument, for a type and the generic types it is nested in.</summary>
+        private static Dictionary<ITypeParameterSymbol, ITypeSymbol> Arguments(INamedTypeSymbol t)
+        {
+            var map = new Dictionary<ITypeParameterSymbol, ITypeSymbol>(SymbolEqualityComparer.Default);
+            for (var s = t; s != null; s = s.ContainingType)
+                for (int i = 0; i < s.TypeArguments.Length; i++)
+                    map[s.OriginalDefinition.TypeParameters[i]] = s.TypeArguments[i];
+            return map;
+        }
+
+        /// <summary>
+        /// A case's own type parameters in terms of the root's arguments: <c>Some&lt;U&gt; : Option&lt;U&gt;</c> at
+        /// <c>Option&lt;int&gt;</c> has U = int. (A case nested in the root uses the root's parameters directly.)
+        /// </summary>
+        private static Dictionary<ITypeParameterSymbol, ITypeSymbol> CaseArguments(INamedTypeSymbol c, INamedTypeSymbol root,
+            Dictionary<ITypeParameterSymbol, ITypeSymbol> rootArgs)
+        {
+            var map = new Dictionary<ITypeParameterSymbol, ITypeSymbol>(rootArgs, SymbolEqualityComparer.Default);
+            for (var s = c; s != null && !SymbolEqualityComparer.Default.Equals(Def(s), root); s = s.BaseType)
+                if (s.BaseType is INamedTypeSymbol b && SymbolEqualityComparer.Default.Equals(Def(b), root))
+                    for (int i = 0; i < b.TypeArguments.Length; i++)
+                        if (b.TypeArguments[i] is ITypeParameterSymbol own && rootArgs.TryGetValue(root.TypeParameters[i], out var arg))
+                            map[own] = arg;
+            return map;
+        }
+
+        /// <summary>The type with its type parameters replaced; null if that cannot be built.</summary>
+        private static ITypeSymbol Substitute(ITypeSymbol t, Dictionary<ITypeParameterSymbol, ITypeSymbol> map)
+        {
+            switch (t)
+            {
+                case ITypeParameterSymbol tp: return map.TryGetValue(tp, out var a) ? a : null;
+                case INamedTypeSymbol n when n.TypeArguments.Length > 0 && n.ContainingType?.IsGenericType != true:
+                {
+                    var args = n.TypeArguments.Select(x => Substitute(x, map)).ToArray();
+                    return args.Any(x => x == null) ? null : n.OriginalDefinition.Construct(args);
+                }
+                case INamedTypeSymbol n when n.ContainingType?.IsGenericType == true:
+                {
+                    // a type nested in a generic one (List<T>.Cons): rebuild the container, then find the member
+                    if (!(Substitute(n.ContainingType, map) is INamedTypeSymbol outer) || n.TypeArguments.Length > 0) return null;
+                    return outer.GetTypeMembers(n.Name).FirstOrDefault();
+                }
+                default: return t;
+            }
         }
     }
 }

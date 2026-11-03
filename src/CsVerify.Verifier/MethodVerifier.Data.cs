@@ -67,7 +67,7 @@ namespace CsVerify.Verifier
         {
             var fields = Data.Fields(r);
             var args = fields.Select((p, i) => T.Coerce(values[i], SortOf(p.OriginalDefinition.Type))).ToArray();
-            var o = _z3.Apply("mk:" + r.ToDisplayString(), Sort.Int, args);
+            var o = _z3.Apply("mk:" + DataTypes.Def(r).ToDisplayString(), Sort.Int, args);
             AssumeOnce("mk:" + o.S, () =>
             {
                 var facts = new List<Term> { NotNull(o), T.Eq(Tag(o), T.Int(Data.TagOf(r))) };
@@ -245,7 +245,7 @@ namespace CsVerify.Verifier
             var type = oc.Type as INamedTypeSymbol;
             if (ctor != null && Data.IsData(type))
             {
-                if (!SymbolEqualityComparer.Default.Equals(DataTypes.PrimaryConstructor(type), ctor))
+                if (!SymbolEqualityComparer.Default.Equals(DataTypes.PrimaryConstructor(type), ctor.OriginalDefinition))
                 {
                     NotModeled(oc.Syntax, $"a data record is built with its primary constructor only");
                     return Unknown(oc.Type, "new");
@@ -292,6 +292,7 @@ namespace CsVerify.Verifier
 
         private void CollectFields(INamedTypeSymbol t, Term[] args, Dictionary<IPropertySymbol, Term> values, Frame f, SpecEnv spec)
         {
+            t = DataTypes.Def(t); // its header's base arguments refer to the definition's parameters
             var primary = DataTypes.PrimaryConstructor(t);
             if (primary == null) return;
             for (int i = 0; i < primary.Parameters.Length; i++)

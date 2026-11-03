@@ -1,7 +1,7 @@
-using System;
-
 namespace CsVerify
 {
+    using System;
+
     /// <summary>
     /// A static index (ATS <c>{n:int}</c>): a value that exists only for the verifier. Zero size at run time;
     /// <see cref="Value"/> may only be read inside specifications, lemma arguments and lemma bodies.

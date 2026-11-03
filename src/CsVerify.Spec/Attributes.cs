@@ -1,7 +1,7 @@
-using System;
-
 namespace CsVerify
 {
+    using System;
+
     /// <summary>
     /// Values of this type are linear (ATS views / <c>viewtype</c>): every one must be consumed exactly once on every
     /// path, cannot be copied, boxed, captured by lambdas or stored in non-linear types. <c>ref</c>/<c>in</c> borrow.

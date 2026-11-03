@@ -59,7 +59,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | lexicographic metric `.<m, n>.` | `Spec.Decreases(m, n)` (up to three components) |
 | `prfun` (proof function, total, erased) | `[Lemma, Conditional("CSVERIFY_SPEC")] void L(...)`: body is the proof, recursion is induction |
 | `prval () = lemma(...)` | a plain call `L(x);` (erased; adds L's postconditions) |
-| `datatype` (ATS), `datatype` (Dafny) | a closed positional record hierarchy: `abstract record List { private List() { } public sealed record Nil() : List; public sealed record Cons(int Head, List Tail) : List; }` |
+| `datatype` (ATS), `datatype` (Dafny) | a closed positional record hierarchy, generic or not: `abstract record List<T> { private List() { } public sealed record Nil() : List<T>; public sealed record Cons(T Head, List<T> Tail) : List<T>; }` |
 | `case`/`match` on constructors | `switch` and `is` patterns (`Cons c`, `Cons(var h, Nil)`, `{ Head: > 0 }`), exhaustiveness proved |
 | metric on a datatype (structural recursion) | `Spec.Decreases(xs)`: the size of a data value |
 | `dataprop` (proof as data: `FACT(n, r)`) | a closed record hierarchy whose cases are the proof rules (`record Ind(Fact Prev) : Fact(Prev.N + 1, ...)`), passed as `Ghost<Fact>` in run-time code; case analysis is `switch`, induction is recursion |
@@ -185,13 +185,16 @@ Z3 runs as a separate process speaking SMT-LIB2, by design. Neither the analyzer
 
 ### Data types and object invariants
 
-A **data record** is a non-generic record class whose whole state is its positional properties. A hierarchy of them is **closed** when the abstract root can't be extended from outside: its constructors are private (cases nested inside it), or the type isn't visible outside the assembly. The verifier then treats it as an algebraic data type:
+A **data record** is a record class whose whole state is its positional properties. A hierarchy of them is **closed** when the abstract root can't be extended from outside: its constructors are private (cases nested inside it), or the type isn't visible outside the assembly. The verifier then treats it as an algebraic data type:
 - **Construction** `new Cons(h, t)` is the term `Cons(h, t)`. Its fields read back, it is not null, its tag is `Cons`'s, and its size is one more than its parts'. A case's base fields are computed from its header (`Ind(Prev) : Fact(Prev.N + 1, ...)` gives `N == Prev.N + 1`).
 - **Case analysis.** `is`, `switch` statements and switch expressions test the tag. A value of a closed type is one of its cases, and on each branch it is that case's constructor applied to its own fields. A switch that misses a case throws, which a `[Pure]` function or lemma may not do (CSV1011), and a specification may not do either (CSV1012).
 - **Equality.** The synthesized record `==` is equality of values, as long as every field compares the way the verifier models it (integers, booleans, arrays by reference, data records).
 - **No identity.** A data value is its contents, so reference identity (`ReferenceEquals`, or `==` at type `object` or an interface) is not modeled. Only comparisons with `null` are known.
 - **Structural recursion.** `Spec.Decreases(xs)` measures the value's size, so recursion on a sub-value terminates, and a lemma recursing that way is a proof by structural induction.
 - **Fields keep their nullability.** A positional field of a non-nullable type is not null, because the constructor's argument was proved not null.
+- **Generic records** (`List<T>`, `Option<T>` with cases `Some<T>`, `None<T>`) are one data type for all instantiations. Tags, constructors and fields are those of the definition, so the `List<int>` a caller builds is what a generic `Length<T>` and its lemmas take apart. Two limits follow from that:
+  - **Nullability.** A field of type `T` is maybe-null even in a `List<string>`, because generic code with an unconstrained `T` can build a `List<string>` holding null.
+  - **Equality.** `==` is value equality when the type arguments compare as modeled: `List<int>` does, `List<string>` doesn't. In that case the result is unknown, with a warning.
 
 An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invariant]` on a data record or its base. It is proved at every `new` (CSV1015) and assumed of every object of the type, since the fields never change afterwards. While verifying the invariant itself, or anything it calls, it is not assumed: otherwise a helper could be "proved" from the very invariant it defines. Invariants may read fields and their lengths but not array contents, which can change.
 
@@ -381,7 +384,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 - `Memory.*`: alloc / read / write / free with linear `PointsTo` views, including a function that borrows a view and gives it back.
 - `ArrayViews.Fill`: divide-and-conquer fill. It splits `array_v(n, l)` into `array_v(n/2, l) * array_v(n - n/2, l + n/2)`, recurses on each half through its own pointer, and joins them back.
 - `DataTypes.cs` (lists after ATS and Dafny, expressions after Dafny's tutorial, FACT from INT2PROGINATS):
-  - `Length`, `Append` and `Reverse` on a `List` data type, with `AppendLength` and `ReverseLength` proved by structural induction, and `Countdown`, which builds a list whose length is proved.
+  - `Length`, `Append` and `Reverse` on a generic `List<T>`, with `AppendLength` and `ReverseLength` proved by structural induction. `Countdown` builds a `List<int>` whose length is proved, and `ReversedCount` applies the generic lemma to it.
   - `Eval` and constant folding `Fold` on expressions, with `FoldPreservesEval`.
   - The dataprop `FACT` as a closed record (`Bas`, `Ind`), with its `nat` index as an invariant. `FactIsFunctional` is ATS's `fact_isfun`, by induction on one proof and case analysis on the other. `Factorial` returns `r` together with a `Ghost<Fact>` proof of `FACT(n, r)` built in its loop; the erased program never builds it.
   - `Interval`, a record with the invariant `Lo <= Hi`, and `Widen`, which keeps it.
@@ -435,7 +438,6 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
 
 **What the ports could not say yet:**
 - **Permutation.** Sorts and partitions don't prove that the output is a permutation of the input. ATS proves it with a dataprop over lists, Dafny with `multiset`.
-- **Generic data types.** `List<T>` is not a data type yet: data records must be non-generic.
 - **Dataviews.** Singly-linked list segments (`slseg`, PADL'05) need views defined by cases over mutable memory. That is stage 2: mutable objects, owned through views.
 - **Proofs returned by lemmas.** ATS's `fact_istot` returns a proof. A lemma is a `[Conditional]` void method, which can't have `out` parameters, so only run-time functions can return a `Ghost<T>` proof (`Factorial`).
 - **Sets and cardinalities.** Pigeonhole proofs like Dafny's TwoDuplicates need them.
@@ -470,7 +472,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 135 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 139 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 

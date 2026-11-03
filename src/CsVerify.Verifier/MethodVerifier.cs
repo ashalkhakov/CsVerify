@@ -740,6 +740,13 @@ namespace CsVerify.Verifier
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
             if (IsRecordEquality(b)) return RecordEquality(b, f, spec);
+            if (b.OperatorMethod != null && b.OperatorMethod.IsImplicitlyDeclared && Data.IsData(b.OperatorMethod.ContainingType))
+            {
+                // a record whose fields compare in ways the verifier does not model (strings by contents, say)
+                Eval(b.LeftOperand, f, spec); Eval(b.RightOperand, f, spec);
+                Warn(b.Syntax, $"'{b.Syntax}': {b.OperatorMethod.ContainingType.Name} has fields whose equality is not modeled; the result is unknown");
+                return Unknown(b.Type);
+            }
             if (b.OperatorMethod != null && b.OperatorMethod.ContainingType.SpecialType == SpecialType.System_String &&
                 (b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals) &&
                 (IsNullConstant(b.LeftOperand) || IsNullConstant(b.RightOperand)))
