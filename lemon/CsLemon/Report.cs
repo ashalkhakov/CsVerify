@@ -1261,7 +1261,7 @@ namespace CsLemon
         private sealed class axset
 #pragma warning restore CS8981
         {
-            public State stp = null!;  /* A pointer to a state */
+            public required State stp;  /* A pointer to a state */
             public bool isTkn;         /* True to use tokens.  False for non-terminals */
             public int nAction;        /* Number of actions */
             public int iOrder;         /* Original order of action sets */
@@ -1571,12 +1571,10 @@ namespace CsLemon
             for (i = 0; i < lemp.nxstate; i++)
             {
                 stp = lemp.sorted[i];
-                ax[i * 2] = new axset();
-                ax[i * 2].stp = stp;
+                ax[i * 2] = new axset { stp = stp };
                 ax[i * 2].isTkn = true;
                 ax[i * 2].nAction = stp.nTknAct;
-                ax[i * 2 + 1] = new axset();
-                ax[i * 2 + 1].stp = stp;
+                ax[i * 2 + 1] = new axset { stp = stp };
                 ax[i * 2 + 1].isTkn = false;
                 ax[i * 2 + 1].nAction = stp.nNtAct;
             }

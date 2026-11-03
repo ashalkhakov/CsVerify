@@ -53,7 +53,7 @@ namespace CsLemon
         public int errorcnt;                  /* Number of errors so far */
         public int tokenstart;                /* Text of current token (index into the file buffer) */
         public char[] filebuf = new char[1];  /* The file buffer that tokenstart indexes */
-        public Lemon gp = null!;              /* Global state vector */
+        public required Lemon gp;              /* Global state vector */
         public e_state state;                 /* The state of the parser */
         public Symbol? fallback;              /* The fallback token */
         public Symbol? tkclass;               /* Token class symbol */
@@ -335,18 +335,15 @@ namespace CsLemon
                     if (At(x, 0) == '.')
                     {
                         /* (calloc cannot fail here: no "Can't allocate enough memory for this rule.") */
-                        Rule rp = new Rule();
+                        Rule rp = new Rule { lhs = psp.lhs!, rhs = new Symbol[psp.nrhs], rhsalias = new string?[psp.nrhs] };
                         int i;
                         rp.ruleline = psp.tokenlineno;
-                        rp.rhs = new Symbol[psp.nrhs];
-                        rp.rhsalias = new string?[psp.nrhs];
                         for (i = 0; i < psp.nrhs; i++)
                         {
                             rp.rhs[i] = psp.rhs[i];
                             rp.rhsalias[i] = psp.alias[i];
                             if (rp.rhsalias[i] != null) { rp.rhs[i].bContent = true; }
                         }
-                        rp.lhs = psp.lhs!;
                         rp.lhsalias = psp.lhsalias;
                         rp.nrhs = psp.nrhs;
                         rp.code = null;
@@ -1074,8 +1071,7 @@ namespace CsLemon
             int cp, nextcp;
             int startline = 0;
 
-            ps = new pstate();
-            ps.gp = gp;
+            ps = new pstate { gp = gp };
             ps.filename = gp.filename;
             ps.errorcnt = 0;
             ps.state = e_state.INITIALIZE;

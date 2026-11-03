@@ -10,10 +10,10 @@ namespace CsLemon
         private static Config? basis = null;         /* Top of list of basis configs */
         private static Config? basisend = null;      /* End of list of basis configs (null: the list is empty) */
 
-        /* Return a pointer to a new configuration */
-        private static Config newconfig()
+        /* Return a pointer to a new configuration (of rule rp: C fills it in after) */
+        private static Config newconfig(Rule rp)
         {
-            return new Config();
+            return new Config { rp = rp };
         }
 
         /* Initialized the configuration list builder */
@@ -43,13 +43,12 @@ namespace CsLemon
         )
         {
             Config? cfp;
-            Config model = new Config();
-            model.rp = rp;
+            Config model = new Config { rp = rp };
             model.dot = dot;
             cfp = Tables.Configtable_find(model);
             if (cfp == null)
             {
-                cfp = newconfig();
+                cfp = newconfig(rp);
                 cfp.rp = rp;
                 cfp.dot = dot;
                 cfp.fws = Sets.SetNew();
@@ -69,13 +68,12 @@ namespace CsLemon
         public static Config Configlist_addbasis(Rule rp, int dot)
         {
             Config? cfp;
-            Config model = new Config();
-            model.rp = rp;
+            Config model = new Config { rp = rp };
             model.dot = dot;
             cfp = Tables.Configtable_find(model);
             if (cfp == null)
             {
-                cfp = newconfig();
+                cfp = newconfig(rp);
                 cfp.rp = rp;
                 cfp.dot = dot;
                 cfp.fws = Sets.SetNew();

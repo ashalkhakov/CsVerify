@@ -47,10 +47,10 @@ namespace CsLemon
         */
         private static int nextSeq = 0;
 
-        /* Allocate a new parser action */
-        public static LemonAction Action_new()
+        /* Allocate a new parser action (on look-ahead sp: C fills it in after) */
+        public static LemonAction Action_new(Symbol sp)
         {
-            LemonAction newaction = new LemonAction();
+            LemonAction newaction = new LemonAction { sp = sp };
             newaction.seq = nextSeq;
             nextSeq++;
             return newaction;
@@ -90,7 +90,7 @@ namespace CsLemon
         public static LemonAction Action_add(LemonAction? app, ActionType type, Symbol sp, State? stp, Rule? rp)
         {
             LemonAction newaction;
-            newaction = Action_new();
+            newaction = Action_new(sp);
             newaction.next = app;
             newaction.type = type;
             newaction.sp = sp;

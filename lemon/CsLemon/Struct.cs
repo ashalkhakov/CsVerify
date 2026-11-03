@@ -33,13 +33,13 @@ namespace CsLemon
     /// <summary>Each production rule in the grammar.</summary>
     public sealed class Rule
     {
-        public Symbol lhs = null!;        /* Left-hand side of the rule */
+        public required Symbol lhs;        /* Left-hand side of the rule */
         public string? lhsalias;          /* Alias for the LHS (null if none) */
         public bool lhsStart;             /* True if left-hand side is the start symbol */
         public int ruleline;              /* Line number for the rule */
         public int nrhs;                  /* Number of RHS symbols */
-        public Symbol[] rhs = null!;      /* The RHS symbols */
-        public string?[] rhsalias = null!;/* An alias for each RHS symbol (null if none) */
+        public required Symbol[] rhs;      /* The RHS symbols */
+        public required string?[] rhsalias;/* An alias for each RHS symbol (null if none) */
         public int line;                  /* Line number at which code begins */
         public string? code;              /* The code executed when this rule is reduced */
         public string? codePrefix;        /* Setup code before code[] above */
@@ -61,7 +61,7 @@ namespace CsLemon
     /// <summary>A production rule together with a mark (dot) showing how much of it has been processed.</summary>
     public sealed class Config
     {
-        public Rule rp = null!;           /* The rule upon which the configuration is based */
+        public required Rule rp;           /* The rule upon which the configuration is based */
         public int dot;                   /* The parse point */
         public bool[]? fws;               /* Follow-set for this configuration only */
         public Plink? fplp;               /* Follow-set forward propagation links */
@@ -90,7 +90,7 @@ namespace CsLemon
     /// <summary>struct action: every shift or reduce operation. (x.stp / x.rp of the C union are two fields.)</summary>
     public sealed class LemonAction
     {
-        public Symbol sp = null!;         /* The look-ahead symbol */
+        public required Symbol sp;         /* The look-ahead symbol */
         public ActionType type;
         public State? stp;                /* The new state, if a shift (x.stp) */
         public Rule? rp;                  /* The rule, if a reduce (x.rp) */
@@ -117,7 +117,7 @@ namespace CsLemon
     /// <summary>A followset propagation link.</summary>
     public sealed class Plink
     {
-        public Config cfp = null!;        /* The configuration to which linked */
+        public required Config cfp;        /* The configuration to which linked */
         public Plink? next;               /* The next propagate link */
     }
 
