@@ -59,6 +59,8 @@ namespace CsVerify.Verifier
         public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         /// <summary>The variables holding packages of views ([Linear] record structs) not yet given away or taken apart.</summary>
         public HashSet<ISymbol> LivePackages = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The variables holding views of memory cells (PointsTo, ArrayView, ArrayHole) in hand.</summary>
+        public HashSet<ISymbol> LiveMemViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
         public HashSet<int> ActiveLoops = new HashSet<int>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
@@ -74,6 +76,7 @@ namespace CsVerify.Verifier
             FieldEpoch = FieldEpoch,
             LiveViews = new HashSet<ISymbol>(LiveViews, SymbolEqualityComparer.Default),
             LivePackages = new HashSet<ISymbol>(LivePackages, SymbolEqualityComparer.Default),
+            LiveMemViews = new HashSet<ISymbol>(LiveMemViews, SymbolEqualityComparer.Default),
             Alloc = Alloc,
             Root = Root,
             Perm = Perm,

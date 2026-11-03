@@ -86,6 +86,8 @@ namespace CsVerify.Verifier
         internal readonly bool UsesDynamicFrames;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
+        /// <summary>The program uses ATS's manual memory (Mem, Ptr and the views of its cells).</summary>
+        internal readonly bool UsesMemory;
         /// <summary>The program speaks of permissions (Spec.Acc): to objects, or to array cells.</summary>
         internal readonly bool UsesPermissions;
         private readonly Dictionary<ISymbol, int> _fieldIds = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default);
@@ -110,6 +112,8 @@ namespace CsVerify.Verifier
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned);
+            UsesMemory = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                .Any(n => n.Identifier.Text == "PointsTo" || n.Identifier.Text == "ArrayView" || n.Identifier.Text == "ArrayHole" || n.Identifier.Text == "Mem"));
             UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc"));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             Options = options;
@@ -131,6 +135,9 @@ namespace CsVerify.Verifier
             if (_writesHeap.TryGetValue(key, out var known)) return known;
             var c = ContractOf(key);
             if (c.IsPure || c.IsLemma) return _writesHeap[key] = false;
+            // Mem and Ptr change only Mem's memory, whose cells change by their own rule (MethodVerifier.KeepHeldMemory)
+            if (SpecSymbols.IsCsVerifyType(key.ContainingType, "Mem") || SpecSymbols.IsCsVerifyType(key.ContainingType, "Ptr`1"))
+                return _writesHeap[key] = false;
             // which override runs is not known: any of them may write arrays
             if (IsOverridable(key)) return _writesHeap[key] = true;
             if (!c.HasSource) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsSequence(p.Type));

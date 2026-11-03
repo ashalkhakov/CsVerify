@@ -412,8 +412,16 @@ namespace CsVerify.Verifier
                 Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1005", inv.Syntax, $"loop invariant '{inv.Syntax}' might not hold on entry");
             if (loop.Permissions) LoopPermissionsEntry(loop.Id, loop.Invariants, f, spec);
 
+            var memoryBefore = f.Heap;
+            DeferTies();
             foreach (var s in loop.Havoc)
+            {
+                // a view of memory the loop reassigns: whatever view it holds at the head holds its cells
+                bool liveView = IsMemView(TypeOf(s)) && f.LiveMemViews.Contains(s);
+                if (liveView) ReleaseMemView(f, s);
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
+                if (liveView) MemViewAlive(f, s, f.Vars[s]);
+            }
             if (loop.HavocAllFields) HavocAllFields(f);
             foreach (var field in loop.HavocFields) f.Fields[field] = FreshMap(field);
             if (loop.HavocAllFields || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
@@ -423,6 +431,8 @@ namespace CsVerify.Verifier
                 foreach (var a in loop.HavocArrays)
                     f.Heap = T.Store(f.Heap, Read(f, a), _z3.Fresh(a.Name + "$elems", Sort.Row));
             foreach (var key in f.Captures.Keys.ToList()) f.Captures.Remove(key);
+            LoopMemory(f, loop.Havoc, memoryBefore);
+            FlushTies(f);
 
             if (loop.Permissions) LoopPermissionsHead(loop.Invariants, f, spec);
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
@@ -688,6 +698,7 @@ namespace CsVerify.Verifier
                     // moving a view (w = v) retires the variable it came from
                     if (SpecSymbols.IsViewType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) Release(f, moved);
                     if (SpecSymbols.IsLinearPackage(a.Value.Type) && VariableOf(a.Value) is ISymbol movedPackage) f.LivePackages.Remove(movedPackage);
+                    if (IsMemView(a.Value.Type) && VariableOf(a.Value) is ISymbol movedView) ReleaseMemView(f, movedView);
                     Write(a.Target, v, f, spec);
                     return v;
                 }
@@ -1044,11 +1055,13 @@ namespace CsVerify.Verifier
                     f.Vars[l.Local] = v;
                     if (IsViewVariable(l.Local)) ViewAlive(l.Local, v, f);
                     if (SpecSymbols.IsLinearPackage(l.Local.Type)) f.LivePackages.Add(l.Local);
+                    if (IsMemView(l.Local.Type)) MemViewAlive(f, l.Local, v);
                     break;
                 case IParameterReferenceOperation p:
                     f.Vars[p.Parameter] = v;
                     if (IsViewVariable(p.Parameter) && p.Parameter.RefKind != RefKind.In) ViewAlive(p.Parameter, v, f);
                     if (SpecSymbols.IsLinearPackage(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) f.LivePackages.Add(p.Parameter);
+                    if (IsMemView(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) MemViewAlive(f, p.Parameter, v);
                     break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
                 case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
@@ -1279,6 +1292,9 @@ namespace CsVerify.Verifier
             var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
             if (!callee.HasSource)
             {
+                var libraryMemory = f.Heap;
+                var libraryHeld = f.ArrPerm;
+                DeferTies();
                 foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
                 {
                     var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
@@ -1286,6 +1302,8 @@ namespace CsVerify.Verifier
                     Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                f.Heap = KeepHeldMemory(f.Heap, libraryMemory, libraryHeld);
+                FlushTies(f);
                 CalleeModifies(callee, pre, f, inv.Syntax);
                 HavocFields(f, m, touched);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
@@ -1315,6 +1333,9 @@ namespace CsVerify.Verifier
             var touchedFields = new List<(Term obj, ISymbol field)>();
             if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null) && _codeMode)
                 foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst, touchedCells, touchedFields: touchedFields);
+            // the memory cells still in hand: the call cannot change them
+            var heldMemory = f.ArrPerm;
+            var memoryBefore = f.Heap;
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {
@@ -1336,6 +1357,7 @@ namespace CsVerify.Verifier
             }
 
             var post = pre.Clone();
+            DeferTies();
             foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
             {
                 var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
@@ -1361,6 +1383,8 @@ namespace CsVerify.Verifier
                     Report("CSV1016", inv.Syntax, $"'{m.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes", isError: true);
                 f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
             }
+            if (!IsMemoryNeutral(callee)) f.Heap = post.Heap = KeepHeldMemory(f.Heap, memoryBefore, heldMemory);
+            FlushTies(f);
             HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst, touchedFields);
             if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
             else TakeBack(inv, receiver, f, callee);

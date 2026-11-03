@@ -304,7 +304,13 @@ public static bool Seg(SNode? from, SNode? to, int n) =>
 - **Methods without array permissions** hold every cell and hand cells out at calls. Their writes are checked too, but only cells they gave away (to a callee, or folded into a predicate) are missing.
 - **In predicates.** A predicate's body may hold cells: ATS's viewtypes whose view includes an `array_v`. `CellStacks.Stack(s, n)` in samples/Good/CellStacks.cs holds the stack object and its array's cells. Folding gives the cells up into the instance, so nobody writes them while folded. A body may read only cells it has permission to. A call that gets the instance changes only its cells. A method that folds, unfolds or receives such a predicate starts with no cells but those it is given.
 - **Constructors** exchange permissions like any call, so `new` can hand back the cells of an array it creates.
-- **Limits.** `ArrayView<T>` stays as it was: ATS's linear views over `Mem`/`Ptr` memory, a separate layer from C# arrays.
+- **Limits.** Only C# arrays and `Mem` memory: a `Span` write may touch any array, so a method with array permissions cannot write through one.
+
+**Mem memory, on the same model.** ATS's manual memory (`Mem`, `Ptr<T>`) and its views (`PointsTo<T>` is `T @ l`, `ArrayView<T>` is `array_v`, `ArrayHole<T>`) are cells of the same heap as C# arrays, a row of its own, under the same cell permissions.
+- **A view in hand holds its cells.** Two non-empty views in hand are of different cells, and a cell in hand is none of an array view's (samples/Good/MemoryModel.cs). ATS gets this from linearity, unstated; here it is a fact the solver can use.
+- **Contents.** A view's contents (`Elems`, `Value`) are its own ghost value, as in ATS, tied to its cells whenever it comes into hand. Nobody changes cells that are held, so the tie stays true.
+- **Calls.** A call changes only the cells whose views it gets, plus memory it allocates or frees; every view still in hand keeps its contents. `Split`, `Join`, `TakeOut`, `PutBack`, `Get` and `Read` change nothing. `Mem` writes no C# array, so memory code and array code frame each other: copying a view into an array with `Spec.Acc(target)` leaves the view's contents, and the array's other cells, known.
+- **The API is unchanged**, and so are the samples that use it.
 
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;

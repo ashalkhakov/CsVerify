@@ -271,8 +271,10 @@ namespace CsVerify.Verifier
             var givenInst = new List<Term>();
             if (pre != null && (f.Inst != null || f.ArrPerm != null))
                 foreach (var req in callee.Requires) Exhale(req, pre, new SpecEnv { Old = pre }, f, oc.Syntax, new List<Term>(), givenInst, givenCells);
+            var memoryBefore = f.Heap;
             if (pre != null && f.ArrPerm != null && MentionsCells(callee)) f.Heap = HavocCells(f, givenCells, f.Alloc, givenInst);
             else if (ctor == null || _engine.MayWriteHeap(ctor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+            if (!Data.IsData(type)) f.Heap = KeepHeldMemory(f.Heap, memoryBefore, f.ArrPerm);
             var obj = _z3.Fresh("new", Sort.Int);
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
             HasType(obj, oc.Type, exact: true);

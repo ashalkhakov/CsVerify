@@ -156,6 +156,7 @@ namespace CsVerify.Verifier
         {
             foreach (var a in oc.Arguments)
             {
+                if (a.Parameter != null && IsMemView(a.Parameter.Type) && VariableOf(a.Value) is ISymbol packedView) ReleaseMemView(f, packedView);
                 if (a.Parameter == null || !SpecSymbols.IsViewType(a.Parameter.Type)) continue;
                 ProveOwnedInvariant(OwnedType(a.Parameter.Type), args[a.Parameter.Ordinal], f, a.Syntax, $"when it is packed into {oc.Type.Name}");
                 if (VariableOf(a.Value) is ISymbol packed) Release(f, packed);
@@ -374,6 +375,10 @@ namespace CsVerify.Verifier
             }
             foreach (var a in inv.Arguments.Where(a => a.Parameter?.RefKind == RefKind.None && SpecSymbols.IsLinearPackage(a.Parameter.Type)))
                 if (VariableOf(a.Value) is ISymbol given) f.LivePackages.Remove(given);
+            // views of memory given by value or lent by ref: their cells go with them (what comes back is granted again)
+            foreach (var a in inv.Arguments.Where(a => a.Parameter != null && IsMemView(a.Parameter.Type) &&
+                                                       (a.Parameter.RefKind == RefKind.None || a.Parameter.RefKind == RefKind.Ref)))
+                if (VariableOf(a.Value) is ISymbol lent) ReleaseMemView(f, lent);
             return touched;
         }
 

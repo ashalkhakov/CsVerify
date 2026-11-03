@@ -599,10 +599,17 @@ namespace CsVerify.Verifier
         /// <summary>At entry: a method with array permissions holds none until its preconditions give them; any other holds every cell.</summary>
         private void EnterCells(Frame f)
         {
-            if (!_engine.UsesPermissions) return;
-            _arrayMode = MentionsCells(_contract) || HandlesCellPredicates();
+            if (!_engine.UsesPermissions && !_engine.UsesMemory) return;
+            _arrayMode = _engine.UsesPermissions && (MentionsCells(_contract) || HandlesCellPredicates());
             f.COwner = _z3.Fresh("cowner", Sort.Heap);
             f.ArrPerm = new Term($"((as const (Array Int (Array Int Real))) ((as const (Array Int Real)) {(_arrayMode ? "0.0" : "1.0")}))", Sort.PermHeap);
+            // memory cells are held only through their views, whatever the method
+            f.ArrPerm = T.Store(f.ArrPerm, MemRow, new Term("((as const (Array Int Real)) 0.0)", Sort.Perm));
+            foreach (var p in _method.Parameters.Where(p => IsMemView(p.Type) && p.RefKind != RefKind.Out && f.Vars.ContainsKey(p)))
+            {
+                GrantView(f, f.Vars[p], p.Type);
+                f.LiveMemViews.Add(p);
+            }
         }
 
         private static string CellPerm(Frame f, Term arr, Term i) =>
