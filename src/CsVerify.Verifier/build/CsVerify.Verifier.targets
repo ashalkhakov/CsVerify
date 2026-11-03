@@ -2,16 +2,23 @@
   <!--
     Runs the CsVerify verifier after Build when CsVerifyEnabled is true:
       dotnet build -p:CsVerifyEnabled=true
-    Its diagnostics use the canonical "file(line,col): error CSVnnnn: ..." format, so MSBuild and IDEs list them
-    like compiler errors. Extra arguments (e.g. overflow checking) go in CsVerifyArgs.
+    Its diagnostics use the canonical "file(line,col): error CSVnnnn: ..." format, so MSBuild and IDEs (and CI
+    systems reading MSBuild's output) list them like compiler errors. Extra arguments go in CsVerifyArgs.
+
+    The verifier is the csverify.dll next to this file's directory (a build of src/CsVerify.Verifier), or else the
+    dotnet-csverify tool (this file comes with the CsVerify package): install it as a local or global tool
+    (dotnet tool install dotnet-csverify). CsVerifyCommand overrides both.
   -->
   <PropertyGroup>
     <CsVerifyEnabled Condition="'$(CsVerifyEnabled)' == ''">false</CsVerifyEnabled>
     <CsVerifyArgs Condition="'$(CsVerifyArgs)' == ''"></CsVerifyArgs>
-    <CsVerifyCommand Condition="'$(CsVerifyCommand)' == ''">dotnet &quot;$(MSBuildThisFileDirectory)../csverify.dll&quot;</CsVerifyCommand>
+    <CsVerifyCommand Condition="'$(CsVerifyCommand)' == '' and Exists('$(MSBuildThisFileDirectory)../csverify.dll')">dotnet &quot;$(MSBuildThisFileDirectory)../csverify.dll&quot;</CsVerifyCommand>
+    <CsVerifyCommand Condition="'$(CsVerifyCommand)' == ''">dotnet csverify</CsVerifyCommand>
   </PropertyGroup>
 
-  <Target Name="CsVerify" AfterTargets="Build" Condition="'$(CsVerifyEnabled)' == 'true'"
+  <!-- (not test projects, which are not written to be proved, nor projects that set CsVerifyExclude) -->
+  <Target Name="CsVerify" AfterTargets="Build"
+          Condition="'$(CsVerifyEnabled)' == 'true' and '$(IsTestProject)' != 'true' and '$(CsVerifyExclude)' != 'true'"
           Inputs="@(Compile)" Outputs="$(IntermediateOutputPath)csverify.stamp">
     <ItemGroup>
       <_CsVerifySource Include="@(Compile)" Exclude="$(IntermediateOutputPath)**" />
@@ -29,27 +36,31 @@
   <!--
     Proof erasure, when CsVerifyErase is true:
       dotnet build -p:CsVerifyErase=true
-    Right before the compiler runs, `csverify erase` rewrites this project's sources with every proof removed
+    Before the compile steps, `csverify erase` rewrites this project's sources with every proof removed
     (specifications, lemmas, ghost parameters, views), adds the erased CsVerify runtime, and checks that the result
     compiles. The compiler then builds those sources instead, without the CsVerify assembly; #line directives keep
     diagnostics, stack traces and the debugger on the original files. A normal build compiles the originals again.
+    It runs before BeforeCompile, so that what hooks in after it sees the erased program: Tarp's MC/DC
+    instrumentation (dotnet tarp test -p:CsVerifyErase=true) measures the code that runs, not the specifications.
   -->
   <PropertyGroup>
     <CsVerifyErase Condition="'$(CsVerifyErase)' == ''">false</CsVerifyErase>
   </PropertyGroup>
 
   <!-- Switching between erased and normal builds must recompile: the mode file changes only when the mode does. -->
-  <Target Name="CsVerifyEraseMode" BeforeTargets="CoreCompile">
+  <Target Name="CsVerifyEraseMode" BeforeTargets="BeforeCompile">
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.mode" Lines="$(CsVerifyErase)" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)csverify-erase.mode" />
     </ItemGroup>
   </Target>
 
-  <Target Name="CsVerifyErase" BeforeTargets="CoreCompile" DependsOnTargets="CsVerifyEraseMode" Condition="'$(CsVerifyErase)' == 'true'">
+  <Target Name="CsVerifyErase" BeforeTargets="BeforeCompile" DependsOnTargets="CsVerifyEraseMode" Condition="'$(CsVerifyErase)' == 'true'">
     <PropertyGroup>
-      <!-- set here, not at import time: this file may be imported before the SDK defines IntermediateOutputPath -->
-      <CsVerifyErasedDir>$(ProjectDir)$(IntermediateOutputPath)csverify-erased/</CsVerifyErasedDir>
+      <!-- set here, not at import time: this file may be imported before the SDK defines the paths. Under obj/ (so
+           not in the default Compile items) but outside the intermediate directory, which coverage tools such as
+           Tarp take for generated code and leave alone; the erased sources are the program that runs. -->
+      <CsVerifyErasedDir>$(ProjectDir)$(BaseIntermediateOutputPath)csverify-erased/$(Configuration)/$(TargetFramework)/</CsVerifyErasedDir>
     </PropertyGroup>
     <ItemGroup>
       <_CsVerifyEraseArgs Include="@(Compile->'%(FullPath)')" />
@@ -62,6 +73,8 @@
       <Compile Include="$(CsVerifyErasedDir)**/*.cs" />
       <_CsVerifyAssembly Include="@(ReferencePathWithRefAssemblies)" Condition="'%(Filename)' == 'CsVerify.Spec' Or '%(Filename)' == 'CsVerify'" />
       <ReferencePathWithRefAssemblies Remove="@(_CsVerifyAssembly)" />
+      <_CsVerifyAssemblyPath Include="@(ReferencePath)" Condition="'%(Filename)' == 'CsVerify.Spec' Or '%(Filename)' == 'CsVerify'" />
+      <ReferencePath Remove="@(_CsVerifyAssemblyPath)" />
     </ItemGroup>
   </Target>
 </Project>

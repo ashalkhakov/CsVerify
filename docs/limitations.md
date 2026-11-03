@@ -1,0 +1,54 @@
+# Limitations
+
+**What "verified" does not cover** (deliberate choices, documented rather than hidden)
+- **Integers** are bounded by default (see [Bounded integers](semantics.md#bounded-integers)). `--no-overflow` makes them mathematical, as ATS's constraint solver does, which is unsound where code can overflow.
+- **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws need not meet the postcondition, only `Spec.EnsuresOnThrow` clauses. Handlers are verified (see Exceptions). Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014), and so never reach a handler.
+- **Mutable objects.**
+  - **Dynamic frames.**
+    - Virtual and interface calls, and library calls that can run user code, can't be checked against `Spec.Modifies`.
+    - The frame rule for `[Pure]` functions follows at most 16 changes back.
+    - Loops forget the fields they write for every object; restate what is kept in the invariant.
+  - **`[Invariant]` on an ordinary mutable class** (neither a data record, immutable nor `[Owned]`) is not used, with a warning.
+  - **Loops** that write owned fields, or move views, forget those fields and the tree roots for every object.
+  - **`Own.Take` splits a tree imprecisely.** The container's other children stay with it, but which of their descendants went with the taken object is not tracked, so a call that touches either part may forget those.
+  - **Proofs about trees can need a hint,** much like an ATS `prval` step: the unfolded fact stated where a child is taken out (`Spec.Assert(Size.Value == 1 + l.Size.Value + ...)`).
+  - **`[Pure]` functions get no view.** They can't assume an owned object's invariant, so recursion over an ownership tree (a measure from the invariant) is done in ordinary methods that take and give.
+  - **Library code** is trusted not to write source objects' fields except by running user code it is handed, so reflection is not covered.
+- **Null and object state.** Fields and auto-properties of nullable type are maybe-null; array elements are maybe-null whatever their type. Library nullability annotations are trusted, not checked.
+- **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
+- **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.
+- **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
+- **Virtual dispatch** is modular: a call uses the declared member's contract, and overrides are checked against it.
+  - **Generic types:** their dynamic types are not modelled.
+  - **Non-sealed overrides:** a `[Pure]` override's body defines the query only if the override is final.
+  - **Lemmas and ghost functions** cannot be virtual (CSV0013).
+- **`[Trusted]` and `Spec.Assume`** are axioms by definition.
+
+**Unsupported constructs**
+- Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
+- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, non-pure calls in specifications, the elements of a `foreach` over a library collection, a string or a span.
+- `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
+- Not verified as separate units: local functions and lambdas.
+
+**Completeness limits** (true things that may not be proved)
+- A new array is known to differ from the arrays in local variables and fields where it is created, not from arrays held elsewhere (inside other arrays).
+- Side facts under a quantifier (non-negative lengths, `[Pure]` unfolding) are a separate quantified axiom, instantiated by e-matching only. A fact needed at a term that never appears may be missing.
+
+**Precision limits**
+- `[Pure]` definitions are unfolded one level per use. Deeper facts need a lemma, as in ATS.
+- Verification explores paths depth-first (`MaxPaths` = 5000 per method), so many sequential branches can be slow.
+- Every method is verified separately against its callees' contracts.
+
+**Views versus ATS/SV** (Zhu & Xi, *Safe Programming with Pointers through Stateful Views*)
+- `PointsTo<T>` tracks address and value, so `T @ l` plus more.
+- Array views (`array_v`), split/join, take-out, pointer arithmetic and `mfree_gc_v` are provided as library axioms. There is still no way to declare your own `dataview` with checked proof constructors: a `[Linear]` struct plus `[Trusted]` functions is how you would add one, and those functions are trusted, not checked.
+- There is no general `⊗`/`−◦` view algebra, no type-changing `setVar`, and no uninitialized `top @ l`.
+- Take-out's linear function `a @ (l+i) -<lin> array_v(a, n, l)` is a linear token (`ArrayHole<T>`) that only `Mem.PutBack` consumes; there are no linear proof functions in general.
+- View-changing proof functions (`Split`, `Join`, `TakeOut`, `PutBack`) cannot be `[Conditional]`, because C# forbids `out` parameters on conditional methods. In a normal build they are empty, inlined methods on data-less structs, erased by the JIT. The erasure pass removes them, and the views, outright.
+- Contents of a view are compared as whole sequences (`Elems == ...`), because C# lambdas cannot capture `ref`/`in` parameters. Element-wise properties go through a `[GhostFunction]` that takes the `Seq<T>` by value (see `ArrayViews.AllEqual`).
+- With e-matching only, a property that needs a cleverer quantifier instantiation may come back "not proved" even though it is true. Add an intermediate `Spec.Assert` or a lemma.
+- The analyzer does not track linear fields inside a linear struct separately: the struct is one resource.
+
+**Packaging**
+- Views and ghosts cost nothing in an erased build (`-p:CsVerifyErase=true`): the erasure pass deletes the types, parameters and calls, so nothing of them reaches the IL. In a normal build they are still empty structs (one byte each to the CLR, no data) passed to empty, inlined methods.
+- The packages (`CsVerify` and the `dotnet-csverify` tool) are released by the release workflow, on GitHub and, once trusted publishing is set up, on nuget.org (see [CI](ci.md#building-and-releasing-csverify)).

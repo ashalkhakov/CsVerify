@@ -1,0 +1,71 @@
+name: Release
+
+# push a tag like v0.1.0 to release: the version comes from the tag
+on:
+  push:
+    tags: ['v*']
+  # to release an existing tag again, e.g. to publish to nuget.org one released before that was set up:
+  # the packages attached to its GitHub release are checked and pushed as they are
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to release, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: write
+  # nuget.org trusted publishing: the job's GitHub OIDC token is exchanged for a short-lived API key
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      # the nuget.org account (profile name, not email) with a trusted publishing policy for this
+      # workflow; without it, nothing is published to nuget.org
+      NUGET_USER: ${{ secrets.NUGET_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+
+      - name: Version from the tag
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - run: dotnet test tests/CsVerify.Tests -c Release
+
+      # CsVerify (the specification library, with the analyzers and the MSBuild targets) and dotnet-csverify (the
+      # verifier, a .NET tool)
+      - name: Packages (the ones already released, if the tag has a release)
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release download "$TAG" --pattern '*.nupkg' --dir nupkg
+            echo "RELEASED=true" >> "$GITHUB_ENV"
+          else
+            dotnet pack src/CsVerify.Spec -c Release -o nupkg -p:Version=$VERSION
+            dotnet pack src/CsVerify.Verifier -c Release -o nupkg -p:Version=$VERSION
+          fi
+
+      - name: Check the packages end to end
+        run: bash samples/e2e.sh nupkg
+
+      - name: GitHub release with the packages
+        if: env.RELEASED != 'true'
+        run: gh release create "$TAG" nupkg/*.nupkg --title "$TAG" --generate-notes
+
+      - name: nuget.org login (trusted publishing)
+        id: nuget-login
+        if: env.NUGET_USER != ''
+        uses: NuGet/login@v1
+        with:
+          user: ${{ env.NUGET_USER }}
+
+      - name: Publish to nuget.org
+        if: env.NUGET_USER != ''
+        run: dotnet nuget push nupkg/*.nupkg --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate

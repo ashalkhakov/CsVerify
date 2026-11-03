@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # the analyzers, the verifier and the erasure pass, against their tests and the samples
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+      - run: dotnet build CsVerify.sln -c Release
+      - run: dotnet test tests/CsVerify.Tests -c Release --no-build
+
+  # the packages as users get them: verify, erase and test with Tarp a copy of samples/Shop (samples/e2e.sh)
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+      - run: bash samples/e2e.sh
+        shell: bash
+
+  # CsLemon: verified, and against the C lemon it was ported from (its outputs, its parsers). On macOS: the C lemon
+  # breaks its last tie between actions by their addresses (actioncmp's ap2 - ap1), and CsLemon models them as
+  # growing with allocation order, as macOS's malloc gives them; glibc's doesn't always (sqlite_parse -p differs)
+  lemon:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+      - name: The C lemon (lemon-grove's lemon.c, SQLite check-in f2f279b2)
+        run: |
+          git clone -q https://github.com/tajmone/lemon-grove "$RUNNER_TEMP/lemon-grove"
+          git -C "$RUNNER_TEMP/lemon-grove" checkout -q 79d3937
+          cc -w -o "$RUNNER_TEMP/lemon" "$RUNNER_TEMP/lemon-grove/lemon/lemon.c"
+      - run: dotnet build src/CsVerify.Verifier -c Release
+      - name: Verify CsLemon
+        run: dotnet run --project src/CsVerify.Verifier -c Release --no-build -- lemon/CsLemon lemon/CsLemon.Runtime
+      - run: dotnet build lemon/CsLemon
+      - run: lemon/tests/difftest.sh "$RUNNER_TEMP/lemon"
+      - run: lemon/tests/lrtest.sh
+      - run: lemon/tests/parsertest.sh "$RUNNER_TEMP/lemon"

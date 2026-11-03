@@ -56,9 +56,11 @@ namespace CsVerify.Verifier
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable));
 
             var result = new ErasureResult();
-            foreach (var d in compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
-                result.Errors.Add(new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan()));
-            if (!result.Success) return result;
+            // Errors binding the sources are not final: a project referencing another erased project calls its
+            // methods with the ghost arguments their erased signatures no longer take. Those arguments go (see
+            // Arguments), and the check below decides: only if the erased program does not compile are these reported.
+            var bindingErrors = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)
+                .Select(d => new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan())).ToList();
 
             int n = 0;
             foreach (var tree in userTrees)
@@ -84,6 +86,7 @@ namespace CsVerify.Verifier
             foreach (var d in erased.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
                 result.Errors.Add(new VerificationDiagnostic("CSV2001", true,
                     $"the erased program does not compile ({d.Id}: {d.GetMessage()}): run-time code depends on ghost code", d.Location.GetMappedLineSpan()));
+            if (!result.Success) result.Errors.InsertRange(0, bindingErrors);
             return result;
         }
 
@@ -284,7 +287,14 @@ namespace CsVerify.Verifier
 
             private void Arguments(ArgumentListSyntax args)
             {
-                if (!(args.Parent is ExpressionSyntax call) || !(_model.GetSymbolInfo(call).Symbol is IMethodSymbol m)) return;
+                if (!(args.Parent is ExpressionSyntax call)) return;
+                if (!(_model.GetSymbolInfo(call).Symbol is IMethodSymbol m))
+                {
+                    // a call that does not bind, to a method of an erased assembly whose signature has lost its proof
+                    // parameters: a proof value can only be a proof parameter's argument, so it goes
+                    RemoveFromList(args.Arguments, a => IsProof(a.Expression));
+                    return;
+                }
                 if (IsErasedMethod(m)) return; // the whole call goes
                 RemoveFromList(args.Arguments, a =>
                 {
