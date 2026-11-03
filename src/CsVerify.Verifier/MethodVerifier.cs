@@ -771,7 +771,7 @@ namespace CsVerify.Verifier
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
-                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
+                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && (hf.Instance != null || hf.Field.IsStatic):
                     return ReadField(hf.Field, hf.Instance, hf.Type, hf.Syntax, f, spec);
                 case IFieldReferenceOperation fr when fr.Field.ContainingType?.IsTupleType == true && fr.Instance != null:
                     return T.Coerce(TupleItem(Eval(fr.Instance, f, spec), fr.Field), SortOf(fr.Type));
@@ -1116,7 +1116,7 @@ namespace CsVerify.Verifier
                     if (IsMemView(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) MemViewAlive(f, p.Parameter, v);
                     break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
-                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
+                case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && (hf.Instance != null || hf.Field.IsStatic):
                     WriteField(hf.Field, hf.Instance, v, hf.Syntax, f, spec);
                     break;
                 case IPropertyReferenceOperation hp when FieldEffects.IsHeapField(hp.Property) && hp.Instance != null:
@@ -1198,6 +1198,16 @@ namespace CsVerify.Verifier
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
             if (IsComputed(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
+            if (!IsStableProperty(prop) && _codeMode && prop.DeclaringSyntaxReferences.Length == 0)
+            {
+                // a library property that may change (Console.Out, a list's Count): each read in code is a value of its own
+                if (pr.Instance != null) Deref(pr.Instance, Eval(pr.Instance, f, spec), pr.Syntax);
+                foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
+                Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
+                var lv = Unknown(pr.Type, prop.Name);
+                if (IsNonNullableType(prop.OriginalDefinition.Type)) AssumeSide(NotNull(lv)); // as the library declares it
+                return lv;
+            }
             if (!IsStableProperty(prop))
                 NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only auto-properties, properties with code, and properties of immutable types are");
             var args = new List<Term>();

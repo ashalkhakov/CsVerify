@@ -37,8 +37,17 @@ namespace CsVerify.Verifier
             return map;
         }
 
+        /// <summary>The statics object, whose fields are the static fields (<see cref="FieldEffects.IsStaticField"/>).</summary>
+        private static Term Statics => T.Int(0);
+
         private Term ReadField(ISymbol field, IOperation instance, ITypeSymbol type, SyntaxNode at, Frame f, SpecEnv spec)
         {
+            if (FieldEffects.IsStaticField(field))
+            {
+                var sv = T.Select(FieldMap(f, field), Statics, ValueSort(field));
+                HasType(sv, type);
+                return ValueSort(field) == Sort.Row ? sv : InRangeOf(T.Coerce(sv, SortOf(type)), type);
+            }
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
             CheckRead(field, o, at);
@@ -57,9 +66,13 @@ namespace CsVerify.Verifier
 
         private void WriteField(ISymbol field, IOperation instance, Term v, SyntaxNode at, Frame f, SpecEnv spec)
         {
-            var o = Eval(instance, f, spec);
-            Deref(instance, o, at);
-            RequireWritePermission(field, o, f, at);
+            bool isStatic = FieldEffects.IsStaticField(field);
+            var o = isStatic ? Statics : Eval(instance, f, spec);
+            if (!isStatic)
+            {
+                Deref(instance, o, at);
+                RequireWritePermission(field, o, f, at);
+            }
             var before = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), o, T.Coerce(v, ValueSort(field)));
             f.Link = new StateLink { Before = before, Changed = T.Store(T.ZeroRow(), o, T.Int(1)) };
@@ -140,7 +153,7 @@ namespace CsVerify.Verifier
             }
             if (all) HavocAllFields(f, keepOwned: touched != null);
             foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
-                f.Fields[field] = modifiable != null && !all && !IsOwnedField(field)
+                f.Fields[field] = modifiable != null && !all && !IsOwnedField(field) && !field.IsStatic
                     ? new Term($"({(MapSort(field) == Sort.Heap ? "cv_frameh" : "cv_frame")} {modifiable} {FieldMap(before, field)} {FreshMap(field)})", MapSort(field))
                     : FreshMap(field);
             // owned fields change at the objects whose views moved, which the link does not describe
@@ -153,6 +166,7 @@ namespace CsVerify.Verifier
             {
                 var parts = new List<string>();
                 if (modifiable != null) parts.Add($"(distinct (select {modifiable} y) 0)");
+                if (fields.Any(x => x.IsStatic)) parts.Add($"(= y {Statics})"); // (the statics object)
                 if (owned.Count > 0 && touched != null)
                 {
                     foreach (var t in touched) parts.Add(before.Root != null ? $"(= (select {before.Root} y) {t})" : $"(= y {t})");

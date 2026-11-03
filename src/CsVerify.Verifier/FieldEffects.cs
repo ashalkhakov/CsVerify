@@ -31,11 +31,15 @@ namespace CsVerify.Verifier
 
         public FieldEffects(Engine engine) { _engine = engine; }
 
-        /// <summary>A member stored as mutable object state: an instance field or auto-property of a source class.</summary>
+        /// <summary>
+        /// A member stored as mutable object state: an instance field or auto-property of a source class, or a mutable
+        /// static field of one (the field of a single object, <see cref="IsStaticField"/>).
+        /// </summary>
         public static bool IsHeapField(ISymbol s)
         {
-            if (s == null || s.IsStatic || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class) return false;
+            if (s == null || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class) return false;
             if (t.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || s.DeclaringSyntaxReferences.Length == 0) return false;
+            if (s.IsStatic) return s is IFieldSymbol sf && !sf.IsConst && !sf.IsReadOnly && !sf.IsImplicitlyDeclared;
             switch (s)
             {
                 case IFieldSymbol f:
@@ -49,6 +53,12 @@ namespace CsVerify.Verifier
                     return false;
             }
         }
+
+        /// <summary>
+        /// A mutable static field: a heap field of the statics object, the null reference (no object is null, so it
+        /// aliases none). It needs no permission; a call changes it if the callee (or anything it reaches) writes it.
+        /// </summary>
+        public static bool IsStaticField(ISymbol s) => s.IsStatic && IsHeapField(s);
 
         public static ISymbol Key(ISymbol s) => s.OriginalDefinition;
 
@@ -75,7 +85,7 @@ namespace CsVerify.Verifier
 
         /// <summary>Every heap field of an [Owned] class in the sources.</summary>
         public IReadOnlyList<ISymbol> OwnedFields() => _owned ??= _engine.SourceTypes
-            .Where(SpecSymbols.IsOwned).SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key)
+            .Where(SpecSymbols.IsOwned).SelectMany(t => t.GetMembers()).Where(m => !m.IsStatic && IsHeapField(m)).Select(Key)
             .Distinct(SymbolEqualityComparer.Default).ToList();
 
         /// <summary>The heap fields of a class and its source base classes.</summary>
@@ -83,7 +93,7 @@ namespace CsVerify.Verifier
         {
             for (var t = (type as INamedTypeSymbol)?.OriginalDefinition; t != null; t = t.BaseType?.OriginalDefinition)
                 foreach (var m in t.GetMembers())
-                    if (IsHeapField(m)) yield return Key(m);
+                    if (!m.IsStatic && IsHeapField(m)) yield return Key(m);
         }
 
         private Direct DirectOf(IMethodSymbol m)

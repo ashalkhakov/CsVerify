@@ -512,9 +512,15 @@ namespace CsVerify.Tests
         [Fact]
         public void UnmodeledState_FailsVerification()
         {
-            // a library type's computed property: its value may change in ways the verifier does not track
-            // (fields of source classes are modeled: see HeapTests)
-            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(System.Collections.Generic.List<int> l) => l.Count; }").Errors("M"));
+            // a library type's computed property: its value may change in ways the verifier does not track, so each
+            // read in code is a value of its own (fields of source classes are modeled: see HeapTests), and a
+            // specification cannot mention it
+            const string list = "System.Collections.Generic.List<int>";
+            Assert.Empty(Harness.Verify("public static class C { public static int M(" + list + " l) => l.Count; }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify("public static class C { public static void M(" + list + " l) { int a = l.Count, b = l.Count; Spec.Assert(a == b); } }").Errors("M"));
+            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(" + list + " l) { Spec.Ensures((int r) => r == l.Count); return l.Count; } }").Errors("M"));
+            // as the library declares it: Console.Out is not null
+            Assert.Empty(Harness.Verify("public static class C { public static void M() { System.Console.Out.Write(1); } }").Errors("M"));
             Assert.Empty(Harness.Verify("public class C { public int P { get; } public int M() => P; }").Errors("M"));
         }
 
