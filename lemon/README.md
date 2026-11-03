@@ -30,7 +30,8 @@ macros, and so on). It writes `grammar.c`, `grammar.h` and the report `grammar.o
 
 `tests/difftest.sh <C lemon>` runs CsLemon and the C lemon it was ported from on every grammar in `tests/grammars`
 (Lemon's calculator examples, SQLite 3.37.0's `parse.y`, and grammars for conflicts, directives, errors, empty
-rules and unambiguous ones), with each of 14 option sets, and compares every output file, stdout, stderr and the exit code byte for byte.
+rules and unambiguous ones), with each of 14 option sets, and compares every output file, stdout, stderr and the
+exit code byte for byte.
 The C lemon is built from lemon-grove's `lemon.c`: `cc -o lemon lemon.c`.
 
 ## Verification
