@@ -1,6 +1,8 @@
 // Input file parser for the LEMON parser generator (parse.c).
 // The input is read into a char[] buffer, one char per byte (Latin-1), terminated by 0 as in C; tokens are
 // copied out of it as C# strings (Strsafe). Function, field and local names are those of parse.c.
+using CsVerify;
+
 namespace CsLemon
 {
     /* The state of the parser */
@@ -60,8 +62,8 @@ namespace CsLemon
         public Symbol? lhs;                   /* Left-hand side of current rule */
         public string? lhsalias;              /* Alias for the LHS */
         public int nrhs;                      /* Number of right-hand side symbols seen */
-        public Symbol[] rhs = new Symbol[MAXRHS];    /* RHS symbols */
-        public string?[] alias = new string?[MAXRHS]; /* Aliases for each RHS symbol (or NULL) */
+        public required Symbol[] rhs;         /* RHS symbols (MAXRHS of them) */
+        public required string?[] alias;      /* Aliases for each RHS symbol (or NULL) (MAXRHS of them) */
         public Rule? prevrule;                /* Previous rule parsed */
         public string? declkeyword;           /* Keyword of a declaration */
         public DeclSlot declargslot;          /* Where the declaration argument should be put */
@@ -77,9 +79,52 @@ namespace CsLemon
 
     public static class Parser
     {
+        /*
+        ** The pstate invariant: the token starts inside the file buffer; nrhs symbols (at most MAXRHS) are stored
+        ** in rhs; a rule being parsed (the states after its LHS) has its LHS, an RHS alias follows a symbol, a token
+        ** class being declared is set, and the rule list has a last rule once it has a first.  (That the first nrhs
+        ** entries of rhs are set is checked where they are read, by Rhs: a fact about array contents, which every
+        ** ErrorMsg call makes the verifier forget, Console.Error.Write being a virtual call.)
+        */
+        [GhostFunction]
+        private static bool Wf(pstate psp) =>
+            0 <= psp.tokenstart && psp.tokenstart < psp.filebuf.Length &&
+            psp.rhs.Length == pstate.MAXRHS && psp.alias.Length == pstate.MAXRHS &&
+            0 <= psp.nrhs && psp.nrhs <= pstate.MAXRHS &&
+            (psp.state == e_state.WAITING_FOR_ARROW || psp.state == e_state.LHS_ALIAS_1 ||
+             psp.state == e_state.LHS_ALIAS_2 || psp.state == e_state.LHS_ALIAS_3 || psp.state == e_state.IN_RHS ||
+             psp.state == e_state.RHS_ALIAS_1 || psp.state == e_state.RHS_ALIAS_2 ? psp.lhs != null : true) &&
+            (psp.state == e_state.RHS_ALIAS_1 ? psp.nrhs > 0 : true) &&
+            (psp.state == e_state.WAITING_FOR_CLASS_TOKEN ? psp.tkclass != null : true) &&
+            (psp.firstrule != null ? psp.lastrule != null : true);
+
+        /// <summary>psp->rhs[i], one of the nrhs symbols of the rule being parsed.</summary>
+        private static Symbol Rhs(pstate psp, int i)
+        {
+            Spec.Requires(Wf(psp) && 0 <= i && i < psp.nrhs);
+            Symbol? sp = psp.rhs[i];
+            Checks.That(sp != null); /* (IN_RHS stores a symbol in each of the first nrhs entries) */
+            return sp!;
+        }
+
+        /// <summary>
+        /// z[i] of the file buffer.  The buffer ends in two 0s, C's terminator at filesize and one more (see Parse),
+        /// which nothing overwrites: every write is over a non-zero character, or a 0 written and then restored.  So
+        /// this is z[i] wherever C reads, and it gives the verifier the bound that C's terminator gives: a scan
+        /// stepping over non-zero characters stays below z.Length - 2, and may step one past a 0.  (The verifier
+        /// cannot keep the two 0s as a fact: every ErrorMsg call makes it forget array contents.)
+        /// </summary>
+        private static char Ch(char[] z, int i)
+        {
+            Spec.Requires(0 <= i);
+            Spec.Ensures((char r) => r == '\0' || i < z.Length - 2);
+            return i < z.Length - 2 ? z[i] : '\0';
+        }
+
         /// <summary>x[i] of a C string: 0 past its end.</summary>
         private static char At(string x, int i)
         {
+            Spec.Requires(0 <= i);
             return i < x.Length ? x[i] : '\0';
         }
 
@@ -92,11 +137,32 @@ namespace CsLemon
         /// <summary>strncmp(&z[i], lit, strlen(lit))==0 on the 0-terminated buffer z.</summary>
         private static bool StartsWith(char[] z, int i, string lit)
         {
+            Spec.Requires(0 <= i && lit.Length > 0);
+            Spec.Ensures((bool r) => !r || i + lit.Length <= z.Length - 2);
             for (int m = 0; m < lit.Length; m++)
             {
-                if (z[i + m] != lit[m]) return false;
+                Spec.Invariant(0 <= m && m <= lit.Length && (m == 0 || i + m <= z.Length - 2));
+                char c = Ch(z, i + m);
+                /* (the literals hold no 0, so the compare stops at z's terminator) */
+                if (c == '\0' || c != lit[m]) return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// new string(z, from, len), copied one char at a time: the verifier takes a library call that is handed
+        /// the array as one that may change it.
+        /// </summary>
+        private static string Str(char[] z, int from, int len)
+        {
+            Spec.Requires(0 <= from && 0 <= len && from <= z.Length - len);
+            var sb = new System.Text.StringBuilder(len);
+            for (int k = 0; k < len; k++)
+            {
+                Spec.Invariant(0 <= k && k <= len);
+                sb.Append(z[from + k]);
+            }
+            return sb.ToString();
         }
 
         /// <summary>*psp->declargslot</summary>
@@ -158,25 +224,48 @@ namespace CsLemon
         /// <summary>realloc(subsym, nsubsym): grow msp.subsym to msp.nsubsym entries.</summary>
         private static void GrowSubsym(Symbol msp)
         {
+            Spec.Requires(msp.nsubsym >= 0);
+            Spec.Modifies(ObjSet.Of(msp));
+            Spec.Ensures(msp.subsym != null && msp.subsym.Length == msp.nsubsym);
             Symbol[] n = new Symbol[msp.nsubsym];
             Symbol[]? old = msp.subsym;
             if (old != null)
             {
-                for (int i = 0; i < old.Length && i < n.Length; i++) n[i] = old[i];
+                for (int i = 0; i < old.Length && i < n.Length; i++)
+                {
+                    Spec.Invariant(0 <= i && n.Length == msp.nsubsym);
+                    n[i] = old[i];
+                }
             }
             msp.subsym = n;
+        }
+
+        /// <summary>msp->nsubsym++ and the realloc of subsym that follows it.</summary>
+        private static void AddSubsym(Symbol msp)
+        {
+            Spec.Ensures(msp.subsym != null && msp.subsym.Length == msp.nsubsym && msp.nsubsym >= 1);
+            Spec.Modifies(ObjSet.Of(msp));
+            Checks.That(msp.nsubsym >= 0); /* (nsubsym counts the symbols in subsym: never negative) */
+            msp.nsubsym = checked(msp.nsubsym + 1);
+            GrowSubsym(msp);
         }
 
         /* Parse a single token */
         private static void parseonetoken(pstate psp)
         {
+            Spec.Requires(Wf(psp));
+            Spec.Ensures(Wf(psp));
             string x;
             /* Save the token permanently: the C string at tokenstart (it ends at the first 0) */
             {
                 char[] buf = psp.filebuf;
                 int e = psp.tokenstart;
-                while (buf[e] != '\0') e++;
-                x = Tables.Strsafe(new string(buf, psp.tokenstart, e - psp.tokenstart));
+                while (Ch(buf, e) != '\0')
+                {
+                    Spec.Invariant(psp.tokenstart <= e && e <= buf.Length && Wf(psp) && buf == psp.filebuf);
+                    e++;
+                }
+                x = Tables.Strsafe(Str(buf, psp.tokenstart, e - psp.tokenstart));
             }
             switch (psp.state)
             {
@@ -208,14 +297,14 @@ namespace CsLemon
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "There is no prior rule upon which to attach the code "
                               + "fragment which begins on this line.");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                         }
                         else if (psp.prevrule.code != null)
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Code fragment beginning on this line is not the first "
                               + "to follow the previous rule.");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                         }
                         else if (string.Equals(x, "{NEVER-REDUCE", System.StringComparison.Ordinal))
                         {
@@ -236,7 +325,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Token \"" + x + "\" should be either \"%\" or a nonterminal name.");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     break;
                 case e_state.PRECEDENCE_MARK_1:
@@ -244,20 +333,20 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "The precedence symbol must be a terminal.");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     else if (psp.prevrule == null)
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "There is no prior rule to assign precedence \"[" + x + "]\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     else if (psp.prevrule.precsym != null)
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Precedence mark on this line is not the first "
                           + "to follow the previous rule.");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     else
                     {
@@ -270,7 +359,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Missing \"]\" on precedence mark.");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     psp.state = e_state.WAITING_FOR_DECL_OR_RULE;
                     break;
@@ -287,7 +376,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Expected to see a \":\" following the LHS symbol \"" + psp.lhs!.name + "\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -301,7 +390,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "\"" + x + "\" is not a valid alias for the LHS \"" + psp.lhs!.name + "\"\n");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -314,7 +403,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Missing \")\" following LHS alias name \"" + S(psp.lhsalias) + "\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -327,7 +416,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Missing \"->\" following: \"" + psp.lhs!.name + "(" + S(psp.lhsalias) + ")\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -340,7 +429,9 @@ namespace CsLemon
                         rp.ruleline = psp.tokenlineno;
                         for (i = 0; i < psp.nrhs; i++)
                         {
-                            rp.rhs[i] = psp.rhs[i];
+                            Spec.Invariant(0 <= i && Wf(psp) && psp.state == e_state.IN_RHS &&
+                                           rp.rhs.Length == psp.nrhs && rp.rhsalias.Length == psp.nrhs);
+                            rp.rhs[i] = Rhs(psp, i);
                             rp.rhsalias[i] = psp.alias[i];
                             if (rp.rhsalias[i] != null) { rp.rhs[i].bContent = true; }
                         }
@@ -349,7 +440,8 @@ namespace CsLemon
                         rp.code = null;
                         rp.noCode = true;
                         rp.precsym = null;
-                        rp.index = psp.gp.nrule++;
+                        rp.index = psp.gp.nrule;
+                        psp.gp.nrule = checked(psp.gp.nrule + 1);
                         rp.nextlhs = rp.lhs.rule;
                         rp.lhs.rule = rp;
                         rp.next = null;
@@ -371,19 +463,19 @@ namespace CsLemon
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Too many symbols on RHS of rule beginning at \"" + x + "\".");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                             psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                         }
                         else
                         {
                             psp.rhs[psp.nrhs] = Tables.Symbol_new(x);
                             psp.alias[psp.nrhs] = null;
-                            psp.nrhs++;
+                            psp.nrhs = psp.nrhs + 1;
                         }
                     }
                     else if ((At(x, 0) == '|' || At(x, 0) == '/') && psp.nrhs > 0 && Chars.ISUPPER(At(x, 1)))
                     {
-                        Symbol msp = psp.rhs[psp.nrhs - 1];
+                        Symbol msp = Rhs(psp, psp.nrhs - 1);
                         if (msp.type != SymbolType.MULTITERMINAL)
                         {
                             Symbol origsp = msp;
@@ -395,14 +487,13 @@ namespace CsLemon
                             msp.name = origsp.name;
                             psp.rhs[psp.nrhs - 1] = msp;
                         }
-                        msp.nsubsym++;
-                        GrowSubsym(msp);
+                        AddSubsym(msp);
                         msp.subsym![msp.nsubsym - 1] = Tables.Symbol_new(x.Substring(1));
-                        if (Chars.ISLOWER(At(x, 1)) || Chars.ISLOWER(At(msp.subsym[0].name, 0)))
+                        if (Chars.ISLOWER(At(x, 1)) || Chars.ISLOWER(At(msp.Sub(0).name, 0)))
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Cannot form a compound containing a non-terminal");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                         }
                     }
                     else if (At(x, 0) == '(' && psp.nrhs > 0)
@@ -413,7 +504,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Illegal character on RHS of rule: \"" + x + "\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -426,8 +517,8 @@ namespace CsLemon
                     else
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
-                          "\"" + x + "\" is not a valid alias for the RHS symbol \"" + psp.rhs[psp.nrhs - 1].name + "\"\n");
-                        psp.errorcnt++;
+                          "\"" + x + "\" is not a valid alias for the RHS symbol \"" + Rhs(psp, psp.nrhs - 1).name + "\"\n");
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -441,7 +532,7 @@ namespace CsLemon
                         /* (sic: C names the LHS alias here) */
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Missing \")\" following LHS alias name \"" + S(psp.lhsalias) + "\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_RULE_ERROR;
                     }
                     break;
@@ -528,19 +619,19 @@ namespace CsLemon
                         }
                         else if (x == "left")
                         {
-                            psp.preccounter++;
+                            psp.preccounter = checked(psp.preccounter + 1);
                             psp.declassoc = Assoc.LEFT;
                             psp.state = e_state.WAITING_FOR_PRECEDENCE_SYMBOL;
                         }
                         else if (x == "right")
                         {
-                            psp.preccounter++;
+                            psp.preccounter = checked(psp.preccounter + 1);
                             psp.declassoc = Assoc.RIGHT;
                             psp.state = e_state.WAITING_FOR_PRECEDENCE_SYMBOL;
                         }
                         else if (x == "nonassoc")
                         {
-                            psp.preccounter++;
+                            psp.preccounter = checked(psp.preccounter + 1);
                             psp.declassoc = Assoc.NONE;
                             psp.state = e_state.WAITING_FOR_PRECEDENCE_SYMBOL;
                         }
@@ -573,7 +664,7 @@ namespace CsLemon
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Unknown declaration keyword: \"%" + x + "\".");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                             psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                         }
                     }
@@ -581,7 +672,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Illegal declaration keyword: \"" + x + "\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     break;
@@ -590,7 +681,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Symbol name missing after %destructor keyword");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     else
@@ -608,7 +699,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Symbol name missing after %type keyword");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     else
@@ -618,7 +709,7 @@ namespace CsLemon
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Symbol %type \"" + x + "\" already defined");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                             psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                         }
                         else
@@ -647,7 +738,7 @@ namespace CsLemon
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Symbol \"" + x + "\" has already be given a precedence.");
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                         }
                         else
                         {
@@ -659,7 +750,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Can't assign a precedence to \"" + x + "\".");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     break;
                 case e_state.WAITING_FOR_DECL_ARG:
@@ -701,6 +792,7 @@ namespace CsLemon
                             string z = psp.filename;
                             for (int iz = 0; iz < z.Length; iz++)
                             {
+                                Spec.Invariant(0 <= iz);
                                 if (z[iz] == '\\')
                                 {
                                     zBuf.Append('\\');
@@ -722,7 +814,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Illegal argument to %" + S(psp.declkeyword) + ": " + x);
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     break;
@@ -735,7 +827,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "%fallback argument \"" + x + "\" should be a token");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     else
                     {
@@ -748,7 +840,7 @@ namespace CsLemon
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "More than one fallback assigned to token " + x);
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                         }
                         else
                         {
@@ -770,7 +862,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "%token argument \"" + x + "\" should be a token");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     else
                     {
@@ -786,7 +878,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "%wildcard argument \"" + x + "\" should be a token");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                     }
                     else
                     {
@@ -799,7 +891,7 @@ namespace CsLemon
                         {
                             Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                               "Extra wildcard to token: " + x);
-                            psp.errorcnt++;
+                            psp.errorcnt = checked(psp.errorcnt + 1);
                         }
                     }
                     break;
@@ -808,14 +900,14 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "%token_class must be followed by an identifier: " + x);
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     else if (Tables.Symbol_find(x) != null)
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "Symbol \"" + x + "\" already used");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     else
@@ -833,8 +925,7 @@ namespace CsLemon
                     else if (Chars.ISUPPER(At(x, 0)) || ((At(x, 0) == '|' || At(x, 0) == '/') && Chars.ISUPPER(At(x, 1))))
                     {
                         Symbol msp = psp.tkclass!;
-                        msp.nsubsym++;
-                        GrowSubsym(msp);
+                        AddSubsym(msp);
                         if (!Chars.ISUPPER(At(x, 0))) x = x.Substring(1);
                         msp.subsym![msp.nsubsym - 1] = Tables.Symbol_new(x);
                     }
@@ -842,7 +933,7 @@ namespace CsLemon
                     {
                         Errors.ErrorMsg(psp.filename, psp.tokenlineno,
                           "%token_class argument \"" + x + "\" should be a token");
-                        psp.errorcnt++;
+                        psp.errorcnt = checked(psp.errorcnt + 1);
                         psp.state = e_state.RESYNC_AFTER_DECL_ERROR;
                     }
                     break;
@@ -856,17 +947,29 @@ namespace CsLemon
             }
         }
 
+        /// <summary>An identifier character: ISALNUM(c) || c=='_' (never the terminator).</summary>
+        private static bool IsIdChar(char c)
+        {
+            Spec.Ensures((bool r) => !r || c != '\0');
+            return c != '\0' && (Chars.ISALNUM(c) || c == '_');
+        }
+
         /* The text in the input is part of the argument to an %ifdef or %ifndef.  Evaluate the text as a boolean
-        ** expression.  Return true or false.  (z is the C string &zbuf[zoff], terminated by 0.) */
+        ** expression.  Return true or false.  (z is the C string &zbuf[zoff], terminated by 0.  A syntax error
+        ** returns -(1 + its offset in z) to a nested call, lineno -1; the top-level call reports it and exits.) */
         private static int eval_preprocessor_boolean(char[] zbuf, int zoff, int lineno)
         {
+            Spec.Requires(0 <= zoff && zoff <= zbuf.Length - 2);
+            Spec.Decreases(zbuf.Length - zoff);
+            Spec.Ensures((int r) => r <= 1 && zoff - (zbuf.Length - 2) <= r && (lineno > 0 ? r >= 0 : true));
             int neg = 0;
             int res = 0;
             int okTerm = 1;
             int i;
             bool syntaxError = false;
-            for (i = 0; zbuf[zoff + i] != '\0'; i++)
+            for (i = 0; Ch(zbuf, zoff + i) != '\0'; i++)
             {
+                Spec.Invariant(0 <= i && zoff + i <= zbuf.Length - 2 && 0 <= res && res <= 1 && !syntaxError);
                 char zi = zbuf[zoff + i];
                 if (Chars.ISSPACE(zi)) continue;
                 if (zi == '!')
@@ -875,7 +978,7 @@ namespace CsLemon
                     neg = neg == 0 ? 1 : 0;
                     continue;
                 }
-                if (zi == '|' && zbuf[zoff + i + 1] == '|')
+                if (zi == '|' && Ch(zbuf, zoff + i + 1) == '|')
                 {
                     if (okTerm != 0) { syntaxError = true; break; }
                     if (res != 0) return 1;
@@ -883,7 +986,7 @@ namespace CsLemon
                     okTerm = 1;
                     continue;
                 }
-                if (zi == '&' && zbuf[zoff + i + 1] == '&')
+                if (zi == '&' && Ch(zbuf, zoff + i + 1) == '&')
                 {
                     if (okTerm != 0) { syntaxError = true; break; }
                     if (res == 0) return 0;
@@ -897,8 +1000,10 @@ namespace CsLemon
                     int n = 1;
                     if (okTerm == 0) { syntaxError = true; break; }
                     bool innerError = false;
-                    for (k = i + 1; zbuf[zoff + k] != '\0'; k++)
+                    for (k = i + 1; Ch(zbuf, zoff + k) != '\0'; k++)
                     {
+                        Spec.Invariant(0 <= i && i < k && zoff + k <= zbuf.Length - 2 && 1 <= n && n <= k - i &&
+                                       zoff + i < zbuf.Length - 2 && 0 <= res && res <= 1 && !innerError);
                         if (zbuf[zoff + k] == ')')
                         {
                             n--;
@@ -936,13 +1041,17 @@ namespace CsLemon
                 {
                     int j, k, n;
                     if (okTerm == 0) { syntaxError = true; break; }
-                    for (k = i + 1; Chars.ISALNUM(zbuf[zoff + k]) || zbuf[zoff + k] == '_'; k++) { }
+                    for (k = i + 1; IsIdChar(Ch(zbuf, zoff + k)); k++)
+                    {
+                        Spec.Invariant(0 <= i && i < k && zoff + k <= zbuf.Length - 2);
+                    }
                     n = k - i;
                     res = 0;
                     for (j = 0; j < Program.azDefine.Count; j++)
                     {
-                        string d = Program.azDefine[j];
-                        if (d.Length == n && string.CompareOrdinal(d, 0, new string(zbuf, zoff + i, n), 0, n) == 0)
+                        Spec.Invariant(0 <= j && res == 0);
+                        string? d = Program.azDefine[j];
+                        if (d != null && d.Length == n && string.CompareOrdinal(d, 0, Str(zbuf, zoff + i, n), 0, n) == 0)
                         {
                             res = 1;
                             break;
@@ -968,8 +1077,12 @@ namespace CsLemon
                 System.Console.Error.Write("%if syntax error on line " + lineno + ".\n");
                 /* "%.*s": at most i+1 characters of z, stopping at its 0 */
                 int m = 0;
-                while (m < i + 1 && zbuf[zoff + m] != '\0') m++;
-                System.Console.Error.Write("  " + new string(zbuf, zoff, m) + " <-- syntax error here\n");
+                while (m < i + 1 && Ch(zbuf, zoff + m) != '\0')
+                {
+                    Spec.Invariant(0 <= m && zoff + m <= zbuf.Length - 2);
+                    m++;
+                }
+                System.Console.Error.Write("  " + Str(zbuf, zoff, m) + " <-- syntax error here\n");
                 System.Environment.Exit(1);
                 return 0;
             }
@@ -979,19 +1092,44 @@ namespace CsLemon
             }
         }
 
+        /// <summary>Blank out z from i to the end of its line (to the newline or the terminator).</summary>
+        private static void BlankLine(char[] z, int i)
+        {
+            Spec.Requires(0 <= i && i <= z.Length - 2);
+            for (int j = i; Ch(z, j) != '\0' && z[j] != '\n'; j++)
+            {
+                Spec.Invariant(i <= j && j <= z.Length - 2);
+                z[j] = ' ';
+            }
+        }
+
+        /// <summary>Blank out z from start up to i, keeping its newlines (excluded text).</summary>
+        private static void BlankRange(char[] z, int start, int i)
+        {
+            Spec.Requires(0 <= start && i <= z.Length);
+            for (int j = start; j < i; j++)
+            {
+                Spec.Invariant(start <= j);
+                if (z[j] != '\n') z[j] = ' ';
+            }
+        }
+
         /* Run the preprocessor over the input file text.  The global variables azDefine[0] through
         ** azDefine[nDefine-1] contains the names of all defined macros.  This routine looks for "%ifdef" and
         ** "%ifndef" and "%endif" and comments them out.  Text in between is also commented out as appropriate. */
         private static void preprocess_input(char[] z)
         {
+            Spec.Requires(z.Length >= 2);
             int i, j;
             char k;
             int exclude = 0;
             int start = 0;
             int lineno = 1;
             int start_lineno = 1;
-            for (i = 0; z[i] != '\0'; i++)
+            for (i = 0; Ch(z, i) != '\0'; i++)
             {
+                Spec.Invariant(0 <= i && i <= z.Length - 2 && 0 <= exclude && exclude <= i &&
+                               0 <= start && start <= i && 1 <= lineno && lineno <= i + 1);
                 if (z[i] == '\n') lineno++;
                 if (z[i] != '%' || (i > 0 && z[i - 1] != '\n')) continue;
                 if (StartsWith(z, i, "%endif") && Chars.ISSPACE(z[i + 6]))
@@ -1001,17 +1139,17 @@ namespace CsLemon
                         exclude--;
                         if (exclude == 0)
                         {
-                            for (j = start; j < i; j++) if (z[j] != '\n') z[j] = ' ';
+                            BlankRange(z, start, i);
                         }
                     }
-                    for (j = i; z[j] != '\0' && z[j] != '\n'; j++) z[j] = ' ';
+                    BlankLine(z, i);
                 }
                 else if (StartsWith(z, i, "%else") && Chars.ISSPACE(z[i + 5]))
                 {
                     if (exclude == 1)
                     {
                         exclude = 0;
-                        for (j = start; j < i; j++) if (z[j] != '\n') z[j] = ' ';
+                        BlankRange(z, start, i);
                     }
                     else if (exclude == 0)
                     {
@@ -1019,7 +1157,7 @@ namespace CsLemon
                         start = i;
                         start_lineno = lineno;
                     }
-                    for (j = i; z[j] != '\0' && z[j] != '\n'; j++) z[j] = ' ';
+                    BlankLine(z, i);
                 }
                 else if (StartsWith(z, i, "%ifdef ")
                       || StartsWith(z, i, "%if ")
@@ -1033,10 +1171,17 @@ namespace CsLemon
                     {
                         bool isNot;
                         int iBool;
-                        for (j = i; z[j] != '\0' && !Chars.ISSPACE(z[j]); j++) { }
+                        for (j = i; Ch(z, j) != '\0' && !Chars.ISSPACE(z[j]); j++)
+                        {
+                            Spec.Invariant(i <= j && j <= z.Length - 2);
+                        }
                         iBool = j;
-                        isNot = (j == i + 7);
-                        while (z[j] != '\0' && z[j] != '\n') { j++; }
+                        isNot = (j - i == 7);  /* (j == i + 7) */
+                        while (Ch(z, j) != '\0' && z[j] != '\n')
+                        {
+                            Spec.Invariant(iBool <= j && j <= z.Length - 2);
+                            j++;
+                        }
                         k = z[j];
                         z[j] = '\0';
                         exclude = eval_preprocessor_boolean(z, iBool, lineno);
@@ -1048,7 +1193,7 @@ namespace CsLemon
                             start_lineno = lineno;
                         }
                     }
-                    for (j = i; z[j] != '\0' && z[j] != '\n'; j++) z[j] = ' ';
+                    BlankLine(z, i);
                 }
             }
             if (exclude != 0)
@@ -1071,7 +1216,7 @@ namespace CsLemon
             int cp, nextcp;
             int startline = 0;
 
-            ps = new pstate { gp = gp };
+            ps = new pstate { gp = gp, rhs = new Symbol[pstate.MAXRHS], alias = new string?[pstate.MAXRHS] };
             ps.filename = gp.filename;
             ps.errorcnt = 0;
             ps.state = e_state.INITIALIZE;
@@ -1089,20 +1234,24 @@ namespace CsLemon
             if (bytes == null)
             {
                 Errors.ErrorMsg(ps.filename, 0, "Can't open this file for reading.");
-                gp.errorcnt++;
+                gp.errorcnt = checked(gp.errorcnt + 1);
                 return;
             }
             filesize = bytes.Length;
             if (filesize > 100000000)
             {
                 Errors.ErrorMsg(ps.filename, 0, "Input file too large.");
-                gp.errorcnt++;
+                gp.errorcnt = checked(gp.errorcnt + 1);
                 return;
             }
             /* filebuf[filesize] = 0, and one more 0: C's scanner can step one past the terminator after an
             ** unterminated comment or literal inside a code block (where C reads past its buffer). */
             filebuf = new char[filesize + 2];
-            for (int b = 0; b < filesize; b++) filebuf[b] = (char)bytes[b];
+            for (int b = 0; b < filesize; b++)
+            {
+                Spec.Invariant(0 <= b && filesize == bytes.Length && filebuf.Length == filesize + 2);
+                filebuf[b] = (char)bytes[b];
+            }
             filebuf[filesize] = '\0';
             filebuf[filesize + 1] = '\0';
             ps.filebuf = filebuf;
@@ -1113,9 +1262,17 @@ namespace CsLemon
             {
                 /* printf("%s\n", filebuf): the bytes up to the first 0 */
                 int len = 0;
-                while (filebuf[len] != '\0') len++;
+                while (Ch(filebuf, len) != '\0')
+                {
+                    Spec.Invariant(0 <= len && len <= filebuf.Length - 2);
+                    len++;
+                }
                 byte[] outb = new byte[len + 1];
-                for (int b = 0; b < len; b++) outb[b] = (byte)filebuf[b];
+                for (int b = 0; b < len; b++)
+                {
+                    Spec.Invariant(0 <= b && outb.Length == len + 1 && len <= filebuf.Length - 2);
+                    outb[b] = unchecked((byte)filebuf[b]); /* (the chars are bytes of the file, or blanks) */
+                }
                 outb[len] = (byte)'\n';
                 System.Console.Out.Flush();
                 System.IO.Stream stdout = System.Console.OpenStandardOutput();
@@ -1126,22 +1283,28 @@ namespace CsLemon
 
             /* Now scan the text of the input file */
             lineno = 1;
-            for (cp = 0; (c = filebuf[cp]) != '\0';)
+            for (cp = 0; (c = Ch(filebuf, cp)) != '\0';)
             {
-                if (c == '\n') lineno++;              /* Keep track of the line number */
+                Spec.Invariant(0 <= cp && cp <= filebuf.Length - 1 && ps.filebuf == filebuf && Wf(ps));
+                if (c == '\n') lineno = checked(lineno + 1);              /* Keep track of the line number */
                 if (Chars.ISSPACE(c)) { cp++; continue; }  /* Skip all white space */
-                if (c == '/' && filebuf[cp + 1] == '/')
+                if (c == '/' && Ch(filebuf, cp + 1) == '/')
                 {          /* Skip C++ style comments */
                     cp += 2;
-                    while ((c = filebuf[cp]) != '\0' && c != '\n') cp++;
+                    while ((c = Ch(filebuf, cp)) != '\0' && c != '\n')
+                    {
+                        Spec.Invariant(2 <= cp && cp <= filebuf.Length - 2 && ps.filebuf == filebuf && Wf(ps));
+                        cp++;
+                    }
                     continue;
                 }
-                if (c == '/' && filebuf[cp + 1] == '*')
+                if (c == '/' && Ch(filebuf, cp + 1) == '*')
                 {          /* Skip C style comments */
                     cp += 2;
-                    while ((c = filebuf[cp]) != '\0' && (c != '/' || filebuf[cp - 1] != '*'))
+                    while ((c = Ch(filebuf, cp)) != '\0' && (c != '/' || filebuf[cp - 1] != '*'))
                     {
-                        if (c == '\n') lineno++;
+                        Spec.Invariant(2 <= cp && cp <= filebuf.Length - 2 && ps.filebuf == filebuf && Wf(ps));
+                        if (c == '\n') lineno = checked(lineno + 1);
                         cp++;
                     }
                     if (c != '\0') cp++;
@@ -1152,9 +1315,10 @@ namespace CsLemon
                 if (c == '"')
                 {                                  /* String literals */
                     cp++;
-                    while ((c = filebuf[cp]) != '\0' && c != '"')
+                    while ((c = Ch(filebuf, cp)) != '\0' && c != '"')
                     {
-                        if (c == '\n') lineno++;
+                        Spec.Invariant(1 <= cp && cp <= filebuf.Length - 2 && ps.filebuf == filebuf && Wf(ps));
+                        if (c == '\n') lineno = checked(lineno + 1);
                         cp++;
                     }
                     if (c == '\0')
@@ -1162,7 +1326,7 @@ namespace CsLemon
                         Errors.ErrorMsg(ps.filename, startline,
                             "String starting on this line is not terminated before "
                             + "the end of the file.");
-                        ps.errorcnt++;
+                        ps.errorcnt = checked(ps.errorcnt + 1);
                         nextcp = cp;
                     }
                     else
@@ -1174,37 +1338,48 @@ namespace CsLemon
                 {                                  /* A block of C code */
                     int level;
                     cp++;
-                    for (level = 1; (c = filebuf[cp]) != '\0' && (level > 1 || c != '}'); cp++)
+                    for (level = 1; (c = Ch(filebuf, cp)) != '\0' && (level > 1 || c != '}'); cp++)
                     {
-                        if (c == '\n') lineno++;
+                        Spec.Invariant(1 <= cp && cp <= filebuf.Length - 1 && 1 <= level && level <= cp &&
+                                       ps.filebuf == filebuf && Wf(ps));
+                        if (c == '\n') lineno = checked(lineno + 1);
                         else if (c == '{') level++;
                         else if (c == '}') level--;
-                        else if (c == '/' && filebuf[cp + 1] == '*')
+                        else if (c == '/' && Ch(filebuf, cp + 1) == '*')
                         {  /* Skip comments */
                             char prevc;
                             cp = cp + 2;
                             prevc = '\0';
-                            while ((c = filebuf[cp]) != '\0' && (c != '/' || prevc != '*'))
+                            while ((c = Ch(filebuf, cp)) != '\0' && (c != '/' || prevc != '*'))
                             {
-                                if (c == '\n') lineno++;
+                                Spec.Invariant(1 <= level && level <= cp && cp <= filebuf.Length - 2 &&
+                                               ps.filebuf == filebuf && Wf(ps));
+                                if (c == '\n') lineno = checked(lineno + 1);
                                 prevc = c;
                                 cp++;
                             }
                         }
-                        else if (c == '/' && filebuf[cp + 1] == '/')
+                        else if (c == '/' && Ch(filebuf, cp + 1) == '/')
                         {  /* Skip C++ style comments too */
                             cp = cp + 2;
-                            while ((c = filebuf[cp]) != '\0' && c != '\n') cp++;
-                            if (c != '\0') lineno++;
+                            while ((c = Ch(filebuf, cp)) != '\0' && c != '\n')
+                            {
+                                Spec.Invariant(1 <= level && level <= cp && cp <= filebuf.Length - 2 &&
+                                               ps.filebuf == filebuf && Wf(ps));
+                                cp++;
+                            }
+                            if (c != '\0') lineno = checked(lineno + 1);
                         }
                         else if (c == '\'' || c == '"')
                         {    /* String a character literals */
                             char startchar, prevc;
                             startchar = c;
                             prevc = '\0';
-                            for (cp++; (c = filebuf[cp]) != '\0' && (c != startchar || prevc == '\\'); cp++)
+                            for (cp++; (c = Ch(filebuf, cp)) != '\0' && (c != startchar || prevc == '\\'); cp++)
                             {
-                                if (c == '\n') lineno++;
+                                Spec.Invariant(1 <= level && level <= cp && cp <= filebuf.Length - 2 &&
+                                               ps.filebuf == filebuf && Wf(ps));
+                                if (c == '\n') lineno = checked(lineno + 1);
                                 if (prevc == '\\') prevc = '\0';
                                 else prevc = c;
                             }
@@ -1215,7 +1390,7 @@ namespace CsLemon
                         Errors.ErrorMsg(ps.filename, ps.tokenlineno,
                           "C code starting on this line is not terminated before "
                           + "the end of the file.");
-                        ps.errorcnt++;
+                        ps.errorcnt = checked(ps.errorcnt + 1);
                         nextcp = cp;
                     }
                     else
@@ -1225,18 +1400,26 @@ namespace CsLemon
                 }
                 else if (Chars.ISALNUM(c))
                 {                                  /* Identifiers */
-                    while ((c = filebuf[cp]) != '\0' && (Chars.ISALNUM(c) || c == '_')) cp++;
+                    while ((c = Ch(filebuf, cp)) != '\0' && (Chars.ISALNUM(c) || c == '_'))
+                    {
+                        Spec.Invariant(0 <= cp && cp <= filebuf.Length - 2 && ps.filebuf == filebuf && Wf(ps));
+                        cp++;
+                    }
                     nextcp = cp;
                 }
-                else if (c == ':' && filebuf[cp + 1] == ':' && filebuf[cp + 2] == '=')
+                else if (c == ':' && Ch(filebuf, cp + 1) == ':' && Ch(filebuf, cp + 2) == '=')
                 {                                  /* The operator "::=" */
                     cp += 3;
                     nextcp = cp;
                 }
-                else if ((c == '/' || c == '|') && Chars.ISALPHA(filebuf[cp + 1]))
+                else if ((c == '/' || c == '|') && Chars.ISALPHA(Ch(filebuf, cp + 1)))
                 {
                     cp += 2;
-                    while ((c = filebuf[cp]) != '\0' && (Chars.ISALNUM(c) || c == '_')) cp++;
+                    while ((c = Ch(filebuf, cp)) != '\0' && (Chars.ISALNUM(c) || c == '_'))
+                    {
+                        Spec.Invariant(2 <= cp && cp <= filebuf.Length - 1 && ps.filebuf == filebuf && Wf(ps));
+                        cp++;
+                    }
                     nextcp = cp;
                 }
                 else

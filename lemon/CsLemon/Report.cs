@@ -77,11 +77,13 @@ namespace CsLemon
             /// The result is cut at an embedded NUL, as C's string functions see it.</summary>
             public string? fgets(int size)
             {
-                if (pos >= data.Length) return null;
+                Spec.Requires(size > 0);
+                if (pos < 0 || pos >= data.Length) return null; /* (pos is never negative) */
                 int start = pos;
                 int n = 0;
                 while (pos < data.Length && n < size - 1)
                 {
+                    Spec.Invariant(0 <= start && start <= pos && pos <= data.Length && 0 <= n);
                     char c = data[pos];
                     pos++;
                     n++;
@@ -96,7 +98,7 @@ namespace CsLemon
             /// <summary>fgetc: the next byte, or -1 (EOF).</summary>
             public int fgetc()
             {
-                if (pos >= data.Length) return -1;
+                if (pos < 0 || pos >= data.Length) return -1; /* (pos is never negative) */
                 int c = data[pos];
                 pos++;
                 return c;
