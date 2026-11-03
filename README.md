@@ -498,8 +498,7 @@ Sources and licences:
 - `FrameBugs.cs`: a `Valid()`-style function reading outside its `Spec.Reads`, a write outside `Spec.Modifies`, and two objects whose constructor promises no freshness, so updating one says nothing about the other.
 - `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
 - `TreeBugs.cs`: an AVL insert that never rotates, a single rotation where a double one is needed, and a red-black rebalance that leaves a red node over a red child.
-- `DataBugs.cs` also has a record invariant that reads a mutable `Gauge`, which anyone holding it could change after the record is built.
-- `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, and an assertion that two equal values are the same object.
+- `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, an assertion that two equal values are the same object, and a record invariant that reads a mutable `Gauge`, which anyone holding it could change after the record is built.
 - `NullBugs.cs`: an unchecked `T?`, `null!` passed and returned, an element of `new string[2]`, and a precondition that reads `a.Length` before checking `a`.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
 - `Linearity.cs` has leak, double free, use-after-free, forging and run-time ghost reads. Its analyzer errors are downgraded to warnings in that project's `.editorconfig` so the solution still builds.
