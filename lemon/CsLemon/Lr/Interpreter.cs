@@ -238,18 +238,35 @@ namespace CsLemon.Lr
         public static int Top(Stack s) => s is Stack.Cell c ? c.State : 0;
 
         /// <summary>
-        /// Pops i cells of rule rhs, checking that each one's incoming symbol is the rule's (rhs[i-1] on top); kids are
-        /// the trees popped so far (of rhs[i..]).
+        /// Pops the cells of rhs[lo .. i), checking that each one's incoming symbol is the rule's (rhs[i-1] on top);
+        /// kids are the trees popped so far (of rhs[i..]).
         /// </summary>
         [Pure]
-        public static Popped Pop(Automaton a, Stack s, int[] rhs, int i, Forest kids)
+        public static Popped Pop(Automaton a, Stack s, int[] rhs, int lo, int i, Forest kids)
         {
-            Spec.Requires(0 <= i && i <= rhs.Length);
+            Spec.Requires(0 <= lo && lo <= i && i <= rhs.Length);
             Spec.Decreases(i);
-            if (i == 0) return new Popped.Ok(s, kids);
+            if (i == lo) return new Popped.Ok(s, kids);
             if (s is Stack.Cell c && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == rhs[i - 1])
-                return Pop(a, c.Below, rhs, i - 1, new Forest.Cons(c.T, kids));
+                return Pop(a, c.Below, rhs, lo, i - 1, new Forest.Cons(c.T, kids));
             return new Popped.Fail();
+        }
+
+        /// <summary>Popping down to lo goes through m: what is left at m pops on down.</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void PopSplit(Automaton a, Stack s, int[] rhs, int lo, int m, int i, Forest kids)
+        {
+            Spec.Requires(0 <= lo && lo <= m && m <= i && i <= rhs.Length);
+            Spec.Decreases(i);
+            Spec.Ensures(Pop(a, s, rhs, lo, i, kids) ==
+                         (Pop(a, s, rhs, m, i, kids) is Popped.Ok ok ? Pop(a, ok.Rest, rhs, lo, m, ok.Kids) : new Popped.Fail()));
+            if (i > m && s is Stack.Cell c && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == rhs[i - 1])
+            {
+                Spec.Assert(Pop(a, s, rhs, lo, i, kids) == Pop(a, c.Below, rhs, lo, i - 1, new Forest.Cons(c.T, kids)));
+                Spec.Assert(Pop(a, s, rhs, m, i, kids) == Pop(a, c.Below, rhs, m, i - 1, new Forest.Cons(c.T, kids)));
+                PopSplit(a, c.Below, rhs, lo, m, i - 1, new Forest.Cons(c.T, kids));
+            }
+            else if (i == m) Spec.Assert(Pop(a, s, rhs, m, i, kids) == new Popped.Ok(s, kids));
         }
 
         /// <summary>Reduces rule r: pops its cells, and pushes the node over their trees with the goto state. Null: an internal error.</summary>
@@ -259,7 +276,7 @@ namespace CsLemon.Lr
             if (r < 0 || r >= g.Lhs.Length || r >= g.Rhs.Length || g.NTerm < 0) return null;
             int[]? rhs = g.Rhs[r];
             if (rhs == null) return null;
-            Popped p = Pop(a, s, rhs, rhs.Length, new Forest.Nil());
+            Popped p = Pop(a, s, rhs, 0, rhs.Length, new Forest.Nil());
             if (!(p is Popped.Ok ok)) return null;
             int lhs = g.Lhs[r], from = Top(ok.Rest);
             if (lhs < g.NTerm || from < 0 || from >= a.Goto.Length) return null;
@@ -355,7 +372,7 @@ namespace CsLemon.Lr
         {
             Spec.Ensures(Reduce(g, a, s, r) == null ||
                          0 <= r && r < g.Lhs.Length && r < g.Rhs.Length && g.Rhs[r] != null &&
-                         Pop(a, s, g.Rhs[r], g.Rhs[r].Length, new Forest.Nil()) is Popped.Ok ok &&
+                         Pop(a, s, g.Rhs[r], 0, g.Rhs[r].Length, new Forest.Nil()) is Popped.Ok ok &&
                          Reduce(g, a, s, r) is Stack.Cell c && c.T == new Tree.Node(r, ok.Kids) && c.Below == ok.Rest &&
                          0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == g.Lhs[r] &&
                          g.NTerm <= g.Lhs[r] && 0 <= Top(ok.Rest) && Top(ok.Rest) < a.Goto.Length && a.Goto[Top(ok.Rest)] != null &&
@@ -371,7 +388,7 @@ namespace CsLemon.Lr
             Spec.Requires(0 <= i && i <= rhs.Length && StackOk(g, a, s) && Kids(g, kids, rhs, i) &&
                           Append(StackFringe(s), Fringes(kids)) == consumed);
             Spec.Decreases(i);
-            Spec.Ensures(!(Pop(a, s, rhs, i, kids) is Popped.Ok ok) ||
+            Spec.Ensures(!(Pop(a, s, rhs, 0, i, kids) is Popped.Ok ok) ||
                          StackOk(g, a, ok.Rest) && Kids(g, ok.Kids, rhs, 0) && Append(StackFringe(ok.Rest), Fringes(ok.Kids)) == consumed);
             if (i > 0 && s is Stack.Cell c && 0 <= c.State && c.State < a.Incoming.Length && a.Incoming[c.State] == rhs[i - 1])
             {
@@ -380,7 +397,7 @@ namespace CsLemon.Lr
                 Spec.Assert(Fringes(more) == Append(Fringe(c.T), Fringes(kids)));
                 Spec.Assert(StackFringe(c) == Append(StackFringe(c.Below), Fringe(c.T)));
                 AppendAssoc(StackFringe(c.Below), Fringe(c.T), Fringes(kids));
-                Spec.Assert(Pop(a, s, rhs, i, kids) == Pop(a, c.Below, rhs, i - 1, more));
+                Spec.Assert(Pop(a, s, rhs, 0, i, kids) == Pop(a, c.Below, rhs, 0, i - 1, more));
                 PopSound(g, a, c.Below, rhs, i - 1, more, consumed);
             }
         }
@@ -420,7 +437,7 @@ namespace CsLemon.Lr
                 AppendNil(StackFringe(s));
                 PopSound(g, a, s, rhs, rhs.Length, new Forest.Nil(), Prefix(w, pos));
                 ReduceShape(g, a, s, r);
-                if (Pop(a, s, rhs, rhs.Length, new Forest.Nil()) is Popped.Ok ok && Reduce(g, a, s, r) is Stack.Cell pushed)
+                if (Pop(a, s, rhs, 0, rhs.Length, new Forest.Nil()) is Popped.Ok ok && Reduce(g, a, s, r) is Stack.Cell pushed)
                 {
                     var node = new Tree.Node(r, ok.Kids);
                     Spec.Assert(Valid(g, node, g.Lhs[r]));
@@ -449,16 +466,16 @@ namespace CsLemon.Lr
                           Safety.SymsOf(a, ann.Syms[σ], ann.Syms[σ].Length - g.Rhs[r].Length + i, s) &&
                           Safety.StatesOf(ann.States[σ], ann.States[σ].Length - g.Rhs[r].Length + i, s));
             Spec.Decreases(i);
-            Spec.Ensures(Pop(a, s, g.Rhs[r], i, kids) is Popped.Ok ok && Safety.Safe(a, ann, ok.Rest) &&
+            Spec.Ensures(Pop(a, s, g.Rhs[r], 0, i, kids) is Popped.Ok ok && Safety.Safe(a, ann, ok.Rest) &&
                          Safety.StatesOf(ann.States[σ], ann.States[σ].Length - g.Rhs[r].Length, ok.Rest));
             if (i > 0)
             {
                 Safety.PopIfSafe(g, a, ann, σ, r, i, s);
                 var c = (Stack.Cell)s;
-                Spec.Assert(Pop(a, s, g.Rhs[r], i, kids) == Pop(a, c.Below, g.Rhs[r], i - 1, new Forest.Cons(c.T, kids)));
+                Spec.Assert(Pop(a, s, g.Rhs[r], 0, i, kids) == Pop(a, c.Below, g.Rhs[r], 0, i - 1, new Forest.Cons(c.T, kids)));
                 PopSafe(g, a, ann, σ, r, c.Below, i - 1, new Forest.Cons(c.T, kids));
             }
-            else Spec.Assert(Pop(a, s, g.Rhs[r], 0, kids) == new Popped.Ok(s, kids));
+            else Spec.Assert(Pop(a, s, g.Rhs[r], 0, 0, kids) == new Popped.Ok(s, kids));
         }
 
         /// <summary>With annotations that pass the safety validator, a step on a safe stack is no internal error, and keeps it safe.</summary>
@@ -486,7 +503,7 @@ namespace CsLemon.Lr
                 int r = args![la];
                 Spec.Assert(Safety.RuleOk(g, a, ann, state, r));
                 PopSafe(g, a, ann, state, r, s, g.Rhs[r]!.Length, new Forest.Nil());
-                var ok = (Popped.Ok)Pop(a, s, g.Rhs[r]!, g.Rhs[r]!.Length, new Forest.Nil());
+                var ok = (Popped.Ok)Pop(a, s, g.Rhs[r]!, 0, g.Rhs[r]!.Length, new Forest.Nil());
                 Safety.GotoIfSafe(g, a, ann, state, r, ok.Rest);
                 Spec.Assert(Top(ok.Rest) == Safety.TopState(ok.Rest));
                 Safety.PushIfSafe(g, a, ann, ok.Rest, a.Goto[Top(ok.Rest)]![g.Lhs[r] - g.NTerm], new Tree.Node(r, ok.Kids));
