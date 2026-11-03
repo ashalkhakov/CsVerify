@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace CsVerify.Verifier
 {
@@ -167,12 +168,79 @@ namespace CsVerify.Verifier
                     ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) => arg.Expression,
                     _ => null,
                 };
+                // (a struct's member inside an array element writes the element: a[i].X = 1)
+                while (target is MemberAccessExpressionSyntax ma && c.Model.GetSymbolInfo(ma).Symbol is ISymbol ms && !ms.IsStatic &&
+                       ms.ContainingType?.TypeKind == TypeKind.Struct)
+                    target = ma.Expression;
                 if (target is ElementAccessExpressionSyntax) writes = true;
                 if (n is InvocationExpressionSyntax inv && c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee &&
                     !SpecSymbols.IsSpecClass(callee.ContainingType) && MayWriteHeap(callee)) writes = true;
                 if (writes) break;
             }
             return _writesHeap[key] = writes;
+        }
+
+        private readonly Dictionary<IMethodSymbol, bool> _touchesArrays = new Dictionary<IMethodSymbol, bool>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// May a call read or write array (or span) contents, in code, directly or through anything it calls? A
+        /// method that does not can be handed an array element by ref: copying the cell in and out is then what
+        /// happens, since nothing else looks at the cell while the callee has it. Specifications and lemmas are
+        /// ghost and do not count. A library method may when it is handed anything but values and strings.
+        /// </summary>
+        internal bool MayTouchArrays(IMethodSymbol m)
+        {
+            var key = (m.ReducedFrom ?? m).OriginalDefinition;
+            if (key.DeclaringSyntaxReferences.Length == 0) key = m.ReducedFrom ?? m;
+            if (_touchesArrays.TryGetValue(key, out var known)) return known;
+            var c = ContractOf(key.OriginalDefinition);
+            if (c.IsLemma) return _touchesArrays[key] = false;
+            if (IsOverridable(key)) return _touchesArrays[key] = true;
+            if (!c.HasSource)
+            {
+                bool Reaches(ITypeSymbol t) => t != null && !t.IsValueType && t.SpecialType != SpecialType.System_String;
+                return _touchesArrays[key] = Fields.RunsUserCode(key) || key.Parameters.Any(p => Reaches(p.Type)) ||
+                                             !key.IsStatic && Reaches(key.ContainingType) || key.IsGenericMethod;
+            }
+            _touchesArrays[key] = false; // assume no for recursive calls while computing
+            var body = c.Model.GetOperation(c.Declaration);
+            // (no operation tree: an auto-property's accessor touches nothing, anything else cannot be told)
+            bool touches = body == null && !(c.Declaration is AccessorDeclarationSyntax ad && ad.Body == null && ad.ExpressionBody == null);
+            foreach (var op in body?.DescendantsAndSelf() ?? Enumerable.Empty<IOperation>())
+            {
+                if (SpecSymbols.EnclosingSpecCall(op.Syntax, c.Model) != null) continue;
+                IMethodSymbol callee = null;
+                switch (op)
+                {
+                    case IArrayElementReferenceOperation _: touches = true; break;
+                    // a sequence's indexer reads its contents, its Length does not
+                    case IPropertyReferenceOperation pr when pr.Instance != null && MethodVerifier.IsSequence(pr.Instance.Type): touches = pr.Property.IsIndexer; break;
+                    case IPropertyReferenceOperation pr:
+                        touches = new[] { pr.Property.GetMethod, pr.Property.SetMethod }.Any(x => x != null && MayTouchArrays(x));
+                        break;
+                    case IInvocationOperation inv: callee = inv.TargetMethod; break;
+                    case IObjectCreationOperation oc: callee = oc.Constructor; break;
+                    case IBinaryOperation b: callee = b.OperatorMethod; break;
+                    case IUnaryOperation u: callee = u.OperatorMethod; break;
+                    case IConversionOperation cv: callee = cv.OperatorMethod; break;
+                    case IIncrementOrDecrementOperation id: callee = id.OperatorMethod; break;
+                    case ICompoundAssignmentOperation ca: callee = ca.OperatorMethod; break;
+                    case IForEachLoopOperation fe when fe.Syntax is CommonForEachStatementSyntax fs:
+                        var info = c.Model.GetForEachStatementInfo(fs);
+                        touches = new[] { info.GetEnumeratorMethod, info.MoveNextMethod, info.CurrentProperty?.GetMethod, info.DisposeMethod }
+                            .Any(x => x != null && MayTouchArrays(x)) || Unwrap(fe.Collection).Type is IArrayTypeSymbol;
+                        break;
+                }
+                if (callee != null && !SpecSymbols.IsSpecClass(callee.ContainingType) && MayTouchArrays(callee)) touches = true;
+                if (touches) break;
+            }
+            return _touchesArrays[key] = touches;
+        }
+
+        private static IOperation Unwrap(IOperation op)
+        {
+            while (op is IConversionOperation c && c.IsImplicit) op = c.Operand;
+            return op;
         }
 
         private readonly Dictionary<IMethodSymbol, HashSet<IMethodSymbol>> _callees = new Dictionary<IMethodSymbol, HashSet<IMethodSymbol>>(SymbolEqualityComparer.Default);

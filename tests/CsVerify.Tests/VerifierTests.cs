@@ -550,8 +550,9 @@ namespace CsVerify.Tests
         [Fact]
         public void HeapAliases_FailVerification()
         {
-            Assert.Contains("CSV1901", Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 0); ref int x = ref a[0]; x = 1; }"));
-            Assert.Equal(new[] { "CSV1901" }, Errors("M", "static void Set(ref int x) { x = 1; } static void M(int[] a) { Spec.Requires(a.Length > 0); Set(ref a[0]); }"));
+            // (a ref local names its cell, and a cell lent by ref is copied in and out: see RefTests) a callee that
+            // could also reach the cell through the array would see the two disagree
+            Assert.Equal(new[] { "CSV1901" }, Errors("M", "static void Set(int[] b, ref int x) { x = b[0]; } static void M(int[] a) { Spec.Requires(a.Length > 0); Set(a, ref a[0]); }"));
         }
 
         [Fact]
