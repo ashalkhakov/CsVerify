@@ -1356,8 +1356,9 @@ namespace CsVerify.Verifier
             }
 
             var preEnv = new SpecEnv { Old = pre };
+            // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`)
             foreach (var req in callee.Requires)
-                Prove(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
+                Prove(T.Implies(T.And(_guards.ToArray()), AsBool(EvalForeignSpec(req, pre, preEnv))), "CSV1001", inv.Syntax,
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
             if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
             if (callee.IsPure && _codeMode) CheckPurePermissions(callee, pre, preEnv, f, inv.Syntax);

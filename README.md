@@ -283,6 +283,7 @@ public static bool Seg(SNode? from, SNode? to, int n) =>
 
 - **Instances.** An instance `Seg(a, b, n)` is held like a view. `Spec.Fold(Seg(a, b, n))` puts the body's permissions into it, and its facts must hold (CSV1019). `Spec.Unfold` takes them out again, and the facts hold. Nobody can write a folded footprint.
 - **Self-framing.** A predicate's body may read only objects it has `Spec.Acc` for, to its left (CSV1016, checked where it is declared). So what a held instance says cannot change behind its back.
+- **Left to right.** Permissions in a body, precondition or invariant are taken in order, as in Viper: a fact that needs one (a read, or a function over a predicate, like `Buf(h, n).Length`) must come after it. Write `Heap(h, n) && n < Buf(h, n).Length`, not the other way round.
 - **Contracts.** Permissions in `Spec.Requires` and `Spec.Ensures` are given by the caller and received by the callee, then back. A call changes only the footprints it gets. In a loop invariant, permissions go round the loop. The loop body may not use up permissions held outside it (CSV1016). Lemmas exchange permissions too (ATS's `slseg_v_extend` is a recursive lemma).
 - **As a condition.** Elsewhere, `Spec.Acc(o)` and `Seg(a, b, n)` mean "in hand".
 - **Functions over predicates.** A `[Pure]` or `[GhostFunction]` with a predicate in its precondition may `Spec.Unfold` it in its body, and it reads exactly that footprint. Its value then survives any change outside the footprint (the frame rule). For example, `Sum(keep, null, n)` is unchanged by reversing another list.
