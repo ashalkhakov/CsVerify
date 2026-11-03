@@ -298,7 +298,7 @@ namespace CsVerify.Verifier
             var parse = new CSharpParseOptions(LanguageVersion.Latest,
                 preprocessorSymbols: new[] { SpecSymbols.SpecSymbol }.Concat(options.Defines));
             var userTrees = sources.Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.path)).ToList();
-            var specTrees = SpecSources().Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.name)).ToList();
+            var specTrees = SpecTrees(parse);
             var compilation = CSharpCompilation.Create("CsVerifyTarget", userTrees.Concat(specTrees), References(options),
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: options.Nullable));
 
@@ -384,6 +384,18 @@ namespace CsVerify.Verifier
             }
         }
 
+        // Syntax trees and metadata are immutable: one copy serves every verification in the process (a test run
+        // verifies hundreds of programs at once; a copy each held gigabytes).
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<SyntaxTree>> _specTrees =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<SyntaxTree>>();
+        private static readonly Lazy<IReadOnlyList<MetadataReference>> _framework =
+            new Lazy<IReadOnlyList<MetadataReference>>(() => LoadFrameworkReferences().ToList());
+
+        /// <summary>The Spec library's sources, parsed once per set of preprocessor symbols.</summary>
+        private static IReadOnlyList<SyntaxTree> SpecTrees(CSharpParseOptions parse) =>
+            _specTrees.GetOrAdd(parse.LanguageVersion + "|" + string.Join(",", parse.PreprocessorSymbolNames.OrderBy(x => x)),
+                _ => SpecSources().Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.name)).ToList());
+
         internal static IEnumerable<(string name, string text)> SpecSources()
         {
             var asm = typeof(Engine).Assembly;
@@ -402,7 +414,9 @@ namespace CsVerify.Verifier
                 yield return MetadataReference.CreateFromFile(r);
         }
 
-        public static IEnumerable<MetadataReference> FrameworkReferences()
+        public static IEnumerable<MetadataReference> FrameworkReferences() => _framework.Value;
+
+        private static IEnumerable<MetadataReference> LoadFrameworkReferences()
         {
             var frameworkDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
             var tpa = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "").Split(Path.PathSeparator);

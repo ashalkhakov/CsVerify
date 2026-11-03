@@ -15,14 +15,17 @@ namespace CsVerify.Tests
     {
         private const string Usings = "using System; using System.Diagnostics; using CsVerify;\n";
 
-        public static IEnumerable<MetadataReference> References()
+        // (one set for the whole run: each test reading them again held a copy of the framework's metadata)
+        private static readonly Lazy<List<MetadataReference>> _references = new Lazy<List<MetadataReference>>(() =>
         {
             var frameworkDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
             var tpa = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")).Split(Path.PathSeparator);
             return tpa.Where(p => Path.GetDirectoryName(p) == frameworkDir)
                 .Append(typeof(CsVerify.Spec).Assembly.Location)
-                .Select(p => MetadataReference.CreateFromFile(p));
-        }
+                .Select(p => (MetadataReference)MetadataReference.CreateFromFile(p)).ToList();
+        });
+
+        public static IEnumerable<MetadataReference> References() => _references.Value;
 
         public static CSharpCompilation Compile(string source, params string[] defines)
         {
