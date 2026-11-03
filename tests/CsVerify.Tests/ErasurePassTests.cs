@@ -55,6 +55,7 @@ namespace CsVerify.Tests
             Assert.Equal(3 + 4 + 7 + 6, Run(asm, "DataTypes", "Demo")); // a proof-carrying factorial: its Ghost<Fact> is gone
             Assert.Equal(10 * 3 + 3, Run(asm, "Trees", "Demo")); // 1..7 inserted: AVL height 3, black height 3
             Assert.Equal(30 + 20, Run(asm, "Bank", "Demo", Activator.CreateInstance(asm.GetType("Samples.NullAudit")))); // owned accounts: views gone
+            Assert.Equal(10, Run(asm, "DynamicFrames", "Demo")); // Dafny-style pairs: Repr and Valid() gone
         }
 
         [Fact]
@@ -63,7 +64,7 @@ namespace CsVerify.Tests
             var asm = Load(EraseSamples());
             var types = asm.GetTypes();
             // no ghost or view type survives, in the runtime or in any signature
-            Assert.DoesNotContain(types, t => new[] { "Ghost`1", "Seq`1", "PointsTo`1", "ArrayView`1", "ArrayHole`1", "FreeGc`1", "Own`1", "Spec" }.Contains(t.Name));
+            Assert.DoesNotContain(types, t => new[] { "Ghost`1", "Seq`1", "PointsTo`1", "ArrayView`1", "ArrayHole`1", "FreeGc`1", "Own`1", "ObjSet", "Spec" }.Contains(t.Name));
             var signatures = types.SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly));
             Assert.DoesNotContain(signatures, m => m.GetParameters().Any(p => p.ParameterType.Name.StartsWith("Ghost") || p.ParameterType.Name.Contains("View")));
             // lemmas, ghost functions and proof-only view functions are gone

@@ -25,6 +25,10 @@ namespace CsVerify.Verifier
         public readonly List<Postcondition> Ensures = new List<Postcondition>();
         /// <summary>The termination measure's components, compared lexicographically; null without Spec.Decreases.</summary>
         public IReadOnlyList<IOperation> Decreases;
+        /// <summary>Spec.Modifies: the objects whose fields the method may write (besides those it allocates); null if none given.</summary>
+        public IOperation Modifies;
+        /// <summary>Spec.Reads: the objects whose fields a [Pure] function may read; null if none given.</summary>
+        public IOperation Reads;
         /// <summary>For [Pure] methods whose body is a single return: the returned expression (the definition).</summary>
         public IOperation PureBody;
         public bool HasSource => Declaration != null;
@@ -72,6 +76,8 @@ namespace CsVerify.Verifier
                         case "Requires": c.Requires.Add(arg); continue;
                         case "Decreases": c.Decreases = op.Arguments.Select(a => a.Value).ToList(); continue;
                         case "Ensures": c.Ensures.Add(ReadEnsures(arg, inv)); continue;
+                        case "Modifies": c.Modifies = arg; continue;
+                        case "Reads": c.Reads = arg; continue;
                     }
                 }
                 rest.Add(stmt);

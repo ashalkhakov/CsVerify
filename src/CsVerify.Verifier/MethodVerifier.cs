@@ -167,16 +167,26 @@ namespace CsVerify.Verifier
                     // a non-nullable parameter is a precondition: each caller proves it (an out parameter is not set yet)
                     if (p.RefKind != RefKind.Out && IsNonNullable(p)) _z3.Assume(NotNull(f.Vars[p]));
                 }
+                EnterAlloc(f);
                 EnterOwned(f);
-                _entry = f.Clone();
+                _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
+                EnterFrames(f, spec);
                 if (_contract.Decreases != null) _entryMeasure = _contract.Decreases.Select(m => ToMeasure(m, EvalOwnSpec(m, f, spec))).ToArray();
-                _entry = f.Clone();
+                _entry = EntryState(f);
                 Exec(cfg.Blocks[0], f, new HashSet<int>());
             }
             finally { _z3.Pop(); }
+        }
+
+        /// <summary>The state Spec.Old refers to (for a constructor, from before its object was allocated).</summary>
+        private Frame EntryState(Frame f)
+        {
+            var entry = f.Clone();
+            if (_allocEntry != null) entry.Alloc = _allocEntry;
+            return entry;
         }
 
         private void FindContractStatements()
@@ -184,7 +194,7 @@ namespace CsVerify.Verifier
             BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body;
             if (block == null) return;
             foreach (var s in block.Statements.OfType<ExpressionStatementSyntax>())
-                if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "Decreases"))
+                if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "Decreases" || n == "Modifies" || n == "Reads"))
                     _contractStatements.Add(inv);
         }
 
@@ -385,7 +395,8 @@ namespace CsVerify.Verifier
             foreach (var s in loop.Havoc)
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
             if (loop.HavocAllFields) HavocAllFields(f);
-            foreach (var field in loop.HavocFields) f.Fields[field] = _z3.Fresh(field.Name + "$map", Sort.Row);
+            foreach (var field in loop.HavocFields) f.Fields[field] = FreshMap(field);
+            if (loop.HavocAllFields || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
             if (loop.HavocHeap) f.Heap = _z3.Fresh("heap", Sort.Heap);
             else
                 foreach (var a in loop.HavocArrays)
@@ -986,6 +997,7 @@ namespace CsVerify.Verifier
         {
             var prop = pr.Property;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
+            if (SpecSymbols.IsObjSet(prop.ContainingType) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
                 return T.Coerce(T.Select(Eval(pr.Instance, f, spec), Eval(pr.Arguments[0].Value, f, spec), Sort.Int), SortOf(pr.Type));
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
@@ -1090,6 +1102,8 @@ namespace CsVerify.Verifier
                     case "Forall":
                     case "Exists":
                         return Quantifier(inv, f, spec, m.Name == "Forall");
+                    case "Fresh":
+                        return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
                     default:
                         return T.True;
                 }
@@ -1136,8 +1150,10 @@ namespace CsVerify.Verifier
                     Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                CalleeModifies(callee, pre, f, inv.Syntax);
                 HavocFields(f, m, touched);
                 var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                AllocAfterCall(f, libResult);
                 LibraryNullFacts(inv, argTerms, libResult);
                 return libResult;
             }
@@ -1146,6 +1162,8 @@ namespace CsVerify.Verifier
             foreach (var req in callee.Requires)
                 Prove(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
+            if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
+            var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax);
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {
@@ -1176,13 +1194,20 @@ namespace CsVerify.Verifier
                 if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
             }
             if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
-            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched);
+            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable);
             TakeBack(inv, receiver, f, callee);
             post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
             post.FieldEpoch = f.FieldEpoch;
+            post.Link = f.Link;
 
             var result = m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name);
             if (result != null && IsNonNullableReturn(callee.Method)) _z3.Assume(NotNull(result));
+            if (!callee.IsPure && !callee.IsLemma)
+            {
+                AllocAfterCall(f, inv.Arguments.Where(a => (a.Parameter?.RefKind == RefKind.Out || a.Parameter?.RefKind == RefKind.Ref) && !(a.Value is IDiscardOperation))
+                    .Select(a => Eval(a.Value, f)).Append(result).ToArray());
+                post.Alloc = f.Alloc;
+            }
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
             foreach (var ens in callee.Ensures)
@@ -1198,6 +1223,12 @@ namespace CsVerify.Verifier
             switch (inv.TargetMethod.Name)
             {
                 case "Const": return T.ConstRow(T.Coerce(args[0], Sort.Int));
+                case "Of": return T.Store(T.ZeroRow(), T.Coerce(args[0], Sort.Int), T.Int(1));
+                case "Contains": return T.Not(T.Eq(T.Select(self, T.Coerce(args[0], Sort.Int), Sort.Int), T.Int(0)));
+                case "Add": return T.Store(self, T.Coerce(args[0], Sort.Int), T.Int(1));
+                case "Union": return new Term($"(cv_union {self} {args[0]})", Sort.Row);
+                case "IsSubsetOf": return new Term($"(cv_subset {self} {args[0]})", Sort.Bool);
+                case "IsDisjointFrom": return new Term($"(cv_disjoint {self} {args[0]})", Sort.Bool);
                 case "Update": return T.Store(self, args[0], T.Coerce(args[1], Sort.Int));
                 case "Drop": return new Term($"(cv_drop {self} {args[0]})", Sort.Row);
                 case "Concat": return new Term($"(cv_concat {self} {args[0]} {args[1]})", Sort.Row);
@@ -1208,7 +1239,15 @@ namespace CsVerify.Verifier
         /// <summary>Drop and Concat as array lambdas: definitions, not quantified axioms, so they cost Z3 nothing until used.</summary>
         public const string SeqTheory =
             "(define-fun cv_drop ((a (Array Int Int)) (n Int)) (Array Int Int) (lambda ((i Int)) (select a (+ n i))))\n" +
-            "(define-fun cv_concat ((a (Array Int Int)) (n Int) (b (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (< i n) (select a i) (select b (- i n)))))";
+            "(define-fun cv_concat ((a (Array Int Int)) (n Int) (b (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (< i n) (select a i) (select b (- i n)))))\n" +
+            // object sets (ObjSet) are arrays to 0/1, like sequences
+            "(define-fun cv_union ((a (Array Int Int)) (b (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (or (distinct (select a i) 0) (distinct (select b i) 0)) 1 0)))\n" +
+            "(define-fun cv_subset ((a (Array Int Int)) (b (Array Int Int))) Bool (forall ((i Int)) (=> (distinct (select a i) 0) (distinct (select b i) 0))))\n" +
+            "(define-fun cv_disjoint ((a (Array Int Int)) (b (Array Int Int))) Bool (forall ((i Int)) (not (and (distinct (select a i) 0) (distinct (select b i) 0)))))\n" +
+            // what a call with Spec.Modifies(w) may change: objects in w, and objects not allocated before it
+            "(define-fun cv_mod ((w (Array Int Int)) (alloc (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (or (distinct (select w i) 0) (= (select alloc i) 0)) 1 0)))\n" +
+            "(define-fun cv_frame ((m (Array Int Int)) (old (Array Int Int)) (new (Array Int Int))) (Array Int Int) (lambda ((i Int)) (ite (distinct (select m i) 0) (select new i) (select old i))))\n" +
+            "(define-fun cv_frameh ((m (Array Int Int)) (old (Array Int (Array Int Int))) (new (Array Int (Array Int Int)))) (Array Int (Array Int Int)) (lambda ((i Int)) (ite (distinct (select m i) 0) (select new i) (select old i))))";
 
         /// <param name="state">the caller's state, whose heap fields the callee's contract reads</param>
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)
@@ -1218,6 +1257,8 @@ namespace CsVerify.Verifier
             {
                 frame.Fields = new Dictionary<ISymbol, Term>(state.Fields, SymbolEqualityComparer.Default);
                 frame.FieldEpoch = state.FieldEpoch;
+                frame.Alloc = state.Alloc;
+                frame.Link = state.Link;
             }
             for (int i = 0; i < args.Length && i < callee.Method.Parameters.Length; i++)
                 if (args[i] != null) frame.Vars[callee.Method.Parameters[i]] = args[i];
@@ -1269,6 +1310,7 @@ namespace CsVerify.Verifier
                 // outside its precondition a pure function's value is unspecified: using it there is ill-defined
                 if (wanted) Require(pre, "CSV1001", specCall, $"precondition of '{m.Name}' might not hold in '{specCall}'");
             }
+            LinkPure(callee, receiver, args, sort, state, app);
             return T.Coerce(app, sort);
         }
 

@@ -268,7 +268,8 @@ namespace CsVerify.Verifier
             if (ctor == null || _engine.MayWriteHeap(ctor)) f.Heap = _z3.Fresh("heap", Sort.Heap);
             var obj = Unknown(oc.Type, "new");
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
-            SetNewObjectFields(f, obj, oc.Type, ctor);
+            SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax) : null);
+            if (pre != null) AllocAfterCall(f);
             if (pre != null)
             {
                 var post = pre.Clone();
@@ -276,6 +277,8 @@ namespace CsVerify.Verifier
                 post.Heap = f.Heap;
                 post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
                 post.FieldEpoch = f.FieldEpoch;
+                post.Alloc = f.Alloc;
+                post.Link = f.Link;
                 foreach (var ens in callee.Ensures)
                     _z3.Assume(AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = obj, ResultParameter = ens.ResultParameter })));
             }

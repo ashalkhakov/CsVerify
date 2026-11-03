@@ -156,6 +156,7 @@ namespace CsVerify.Verifier
         {
             Send("(reset)");
             _declared.Clear();
+            _fresh = 0; // the same names for the same method, whatever was verified before: Z3's search depends on them
             Depth = 0;
             Scope = ++_scopes;
             Start();

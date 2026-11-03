@@ -78,12 +78,16 @@ namespace CsVerify.Verifier
         internal readonly DataTypes Data;
         internal readonly FieldEffects Fields;
         internal readonly IReadOnlyList<INamedTypeSymbol> SourceTypes;
+        /// <summary>Does the program use dynamic frames (Spec.Modifies/Reads/Fresh, ObjSet)? Allocation is tracked only then.</summary>
+        internal readonly bool UsesDynamicFrames;
 
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
             _compilation = compilation;
             Data = new DataTypes(compilation, userTrees);
             Fields = new FieldEffects(this);
+            UsesDynamicFrames = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"));
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Options = options;

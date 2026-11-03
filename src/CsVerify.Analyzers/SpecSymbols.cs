@@ -54,7 +54,9 @@ namespace CsVerify.Analyzers
         }
         /// <summary>[Pure] or [GhostFunction]: a mathematical function the verifier may use in specifications.</summary>
         public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s);
-        public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq");
+        /// <summary>A ghost collection: Seq&lt;T&gt; (and its static class Seq) or ObjSet.</summary>
+        public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq") || IsObjSet(type);
+        public static bool IsObjSet(ITypeSymbol type) => IsCsVerifyType(type, "ObjSet");
 
         public static bool IsTrusted(ISymbol s)
         {

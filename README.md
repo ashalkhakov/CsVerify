@@ -80,6 +80,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | static function | `[GhostFunction]`: specification-only, its body is ghost context (quantifiers, `Seq`), unfolded at each use |
 | linear logic on views (used exactly once) | `[Linear]` types checked by the `LinearityAnalyzer` on Roslyn's control-flow graph |
 | frame rule `(ext)` | calls only change what they receive by `ref`/`out`, and the arrays and fields they may write (inferred) |
+| Dafny's `ghost var Repr: set<object>`, `Valid()`, `modifies`, `reads`, `fresh` | `Ghost<ObjSet> Repr` field, `[GhostFunction] bool Valid()`, `Spec.Modifies(Repr.Value)`, `Spec.Reads(Repr.Value.Add(this))`, `Spec.Fresh(Repr.Value)` |
 | a view of an object's fields, `(pf \| p)` | `[Owned]` class; `Own.New(new C(...), out Own<C> view)`; pass `(C obj, ref Own<C> view)` with `Spec.Requires(view.Obj.Value == obj)` |
 | several results, `[r1, r2: int] (...)` (Dafny `returns (k, m)`) | a C# tuple `(int k, int m)`; `Spec.Ensures<(int k, int m)>(r => ... r.k ... r.m ...)`; callers read `t.k` or deconstruct with `var (k, m) = ...` |
 | `$UNSAFE` | `[Trusted]`: the body is not verified, its contract is taken as an axiom, linearity is not checked |
@@ -181,7 +182,7 @@ The verifier runs all three analyzers over the compilation it verifies: a method
 
 Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
 
-Z3 is reset before each method (`(reset)`, then the options and theory again), so a method's result never depends on which methods were verified before it. Z3's search is history-dependent, and an "unknown" from e-matching could otherwise come and go with unrelated code.
+Z3 is reset before each method (`(reset)`, then the options and theory again), and fresh names are numbered from zero again, so a method's result never depends on which methods were verified before it. Z3's search is history-dependent, and an "unknown" from e-matching could otherwise come and go with unrelated code.
 
 Z3 runs as a separate process speaking SMT-LIB2, by design. Neither the analyzer nor MSBuild loads native code, any Z3 build for any OS or CPU works (including arm64, where the `Microsoft.Z3` NuGet package's x64-only binaries cannot load), you can upgrade Z3 independently of CsVerify, a solver crash or hang cannot take the build down with it, and `--smt-log` shows exactly what was asked.
 
@@ -224,6 +225,15 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 - **Reads need no view.** Objects are garbage-collected, and while a method runs nobody else holds a view it lent.
 - **Giving up.** `Own.Drop(view)` gives the object up for good.
 - **The ATS idiom.** Methods take the object and its view side by side, `Transfer(Account from, ref Own<Account> fromView, ...)`, tied by `Spec.Requires(fromView.Obj.Value == from)`.
+
+**Dafny-style objects (dynamic frames).** For ordinary mutable classes, Dafny's `Valid()`/`Repr` idiom is available:
+- **The pieces.** An object keeps a ghost set of the objects it is made of, `Ghost<ObjSet> Repr`, which is erased like every ghost. `ObjSet` has `Empty`, `Of`, `Add`, `Union`, `Contains`, `IsSubsetOf` and `IsDisjointFrom`. A ghost `[GhostFunction] bool Valid()` states the object's invariant over `Repr`.
+- **`Spec.Modifies(W)`:** the method writes fields only of objects in `W` (as on entry) or of objects it allocates (CSV1017). A callee that writes fields but has no frame, or a wider one, is reported there too. A call to such a method changes nothing outside `W`: every other object's fields stay as they were, and only the callee's own Modifies is needed, not inferred effects.
+- **`Spec.Reads(R)`:** a `[Pure]` or `[GhostFunction]` reads fields only of objects in `R` (CSV1017), and calls only functions whose `Reads` are within `R`. Its value then survives any change of fields that touches nothing in `R`. The verifier follows each change back (a field write touches one object, a call touches its `Modifies` and what it allocates) and keeps the old value whenever the change is disjoint from `R`. So `q.Valid()` survives `p.Swap()` when their representations are disjoint.
+- **`Spec.Fresh(x)` / `Spec.Fresh(set)`** in a postcondition: allocated by the method, as Dafny's `fresh`. A constructor that ensures `Spec.Fresh(Repr.Value)` lets clients know two new objects have disjoint representations.
+- **Allocation is tracked** (which objects exist), but only in programs that use dynamic frames.
+- **Arrays are outside dynamic frames.** Their contents are the array heap, as before, and any change to it ends the frame reasoning for `[Pure]` functions.
+- **One style per class.** An `[Owned]` class is framed by its views; `Spec.Modifies`/`Spec.Reads` on its methods is an error (CSV1017).
 
 ### Null references
 
@@ -332,6 +342,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
 | CSV1015 | verifier | an object invariant might not hold for a new object |
 | CSV1016 | verifier | an [Owned] object written without its view in hand, or a view made for an object that is not new |
+| CSV1017 | verifier | a dynamic frame broken: a write outside `Spec.Modifies`, a read outside `Spec.Reads`, a callee with no or a wider frame, or `Spec.Modifies`/`Reads` on an `[Owned]` class |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
@@ -418,6 +429,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **AVL:** `Node`, both rotations (single and double), and `Insert`, proved to raise the height by at most one.
   - **Red-black, after Okasaki:** `BalanceL` and `BalanceR` handle the four rotation cases as nested C# patterns, such as `Ins.Viol(Rb.T { Red: true } a, var y, var c)`. `Ins` keeps the black height. `Insert` raises it by at most one. ATS's violation index becomes a type of its own, `Ins = Fine(Rb) | Viol(l, k, r)`: an intermediate tree that may have a red-red violation at its root cannot be an `Rb`.
   - **Hints and dead branches:** `Spec.Assert(Bh(a) == Bh(a.L))` hints play the part of ATS's `prval` steps, because definitions unfold one level per use. Unreachable branches carry a `Spec.Assert(false)` that the verifier checks.
+- `DynamicFrames.cs`: Dafny's `Valid()`/`Repr` idiom. A `Pair` of two cells has a ghost representation set, a ghost `Valid()` that reads only it, and `IncA`/`Swap` that modify only it. `Demo` builds two pairs, updates one, and proves the other unchanged and still valid.
 - `Owned.cs`: an `[Owned]` bank `Account` whose invariant (never overdrawn) travels with its view. `Bank.Transfer` takes two accounts with their views, and `Demo` calls unknown `IAudit` code between updates and still knows both balances.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
@@ -483,6 +495,7 @@ Sources and licences:
 
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
+- `FrameBugs.cs`: a `Valid()`-style function reading outside its `Spec.Reads`, a write outside `Spec.Modifies`, and two objects whose constructor promises no freshness, so updating one says nothing about the other.
 - `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
 - `TreeBugs.cs`: an AVL insert that never rotates, a single rotation where a double one is needed, and a red-black rebalance that leaves a red node over a red child.
 - `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, and an assertion that two equal values are the same object.
@@ -505,7 +518,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 153 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 159 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -513,7 +526,10 @@ samples/Good, samples/Buggy
 - **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014).
 - **Mutable objects.**
-  - **Dafny-style objects** (`Valid()` plus `Repr` and `Modifies`/`Reads` frames) are not there yet. A class can't be both styles.
+  - **Dynamic frames.**
+    - Virtual and interface calls, and library calls handed source objects, can't be checked against `Spec.Modifies`.
+    - The frame rule for `[Pure]` functions follows at most 16 changes back.
+    - Loops forget the fields they write for every object; restate what is kept in the invariant.
   - **`[Invariant]` on an ordinary mutable class** (neither a data record nor `[Owned]`) is not used: it is neither assumed nor proved.
   - **Loops** that write owned fields forget them for every object, not just the ones whose views they hold.
   - **Library code** is trusted not to write source objects' fields except through what it is handed, so reflection is not covered.

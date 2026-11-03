@@ -42,6 +42,19 @@ namespace CsVerify
         /// </summary>
         [Conditional(Symbol)] public static void Decreases<T>(T structure) where T : class { }
 
+        /// <summary>
+        /// Dynamic frame (Dafny's <c>modifies</c>): a top-level statement of a method body. The method may write fields
+        /// only of objects in <paramref name="frame"/> (as it is on entry) and of objects it allocates. Its callers then
+        /// know every other object is unchanged.
+        /// </summary>
+        [Conditional(Symbol)] public static void Modifies(ObjSet frame) { }
+
+        /// <summary>
+        /// Dynamic frame of a [Pure] function (Dafny's <c>reads</c>): its body reads fields only of objects in
+        /// <paramref name="frame"/>, so its value survives any change outside the frame.
+        /// </summary>
+        [Conditional(Symbol)] public static void Reads(ObjSet frame) { }
+
         /// <summary>Proof obligation at this point.</summary>
         [Conditional(Symbol)] public static void Assert(bool condition) { }
 
@@ -56,6 +69,12 @@ namespace CsVerify
 
         /// <summary>Bounded existential quantifier: <paramref name="body"/> holds for some i with from &lt;= i &lt; to.</summary>
         public static bool Exists(int from, int to, Func<int, bool> body) => throw GhostException.Instance;
+
+        /// <summary>In a postcondition: the object was allocated by the method (Dafny's <c>fresh</c>).</summary>
+        public static bool Fresh(object item) => throw GhostException.Instance;
+
+        /// <summary>In a postcondition: every object in the set was allocated by the method.</summary>
+        public static bool Fresh(ObjSet items) => throw GhostException.Instance;
 
         /// <summary>The value an expression had on method entry; only meaningful inside <see cref="Ensures(bool)"/>.</summary>
         public static T Old<T>(T value) => throw GhostException.Instance;
