@@ -844,7 +844,11 @@ namespace CsVerify.Verifier
                 case IFlowAnonymousFunctionOperation _:
                 case IDelegateCreationOperation _:
                 case IAnonymousFunctionOperation _:
-                    return _z3.Fresh("delegate", Sort.Int);
+                {
+                    var d = _z3.Fresh("delegate", Sort.Int);
+                    AssumeSide(NotNull(d)); // a lambda, or a method group made a delegate, is never null
+                    return d;
+                }
                 case ILiteralOperation _:
                     return Unknown(op.Type, "literal");
                 default:
@@ -1240,7 +1244,9 @@ namespace CsVerify.Verifier
                 foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
                 Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
                 var lv = Unknown(pr.Type, prop.Name);
-                if (IsNonNullableType(prop.OriginalDefinition.Type)) AssumeSide(NotNull(lv)); // as the library declares it
+                // as the library declares it, a type parameter as instantiated (a List<string>'s items are strings)
+                if (IsNonNullableType(prop.OriginalDefinition.Type) ||
+                    prop.OriginalDefinition.Type is ITypeParameterSymbol && IsNonNullableType(prop.Type)) AssumeSide(NotNull(lv));
                 return lv;
             }
             if (!IsStableProperty(prop))

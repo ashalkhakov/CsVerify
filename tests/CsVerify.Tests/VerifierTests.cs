@@ -741,6 +741,10 @@ namespace CsVerify.Tests
             Assert.Empty(Errors("M", "static readonly int[] T = new int[4]; static int M() => T.Length;"));
             Assert.Empty(Errors("M", "static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? s.Length : 0;"));
             Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? 0 : s.Length;"));
+            // a method group made a delegate is not null; a list of strings holds strings
+            Assert.Empty(Errors("M", "static int Cmp(int a, int b) => 0; static void M(int[] a) { System.Array.Sort(a, Cmp); }"));
+            Assert.Empty(Errors("M", "static int M(System.Collections.Generic.List<string> l) { Spec.Requires(l != null); return l.Count > 0 ? l[0].Length : 0; }"));
+            Assert.Equal(new[] { "CSV1013" }, Errors("M", "static int M(System.Collections.Generic.List<string?> l) => l.Count > 0 ? l[0].Length : 0;"));
         }
 
         [Fact]
