@@ -1,20 +1,20 @@
 // Small modules of LEMON: set.c, plink.c, error.c, msort.c, and the hash tables of table.c (x1..x4).
 using System.Collections.Generic;
+using CsVerify;
 
 namespace CsLemon
 {
     /// <summary>set.c: sets of terminal numbers 0..size-1 (char* in C, bool[] here).</summary>
     public static class Sets
     {
-        private static int size;
+        private static uint size; /* (never negative) */
 
         /// <summary>Set the set size (n terminals and one more).</summary>
         public static void SetSize(int n)
         {
-            size = n + 1;
+            Spec.Requires(0 <= n && n < int.MaxValue);
+            size = (uint)(n + 1);
         }
-
-        public static int Size => size;
 
         /// <summary>Allocate a new set.</summary>
         public static bool[] SetNew()
@@ -25,6 +25,7 @@ namespace CsLemon
         /// <summary>Add a new element to the set.  Return true if the element was added and false if it was already there.</summary>
         public static bool SetAdd(bool[] s, int e)
         {
+            Spec.Requires(0 <= e && e < s.Length);
             bool rv = s[e];
             s[e] = true;
             return !rv;
@@ -36,6 +37,7 @@ namespace CsLemon
             bool progress = false;
             for (int i = 0; i < size && i < s1.Length && i < s2.Length; i++)
             {
+                Spec.Invariant(0 <= i);
                 if (!s2[i]) continue;
                 if (!s1[i])
                 {
@@ -47,7 +49,11 @@ namespace CsLemon
         }
 
         /// <summary>SetFind: true if e is in s.</summary>
-        public static bool SetFind(bool[] s, int e) => s[e];
+        public static bool SetFind(bool[] s, int e)
+        {
+            Spec.Requires(0 <= e && e < s.Length);
+            return s[e];
+        }
     }
 
     /// <summary>plink.c: follow-set propagation links (the free list is the collector's).</summary>
@@ -124,19 +130,25 @@ namespace CsLemon
             var set = new Config?[LISTSIZE];
             while (list != null)
             {
+                Spec.Invariant(set.Length == LISTSIZE);
                 Config? ep = list;
                 list = list.next;
                 ep.next = null;
                 int i;
                 for (i = 0; i < LISTSIZE - 1 && set[i] != null; i++)
                 {
+                    Spec.Invariant(0 <= i && i < LISTSIZE && set.Length == LISTSIZE);
                     ep = MergeNext(ep, set[i]);
                     set[i] = null;
                 }
                 set[i] = ep;
             }
             Config? res = null;
-            for (int i = 0; i < LISTSIZE; i++) if (set[i] != null) res = MergeNext(set[i], res);
+            for (int i = 0; i < LISTSIZE; i++)
+            {
+                Spec.Invariant(0 <= i && set.Length == LISTSIZE);
+                if (set[i] != null) res = MergeNext(set[i], res);
+            }
             return res;
         }
 
@@ -168,19 +180,25 @@ namespace CsLemon
             var set = new Config?[LISTSIZE];
             while (list != null)
             {
+                Spec.Invariant(set.Length == LISTSIZE);
                 Config? ep = list;
                 list = list.bp;
                 ep.bp = null;
                 int i;
                 for (i = 0; i < LISTSIZE - 1 && set[i] != null; i++)
                 {
+                    Spec.Invariant(0 <= i && i < LISTSIZE && set.Length == LISTSIZE);
                     ep = MergeBp(ep, set[i]);
                     set[i] = null;
                 }
                 set[i] = ep;
             }
             Config? res = null;
-            for (int i = 0; i < LISTSIZE; i++) if (set[i] != null) res = MergeBp(set[i], res);
+            for (int i = 0; i < LISTSIZE; i++)
+            {
+                Spec.Invariant(0 <= i && set.Length == LISTSIZE);
+                if (set[i] != null) res = MergeBp(set[i], res);
+            }
             return res;
         }
 
@@ -212,19 +230,25 @@ namespace CsLemon
             var set = new LemonAction?[LISTSIZE];
             while (list != null)
             {
+                Spec.Invariant(set.Length == LISTSIZE);
                 LemonAction? ep = list;
                 list = list.next;
                 ep.next = null;
                 int i;
                 for (i = 0; i < LISTSIZE - 1 && set[i] != null; i++)
                 {
+                    Spec.Invariant(0 <= i && i < LISTSIZE && set.Length == LISTSIZE);
                     ep = MergeActions(ep, set[i]);
                     set[i] = null;
                 }
                 set[i] = ep;
             }
             LemonAction? res = null;
-            for (int i = 0; i < LISTSIZE; i++) if (set[i] != null) res = MergeActions(set[i], res);
+            for (int i = 0; i < LISTSIZE; i++)
+            {
+                Spec.Invariant(0 <= i && set.Length == LISTSIZE);
+                if (set[i] != null) res = MergeActions(set[i], res);
+            }
             return res;
         }
     }
@@ -266,7 +290,7 @@ namespace CsLemon
                 symbolList.Add(sp);
                 symbolMap[x] = sp;
             }
-            sp.useCnt++;
+            sp.useCnt = checked(sp.useCnt + 1);
             return sp;
         }
 
@@ -285,18 +309,25 @@ namespace CsLemon
         /// </summary>
         public static int Symbolcmpp(Symbol a, Symbol b)
         {
-            int i1 = a.type == SymbolType.MULTITERMINAL ? 3 : a.name[0] > 'Z' ? 2 : 1;
-            int i2 = b.type == SymbolType.MULTITERMINAL ? 3 : b.name[0] > 'Z' ? 2 : 1;
-            return i1 == i2 ? a.index - b.index : i1 - i2;
+            /* (C reads name[0] of "" as the terminating '\0') */
+            int i1 = a.type == SymbolType.MULTITERMINAL ? 3 : a.name.Length > 0 && a.name[0] > 'Z' ? 2 : 1;
+            int i2 = b.type == SymbolType.MULTITERMINAL ? 3 : b.name.Length > 0 && b.name[0] > 'Z' ? 2 : 1;
+            return i1 == i2 ? Cmp(a.index, b.index) : i1 - i2;
         }
+
+        /// <summary>
+        /// The sign of x - y, which is all the callers of the comparisons look at (C subtracts; here that could
+        /// overflow).
+        /// </summary>
+        public static int Cmp(int x, int y) => x < y ? -1 : x > y ? 1 : 0;
 
         // ---- configurations
 
         /// <summary>Compare two configurations.</summary>
         public static int Configcmp(Config a, Config b)
         {
-            int x = a.rp.index - b.rp.index;
-            if (x == 0) x = a.dot - b.dot;
+            int x = Cmp(a.rp.index, b.rp.index);
+            if (x == 0) x = Cmp(a.dot, b.dot);
             return x;
         }
 
@@ -341,7 +372,7 @@ namespace CsLemon
 
         private static readonly Dictionary<long, Config> configMap = new Dictionary<long, Config>();
 
-        private static long ConfigKey(Config c) => ((long)c.rp.index << 32) | (uint)c.dot;
+        private static long ConfigKey(Config c) => ((long)c.rp.index << 32) | unchecked((uint)c.dot);
 
         public static void Configtable_init()
         {
