@@ -23,7 +23,7 @@ namespace Samples
             {
                 Spec.Invariant(0 <= i && i <= v1.Length);
                 Spec.Decreases(v1.Length - i);
-                sum += v1[i] * v2[i];
+                sum = checked(sum + v1[i] * v2[i]);
             }
             return sum;
         }

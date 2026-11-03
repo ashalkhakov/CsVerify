@@ -45,7 +45,7 @@ namespace CsVerify.Verifier
         private Term Field(IPropertySymbol p, Term o, ITypeSymbol staticType)
         {
             var def = p.OriginalDefinition;
-            var v = _z3.Apply(def.ToDisplayString(), SortOf(def.Type), new[] { o });
+            var v = InRangeOf(_z3.Apply(def.ToDisplayString(), SortOf(def.Type), new[] { o }), def.Type);
             // what every object of the type satisfies, and that it is one of the type's cases (not from inside a
             // definition being unfolded, where nested definitions are not unfolded and the facts would be empty, nor
             // from inside another case's facts, which would not end)

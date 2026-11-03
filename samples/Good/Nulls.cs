@@ -29,7 +29,7 @@ namespace Samples
             for (int i = 0; i < words.Length; i++)
             {
                 Spec.Invariant(0 <= i && i <= words.Length);
-                total += words[i].Length;
+                total = checked(total + words[i].Length);
             }
             return total;
         }

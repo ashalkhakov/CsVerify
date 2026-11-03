@@ -44,14 +44,14 @@ namespace Samples.Buggy
         public static int Key(Tree t) => t switch { Tree.Node n => n.Key };
 
         // BUG: recurses on the same tree, not a subtree (CSV1008)
-        [Pure]
+        [GhostFunction]
         public static int Size(Tree t)
         {
             Spec.Decreases(t);
             return t is Tree.Node n ? 1 + Size(n.Left) + Size(t) : 0;
         }
 
-        [Pure]
+        [GhostFunction]
         public static int Eval(Exp e)
         {
             Spec.Decreases(e);
@@ -81,14 +81,14 @@ namespace Samples.Buggy
             {
                 Spec.Invariant(0 <= i && i <= n && pf.Value != null && pf.Value.N == i && pf.Value.R == r);
                 pf = Ghost.Of<Fact>(new Fact.Ind(pf.Value));
-                r = i * r;
+                r = checked(i * r);
             }
             proof = pf;
             return r;
         }
 
         // BUG: an empty interval the wrong way round (CSV1015)
-        public static Interval Backwards(int x) => new Interval(x + 1, x);
+        public static Interval Backwards(int x) => new Interval(checked(x + 1), x);
 
         // BUG: two equal values are still two objects; reference identity is not what record == means (CSV1004)
         public static void SameObject()

@@ -671,7 +671,7 @@ namespace CsVerify.Verifier
                 case ICompoundAssignmentOperation ca:
                 {
                     var old = Eval(ca.Target, f, spec);
-                    var v = Arith(ca.OperatorKind, old, Eval(ca.Value, f, spec), ca.Type, ca.Syntax, ca.OperatorMethod != null);
+                    var v = Arith(ca.OperatorKind, old, Eval(ca.Value, f, spec), ca.Type, ca.Syntax, ca.OperatorMethod != null, ca.IsChecked);
                     Write(ca.Target, v, f, spec);
                     return v;
                 }
@@ -679,7 +679,7 @@ namespace CsVerify.Verifier
                 {
                     var old = Eval(inc.Target, f, spec);
                     var kind = inc.Kind == OperationKind.Increment ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract;
-                    var v = Arith(kind, old, T.Int(1), inc.Type, inc.Syntax, inc.OperatorMethod != null);
+                    var v = Arith(kind, old, T.Int(1), inc.Type, inc.Syntax, inc.OperatorMethod != null, inc.IsChecked);
                     Write(inc.Target, v, f, spec);
                     return inc.IsPostfix ? old : v;
                 }
@@ -690,7 +690,7 @@ namespace CsVerify.Verifier
                     var idx = Eval(ae.Indices[0], f, spec);
                     Deref(ae.ArrayReference, arr, ae.Syntax);
                     BoundsCheck(arr, idx, ae.Syntax);
-                    return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type));
+                    return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
                 case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
@@ -781,11 +781,8 @@ namespace CsVerify.Verifier
                 Unsupported(c);
                 return Unknown(c.Type);
             }
-            if (IsIntegral(c.Type) && IsIntegral(from) && _codeMode && _engine.Options.CheckOverflow)
-            {
-                var (lo, hi) = RangeOf(c.Type);
-                Prove(T.InRange(v, lo, hi), "CSV1010", c.Syntax, $"conversion '{c.Syntax}' to {c.Type.Name} might overflow");
-            }
+            if (IsIntegral(c.Type) && IsIntegral(from))
+                return Bounded(v, c.Type, c.Syntax, c.IsChecked, $"conversion '{c.Syntax}' to {c.Type.Name} might overflow");
             else if (IsIntegral(c.Type) && !IsIntegral(from) && from?.SpecialType != SpecialType.System_Boolean && !SpecSymbols.IsGhostType(from) && from != null && from.TypeKind != TypeKind.TypeParameter)
             {
                 return Unknown(c.Type, "conv");
@@ -846,7 +843,7 @@ namespace CsVerify.Verifier
                 case BinaryOperatorKind.And when boolean: return T.And(l, r);
                 case BinaryOperatorKind.Or when boolean: return T.Or(l, r);
                 case BinaryOperatorKind.ExclusiveOr when boolean: return T.Xor(l, r);
-                default: return Arith(b.OperatorKind, l, r, b.Type, b.Syntax, false);
+                default: return Arith(b.OperatorKind, l, r, b.Type, b.Syntax, false, b.IsChecked);
             }
         }
 
@@ -869,7 +866,52 @@ namespace CsVerify.Verifier
             return op;
         }
 
-        private Term Arith(BinaryOperatorKind kind, Term l, Term r, ITypeSymbol type, SyntaxNode at, bool userDefined)
+        private int _ghostDepth;
+
+        /// <summary>Ghost computation (erased: lemma and [GhostFunction] bodies, Ghost.Of arguments) uses mathematical integers.</summary>
+        private bool InGhostCode => _ghostDepth > 0 || _contract.IsLemma || SpecSymbols.IsGhostFunction(_method);
+
+        /// <summary>
+        /// Bounded integers. A run-time result <paramref name="v"/> of <paramref name="type"/>:
+        /// in an explicit <c>unchecked</c> expression or statement it wraps around, exactly as C# computes it; in a
+        /// <c>checked</c> context it throws on overflow, so code that goes on may assume it did not (a proof, which
+        /// may not throw, must show it); otherwise (C#'s default, silently wrapping) overflow is reported (CSV1010).
+        /// Specifications and ghost code are mathematical. With --no-overflow all integers are mathematical.
+        /// </summary>
+        private Term Bounded(Term v, ITypeSymbol type, SyntaxNode at, bool isChecked, string message)
+        {
+            if (!_codeMode || InGhostCode || !_engine.Options.CheckOverflow || !IsIntegral(type)) return v;
+            var (lo, hi) = RangeOf(type);
+            if (ExplicitlyUnchecked(at))
+                return new Term($"(+ (mod (- {v} {T.Int(lo)}) {T.Int(hi - lo + 1)}) {T.Int(lo)})", Sort.Int);
+            if (isChecked && !ProofCode) { _z3.Assume(T.InRange(v, lo, hi)); return v; }
+            Prove(T.InRange(v, lo, hi), "CSV1010", at, message);
+            return v;
+        }
+
+        /// <summary>A value read from memory (a field, an array element, a [Pure] result) of an integer type is in its range.</summary>
+        private Term InRangeOf(Term v, ITypeSymbol type)
+        {
+            if (_engine.Options.CheckOverflow && IsIntegral(type) && v.Sort == Sort.Int)
+            {
+                var (lo, hi) = RangeOf(type);
+                AssumeSide(T.InRange(v, lo, hi));
+            }
+            return v;
+        }
+
+        /// <summary>Is the nearest checked/unchecked expression or statement around this one <c>unchecked</c>?</summary>
+        private static bool ExplicitlyUnchecked(SyntaxNode at)
+        {
+            for (var n = at; n != null; n = n.Parent)
+            {
+                if (n is CheckedExpressionSyntax ce) return ce.IsKind(SyntaxKind.UncheckedExpression);
+                if (n is CheckedStatementSyntax cs) return cs.IsKind(SyntaxKind.UncheckedStatement);
+            }
+            return false;
+        }
+
+        private Term Arith(BinaryOperatorKind kind, Term l, Term r, ITypeSymbol type, SyntaxNode at, bool userDefined, bool isChecked = false)
         {
             if (userDefined || !IsIntegral(type) || l.Sort != Sort.Int || r.Sort != Sort.Int)
             {
@@ -892,17 +934,13 @@ namespace CsVerify.Verifier
                 case BinaryOperatorKind.Remainder:
                     Require(T.Not(T.Eq(r, T.Int(0))), "CSV1009", at, $"possible division by zero in '{at}'");
                     v = kind == BinaryOperatorKind.Divide ? T.Div(l, r) : T.Rem(l, r);
+                    isChecked = true; // MinValue / -1 (and % -1) throw in .NET even when unchecked
                     break;
                 default:
                     if (_codeMode) Warn(at, $"operator {kind} is not modeled; result is unknown");
                     return Unknown(type);
             }
-            if (_codeMode && _engine.Options.CheckOverflow)
-            {
-                var (lo, hi) = RangeOf(type);
-                Prove(T.InRange(v, lo, hi), "CSV1010", at, $"arithmetic '{at}' might overflow {type.Name}");
-            }
-            return v;
+            return Bounded(v, type, at, isChecked, $"arithmetic '{at}' might overflow {type.Name}");
         }
 
         private Term EvalUnary(IUnaryOperation u, Frame f, SpecEnv spec)
@@ -913,7 +951,7 @@ namespace CsVerify.Verifier
                 case UnaryOperatorKind.Not: return T.Not(AsBool(v));
                 case UnaryOperatorKind.Plus: return v;
                 case UnaryOperatorKind.Minus when v.Sort == Sort.Int && IsIntegral(u.Type):
-                    return Arith(BinaryOperatorKind.Subtract, T.Int(0), v, u.Type, u.Syntax, false);
+                    return Arith(BinaryOperatorKind.Subtract, T.Int(0), v, u.Type, u.Syntax, false, u.IsChecked);
                 default:
                     Unsupported(u);
                     return Unknown(u.Type);
@@ -1024,7 +1062,7 @@ namespace CsVerify.Verifier
                     if (pr.Instance.Type.SpecialType == SpecialType.System_String) return Unknown(pr.Type, "char");
                     // a span may view an array at an offset; its contents are not tracked (only its bounds)
                     if (IsSpan(pr.Instance.Type)) return Unknown(pr.Type, "spanElem");
-                    return T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type));
+                    return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type)), pr.Type);
                 }
             }
             if (SpecSymbols.IsOwnType(prop.ContainingType) && prop.Name == "Obj") return Eval(pr.Instance, f, spec); // a view is its object
@@ -1117,7 +1155,13 @@ namespace CsVerify.Verifier
                         return T.True;
                 }
             }
-            if (SpecSymbols.IsGhostOf(m)) return Eval(inv.Arguments[0].Value, f, spec);
+            if (SpecSymbols.IsGhostOf(m))
+            {
+                // a ghost value is computed with mathematical integers: it never exists at run time
+                _ghostDepth++;
+                try { return Eval(inv.Arguments[0].Value, f, spec); }
+                finally { _ghostDepth--; }
+            }
             if (SpecSymbols.IsSeqType(m.ContainingType)) return EvalSeq(inv, f, spec);
             if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) return OwnCall(inv, f, spec);
 
@@ -1373,6 +1417,8 @@ namespace CsVerify.Verifier
                 if (wanted) Require(pre, "CSV1001", specCall, $"precondition of '{m.Name}' might not hold in '{specCall}'");
             }
             LinkPure(callee, receiver, args, sort, state, app);
+            // a run-time function returns a value of its type (a ghost function's integers are mathematical)
+            if (!SpecSymbols.IsGhostFunction(m)) InRangeOf(app, m.ReturnType);
             return T.Coerce(app, sort);
         }
 
@@ -1540,9 +1586,8 @@ namespace CsVerify.Verifier
                 case "Max" when args.Length == 2: return T.Ite(T.Ge(args[0], args[1]), args[0], args[1]);
                 case "Min" when args.Length == 2: return T.Ite(T.Le(args[0], args[1]), args[0], args[1]);
                 case "Abs" when args.Length == 1:
-                    if (_codeMode && _engine.Options.CheckOverflow)
-                        Prove(T.Not(T.Eq(args[0], T.Int(RangeOf(inv.Type).lo))), "CSV1010", inv.Syntax, $"'{inv.Syntax}' overflows for {inv.Type.Name}.MinValue");
-                    return T.Abs(args[0]);
+                    // Math.Abs(MinValue) throws, like a checked operation
+                    return Bounded(T.Abs(args[0]), inv.Type, inv.Syntax, true, $"'{inv.Syntax}' overflows for {inv.Type.Name}.MinValue");
                 default: return null;
             }
         }

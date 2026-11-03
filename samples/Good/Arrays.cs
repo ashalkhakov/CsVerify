@@ -4,8 +4,8 @@ namespace Samples
 {
     public static class Arrays
     {
-        /// <summary>Sum of a[0..n). Every a[i] is proved in bounds; the result is pinned by a [Pure] definition.</summary>
-        [Pure]
+        /// <summary>Sum of a[0..n), a mathematical (ghost) definition: every a[i] is proved in bounds.</summary>
+        [GhostFunction]
         public static int SumTo(int[] a, int n)
         {
             Spec.Requires(0 <= n && n <= a.Length);
@@ -22,7 +22,7 @@ namespace Samples
                 Spec.Invariant(0 <= i && i <= a.Length);
                 Spec.Invariant(sum == SumTo(a, i));
                 Spec.Decreases(a.Length - i);
-                sum += a[i];
+                sum = checked(sum + a[i]); // throws if the sum leaves int, so a return means it did not
             }
             return sum;
         }
@@ -52,6 +52,7 @@ namespace Samples
         /// <summary>Returns a copy of a with x appended; the length postcondition is ATS's array(a, n+1).</summary>
         public static int[] Append(int[] a, int x)
         {
+            Spec.Requires(a.Length < int.MaxValue);
             Spec.Ensures<int[]>(r => r.Length == a.Length + 1);
             Spec.Ensures<int[]>(r => r[a.Length] == x && Spec.Forall(0, a.Length, j => r[j] == a[j]));
             var result = new int[a.Length + 1];

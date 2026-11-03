@@ -159,7 +159,7 @@ The verifier runs all three analyzers over the compilation it verifies: a method
      - earlier preconditions and invariants.
 
      So `a.Length > 0 && a[0] > 0` is fine, and `a[0] > 0` alone is not. Outside its precondition a pure function's value is unspecified, so a spec using it there could be proved vacuously. Preconditions are checked at entry, invariants and measures at an arbitrary iteration, and postconditions at each return. A callee's contract is not re-checked at the call site, since it is checked when the callee is verified.
-   - overflow (only with `--overflow`).
+   - overflow of run-time integer arithmetic and narrowing conversions (see *Bounded integers*).
 4. **Loops.** Each loop is cut at its head. The invariant is checked, the variables and arrays the loop assigns are havocked, and the invariant is assumed. A back edge re-checks the invariant and that the measure decreases while staying ≥ 0.
 5. **Calls are modular.** At a call the verifier:
    - checks the callee's `Requires`;
@@ -258,6 +258,18 @@ The styles mix: a method can have a `Spec.Modifies` frame and hold views, and an
 - **Arrays are outside dynamic frames.** Their contents are the array heap, as before, and any change to it ends the frame reasoning for `[Pure]` functions.
 - **One style per class.** An `[Owned]` class is framed by its views; `Spec.Modifies`/`Spec.Reads` on its methods is an error (CSV1017).
 
+### Bounded integers
+
+Run-time integers are C#'s, and specifications are mathematics, as with ACSL's `int` and `integer`:
+- **Default context.** C# silently wraps, which is almost always a bug, so overflow is a proof obligation (CSV1010) for `+ - *`, `++`, compound assignment, unary minus and explicit narrowing casts.
+- **`unchecked(...)` or an `unchecked { }` block.** The wrap-around is modelled exactly, as modular arithmetic: `unchecked(int.MaxValue + 1) == int.MinValue` is provable. Use it for code that means it, such as hashing.
+- **`checked(...)`, `checked { }`, or a project with `CheckForOverflowUnderflow`.** Overflow throws, so ordinary code goes on only if it didn't, and may assume so. That's partial correctness: `checked(sum + a[i])` is the honest "throws if the sum leaves `int`". `Math.Abs(MinValue)` and `MinValue / -1` throw in .NET even when unchecked, and are treated the same way.
+- **Proofs.** A `[Pure]` function or lemma may not throw, so there `checked` is no excuse and the bound must be proved.
+- **Specifications and ghost code are mathematical:** `Spec.*` arguments, `Ghost.Of(...)` arguments, and lemma and `[GhostFunction]` bodies. So the usual pattern is ACSL's:
+  - definitions used only in specifications are `[GhostFunction]` (`Fact`, `Sum`, `Accumulate`, `Length`, `Bh`), mathematical and unbounded;
+  - run-time code computes with checked arithmetic or bounds preconditions (ACSL's `AccumulateBounds`), proved to agree with them (`Count` vs `Length`, `Evaluate` vs `Eval`, `BlackHeight` vs `Bh`).
+- **Values from memory are in range:** what is read from a field, an array element, or a run-time `[Pure]` function is within its type's range.
+
 ### Null references
 
 C#'s nullable reference types are only warnings, and deliberately unsound ones: `null!` silences them, `new string[n]` is an array of nulls typed `string[]`, and a field can be read before the constructor sets it. CsVerify takes the annotations as contracts and proves them instead:
@@ -321,7 +333,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | option | meaning |
 |---|---|
 | `--nullable <ctx>` | the nullable context: `enable` (default), `disable`, `annotations`, `warnings`; only non-nullable reference types are known not to be null |
-| `--overflow` | also prove that `int`/`long`/... arithmetic and narrowing conversions stay in range |
+| `--no-overflow` | make every integer mathematical, which is unsound where code can overflow (by default integers are bounded: see *Bounded integers*) |
 | `--timeout <ms>` | per-query Z3 timeout (default 10000) |
 | `--z3 <path>` | Z3 executable |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
@@ -334,7 +346,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 dotnet build -p:CsVerifyEnabled=true
 ```
 
-The verifier runs after `Build` on the project's `Compile` items. Its `file(line,col): error CSVnnnn` output appears as build errors. Pass extra flags with `-p:CsVerifyArgs=--overflow`.
+The verifier runs after `Build` on the project's `Compile` items. Its `file(line,col): error CSVnnnn` output appears as build errors. Pass extra flags with `-p:CsVerifyArgs=...`.
 
 ### Diagnostics
 
@@ -359,7 +371,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1007 | verifier | loop measure might not decrease or might be negative |
 | CSV1008 | verifier | recursion measure (own or of a mutually recursive callee) might not decrease or might be negative |
 | CSV1009 | verifier | possible division by zero |
-| CSV1010 | verifier | possible overflow (`--overflow`) |
+| CSV1010 | verifier | possible overflow: run-time arithmetic or a narrowing conversion that might leave its type (or, in a proof, a checked one that might throw) |
 | CSV1012 | verifier | a specification might not be well-defined: index out of range, null dereference, `[Pure]` call outside its precondition, or division by zero inside a spec |
 | CSV1013 | verifier | a dereference (`a.Length`, `a[i]`, `x.M()`) of a reference that might be null |
 | CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
@@ -461,7 +473,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **Sorting:** `selection_sort`, `bubble_sort` and `insertion_sort` (with adjacent swaps; the book's version uses `rotate`), each proved to sort and to permute: `MultisetReorder` becomes `Spec.Multiset(a, n) == Spec.Old(...)`.
   - **The translation:** `\valid_read(a + (0..n-1))` becomes `n <= a.Length`, `\separated` becomes `a != b`, `Unchanged{Old,Here}` becomes `Spec.Old` under a `Forall`, and logic functions become recursive `[Pure]` definitions.
   - **Not ported:** the heap chapter, the `rotate`-based insertion sort, and the stack (an ADT with axioms).
-  - **Overflow:** integers are mathematical unless you run `--overflow`. ACSL states explicit bounds instead.
+  - **Overflow:** as in ACSL, logic functions (`Count`, `Accumulate`) are mathematical. `accumulate` and `partial_sum` carry ACSL's `AccumulateBounds` precondition, and `iota` requires `v + n` to fit.
 - `AtsViewtypes.cs`, from INT2PROGINATS part IV ("Programming with Views and Viewtypes"):
   - **Linear lists `list_vt(a, n)` (ch. 15):** `insord` and an insertion sort that only relinks nodes. The length index is preserved, and sortedness is proved too, which the book's version does not prove.
   - **Linear binary search trees `bstree_vt(a, n)` (ch. 15):** leaf insertion, proved to grow the size index by one and keep each node ordered with its children.
@@ -559,12 +571,12 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 169 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 175 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
-- **Integers.** Without `--overflow`, integers are mathematical. C#'s unchecked `int` wraps, so a proof can hold for ℤ and fail at run time on overflow. ATS makes the same idealization for its constraint solver. Use `--overflow` to close it, at the price of range preconditions.
+- **Integers** are bounded by default (see *Bounded integers*). `--no-overflow` makes them mathematical, as ATS's constraint solver does, which is unsound where code can overflow.
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws is not followed further. Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014).
 - **Mutable objects.**
   - **Dynamic frames.**

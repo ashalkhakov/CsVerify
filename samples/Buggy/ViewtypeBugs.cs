@@ -17,7 +17,7 @@ namespace Samples.Buggy
         public void Insert(int x)
         {
             Spec.Requires(_count < _items!.Length);
-            _items[_first + _count] = x;
+            _items[checked(_first + _count)] = x;
             _count++;
         }
 

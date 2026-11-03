@@ -13,8 +13,12 @@ namespace CsVerify.Verifier
 {
     public sealed class VerifierOptions
     {
-        /// <summary>Check that integer arithmetic and narrowing conversions stay in range of their C# type.</summary>
-        public bool CheckOverflow;
+        /// <summary>
+        /// Bounded integers (the default): run-time integer arithmetic and narrowing conversions are C#'s, so
+        /// overflow is reported unless it throws (checked) or wraps on purpose (unchecked). False makes every
+        /// integer mathematical, which is unsound for code that can overflow.
+        /// </summary>
+        public bool CheckOverflow = true;
         /// <summary>
         /// The nullable context the sources are compiled in (the project's &lt;Nullable&gt;). Non-nullable reference
         /// types are contracts; oblivious ones (nullable disabled) are maybe-null, so only an enabled context lets

@@ -16,7 +16,7 @@ namespace Samples
         public sealed record E() : Avl;
         public sealed record N(int H, Avl L, int K, Avl R) : Avl
         {
-            [Invariant, Pure] public bool Balanced() =>
+            [Invariant, GhostFunction] public bool Balanced() =>
                 H == 1 + Math.Max(AvlTree.Ht(L), AvlTree.Ht(R)) && Math.Abs(AvlTree.Ht(L) - AvlTree.Ht(R)) <= 1;
         }
     }
@@ -28,7 +28,7 @@ namespace Samples
         {
             Spec.Requires(Math.Abs(Ht(l) - Ht(r)) <= 1);
             Spec.Ensures((Avl t) => Ht(t) == 1 + Math.Max(Ht(l), Ht(r)));
-            return new Avl.N(1 + Math.Max(Ht(l), Ht(r)), l, k, r);
+            return new Avl.N(checked(1 + Math.Max(Ht(l), Ht(r))), l, k, r);
         }
 
         public static Avl RotR(Avl l, int k, Avl r)
@@ -77,7 +77,7 @@ namespace Samples
         public sealed record E() : Rb;
         public sealed record T(bool Red, Rb L, int K, Rb R) : Rb
         {
-            [Invariant, Pure] public bool Valid() =>
+            [Invariant, GhostFunction] public bool Valid() =>
                 RbTree.Bh(L) == RbTree.Bh(R) && (!Red || !RbTree.IsRed(L) && !RbTree.IsRed(R));
         }
     }
@@ -88,18 +88,28 @@ namespace Samples
         public sealed record Fine(Rb Tree) : Ins;
         public sealed record Viol(Rb L, int K, Rb R) : Ins
         {
-            [Invariant, Pure] public bool SameHeight() => RbTree.Bh(L) == RbTree.Bh(R);
+            [Invariant, GhostFunction] public bool SameHeight() => RbTree.Bh(L) == RbTree.Bh(R);
         }
     }
     public static class RbTree
     {
-        [Pure] public static int Bh(Rb t)
+        [GhostFunction] public static int Bh(Rb t)
         {
             Spec.Decreases(t);
             return t switch { Rb.T n => n.Red ? Bh(n.L) : Bh(n.L) + 1, _ => 0 };
         }
+        /// <summary>The black height at run time, along the leftmost path, proved equal to Bh.</summary>
+        public static int BlackHeight(Rb t)
+        {
+            Spec.Decreases(t);
+            Spec.Ensures((int r) => r == Bh(t));
+            if (t is not Rb.T n) return 0;
+            int below = BlackHeight(n.L);
+            return n.Red ? below : checked(below + 1);
+        }
+
         [Pure] public static bool IsRed(Rb t) => t is Rb.T n && n.Red;
-        [Pure] public static int BhI(Ins i) => i switch { Ins.Fine f => Bh(f.Tree), Ins.Viol v => Bh(v.L), _ => 0 };
+        [GhostFunction] public static int BhI(Ins i) => i switch { Ins.Fine f => Bh(f.Tree), Ins.Viol v => Bh(v.L), _ => 0 };
 
         public static Rb Black(Rb l, int k, Rb r)
         {
@@ -215,7 +225,7 @@ namespace Samples
                 a = AvlTree.Insert(a, i);
                 r = RbTree.Insert(r, i);
             }
-            return 10 * AvlTree.Ht(a) + RbTree.Bh(r);
+            return checked(10 * AvlTree.Ht(a) + RbTree.BlackHeight(r));
         }
     }
 }

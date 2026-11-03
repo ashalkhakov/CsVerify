@@ -32,7 +32,7 @@ public sealed class Pair
 
     public void IncA()
     {
-        Spec.Requires(Valid());
+        Spec.Requires(Valid() && A!.Val < int.MaxValue);
         Spec.Modifies(Repr.Value);
         Spec.Ensures(Valid() && Repr.Value == Spec.Old(Repr.Value) && A!.Val == Spec.Old(A!.Val) + 1 && B!.Val == Spec.Old(B!.Val));
         A!.Val++;
@@ -77,9 +77,9 @@ public sealed class Pair
         {
             // q may be p, or share its cells: nothing is known after p changes
             Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(Pair p, Pair q) { Spec.Requires(p.Valid() && q.Valid()); p.Swap(); Spec.Assert(q.Valid()); }"));
-            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(Pair p, Pair q) { Spec.Requires(p.Valid() && q.Valid()); int v = q.A!.Val; p.IncA(); Spec.Assert(q.A!.Val == v); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(Pair p, Pair q) { Spec.Requires(p.Valid() && q.Valid() && p.A!.Val < int.MaxValue); int v = q.A!.Val; p.IncA(); Spec.Assert(q.A!.Val == v); }"));
             Assert.Empty(Errors("M", @"static void M(Pair p, Pair q) {
-                Spec.Requires(p.Valid() && q.Valid() && p.Repr.Value.IsDisjointFrom(q.Repr.Value));
+                Spec.Requires(p.Valid() && q.Valid() && p.Repr.Value.IsDisjointFrom(q.Repr.Value) && p.A!.Val < int.MaxValue);
                 int v = q.A!.Val; p.IncA(); Spec.Assert(q.A!.Val == v && q.Valid()); }"));
         }
 
@@ -90,7 +90,7 @@ public sealed class Pair
             Assert.Empty(Errors("M", "static void M(Pair p, Cell c) { Spec.Modifies(ObjSet.Of(c)); c.Val = 1; var d = new Cell(3); d.Val = 4; }"));
             // a callee that writes but has no frame cannot be checked; one with a wider frame is not allowed
             Assert.Equal(new[] { "CSV1017" }, Errors("M", "static void Set(Cell c) { c.Val = 0; } static void M(Cell c) { Spec.Modifies(ObjSet.Of(c)); Set(c); }"));
-            Assert.Equal(new[] { "CSV1017" }, Errors("M", "static void M(Pair p, Cell c) { Spec.Requires(p.Valid()); Spec.Modifies(ObjSet.Of(c)); p.IncA(); }"));
+            Assert.Equal(new[] { "CSV1017" }, Errors("M", "static void M(Pair p, Cell c) { Spec.Requires(p.Valid() && p.A!.Val < int.MaxValue); Spec.Modifies(ObjSet.Of(c)); p.IncA(); }"));
         }
 
         [Fact]

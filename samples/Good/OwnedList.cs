@@ -63,7 +63,7 @@ namespace Samples
             var next = Own.Take(ref Next, out var nv);
             int rest = next.Digits();
             Own.Give(ref Next, next, nv);
-            return Val + 10 * rest;
+            return checked(Val + 10 * rest);
         }
     }
 

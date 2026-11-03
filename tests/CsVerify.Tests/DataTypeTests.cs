@@ -16,7 +16,7 @@ public abstract record List
         private const string LemmaAttrs = "[Lemma, Conditional(\"CSVERIFY_SPEC\")] ";
 
         private const string ListFunctions = @"
-    [Pure] public static int Length(List xs)
+    [GhostFunction] public static int Length(List xs)
     {
         Spec.Decreases(xs);
         Spec.Ensures((int r) => r >= 0);
@@ -112,7 +112,7 @@ public static class C { [Pure] static int K(Shape s) => s switch { Shape.Dot => 
 public sealed record Range(int Lo, int Hi)
 {
     [Invariant, Pure] public bool Valid() => Lo <= Hi;
-    [Pure] public int Width() { Spec.Ensures((int r) => r >= 0); return Hi - Lo; }
+    [Pure] public long Width() { Spec.Ensures((long r) => r >= 0); return (long)Hi - Lo; }
 }
 ";
 
@@ -127,7 +127,7 @@ public sealed record Range(int Lo, int Hi)
         [Fact]
         public void Invariant_HoldsOfEveryObject()
         {
-            var r = Harness.Verify(Range + "public static class C { static int M(Range r) { Spec.Ensures((int w) => w >= 0); return r.Hi - r.Lo; } }");
+            var r = Harness.Verify(Range + "public static class C { static long M(Range r) { Spec.Ensures((long w) => w >= 0); return (long)r.Hi - r.Lo; } }");
             Assert.Empty(r.Errors("M"));
             Assert.Empty(r.Errors("Width"));
         }
@@ -177,7 +177,7 @@ internal abstract record Option<T>;
 internal sealed record None<T>() : Option<T>;
 internal sealed record Some<T>(T Value) : Option<T>;
 internal static class C {
-    [Pure] public static int Length<T>(List<T> xs) { Spec.Decreases(xs); Spec.Ensures((int r) => r >= 0); return xs switch { List<T>.Nil => 0, List<T>.Cons c => 1 + Length(c.Tail) }; }
+    [GhostFunction] public static int Length<T>(List<T> xs) { Spec.Decreases(xs); Spec.Ensures((int r) => r >= 0); return xs switch { List<T>.Nil => 0, List<T>.Cons c => 1 + Length(c.Tail) }; }
     [Pure] public static List<T> Append<T>(List<T> xs, List<T> ys) { Spec.Decreases(xs); return xs switch { List<T>.Nil => ys, List<T>.Cons c => new List<T>.Cons(c.Head, Append(c.Tail, ys)) }; }
     [Lemma, Conditional(""CSVERIFY_SPEC"")] static void AppendLength<T>(List<T> xs, List<T> ys) { Spec.Decreases(xs); Spec.Ensures(Length(Append(xs, ys)) == Length(xs) + Length(ys)); if (xs is List<T>.Cons c) AppendLength(c.Tail, ys); }
     [Pure] static Option<T> Nth<T>(List<T> xs, int n) { Spec.Decreases(xs); return xs switch { List<T>.Cons c => n == 0 ? new Some<T>(c.Head) : Nth(c.Tail, n - 1), _ => new None<T>() }; }

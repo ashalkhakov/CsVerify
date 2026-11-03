@@ -15,7 +15,7 @@ namespace Samples.Buggy
         {
             Spec.Requires(Next == null);
             var n = Own.New(new Link(), out var nv);
-            n.Val = Val - 1;
+            n.Val = checked(Val - 1);
             Own.Give(ref Next, n, nv);
         }
 

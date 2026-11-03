@@ -49,7 +49,7 @@ namespace CsVerify.Verifier
             // a field of an allocated object refers to an allocated object
             if (f.Alloc != null && MayBeNullType(type))
                 AssumeSide(T.Implies(T.And(InSet(f.Alloc, o), NotNull(v)), InSet(f.Alloc, v)));
-            return ValueSort(field) == Sort.Row ? v : T.Coerce(v, SortOf(type));
+            return ValueSort(field) == Sort.Row ? v : InRangeOf(T.Coerce(v, SortOf(type)), type);
         }
 
         private void WriteField(ISymbol field, IOperation instance, Term v, SyntaxNode at, Frame f, SpecEnv spec)

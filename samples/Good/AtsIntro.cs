@@ -18,7 +18,7 @@ namespace Samples
         // ---- factorial ----------------------------------------------------------------------------------------
 
         /// <summary>The FACT relation: FACTbas: FACT(0, 1); FACTind: FACT(n, r) implies FACT(n+1, (n+1) r).</summary>
-        [Pure]
+        [GhostFunction]
         public static int Fact(int n)
         {
             Spec.Requires(n >= 0);
@@ -37,7 +37,7 @@ namespace Samples
                 Spec.Invariant(1 <= i && i <= n + 1);
                 Spec.Invariant(r == Fact(i - 1));
                 Spec.Decreases(n + 1 - i);
-                r = r * i;
+                r = checked(r * i); // n <= 12 keeps it in int; checked says so at run time
             }
             return r;
         }
@@ -45,7 +45,7 @@ namespace Samples
         // ---- Fibonacci ----------------------------------------------------------------------------------------
 
         /// <summary>The FIB relation: FIB(0, 0), FIB(1, 1), FIB(n, r0) and FIB(n+1, r1) give FIB(n+2, r0 + r1).</summary>
-        [Pure]
+        [GhostFunction]
         public static int Fib(int n)
         {
             Spec.Requires(n >= 0);
@@ -64,7 +64,7 @@ namespace Samples
                 Spec.Invariant(0 <= i && i <= n);
                 Spec.Invariant(a == Fib(i) && b == Fib(i + 1));
                 Spec.Decreases(n - i);
-                int c = a + b;
+                int c = checked(a + b);
                 a = b;
                 b = c;
             }
@@ -87,7 +87,7 @@ namespace Samples
                 Spec.Invariant(0 <= i && i <= x);
                 Spec.Invariant(r == i * y);
                 Spec.Decreases(x - i);
-                r = r + y;
+                r = checked(r + y);
             }
             return r;
         }
@@ -174,7 +174,7 @@ namespace Samples
             Spec.Requires(m >= 0 && n >= 0);
             Spec.Ensures<int>(r => r > n);
             Spec.Decreases(m, n);
-            if (m == 0) return n + 1;
+            if (m == 0) return checked(n + 1);
             if (n == 0) return Ackermann(m - 1, 1);
             return Ackermann(m - 1, Ackermann(m, n - 1));
         }

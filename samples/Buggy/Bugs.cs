@@ -12,7 +12,7 @@ namespace Samples.Buggy
             for (int i = 0; i <= a.Length; i++)
             {
                 Spec.Invariant(0 <= i && i <= a.Length + 1);
-                sum += a[i];
+                sum = checked(sum + a[i]);
             }
             return sum;
         }
@@ -78,7 +78,7 @@ namespace Samples.Buggy
 
     public static class Math
     {
-        [Pure]
+        [GhostFunction]
         public static int Tri(int n)
         {
             Spec.Requires(n >= 0);

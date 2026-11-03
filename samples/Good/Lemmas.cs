@@ -5,8 +5,8 @@ namespace Samples
 {
     public static class Lemmas
     {
-        /// <summary>1 + 2 + ... + n, defined recursively.</summary>
-        [Pure]
+        /// <summary>1 + 2 + ... + n, defined recursively (mathematical: a ghost function).</summary>
+        [GhostFunction]
         public static int Tri(int n)
         {
             Spec.Requires(n >= 0);
@@ -43,7 +43,7 @@ namespace Samples
             Spec.Ensures<int>(r => r >= 1);
             Spec.Decreases(n);
             if (n == 0) return 1;
-            return 2 * Power2(n - 1);
+            return checked(2 * Power2(n - 1));
         }
     }
 }

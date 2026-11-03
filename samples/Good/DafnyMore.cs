@@ -12,7 +12,7 @@ namespace Samples
         // ---- maximum segment sum (Kadane) ---------------------------------------------------------------------
 
         /// <summary>a[s] + ... + a[t-1].</summary>
-        [Pure]
+        [GhostFunction]
         public static int Sum(int[] a, int s, int t)
         {
             Spec.Requires(0 <= s && s <= t && t <= a.Length);
@@ -37,7 +37,7 @@ namespace Samples
                 Spec.Invariant(0 <= k && k <= m && m <= n && s == Sum(a, k, m));
                 Spec.Invariant(Spec.Forall(0, n + 1, p => Spec.Forall(p, n + 1, q => Sum(a, p, q) <= Sum(a, k, m))));
                 Spec.Decreases(a.Length - n);
-                t = t + a[n];
+                t = checked(t + a[n]);
                 n = n + 1;
                 if (t < 0) { c = n; t = 0; }
                 else if (s < t) { k = c; m = n; s = t; }
@@ -59,16 +59,19 @@ namespace Samples
                 Spec.Invariant(c == n * n * n && k == 3 * n * n + 3 * n + 1 && m == 6 * n + 6);
                 Spec.Decreases(a.Length - n);
                 a[n] = c;
-                c = c + k;
-                k = k + m;
-                m = m + 6;
+                checked
+                {
+                    c = c + k;
+                    k = k + m;
+                    m = m + 6;
+                }
             }
         }
 
         // ---- sum of cubes is the square of the sum ------------------------------------------------------------
 
         /// <summary>0 + 1 + ... + (n-1).</summary>
-        [Pure]
+        [GhostFunction]
         public static int Gauss(int n)
         {
             Spec.Requires(n >= 0);
@@ -77,7 +80,7 @@ namespace Samples
         }
 
         /// <summary>0³ + 1³ + ... + (n-1)³.</summary>
-        [Pure]
+        [GhostFunction]
         public static int SumCubes(int n)
         {
             Spec.Requires(n >= 0);
@@ -120,7 +123,7 @@ namespace Samples
             {
                 Spec.Invariant(0 <= i && i <= n && sum == SumCubes(i));
                 Spec.Decreases(n - i);
-                sum += i * i * i;
+                sum = checked(sum + i * i * i);
             }
             Nicomachus(n);
             return sum;
@@ -128,7 +131,7 @@ namespace Samples
 
         // ---- factorial with additions only (Classics.dfy) -----------------------------------------------------
 
-        [Pure]
+        [GhostFunction]
         public static int Factorial(int n)
         {
             Spec.Requires(n >= 0);
@@ -151,7 +154,7 @@ namespace Samples
                 {
                     Spec.Invariant(1 <= s && s <= r + 1 && u == s * Factorial(r));
                     Spec.Decreases(r + 1 - s);
-                    u = u + v;
+                    u = checked(u + v);
                 }
             }
             return u;

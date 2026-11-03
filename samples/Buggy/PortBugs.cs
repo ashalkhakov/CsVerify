@@ -5,7 +5,7 @@ namespace Samples.Buggy
     /// <summary>The ported ATS and Dafny samples (samples/Good/AtsIntro.cs, DafnyClassics.cs), each with one planted bug.</summary>
     public static class PortBugs
     {
-        [Pure]
+        [GhostFunction]
         public static int Fib(int n)
         {
             Spec.Requires(n >= 0);
@@ -45,7 +45,7 @@ namespace Samples.Buggy
             }
         }
 
-        [Pure]
+        [GhostFunction]
         public static int Pow(int b, int e)
         {
             Spec.Requires(e >= 0);
@@ -61,8 +61,8 @@ namespace Samples.Buggy
             Spec.Decreases(e);
             if (e == 0) return 1;
             int h = FastPowWithoutLemma(b, e / 2);
-            if (e % 2 == 0) return h * h;
-            return b * h * h;
+            if (e % 2 == 0) return checked(h * h);
+            return checked(b * h * h);
         }
 
         // CSV1008: f91 with the wrong termination metric (n instead of 101 - n).
@@ -99,7 +99,7 @@ namespace Samples.Buggy
             Spec.Requires(m >= 0 && n >= 0);
             Spec.Ensures<int>(r => r > n);
             Spec.Decreases(m);
-            if (m == 0) return n + 1;
+            if (m == 0) return checked(n + 1);
             if (n == 0) return AckermannSingleMeasure(m - 1, 1);
             return AckermannSingleMeasure(m - 1, AckermannSingleMeasure(m, n - 1));
         }

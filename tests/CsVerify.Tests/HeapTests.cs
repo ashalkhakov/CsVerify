@@ -11,7 +11,7 @@ public sealed class Counter
     public int Count;
     public int Step { get; set; } = 1;
     public Counter(int start) { Spec.Requires(start >= 0); Spec.Ensures(Count == start && Step == 1); Count = start; }
-    public void Tick() { Spec.Ensures(Count == Spec.Old(Count) + Step && Step == Spec.Old(Step)); Count += Step; }
+    public void Tick() { Spec.Ensures(Count == Spec.Old(Count) + Step && Step == Spec.Old(Step)); Count = checked(Count + Step); }
 }
 public sealed class Other { public int X; public void Bump() { X++; } }
 ";
@@ -66,8 +66,8 @@ public sealed class Other { public int X; public void Bump() { X++; } }
         public void PureFunctions_ReadTheCurrentFields()
         {
             const string get = "[Pure] static int Get(Counter c) => c.Count; ";
-            Assert.Empty(Errors("M", get + "static void M(Counter c) { int g = Get(c); c.Count = g + 1; Spec.Assert(Get(c) == g + 1); }"));
-            Assert.Equal(new[] { "CSV1004" }, Errors("M", get + "static void M(Counter c) { int g = Get(c); c.Count = g + 1; Spec.Assert(Get(c) == g); }"));
+            Assert.Empty(Errors("M", get + "static void M(Counter c) { int g = Get(c); c.Count = checked(g + 1); Spec.Assert(Get(c) == g + 1); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", get + "static void M(Counter c) { int g = Get(c); c.Count = checked(g + 1); Spec.Assert(Get(c) == g); }"));
             Assert.Empty(Errors("M", get + "static void M(Counter c, Other o) { int g = Get(c); o.Bump(); Spec.Assert(Get(c) == g); }"));
         }
 
@@ -77,13 +77,13 @@ public sealed class Other { public int X; public void Bump() { X++; } }
             // through a field: the function depends on the array heap, so a write makes it a new value
             Assert.Equal(new[] { "CSV1004" }, Harness.Verify(@"
 public sealed class Box { public int[]? Items; [Pure] public int First() { Spec.Requires(Items != null && Items.Length > 0); return Items[0]; } }
-public static class C { static void M(Box b) { Spec.Requires(b.Items != null && b.Items.Length > 0); int f = b.First(); b.Items[0] = f + 1; Spec.Assert(b.First() == f); } }").Errors("M"));
+public static class C { static void M(Box b) { Spec.Requires(b.Items != null && b.Items.Length > 0); int f = b.First(); b.Items[0] = checked(f + 1); Spec.Assert(b.First() == f); } }").Errors("M"));
             // through a parameter: only that array matters, so writing another one changes nothing
             Assert.Empty(Harness.Verify(@"
 public static class C {
     [Pure] static int Head(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
     static void M(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b); int h = Head(a); b[0] = 7; Spec.Assert(Head(a) == h); }
-    static void W(int[] a) { Spec.Requires(a.Length > 0); int h = Head(a); a[0] = h + 1; Spec.Assert(Head(a) == h + 1); } }").Errors("M"));
+    static void W(int[] a) { Spec.Requires(a.Length > 0); int h = Head(a); a[0] = checked(h + 1); Spec.Assert(Head(a) == h + 1); } }").Errors("M"));
         }
 
         [Fact]

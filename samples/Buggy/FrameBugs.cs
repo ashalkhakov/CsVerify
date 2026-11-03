@@ -41,7 +41,7 @@ namespace Samples.Buggy
             Spec.Requires(Valid());
             Spec.Modifies(Repr.Value);
             Spec.Ensures(Valid() && Repr.Value == Spec.Old(Repr.Value));
-            S!.Val++;
+            S!.Val = checked(S!.Val + 1);
         }
     }
 

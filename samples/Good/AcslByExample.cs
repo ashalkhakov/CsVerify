@@ -33,8 +33,8 @@ namespace Samples
             return n == 0 ? 0 : Count(a, n - 1, v) + (a[n - 1] == v ? 1 : 0);
         }
 
-        /// <summary>The logic function Accumulate(a, n, init): init + a[0] + ... + a[n-1].</summary>
-        [Pure]
+        /// <summary>The logic function Accumulate(a, n, init): init + a[0] + ... + a[n-1], mathematically.</summary>
+        [GhostFunction]
         public static int Accumulate(int[] a, int n, int init)
         {
             Spec.Requires(0 <= n && n <= a.Length);
@@ -278,10 +278,10 @@ namespace Samples
 
         // ------------------------------------------------------------------------------- numeric
 
-        /// <summary>iota: a[i] == v + i.</summary>
+        /// <summary>iota: a[i] == v + i (ACSL: v + n must not overflow).</summary>
         public static void Iota(int[] a, int n, int v)
         {
-            Spec.Requires(0 <= n && n <= a.Length);
+            Spec.Requires(0 <= n && n <= a.Length && v + n <= int.MaxValue);
             Spec.Ensures(Spec.Forall(0, n, i => a[i] == v + i));
             for (int i = 0; i < n; i++)
             {
@@ -294,11 +294,14 @@ namespace Samples
         public static int AccumulateOf(int[] a, int n, int init)
         {
             Spec.Requires(0 <= n && n <= a.Length);
+            // ACSL's AccumulateBounds: every partial sum fits in int
+            Spec.Requires(Spec.Forall(0, n + 1, i => int.MinValue <= Accumulate(a, i, init) && Accumulate(a, i, init) <= int.MaxValue));
             Spec.Ensures((int r) => r == Accumulate(a, n, init));
             int sum = init;
             for (int i = 0; i < n; i++)
             {
                 Spec.Invariant(0 <= i && i <= n && sum == Accumulate(a, i, init));
+                Spec.Assert(Accumulate(a, i + 1, init) == sum + a[i]); // the next partial sum, unfolded: within the bounds
                 sum += a[i];
             }
             return sum;
@@ -308,6 +311,7 @@ namespace Samples
         public static int PartialSum(int[] a, int n, int[] b)
         {
             Spec.Requires(0 <= n && n <= a.Length && n <= b.Length && a != b);
+            Spec.Requires(Spec.Forall(0, n + 1, i => int.MinValue <= Accumulate(a, i, 0) && Accumulate(a, i, 0) <= int.MaxValue));
             Spec.Ensures((int r) => r == n);
             Spec.Ensures(Spec.Forall(0, n, i => b[i] == Accumulate(a, i + 1, 0)));
             Spec.Ensures(Spec.Forall(0, a.Length, i => a[i] == Spec.Old(a[i])));
@@ -317,6 +321,7 @@ namespace Samples
                 Spec.Invariant(0 <= i && i <= n && sum == Accumulate(a, i, 0));
                 Spec.Invariant(Spec.Forall(0, i, k => b[k] == Accumulate(a, k + 1, 0)));
                 Spec.Invariant(Spec.Forall(0, a.Length, k => a[k] == Spec.Old(a[k])));
+                Spec.Assert(Accumulate(a, i + 1, 0) == sum + a[i]);
                 sum += a[i];
                 b[i] = sum;
             }
@@ -429,7 +434,7 @@ namespace Samples
             SelectionSort(x);
             BubbleSort(y);
             InsertionSort(z);
-            return (x[0] * 100 + x[1] * 10 + x[2]) * 1000000 + (y[0] * 100 + y[1] * 10 + y[2]) * 1000 + z[0] * 100 + z[1] * 10 + z[2];
+            return checked((x[0] * 100 + x[1] * 10 + x[2]) * 1000000 + (y[0] * 100 + y[1] * 10 + y[2]) * 1000 + z[0] * 100 + z[1] * 10 + z[2]);
         }
 
         public static int Demo()
@@ -442,7 +447,7 @@ namespace Samples
             int count = CountOf(a, 5, 3);              // 2
             int kept = RemoveCopy(a, 5, b, 3);         // 3: b = 1 5 8
             PartialSum(a, 5, b);                       // b = 1 4 7 12 20
-            return found * 10000 + lb * 1000 + ub * 100 + count * 10 + kept + b[4] * 100000;
+            return checked(found * 10000 + lb * 1000 + ub * 100 + count * 10 + kept + b[4] * 100000);
         }
     }
 }

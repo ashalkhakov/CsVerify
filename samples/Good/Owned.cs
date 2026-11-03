@@ -24,7 +24,7 @@ namespace Samples
         {
             Spec.Requires(amount >= 0);
             Spec.Ensures(Balance == Spec.Old(Balance) + amount);
-            Balance += amount;
+            Balance = checked(Balance + amount); // a deposit that would overflow throws
         }
 
         public void Withdraw(int amount)

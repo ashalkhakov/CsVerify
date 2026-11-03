@@ -42,7 +42,7 @@ namespace CsVerify.Tests
                 .Select(d => d.Id).OrderBy(x => x).ToArray();
         }
 
-        public static VerificationResult Verify(string source, bool overflow = false)
+        public static VerificationResult Verify(string source, bool overflow = true)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, new VerifierOptions { CheckOverflow = overflow });
             Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));

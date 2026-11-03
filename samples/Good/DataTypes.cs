@@ -45,11 +45,12 @@ namespace Samples
     {
         [Invariant, Pure] public bool Valid() => Lo <= Hi;
 
+        /// <summary>Hi - Lo, as a long: with Lo &lt;= Hi it is never negative, but it can exceed int.</summary>
         [Pure]
-        public int Width()
+        public long Width()
         {
-            Spec.Ensures((int r) => r >= 0);
-            return Hi - Lo;
+            Spec.Ensures((long r) => r >= 0);
+            return (long)Hi - Lo;
         }
     }
 
@@ -57,7 +58,8 @@ namespace Samples
     {
         // ---------------------------------------------------------------- lists
 
-        [Pure]
+        /// <summary>The length, mathematically (a ghost definition, like an ACSL logic function).</summary>
+        [GhostFunction]
         public static int Length<T>(List<T> xs)
         {
             Spec.Decreases(xs);
@@ -127,12 +129,21 @@ namespace Samples
             Spec.Ensures((int r) => r == n);
             var xs = Countdown(n);
             ReverseLength(xs);
-            return Length(Reverse(xs));
+            return Count(Reverse(xs));
+        }
+
+        /// <summary>The length at run time, proved equal to the ghost definition.</summary>
+        public static int Count<T>(List<T> xs)
+        {
+            Spec.Decreases(xs);
+            Spec.Ensures((int r) => r == Length(xs));
+            return xs is List<T>.Cons c ? checked(1 + Count(c.Tail)) : 0;
         }
 
         // ---------------------------------------------------------------- expressions
 
-        [Pure]
+        /// <summary>The meaning of an expression, mathematically.</summary>
+        [GhostFunction]
         public static int Eval(Exp e)
         {
             Spec.Decreases(e);
@@ -142,6 +153,20 @@ namespace Samples
                 Exp.Add a => Eval(a.Left) + Eval(a.Right),
                 Exp.Mul m => Eval(m.Left) * Eval(m.Right),
             };
+        }
+
+        /// <summary>Evaluation at run time (int arithmetic, checked), proved to agree with Eval.</summary>
+        public static int Evaluate(Exp e)
+        {
+            Spec.Decreases(e);
+            Spec.Ensures((int r) => r == Eval(e));
+            switch (e)
+            {
+                case Exp.Num n: return n.Value;
+                case Exp.Add a: return checked(Evaluate(a.Left) + Evaluate(a.Right));
+                case Exp.Mul m: return checked(Evaluate(m.Left) * Evaluate(m.Right));
+                default: Spec.Assert(false); return 0;
+            }
         }
 
         /// <summary>One step of constant folding: 0 + e = e, 0 * e = 0, 1 * e = e.</summary>
@@ -185,7 +210,7 @@ namespace Samples
             {
                 Spec.Invariant(0 <= i && i <= n && pf.Value != null && pf.Value.N == i && pf.Value.R == r);
                 pf = Ghost.Of<Fact>(new Fact.Ind(pf.Value));
-                r = (i + 1) * r;
+                r = checked((i + 1) * r);
             }
             proof = pf;
             return r;
@@ -195,18 +220,18 @@ namespace Samples
 
         public static Interval Widen(Interval v, int by)
         {
-            Spec.Requires(by >= 0);
+            Spec.Requires(by >= 0 && v.Lo - by >= int.MinValue && v.Hi + by <= int.MaxValue);
             Spec.Ensures((Interval r) => r.Width() == v.Width() + 2 * by);
             return new Interval(v.Lo - by, v.Hi + by);
         }
 
         public static int Demo()
         {
-            int known = ReversedCount(3) + Widen(new Interval(0, 2), 1).Width();
+            int known = ReversedCount(3) + (int)Widen(new Interval(0, 2), 1).Width();
             Spec.Assert(known == 3 + 4);
             var e = new Exp.Mul(new Exp.Num(1), new Exp.Add(new Exp.Num(3), new Exp.Num(4)));
             FoldPreservesEval(e);
-            return known + Eval(Fold(e)) + Factorial(3, out _);
+            return checked(known + Evaluate(Fold(e)) + Factorial(3, out _));
         }
     }
 }

@@ -139,8 +139,8 @@ namespace Samples
         {
             Spec.Requires(_count < Capacity());
             Spec.Ensures(_count == Spec.Old(_count) + 1 && _items == Spec.Old(_items));
-            int last = _first + _count;
-            if (last >= _items!.Length) last -= _items.Length;
+            // _first + _count, wrapped, without ever leaving int
+            int last = _first < _items!.Length - _count ? _first + _count : _first - (_items.Length - _count);
             _items[last] = x;
             _count++;
         }
@@ -174,7 +174,7 @@ namespace Samples
 
         public void Pause(long now)
         {
-            Spec.Requires(!_running || now >= _resumedAt);
+            Spec.Requires(!_running || now >= _resumedAt && now - _resumedAt <= long.MaxValue - _ticks);
             Spec.Ensures(!_running && _started == Spec.Old(_started) && _ticks == Spec.Old(Ticks(now)));
             if (_running) { _ticks += now - _resumedAt; _running = false; }
         }
@@ -188,7 +188,12 @@ namespace Samples
         }
 
         /// <summary>The ticks counted so far, the running interval included.</summary>
-        [Pure] public long Ticks(long now) => _running ? _ticks + (now - _resumedAt) : _ticks;
+        [Pure]
+        public long Ticks(long now)
+        {
+            Spec.Requires(_ticks >= 0 && (!_running || now >= _resumedAt && now - _resumedAt <= long.MaxValue - _ticks));
+            return _running ? _ticks + (now - _resumedAt) : _ticks;
+        }
     }
 
     public static class AtsViewtypes
@@ -272,7 +277,7 @@ namespace Samples
             var next = Own.Take(ref n.Next, out var nv);
             int rest = Digits(next, ref nv);
             Own.Give(ref n.Next, next, nv);
-            return n.Val + 10 * rest;
+            return checked(n.Val + 10 * rest);
         }
 
         /// <summary>A linear list 3 1 4 1 5 sorted in place; its values read back as digits.</summary>
@@ -316,7 +321,7 @@ namespace Samples
             int second = b.Remove();
             Spec.Assert(b.Size() == 1);
             Own.Drop(bv);
-            return first * 10 + second;
+            return checked(first * 10 + second);
         }
 
         /// <summary>A timer started at 100, paused at 130, resumed at 500: at 510 it has counted 40.</summary>
@@ -332,6 +337,6 @@ namespace Samples
             return ticks;
         }
 
-        public static long Demo() => SortDemo() * 10000L + BufferDemo() * 100 + TimerDemo() + TreeDemo() * 1000;
+        public static long Demo() => checked(SortDemo() * 10000L + BufferDemo() * 100 + TimerDemo() + TreeDemo() * 1000);
     }
 }

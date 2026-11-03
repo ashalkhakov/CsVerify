@@ -13,7 +13,9 @@ Verifies CsVerify specifications (Spec.Requires/Ensures/Invariant/Decreases/Asse
 Directories are searched recursively for .cs files (bin/ and obj/ are skipped); a .csproj means its directory.
 
 options:
-  --overflow          also prove that integer arithmetic does not overflow
+  --no-overflow       treat every integer as mathematical (unsound where code can overflow); by default
+                      run-time arithmetic is C#'s: overflow is reported unless checked (throws) or
+                      unchecked (wraps on purpose)
   --nullable <ctx>    nullable context: enable (default), disable, annotations, warnings; only
                       non-nullable reference types are known not to be null
   --timeout <ms>      per-query Z3 timeout (default 10000)
@@ -39,7 +41,8 @@ options:
                 {
                     switch (args[i])
                     {
-                        case "--overflow": options.CheckOverflow = true; break;
+                        case "--overflow": options.CheckOverflow = true; break; // the default
+                        case "--no-overflow": options.CheckOverflow = false; break;
                         case "--nullable":
                             options.Nullable = (Microsoft.CodeAnalysis.NullableContextOptions)Enum.Parse(typeof(Microsoft.CodeAnalysis.NullableContextOptions), args[++i], ignoreCase: true);
                             break;

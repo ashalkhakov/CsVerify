@@ -70,7 +70,7 @@ namespace Samples
             Spec.Requires(n >= 0);
             Spec.Ensures<int>(r => r >= 0 && r * r <= n && n < (r + 1) * (r + 1));
             int r = 0;
-            while ((r + 1) * (r + 1) <= n)
+            while (checked((long)(r + 1) * (r + 1)) <= n)
             {
                 Spec.Invariant(r >= 0 && r * r <= n);
                 Spec.Decreases(n - r * r);
@@ -81,7 +81,7 @@ namespace Samples
 
         // ---- fast exponentiation, with an inductive lemma ------------------------------------------------------
 
-        [Pure]
+        [GhostFunction]
         public static int Pow(int b, int e)
         {
             Spec.Requires(e >= 0);
@@ -108,9 +108,9 @@ namespace Samples
             if (e == 0) return 1;
             int h = FastPow(b, e / 2);
             PowAdd(b, e / 2, e / 2);
-            if (e % 2 == 0) return h * h;
+            if (e % 2 == 0) return checked(h * h);
             PowAdd(b, 1, e - 1);
-            return b * h * h;
+            return checked(b * h * h);
         }
 
         // ---- Dutch national flag, bounds and colours (no permutation) ----------------------------------------
@@ -203,7 +203,7 @@ namespace Samples
                 Spec.Decreases(a.Length - index);
                 if (a[index] == 0) return index;
                 Skipping(a, index);
-                index += a[index];
+                index = checked(index + a[index]);
             }
             return -1;
         }

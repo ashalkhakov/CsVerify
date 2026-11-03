@@ -10,7 +10,7 @@ namespace Samples.Buggy
         public sealed record E() : Avl;
         public sealed record N(int H, Avl L, int K, Avl R) : Avl
         {
-            [Invariant, Pure] public bool Balanced() =>
+            [Invariant, GhostFunction] public bool Balanced() =>
                 H == 1 + System.Math.Max(AvlTree.Ht(L), AvlTree.Ht(R)) && System.Math.Abs(AvlTree.Ht(L) - AvlTree.Ht(R)) <= 1;
         }
     }
@@ -23,7 +23,7 @@ namespace Samples.Buggy
         {
             Spec.Requires(System.Math.Abs(Ht(l) - Ht(r)) <= 1);
             Spec.Ensures((Avl t) => Ht(t) == 1 + System.Math.Max(Ht(l), Ht(r)));
-            return new Avl.N(1 + System.Math.Max(Ht(l), Ht(r)), l, k, r);
+            return new Avl.N(checked(1 + System.Math.Max(Ht(l), Ht(r))), l, k, r);
         }
     }
 
@@ -33,7 +33,7 @@ namespace Samples.Buggy
         public sealed record E() : Rb;
         public sealed record T(bool Red, Rb L, int K, Rb R) : Rb
         {
-            [Invariant, Pure] public bool Valid() =>
+            [Invariant, GhostFunction] public bool Valid() =>
                 RbTree.Bh(L) == RbTree.Bh(R) && (!Red || !RbTree.IsRed(L) && !RbTree.IsRed(R));
         }
     }
@@ -44,19 +44,19 @@ namespace Samples.Buggy
         public sealed record Fine(Rb Tree) : Ins;
         public sealed record Viol(Rb L, int K, Rb R) : Ins
         {
-            [Invariant, Pure] public bool SameHeight() => RbTree.Bh(L) == RbTree.Bh(R);
+            [Invariant, GhostFunction] public bool SameHeight() => RbTree.Bh(L) == RbTree.Bh(R);
         }
     }
 
     public static class RbTree
     {
-        [Pure] public static int Bh(Rb t)
+        [GhostFunction] public static int Bh(Rb t)
         {
             Spec.Decreases(t);
             return t switch { Rb.T n => n.Red ? Bh(n.L) : Bh(n.L) + 1, _ => 0 };
         }
         [Pure] public static bool IsRed(Rb t) => t is Rb.T n && n.Red;
-        [Pure] public static int BhI(Ins i) => i switch { Ins.Fine f => Bh(f.Tree), Ins.Viol v => Bh(v.L), _ => 0 };
+        [GhostFunction] public static int BhI(Ins i) => i switch { Ins.Fine f => Bh(f.Tree), Ins.Viol v => Bh(v.L), _ => 0 };
 
         public static Rb Black(Rb l, int k, Rb r)
         {
@@ -92,7 +92,7 @@ namespace Samples.Buggy
             Spec.Requires(AvlTree.Ht(l) == AvlTree.Ht(r) + 2);
             if (l is not Avl.N n) return l;
             var right = AvlTree.Node(n.R, k, r);
-            return new Avl.N(1 + System.Math.Max(AvlTree.Ht(n.L), AvlTree.Ht(right)), n.L, n.K, right);
+            return new Avl.N(checked(1 + System.Math.Max(AvlTree.Ht(n.L), AvlTree.Ht(right))), n.L, n.K, right);
         }
 
         // BUG: recolors the new subtree's root red over a red child (CSV1001, Red's precondition)

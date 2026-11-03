@@ -34,7 +34,7 @@ namespace Samples
 
         public void IncA()
         {
-            Spec.Requires(Valid());
+            Spec.Requires(Valid() && A!.Val < int.MaxValue);
             Spec.Modifies(Repr.Value);
             Spec.Ensures(Valid() && Repr.Value == Spec.Old(Repr.Value) && A!.Val == Spec.Old(A!.Val) + 1 && B!.Val == Spec.Old(B!.Val));
             A!.Val++;
