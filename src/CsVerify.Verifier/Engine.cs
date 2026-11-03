@@ -219,7 +219,7 @@ namespace CsVerify.Verifier
             }
         }
 
-        private static IEnumerable<(string name, string text)> SpecSources()
+        internal static IEnumerable<(string name, string text)> SpecSources()
         {
             var asm = typeof(Engine).Assembly;
             foreach (var name in asm.GetManifestResourceNames().Where(n => n.StartsWith("CsVerify.Spec.") && n.EndsWith(".cs")))
@@ -232,12 +232,17 @@ namespace CsVerify.Verifier
         private static IEnumerable<MetadataReference> References(VerifierOptions options)
         {
             // Only the shared framework: the Spec library comes in as source (see SpecSources).
+            foreach (var r in FrameworkReferences()) yield return r;
+            foreach (var r in options.References)
+                yield return MetadataReference.CreateFromFile(r);
+        }
+
+        public static IEnumerable<MetadataReference> FrameworkReferences()
+        {
             var frameworkDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
             var tpa = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "").Split(Path.PathSeparator);
             foreach (var path in tpa.Where(p => Path.GetDirectoryName(p) == frameworkDir && p.EndsWith(".dll")))
                 yield return MetadataReference.CreateFromFile(path);
-            foreach (var r in options.References)
-                yield return MetadataReference.CreateFromFile(r);
         }
     }
 }

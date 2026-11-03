@@ -20,4 +20,43 @@
     <Exec Command="$(CsVerifyCommand) $(CsVerifyArgs) @&quot;$(IntermediateOutputPath)csverify.rsp&quot;" />
     <Touch Files="$(IntermediateOutputPath)csverify.stamp" AlwaysCreate="true" />
   </Target>
+
+  <!--
+    Proof erasure, when CsVerifyErase is true:
+      dotnet build -p:CsVerifyErase=true
+    Right before the compiler runs, `csverify erase` rewrites this project's sources with every proof removed
+    (specifications, lemmas, ghost parameters, views), adds the erased CsVerify runtime, and checks that the result
+    compiles. The compiler then builds those sources instead, without the CsVerify assembly; #line directives keep
+    diagnostics, stack traces and the debugger on the original files. A normal build compiles the originals again.
+  -->
+  <PropertyGroup>
+    <CsVerifyErase Condition="'$(CsVerifyErase)' == ''">false</CsVerifyErase>
+  </PropertyGroup>
+
+  <!-- Switching between erased and normal builds must recompile: the mode file changes only when the mode does. -->
+  <Target Name="CsVerifyEraseMode" BeforeTargets="CoreCompile">
+    <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.mode" Lines="$(CsVerifyErase)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)csverify-erase.mode" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CsVerifyErase" BeforeTargets="CoreCompile" DependsOnTargets="CsVerifyEraseMode" Condition="'$(CsVerifyErase)' == 'true'">
+    <PropertyGroup>
+      <!-- set here, not at import time: this file may be imported before the SDK defines IntermediateOutputPath -->
+      <CsVerifyErasedDir>$(ProjectDir)$(IntermediateOutputPath)csverify-erased/</CsVerifyErasedDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_CsVerifyEraseArgs Include="@(Compile->'%(FullPath)')" />
+      <_CsVerifyEraseArgs Include="@(ReferencePathWithRefAssemblies->'-r %(FullPath)')" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.rsp" Lines="@(_CsVerifyEraseArgs)" Overwrite="true" />
+    <Exec Command="$(CsVerifyCommand) erase --out &quot;$(CsVerifyErasedDir).&quot; @&quot;$(IntermediateOutputPath)csverify-erase.rsp&quot;" />
+    <ItemGroup>
+      <Compile Remove="@(Compile)" />
+      <Compile Include="$(CsVerifyErasedDir)**/*.cs" />
+      <_CsVerifyAssembly Include="@(ReferencePathWithRefAssemblies)" Condition="'%(Filename)' == 'CsVerify.Spec' Or '%(Filename)' == 'CsVerify'" />
+      <ReferencePathWithRefAssemblies Remove="@(_CsVerifyAssembly)" />
+    </ItemGroup>
+  </Target>
 </Project>

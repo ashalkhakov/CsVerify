@@ -16,6 +16,7 @@ It adds **no syntax**. There is no preprocessor, desugaring step or compiler for
 - a small specification library (`CsVerify.Spec`). Its statements are erased from normal builds.
 - Roslyn analyzers that check linearity and ghost hygiene as you type.
 - a verifier that turns specifications into verification conditions and proves them with Z3.
+- an optional proof-erasure pass (`csverify erase`, or `-p:CsVerifyErase=true`). It builds the program with every proof removed and checks that what is left compiles. This is not a language layer: the sources stay plain C#, and a normal build of them is the reference meaning, which erasure must and does preserve.
 
 CsVerify is the proving counterpart of [Tarp](https://github.com/ashalkhakov/Tarp). Tarp measures, by running your tests, which conditions and decisions were exercised (MC/DC). CsVerify proves statically that index bounds, contracts, invariants and termination hold on *every* path. Both work on the same plain C# sources.
 
@@ -258,6 +259,59 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1999 | verifier | internal or solver error |
+| CSV2001 | erase | the erased program does not compile: run-time code depends on ghost code |
+
+## Proof erasure
+
+In ATS, proofs and static indices exist only at compile time and are erased before the program runs. CsVerify gets most of that from C# itself:
+- `[Conditional("CSVERIFY_SPEC")]` deletes specification statements and lemma calls, arguments included.
+- Views are empty structs.
+- `Split`/`Join` are empty methods the JIT inlines.
+
+Ghost parameters and view tokens are still in the signatures, though. The erasure pass removes all of it, and turns "proofs don't affect the program" from a promise into a check.
+
+```bash
+dotnet build -p:CsVerifyErase=true          # build the erased program
+csverify erase --out erased/ src/           # or write it out to look at
+```
+
+**What it removes:**
+- Specification statements.
+- Lemmas and `[GhostFunction]`s, with their calls.
+- Every parameter, argument, local, field and property of a **proof type**: `Ghost<T>`, `Seq<T>`, and data-less `[Linear]` structs (views such as `PointsTo<T>`, `ArrayView<T>` and `FreeGc<T>`, or your own tokens).
+- Trusted view functions that only consume and produce proofs (`Mem.Split`, `Join`, `TakeOut`, `PutBack`), with their calls.
+- Proof results: a method returning a view returns `void`.
+
+What is left is ATS's erased program:
+
+```csharp
+// before                                                        // after erasure
+public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static void Fill(Ptr<int> p, int n, int x)
+                        int n, int x)                            {
+{                                                                    if (n == 0) return;
+    Spec.Requires(view.Addr == p.Addr && view.Length.Value == n);    if (n == 1) { Mem.Set(p, 0, x); return; }
+    ...                                                              int mid = n / 2;
+    Mem.Split(view, Ghost.Of(mid), out var left, out var right);     Fill(p, mid, x);
+    Fill(ref left, p, mid, x);                                       Fill(p.Offset(mid), n - mid, x);
+    Fill(ref right, p.Offset(mid), n - mid, x);                  }
+    Mem.Join(left, right, out view);
+}
+```
+
+**The runtime.** The Spec library goes through the same pass and becomes a small runtime that is compiled into the program in place of the CsVerify assembly. It keeps `Ptr<T>`, `Mem.Read(p)`, `Mem.AllocArray(n, fill)` and the like, and has no `Spec`, `Ghost`, `Seq` or view types at all.
+
+**The check.** If the erased program does not compile, run-time code still depends on a proof, for example a view hidden in a tuple or a `Ghost` boxed into an `object`. That is error CSV2001, reported at the original line.
+
+**How it builds.** Like Tarp's instrumentation:
+- the rewrite happens right before the compiler runs, into `obj/.../csverify-erased/`;
+- deletions keep their line breaks, and each file starts with a `#line` naming the original, so errors, stack traces and the debugger stay on your sources;
+- switching between erased and normal builds recompiles.
+
+**Tested:** the erased samples carry no ghost types or ghost references, and running them returns exactly the values their verified postconditions state.
+
+**Limitations:**
+- Erasure works per project. The runtime is compiled into each erased project, so `Ptr<T>` from two erased projects are different types.
+- A proof type inside a generic or a tuple is not erased; the check reports it.
 
 ## Specification rules
 
@@ -353,13 +407,13 @@ Sources and licences:
 
 ```
 src/CsVerify.Spec        Spec, Ghost<T>, attributes, Ptr<T>/PointsTo<T>/Mem    (net8.0, package "CsVerify")
-src/CsVerify.Analyzers   LinearityAnalyzer, GhostAnalyzer                      (netstandard2.0)
-src/CsVerify.Verifier    csverify: contracts, CFG symbolic execution, SMT-LIB/Z3, MSBuild targets (net8.0)
+src/CsVerify.Analyzers   LinearityAnalyzer, GhostAnalyzer, PurityAnalyzer      (netstandard2.0)
+src/CsVerify.Verifier    csverify: contracts, CFG symbolic execution, SMT-LIB/Z3, erasure, MSBuild targets (net8.0)
 tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted per feature, samples
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 103 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 108 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -393,7 +447,7 @@ samples/Good, samples/Buggy
 - Array views (`array_v`), split/join, take-out, pointer arithmetic and `mfree_gc_v` are provided as library axioms. There is still no way to declare your own `dataview` with checked proof constructors: a `[Linear]` struct plus `[Trusted]` functions is how you would add one, and those functions are trusted, not checked.
 - There is no general `⊗`/`−◦` view algebra, no type-changing `setVar`, and no uninitialized `top @ l`.
 - Take-out's linear function `a @ (l+i) -<lin> array_v(a, n, l)` is a linear token (`ArrayHole<T>`) that only `Mem.PutBack` consumes; there are no linear proof functions in general.
-- View-changing proof functions (`Split`, `Join`, `TakeOut`, `PutBack`) cannot be `[Conditional]`, because C# forbids `out` parameters on conditional methods. They are empty, inlined methods on data-less structs instead: proof erasure by the JIT rather than by the compiler.
+- View-changing proof functions (`Split`, `Join`, `TakeOut`, `PutBack`) cannot be `[Conditional]`, because C# forbids `out` parameters on conditional methods. In a normal build they are empty, inlined methods on data-less structs, erased by the JIT. The erasure pass removes them, and the views, outright.
 - Contents of a view are compared as whole sequences (`Elems == ...`), because C# lambdas cannot capture `ref`/`in` parameters. Element-wise properties go through a `[GhostFunction]` that takes the `Seq<T>` by value (see `ArrayViews.AllEqual`).
 - With e-matching only, a property that needs a cleverer quantifier instantiation may come back "not proved" even though it is true. Add an intermediate `Spec.Assert` or a lemma.
 - The analyzer does not track linear fields inside a linear struct separately: the struct is one resource.
