@@ -38,10 +38,12 @@ namespace CsVerify.Analyzers
         {
             var m = (IMethodSymbol)context.Symbol;
             if (!SpecSymbols.IsProofMethod(m) || SpecSymbols.IsTrusted(m)) return;
-            // the verifier reads a proof's contract and definition from the declared member; an override could differ
-            if (m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface)
+            // a lemma or ghost function is one fixed proof or definition; a [Pure] query may be virtual (its overrides
+            // are [Pure] too, and honour its contract)
+            if ((SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m)) &&
+                (m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureGhost, m.Locations.FirstOrDefault(),
-                    $"'{m.Name}' is virtual, abstract or an interface member; a lemma or pure function must have one fixed body"));
+                    $"'{m.Name}' is virtual, abstract or an interface member; a lemma or ghost function must have one fixed body"));
             foreach (var p in m.Parameters.Where(p => p.RefKind == RefKind.Ref || p.RefKind == RefKind.Out))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureGhost, p.Locations.FirstOrDefault(),
                     $"'{p.Name}' is passed by {(p.RefKind == RefKind.Ref ? "ref" : "out")}"));

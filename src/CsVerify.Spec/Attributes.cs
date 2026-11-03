@@ -34,7 +34,7 @@ namespace CsVerify
     /// A side-effect-free function usable inside specifications. The verifier treats it as a mathematical function
     /// and unfolds a single-<c>return</c> body once at every use.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Method)]
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Property)]
     public sealed class PureAttribute : Attribute { }
 
     /// <summary>

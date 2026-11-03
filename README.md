@@ -123,10 +123,10 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - **What's allowed:** a proof may assign only its own locals and value parameters, and may call only lemmas, pure functions, the spec library and `System.Math`.
 - **What's not:**
   - writing an array element, field or property;
-  - calling ordinary code, a delegate or a virtual method;
+  - calling ordinary code or a delegate (a virtual `[Pure]` query is fine);
   - allocating;
   - `ref`/`out` parameters on a pure function;
-  - a virtual, abstract or interface proof.
+  - a virtual, abstract or interface lemma or ghost function (a `[Pure]` query may be virtual: see *Object-oriented code*).
 - **Why each matters:**
   - A lemma call is erased from the program, so a write inside it would happen only in the verifier's model.
   - A pure function is an SMT function of its arguments, so an allocation would make `f() == f()` false.
@@ -175,9 +175,8 @@ The verifier runs all three analyzers over the compilation it verifies: a method
 8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
    - `foreach`, `goto` cycles, `try`/`catch`/`finally` (including `using` and `lock`), and hitting the path limit;
    - static fields, mutable fields of structs, and fields of library classes;
-   - computed properties other than members of strings, readonly structs and the spec library (`List<T>.Count` changes, so it is not a function of its object);
+   - library properties other than members of strings and readonly structs (`List<T>.Count` changes, so it is not a function of its object); properties with code in the sources are calls (see *Object-oriented code*);
    - assignments to anything but locals, parameters, array elements and heap fields;
-   - constructor chaining (`this(...)`, or `base(...)` of a source class);
    - `ref` locals, and passing array elements or fields by `ref`/`in` (aliases of the heap);
    - object initializers and other unsupported operations.
    Constructors are calls (see *Mutable objects*). Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
@@ -217,7 +216,7 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 
 **Heap fields.** An instance field or auto-property of a class in the sources is a map from object to value:
 - **Reads, writes and aliasing.** `o.F` reads the map and `o.F = v` updates it, so two references to the same object see each other's writes, and different objects don't.
-- **Calls.** A call forgets only the fields its callee, or anything it reaches, may write: an inferred frame condition per field. After a virtual or interface call, or a library call handed a callback or a source object, any field may have changed.
+- **Calls.** A call forgets only the fields its callee, or anything it reaches, may write: an inferred frame condition per field. A virtual or interface call forgets only what its declared member's `Spec.Modifies` allows, which every override is checked against. Without one, any field may have changed, as after a library call handed a callback or a source object.
 - **Loops** forget only the fields they write.
 - **`[Pure]` functions** take the field maps they read as arguments, so their value is never stale after a write. The same goes for arrays: a function that reads array elements only through its own array parameters depends on those arrays' contents, so writing another array leaves it as it was. A function that reaches arrays any other way (through a field, say) depends on the whole array heap.
 - **Constructors.**
@@ -248,6 +247,32 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 - or `o` was allocated in the method.
 
 The styles mix: a method can have a `Spec.Modifies` frame and hold views, and an `[Owned]` class's methods can call framed methods.
+
+### Object-oriented code
+
+Verification is modular, with behavioural subtyping (Liskov), as in Dafny, Spec# and JML. A call through a base type is checked against the base's contract, and every override is checked against that contract too.
+- **Contracts of abstract and interface members.** They have no body, so their `Spec` statements go in a *contract class*, the .NET Code Contracts pattern: `[ContractClassFor(typeof(IShape))] internal abstract class ShapeContract : IShape { ... }`. Its methods carry only specifications. It is not verified or run, and inside it a member's name means the member it specifies.
+- **Overrides inherit.** An override or implementation inherits its base's postconditions and frame, and its precondition unless it states its own.
+  - **Preconditions:** it may require less, not more (CSV1018). If it weakens the precondition, the inherited postconditions are promised only where the base's precondition held.
+  - **Postconditions:** it may promise more.
+  - **Frames:** its `Spec.Modifies` must lie within the base's (CSV1018).
+- **Virtual `[Pure]` queries** (`Area()`, an abstract `[Pure]` property `Balance`):
+  - **One function.** A query and all its overrides are one function, named after the root declaration, so `s.Area()` means the same whatever the static type of `s`.
+  - **Overrides are queries too.** An override of a `[Pure]` member is `[Pure]` itself, and the analyzer checks its body.
+  - **Postconditions.** An override's extra postconditions hold for instances of its class.
+  - **Bodies.** Its body defines the query only where it is the one that runs, a `sealed` override, for instances of its class. So after `Shape s = new Square(3)`, `s.Area() == 9` is provable.
+- **Dynamic types.**
+  - **What is known.** A value of a static type is an instance of it and its supertypes, and an object made by `new C()` is exactly a `C`.
+  - **Disjointness.** Unrelated classes share no instances (single inheritance), and neither do a sealed class and anything not above it.
+  - **Tests and casts.** `is`, `as`, patterns and casts use this. A downcast is assumed in ordinary code (a failed cast throws) and must be proved in proofs (CSV1011).
+  - **Generics.** Generic types are not modelled.
+- **Constructors.** `base(...)` and `this(...)` are checked calls on the object being built: preconditions checked, postconditions assumed. Field initializers run before `base(...)`, and not with `this(...)`.
+- **Properties with code** are methods. A getter or setter with a body is verified and called with its contract, and so is an abstract, virtual or interface accessor. A `[Pure]` property is a function usable in specifications.
+- **Invariants of immutable classes.** In a class whose instance fields are all `readonly`, an `[Invariant]`:
+  - is proved where each constructor returns, and assumed wherever fields are read;
+  - may not be relied on early: `this` may not escape a constructor before the invariant holds (CSV1015).
+
+An `[Invariant]` on a mutable class gets a warning and is not used. Use the immutable, `[Owned]` or Dafny `Valid()` style for those.
 
 **Dafny-style objects (dynamic frames).** For ordinary mutable classes, Dafny's `Valid()`/`Repr` idiom is available:
 - **The pieces.** An object keeps a ghost set of the objects it is made of, `Ghost<ObjSet> Repr`, which is erased like every ghost. `ObjSet` has `Empty`, `Of`, `Add`, `Union`, `Contains`, `IsSubsetOf` and `IsDisjointFrom`. A ghost `[GhostFunction] bool Valid()` states the object's invariant over `Repr`.
@@ -377,6 +402,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
 | CSV1015 | verifier | an object invariant might not hold for a new object |
 | CSV1016 | verifier | an [Owned] object written without its view in hand, or a view made for an object that is not new |
+| CSV1018 | verifier | an override breaks behavioural subtyping: it requires more than the member it overrides, or its `Spec.Modifies` is wider |
 | CSV1017 | verifier | a dynamic frame broken: a write outside `Spec.Modifies`, a read outside `Spec.Reads`, a callee with no or a wider frame, or `Spec.Modifies`/`Reads` on an `[Owned]` class |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
@@ -480,6 +506,9 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **The circular buffer `cbufObj(a, m, n)` (ch. 16):** the book skips its proofs as "too costly". Here capacity and size bounds are the object's invariant, and every index is checked.
   - **The stopwatch `timer` (ch. 16):** a simple linear object, made by `Own.New`, borrowed by its operations, and freed by `Own.Drop`.
 - `OwnedList.cs`: a sorted linked list whose nodes own the rest of the list. A ghost length `Len`, ATS's index, also measures the recursion. `InsertAfter` unfolds, inserts and folds back, and the list is proved sorted because every node is. `Independent` shows that inserting into one list leaves another's whole tree as it was.
+- `Oop.cs`:
+  - **Shapes.** Immutable classes with invariants, and an abstract `[Pure]` `Area()` specified by a contract class. `TotalArea` works for any shapes; `Nine` computes a square's area through a `Shape` reference.
+  - **Accounts.** A `BankAccount` hierarchy whose abstract members have contracts and frames (`Spec.Modifies(ObjSet.Of(this))`). `Overdraft` is built with `base(...)` and overrides to allow more withdrawals. `Transfer` keeps the sum of two accounts of any kinds.
 - `Owned.cs`: an `[Owned]` bank `Account` whose invariant (never overdrawn) travels with its view. `Bank.Transfer` takes two accounts with their views, and `Demo` calls unknown `IAudit` code between updates and still knows both balances.
 - `Nulls.*`: nullable parameters checked before use, `??`, a `string[]` whose elements a precondition proves non-null, and a caller that proves it.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
@@ -549,6 +578,10 @@ Sources and licences:
 - `AcslBugs.cs`: a `lower_bound` comparing with `<=` (so it is really `upper_bound`), a `find` that returns the last match, a `copy` whose contract lets the ranges overlap, and a selection sort that copies the minimum instead of swapping (sorted, but not a permutation).
 - `ViewtypeBugs.cs`: a ring buffer that forgets to wrap around, one that can go below empty, and a tree that adds a leaf but not to its size.
 - `TreeOwnershipBugs.cs`: appending a smaller node to a sorted list, writing an owned node in place, setting an `[Owns]` field directly, a node made to own itself, and assuming an inner node unchanged after the list was handed to a method.
+- `OopBugs.cs`:
+  - **Subtyping:** an override that requires more (CSV1018), one that breaks the inherited postcondition, and one that writes outside the inherited frame.
+  - **Construction:** a bad `base(...)` argument, a constructor that breaks an immutable class's invariant, and one that lets `this` escape.
+  - **Casts:** a `[Pure]` function with an unproved cast.
 - `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
 - `TreeBugs.cs`: an AVL insert that never rotates, a single rotation where a double one is needed, and a red-black rebalance that leaves a red node over a red child.
 - `DataBugs.cs`: a switch missing a case, recursion on the same tree instead of a subtree, a constant folder that breaks its correctness lemma, a FACT proof step that does not match the computation, an interval built the wrong way round, an assertion that two equal values are the same object, and a record invariant that reads a mutable `Gauge`, which anyone holding it could change after the record is built.
@@ -571,7 +604,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 175 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 182 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 
@@ -583,7 +616,7 @@ samples/Good, samples/Buggy
     - Virtual and interface calls, and library calls handed source objects, can't be checked against `Spec.Modifies`.
     - The frame rule for `[Pure]` functions follows at most 16 changes back.
     - Loops forget the fields they write for every object; restate what is kept in the invariant.
-  - **`[Invariant]` on an ordinary mutable class** (neither a data record nor `[Owned]`) is not used: it is neither assumed nor proved.
+  - **`[Invariant]` on an ordinary mutable class** (neither a data record, immutable nor `[Owned]`) is not used, with a warning.
   - **Loops** that write owned fields, or move views, forget those fields and the tree roots for every object.
   - **`Own.Take` splits a tree imprecisely.** The container's other children stay with it, but which of their descendants went with the taken object is not tracked, so a call that touches either part may forget those.
   - **Proofs about trees can need a hint,** much like an ATS `prval` step: the unfolded fact stated where a child is taken out (`Spec.Assert(Size.Value == 1 + l.Size.Value + ...)`).
@@ -593,7 +626,10 @@ samples/Good, samples/Buggy
 - **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
 - **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.
 - **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
-- **Virtual dispatch.** Calls through interfaces or virtual methods use the contract written on the declared member (an interface member has none, so its result is unknown). Proofs cannot be virtual (CSV0013).
+- **Virtual dispatch** is modular: a call uses the declared member's contract, and overrides are checked against it.
+  - **Generic types:** their dynamic types are not modelled.
+  - **Non-sealed overrides:** a `[Pure]` override's body defines the query only if the override is final.
+  - **Lemmas and ghost functions** cannot be virtual (CSV0013).
 - **`[Trusted]` and `Spec.Assume`** are axioms by definition.
 
 **Unsupported constructs**

@@ -149,11 +149,14 @@ namespace CsVerify.Verifier
             {
                 case IMethodBodyOperation mb: cfg = ControlFlowGraph.Create(mb); break;
                 case IConstructorBodyOperation cb: cfg = ControlFlowGraph.Create(cb); break;
+                case IBlockOperation block: cfg = ControlFlowGraph.Create(block); break; // an expression-bodied property
                 default: return;
             }
             FindContractStatements();
-            if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType)) &&
-                _engine.Fields.InvariantDependence(_method, SpecSymbols.IsOwned(_method.ContainingType)) is string why)
+            if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
+                Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
+            if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType) || IsImmutableClass(_method.ContainingType)) &&
+                _engine.Fields.InvariantDependence(_method, !Data.IsData(_method.ContainingType)) is string why)
                 Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
             FindLoops(cfg);
             if (HasExceptionRegion(cfg.Root))
@@ -198,7 +201,7 @@ namespace CsVerify.Verifier
 
         private void FindContractStatements()
         {
-            BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body;
+            BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body;
             if (block == null) return;
             foreach (var s in block.Statements.OfType<ExpressionStatementSyntax>())
                 if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "Decreases" || n == "Modifies" || n == "Reads"))
@@ -436,6 +439,7 @@ namespace CsVerify.Verifier
         {
             var at = f.ReturnSyntax ?? MethodLocationNode();
             ExitOwned(f, at);
+            ProveImmutableInvariants(f, at);
             // a non-nullable return type or out/ref parameter is a postcondition the callers assume
             if (f.Result != null && IsNonNullableReturn(_method))
                 Prove(NotNull(f.Result), "CSV1014", at, $"'{_method.Name}' might return null, but its return type '{_method.ReturnType}' is not nullable");
@@ -461,7 +465,7 @@ namespace CsVerify.Verifier
         {
             if (op is IExpressionStatementOperation es) op = es.Operation;
             var specCall = SpecSymbols.EnclosingSpecCall(op.Syntax, _model);
-            if (specCall == null) { Eval(op, f); return; }
+            if (specCall == null) { CheckThisEscape(op); Eval(op, f); return; }
             if (op.Syntax != specCall) return; // a lowered piece of a specification argument: evaluated as a whole below
             if (_contractStatements.Contains(specCall) || _loopSpecStatements.Contains(specCall)) return;
 
@@ -1033,6 +1037,9 @@ namespace CsVerify.Verifier
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
                 }
+                case IPropertyReferenceOperation ps when IsComputed(ps.Property.SetMethod):
+                    CallAccessor(ps.Property.SetMethod, ps.Instance, ps.Arguments.Select(a => a.Value), v, null, ps.Syntax, f, spec);
+                    break;
                 case IPropertyReferenceOperation pr when pr.Property.IsIndexer && IsSequence(pr.Instance?.Type) && pr.Arguments.Length == 1:
                 {
                     var arr = Eval(pr.Instance, f, spec);
@@ -1088,8 +1095,9 @@ namespace CsVerify.Verifier
                 Deref(pr.Instance, o, pr.Syntax);
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
+            if (IsComputed(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
             if (!IsStableProperty(prop))
-                NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only get-only auto-properties and properties of immutable types are");
+                NotModeled(pr.Syntax, $"property '{prop.Name}' is not supported: only auto-properties, properties with code, and properties of immutable types are");
             var args = new List<Term>();
             if (pr.Instance != null)
             {
@@ -1206,7 +1214,8 @@ namespace CsVerify.Verifier
                 return Unknown(inv.Type);
             }
 
-            var touched = HandOver(inv, receiver, argTerms, f, callee);
+            bool chained = m.MethodKind == MethodKind.Constructor; // base(...) or this(...): the object is not built yet
+            var touched = chained ? new List<Term>() : HandOver(inv, receiver, argTerms, f, callee);
             var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
             if (!callee.HasSource)
             {
@@ -1262,7 +1271,8 @@ namespace CsVerify.Verifier
             }
             if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
             HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable);
-            TakeBack(inv, receiver, f, callee);
+            if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
+            else TakeBack(inv, receiver, f, callee);
             post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
             post.FieldEpoch = f.FieldEpoch;
             post.Link = f.Link;
@@ -1430,8 +1440,11 @@ namespace CsVerify.Verifier
             var all = new List<Term>();
             if (receiver != null) all.Add(receiver);
             all.AddRange(args.Select(a => a ?? T.Int(0)));
-            bool readsHeap = m.Parameters.Any(p => IsSequence(p.Type)) || _engine.Fields.ReadsArrays(m);
-            if (readsHeap && _engine.Fields.ReadsOnlyParameterArrays(m))
+            // (a virtual query and its overrides are one function: what they depend on is decided at the root)
+            var rootDecl = m;
+            while (rootDecl.OverriddenMethod != null) rootDecl = rootDecl.OverriddenMethod.OriginalDefinition;
+            bool readsHeap = m.Parameters.Any(p => IsSequence(p.Type)) || _engine.Fields.ReadsArrays(rootDecl);
+            if (readsHeap && _engine.Fields.ReadsOnlyParameterArrays(rootDecl))
             {
                 // only its array parameters' contents matter: writing another array leaves the value as it is
                 for (int i = 0; i < m.Parameters.Length; i++)
@@ -1439,10 +1452,20 @@ namespace CsVerify.Verifier
                         all.Add(T.Select(heap, args[i], Sort.Row));
             }
             else if (readsHeap) all.Add(heap);
-            // and the heap fields it reads: its value is a function of them too
+            // and the heap fields it reads (for a virtual query, any of its overrides): its value is a function of them too
             var stateFrame = state ?? new Frame();
-            foreach (var field in _engine.Fields.ReadsOf(m)) all.Add(FieldMap(stateFrame, field));
-            var app = _z3.Apply("pure:" + m.ToDisplayString(), SortOf(m.ReturnType), all);
+            var declared = m;
+            while (declared.OverriddenMethod != null) declared = declared.OverriddenMethod.OriginalDefinition;
+            foreach (var field in _engine.Fields.ReadsOf(declared)) all.Add(FieldMap(stateFrame, field));
+            // one function for a virtual query and all its overrides: named after the declaration they all override
+            var root = m;
+            while (root.OverriddenMethod != null) root = root.OverriddenMethod.OriginalDefinition;
+            var app = _z3.Apply("pure:" + root.ToDisplayString(), SortOf(m.ReturnType), all);
+            // an override's definition and extra postconditions hold for instances of its class; a body defines the
+            // function only where it is the one that runs (not overridable further)
+            var instance = receiver != null && (m.IsOverride || _engine.BaseMembers(m).Any()) && ModeledType(m.ContainingType) != null
+                ? T.Implies(NotNull(receiver), Isa(receiver, ModeledType(m.ContainingType))) : T.True;
+            bool bodyRuns = !Engine.IsOverridable(m);
 
             bool wanted = specCall != null && !_codeMode && _foreignSpec == 0;
             if (_unfoldDepth == 0 || wanted)
@@ -1460,10 +1483,22 @@ namespace CsVerify.Verifier
                     pre = T.And(callee.Requires.Select(r => AsBool(Eval(r, frame, env))).ToArray());
                     if (unfold)
                     {
-                        if (callee.PureBody != null) AssumeSide(T.Implies(pre, T.Eq(app, Eval(callee.PureBody, frame, env))));
+                        if (callee.PureBody != null && bodyRuns)
+                            AssumeSide(T.Implies(T.And(instance, pre), T.Eq(app, Eval(callee.PureBody, frame, env))));
                         if (IsNonNullableReturn(m)) AssumeSide(T.Implies(pre, NotNull(app)));
                         foreach (var ens in callee.Ensures)
-                            AssumeSide(T.Implies(pre, AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
+                            AssumeSide(T.Implies(T.And(instance, pre), AsBool(Eval(ens.Expr, frame, new SpecEnv { Old = frame, Result = app, ResultParameter = ens.ResultParameter }))));
+                        // through a base type, each final override defines the query for instances of its class
+                        if (receiver != null && Engine.IsOverridable(m))
+                            foreach (var o in _engine.Fields.Overrides(root).Where(o => !Engine.IsOverridable(o)))
+                            {
+                                var oc = _engine.ContractOf(o);
+                                if (oc.PureBody == null || !(ModeledType(o.ContainingType) is INamedTypeSymbol ot)) continue;
+                                var oframe = CalleeFrame(oc, receiver, args, heap, stateFrame);
+                                var oenv = new SpecEnv { Old = oframe, Result = app };
+                                var opre = T.And(oc.Requires.Select(r => AsBool(Eval(r, oframe, oenv))).ToArray());
+                                AssumeSide(T.Implies(T.And(NotNull(receiver), Isa(receiver, ot), opre), T.Eq(app, Eval(oc.PureBody, oframe, oenv))));
+                            }
                     }
                 }
                 finally { _unfoldDepth--; _foreignSpec--; _codeMode = wasCode; }

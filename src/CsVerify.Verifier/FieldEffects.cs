@@ -97,6 +97,9 @@ namespace CsVerify.Verifier
                 d.All = true;
             // a source class's implicit constructor only sets the new object's fields (defaults, initializers)
             if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0) return d;
+            // a virtual member may run any override: they are all reachable from it
+            if (Engine.IsOverridable(m))
+                foreach (var o in Overrides(m)) d.Callees.Add(o);
             var c = _engine.ContractOf(m);
             if (!c.HasSource)
             {
@@ -135,6 +138,24 @@ namespace CsVerify.Verifier
                 }
             }
             return d;
+        }
+
+        /// <summary>The source methods that override or implement <paramref name="m"/>.</summary>
+        internal IEnumerable<IMethodSymbol> Overrides(IMethodSymbol m)
+        {
+            // all levels: the overrides of the overrides too
+            var found = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            var work = new Stack<IMethodSymbol>();
+            work.Push(m.OriginalDefinition);
+            var all = _engine.SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).ToList();
+            while (work.Count > 0)
+            {
+                var b = work.Pop();
+                foreach (var o in all)
+                    if (!SymbolEqualityComparer.Default.Equals(o, b) && _engine.BaseMembers(o).Contains(b, SymbolEqualityComparer.Default) && found.Add(o.OriginalDefinition))
+                        work.Push(o.OriginalDefinition);
+            }
+            return found;
         }
 
         private static bool HandsOver(ITypeSymbol t) =>
@@ -225,7 +246,8 @@ namespace CsVerify.Verifier
                     if (s != null && IsHeapField(s))
                     {
                         if (!owned) return $"it reads '{access ?? (SyntaxNode)name}', a mutable field";
-                        if (!SpecSymbols.IsOwned(s.ContainingType)) return $"it reads '{access ?? (SyntaxNode)name}', which code without this object's view can change";
+                        bool fixedField = s is IFieldSymbol rf && rf.IsReadOnly || s is IPropertySymbol rp && (rp.SetMethod == null || rp.SetMethod.IsInitOnly);
+                        if (!SpecSymbols.IsOwned(s.ContainingType) && !fixedField) return $"it reads '{access ?? (SyntaxNode)name}', which code without this object's view can change";
                         if (m.IsStatic) return $"'{m.Name}' reads '{access ?? (SyntaxNode)name}' of whatever object it is given; read owned fields through this";
                         if (onOther && !OwnedChild(access.Expression, c.Model))
                             return $"it reads '{access ?? (SyntaxNode)name}' of another object, whose view someone else may hold";

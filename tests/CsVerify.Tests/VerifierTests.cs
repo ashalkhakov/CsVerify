@@ -437,6 +437,13 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1002" }, r.Errors("FindLast"));
             Assert.Equal(new[] { "CSV1006" }, r.Errors("CopyOverlapping"));
             Assert.Equal(new[] { "CSV1006" }, r.Errors("SelectionSortCopies"));
+            Assert.Equal(new[] { "CSV1018" }, r.Errors("PickyPurse.TrySpend"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("LyingPurse.Add"));
+            Assert.Equal(new[] { "CSV1002", "CSV1017" }, r.Errors("LeakyPurse.Add"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Overdrawn..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Tile..ctor"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Registered..ctor"));
+            Assert.Equal(new[] { "CSV1011" }, r.Errors("FundsOf"));
         }
     }
 

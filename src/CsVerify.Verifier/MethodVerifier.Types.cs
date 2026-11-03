@@ -15,6 +15,7 @@ namespace CsVerify.Verifier
     {
         private readonly List<(Term obj, INamedTypeSymbol type, bool exact)> _typed = new List<(Term, INamedTypeSymbol, bool)>();
         private readonly HashSet<INamedTypeSymbol> _typesInPlay = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        private readonly List<(Term obj, INamedTypeSymbol type)> _tested = new List<(Term, INamedTypeSymbol)>();
 
         private static INamedTypeSymbol ModeledType(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.IsReferenceType && !n.IsGenericType && n.ContainingType?.IsGenericType != true &&
@@ -47,6 +48,8 @@ namespace CsVerify.Verifier
         {
             if (!_typesInPlay.Add(t)) return;
             foreach (var (o, type, exact) in _typed.ToList()) Relate(o, type, exact, t);
+            foreach (var (o, tested) in _tested.ToList())
+                if (Disjoint(tested, t)) AssumeSide(T.Not(T.And(Isa(o, tested), Isa(o, t))));
         }
 
         private void Relate(Term o, INamedTypeSymbol type, bool exact, INamedTypeSymbol other)
@@ -71,6 +74,11 @@ namespace CsVerify.Verifier
         {
             if (!(ModeledType(matched) is INamedTypeSymbol d) || Data.IsData(d)) return null;
             InPlay(d);
+            // what holds of any instance of D holds if the test succeeds
+            foreach (var sup in Supertypes(d)) AssumeSide(T.Implies(Isa(o, d), Isa(o, sup)));
+            foreach (var other in _typesInPlay.ToList())
+                if (Disjoint(d, other)) AssumeSide(T.Not(T.And(Isa(o, d), Isa(o, other))));
+            _tested.Add((o, d));
             return T.And(NotNull(o), Isa(o, d));
         }
     }

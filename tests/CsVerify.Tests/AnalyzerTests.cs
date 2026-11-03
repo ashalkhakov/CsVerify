@@ -251,7 +251,12 @@ namespace CsVerify.Tests
         public void ProofSignatures()
         {
             Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("static class C { [Pure] static int F(ref int x) => x; }"));
-            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("class C { [Pure] public virtual int F(int x) => x; }"));
+            // a [Pure] query may be virtual (overrides honour its contract), but its overrides must be [Pure] too;
+            // a lemma or ghost function is one fixed proof or definition
+            Assert.Empty(Harness.Analyze("class C { [Pure] public virtual int F(int x) => x; }"));
+            // an override of a [Pure] query is [Pure] itself: its body may have no side effects
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("class C { [Pure] public virtual int F(int x) => x; } class D : C { int _n; public override int F(int x) { _n = x; return x; } }"));
+            Assert.Equal(new[] { "CSV0013" }, Harness.Analyze("class C { [GhostFunction] public virtual int F(int x) => x; }"));
         }
 
         [Fact]

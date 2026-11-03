@@ -47,6 +47,7 @@ namespace CsVerify.Verifier
             if (f.Root != null && SpecSymbols.IsOwnsField(field))
                 AssumeSide(T.Implies(NotNull(v), T.And(T.Eq(RootOf(f, v), RootOf(f, o)), T.Not(T.Eq(RootOf(f, v), v)))));
             HasType(v, type);
+            AssumeImmutableInvariants(o, instance.Type, f);
             // a field of an allocated object refers to an allocated object
             if (f.Alloc != null && MayBeNullType(type))
                 AssumeSide(T.Implies(T.And(InSet(f.Alloc, o), NotNull(v)), InSet(f.Alloc, v)));
@@ -89,7 +90,8 @@ namespace CsVerify.Verifier
                     ? new Term($"({(MapSort(field) == Sort.Heap ? "cv_frameh" : "cv_frame")} {modifiable} {FieldMap(before, field)} {FreshMap(field)})", MapSort(field))
                     : FreshMap(field);
             // owned fields change at the objects whose views moved, which the link does not describe
-            f.Link = modifiable != null && !all && owned.Count == 0 ? new StateLink { Before = before, Changed = modifiable } : null;
+            // (owned objects change only where views moved: with none handed over, none changed)
+            f.Link = modifiable != null && !all && (owned.Count == 0 || touched != null && touched.Count == 0) ? new StateLink { Before = before, Changed = modifiable } : null;
             if (touched == null)
             {
                 if (owned.Count > 0 && f.Root != null) f.Root = _z3.Fresh("root", Sort.Row);
@@ -169,14 +171,13 @@ namespace CsVerify.Verifier
         private void EnterConstructor(Frame f)
         {
             var type = _method.ContainingType;
-            if (ChainedInitializer(_method, _model) is ConstructorInitializerSyntax chained)
-            {
-                NotModeled(chained, "constructor chaining (this(...), or base(...) of a source class) is not supported yet");
-                return;
-            }
-            var own = FieldEffects.FieldsOf(type).Where(s => DeclaredIn(s, type)).ToList();
-            foreach (var field in own)
+            // a new object's fields all start at their defaults (its bases' too)
+            foreach (var field in FieldEffects.FieldsOf(type))
                 _z3.Assume(T.Eq(T.Select(FieldMap(f, field), f.This, ValueSort(field)), DefaultValue(field)));
+            // with this(...) the other constructor runs the field initializers; with base(...) they run first, here
+            var own = FieldEffects.FieldsOf(type).Where(s => DeclaredIn(s, type)).ToList();
+            if (ChainedInitializer(_method, _model) is ConstructorInitializerSyntax chained && chained.ThisOrBaseKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ThisKeyword))
+                own.Clear();
             bool wasCode = _codeMode;
             _codeMode = true;
             try
@@ -192,6 +193,17 @@ namespace CsVerify.Verifier
                 }
             }
             finally { _codeMode = wasCode; }
+        }
+
+        /// <summary>
+        /// A constructor's <c>base(...)</c> or <c>this(...)</c>: a call on the object being built. Afterwards the fields
+        /// the other constructor's class has (its bases' included) are whatever it made them, as its postcondition says.
+        /// </summary>
+        private void AfterChainedConstructor(Frame f, IMethodSymbol ctor, Term obj)
+        {
+            foreach (var field in FieldEffects.FieldsOf(ctor.ContainingType))
+                f.Fields[field] = T.Store(FieldMap(f, field), obj, _z3.Fresh(field.Name, ValueSort(field)));
+            f.Link = null;
         }
 
         /// <summary>

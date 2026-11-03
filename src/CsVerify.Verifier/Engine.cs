@@ -214,6 +214,9 @@ namespace CsVerify.Verifier
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
             if (_contracts.TryGetValue(key, out var c)) return c;
+            // a contract class's member, named in its own specifications, stands for the member it specifies
+            if (SpecSymbols.ContractClassTarget(key.ContainingType) != null && SpecifiedMember(key) is IMethodSymbol target)
+                return _contracts[key] = ContractOf(target);
             _contracts[key] = c = Contract.Read(key, _compilation);
             // behavioural subtyping: an abstract or interface member's contract comes from its contract class, and
             // an override or implementation inherits the contracts of what it overrides or implements
@@ -243,6 +246,17 @@ namespace CsVerify.Verifier
             if (m.ContainingType.TypeKind == TypeKind.Interface)
                 return cc.FindImplementationForInterfaceMember(m) as IMethodSymbol;
             return cc.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(o => SymbolEqualityComparer.Default.Equals(o.OverriddenMethod?.OriginalDefinition, m));
+        }
+
+        /// <summary>The interface or abstract member a contract class's method specifies.</summary>
+        private static IMethodSymbol SpecifiedMember(IMethodSymbol m)
+        {
+            if (m.OverriddenMethod != null) return m.OverriddenMethod.OriginalDefinition;
+            foreach (var iface in m.ContainingType.AllInterfaces)
+                foreach (var im in iface.GetMembers().OfType<IMethodSymbol>())
+                    if (SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(im)?.OriginalDefinition, m))
+                        return im.OriginalDefinition;
+            return null;
         }
 
         /// <summary>The members a method overrides or implements (one level: their own contracts carry the rest).</summary>
@@ -301,6 +315,34 @@ namespace CsVerify.Verifier
                     }
                     foreach (var err in engine.Solver.Errors)
                         mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, decl.GetLocation().GetLineSpan()));
+                    engine.Solver.Errors.Clear();
+                }
+            }
+            // accessors with code: properties are methods too
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var node in tree.GetRoot().DescendantNodes())
+                {
+                    IMethodSymbol accessor = node switch
+                    {
+                        AccessorDeclarationSyntax acc when acc.Body != null || acc.ExpressionBody != null => model.GetDeclaredSymbol(acc) as IMethodSymbol,
+                        ArrowExpressionClauseSyntax arrow when arrow.Parent is BasePropertyDeclarationSyntax prop => (model.GetDeclaredSymbol(prop) as IPropertySymbol)?.GetMethod,
+                        _ => null,
+                    };
+                    if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.ContractClassTarget(accessor.ContainingType) != null ||
+                        accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
+                    var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name };
+                    result.Methods.Add(mr);
+                    declarations.Add((node, mr));
+                    engine.Solver.Reset();
+                    try { new MethodVerifier(engine, engine.ContractOf(accessor), mr).Run(); }
+                    catch (Exception e)
+                    {
+                        mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, node.GetLocation().GetLineSpan()));
+                    }
+                    foreach (var err in engine.Solver.Errors)
+                        mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, node.GetLocation().GetLineSpan()));
                     engine.Solver.Errors.Clear();
                 }
             }

@@ -67,6 +67,8 @@ namespace CsVerify.Verifier
                 case MethodDeclarationSyntax m: block = m.Body; exprBody = m.ExpressionBody?.Expression; break;
                 case LocalFunctionStatementSyntax lf: block = lf.Body; exprBody = lf.ExpressionBody?.Expression; break;
                 case ConstructorDeclarationSyntax ctor: block = ctor.Body; exprBody = ctor.ExpressionBody?.Expression; break;
+                case AccessorDeclarationSyntax acc: block = acc.Body; exprBody = acc.ExpressionBody?.Expression; break;
+                case ArrowExpressionClauseSyntax arrow: block = null; exprBody = arrow.Expression; break; // int P => ...
                 default: return c;
             }
             c.Declaration = syntax;

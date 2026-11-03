@@ -60,7 +60,13 @@ namespace CsVerify.Analyzers
             return true;
         }
         /// <summary>[Pure] or [GhostFunction]: a mathematical function the verifier may use in specifications.</summary>
-        public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s);
+        public static bool IsPure(ISymbol s) => HasAttribute(s, "PureAttribute") || IsGhostFunction(s) ||
+            s is IMethodSymbol m && (
+                m.MethodKind == MethodKind.PropertyGet && m.AssociatedSymbol is IPropertySymbol p && HasAttribute(p, "PureAttribute") || // a [Pure] property's getter
+                // an override or implementation of a [Pure] query is one too (its body must then be pure)
+                m.OverriddenMethod != null && IsPure(m.OverriddenMethod) ||
+                !m.IsStatic && m.ContainingType != null && m.ContainingType.AllInterfaces.SelectMany(i => i.GetMembers().OfType<IMethodSymbol>())
+                    .Any(im => SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(im), m) && IsPure(im)));
         /// <summary>A ghost collection: Seq&lt;T&gt; (and its static class Seq), ObjSet or Bag.</summary>
         public static bool IsSeqType(ITypeSymbol type) => IsCsVerifyType(type, "Seq`1") || IsCsVerifyType(type, "Seq") || IsObjSet(type) || IsBag(type);
         public static bool IsBag(ITypeSymbol type) => IsCsVerifyType(type, "Bag");
