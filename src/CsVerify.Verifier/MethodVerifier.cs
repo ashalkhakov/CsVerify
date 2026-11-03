@@ -292,7 +292,7 @@ namespace CsVerify.Verifier
                 {
                     case AssignmentExpressionSyntax asg: Target(asg.Left); break;
                     case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression) || pre.IsKind(SyntaxKind.PreDecrementExpression): Target(pre.Operand); break;
-                    case PostfixUnaryExpressionSyntax post: Target(post.Operand); break;
+                    case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression): Target(post.Operand); break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
                     case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
                         if (HavocsHeap(m)) loop.HavocHeap = true;

@@ -70,6 +70,16 @@ public sealed class Other { public int X; public void Bump() { X++; } }
         }
 
         [Fact]
+        public void ReadingAnElement_IsNoWrite()
+        {
+            // !a[i], -a[i] and a[i]! read the element: a callee doing so writes no array
+            const string callees = "static bool Not(bool[] b) => b.Length > 0 && !b[0]; static int Neg(int[] b) => b.Length > 0 ? -b[0] : 0; ";
+            Assert.Empty(Errors("M", callees + "static void M(int[] a, bool[] b, int[] c) { Spec.Requires(a.Length > 0); a[0] = 1; Not(b); Neg(c); Spec.Assert(a[0] == 1); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void Inc(int[] b) { if (b.Length > 0) b[0]++; } " +
+                "static void M(int[] a, int[] c) { Spec.Requires(a.Length > 0); a[0] = 1; Inc(c); Spec.Assert(a[0] == 1); }"));
+        }
+
+        [Fact]
         public void Aliasing_IsTracked()
         {
             Assert.Empty(Errors("M", "static void M(Counter a, Counter b) { Spec.Requires(a != b); int old = b.Count; a.Count = 10; Spec.Assert(b.Count == old); }"));

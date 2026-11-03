@@ -157,8 +157,11 @@ namespace CsVerify.Verifier
                 ExpressionSyntax target = n switch
                 {
                     AssignmentExpressionSyntax a => a.Left,
-                    PrefixUnaryExpressionSyntax pre => pre.Operand,
-                    PostfixUnaryExpressionSyntax post => post.Operand,
+                    // (only ++ and --: !a[i], -a[i] and a[i]! read)
+                    PrefixUnaryExpressionSyntax pre when pre.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreIncrementExpression) ||
+                                                         pre.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreDecrementExpression) => pre.Operand,
+                    PostfixUnaryExpressionSyntax post when post.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PostIncrementExpression) ||
+                                                           post.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.PostDecrementExpression) => post.Operand,
                     ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) => arg.Expression,
                     _ => null,
                 };
