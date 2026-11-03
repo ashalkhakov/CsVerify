@@ -134,5 +134,37 @@ public sealed class Node
         public void OwnedChildren_MayBeReadByTheInvariant_OneLevelDown() =>
             Assert.Equal("CSV1015", string.Join(",", Harness.Verify(
                 "[Owned] public sealed class N { public int V; [Owns] public N? Next; [Invariant, Pure] public bool I() => Next == null || Next.Next == null || V <= Next.Next.V; }").Errors("I")));
+
+        [Fact]
+        public void OwnedQueries_AreFramedByTheirTree()
+        {
+            const string node = @"
+[Owned]
+public sealed class N
+{
+    public int Val;
+    [Owns] public N? Next;
+    public N? Peer;
+    [Pure] public bool TwoSmall => Val < 10 && (Next == null || Next.Val < 10);
+    [Pure] public int PeerVal => Peer == null ? 0 : Peer.Val;
+    public void Bump() { Val = checked(Val + 1); }
+}
+public static class C { BODY }";
+            var r = Harness.Verify(node.Replace("BODY", @"
+    static void Kept(N a, ref Own<N> av, N b, ref Own<N> bv) {
+        Spec.Requires(av.Obj.Value == a && bv.Obj.Value == b);
+        bool s = b.TwoSmall; a.Bump(); Spec.Assert(b.TwoSmall == s); }
+    static void Changed(N a, ref Own<N> av) {
+        Spec.Requires(av.Obj.Value == a);
+        bool s = a.TwoSmall; a.Bump(); Spec.Assert(a.TwoSmall == s); }
+    static void Footprint(N a, ref Own<N> av) {
+        Spec.Requires(av.Obj.Value == a && a.Next != null);
+        Spec.Assert(Own.Tree(a).Contains(a) && Own.Tree(a).Contains(a.Next)); }"));
+            Assert.Empty(r.Errors("Kept"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Changed"));
+            Assert.Empty(r.Errors("Footprint"));
+            // a query reads only its own tree
+            Assert.Equal(new[] { "CSV1017" }, r.Errors("get_PeerVal"));
+        }
 }
 }

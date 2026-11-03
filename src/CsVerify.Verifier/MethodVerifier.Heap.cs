@@ -91,7 +91,19 @@ namespace CsVerify.Verifier
                     : FreshMap(field);
             // owned fields change at the objects whose views moved, which the link does not describe
             // (owned objects change only where views moved: with none handed over, none changed)
-            f.Link = modifiable != null && !all && (owned.Count == 0 || touched != null && touched.Count == 0) ? new StateLink { Before = before, Changed = modifiable } : null;
+            // the frame rule needs to know what changed: the callee's frame for unowned fields (or none written), and
+            // for owned ones the trees whose roots it got
+            bool unownedKnown = !all && (modifiable != null || !fields.Any(x => !IsOwnedField(x)));
+            bool ownedKnown = owned.Count == 0 || touched != null;
+            if (unownedKnown && ownedKnown)
+            {
+                var parts = new List<string>();
+                if (modifiable != null) parts.Add($"(distinct (select {modifiable} y) 0)");
+                if (owned.Count > 0 && touched != null)
+                    foreach (var t in touched) parts.Add(before.Root != null ? $"(= (select {before.Root} y) {t})" : $"(= y {t})");
+                f.Link = new StateLink { Before = before, Changed = new Term($"(lambda ((y Int)) (ite {(parts.Count == 0 ? "false" : parts.Count == 1 ? parts[0] : "(or " + string.Join(" ", parts) + ")")} 1 0))", Sort.Row) };
+            }
+            else f.Link = null;
             if (touched == null)
             {
                 if (owned.Count > 0 && f.Root != null) f.Root = _z3.Fresh("root", Sort.Row);

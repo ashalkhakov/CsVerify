@@ -241,6 +241,16 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 - **Invariants.** An owned object at rest can't change, so its invariant held when it went in still holds when it comes out. The container's invariant may read its children's fields, one level down. A sorted list is then every node's `Next == null || Val <= Next.Val`.
 - **Frames.** The verifier tracks each object's tree root, a ghost map maintained exactly by `Own.New`, `Take` and `Give`. A call that gets a root's view may change that root's whole tree and nothing else, so two lists stay independent. For classes no `[Owns]` field can hold, every object is its own root and only the objects whose views go in change.
 
+**Owned objects and the frame rule.** An ownership tree is a footprint: the root and everything it owns, transitively.
+- **`Own.Tree(x)`** is that footprint as a ghost `ObjSet`, for Dafny-style specifications such as `Spec.Reads(Own.Tree(list))` on a static query.
+- **Queries read their tree.** A `[Pure]` method or property of an `[Owned]` class without its own `Spec.Reads` reads its tree. Its body is checked to read nothing outside the tree (CSV1017); invariants keep their stricter rule.
+- **The frame rule applies.** Every owned change knows its footprint:
+  - a field write: one object;
+  - `Own.Take`/`Own.Give`: the container's tree;
+  - a call: the trees of the views it gets, plus the callee's `Spec.Modifies`.
+  
+  So a query on one list keeps its value across any change to another list. `Spec.Reads` may be given on owned classes; `Spec.Modifies` may not, since writes go through views.
+
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;
 - or `o` is in the method's `Spec.Modifies` frame;
@@ -604,7 +614,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 182 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 183 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 

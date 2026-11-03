@@ -23,6 +23,19 @@ namespace CsVerify.Verifier
     {
         private static Term RootOf(Frame f, Term o) => T.Select(f.Root, T.Coerce(o, Sort.Int), Sort.Int);
 
+        /// <summary>The footprint of o's ownership tree in state f: the objects with the same root (just o without ownership).</summary>
+        private static Term TreeOf(Frame f, Term o) => f.Root == null
+            ? T.Store(T.ZeroRow(), T.Coerce(o, Sort.Int), T.Int(1))
+            : new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {RootOf(f, o)}) 1 0))", Sort.Row);
+
+        /// <summary>
+        /// A [Pure] query of an [Owned] class without its own Spec.Reads reads its ownership tree: the frame rule
+        /// then keeps its value across any change outside the tree.
+        /// </summary>
+        private static bool ReadsItsTree(Contract c) =>
+            c.IsPure && c.Reads == null && !c.Method.IsStatic && SpecSymbols.IsOwned(c.Method.ContainingType) &&
+            !SpecSymbols.IsInvariant(c.Method); // an invariant has a stricter rule of its own (CSV1015)
+
         /// <summary>An object whose view is in hand is the root of its ownership tree (no [Owns] field holds it).</summary>
         private void IsRoot(Frame f, Term o)
         {
@@ -70,8 +83,9 @@ namespace CsVerify.Verifier
             var x = T.Select(FieldMap(f, field), c, Sort.Int);
             Require(NotNull(x), "CSV1016", inv.Syntax, $"'{inv.Arguments[0].Value.Syntax}' might be null: there is nothing to take");
             var before = f.Root;
+            var state = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), c, T.Int(0));
-            f.Link = null;
+            f.Link = new StateLink { Before = state, Changed = TreeOf(state, c) }; // only c's tree changed
             if (before != null)
             {
                 // each object of c's tree other than c now belongs to c's or to x's tree (which, the verifier does not track)
@@ -104,8 +118,9 @@ namespace CsVerify.Verifier
                 Require(T.Not(T.Eq(RootOf(f, c), x)), "CSV1016", inv.Syntax, $"'{inv.Arguments[1].Value.Syntax}' might own the container: ownership would be a cycle");
             ProveOwnedInvariant(field.Type, x, f, inv.Syntax, "when it is given to its owner");
             if (VariableOf(inv.Arguments[2].Value) is ISymbol consumed) f.LiveViews.Remove(consumed);
+            var state = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), c, x);
-            f.Link = null;
+            f.Link = new StateLink { Before = state, Changed = TreeOf(state, c) }; // only c's tree changed (x joins it)
             if (f.Root != null)
                 f.Root = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {x}) {RootOf(f, c)} (select {f.Root} y)))", Sort.Row);
             return T.True;
@@ -220,6 +235,7 @@ namespace CsVerify.Verifier
         private Term OwnCall(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
+            if (m.Name == "Tree") return TreeOf(f, Eval(inv.Arguments[0].Value, f, spec));
             if (m.Name == "Take") return OwnTake(inv, f, spec);
             if (m.Name == "Give") return OwnGive(inv, f, spec);
             if (m.Name == "Drop")

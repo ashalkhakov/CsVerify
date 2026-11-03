@@ -47,6 +47,13 @@ namespace CsVerify
             slot = obj;
         }
 
+        /// <summary>
+        /// The footprint of an ownership tree, as a ghost set of objects (for Dafny-style frames): every object in the
+        /// tree <paramref name="obj"/> belongs to, its root and everything the root owns, transitively.
+        /// </summary>
+        [GhostFunction]
+        public static ObjSet Tree(object obj) => throw GhostException.Instance;
+
         /// <summary>Gives the view up for good: nobody can write the object any more.</summary>
         [Trusted]
         public static void Drop<T>(Own<T> view) where T : class { }

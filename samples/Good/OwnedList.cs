@@ -26,6 +26,9 @@ namespace Samples
             Len = Ghost.Of(1);
         }
 
+        /// <summary>The first value: a query of this list, framed by its ownership tree.</summary>
+        [Pure] public int First => Val;
+
         /// <summary>Inserts <paramref name="v"/> after this node, keeping the list sorted (unfold, insert, fold).</summary>
         public void InsertAfter(int v)
         {
@@ -75,8 +78,10 @@ namespace Samples
             Spec.Requires(av.Obj.Value == a && bv.Obj.Value == b && a.Val <= 10);
             var bLen = Ghost.Of(b.Len.Value);
             var bNext = b.Next;
+            int bFirst = b.First;
             a.InsertAfter(10);
             Spec.Assert(b.Len.Value == bLen.Value && b.Next == bNext);
+            Spec.Assert(b.First == bFirst); // the frame rule: First reads b's tree, and only a's changed
         }
 
         public static int Demo()

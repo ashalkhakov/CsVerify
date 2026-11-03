@@ -42,10 +42,11 @@ namespace CsVerify.Verifier
         /// <summary>After the preconditions: the method's own frames, as they are on entry.</summary>
         private void EnterFrames(Frame f, SpecEnv spec)
         {
-            if ((_contract.Modifies != null || _contract.Reads != null) && SpecSymbols.IsOwned(_method.ContainingType))
-                Report("CSV1017", MethodLocationNode(), $"{_method.ContainingType.Name} is [Owned]: its objects are framed by their views, not by Spec.Modifies/Spec.Reads", isError: true);
+            if (_contract.Modifies != null && SpecSymbols.IsOwned(_method.ContainingType))
+                Report("CSV1017", MethodLocationNode(), $"{_method.ContainingType.Name} is [Owned]: its objects are changed through their views, not by Spec.Modifies", isError: true);
             if (_contract.Modifies != null) _modifiesEntry = EvalOwnSpec(_contract.Modifies, f, spec);
             if (_contract.Reads != null) _readsEntry = EvalOwnSpec(_contract.Reads, f, spec);
+            else if (ReadsItsTree(_contract) && f.This != null) _readsEntry = TreeOf(f, f.This);
         }
 
         private bool ChecksFrames => _codeMode && _foreignSpec == 0;
@@ -90,12 +91,12 @@ namespace CsVerify.Verifier
         private void CheckPureCallReads(Contract callee, Frame pre, SyntaxNode at)
         {
             if (_readsEntry == null || !ChecksFrames || _engine.Fields.ReadsOf(callee.Method).Count == 0) return;
-            if (callee.Reads == null)
+            if (callee.Reads == null && !(ReadsItsTree(callee) && pre.This != null))
             {
                 Report("CSV1017", at, $"'{callee.Method.Name}' reads fields but has no Spec.Reads frame, so this function's Spec.Reads cannot be checked", isError: true);
                 return;
             }
-            var frame = T.Coerce(EvalForeignSpec(callee.Reads, pre, new SpecEnv { Old = pre }), Sort.Row);
+            var frame = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, pre, new SpecEnv { Old = pre }), Sort.Row) : TreeOf(pre, pre.This);
             Prove(new Term($"(cv_subset {frame} {_readsEntry})", Sort.Bool), "CSV1017", at,
                 $"Spec.Reads of '{callee.Method.Name}' might not be within this function's");
         }
@@ -129,7 +130,7 @@ namespace CsVerify.Verifier
         /// </summary>
         private void LinkPure(Contract callee, Term receiver, Term[] args, Sort sort, Frame state, Term app)
         {
-            if (callee.Reads == null || state?.Link == null || _linkDepth >= 16) return;
+            if (callee.Reads == null && !(ReadsItsTree(callee) && receiver != null) || state?.Link == null || _linkDepth >= 16) return;
             var link = state.Link;
             _linkDepth++;
             try
@@ -137,7 +138,7 @@ namespace CsVerify.Verifier
                 var before = PureApply(callee, receiver, args, link.Before.Heap, sort, null, link.Before);
                 if (before.S == T.Coerce(app, sort).S) return;
                 var frame = CalleeFrame(callee, receiver, args, link.Before.Heap, link.Before);
-                var reads = T.Coerce(EvalForeignSpec(callee.Reads, frame, new SpecEnv { Old = frame }), Sort.Row);
+                var reads = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, frame, new SpecEnv { Old = frame }), Sort.Row) : TreeOf(link.Before, receiver);
                 AssumeSide(T.Implies(new Term($"(cv_disjoint {reads} {link.Changed})", Sort.Bool), T.Eq(T.Coerce(app, sort), before)));
             }
             finally { _linkDepth--; }
