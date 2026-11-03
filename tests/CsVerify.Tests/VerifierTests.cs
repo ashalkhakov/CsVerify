@@ -430,6 +430,9 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Bypass"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Cycle"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
+            Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));
+            Assert.Equal(new[] { "CSV1015" }, r.Errors("AddLeft"));
         }
     }
 

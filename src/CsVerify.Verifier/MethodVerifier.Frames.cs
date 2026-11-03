@@ -27,7 +27,8 @@ namespace CsVerify.Verifier
         /// <summary>Before the preconditions: the allocated objects (this and the parameters, unless this is being built).</summary>
         private void EnterAlloc(Frame f)
         {
-            if (!_engine.UsesDynamicFrames) return;
+            // (ownership needs it too: a new object is none of the objects reachable through fields)
+            if (!_engine.UsesDynamicFrames && !_engine.UsesOwnership) return;
             f.Alloc = _allocEntry = _z3.Fresh("alloc", Sort.Row);
             foreach (var p in _method.Parameters.Where(p => MayBeNullType(p.Type) && f.Vars.ContainsKey(p)))
                 _z3.Assume(T.Implies(NotNull(f.Vars[p]), InSet(f.Alloc, f.Vars[p])));

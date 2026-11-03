@@ -207,6 +207,10 @@ namespace CsVerify.Verifier
             {
                 var c = _engine.ContractOf(m);
                 if (!c.HasSource) continue;
+                // array contents can be written by anyone holding the array (lengths never change)
+                if (owned && c.Declaration.DescendantNodes().OfType<ElementAccessExpressionSyntax>()
+                        .FirstOrDefault(e => c.Model.GetTypeInfo(e.Expression).Type is IArrayTypeSymbol) is ElementAccessExpressionSyntax element)
+                    return $"it reads '{element}', an array element, which anyone holding the array can change";
                 foreach (var name in c.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
                 {
                     var s = c.Model.GetSymbolInfo(name).Symbol;

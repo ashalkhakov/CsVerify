@@ -75,9 +75,13 @@ namespace CsVerify.Verifier
             if (before != null)
             {
                 // each object of c's tree other than c now belongs to c's or to x's tree (which, the verifier does not track)
+                // (its other children stay: they are owned by c itself)
                 var choice = _z3.Fresh("split", Sort.Row);
                 var cRoot = RootOf(f, c);
-                f.Root = new Term($"(lambda ((y Int)) (ite (= y {x}) {x} (ite (and (= (select {before} y) {cRoot}) (distinct y {c}) (distinct (select {choice} y) 0)) {x} (select {before} y))))", Sort.Row);
+                var siblings = string.Concat(FieldEffects.FieldsOf(field.ContainingType)
+                    .Where(g => SpecSymbols.IsOwnsField(g) && !SymbolEqualityComparer.Default.Equals(g, FieldEffects.Key(field)))
+                    .Select(g => $" (distinct y {T.Select(FieldMap(f, g), c, Sort.Int)})"));
+                f.Root = new Term($"(lambda ((y Int)) (ite (= y {x}) {x} (ite (and (= (select {before} y) {cRoot}) (distinct y {c}){siblings} (distinct (select {choice} y) 0)) {x} (select {before} y))))", Sort.Row);
             }
             AssumeOwnedInvariant(field.Type, x, f);
             Write(inv.Arguments[1].Value, x, f, spec);

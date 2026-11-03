@@ -57,6 +57,9 @@ public interface IAudit { void Record(int amount); }
             Assert.Equal("CSV1015", Check("[Owned] public sealed class A { public int N; public A? Other; [Invariant, Pure] public bool V() => Other == null || Other.N >= 0; }"));
             Assert.Equal("CSV1015", Check("[Owned] public sealed class A { public int N; [Invariant, Pure] public bool V() => Ok(this); [Pure] static bool Ok(A a) => a.N >= 0; }"));
             Assert.Equal("", Check("[Owned] public sealed class A { public int N; [Invariant, Pure] public bool V() => N >= 0 && this.N < 100; }"));
+            // array contents can be changed by anyone holding the array; its length cannot
+            Assert.Equal("CSV1015", Check("[Owned] public sealed class A { public int[]? Items; [Invariant, Pure] public bool V() => Items == null || Items.Length == 0 || Items[0] > 0; }"));
+            Assert.Equal("", Check("[Owned] public sealed class A { public int[]? Items; [Invariant, Pure] public bool V() => Items != null && Items.Length > 0; }"));
         }
 
         [Fact]
