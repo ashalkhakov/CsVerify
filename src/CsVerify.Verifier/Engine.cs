@@ -121,6 +121,7 @@ namespace CsVerify.Verifier
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);
+            Solver.Preamble(MethodVerifier.FloatTheory);
         }
 
         public void Dispose() => Solver.Dispose();

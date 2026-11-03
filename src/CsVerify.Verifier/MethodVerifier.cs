@@ -627,6 +627,8 @@ namespace CsVerify.Verifier
         {
             if (SpecSymbols.IsGhostType(t)) return SortOf(((INamedTypeSymbol)t).TypeArguments[0]);
             if (SpecSymbols.IsSeqType(t)) return Sort.Row;
+            if (t?.SpecialType == SpecialType.System_Single) return Sort.F32;
+            if (t?.SpecialType == SpecialType.System_Double) return Sort.F64;
             return t?.SpecialType == SpecialType.System_Boolean ? Sort.Bool : Sort.Int;
         }
 
@@ -692,6 +694,8 @@ namespace CsVerify.Verifier
                         AssumeSide(T.Eq(Len(v), T.Int(str.Length)));
                         return v;
                     }
+                    case float _:
+                    case double _: return FloatLiteral(op.ConstantValue.Value);
                     case ulong ul: return T.Int(new BigInteger(ul));
                     case object o when IsIntegral(op.Type) || o is int || o is long: return T.Int(Convert.ToInt64(o));
                 }
@@ -752,7 +756,7 @@ namespace CsVerify.Verifier
                 {
                     var old = Eval(inc.Target, f, spec);
                     var kind = inc.Kind == OperationKind.Increment ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract;
-                    var v = Arith(kind, old, T.Int(1), inc.Type, inc.Syntax, inc.OperatorMethod != null, inc.IsChecked);
+                    var v = Arith(kind, old, IsFloating(inc.Type) ? FloatLiteral(inc.Type.SpecialType == SpecialType.System_Single ? (object)1f : 1d) : T.Int(1), inc.Type, inc.Syntax, inc.OperatorMethod != null, inc.IsChecked);
                     Write(inc.Target, v, f, spec);
                     return inc.IsPostfix ? old : v;
                 }
@@ -790,7 +794,7 @@ namespace CsVerify.Verifier
                 }
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
-                case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : T.Int(0);
+                case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : IsFloating(op.Type) ? Zero(SortOf(op.Type)) : T.Int(0);
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
                 case IArgumentOperation arg: return Eval(arg.Value, f, spec);
                 case IExpressionStatementOperation es: return Eval(es.Operation, f, spec);
@@ -873,6 +877,8 @@ namespace CsVerify.Verifier
                 Unsupported(c);
                 return Unknown(c.Type);
             }
+            if (IsFloating(c.Type) && (IsFloating(from) || IsIntegral(from)) || IsFloating(from) && IsIntegral(c.Type))
+                return FloatConversion(v, from, c.Type, c);
             if (IsIntegral(c.Type) && IsIntegral(from))
                 return Bounded(v, c.Type, c.Syntax, c.IsChecked, $"conversion '{c.Syntax}' to {c.Type.Name} might overflow");
             else if (IsIntegral(c.Type) && !IsIntegral(from) && from?.SpecialType != SpecialType.System_Boolean && !SpecSymbols.IsGhostType(from) && from != null && from.TypeKind != TypeKind.TypeParameter)
@@ -922,6 +928,8 @@ namespace CsVerify.Verifier
             }
             var r = Eval(b.RightOperand, f, spec);
             var opType = b.LeftOperand.Type;
+            if (IsFloating(opType) || IsFloating(b.RightOperand.Type))
+                return FloatBinary(b.OperatorKind, l, r, IsFloating(opType) ? opType : b.RightOperand.Type, b.Syntax, b.Type);
             bool numeric = IsIntegral(opType) || IsIntegral(b.RightOperand.Type) || SpecSymbols.IsGhostType(opType);
             bool boolean = l.Sort == Sort.Bool && r.Sort == Sort.Bool;
             switch (b.OperatorKind)
@@ -1011,6 +1019,7 @@ namespace CsVerify.Verifier
 
         private Term Arith(BinaryOperatorKind kind, Term l, Term r, ITypeSymbol type, SyntaxNode at, bool userDefined, bool isChecked = false)
         {
+            if (!userDefined && IsFloating(type)) return FloatBinary(kind, l, r, type, at, type);
             if (userDefined || !IsIntegral(type) || l.Sort != Sort.Int || r.Sort != Sort.Int)
             {
                 if (!userDefined && l.Sort == Sort.Bool && r.Sort == Sort.Bool)
@@ -1048,6 +1057,7 @@ namespace CsVerify.Verifier
             {
                 case UnaryOperatorKind.Not: return T.Not(AsBool(v));
                 case UnaryOperatorKind.Plus: return v;
+                case UnaryOperatorKind.Minus when IsFloating(u.Type): return FloatNegate(v, u.Type);
                 case UnaryOperatorKind.Minus when v.Sort == Sort.Int && IsIntegral(u.Type):
                     return Arith(BinaryOperatorKind.Subtract, T.Int(0), v, u.Type, u.Syntax, false, u.IsChecked);
                 default:
@@ -1852,6 +1862,7 @@ namespace CsVerify.Verifier
         private Term Builtin(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
+            if (FloatBuiltin(inv, f, spec) is Term floating) return floating;
             if (m.ContainingType?.ToDisplayString() != "System.Math" || !IsIntegral(inv.Type)) return null;
             var args = inv.Arguments.Select(a => Eval(a.Value, f, spec)).ToArray();
             switch (m.Name)
