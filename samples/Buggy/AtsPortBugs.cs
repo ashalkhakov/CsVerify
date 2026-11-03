@@ -241,6 +241,23 @@ namespace Samples.Buggy
             Spec.Fold(Fs(n, lf, lfp, lr, lrn));
         }
 
+        // BUG: rtrace's split, which keeps going with half the volume while one side is empty: on points that are
+        // all at one place nothing ever separates, and the range does not shrink (CSV1008: the measure does not go down)
+        public static int SplitWithoutFallback(int[] key, int lo, int hi, int d)
+        {
+            Spec.Requires(0 <= lo && lo < hi && hi <= key.Length && -1000 <= d && d <= 1000);
+            Spec.Decreases(hi - lo);
+            if (hi - lo == 1) return 1;
+            int mid = lo;
+            for (int i = lo; i < hi; i++)
+            {
+                Spec.Invariant(lo <= mid && mid <= i && i <= hi);
+                if (key[i] < d) mid++;
+            }
+            if (mid == lo || mid == hi) return SplitWithoutFallback(key, lo, hi, d / 2);
+            return checked(SplitWithoutFallback(key, lo, mid, d) + SplitWithoutFallback(key, mid, hi, d));
+        }
+
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
         public static void InsertTwice(Sn head, int n, Sn node)
         {

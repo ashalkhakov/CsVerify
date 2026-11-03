@@ -458,6 +458,7 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("InsertDropsRest"));
             Assert.Equal(new[] { "CSV1019" }, r.Errors("ShrinkBelowCount"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Lemma3AsStated"));
+            Assert.Equal(new[] { "CSV1008" }, r.Errors("SplitWithoutFallback"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
             Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));
