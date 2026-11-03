@@ -455,6 +455,7 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1002" }, r.Errors("GrowWithoutCopy"));
             Assert.Equal(new[] { "CSV1019" }, r.Errors("DanglingTwin"));
             Assert.Equal(new[] { "CSV1019" }, r.Errors("SetAnyChar"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("InsertDropsRest"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
             Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));

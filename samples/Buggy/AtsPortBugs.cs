@@ -184,6 +184,19 @@ namespace Samples.Buggy
             Spec.Fold(Cstr(buf, n));
         }
 
+        // BUG: slist_insert_before's aux, linking v in but not the rest of the list after it: the nodes after the
+        // place are lost, and the list is one node short of n + 2 (CSV1016: their segment is not there to fold)
+        public static void InsertDropsRest(Sn v, Sn hd, Sn? rest, int n)
+        {
+            Spec.Requires(n >= 0 && Spec.Acc(v) && Spec.Acc(hd) && hd.Next == rest && Sl(rest, null, n));
+            Spec.Ensures(Sl(hd, null, n + 2));
+            hd.Next = v;
+            v.Next = null;
+            Spec.Fold(Sl(v.Next, null, 0));
+            Spec.Fold(Sl(v, null, 1));
+            Spec.Fold(Sl(hd, null, n + 2));
+        }
+
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
         public static void InsertTwice(Sn head, int n, Sn node)
         {

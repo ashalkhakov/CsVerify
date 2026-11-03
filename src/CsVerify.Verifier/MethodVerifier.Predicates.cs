@@ -409,6 +409,8 @@ namespace CsVerify.Verifier
                 {
                     // two whole permissions to one object cannot both be in hand
                     _z3.Assume(T.Implies(a.Guard, T.And(NotNull(a.Obj), BelowWhole(f, a.Obj), T.Eq(RootOf(f, a.Obj), a.Obj), NoFieldsHeld(f, a.Obj, a.Type))));
+                    // (and it is folded into no instance: a permission in hand is not in a footprint)
+                    if (f.Owner != null) _z3.Assume(T.Implies(a.Guard, T.Eq(OwnerOf(f, a.Obj), T.Int(0))));
                     f.Perm = Change(f.Perm, a.Obj, a.Guard, "+");
                     if (DataTypes.Invariants(a.Type).Any()) _z3.Assume(T.Implies(a.Guard, OwnedInvariant(a.Type, a.Obj, f)));
                 }
