@@ -430,10 +430,10 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1001" }, r.Errors("BalanceLRecolorWrong"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Spend"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Steal"));
-            Assert.Equal(new[] { "CSV1016" }, r.Errors("Forge"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("OwnedBugs.Forge"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("OwnedBugs.Peek"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("AfterDrop"));
-            Assert.Equal(new[] { "CSV1017" }, r.Errors("Positive"));
+            Assert.Equal(new[] { "CSV1017" }, r.Errors("Holder.Positive"));
             Assert.Equal(new[] { "CSV1017" }, r.Errors("Sneaky"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Independent"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Reading.Positive"));
@@ -449,7 +449,7 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1015" }, r.Errors("LendBroken"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("ShareBugs.Distinct"));
             // predicates (PredicateBugs.cs)
-            Assert.Equal(new[] { "CSV1016" }, r.Errors("Unframed"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("PredicateBugs.Unframed"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("WriteFolded"));
             Assert.Equal(new[] { "CSV1019" }, r.Errors("FoldWrong"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("UnfoldMissing"));

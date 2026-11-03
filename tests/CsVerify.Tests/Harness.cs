@@ -52,9 +52,15 @@ namespace CsVerify.Tests
             return result;
         }
 
-        /// <summary>Error ids reported for one method (warnings excluded).</summary>
-        public static string[] Errors(this VerificationResult r, string method) =>
-            (r[method] ?? throw new ArgumentException("no method " + method)).Diagnostics.Where(d => d.IsError).Select(d => d.Id).OrderBy(x => x).ToArray();
+        /// <summary>Error ids reported for one method (warnings excluded). The name must match one method only: which of
+        /// several came first would depend on the order of the files, which differs between platforms.</summary>
+        public static string[] Errors(this VerificationResult r, string method)
+        {
+            var matches = r.Methods.Where(m => m.Name == method || m.Name.EndsWith("." + method)).ToList();
+            if (matches.Count == 0) throw new ArgumentException("no method " + method);
+            if (matches.Count > 1) throw new ArgumentException($"'{method}' is ambiguous: " + string.Join(", ", matches.Select(m => m.Name)));
+            return matches[0].Diagnostics.Where(d => d.IsError).Select(d => d.Id).OrderBy(x => x).ToArray();
+        }
 
         public static string RepoRoot()
         {

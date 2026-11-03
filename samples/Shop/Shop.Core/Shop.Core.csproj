@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A project using CsVerify from its package: specifications in the code, verified by
+       dotnet build -p:CsVerifyEnabled=true (with the dotnet-csverify tool), erased by -p:CsVerifyErase=true. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <CsVerifyVersion Condition="'$(CsVerifyVersion)' == ''">0.1.0</CsVerifyVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" />
+  </ItemGroup>
+</Project>

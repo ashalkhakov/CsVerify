@@ -6,7 +6,15 @@
     <Description>ATS-style specifications for C#: contracts, ghost values, linear views. Ships the CsVerify analyzers.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <PackageTags>verification;formal-methods;contracts;analyzers</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <!-- -p:CsVerifyEnabled=true (verify) and -p:CsVerifyErase=true (erase), with the dotnet-csverify tool -->
+    <None Include="..\CsVerify.Verifier\build\CsVerify.Verifier.targets" Pack="true" PackagePath="build/CsVerify.targets" Visible="false" />
+    <None Include="..\CsVerify.Verifier\build\CsVerify.Verifier.targets" Pack="true" PackagePath="buildTransitive/CsVerify.targets" Visible="false" />
+  </ItemGroup>
   <ItemGroup>
     <!-- The analyzer travels inside the package so every consuming IDE shows its diagnostics. -->
     <ProjectReference Include="..\CsVerify.Analyzers\CsVerify.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
