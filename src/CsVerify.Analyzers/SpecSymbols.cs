@@ -28,6 +28,7 @@ namespace CsVerify.Analyzers
         public static bool IsLemma(ISymbol s) => HasAttribute(s, "LemmaAttribute");
         public static bool IsGhostFunction(ISymbol s) => HasAttribute(s, "GhostFunctionAttribute");
         public static bool IsInvariant(ISymbol s) => HasAttribute(s, "InvariantAttribute");
+        public static bool IsPredicate(ISymbol s) => HasAttribute(s, "PredicateAttribute");
         public static bool IsOwnType(ITypeSymbol type) => IsCsVerifyType(type, "Own`1");
         public static bool IsSharedType(ITypeSymbol type) => IsCsVerifyType(type, "Shared`1");
         /// <summary>A view or a read share of one: Own&lt;T&gt; or Shared&lt;T&gt;.</summary>
@@ -92,7 +93,7 @@ namespace CsVerify.Analyzers
         /// <summary>A method whose arguments are ghost: specification statements, Ghost.Of, lemmas.</summary>
         public static bool IsGhostMethod(IMethodSymbol m) =>
             m != null && (IsSpecClass(m.ContainingType) || IsGhostOf(m) || IsLemma(m.OriginalDefinition) ||
-                          IsGhostFunction(m.OriginalDefinition) || IsSeqType(m.ContainingType));
+                          IsGhostFunction(m.OriginalDefinition) || IsPredicate(m.OriginalDefinition) || IsSeqType(m.ContainingType));
 
         /// <summary>
         /// True when <paramref name="node"/> sits where ghost values are legal: inside the arguments of a ghost
@@ -109,7 +110,7 @@ namespace CsVerify.Analyzers
                         break;
                     case MethodDeclarationSyntax md:
                         var declared = model.GetDeclaredSymbol(md);
-                        return IsLemma(declared) || IsGhostFunction(declared);
+                        return IsLemma(declared) || IsGhostFunction(declared) || IsPredicate(declared);
                     case LocalFunctionStatementSyntax lf:
                         if (IsLemma(model.GetDeclaredSymbol(lf))) return true;
                         break;

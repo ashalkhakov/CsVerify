@@ -48,9 +48,13 @@ namespace CsVerify.Verifier
             // trees lent to this method: it may write all of them
             if (f.Perm != null)
                 foreach (var root in LentTrees(_contract, f, spec))
+                {
+                    _lentRoots.Add(root);
                     f.Perm = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {root}) 1.0 (select {f.Perm} y)))", Sort.Perm);
+                }
             if (_contract.Reads != null) _readsEntry = EvalOwnSpec(_contract.Reads, f, spec);
             else if (ReadsItsTree(_contract) && f.This != null) _readsEntry = TreeOf(f, f.This);
+            else if (ReadsFootprint(_contract) && f.Owner != null) _readsEntry = FootprintOf(_contract, f);
         }
 
         private bool ChecksFrames => _codeMode && _foreignSpec == 0;
@@ -95,12 +99,13 @@ namespace CsVerify.Verifier
         private void CheckPureCallReads(Contract callee, Frame pre, SyntaxNode at)
         {
             if (_readsEntry == null || !ChecksFrames || _engine.Fields.ReadsOf(callee.Method).Count == 0) return;
-            if (callee.Reads == null && !(ReadsItsTree(callee) && pre.This != null))
+            if (callee.Reads == null && !(ReadsItsTree(callee) && pre.This != null) && !(ReadsFootprint(callee) && pre.Owner != null))
             {
                 Report("CSV1017", at, $"'{callee.Method.Name}' reads fields but has no Spec.Reads frame, so this function's Spec.Reads cannot be checked", isError: true);
                 return;
             }
-            var frame = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, pre, new SpecEnv { Old = pre }), Sort.Row) : TreeOf(pre, pre.This);
+            var frame = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, pre, new SpecEnv { Old = pre }), Sort.Row)
+                : ReadsItsTree(callee) && pre.This != null ? TreeOf(pre, pre.This) : FootprintOf(callee, pre);
             Prove(new Term($"(cv_subset {frame} {_readsEntry})", Sort.Bool), "CSV1017", at,
                 $"Spec.Reads of '{callee.Method.Name}' might not be within this function's");
         }
@@ -134,7 +139,7 @@ namespace CsVerify.Verifier
         /// </summary>
         private void LinkPure(Contract callee, Term receiver, Term[] args, Sort sort, Frame state, Term app)
         {
-            if (callee.Reads == null && !(ReadsItsTree(callee) && receiver != null) || state?.Link == null || _linkDepth >= 16) return;
+            if (callee.Reads == null && !(ReadsItsTree(callee) && receiver != null) && !(ReadsFootprint(callee) && state?.Owner != null) || state?.Link == null || _linkDepth >= 16) return;
             var link = state.Link;
             _linkDepth++;
             try
@@ -142,7 +147,8 @@ namespace CsVerify.Verifier
                 var before = PureApply(callee, receiver, args, link.Before.Heap, sort, null, link.Before);
                 if (before.S == T.Coerce(app, sort).S) return;
                 var frame = CalleeFrame(callee, receiver, args, link.Before.Heap, link.Before);
-                var reads = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, frame, new SpecEnv { Old = frame }), Sort.Row) : TreeOf(link.Before, receiver);
+                var reads = callee.Reads != null ? T.Coerce(EvalForeignSpec(callee.Reads, frame, new SpecEnv { Old = frame }), Sort.Row)
+                    : ReadsItsTree(callee) && receiver != null ? TreeOf(link.Before, receiver) : FootprintOf(callee, frame);
                 AssumeSide(T.Implies(new Term($"(cv_disjoint {reads} {link.Changed})", Sort.Bool), T.Eq(T.Coerce(app, sort), before)));
             }
             finally { _linkDepth--; }

@@ -303,6 +303,31 @@ namespace CsVerify.Verifier
             if (m.Name == "Tree") return TreeOf(f, Eval(inv.Arguments[0].Value, f, spec));
             if (m.Name == "Take") return OwnTake(inv, f, spec);
             if (m.Name == "Give") return OwnGive(inv, f, spec);
+            if (m.Name == "ToAcc")
+            {
+                // the view goes, its permission stays in hand (as Spec.Acc)
+                var view = inv.Arguments[0].Value;
+                Eval(view, f, spec);
+                if (VariableOf(view) is ISymbol gone) f.LiveViews.Remove(gone);
+                return T.True;
+            }
+            if (m.Name == "FromAcc")
+            {
+                var target = Eval(inv.Arguments[0].Value, f, spec);
+                var at = inv.Syntax;
+                if (f.Perm != null)
+                {
+                    Require(CanWrite(f, target), "CSV1016", at, $"'{inv.Arguments[0].Value.Syntax}' has no permission in hand to make a view of");
+                    Require(T.Eq(RootOf(f, target), target), "CSV1016", at, $"'{inv.Arguments[0].Value.Syntax}' is owned by another object: take it out instead");
+                    foreach (var live in f.LiveViews.ToList())
+                        if (f.Vars.TryGetValue(live, out var lv))
+                            Require(T.Not(T.Eq(lv, target)), "CSV1016", at, $"'{live.Name}' might already be a view of '{inv.Arguments[0].Value.Syntax}'");
+                    NotLent(target, T.True, f, at);
+                }
+                Revoke(f, target); // the view written next holds it
+                Write(inv.Arguments[1].Value, target, f, spec);
+                return T.True;
+            }
             if (m.Name == "Share")
             {
                 // the view keeps 1 - ε, the share gets ε: nothing changes in sum

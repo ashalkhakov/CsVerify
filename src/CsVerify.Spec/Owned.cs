@@ -82,6 +82,20 @@ namespace CsVerify
         [Trusted]
         public static void Unshare<T>(ref Own<T> view, Shared<T> share) where T : class { }
 
+        /// <summary>
+        /// Lets a view go, keeping its permission in hand as <see cref="Spec.Acc"/> (for predicates and contracts
+        /// that speak of permissions, Viper style).
+        /// </summary>
+        [Trusted]
+        public static void ToAcc<T>(Own<T> view) where T : class { }
+
+        /// <summary>Makes a view of an object whose permission is in hand (<see cref="Spec.Acc"/>, not already a view).</summary>
+        [Trusted]
+        public static void FromAcc<T>(T obj, out Own<T> view) where T : class
+        {
+            view = default;
+        }
+
         /// <summary>Gives a share up for good: its view can no longer get the object back whole.</summary>
         [Trusted]
         public static void Drop<T>(Shared<T> share) where T : class { }

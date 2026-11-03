@@ -79,6 +79,18 @@ namespace CsVerify
         /// <summary>In a postcondition: every object in the set was allocated by the method.</summary>
         public static bool Fresh(ObjSet items) => throw GhostException.Instance;
 
+        /// <summary>
+        /// Permission to write an [Owned] object (Viper's <c>acc</c>): in contracts, loop invariants and predicate
+        /// bodies, as a conjunct. As a condition elsewhere, "the permission is in hand".
+        /// </summary>
+        public static bool Acc(object obj) => throw GhostException.Instance;
+
+        /// <summary>Folds a predicate instance: its body's permissions go into it, and its facts must hold.</summary>
+        [Conditional(Symbol)] public static void Fold(bool predicate) { }
+
+        /// <summary>Unfolds a held predicate instance: its body's permissions come out, and its facts hold.</summary>
+        [Conditional(Symbol)] public static void Unfold(bool predicate) { }
+
         /// <summary>The value an expression had on method entry; only meaningful inside <see cref="Ensures(bool)"/>.</summary>
         public static T Old<T>(T value) => throw GhostException.Instance;
     }

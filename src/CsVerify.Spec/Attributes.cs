@@ -31,6 +31,16 @@ namespace CsVerify
     public sealed class GhostFunctionAttribute : Attribute { }
 
     /// <summary>
+    /// A predicate (Viper's, or ATS's dataview): a static bool method whose body, one expression, describes a
+    /// footprint of permissions (<see cref="Spec.Acc"/>, other predicates, conjoined with <c>&amp;&amp;</c> or in the branches
+    /// of <c>?:</c>) and facts about it. Holding an instance <c>P(args)</c> holds those permissions, folded:
+    /// <see cref="Spec.Unfold"/> trades it for its body, <see cref="Spec.Fold"/> back. Specification only; never
+    /// unfolded on its own, so it may be recursive.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class PredicateAttribute : Attribute { }
+
+    /// <summary>
     /// A side-effect-free function usable inside specifications. The verifier treats it as a mathematical function
     /// and unfolds a single-<c>return</c> body once at every use.
     /// </summary>

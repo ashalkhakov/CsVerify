@@ -127,7 +127,7 @@ namespace CsVerify.Verifier
         {
             if (m == null) return false;
             m = m.ReducedFrom ?? m.OriginalDefinition;
-            if (SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m) || SpecSymbols.IsSpecClass(m.ContainingType) ||
+            if (SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m) || SpecSymbols.IsPredicate(m) || SpecSymbols.IsSpecClass(m.ContainingType) ||
                 SpecSymbols.IsGhostOf(m) || SpecSymbols.IsSeqType(m.ContainingType))
                 return true;
             if (!SpecSymbols.IsTrusted(m)) return false;

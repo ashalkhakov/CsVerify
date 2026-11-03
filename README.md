@@ -258,13 +258,30 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 
 It's revoked when the view goes: consumed, moved, dropped, or lent by `ref`. Writes check it (CSV1016).
 - **Lending.** A Dafny-style method with `Spec.Modifies(Own.Tree(x))` borrows `x`'s whole ownership tree for the call. Its caller must hold that tree (its root's view), the method may then write any object in it without a view, and afterwards the caller knows that tree, and nothing else, may have changed. That bridges ATS-style ownership and Dafny-style frames: framed code works on owned data without threading views through its signature.
-- **What stays.** This is the Carbon-style encoding of permissions (Viper's VC-generating backend): the heap stays a map per field, so reads remain free, and the ownership `Root` map and the frame links stay. User-defined predicates are the next step.
+- **What stays.** This is the Carbon-style encoding of permissions (Viper's VC-generating backend): the heap stays a map per field, so reads remain free, and the ownership `Root` map and the frame links stay. Predicates build on the same mask (below).
 
 **Read shares (fractions).** `Own.Share(ref v, out Shared<T> s)` splits a read share off a view, and `Own.Unshare(ref v, s)` joins it back. This is the fractional permission of ATS's early prototype, in its counting form: every share holds the same small fraction ε, so a view with k shares out holds 1 − kε and is whole again only when all k are back.
 - **Holding a share.** A `Shared<T>` is linear: it is passed, returned or dropped (`Own.Drop(s)`), never copied. Its holder relies on the object's invariant, which is proved when the share is handed over, and on nobody writing the object while the share is out. It cannot write the object itself.
 - **The view while shares are out.** It cannot write the object, hand it to code that may (by `ref` or by value), or give it to an owner (`Own.Give`). A share given away for good leaves the object read-only for good.
 - **Aliasing.** Shares may alias: two shares of one object are fine, as in `Within(in s1, g, in s2, g)` (samples/Good/Shares.cs).
 - **`in Own<T>`.** A view lent `in` is a share for the call. Two `in` views may be the same view, and the invariant is proved when it is lent. Both used to be assumed, which was unsound.
+
+**Predicates (Viper style; ATS's dataviews).** `Spec.Acc(o)` is write permission to an [Owned] object. A `[Predicate]` is a static bool method whose one-expression body describes permissions and facts. Permissions are `Spec.Acc` or other predicates, joined by `&&` or in the branches of `?:`. Predicates may be recursive. ATS's list segment `slseg_v` becomes:
+
+```csharp
+[Predicate]
+public static bool Seg(SNode? from, SNode? to, int n) =>
+    n == 0 ? from == to : n > 0 && from != null && Spec.Acc(from) && Seg(from.Next, to, n - 1);
+```
+
+- **Instances.** An instance `Seg(a, b, n)` is held like a view. `Spec.Fold(Seg(a, b, n))` puts the body's permissions into it, and its facts must hold (CSV1019). `Spec.Unfold` takes them out again, and the facts hold. Nobody can write a folded footprint.
+- **Self-framing.** A predicate's body may read only objects it has `Spec.Acc` for, to its left (CSV1016, checked where it is declared). So what a held instance says cannot change behind its back.
+- **Contracts.** Permissions in `Spec.Requires` and `Spec.Ensures` are given by the caller and received by the callee, then back. A call changes only the footprints it gets. In a loop invariant, permissions go round the loop. The loop body may not use up permissions held outside it (CSV1016). Lemmas exchange permissions too (ATS's `slseg_v_extend` is a recursive lemma).
+- **As a condition.** Elsewhere, `Spec.Acc(o)` and `Seg(a, b, n)` mean "in hand".
+- **Functions over predicates.** A `[Pure]` or `[GhostFunction]` with a predicate in its precondition may `Spec.Unfold` it in its body, and it reads exactly that footprint. Its value then survives any change outside the footprint (the frame rule). For example, `Sum(keep, null, n)` is unchanged by reversing another list.
+- **Views and `Spec.Acc`.** `Own.ToAcc(view)` turns a view into a plain permission, for folding. `Own.FromAcc(o, out view)` turns it back.
+- **The sample.** samples/Good/ListSegments.cs has cons, length (walking with a segment from the head to the cursor), in-place reverse, and a ghost sum.
+- **Limits.** Permission is per object, not per field. Two copies of one instance are allowed only when its footprint is empty. A `[Pure]` callee's predicate preconditions are not checked as "in hand" at the call; its facts are.
 
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;
@@ -427,6 +444,7 @@ The verifier runs after `Build` on the project's `Compile` items. Its `file(line
 | CSV1014 | verifier | a possibly-null value where a non-nullable type promises otherwise: an argument, a return value, an `out`/`ref` parameter on return |
 | CSV1015 | verifier | an object invariant might not hold for a new object |
 | CSV1016 | verifier | an [Owned] object written without its view in hand, or a view made for an object that is not new |
+| CSV1019 | verifier | a predicate's body might not hold where it is folded |
 | CSV1018 | verifier | an override breaks behavioural subtyping: it requires more than the member it overrides, or its `Spec.Modifies` is wider |
 | CSV1017 | verifier | a dynamic frame broken: a write outside `Spec.Modifies`, a read outside `Spec.Reads`, a callee with no or a wider frame, or `Spec.Modifies`/`Reads` on an `[Owned]` class |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |

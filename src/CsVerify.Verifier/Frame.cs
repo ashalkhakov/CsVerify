@@ -34,6 +34,15 @@ namespace CsVerify.Verifier
         /// through Spec.Modifies; revoked when the view goes. Null when the program has no [Owned] classes.
         /// </summary>
         public Term Perm;
+        /// <summary>Predicate instances held: instance -> amount (1 per copy). Null when the program has no [Owned] classes.</summary>
+        public Term Inst;
+        /// <summary>
+        /// The predicate instance whose (folded) footprint each object is in: object -> instance, 0 for none. An
+        /// ownership tree is in the footprint its root is in.
+        /// </summary>
+        public Term Owner;
+        /// <summary>Loops whose body exchanges permissions: the permissions held outside them (not their invariants'), on entry.</summary>
+        public Dictionary<int, (Term perm, Term inst)> LoopPermFrames = new Dictionary<int, (Term, Term)>();
         /// <summary>The Own&lt;T&gt; view variables in hand (not consumed, not read-only borrows).</summary>
         public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
@@ -53,6 +62,9 @@ namespace CsVerify.Verifier
             Alloc = Alloc,
             Root = Root,
             Perm = Perm,
+            Inst = Inst,
+            Owner = Owner,
+            LoopPermFrames = new Dictionary<int, (Term, Term)>(LoopPermFrames),
             Link = Link,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),

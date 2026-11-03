@@ -32,6 +32,7 @@ namespace CsVerify.Verifier
             public HashSet<ISymbol> HavocFields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public bool HavocAllFields;
             public bool HavocRoot; // ownership changes hands in the loop (Own.New/Take/Give)
+            public bool Permissions; // permissions are exchanged in the loop (folds, unfolds, calls whose contracts speak of them)
         }
 
         private readonly Engine _engine;
@@ -153,6 +154,7 @@ namespace CsVerify.Verifier
                 default: return;
             }
             FindContractStatements();
+            if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
             if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType) || IsImmutableClass(_method.ContainingType)) &&
@@ -178,9 +180,12 @@ namespace CsVerify.Verifier
                 foreach (var alias in _contract.Aliases) AliasParameters(f, alias, _method.Parameters.Select(p => f.Vars.TryGetValue(p, out var v) ? v : null).ToArray());
                 EnterAlloc(f);
                 EnterOwned(f);
+                EnterPredicates(f);
                 _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
                 CheckSubtyping(f, spec);
+                // the permissions the preconditions give (then, as conditions, they say they are in hand)
+                foreach (var req in _contract.Requires) Inhale(req, f, spec, f);
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
                 EnterFrames(f, spec);
@@ -251,6 +256,8 @@ namespace CsVerify.Verifier
                 if (ProofCode && loop.Decreases == null)
                     NotTotal(stmt, "a loop in a lemma or [Pure] function needs Spec.Decreases");
                 CollectHavoc(stmt, loop);
+                loop.Permissions = LoopExchangesPermissions(stmt);
+                if (loop.Permissions) loop.HavocRoot = true;
                 _loops[loop.Head] = loop;
             }
         }
@@ -402,6 +409,7 @@ namespace CsVerify.Verifier
             var spec = new SpecEnv { Old = _entry };
             foreach (var inv in loop.Invariants)
                 Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1005", inv.Syntax, $"loop invariant '{inv.Syntax}' might not hold on entry");
+            if (loop.Permissions) LoopPermissionsEntry(loop.Id, loop.Invariants, f, spec);
 
             foreach (var s in loop.Havoc)
                 f.Vars[s] = FreshOf(TypeOf(s), s.Name);
@@ -415,6 +423,7 @@ namespace CsVerify.Verifier
                     f.Heap = T.Store(f.Heap, Read(f, a), _z3.Fresh(a.Name + "$elems", Sort.Row));
             foreach (var key in f.Captures.Keys.ToList()) f.Captures.Remove(key);
 
+            if (loop.Permissions) LoopPermissionsHead(loop.Invariants, f, spec);
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
             foreach (var inv in loop.Invariants) _z3.Assume(AsBool(EvalOwnSpec(inv, f, spec)));
             if (loop.Decreases != null) f.LoopMeasures[loop.Id] = loop.Decreases.Select(m => ToMeasure(m, EvalOwnSpec(m, f, spec))).ToArray();
@@ -426,6 +435,7 @@ namespace CsVerify.Verifier
             var spec = new SpecEnv { Old = _entry };
             foreach (var inv in loop.Invariants)
                 Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1006", inv.Syntax, $"loop invariant '{inv.Syntax}' might not be maintained by the loop");
+            if (loop.Permissions) LoopPermissionsBackEdge(loop.Id, loop.Invariants, f, spec, loop.Syntax);
             if (loop.Decreases != null)
             {
                 var before = f.LoopMeasures[loop.Id];
@@ -446,6 +456,10 @@ namespace CsVerify.Verifier
             foreach (var p in _method.Parameters.Where(p => p.RefKind == RefKind.Out || p.RefKind == RefKind.Ref))
                 if (IsNonNullable(p) && f.Vars.TryGetValue(p, out var pv))
                     Prove(NotNull(pv), "CSV1014", at, $"'{p.Name}' might be null on return, but its type '{p.Type}' is not nullable");
+            // the permissions the postconditions give back must be in hand (and not lent to this method)
+            var giving = f.Clone();
+            foreach (var post in _contract.Ensures)
+                Exhale(post.Expr, f, new SpecEnv { Old = _entry, Result = f.Result, ResultParameter = post.ResultParameter }, giving, at, null, null);
             foreach (var post in _contract.Ensures)
             {
                 var spec = new SpecEnv { Old = _entry, Result = f.Result, ResultParameter = post.ResultParameter };
@@ -479,6 +493,11 @@ namespace CsVerify.Verifier
                     break;
                 case "Assume":
                     _z3.Assume(AsBool(EvalOwnSpec(arg, f, spec)));
+                    break;
+                case "Fold":
+                case "Unfold":
+                    _codeMode = true;
+                    if (inv.TargetMethod.Name == "Fold") Fold(inv, f, spec); else Unfold(inv, f, spec);
                     break;
                 case "Invariant":
                 case "Decreases":
@@ -887,7 +906,7 @@ namespace CsVerify.Verifier
         private int _ghostDepth;
 
         /// <summary>Ghost computation (erased: lemma and [GhostFunction] bodies, Ghost.Of arguments) uses mathematical integers.</summary>
-        private bool InGhostCode => _ghostDepth > 0 || _contract.IsLemma || SpecSymbols.IsGhostFunction(_method);
+        private bool InGhostCode => _ghostDepth > 0 || _contract.IsLemma || SpecSymbols.IsGhostFunction(_method) || SpecSymbols.IsPredicate(_method);
 
         /// <summary>
         /// Bounded integers. A run-time result <paramref name="v"/> of <paramref name="type"/>:
@@ -1173,6 +1192,11 @@ namespace CsVerify.Verifier
                         return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
                     case "Multiset":
                         return MultisetOf(inv, f, spec);
+                    case "Acc":
+                    {
+                        var o = Eval(inv.Arguments[0].Value, f, spec);
+                        return _atomsTrue > 0 || f.Perm == null ? T.True : CanWrite(f, o);
+                    }
                     default:
                         return T.True;
                 }
@@ -1186,6 +1210,12 @@ namespace CsVerify.Verifier
             }
             if (SpecSymbols.IsSeqType(m.ContainingType)) return EvalSeq(inv, f, spec);
             if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) return OwnCall(inv, f, spec);
+            if (SpecSymbols.IsPredicate(m.OriginalDefinition))
+            {
+                // as a condition: the instance is held here
+                var instance = Instance(m, inv.Arguments.Select(a => Eval(a.Value, f, spec)).ToList());
+                return _atomsTrue > 0 || f.Inst == null ? T.True : Held(f, instance);
+            }
 
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
@@ -1248,6 +1278,10 @@ namespace CsVerify.Verifier
                         Require(CanWrite(f, root), "CSV1016", inv.Syntax, $"'{m.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here");
                     touched.Add(root);
                 }
+            // the permissions its preconditions ask for are given to it: what they cover may change
+            var touchedInst = new List<Term>();
+            if (!callee.IsPure && f.Inst != null && _codeMode)
+                foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst);
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {
@@ -1278,7 +1312,7 @@ namespace CsVerify.Verifier
                 if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
             }
             if (HavocsHeap(m)) f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
-            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable);
+            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst);
             if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
             else TakeBack(inv, receiver, f, callee);
             post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
@@ -1295,6 +1329,8 @@ namespace CsVerify.Verifier
             }
             if (result != null && callee.IsPure)
                 _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
+            if (!callee.IsPure && f.Inst != null)
+                foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
             foreach (var ens in callee.Ensures)
                 _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }))));
             return result ?? T.True;
@@ -1429,6 +1465,7 @@ namespace CsVerify.Verifier
                 frame.FieldEpoch = state.FieldEpoch;
                 frame.Alloc = state.Alloc;
                 frame.Root = state.Root;
+                frame.Owner = state.Owner;
                 frame.Link = state.Link;
             }
             for (int i = 0; i < args.Length && i < callee.Method.Parameters.Length; i++)

@@ -436,6 +436,13 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("WrongJoin"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("LendBroken"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("ShareBugs.Distinct"));
+            // predicates (PredicateBugs.cs)
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Unframed"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("WriteFolded"));
+            Assert.Equal(new[] { "CSV1019" }, r.Errors("FoldWrong"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("UnfoldMissing"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("UseUp"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("KeepLent"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("TreeOwnershipBugs.Stale"));
             Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));

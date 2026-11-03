@@ -86,6 +86,8 @@ namespace CsVerify.Verifier
         internal readonly bool UsesDynamicFrames;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
+        /// <summary>The [Predicate] methods of the program.</summary>
+        internal readonly List<IMethodSymbol> Predicates;
 
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
@@ -97,6 +99,7 @@ namespace CsVerify.Verifier
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned);
+            Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);
