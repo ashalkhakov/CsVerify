@@ -125,6 +125,8 @@ namespace CsVerify.Verifier
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
             Solver.Preamble(MethodVerifier.SeqTheory);
             Solver.Preamble(MethodVerifier.FloatTheory);
+            if (userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<ArrayRankSpecifierSyntax>().Any(r => r.Rank > 1)))
+                Solver.Preamble(MethodVerifier.CellTheory); // rectangular arrays' cells
         }
 
         public void Dispose() => Solver.Dispose();

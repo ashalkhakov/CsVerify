@@ -32,7 +32,7 @@ namespace CsVerify.Verifier
         /// <summary>Would an exception raised here be seen: a try around it, or exceptional postconditions to prove?</summary>
         private bool ExceptionsObserved =>
             _block != null && !ProofCode && _codeMode && _foreignSpec == 0 &&
-            (_contract.ThrowEnsures.Count > 0 || Enclosing(_block.EnclosingRegion, ControlFlowRegionKind.Try));
+            (_contract.ThrowEnsures.Count > 0 || InTry(_block.EnclosingRegion));
 
         private static bool Enclosing(ControlFlowRegion r, ControlFlowRegionKind kind)
         {
@@ -89,7 +89,7 @@ namespace CsVerify.Verifier
                 // an exception in a filter does not escape it: the filter is false
                 if (r.Kind == ControlFlowRegionKind.Filter) { Resume(f); return; }
                 var parent = r.EnclosingRegion;
-                if (r.Kind != ControlFlowRegionKind.Try || parent == null) continue;
+                if (r.Kind != ControlFlowRegionKind.Try || parent == null || _erasedTry.Contains(parent)) continue;
                 if (parent.Kind == ControlFlowRegionKind.TryAndCatch)
                 {
                     TryHandlers(parent, 1, x, f);
@@ -164,6 +164,7 @@ namespace CsVerify.Verifier
         private void ThroughFinally(ControlFlowBranch succ, int index, Frame f, Action<Frame> then)
         {
             if (index >= succ.FinallyRegions.Length) { then(f); return; }
+            if (_erasedTry.Contains(succ.FinallyRegions[index].EnclosingRegion)) { ThroughFinally(succ, index + 1, f, then); return; }
             f.Pending = f.Pending.Push(after => ThroughFinally(succ, index + 1, after, then));
             Exec(_cfg.Blocks[succ.FinallyRegions[index].FirstBlockOrdinal], f, _onPath);
         }

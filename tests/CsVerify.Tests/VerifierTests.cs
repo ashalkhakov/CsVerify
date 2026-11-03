@@ -517,8 +517,8 @@ namespace CsVerify.Tests
         [Fact]
         public void UnmodeledControlFlow_FailsVerification()
         {
-            Assert.Contains("CSV1901", Errors("M", "static int M(int[] a) { int s = 0; foreach (var x in a) s += x; return s; }"));
-            Assert.Contains("CSV1901", Errors("M", "static int M(int x) { again: x++; if (x < 3) goto again; return x; }"));
+            // (foreach and goto loops: see LoopTests) a cycle entered in two places has no head to cut it at
+            Assert.Contains("CSV1901", Errors("M", "static int M(int x, bool c) { if (c) goto inside; again: x++; inside: x++; if (x < 5) goto again; return x; }"));
         }
 
         [Fact]

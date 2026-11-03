@@ -33,6 +33,7 @@ namespace CsVerify.Verifier
             public bool HavocAllFields;
             public bool HavocRoot; // ownership changes hands in the loop (Own.New/Take/Give)
             public bool Permissions; // permissions are exchanged in the loop (folds, unfolds, calls whose contracts speak of them)
+            public ITypeSymbol ArrayElement; // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
 
         private readonly Engine _engine;
@@ -231,9 +232,7 @@ namespace CsVerify.Verifier
                     case WhileStatementSyntax w: loopBody = w.Statement; cond = w.Condition; break;
                     case ForStatementSyntax fs: loopBody = fs.Statement; cond = fs.Condition; break;
                     case DoStatementSyntax d: loopBody = d.Statement; cond = null; break;
-                    case CommonForEachStatementSyntax fe:
-                        NotModeled(fe.ForEachKeyword, "foreach loops are not supported; use for/while with Spec.Invariant");
-                        continue;
+                    case CommonForEachStatementSyntax fe: FindForEach(fe, cfg); continue;
                     default: continue;
                 }
                 var loop = new Loop { Id = _loops.Count, Syntax = stmt };
@@ -242,27 +241,39 @@ namespace CsVerify.Verifier
                                                   (b.BranchValue != null && span.Contains(b.BranchValue.Syntax.Span)));
                 if (!heads.Any()) continue;
                 loop.Head = heads.Min(b => b.Ordinal);
+                ReadLoopSpecs(loopBody is BlockSyntax bs ? bs.Statements : new SyntaxList<StatementSyntax>(loopBody), loop);
+                AddLoop(loop, new[] { stmt }, needsMeasure: true);
+            }
+            FindGotoLoops(cfg);
+        }
 
-                var leading = loopBody is BlockSyntax bs ? bs.Statements : new SyntaxList<StatementSyntax>(loopBody);
-                foreach (var s in leading)
-                {
-                    if (!(s is ExpressionStatementSyntax es && es.Expression is InvocationExpressionSyntax inv)) break;
-                    var name = SpecName(inv);
-                    if (name != "Invariant" && name != "Decreases") break;
-                    var args = ((IInvocationOperation)_model.GetOperation(inv)).Arguments;
-                    if (name == "Invariant") loop.Invariants.Add(args[0].Value); else loop.Decreases = args.Select(a => a.Value).ToList();
-                    _loopSpecStatements.Add(inv);
-                }
-                if (ProofCode && loop.Decreases == null)
-                    NotTotal(stmt, "a loop in a lemma or [Pure] function needs Spec.Decreases");
-                CollectHavoc(stmt, loop);
-                loop.Permissions = LoopExchangesPermissions(stmt);
-                if (loop.Permissions) loop.HavocRoot = true;
-                _loops[loop.Head] = loop;
+        /// <summary>The loop's Spec.Invariant and Spec.Decreases: the leading statements of its body.</summary>
+        private void ReadLoopSpecs(IEnumerable<StatementSyntax> leading, Loop loop)
+        {
+            foreach (var s in leading)
+            {
+                if (!(s is ExpressionStatementSyntax es && es.Expression is InvocationExpressionSyntax inv)) break;
+                var name = SpecName(inv);
+                if (name != "Invariant" && name != "Decreases") break;
+                var args = ((IInvocationOperation)_model.GetOperation(inv)).Arguments;
+                if (name == "Invariant") loop.Invariants.Add(args[0].Value); else loop.Decreases = args.Select(a => a.Value).ToList();
+                _loopSpecStatements.Add(inv);
             }
         }
 
-        private void CollectHavoc(SyntaxNode loopSyntax, Loop loop)
+        /// <param name="roots">the syntax the loop runs (its statement, or the code of its blocks): what it may change</param>
+        /// <param name="needsMeasure">in a proof, the loop must be shown to terminate with Spec.Decreases</param>
+        private void AddLoop(Loop loop, IReadOnlyCollection<SyntaxNode> roots, bool needsMeasure)
+        {
+            if (ProofCode && needsMeasure && loop.Decreases == null)
+                NotTotal(loop.Syntax, "a loop in a lemma or [Pure] function needs Spec.Decreases");
+            CollectHavoc(roots, loop);
+            loop.Permissions = roots.Any(LoopExchangesPermissions);
+            if (loop.Permissions) loop.HavocRoot = true;
+            _loops[loop.Head] = loop;
+        }
+
+        private void CollectHavoc(IEnumerable<SyntaxNode> roots, Loop loop)
         {
             void Target(ExpressionSyntax e)
             {
@@ -286,7 +297,7 @@ namespace CsVerify.Verifier
                     default: loop.HavocHeap = true; break;
                 }
             }
-            foreach (var n in loopSyntax.DescendantNodes(n => !(n is AnonymousFunctionExpressionSyntax)))
+            foreach (var n in roots.SelectMany(r => r.DescendantNodesAndSelf(n => !(n is AnonymousFunctionExpressionSyntax))))
             {
                 switch (n)
                 {
@@ -294,18 +305,30 @@ namespace CsVerify.Verifier
                     case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression) || pre.IsKind(SyntaxKind.PreDecrementExpression): Target(pre.Operand); break;
                     case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression): Target(post.Operand); break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
-                    case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
-                        if (HavocsHeap(m)) loop.HavocHeap = true;
-                        if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) loop.HavocRoot = true;
-                        if (!SpecSymbols.IsSpecClass(m.ContainingType)) AddFieldWrites(loop, m);
-                        break;
+                    case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m: CalledInLoop(loop, m); break;
                     case BaseObjectCreationExpressionSyntax oc when _model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor:
                         AddFieldWrites(loop, ctor);
                         loop.HavocFields.UnionWith(FieldEffects.FieldsOf(ctor.ContainingType)); // the new object's fields are set
                         break;
+                    case CommonForEachStatementSyntax fe:
+                        // the iteration variables, and what the enumerator's methods do in each iteration
+                        foreach (var l in ForEachLocals(fe)) loop.Havoc.Add(l);
+                        if (!IsArrayForEach(fe))
+                        {
+                            var info = _model.GetForEachStatementInfo(fe);
+                            foreach (var m in new[] { info.MoveNextMethod, info.CurrentProperty?.GetMethod }.Where(m => m != null)) CalledInLoop(loop, m);
+                        }
+                        break;
                 }
             }
             foreach (var a in loop.HavocArrays) if (loop.Havoc.Contains(a)) loop.HavocHeap = true;
+        }
+
+        private void CalledInLoop(Loop loop, IMethodSymbol m)
+        {
+            if (HavocsHeap(m)) loop.HavocHeap = true;
+            if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) loop.HavocRoot = true;
+            if (!SpecSymbols.IsSpecClass(m.ContainingType)) AddFieldWrites(loop, m);
         }
 
         private void AddFieldWrites(Loop loop, IMethodSymbol m)
@@ -334,7 +357,7 @@ namespace CsVerify.Verifier
             }
             else if (onPath.Contains(block.Ordinal))
             {
-                NotModeled(block.Operations.FirstOrDefault()?.Syntax ?? MethodLocationNode(), "unstructured cycle (goto) is not supported");
+                NotModeled(block.Operations.FirstOrDefault()?.Syntax ?? MethodLocationNode(), "a cycle with no single entry (a goto into a loop) is not supported");
                 return;
             }
 
@@ -458,9 +481,11 @@ namespace CsVerify.Verifier
             else
                 foreach (var a in loop.HavocArrays)
                     f.Heap = T.Store(f.Heap, Read(f, a), _z3.Fresh(a.Name + "$elems", Sort.Row));
-            foreach (var key in f.Captures.Keys.ToList()) f.Captures.Remove(key);
+            // (a foreach's enumerator is captured once, before the loop: the same object in every iteration)
+            foreach (var key in f.Captures.Keys.Where(k => !_enumerators.Contains(k)).ToList()) f.Captures.Remove(key);
             LoopMemory(f, loop.Havoc, memoryBefore);
             FlushTies(f);
+            ArrayForEachHead(loop, f);
 
             if (loop.Permissions) LoopPermissionsHead(loop.Invariants, f, spec);
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
@@ -471,6 +496,7 @@ namespace CsVerify.Verifier
 
         private void LoopBackEdge(Loop loop, Frame f)
         {
+            ArrayForEachNext(loop, f);
             var spec = new SpecEnv { Old = _entry };
             foreach (var inv in loop.Invariants)
                 Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1006", inv.Syntax, $"loop invariant '{inv.Syntax}' might not be maintained by the loop");
@@ -541,7 +567,7 @@ namespace CsVerify.Verifier
                     break;
                 case "Invariant":
                 case "Decreases":
-                    Warn(specCall, $"Spec.{inv.TargetMethod.Name} must be a leading statement of a while/for/do loop body (or of the method body for Decreases); ignored");
+                    Warn(specCall, $"Spec.{inv.TargetMethod.Name} must be a leading statement of a loop body or after a label a goto jumps back to (or of the method body for Decreases); ignored");
                     break;
                 default:
                     Warn(specCall, $"Spec.{inv.TargetMethod.Name} must be a top-level statement of the method body; ignored");
@@ -710,6 +736,7 @@ namespace CsVerify.Verifier
                     case object o when IsIntegral(op.Type) || o is int || o is long: return T.Int(Convert.ToInt64(o));
                 }
             }
+            if (_arrayForEach.Count > 0 && EvalArrayForEach(op, f, spec) is Term element) return element;
             switch (op)
             {
                 case IConversionOperation c: return EvalConversion(c, f, spec);
@@ -774,11 +801,8 @@ namespace CsVerify.Verifier
                 }
                 case IArrayElementReferenceOperation ae:
                 {
-                    if (ae.Indices.Length != 1) { Unsupported(op); return Unknown(op.Type); }
                     var arr = Eval(ae.ArrayReference, f, spec);
-                    var idx = Eval(ae.Indices[0], f, spec);
-                    Deref(ae.ArrayReference, arr, ae.Syntax);
-                    BoundsCheck(arr, idx, ae.Syntax);
+                    var idx = CellOf(ae, arr, f, spec);
                     CheckCellFraming(arr, idx, f, ae.Syntax);
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
@@ -1152,12 +1176,10 @@ namespace CsVerify.Verifier
                 case IPropertyReferenceOperation hp when FieldEffects.IsHeapField(hp.Property) && hp.Instance != null:
                     WriteField(hp.Property, hp.Instance, v, hp.Syntax, f, spec);
                     break;
-                case IArrayElementReferenceOperation ae when ae.Indices.Length == 1:
+                case IArrayElementReferenceOperation ae:
                 {
                     var arr = Eval(ae.ArrayReference, f, spec);
-                    var idx = Eval(ae.Indices[0], f, spec);
-                    Deref(ae.ArrayReference, arr, ae.Syntax);
-                    BoundsCheck(arr, idx, ae.Syntax);
+                    var idx = CellOf(ae, arr, f, spec);
                     CheckCellWrite(arr, idx, f, ae.Syntax);
                     f.Heap = T.Store(f.Heap, arr, T.Store(T.Select(f.Heap, arr, Sort.Row), idx, T.Coerce(v, Sort.Int)));
                     break;
@@ -1213,6 +1235,7 @@ namespace CsVerify.Verifier
                 {
                     var seq = Eval(pr.Instance, f, spec);
                     Deref(pr.Instance, seq, pr.Syntax);
+                    if (RankOf(pr.Instance.Type) > 1) LengthIsProduct(seq, RankOf(pr.Instance.Type));
                     return Len(seq);
                 }
                 if (prop.IsIndexer && pr.Arguments.Length == 1)
@@ -1286,12 +1309,12 @@ namespace CsVerify.Verifier
 
         private Term EvalArrayCreation(IArrayCreationOperation ac, Frame f, SpecEnv spec)
         {
-            if (ac.DimensionSizes.Length != 1) { Unsupported(ac); return Unknown(ac.Type); }
-            var n = Eval(ac.DimensionSizes[0], f, spec);
-            if (_codeMode) Prove(T.Le(T.Int(0), n), "CSV1003", ac.Syntax, $"array size in '{ac.Syntax}' might be negative");
+            var sizes = ac.DimensionSizes.Select(d => Eval(d, f, spec)).ToList();
+            foreach (var n in sizes)
+                if (_codeMode) Prove(T.Le(T.Int(0), n), "CSV1003", ac.Syntax, $"array size in '{ac.Syntax}' might be negative");
             var r = _z3.Fresh("array", Sort.Int);
             _z3.Assume(NotNull(r));
-            _z3.Assume(T.Eq(Len(r), n));
+            if (sizes.Count == 1) _z3.Assume(T.Eq(Len(r), sizes[0]));
             // A new array is distinct from every array the method can already see.
             foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
                 _z3.Assume(T.Not(T.Eq(r, t)));
@@ -1301,8 +1324,8 @@ namespace CsVerify.Verifier
                 var map = FieldMap(f, field);
                 _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
             }
-            var row = T.ZeroRow();
-            if (ac.Initializer != null)
+            var row = sizes.Count > 1 ? NewMultiArray(ac, r, sizes, f, spec) : T.ZeroRow();
+            if (ac.Initializer != null && sizes.Count == 1)
                 for (int i = 0; i < ac.Initializer.ElementValues.Length; i++)
                     row = T.Store(row, T.Int(i), T.Coerce(Eval(ac.Initializer.ElementValues[i], f, spec), Sort.Int));
             f.Heap = T.Store(f.Heap, r, row);
@@ -1318,6 +1341,7 @@ namespace CsVerify.Verifier
         private Term EvalInvocation(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
+            if (IsGetLength(inv)) return GetLength(inv, f, spec);
             if (SpecSymbols.IsSpecClass(m.ContainingType))
             {
                 switch (m.Name)
@@ -1333,6 +1357,8 @@ namespace CsVerify.Verifier
                         return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
                     case "Multiset":
                         return MultisetOf(inv, f, spec);
+                    case "Index":
+                        return ForEachIndex(inv, f);
                     case "Acc":
                     {
                         var o = Eval(inv.Arguments[0].Value, f, spec);

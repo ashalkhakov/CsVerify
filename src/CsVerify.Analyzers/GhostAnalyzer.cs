@@ -54,7 +54,7 @@ namespace CsVerify.Analyzers
                 return;
             }
             if (!SpecSymbols.IsSpecClass(m.ContainingType)) return;
-            if (m.Name == "Forall" || m.Name == "Exists")
+            if (m.Name == "Forall" || m.Name == "Exists" || m.Name == "Index")
             {
                 if (!SpecSymbols.IsInGhostContext(op.Syntax, op.SemanticModel))
                     context.ReportDiagnostic(Diagnostic.Create(Descriptors.GhostOutsideSpec, op.Syntax.GetLocation(), "Spec." + m.Name));

@@ -152,9 +152,13 @@ namespace CsVerify.Analyzers
             return IsProofMethod(member) || IsInGhostContext(node, model);
         }
 
-        /// <summary>Methods ghost and pure code may call: the spec library's ghost members, lemmas, pure functions, System.Math.</summary>
+        /// <summary>
+        /// Methods ghost and pure code may call: the spec library's ghost members, lemmas, pure functions, System.Math,
+        /// and an array's GetLength (its lengths never change).
+        /// </summary>
         public static bool IsPureCallee(IMethodSymbol m) =>
             m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math" ||
+                          m.Name == "GetLength" && m.ContainingType?.SpecialType == SpecialType.System_Array ||
                           m.ContainingType?.ToDisplayString() == "System.MathF" ||
                           m.IsStatic && (m.ContainingType?.SpecialType == SpecialType.System_Double || m.ContainingType?.SpecialType == SpecialType.System_Single));
 
