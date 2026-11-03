@@ -69,6 +69,41 @@ namespace Samples.Buggy
             Spec.Fold(Circ(head, n + 1));
         }
 
+        [GhostFunction]
+        public static bool Heap(int[] a, int n)
+        {
+            Spec.Requires(0 <= n && n <= a.Length);
+            return Spec.Forall(1, n, j => a[(j - 1) / 2] >= a[j]);
+        }
+
+        // BUG: binheap's pop, moving the smaller child up into the hole: the larger one ends up below it (CSV1006)
+        public static int PopSmallerChild(int[] a, int n)
+        {
+            Spec.Requires(0 < n && n <= a.Length && a.Length < 0x3FFFFFFF && Spec.Acc(a) && Heap(a, n));
+            Spec.Ensures((int r) => Spec.Acc(a));
+            int top = a[0];
+            int count = n - 1;
+            int last = a[count];
+            if (count == 0) return top;
+            int hole = 0;
+            while (true)
+            {
+                Spec.Invariant(0 <= hole && hole < count);
+                Spec.Invariant(Spec.Forall(1, count, j => j != hole && (j - 1) / 2 != hole ? a[(j - 1) / 2] >= a[j] : true));
+                Spec.Invariant(hole > 0 ? Spec.Forall(1, count, j => (j - 1) / 2 == hole ? a[(hole - 1) / 2] >= a[j] : true) : true);
+                Spec.Decreases(count - hole);
+                int swap = hole + hole + 1;
+                if (swap >= count) break;
+                int other = swap + 1;
+                if (other < count && a[other] < a[swap]) swap = other;
+                if (last >= a[swap]) break;
+                a[hole] = a[swap];
+                hole = swap;
+            }
+            a[hole] = last;
+            return top;
+        }
+
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
         public static void InsertTwice(Sn head, int n, Sn node)
         {

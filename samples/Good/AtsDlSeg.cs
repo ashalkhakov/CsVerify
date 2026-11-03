@@ -250,6 +250,77 @@ namespace Samples
             t1 = t2;
         }
 
+        // ------------------------------------------------------------------------------------------ zipper
+        // dllst_v_zipper(lh, lf, lt, n1, n2): a focused node (the cursor), the n1 nodes before it as a backward
+        // segment, the n2 after it as a forward one.
+
+        [Predicate]
+        public static bool Zipper(DlNode? head, DlNode? cursor, DlNode? tail, int n1, int n2) =>
+            cursor != null && Spec.Acc(cursor) &&
+            RDlSeg(head, null, cursor, cursor.Prev, n1) && DlSeg(cursor.Next, cursor, null, tail, n2);
+
+        /// <summary>dlzipper_make_first: the cursor on the first node.</summary>
+        public static void ZipFirst(DlNode? head, DlNode? tail, int n)
+        {
+            Spec.Requires(n > 0 && DlSeg(head, null, null, tail, n));
+            Spec.Ensures(Zipper(head, head, tail, 0, n - 1));
+            Spec.Unfold(DlSeg(head, null, null, tail, n));
+            Spec.Fold(RDlSeg(head, null, head, head!.Prev, 0));
+            Spec.Fold(Zipper(head, head, tail, 0, n - 1));
+        }
+
+        /// <summary>dlzipper_move_right.</summary>
+        public static void MoveRight(DlNode? head, ref DlNode cursor, DlNode? tail, int n1, int n2)
+        {
+            Spec.Requires(n1 >= 0 && n2 > 0 && Zipper(head, cursor, tail, n1, n2));
+            Spec.Ensures(Zipper(head, cursor, tail, n1 + 1, n2 - 1) && cursor.Prev == Spec.Old(cursor));
+            Spec.Unfold(Zipper(head, cursor, tail, n1, n2));
+            var next = cursor.Next!;
+            Spec.Unfold(DlSeg(next, cursor, null, tail, n2));
+            Spec.Fold(RDlSeg(head, null, next, cursor, n1 + 1));
+            Spec.Fold(Zipper(head, next, tail, n1 + 1, n2 - 1));
+            cursor = next;
+        }
+
+        /// <summary>dlzipper_move_left.</summary>
+        public static void MoveLeft(DlNode? head, ref DlNode cursor, DlNode? tail, int n1, int n2)
+        {
+            Spec.Requires(n1 > 0 && n2 >= 0 && n2 < int.MaxValue && Zipper(head, cursor, tail, n1, n2));
+            Spec.Ensures(Zipper(head, cursor, tail, n1 - 1, n2 + 1));
+            Spec.Unfold(Zipper(head, cursor, tail, n1, n2));
+            var prev = cursor.Prev!;
+            Spec.Unfold(RDlSeg(head, null, cursor, prev, n1));
+            Spec.Unfold(DlSeg(cursor.Next, cursor, null, tail, n2)); // (to see the tail is a node)
+            Spec.Fold(DlSeg(cursor.Next, cursor, null, tail, n2));
+            Spec.Fold(DlSeg(cursor, prev, null, tail, n2 + 1));
+            Spec.Fold(Zipper(head, prev, tail, n1 - 1, n2 + 1));
+            cursor = prev;
+        }
+
+        /// <summary>dlzipper_takeout, to write: the item under the cursor.</summary>
+        public static void SetFocus(DlNode? head, DlNode cursor, DlNode? tail, int n1, int n2, int item)
+        {
+            Spec.Requires(Zipper(head, cursor, tail, n1, n2));
+            Spec.Ensures(Zipper(head, cursor, tail, n1, n2) && cursor.Item == item);
+            Spec.Unfold(Zipper(head, cursor, tail, n1, n2));
+            cursor.Item = item;
+            Spec.Fold(Zipper(head, cursor, tail, n1, n2));
+        }
+
+        /// <summary>dllst_v_of_zipper_v: the whole list again.</summary>
+        public static void Unzip(DlNode? head, DlNode cursor, DlNode? tail, int n1, int n2)
+        {
+            Spec.Requires(n1 >= 0 && n2 >= 0 && n2 < int.MaxValue && Zipper(head, cursor, tail, n1, n2));
+            Spec.Ensures(DlSeg(head, null, null, tail, n1 + n2 + 1));
+            Spec.Unfold(Zipper(head, cursor, tail, n1, n2));
+            var before = cursor.Prev;
+            ForwardOf(head, null, cursor, before, n1);
+            Spec.Unfold(DlSeg(cursor.Next, cursor, null, tail, n2)); // (to see the tail is a node)
+            Spec.Fold(DlSeg(cursor.Next, cursor, null, tail, n2));
+            Spec.Fold(DlSeg(cursor, before, null, tail, n2 + 1));
+            DlSegAppend(head, null, cursor, before, n1, null, tail, n2 + 1);
+        }
+
         // ------------------------------------------------------------------------------------------ test
 
         private static DlNode Fresh(int item)
@@ -258,6 +329,25 @@ namespace Samples
             var node = Own.New(new DlNode(item), out var view);
             Own.ToAcc(view);
             return node;
+        }
+
+        /// <summary>A zipper walk: to the third node, write it, one back, and the list again.</summary>
+        public static int ZipperDemo()
+        {
+            Spec.Ensures((int r) => r == 3);
+            DlNode? h = null, t = null;
+            Spec.Fold(DlSeg(h, null, null, t, 0));
+            Cons(ref h, ref t, 0, Fresh(3));
+            Cons(ref h, ref t, 1, Fresh(2));
+            Cons(ref h, ref t, 2, Fresh(1));
+            ZipFirst(h, t, 3);
+            DlNode c = h!;
+            MoveRight(h, ref c, t, 0, 2);
+            MoveRight(h, ref c, t, 1, 1);
+            SetFocus(h, c, t, 2, 0, 30);
+            MoveLeft(h, ref c, t, 2, 0);
+            Unzip(h, c, t, 1, 1);
+            return Length(h, t, 3);
         }
 
         /// <summary>dlseg_test: build [3, 1, 2] and [4], concatenate, take the first off, count.</summary>
