@@ -7,7 +7,7 @@ using System.Text;
 
 namespace CsVerify.Verifier
 {
-    public enum Sort { Int, Bool, Heap, Row, Perm, PermHeap }
+    public enum Sort { Int, Bool, Heap, Row, Perm, PermHeap, F32, F64 }
 
     /// <summary>An SMT-LIB2 term with its sort.</summary>
     public sealed class Term
@@ -31,6 +31,8 @@ namespace CsVerify.Verifier
             Sort.Row => "(Array Int Int)",
             Sort.Perm => "(Array Int Real)",
             Sort.PermHeap => "(Array Int (Array Int Real))",
+            Sort.F32 => "(_ FloatingPoint 8 24)",
+            Sort.F64 => "(_ FloatingPoint 11 53)",
             _ => "(Array Int (Array Int Int))",
         };
 
@@ -91,6 +93,9 @@ namespace CsVerify.Verifier
             if (t.Sort == to) return t;
             if (to == Sort.Bool && t.Sort == Sort.Int) return Not(Eq(t, Int(0)));
             if (to == Sort.Int && t.Sort == Sort.Bool) return Ite(t, Int(1), Int(0));
+            // a float in the heap (a field, an array cell) is stored through an injective encoding
+            if (to == Sort.Int && (t.Sort == Sort.F32 || t.Sort == Sort.F64)) return new Term($"({(t.Sort == Sort.F32 ? "cv_enc32" : "cv_enc64")} {t.S})", Sort.Int);
+            if ((to == Sort.F32 || to == Sort.F64) && t.Sort == Sort.Int) return new Term($"({(to == Sort.F32 ? "cv_dec32" : "cv_dec64")} {t.S})", to);
             throw new InvalidOperationException($"cannot coerce {t.Sort} to {to}");
         }
 

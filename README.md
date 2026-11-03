@@ -378,6 +378,16 @@ Methods are verified for partial correctness: any call may throw anything, and a
 - **Cost.** An exceptional path is explored only where something sees it: inside a try, or in a method with `EnsuresOnThrow`. Elsewhere a throw ends the path, as before.
 - **Not modeled.** Exceptions from property accessors with code, and from operations the verifier proves cannot fail (null dereference, array bounds, division by zero), are not raised. Catching a generic exception type is not supported (CSV1901). Neither are stack overflow and out-of-memory.
 
+### Floating point
+
+`float` and `double` are IEEE 754 binary32 and binary64, exactly (Z3's floating-point theory). Every operation rounds as .NET does, to nearest with ties to even, and NaN, the infinities and -0.0 are values like any other. What verifies holds of the program as it runs: `0.1 + 0.2 != 0.3` is provable, and `x + 1.0 > x` is not (NaN, the infinities, large x).
+- **Comparisons** are IEEE's. `==` is false for NaN (even `x == x`) and true for `-0.0 == 0.0`, and `<` and the rest are false when an operand is NaN. So `!float.IsNaN(x)` is a common precondition.
+- **Arithmetic** `+ - * /` rounds; overflow gives an infinity, as at run time, so it is not an error. `%` is not modeled (an unknown value, with a warning).
+- **Casts.** Integer to float and float to float round to nearest. Float to an integer type truncates and must fit: it is CSV1010 if it might be NaN, infinite or out of range, or an `OverflowException` in a checked context.
+- **Library.** `Math`/`MathF` `Min` and `Max` (with .NET's NaN and -0.0 rules), `Abs`, `Sqrt`, `Floor`, `Ceiling`, `Truncate`, `Round` and `FusedMultiplyAdd` are exact, and so are `double`/`float` `IsNaN`, `IsInfinity`, `IsFinite`, `IsPositiveInfinity`, `IsNegativeInfinity`, `IsNormal` and `IsSubnormal`. `Sin`, `Exp`, `Pow` and the like are unknown values.
+- **Storage.** Floats live in fields, array cells, sequences and data records (stored through an injective encoding; a new array's cells are +0.0).
+- **What proves well.** Comparisons, min and max, and casts to integers within constant bounds prove quickly: the bounding-box code of samples/Good/Floats.cs does. Proofs about rounded arithmetic (`lo + (hi - lo) / 2` stays within `[lo, hi]`) are bit-precise and can be slow, or beyond the solver. Relating a float to a symbolic integer (`x < n` for an `int n`) often is.
+
 ### Null references
 
 C#'s nullable reference types are only warnings, and deliberately unsound ones: `null!` silences them, `new string[n]` is an array of nulls typed `string[]`, and a field can be read before the constructor sets it. CsVerify takes the annotations as contracts and proves them instead:
@@ -730,7 +740,7 @@ samples/Good, samples/Buggy
 
 **Unsupported constructs**
 - Rejected as CSV1901 (the method is not verified): see "What it cannot model, it rejects" above.
-- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating point, string characters, non-pure calls in specifications.
+- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, non-pure calls in specifications.
 - Not verified as separate units: local functions and lambdas.
 
 **Completeness limits** (true things that may not be proved)

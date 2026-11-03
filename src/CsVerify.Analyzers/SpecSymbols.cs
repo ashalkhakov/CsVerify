@@ -154,7 +154,9 @@ namespace CsVerify.Analyzers
 
         /// <summary>Methods ghost and pure code may call: the spec library's ghost members, lemmas, pure functions, System.Math.</summary>
         public static bool IsPureCallee(IMethodSymbol m) =>
-            m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math");
+            m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math" ||
+                          m.ContainingType?.ToDisplayString() == "System.MathF" ||
+                          m.IsStatic && (m.ContainingType?.SpecialType == SpecialType.System_Double || m.ContainingType?.SpecialType == SpecialType.System_Single));
 
         /// <summary>The outermost Spec statement (void Spec.* call) that is <paramref name="node"/> or contains it in its arguments.</summary>
         public static InvocationExpressionSyntax EnclosingSpecCall(SyntaxNode node, SemanticModel model)
