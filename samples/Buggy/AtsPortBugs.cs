@@ -44,6 +44,19 @@ namespace Samples.Buggy
         }
     }
 
+    [Owned]
+    public sealed class Pq
+    {
+        public int[] Data;
+        public int Count;
+
+        public Pq(int[] data)
+        {
+            Spec.Ensures(Data == data && Count == 0);
+            Data = data;
+        }
+    }
+
     public static class AtsPortBugs
     {
         [Predicate]
@@ -195,6 +208,21 @@ namespace Samples.Buggy
             Spec.Fold(Sl(v.Next, null, 0));
             Spec.Fold(Sl(v, null, 1));
             Spec.Fold(Sl(hd, null, n + 2));
+        }
+
+        /// <summary>heaparray's heap(T, m, n, l): myprop says m >= n.</summary>
+        [Predicate]
+        public static bool PqHeld(Pq h, int n) =>
+            h != null && Spec.Acc(h) && h.Data != null && h.Count == n && 0 <= n && n <= h.Data.Length && Spec.Acc(h.Data);
+
+        // BUG: heap_resize without its n <= m1 precondition: a buffer smaller than the count breaks myprop (CSV1019)
+        public static void ShrinkBelowCount(Pq h, int n, int size)
+        {
+            Spec.Requires(PqHeld(h, n) && 0 <= size);
+            Spec.Ensures(PqHeld(h, n));
+            Spec.Unfold(PqHeld(h, n));
+            h.Data = new int[size];
+            Spec.Fold(PqHeld(h, n));
         }
 
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)
