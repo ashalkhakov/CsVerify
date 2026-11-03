@@ -66,3 +66,30 @@ cells (state, parse tree), the current state being the top cell's, or 0 when the
 
 Termination is not proved: the interpreter takes fuel (the paper explains why: unit and empty rules do not shrink the
 stack, and automata whose interpretation loops exist).
+
+## Completeness, as proved here
+
+The interpreter is a pure function `Step` (one action) iterated by the ghost `Steps(n, run)`; `Parse` runs `Step` in
+a loop. Completeness is a lemma about `Steps`, by induction on the parse tree (the paper's intuition: the parser
+walks the tree depth-first, shifting at leaves and reducing at nodes):
+
+- **Items.** The validator is given, per state, items (rule, dot, lookahead set) — Lemon's configurations and their
+  follow sets — and first sets and nullable flags. `Has(σ, r, d, c)`: some item of σ is (r, d) with c in its set.
+- **Walk(t)**: if t is a tree for the symbol after the dot of an item (r, d, b) of the top state σ, the input at pos
+  begins with t's fringe, and the terminal after it is in first(rhs[d+1..] b), then `Steps(Size(t))` pushes exactly
+  t, in a state having (r, d+1, b). For a leaf: one shift. For a node of rule r': closure gives (r', 0, la) in σ;
+  `WalkKids` pushes the children one by one; the reduce on la pops them (the incoming-symbol checks pass: an item
+  (r, d) with d > 0 says its state's incoming symbol is rhs[d-1]) and the goto pushes the node.
+- **The root**: the start rules' items with lookahead `$` are in state 0, and after the root's children the reduce,
+  the goto to the accepting state and the accept follow: `Steps(Size(t) + 1)` from the empty stack accepts t itself
+  (so a validated grammar is unambiguous).
+
+Validator conditions (the paper's, adapted to Lemon): first/nullable are closed under the rules; item sets are
+closed; every item (r, d) with d at the end reduces r on its lookaheads; with a terminal (or multiterminal) after
+the dot, shifts on it (each member) to a state having (r, d+1) with the same lookaheads; with a nonterminal, has a
+goto (defined: stricter than the paper's, so no appeal to safety is needed) to such a state; an item (r, d) with
+d > 0 makes rhs[d-1] its state's incoming symbol; state 0 has every start rule at dot 0 with lookahead `$`; the goto
+of state 0 on the start symbol accepts on `$`.
+
+Conflicts resolved by precedence (`%left`, `%right`, `%nonassoc`) drop actions some items call for, and the
+validator rejects the automaton: such grammars are ambiguous, and the parser deliberately does not accept every tree.
