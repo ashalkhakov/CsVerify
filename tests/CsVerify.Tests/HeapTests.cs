@@ -72,6 +72,21 @@ public sealed class Other { public int X; public void Bump() { X++; } }
         }
 
         [Fact]
+        public void PureFunctions_OverArrays_SeeArrayWrites()
+        {
+            // through a field: the function depends on the array heap, so a write makes it a new value
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify(@"
+public sealed class Box { public int[]? Items; [Pure] public int First() { Spec.Requires(Items != null && Items.Length > 0); return Items[0]; } }
+public static class C { static void M(Box b) { Spec.Requires(b.Items != null && b.Items.Length > 0); int f = b.First(); b.Items[0] = f + 1; Spec.Assert(b.First() == f); } }").Errors("M"));
+            // through a parameter: only that array matters, so writing another one changes nothing
+            Assert.Empty(Harness.Verify(@"
+public static class C {
+    [Pure] static int Head(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
+    static void M(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b); int h = Head(a); b[0] = 7; Spec.Assert(Head(a) == h); }
+    static void W(int[] a) { Spec.Requires(a.Length > 0); int h = Head(a); a[0] = h + 1; Spec.Assert(Head(a) == h + 1); } }").Errors("M"));
+        }
+
+        [Fact]
         public void VirtualCalls_MayWriteAnything() =>
             Assert.Equal(new[] { "CSV1004" }, Harness.Verify(Classes + @"
 public interface IAction { void Run(); }

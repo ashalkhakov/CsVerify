@@ -433,6 +433,9 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1003" }, r.Errors("Ring.Insert"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("Clear1"));
             Assert.Equal(new[] { "CSV1015" }, r.Errors("AddLeft"));
+            Assert.Equal(new[] { "CSV1006" }, r.Errors("LowerBoundWrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("FindLast"));
+            Assert.Equal(new[] { "CSV1006" }, r.Errors("CopyOverlapping"));
         }
     }
 

@@ -211,7 +211,7 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 - **Reads, writes and aliasing.** `o.F` reads the map and `o.F = v` updates it, so two references to the same object see each other's writes, and different objects don't.
 - **Calls.** A call forgets only the fields its callee, or anything it reaches, may write: an inferred frame condition per field. After a virtual or interface call, or a library call handed a callback or a source object, any field may have changed.
 - **Loops** forget only the fields they write.
-- **`[Pure]` functions** take the field maps they read as arguments, so their value is never stale after a write.
+- **`[Pure]` functions** take the field maps they read as arguments, so their value is never stale after a write. The same goes for arrays: a function that reads array elements only through its own array parameters depends on those arrays' contents, so writing another array leaves it as it was. A function that reaches arrays any other way (through a field, say) depends on the whole array heap.
 - **Constructors.**
   - Verifying one: the new object's fields start at their defaults and the field initializers run.
   - At `new C(...)`: the constructor's preconditions are checked and its postconditions assumed about the new object. That object is distinct from every reference in scope, and its fields are their defaults unless the constructor or an initializer sets them.
@@ -445,6 +445,17 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
   - **Red-black, after Okasaki:** `BalanceL` and `BalanceR` handle the four rotation cases as nested C# patterns, such as `Ins.Viol(Rb.T { Red: true } a, var y, var c)`. `Ins` keeps the black height. `Insert` raises it by at most one. ATS's violation index becomes a type of its own, `Ins = Fine(Rb) | Viol(l, k, r)`: an intermediate tree that may have a red-red violation at its root cannot be an `Rb`.
   - **Hints and dead branches:** `Spec.Assert(Bh(a) == Bh(a.L))` hints play the part of ATS's `prval` steps, because definitions unfold one level per use. Unreachable branches carry a `Spec.Assert(false)` that the verifier checks.
 - `DynamicFrames.cs`: Dafny's `Valid()`/`Repr` idiom. A `Pair` of two cells has a ghost representation set, a ghost `Valid()` that reads only it, and `IncA`/`Swap` that modify only it. `Demo` builds two pairs, updates one, and proves the other unchanged and still valid.
+- `AcslByExample.cs`, from *ACSL by Example* (Fraunhofer FOKUS, MIT licence), the C++ standard algorithms specified in ACSL for Frama-C/WP, with their contracts carried over:
+  - **Non-mutating:** `find` (its *some*/*none* behaviors), `mismatch`, `equal`, `adjacent_find`, and `count` against the logic function `Count`.
+  - **Min/max and search:** `max_element`, `clamp`, and `lower_bound`, `upper_bound` and `binary_search` on sorted arrays.
+  - **Mutating:** `fill`, `copy`, `swap_ranges`, `replace`, `remove_copy` and `reverse`, each with ACSL's `assigns` and `Unchanged` as explicit postconditions.
+  - **Numeric:** `iota`, `accumulate` and `partial_sum` against the logic function `Accumulate`, and `is_sorted`.
+  - **The translation:** `\valid_read(a + (0..n-1))` becomes `n <= a.Length`, `\separated` becomes `a != b`, `Unchanged{Old,Here}` becomes `Spec.Old` under a `Forall`, and logic functions become recursive `[Pure]` definitions.
+  - **Not ported:**
+    - the sorting chapter, which proves permutations with multisets, not expressible yet;
+    - the heap chapter;
+    - the stack, an ADT with axioms.
+  - **Overflow:** integers are mathematical unless you run `--overflow`. ACSL states explicit bounds instead.
 - `AtsViewtypes.cs`, from INT2PROGINATS part IV ("Programming with Views and Viewtypes"):
   - **Linear lists `list_vt(a, n)` (ch. 15):** `insord` and an insertion sort that only relinks nodes. The length index is preserved, and sortedness is proved too, which the book's version does not prove.
   - **Linear binary search trees `bstree_vt(a, n)` (ch. 15):** leaf insertion, proved to grow the size index by one and keep each node ordered with its children.
@@ -517,6 +528,7 @@ Sources and licences:
 `samples/Buggy` holds deliberate errors:
 - `Bugs.cs` has one verifier error per method.
 - `FrameBugs.cs`: a `Valid()`-style function reading outside its `Spec.Reads`, a write outside `Spec.Modifies`, and two objects whose constructor promises no freshness, so updating one says nothing about the other.
+- `AcslBugs.cs`: a `lower_bound` comparing with `<=` (so it is really `upper_bound`), a `find` that returns the last match, and a `copy` whose contract lets the ranges overlap.
 - `ViewtypeBugs.cs`: a ring buffer that forgets to wrap around, one that can go below empty, and a tree that adds a leaf but not to its size.
 - `TreeOwnershipBugs.cs`: appending a smaller node to a sorted list, writing an owned node in place, setting an `[Owns]` field directly, a node made to own itself, and assuming an inner node unchanged after the list was handed to a method.
 - `OwnedBugs.cs`: a method that leaves the object breaking its invariant, a write without the view, a forged second view, reading the invariant without the view, and a write after `Drop`.
@@ -541,7 +553,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 164 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 165 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 

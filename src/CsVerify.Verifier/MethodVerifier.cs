@@ -1285,8 +1285,15 @@ namespace CsVerify.Verifier
             var all = new List<Term>();
             if (receiver != null) all.Add(receiver);
             all.AddRange(args.Select(a => a ?? T.Int(0)));
-            bool readsHeap = m.Parameters.Any(p => IsSequence(p.Type));
-            if (readsHeap) all.Add(heap);
+            bool readsHeap = m.Parameters.Any(p => IsSequence(p.Type)) || _engine.Fields.ReadsArrays(m);
+            if (readsHeap && _engine.Fields.ReadsOnlyParameterArrays(m))
+            {
+                // only its array parameters' contents matter: writing another array leaves the value as it is
+                for (int i = 0; i < m.Parameters.Length; i++)
+                    if (IsSequence(m.Parameters[i].Type) && args[i] != null && args[i].Sort == Sort.Int)
+                        all.Add(T.Select(heap, args[i], Sort.Row));
+            }
+            else if (readsHeap) all.Add(heap);
             // and the heap fields it reads: its value is a function of them too
             var stateFrame = state ?? new Frame();
             foreach (var field in _engine.Fields.ReadsOf(m)) all.Add(FieldMap(stateFrame, field));

@@ -59,6 +59,8 @@ namespace CsVerify.Tests
             Assert.Equal(5431, Run(asm, "OwnedList", "Demo")); // 1, 5, 3, 4 inserted: 1 3 4 5, last digit first; Take/Give run
             // INT2PROGINATS ch. 15-16: 3 1 4 1 5 sorted (54311), buffer 7 then 8, timer 40 ticks, tree of size 4
             Assert.Equal(54311L * 10000 + 78 * 100 + 40 + 4 * 1000, Run(asm, "AtsViewtypes", "Demo"));
+            // ACSL by Example on 1 3 3 5 8: find 5 at 3, lower/upper bound of 3 at 1/3, two 3s, three kept, sum 20
+            Assert.Equal(20 * 100000 + 3 * 10000 + 1 * 1000 + 3 * 100 + 2 * 10 + 3, Run(asm, "AcslByExample", "Demo"));
         }
 
         [Fact]

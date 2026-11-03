@@ -242,6 +242,26 @@ namespace CsVerify.Verifier
             return model.GetSymbolInfo(e).Symbol is ISymbol s && SpecSymbols.IsOwnsField(s);
         }
 
+        /// <summary>
+        /// Does a [Pure] function's value depend on array contents: does it (or anything it calls) read an element of
+        /// an array, however it got the array (a parameter, a field)?
+        /// </summary>
+        /// <summary>
+        /// Does every array element a [Pure] function (or anything it calls) reads come from its own array
+        /// parameters? Then its value depends on those arrays' contents only, not on the whole array heap.
+        /// </summary>
+        public bool ReadsOnlyParameterArrays(IMethodSymbol m) =>
+            Reachable(m).All(r => !(_engine.ContractOf(r) is Contract c && c.HasSource) ||
+                c.Declaration.DescendantNodes().OfType<ElementAccessExpressionSyntax>()
+                    .Where(e => MethodVerifier.IsSequence(c.Model.GetTypeInfo(e.Expression).Type))
+                    .All(e => c.Model.GetSymbolInfo(e.Expression).Symbol is IParameterSymbol p && SymbolEqualityComparer.Default.Equals(p.ContainingSymbol, r)));
+
+        public bool ReadsArrays(IMethodSymbol m) =>
+            Reachable(m).Any(r => _engine.ContractOf(r) is Contract c && c.HasSource &&
+                (r.Parameters.Any(p => MethodVerifier.IsSequence(p.Type)) ||
+                 c.Declaration.DescendantNodes().OfType<ElementAccessExpressionSyntax>()
+                     .Any(e => MethodVerifier.IsSequence(c.Model.GetTypeInfo(e.Expression).Type))));
+
         /// <summary>The heap fields a [Pure] function's value may depend on (all it, or its callees, read), in a fixed order.</summary>
         public IReadOnlyList<ISymbol> ReadsOf(IMethodSymbol m) =>
             Reachable(m).SelectMany(r => DirectOf(r).Reads).Distinct(SymbolEqualityComparer.Default)
