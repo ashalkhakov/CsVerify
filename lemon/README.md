@@ -29,8 +29,8 @@ macros, and so on). It writes `grammar.c`, `grammar.h` and the report `grammar.o
 ## Testing
 
 `tests/difftest.sh <C lemon>` runs CsLemon and the C lemon it was ported from on every grammar in `tests/grammars`
-(Lemon's calculator examples, SQLite 3.37.0's `parse.y`, and grammars for conflicts, directives, errors and empty
-rules), with each of 14 option sets, and compares every output file, stdout, stderr and the exit code byte for byte.
+(Lemon's calculator examples, SQLite 3.37.0's `parse.y`, and grammars for conflicts, directives, errors, empty
+rules and unambiguous ones), with each of 14 option sets, and compares every output file, stdout, stderr and the exit code byte for byte.
 The C lemon is built from lemon-grove's `lemon.c`: `cc -o lemon lemon.c`.
 
 ## Verification
@@ -39,7 +39,7 @@ The C lemon is built from lemon-grove's `lemon.c`: `cc -o lemon lemon.c`.
 dotnet run --project src/CsVerify.Verifier -- lemon/CsLemon
 ```
 
-verifies every method (173 of 173). What that proves, beyond what C# already guarantees (no memory corruption):
+verifies every method (310 of 310, the validated parser of the next section included). What that proves, beyond what C# already guarantees (no memory corruption):
 
 - **No unexpected exceptions.** Every array and string index is in range, nothing null is dereferenced, nothing is
   divided by zero, and every call's precondition holds.
@@ -55,8 +55,28 @@ Proving `Actions.Wf` found a bug in C Lemon: `acttab_insert` reserves `nsymbol +
 can need `mnLookahead + mxLookahead + 2`; then the search for a hole stops short and C writes past the table. CsLemon
 reserves `2 * nsymbol + 1`, which is enough (a hole is found by `nAction + mnLookahead + 1`); only the size changes.
 
-It does **not** prove that the generated parser is right (that the states, follow sets, conflict resolution and table
-compression implement the grammar's LALR(1) automaton). The differential test is the evidence for that.
+That the generated parser is right is checked per grammar, by validation (next section); the table compression
+(`yy_action`, `yy_lookahead`) is not yet covered, and the differential test is the evidence for it.
+
+## A validated LR(1) parser
+
+Following Jourdan, Pottier and Leroy, *Validating LR(1) Parsers* (ESOP 2012), written from the paper (see
+`Lr/DESIGN.md`), `CsLemon/Lr` has an LR interpreter and two validators, all verified:
+
+- **Soundness** (`Interpreter.cs`): for any automaton, what the interpreter accepts comes with a parse tree of the
+  start symbol whose leaves are exactly the input consumed.
+- **Safety** (`Safety.cs`): if the safety validator accepts the automaton (with annotations CsLemon computes), the
+  interpreter never reaches an internal error (a reduction finds its cells, every goto exists).
+- **Completeness** (`Completeness.cs`): if the completeness validator accepts the automaton with its items (Lemon's
+  configurations and follow sets, first sets, nullability), every sentence of the grammar is accepted, with its parse
+  tree given back exactly (`ParseAccepts`); so the grammar is unambiguous.
+
+`CSLEMON_VALIDATE=1 cslemon grammar.y` runs both validators on the automaton Lemon built (after conflict resolution,
+before compression); `CSLEMON_PARSE=tokens cslemon grammar.y` parses a file of terminal names with the verified
+interpreter. Every test grammar's automaton passes the safety validator, SQLite's included. Completeness holds only
+for conflict-free grammars (`tests/grammars/expr.y`, `decls.y`): precedence declarations resolve the conflicts of an
+ambiguous grammar, and the parser deliberately rejects some of its parse trees. `tests/lrtest.sh` checks parses,
+both validators, and that corrupted automata are rejected.
 
 ### Run-time checks
 

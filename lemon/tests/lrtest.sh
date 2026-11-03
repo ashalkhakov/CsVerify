@@ -1,7 +1,8 @@
 #!/bin/sh
 # The verified LR interpreter (lemon/CsLemon/Lr) on Lemon's automata: each tests/lr/<grammar>.<name>.tok is a
 # sequence of terminals; "ok" files must be accepted whole, "bad" ones rejected (never an internal error); and the
-# safety validator must accept each grammar's automaton and reject corruptions of it (not all: some keep it safe).
+# safety validator must accept each grammar's automaton and reject corruptions of it (not all: some keep it safe);
+# the completeness validator must accept the unambiguous grammars' (expr, decls) and reject every dropped action.
 # Usage: lrtest.sh [cslemon dll]
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -26,8 +27,11 @@ done
 for g in "$HERE"/grammars/*.y; do
   name="$(basename "$g" .y)"; [ "$name" = errors ] && continue
   rm -rf "$WORK"; mkdir -p "$WORK"; cp "$g" "$HERE/../CsLemon/lempar.c" "$WORK/"
-  out="$(cd "$WORK" && CSLEMON_VALIDATE=mutate dotnet "$CS" -q "$name.y" 2>/dev/null | grep -E '^(safety|mutations)')"
-  if echo "$out" | grep -q '^safety: validated' && echo "$out" | grep -Eq '^mutations rejected: [1-9]'; then
+  out="$(cd "$WORK" && CSLEMON_VALIDATE=mutate dotnet "$CS" -q "$name.y" 2>/dev/null | grep -E '^(safety|mutations|completeness)')"
+  case "$name" in expr|decls) complete=yes ;; *) complete=no ;; esac
+  if echo "$out" | grep -q '^safety: validated' && echo "$out" | grep -Eq '^mutations rejected: [1-9]' &&
+     { [ $complete = no ] || { echo "$out" | grep -q '^completeness: validated' &&
+                               echo "$out" | grep -Eq '^completeness mutations rejected: ([0-9]+) of \1$'; }; }; then
     pass=$((pass + 1))
   else
     fail=$((fail + 1)); echo "FAIL: $name: $out"

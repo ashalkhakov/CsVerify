@@ -227,6 +227,72 @@ namespace CsLemon.Lr
             return added;
         }
 
+        /// <summary>
+        /// The completeness validator's items: each state's configurations (rule, dot, follow set) and, per
+        /// nonterminal, its first set and whether it derives the empty word (Lemon's lambda). The accepting state
+        /// has none.
+        /// </summary>
+        public static Items ItemsOf(Lemon lemp, Grammar g, Automaton a)
+        {
+            int n = a.NState, nterm = g.NTerm;
+            Checks.That(0 < n && 0 < nterm && nterm <= g.NSym && lemp.nstate < n);
+            int nnon = g.NSym - nterm;
+            var rule = new int[n][];
+            var dot = new int[n][];
+            var la = new bool[n][][];
+            for (int σ = 0; σ < n; σ++)
+            {
+                Spec.Invariant(0 <= σ && rule.Length == n && dot.Length == n && la.Length == n);
+                int count = 0;
+                if (σ < lemp.nstate)
+                    for (Config? cfp = lemp.Sorted(σ).cfp; cfp != null; cfp = cfp.next)
+                    {
+                        Spec.Invariant(0 <= count);
+                        count = checked(count + 1);
+                    }
+                var ru = new int[count];
+                var dt = new int[count];
+                var ls = new bool[count][];
+                int k = 0;
+                if (σ < lemp.nstate)
+                    for (Config? cfp = lemp.Sorted(σ).cfp; cfp != null && k < count; cfp = cfp.next)
+                    {
+                        Spec.Invariant(0 <= k && ru.Length == count && dt.Length == count && ls.Length == count);
+                        ru[k] = cfp.rp.index;
+                        dt[k] = cfp.dot;
+                        bool[] fws = cfp.Fws();
+                        var set = new bool[nterm];
+                        for (int c = 0; c < nterm && c < fws.Length; c++)
+                        {
+                            Spec.Invariant(0 <= c && set.Length == nterm);
+                            set[c] = fws[c];
+                        }
+                        ls[k] = set;
+                        k++;
+                    }
+                rule[σ] = ru;
+                dot[σ] = dt;
+                la[σ] = ls;
+            }
+            var first = new bool[nnon][];
+            var nullable = new bool[nnon];
+            for (int x = 0; x < nnon; x++)
+            {
+                Spec.Invariant(0 <= x && first.Length == nnon && nullable.Length == nnon);
+                Symbol sp = lemp.Sym(checked(nterm + x));
+                var set = new bool[nterm];
+                bool[]? fs = sp.firstset;
+                for (int c = 0; fs != null && c < nterm && c < fs.Length; c++)
+                {
+                    Spec.Invariant(0 <= c && set.Length == nterm);
+                    set[c] = fs[c];
+                }
+                first[x] = set;
+                nullable[x] = sp.lambda;
+            }
+            return new Items(rule, dot, la, first, nullable);
+        }
+
         /// <summary>CSLEMON_VALIDATE: runs the safety validator on the automaton, and says whether it passed.</summary>
         public static void ValidateAll(Lemon lemp)
         {
@@ -234,6 +300,7 @@ namespace CsLemon.Lr
             var a = AutomatonOf(lemp, incoming);
             var ann = AnnotationsOf(g, a, syms);
             System.Console.Out.Write(Safety.Validate(g, a, ann) ? "safety: validated\n" : "safety: NOT validated\n");
+            System.Console.Out.Write(Completeness.Validate(g, a, ItemsOf(lemp, g, a)) ? "completeness: validated\n" : "completeness: NOT validated\n");
             if (System.Environment.GetEnvironmentVariable("CSLEMON_VALIDATE") != "mutate") return;
             /* corrupt one entry at a time (a shift's target, a reduce's rule, a goto), and count the corruptions the
             ** validator rejects: one that keeps the automaton safe (another target with the same past) is no failure,
@@ -268,6 +335,27 @@ namespace CsLemon.Lr
                 }
             }
             System.Console.Out.Write("mutations rejected: " + rejected + " of " + tried + "\n");
+            /* and for completeness: an action dropped (made a rejection) */
+            var items = ItemsOf(lemp, g, a);
+            if (!Completeness.Validate(g, a, items)) return;
+            int ctried = 0, crejected = 0;
+            for (int σ = 0; σ < a.NState && σ < a.Kind.Length && ctried < 300; σ++)
+            {
+                Spec.Invariant(0 <= σ && 0 <= ctried && 0 <= crejected && crejected <= ctried);
+                int[]? kinds = a.Kind[σ];
+                if (kinds == null) continue;
+                for (int t = 0; t < kinds.Length && ctried < 300; t++)
+                {
+                    Spec.Invariant(0 <= t && 0 <= ctried && 0 <= crejected && crejected <= ctried);
+                    int saved = kinds[t];
+                    if (saved != Automaton.Shift && saved != Automaton.Reduce) continue;
+                    kinds[t] = Automaton.Reject;
+                    ctried++;
+                    if (!Completeness.Validate(g, a, items)) crejected++;
+                    kinds[t] = saved;
+                }
+            }
+            System.Console.Out.Write("completeness mutations rejected: " + crejected + " of " + ctried + "\n");
         }
 
         /// <summary>The next number below n after v, round to 0.</summary>

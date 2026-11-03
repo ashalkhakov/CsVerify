@@ -621,5 +621,237 @@ namespace CsLemon.Lr
             Accepts(g, a, it, w, t);
             Interpreter.StepsRest(g, a, w, Size(t) + 1, fuel, Interpreter.Start());
         }
+
+        // ------------------------------------------------------------------------------------------ the validator
+
+        [Pure]
+        public static bool FirstOfX(Grammar g, Items it, int x, int c)
+        {
+            Spec.Requires(it.First.Length == g.NSym - g.NTerm && 0 <= g.NTerm);
+            Spec.Ensures((bool r) => r == FirstOf(g, it, x, c));
+            if (g.NTerm <= x && x < g.NSym)
+            {
+                bool[]? f = it.First[x - g.NTerm];
+                if (f == null) return false;
+                bool res = 0 <= c && c < f.Length && f[c];
+                Spec.Assert(res == Safety.In(f, c));
+                return res;
+            }
+            return Interpreter.Match(g, x, c);
+        }
+
+        [Pure]
+        public static bool NullableX(Grammar g, Items it, int x)
+        {
+            Spec.Requires(it.Nullable.Length == g.NSym - g.NTerm && 0 <= g.NTerm);
+            Spec.Ensures((bool r) => r == NullableOf(g, it, x));
+            return g.NTerm <= x && x < g.NSym && it.Nullable[x - g.NTerm];
+        }
+
+        [Pure]
+        public static bool FirstSeqX(Grammar g, Items it, int[] rhs, int i, int c)
+        {
+            Spec.Requires(it.First.Length == g.NSym - g.NTerm && it.Nullable.Length == g.NSym - g.NTerm && 0 <= g.NTerm && 0 <= i);
+            Spec.Decreases(rhs.Length - i);
+            Spec.Ensures((bool r) => r == FirstSeq(g, it, rhs, i, c));
+            return i < rhs.Length && (FirstOfX(g, it, rhs[i], c) || NullableX(g, it, rhs[i]) && FirstSeqX(g, it, rhs, i + 1, c));
+        }
+
+        [Pure]
+        public static bool AllNullableX(Grammar g, Items it, int[] rhs, int i)
+        {
+            Spec.Requires(it.Nullable.Length == g.NSym - g.NTerm && 0 <= g.NTerm && 0 <= i);
+            Spec.Decreases(rhs.Length - i);
+            Spec.Ensures((bool r) => r == AllNullable(g, it, rhs, i));
+            return i >= rhs.Length || NullableX(g, it, rhs[i]) && AllNullableX(g, it, rhs, i + 1);
+        }
+
+        public static bool CheckWf(Grammar g, Automaton a, Items it)
+        {
+            Spec.Ensures((bool r) => !r || Wf(g, a, it) && ItemShape(g, a, it));
+            int n = a.NState;
+            if (!(n == a.Incoming.Length && a.Kind.Length == n && a.Arg.Length == n && a.Goto.Length == n && 0 < n &&
+                  g.Lhs.Length == g.Rhs.Length && it.Rule.Length == n && it.Dot.Length == n && it.La.Length == n &&
+                  0 < g.NTerm && g.NTerm <= g.NSym && it.First.Length == g.NSym - g.NTerm && it.Nullable.Length == g.NSym - g.NTerm)) return false;
+            for (int σ = 0; σ < n; σ++)
+            {
+                Spec.Invariant(0 <= σ && σ <= n && n == a.NState && a.Kind.Length == n && a.Arg.Length == n && a.Goto.Length == n &&
+                               it.Rule.Length == n && it.Dot.Length == n && it.La.Length == n && g.NTerm <= g.NSym &&
+                               Spec.Forall(0, σ, q => it.Rule[q] != null && it.Dot[q] != null && it.La[q] != null &&
+                                                      it.Dot[q].Length == it.Rule[q].Length && it.La[q].Length == it.Rule[q].Length) &&
+                               Spec.Forall(0, σ, q => a.Kind[q] != null && a.Arg[q] != null && a.Goto[q] != null &&
+                                                      a.Kind[q].Length == g.NTerm && a.Arg[q].Length == g.NTerm && a.Goto[q].Length == g.NSym - g.NTerm));
+                int[]? ru = it.Rule[σ], dt = it.Dot[σ], k = a.Kind[σ], x = a.Arg[σ], gt = a.Goto[σ];
+                bool[][]? la = it.La[σ];
+                if (ru == null || dt == null || la == null || dt.Length != ru.Length || la.Length != ru.Length ||
+                    k == null || x == null || gt == null || k.Length != g.NTerm || x.Length != g.NTerm || gt.Length != g.NSym - g.NTerm) return false;
+            }
+            for (int y = 0; y < g.NSym - g.NTerm; y++)
+            {
+                Spec.Invariant(0 <= y && y <= g.NSym - g.NTerm && it.First.Length == g.NSym - g.NTerm &&
+                               Spec.Forall(0, y, q => it.First[q] != null && it.First[q].Length == g.NTerm));
+                bool[]? f = it.First[y];
+                if (f == null || f.Length != g.NTerm) return false;
+            }
+            return true;
+        }
+
+        public static bool CheckFirst(Grammar g, Automaton a, Items it)
+        {
+            Spec.Requires(Wf(g, a, it) && ItemShape(g, a, it));
+            Spec.Ensures((bool r) => !r || FirstOk(g, a, it));
+            for (int r = 0; r < g.Lhs.Length; r++)
+            {
+                Spec.Invariant(0 <= r && r <= g.Lhs.Length && Wf(g, a, it) && ItemShape(g, a, it) && Spec.Forall(0, r, q => RuleFirstOk(g, a, it, q)));
+                if (r >= g.Rhs.Length) return false;
+                int[]? rhs = g.Rhs[r];
+                int lhs = g.Lhs[r];
+                if (rhs == null || !(g.NTerm <= lhs && lhs < g.NSym)) return false;
+                bool[] f = it.First[lhs - g.NTerm]!;
+                for (int c = 0; c < g.NTerm; c++)
+                {
+                    Spec.Invariant(0 <= c && c <= g.NTerm && Wf(g, a, it) && ItemShape(g, a, it) && g.Rhs[r] == rhs && g.Lhs[r] == lhs &&
+                                   it.First[lhs - g.NTerm] == f && f.Length == g.NTerm &&
+                                   Spec.Forall(0, c, e => !FirstSeq(g, it, rhs, 0, e) || f[e]));
+                    if (FirstSeqX(g, it, rhs, 0, c) && !f[c]) return false;
+                }
+                if (AllNullableX(g, it, rhs, 0) && !it.Nullable[lhs - g.NTerm]) return false;
+                Spec.Assert(RuleFirstOk(g, a, it, r));
+            }
+            return true;
+        }
+
+        public static bool CheckHasAll(Grammar g, Automaton a, Items it, int σ2, int r, int d, bool[] L)
+        {
+            Spec.Requires(Wf(g, a, it) && ItemShape(g, a, it) && 0 <= σ2 && σ2 < a.NState);
+            Spec.Ensures((bool res) => !res || HasAll(g, a, it, σ2, r, d, L));
+            int j = FindItem(g, a, it, σ2, r, d, 0);
+            if (j < 0) return false;
+            bool[]? la = it.La[σ2]![j];
+            return la != null && Safety.CheckSub(L, la);
+        }
+
+        public static bool CheckItem(Grammar g, Automaton a, Items it, int σ, int k)
+        {
+            Spec.Requires(Wf(g, a, it) && ItemShape(g, a, it) && 0 <= σ && σ < a.NState && 0 <= k && k < it.Rule[σ].Length);
+            Spec.Ensures((bool res) => !res || ItemOk(g, a, it, σ, k));
+            int r = it.Rule[σ]![k], d = it.Dot[σ]![k];
+            bool[]? L = it.La[σ]![k];
+            if (!(0 <= r && r < g.Lhs.Length)) return false;
+            int[]? rhs = g.Rhs[r];
+            if (rhs == null || !(0 <= d && d <= rhs.Length) || L == null || L.Length != g.NTerm) return false;
+            if (d > 0 && a.Incoming[σ] != rhs[d - 1]) return false;
+            if (!CheckActs(g, a, it, σ, r, d, L)) return false;
+            return true;
+        }
+
+        public static bool CheckActs(Grammar g, Automaton a, Items it, int σ, int r, int d, bool[] L)
+        {
+            Spec.Requires(Wf(g, a, it) && ItemShape(g, a, it) && 0 <= σ && σ < a.NState && 0 <= r && r < g.Lhs.Length && g.Rhs[r] != null &&
+                          0 <= d && d <= g.Rhs[r].Length);
+            Spec.Ensures((bool res) => !res || ItemActsOk(g, a, it, σ, r, d, L));
+            int[] rhs = g.Rhs[r]!;
+            int[] kinds = a.Kind[σ]!, args = a.Arg[σ]!;
+            if (d == rhs.Length)
+            {
+                for (int c = 0; c < g.NTerm; c++)
+                {
+                    Spec.Invariant(0 <= c && c <= g.NTerm && Wf(g, a, it) && a.Kind[σ] == kinds && a.Arg[σ] == args &&
+                                   Spec.Forall(0, c, e => !Safety.In(L, e) || kinds[e] == Automaton.Reduce && args[e] == r));
+                    if (c < L.Length && L[c] && !(kinds[c] == Automaton.Reduce && args[c] == r)) return false;
+                }
+                return true;
+            }
+            int x = rhs[d];
+            if (g.NTerm <= x && x < g.NSym)
+            {
+                int to = a.Goto[σ]![x - g.NTerm];
+                if (!(0 <= to && to < a.NState) || !CheckHasAll(g, a, it, to, r, d + 1, L)) return false;
+                for (int r2 = 0; r2 < g.Lhs.Length; r2++)
+                {
+                    Spec.Invariant(0 <= r2 && r2 <= g.Lhs.Length && Wf(g, a, it) && ItemShape(g, a, it) && g.Rhs[r] == rhs && rhs[d] == x &&
+                                   0 <= to && to < a.NState && a.Goto[σ][x - g.NTerm] == to && HasAll(g, a, it, to, r, d + 1, L) &&
+                                   Spec.Forall(0, r2, q => g.Lhs[q] != x || ClosureOk(g, a, it, σ, r, d, L, q)));
+                    if (g.Lhs[r2] == x && !CheckClosure(g, a, it, σ, r, d, L, r2)) return false;
+                }
+                return true;
+            }
+            for (int c = 0; c < g.NTerm; c++)
+            {
+                Spec.Invariant(0 <= c && c <= g.NTerm && Wf(g, a, it) && ItemShape(g, a, it) && a.Kind[σ] == kinds && a.Arg[σ] == args && g.Rhs[r] == rhs && rhs[d] == x &&
+                               Spec.Forall(0, c, e => !Interpreter.Matches(g, x, e) ||
+                                                      kinds[e] == Automaton.Shift && 0 <= args[e] && args[e] < a.NState && HasAll(g, a, it, args[e], r, d + 1, L)));
+                if (Interpreter.Match(g, x, c) &&
+                    !(kinds[c] == Automaton.Shift && 0 <= args[c] && args[c] < a.NState && CheckHasAll(g, a, it, args[c], r, d + 1, L))) return false;
+            }
+            return true;
+        }
+
+        public static bool CheckClosure(Grammar g, Automaton a, Items it, int σ, int r, int d, bool[] L, int r2)
+        {
+            Spec.Requires(Wf(g, a, it) && ItemShape(g, a, it) && 0 <= σ && σ < a.NState && 0 <= r && r < g.Lhs.Length && g.Rhs[r] != null &&
+                          0 <= d && d < g.Rhs[r].Length);
+            Spec.Ensures((bool res) => !res || ClosureOk(g, a, it, σ, r, d, L, r2));
+            int j = FindItem(g, a, it, σ, r2, 0, 0);
+            if (j < 0) return false;
+            bool[]? la2 = it.La[σ]![j];
+            if (la2 == null) return false;
+            int[] rhs = g.Rhs[r]!;
+            for (int c = 0; c < g.NTerm; c++)
+            {
+                Spec.Invariant(0 <= c && c <= g.NTerm && Wf(g, a, it) && ItemShape(g, a, it) && g.Rhs[r] == rhs && FindItem(g, a, it, σ, r2, 0, 0) == j &&
+                               it.La[σ][j] == la2 &&
+                               Spec.Forall(0, c, e => !FirstSeqIn(g, it, rhs, d + 1, L, e) || Safety.In(la2, e)));
+                bool f1 = FirstSeqX(g, it, rhs, d + 1, c), f2 = AllNullableX(g, it, rhs, d + 1), inL = c < L.Length && L[c];
+                Spec.Assert(f1 == FirstSeq(g, it, rhs, d + 1, c) && f2 == AllNullable(g, it, rhs, d + 1) && inL == Safety.In(L, c));
+                bool need = f1 || f2 && inL;
+                Spec.Assert(need == FirstSeqIn(g, it, rhs, d + 1, L, c));
+                if (need && !(c < la2.Length && la2[c])) return false;
+                Spec.Assert(!need || Safety.In(la2, c));
+            }
+            return true;
+        }
+
+        public static bool CheckRoot(Grammar g, Automaton a, Items it)
+        {
+            Spec.Requires(Wf(g, a, it) && ItemShape(g, a, it));
+            Spec.Ensures((bool res) => !res || RootOk(g, a, it));
+            if (!(g.NTerm <= g.Start && g.Start < g.NSym)) return false;
+            int acc = a.Goto[0]![g.Start - g.NTerm];
+            if (!(0 < acc && acc < a.NState && a.Incoming[acc] == g.Start && a.Kind[acc]![0] == Automaton.Accept)) return false;
+            for (int r = 0; r < g.Lhs.Length; r++)
+            {
+                Spec.Invariant(0 <= r && r <= g.Lhs.Length && Wf(g, a, it) && ItemShape(g, a, it) &&
+                               Spec.Forall(0, r, q => g.Lhs[q] != g.Start || Has(g, a, it, 0, q, 0, 0)));
+                if (g.Lhs[r] != g.Start) continue;
+                int j = FindItem(g, a, it, 0, r, 0, 0);
+                if (j < 0) return false;
+                bool[]? la = it.La[0]![j];
+                if (la == null || la.Length == 0 || !la[0]) return false;
+                Spec.Assert(it.La[0][j] == la && Safety.In(la, 0) && FindItem(g, a, it, 0, r, 0, 0) == j);
+                Spec.Assert(Has(g, a, it, 0, r, 0, 0));
+            }
+            return true;
+        }
+
+        /// <summary>The completeness validator: true only if every sentence is accepted with its parse tree (ParseAccepts).</summary>
+        public static bool Validate(Grammar g, Automaton a, Items it)
+        {
+            Spec.Ensures((bool r) => !r || CompleteOk(g, a, it));
+            if (!CheckWf(g, a, it) || !CheckFirst(g, a, it) || !CheckRoot(g, a, it)) return false;
+            for (int σ = 0; σ < a.NState; σ++)
+            {
+                Spec.Invariant(0 <= σ && σ <= a.NState && Wf(g, a, it) && ItemShape(g, a, it) &&
+                               Spec.Forall(0, σ, q => Spec.Forall(0, it.Rule[q].Length, k => ItemOk(g, a, it, q, k))));
+                int n = it.Rule[σ]!.Length;
+                for (int k = 0; k < n; k++)
+                {
+                    Spec.Invariant(0 <= k && k <= n && n == it.Rule[σ].Length && Wf(g, a, it) && ItemShape(g, a, it) &&
+                                   Spec.Forall(0, k, q => ItemOk(g, a, it, σ, q)));
+                    if (!CheckItem(g, a, it, σ, k)) return false;
+                }
+            }
+            return true;
+        }
     }
 }
