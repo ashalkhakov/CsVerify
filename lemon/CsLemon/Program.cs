@@ -305,6 +305,9 @@ namespace CsLemon
                 Build.FindFollowSets(lem);
                 /* Compute the action tables */
                 Build.FindActions(lem);
+                /* (testing the verified LR interpreter: CSLEMON_PARSE names a file of terminals to parse) */
+                string? parseFile = System.Environment.GetEnvironmentVariable("CSLEMON_PARSE");
+                if (parseFile != null) Lr.Export.ParseFile(lem, parseFile);
                 /* Compress the action tables */
                 if (!Flag("c")) Report.CompressTables(lem);
                 /* Reorder and renumber the states so that states with fewer choices occur at the end. */

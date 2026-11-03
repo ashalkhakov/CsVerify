@@ -52,17 +52,19 @@ namespace CsLemon.Lr
 
     /// <summary>
     /// A grammar: terminals 0 .. NTerm-1 (0 is the end of input), nonterminals NTerm .. NSym-1, and rules r with a
-    /// left-hand side Lhs[r] and a right-hand side Rhs[r].
+    /// left-hand side Lhs[r] and a right-hand side Rhs[r]. Symbols from NSym on are Lemon's multiterminals (A|B): the
+    /// terminals Multi[x - NSym] each match x.
     /// </summary>
     public sealed class Grammar
     {
         public readonly int NTerm, NSym, Start;
         public readonly int[] Lhs;
         public readonly int[][] Rhs;
+        public readonly int[][] Multi;
 
-        public Grammar(int nterm, int nsym, int start, int[] lhs, int[][] rhs)
+        public Grammar(int nterm, int nsym, int start, int[] lhs, int[][] rhs, int[][] multi)
         {
-            NTerm = nterm; NSym = nsym; Start = start; Lhs = lhs; Rhs = rhs;
+            NTerm = nterm; NSym = nsym; Start = start; Lhs = lhs; Rhs = rhs; Multi = multi;
         }
     }
 
@@ -139,8 +141,31 @@ namespace CsLemon.Lr
             {
                 Tree.Node n => 0 <= n.Rule && n.Rule < g.Lhs.Length && n.Rule < g.Rhs.Length && g.Lhs[n.Rule] == x &&
                                g.Rhs[n.Rule] != null && Kids(g, n.Kids, g.Rhs[n.Rule], 0),
-                Tree.Leaf l => l.Term == x && 0 <= x && x < g.NTerm,
+                Tree.Leaf l => Matches(g, x, l.Term),
             };
+        }
+
+        /// <summary>The terminal a matches symbol x: it is x, or one of the multiterminal x's terminals.</summary>
+        [GhostFunction]
+        public static bool Matches(Grammar g, int x, int a) =>
+            0 <= a && a < g.NTerm &&
+            (a == x || 0 <= g.NSym && g.NSym <= x && x - g.NSym < g.Multi.Length && g.Multi[x - g.NSym] != null && Spec.Exists(0, g.Multi[x - g.NSym].Length, k => g.Multi[x - g.NSym][k] == a));
+
+        /// <summary>Matches, at run time.</summary>
+        public static bool Match(Grammar g, int x, int a)
+        {
+            Spec.Ensures((bool r) => r == Matches(g, x, a));
+            if (a < 0 || a >= g.NTerm) return false;
+            if (a == x) return true;
+            if (x < g.NSym || g.NSym < 0 || x - g.NSym >= g.Multi.Length) return false;
+            int[]? m = g.Multi[x - g.NSym];
+            if (m == null) return false;
+            for (int k = 0; k < m.Length; k++)
+            {
+                Spec.Invariant(0 <= k && k <= m.Length && Spec.Forall(0, k, j => m[j] != a));
+                if (m[k] == a) return true;
+            }
+            return false;
         }
 
         /// <summary>ts are parse trees for the symbols rhs[i..], one each.</summary>
@@ -214,7 +239,7 @@ namespace CsLemon.Lr
                 if (kind == Automaton.Shift)
                 {
                     int next = args[la];
-                    if (pos == w.Length || next < 0 || next >= a.Incoming.Length || a.Incoming[next] != la) return new Result.InternalError();
+                    if (pos == w.Length || next < 0 || next >= a.Incoming.Length || !Match(g, a.Incoming[next], la)) return new Result.InternalError();
                     var shifted = new Stack.Cell(next, new Tree.Leaf(la), s);
                     Spec.Assert(Valid(g, shifted.T, a.Incoming[next]));
                     Spec.Assert(StackOk(g, a, shifted));
