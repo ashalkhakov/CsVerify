@@ -69,6 +69,8 @@ namespace CsVerify.Verifier
         {
             if (f.Perm == null) return;
             f.Inst = new Term("((as const (Array Int Real)) 0.0)", Sort.Perm);
+            f.FPerm = new Term("((as const (Array Int (Array Int Real))) ((as const (Array Int Real)) 0.0))", Sort.PermHeap);
+            f.FOwner = _z3.Fresh("fowner", Sort.Heap);
             f.Owner = _z3.Fresh("owner", Sort.Row);
             _z3.Assume(T.Not(T.Eq(NoInstance(), T.Int(0))));
             // instances are not 0 (no owner), and two are the same only if they are of one predicate with the same arguments
@@ -124,8 +126,10 @@ namespace CsVerify.Verifier
         {
             public Term Guard;
             public Term Obj;          // Spec.Acc(Obj)
+            public ISymbol Field;     // or Spec.Acc(Obj, nameof(Field))
             public ITypeSymbol Type;
             public Term Inst;         // or a predicate instance
+            public IMethodSymbol Pred; // (of this predicate)
             public Term Arr, Lo, Hi;  // or array cells: Spec.Acc(Arr, Lo, Hi)
             public SyntaxNode At;
         }
@@ -184,6 +188,17 @@ namespace CsVerify.Verifier
                     });
                     return T.True;
                 }
+                if (acc.Arguments.Length == 2 && SpecSymbols.IsOwned(target.Type))
+                {
+                    if (!(acc.Arguments[1].Value.ConstantValue is { HasValue: true, Value: string name }))
+                    {
+                        Report("CSV1016", acc.Syntax, "the field of Spec.Acc(o, field) must be a constant: nameof(C.F)", isError: true);
+                        return T.True;
+                    }
+                    var field = AccField(target.Type, name, acc.Syntax);
+                    if (field != null) atom(new Atom { Guard = guard, Obj = Arg(target, guard), Type = target.Type, Field = field, At = acc.Syntax });
+                    return T.True;
+                }
                 if (!SpecSymbols.IsOwned(target.Type))
                 {
                     Report("CSV1016", acc.Syntax, $"Spec.Acc is permission to an [Owned] object or to array cells; '{target.Syntax}' is neither", isError: true);
@@ -195,7 +210,7 @@ namespace CsVerify.Verifier
             if (IsPredicateCall(op, out var pc))
             {
                 var args = pc.Arguments.Select(a => Arg(a.Value, guard)).ToList();
-                atom(new Atom { Guard = guard, Inst = Instance(pc.TargetMethod, args), At = pc.Syntax });
+                atom(new Atom { Guard = guard, Inst = Instance(pc.TargetMethod, args), Pred = pc.TargetMethod.OriginalDefinition, At = pc.Syntax });
                 return T.True;
             }
             if (op is ILiteralOperation lit && lit.ConstantValue.HasValue && lit.ConstantValue.Value is true) return T.True;
@@ -249,6 +264,13 @@ namespace CsVerify.Verifier
                 atom: a =>
                 {
                     if (a.Arr != null) { NoCellsInPredicates(a); return; }
+                    if (a.Field != null)
+                    {
+                        NotLent(a.Obj, a.Guard, f, at);
+                        GiveField(f, a.Obj, a.Field, a.Guard, at, $"folding needs '{a.At}', but that permission is not in hand here");
+                        FoldField(f, a.Obj, a.Field, a.Guard, p);
+                        return;
+                    }
                     if (a.Obj != null)
                     {
                         Require(T.Implies(a.Guard, CanWrite(f, a.Obj)), "CSV1016", at, $"folding needs '{a.At}', but that permission is not in hand here");
@@ -264,6 +286,8 @@ namespace CsVerify.Verifier
                         Require(T.Implies(a.Guard, Held(f, a.Inst)), "CSV1016", at, $"folding needs '{a.At}', which is not held here");
                         f.Inst = Change(f.Inst, a.Inst, a.Guard, "-");
                         f.Owner = _z3.Define("owner", new Term($"(lambda ((y Int)) (ite (and {a.Guard} (= (select {f.Owner} y) {a.Inst})) {p} (select {f.Owner} y)))", Sort.Row));
+                        if (f.FOwner != null)
+                            f.FOwner = _z3.Define("fowner", new Term($"(lambda ((y Int)) (lambda ((k Int)) (ite (and {a.Guard} (= (select (select {f.FOwner} y) k) {a.Inst})) {p} (select (select {f.FOwner} y) k))))", Sort.Heap));
                     }
                 },
                 fact: (g, v, node) => Require(T.Implies(g, v), "CSV1019", at, $"'{node}' might not hold when folding '{stmt.Arguments[0].Value.Syntax}'"));
@@ -282,6 +306,8 @@ namespace CsVerify.Verifier
             Require(Held(f, p), "CSV1016", at, $"'{stmt.Arguments[0].Value.Syntax}' is not held here");
             f.Inst = Change(f.Inst, p, T.True, "-");
             var footprint = f.Owner;
+            var fieldFootprint = f.FOwner;
+            var ownFields = new List<(Term guard, Term obj, int field)>();
             var own = new List<(Term guard, Term obj)>();
             var nested = new List<(Term guard, Term inst)>();
             var pf = PredicateFrame(pred, args, f);
@@ -289,9 +315,16 @@ namespace CsVerify.Verifier
                 atom: a =>
                 {
                     if (a.Arr != null) { NoCellsInPredicates(a); return; }
+                    if (a.Field != null)
+                    {
+                        _z3.Assume(T.Implies(a.Guard, new Term($"(= (select (select {fieldFootprint} {T.Coerce(a.Obj, Sort.Int)}) {FieldId(a.Field)}) {p})", Sort.Bool)));
+                        TakeField(f, a.Obj, a.Field, a.Guard);
+                        ownFields.Add((a.Guard, a.Obj, FieldId(a.Field)));
+                        return;
+                    }
                     if (a.Obj != null)
                     {
-                        _z3.Assume(T.Implies(a.Guard, T.And(NotNull(a.Obj), T.Eq(T.Select(footprint, T.Coerce(a.Obj, Sort.Int), Sort.Int), p), BelowWhole(f, a.Obj), T.Eq(RootOf(f, a.Obj), a.Obj))));
+                        _z3.Assume(T.Implies(a.Guard, T.And(NotNull(a.Obj), T.Eq(T.Select(footprint, T.Coerce(a.Obj, Sort.Int), Sort.Int), p), BelowWhole(f, a.Obj), T.Eq(RootOf(f, a.Obj), a.Obj), NoFieldsHeld(f, a.Obj, a.Type))));
                         f.Perm = Change(f.Perm, a.Obj, a.Guard, "+");
                         if (DataTypes.Invariants(a.Type).Any()) _z3.Assume(T.Implies(a.Guard, OwnedInvariant(a.Type, a.Obj, f)));
                         own.Add((a.Guard, a.Obj));
@@ -317,6 +350,19 @@ namespace CsVerify.Verifier
             var elsewhere = nested.Count == 0 ? $"(select {footprint} y)"
                 : $"(ite (or {string.Join(" ", nested.Select(n => $"(= (select {footprint} y) {n.inst})"))}) 0 (select {footprint} y))";
             f.Owner = _z3.Define("owner", new Term($"(lambda ((y Int)) (ite (= (select {footprint} y) {p}) {to} {elsewhere}))", Sort.Row));
+            // single fields likewise: the body's own are free, the rest go to its instances
+            if (fieldFootprint == null) return;
+            var fchoice = nested.Count > 1 ? _z3.Fresh("unfold", Sort.Heap) : null;
+            var fto = "0";
+            for (int k = nested.Count - 1; k >= 0; k--)
+            {
+                var pick = fchoice == null ? nested[k].guard.S : $"(and {nested[k].guard} (= (select (select {fchoice} y) k) {k}))";
+                fto = $"(ite {pick} {nested[k].inst} {fto})";
+            }
+            foreach (var (guard, obj, field) in ownFields) fto = $"(ite (and {guard} (= y {T.Coerce(obj, Sort.Int)}) (= k {field})) 0 {fto})";
+            var fold = $"(select (select {fieldFootprint} y) k)";
+            var felsewhere = nested.Count == 0 ? fold : $"(ite (or {string.Join(" ", nested.Select(n => $"(= {fold} {n.inst})"))}) 0 {fold})";
+            f.FOwner = _z3.Define("fowner", new Term($"(lambda ((y Int)) (lambda ((k Int)) (ite (= {fold} {p}) {fto} {felsewhere})))", Sort.Heap));
         }
 
         // ------------------------------------------------------------------------------------------ contracts
@@ -329,10 +375,11 @@ namespace CsVerify.Verifier
             {
                 if (a.Arr != null) { if (f.ArrPerm != null) InhaleCells(f, a); return; }
                 if (f.Inst == null) return;
+                if (a.Field != null) { TakeField(f, a.Obj, a.Field, a.Guard); return; }
                 if (a.Obj != null)
                 {
                     // two whole permissions to one object cannot both be in hand
-                    _z3.Assume(T.Implies(a.Guard, T.And(NotNull(a.Obj), BelowWhole(f, a.Obj), T.Eq(RootOf(f, a.Obj), a.Obj))));
+                    _z3.Assume(T.Implies(a.Guard, T.And(NotNull(a.Obj), BelowWhole(f, a.Obj), T.Eq(RootOf(f, a.Obj), a.Obj), NoFieldsHeld(f, a.Obj, a.Type))));
                     f.Perm = Change(f.Perm, a.Obj, a.Guard, "+");
                     if (DataTypes.Invariants(a.Type).Any()) _z3.Assume(T.Implies(a.Guard, OwnedInvariant(a.Type, a.Obj, f)));
                 }
@@ -346,7 +393,8 @@ namespace CsVerify.Verifier
         /// its instances <paramref name="touchedInst"/>.
         /// </summary>
         /// <param name="checkOnly">only check they are in hand (a [Pure] callee reads them: nothing is given)</param>
-        private void Exhale(IOperation e, Frame ef, SpecEnv spec, Frame f, SyntaxNode at, List<Term> touched, List<Term> touchedInst, List<Atom> touchedCells = null, bool checkOnly = false)
+        private void Exhale(IOperation e, Frame ef, SpecEnv spec, Frame f, SyntaxNode at, List<Term> touched, List<Term> touchedInst, List<Atom> touchedCells = null, bool checkOnly = false,
+            List<(Term obj, ISymbol field)> touchedFields = null)
         {
             if (f.Inst == null && f.ArrPerm == null || !HasPermissions(e)) return;
             bool wasCode = _codeMode;
@@ -357,6 +405,13 @@ namespace CsVerify.Verifier
                 {
                     if (a.Arr != null) { if (f.ArrPerm != null) { ExhaleCells(f, a, at); touchedCells?.Add(a); } return; }
                     if (f.Inst == null) return;
+                    if (a.Field != null)
+                    {
+                        if (!checkOnly) NotLent(a.Obj, a.Guard, f, at);
+                        GiveField(f, a.Obj, a.Field, a.Guard, at, $"'{a.At}' is needed here, but that permission is not in hand");
+                        touchedFields?.Add((a.Obj, a.Field));
+                        return;
+                    }
                     if (a.Obj != null)
                     {
                         Require(T.Implies(a.Guard, CanWrite(f, a.Obj)), "CSV1016", at, $"'{a.At}' is needed here, but that permission is not in hand");
@@ -375,7 +430,9 @@ namespace CsVerify.Verifier
                         f.Inst = Change(f.Inst, a.Inst, a.Guard, "-");
                         // two copies of an instance in hand have no footprint (its permissions would be had twice):
                         // giving one away while the other stays changes nothing
-                        touchedInst?.Add(T.Ite(Held(f, a.Inst), NoInstance(), a.Inst));
+                        var given = T.Ite(Held(f, a.Inst), NoInstance(), a.Inst);
+                        touchedInst?.Add(given);
+                        if (a.Pred != null && PredicateHasFields(a.Pred)) _instancesWithFields.Add(given.S);
                     }
                 }, fact: null);
             }
@@ -412,7 +469,7 @@ namespace CsVerify.Verifier
             var parts = new List<string>();
             if (frame.Owner != null && frame.Root != null)
                 foreach (var req in c.Requires.Where(HasPermissions))
-                    Walk(req, frame, new SpecEnv { Old = frame }, T.True, own: false, atom: a => { if (a.Arr == null) parts.Add(a.Obj != null
+                    Walk(req, frame, new SpecEnv { Old = frame }, T.True, own: false, atom: a => { if (a.Field != null) parts.Add($"(and {a.Guard} (= y {T.Coerce(a.Obj, Sort.Int)}))"); else if (a.Arr == null) parts.Add(a.Obj != null
                         ? $"(and {a.Guard} (= (select {frame.Root} y) {RootOf(frame, a.Obj)}))"
                         : $"(and {a.Guard} {InFootprint(frame.Owner, frame.Root, "y", a.Inst)})"); }, fact: null);
             return new Term($"(lambda ((y Int)) (ite {(parts.Count == 0 ? "false" : $"(or {string.Join(" ", parts)})")} 1 0))", Sort.Row);
@@ -432,7 +489,8 @@ namespace CsVerify.Verifier
         private void LoopPermissionsEntry(int loop, IReadOnlyList<IOperation> invariants, Frame f, SpecEnv spec)
         {
             foreach (var inv in invariants) Exhale(inv, f, spec, f, inv.Syntax, null, null);
-            f.LoopPermFrames[loop] = (f.Perm, f.Inst, f.ArrPerm);
+            f.LoopPermFrames[loop] = (f.Perm, f.Inst, f.ArrPerm, f.FPerm);
+            if (f.FOwner != null) f.FOwner = _z3.Fresh("fowner", Sort.Heap);
             f.Owner = _z3.Fresh("owner", Sort.Row);
         }
 
@@ -446,9 +504,10 @@ namespace CsVerify.Verifier
         {
             var after = f.Clone();
             foreach (var inv in invariants) Exhale(inv, after, spec, after, inv.Syntax, null, null);
-            var (perm, inst, arr) = f.LoopPermFrames[loop];
+            var (perm, inst, arr, fperm) = f.LoopPermFrames[loop];
             var kept = new List<string>();
             if (perm != null) kept.Add($"(>= (select {after.Perm} y) (select {perm} y)) (>= (select {after.Inst} y) (select {inst} y))");
+            if (fperm != null) kept.Add($"(forall ((k Int)) (>= (select (select {after.FPerm} y) k) (select (select {fperm} y) k)))");
             if (arr != null) kept.Add($"(forall ((i Int)) (>= (select (select {after.ArrPerm} y) i) (select (select {arr} y) i)))");
             if (kept.Count == 0) return;
             Prove(new Term($"(forall ((y Int)) (and {string.Join(" ", kept)}))", Sort.Bool),
@@ -564,17 +623,17 @@ namespace CsVerify.Verifier
                 _codeMode = true;
                 _framingCheck = true;
                 Walk(_contract.PureBody, f, new SpecEnv { Old = f }, T.True, own: true,
-                    atom: a => { if (a.Arr != null) NoCellsInPredicates(a); else if (a.Obj != null) f.Perm = Change(f.Perm, a.Obj, a.Guard, "+"); }, fact: null);
+                    atom: a =>
+                    {
+                        // (no permission to null is ever held)
+                        if (a.Obj != null) _z3.Assume(T.Implies(a.Guard, NotNull(a.Obj)));
+                        if (a.Arr != null) NoCellsInPredicates(a);
+                        else if (a.Field != null) ChangeField(f, a.Obj, FieldId(a.Field), a.Guard, "+");
+                        else if (a.Obj != null) f.Perm = Change(f.Perm, a.Obj, a.Guard, "+");
+                    }, fact: null);
             }
             finally { _framingCheck = false; _z3.Pop(); }
         }
 
-        /// <summary>In a predicate's body: a field read needs permission to its object, from a Spec.Acc before it.</summary>
-        private void CheckFraming(Term o, Frame f, SyntaxNode at)
-        {
-            if (!_framingCheck || f.Perm == null) return;
-            Require(new Term($"(> (select {f.Perm} {T.Coerce(o, Sort.Int)}) 0.0)", Sort.Bool), "CSV1016", at,
-                $"'{at}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded");
-        }
     }
 }

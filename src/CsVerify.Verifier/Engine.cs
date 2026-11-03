@@ -88,6 +88,15 @@ namespace CsVerify.Verifier
         internal readonly bool UsesOwnership;
         /// <summary>The program speaks of permissions (Spec.Acc): to objects, or to array cells.</summary>
         internal readonly bool UsesPermissions;
+        private readonly Dictionary<ISymbol, int> _fieldIds = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default);
+
+        /// <summary>A number for each field, for masks indexed by field (permissions to single fields).</summary>
+        internal int FieldId(ISymbol field)
+        {
+            if (!_fieldIds.TryGetValue(field, out var id)) _fieldIds[field] = id = _fieldIds.Count + 1;
+            return id;
+        }
+
         /// <summary>The [Predicate] methods of the program.</summary>
         internal readonly List<IMethodSymbol> Predicates;
 

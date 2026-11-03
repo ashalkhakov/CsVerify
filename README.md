@@ -288,7 +288,13 @@ public static bool Seg(SNode? from, SNode? to, int n) =>
 - **Functions over predicates.** A `[Pure]` or `[GhostFunction]` with a predicate in its precondition may `Spec.Unfold` it in its body, and it reads exactly that footprint. Its value then survives any change outside the footprint (the frame rule). For example, `Sum(keep, null, n)` is unchanged by reversing another list.
 - **Views and `Spec.Acc`.** `Own.ToAcc(view)` turns a view into a plain permission, for folding. `Own.FromAcc(o, out view)` turns it back.
 - **The sample.** samples/Good/ListSegments.cs has cons, length (walking with a segment from the head to the cursor), in-place reverse, and a ghost sum.
-- **Limits.** Permission is per object, not per field. Two copies of one instance are allowed only when its footprint is empty. A `[Pure]` callee's predicate preconditions are not checked as "in hand" at the call; its facts are.
+- **Limits.** Two copies of one instance are allowed only when its footprint is empty. A `[Pure]` callee must hold the predicates its precondition names (it is given nothing).
+
+**Single fields.** `Spec.Acc(o, nameof(C.F))` is permission to write one field of an [Owned] object (Viper's `acc(o.f)`). Different code may hold different fields of one object.
+- **Writing `o.F`** needs the whole object (a view, `Spec.Acc(o)`) or that field.
+- **Split and rejoin.** Giving a field out of a whole object splits it: the other fields stay in hand, one by one. With every field in hand again, the object is whole, and its view can be handed over again.
+- **Calls and predicates.** A call that gets a field changes only that field, so the rest of the object stays known. Fields can be folded into predicates like objects (samples/Good/FieldPermissions.cs).
+- **Limits.** Only for sealed classes without an `[Invariant]`, and not `[Owns]` fields: invariants and ownership trees are about whole objects.
 
 **Array cells.** `Spec.Acc(a, from, to)` is permission to write the cells `a[from..to)`, and `Spec.Acc(a)` is the whole array (Viper's quantified permissions over a range). Array permissions are opt-in per method: they apply in a method whose contract mentions them.
 - **Such a method writes only cells in hand** (CSV1016). Its permissions come from its preconditions and from arrays it creates.

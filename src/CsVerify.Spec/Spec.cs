@@ -86,6 +86,12 @@ namespace CsVerify
         public static bool Acc(object obj) => throw GhostException.Instance;
 
         /// <summary>
+        /// Permission to write one field of an [Owned] object (Viper's <c>acc(o.f)</c>): <c>Spec.Acc(node, nameof(Node.Val))</c>.
+        /// Two pieces of code may hold different fields of one object. For sealed classes without an [Invariant].
+        /// </summary>
+        public static bool Acc(object obj, string field) => throw GhostException.Instance;
+
+        /// <summary>
         /// Permission to write the cells <paramref name="from"/> (inclusive) to <paramref name="to"/> (exclusive) of
         /// an array, in a method's contract and loop invariants (<c>Spec.Acc(array)</c> is the whole array). A method
         /// whose contract gives it array permissions writes only cells it has permission to, and calls to it change

@@ -42,7 +42,7 @@ namespace CsVerify.Verifier
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
             CheckRead(field, o, at);
-            CheckFraming(o, f, at);
+            CheckFraming(o, field, f, at);
             var v = T.Select(FieldMap(f, field), o, ValueSort(field));
             // what an [Owns] field refers to is in the same ownership tree, and is not its root (it is owned)
             if (f.Root != null && SpecSymbols.IsOwnsField(field))
@@ -73,10 +73,20 @@ namespace CsVerify.Verifier
         /// After a call: which instance owns an object may change for the objects it got (their trees), those in the
         /// footprints of the instances it got, and objects it allocates (it may fold them); for all, if that is not known.
         /// </summary>
-        private void HavocOwners(Frame f, IReadOnlyList<Term> touched, IReadOnlyList<Term> touchedInst)
+        private void HavocOwners(Frame f, IReadOnlyList<Term> touched, IReadOnlyList<Term> touchedInst, IReadOnlyList<(Term obj, ISymbol field)> touchedFields)
         {
             if (f.Owner == null) return;
-            if (touched == null) { f.Owner = _z3.Fresh("owner", Sort.Row); return; }
+            if (touched == null) { f.Owner = _z3.Fresh("owner", Sort.Row); if (f.FOwner != null) f.FOwner = _z3.Fresh("fowner", Sort.Heap); return; }
+            if (f.FOwner != null)
+            {
+                // a single field's owner changes where the call got the field, its object, or a footprint with it
+                var fparts = touched.Select(t => $"(= (select {f.Root} y) {t})")
+                    .Concat(touchedFields.Select(t => $"(and (= y {T.Coerce(t.obj, Sort.Int)}) (= k {FieldId(t.field)}))"))
+                    .Concat(touchedInst.Select(q => $"(= (select (select {f.FOwner} y) k) {q})")).ToList();
+                if (f.Alloc != null) fparts.Add($"(= (select {f.Alloc} y) 0)");
+                if (fparts.Count > 0)
+                    f.FOwner = _z3.Define("fowner", new Term($"(lambda ((y Int)) (lambda ((k Int)) (ite (or {string.Join(" ", fparts)}) (select (select {_z3.Fresh("fowner", Sort.Heap)} y) k) (select (select {f.FOwner} y) k))))", Sort.Heap));
+            }
             var parts = touched.Select(t => $"(= (select {f.Root} y) {t})").Concat(touchedInst.Select(q => InFootprint(f.Owner, f.Root, "y", q))).ToList();
             if (f.Alloc != null) parts.Add($"(= (select {f.Alloc} y) 0)");
             if (parts.Count == 0) return;
@@ -91,18 +101,22 @@ namespace CsVerify.Verifier
         /// <param name="modifiable">for a callee with Spec.Modifies: the objects it may change (its frame, and objects
         /// allocated after the call began); every other object's fields stay as they were</param>
         /// <param name="touchedInst">predicate instances the call got: their footprints may change too</param>
-        private void HavocFields(Frame f, IMethodSymbol callee, IReadOnlyList<Term> touched = null, Term modifiable = null, IReadOnlyList<Term> touchedInst = null)
+        /// <param name="touchedFields">single fields the call got (Spec.Acc(o, nameof(F))): those change too</param>
+        private void HavocFields(Frame f, IMethodSymbol callee, IReadOnlyList<Term> touched = null, Term modifiable = null, IReadOnlyList<Term> touchedInst = null,
+            IReadOnlyList<(Term obj, ISymbol field)> touchedFields = null)
         {
             touchedInst ??= System.Array.Empty<Term>();
+            touchedFields ??= System.Array.Empty<(Term, ISymbol)>();
+            var fownerBefore = f.FOwner;
             if (f.Owner != null) f.Owner = _z3.Define("owner", f.Owner);
             if (f.Root != null) f.Root = _z3.Define("root", f.Root);
             var ownerBefore = f.Owner; // (footprints as they were when the call began)
-            HavocOwners(f, touched, touchedInst);
+            HavocOwners(f, touched, touchedInst, touchedFields);
             var (fields, all) = _engine.Fields.WritesOf(callee);
             if (fields.Count == 0 && !all) return;
             var owned = all ? _engine.Fields.OwnedFields() : fields.Where(IsOwnedField).ToList();
             // a tree lent through Spec.Modifies may have any owned field changed (the callee's own may be few)
-            if (touched != null && touched.Count + touchedInst.Count > 0 && owned.Count == 0) owned = _engine.Fields.OwnedFields().ToList();
+            if (touched != null && touched.Count + touchedInst.Count + touchedFields.Count > 0 && owned.Count == 0) owned = _engine.Fields.OwnedFields().ToList();
             var before = f.Clone();
             before.Owner = ownerBefore;
             if (all && modifiable != null)
@@ -131,6 +145,8 @@ namespace CsVerify.Verifier
                 {
                     foreach (var t in touched) parts.Add(before.Root != null ? $"(= (select {before.Root} y) {t})" : $"(= y {t})");
                     foreach (var q in touchedInst) parts.Add(InFootprint(ownerBefore, before.Root, "y", q));
+                    foreach (var field in owned)
+                        if (FieldTouched(field, "y", fownerBefore, touchedFields, touchedInst) is string single) parts.Add(single);
                 }
                 f.Link = new StateLink { Before = before, Changed = new Term($"(lambda ((y Int)) (ite {(parts.Count == 0 ? "false" : parts.Count == 1 ? parts[0] : "(or " + string.Join(" ", parts) + ")")} 1 0))", Sort.Row) };
             }
@@ -149,6 +165,8 @@ namespace CsVerify.Verifier
                 foreach (var o in touched) map = T.Store(map, o, _z3.Fresh(field.Name, ValueSort(field)));
                 if (touchedInst.Count > 0)
                     map = new Term($"(lambda ((y Int)) (ite (or {string.Join(" ", touchedInst.Select(q => InFootprint(ownerBefore, before.Root, "y", q)))}) (select {FreshMap(field)} y) (select {map} y)))", MapSort(field));
+                if (FieldTouched(field, "y", fownerBefore, touchedFields, touchedInst) is string single)
+                    map = new Term($"(lambda ((y Int)) (ite {single} (select {FreshMap(field)} y) (select {map} y)))", MapSort(field));
                 f.Fields[field] = map;
             }
             var inTrees = f.Root == null ? new List<ISymbol>() : owned.Where(x => _engine.Fields.CanBeOwned(x.ContainingType)).ToList();
@@ -166,7 +184,10 @@ namespace CsVerify.Verifier
             string inTouched(string y) => touched.Count + touchedInst.Count == 0 ? "false"
                 : "(or " + string.Join(" ", touched.Select(t => $"(= (select {f.Root} {y}) {t})").Concat(touchedInst.Select(q => InFootprint(ownerBefore, before.Root, y, q)))) + ")";
             foreach (var field in inTrees)
-                f.Fields[field] = new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {FreshMap(field)} y) (select {FieldMap(f, field)} y)))", MapSort(field));
+            {
+                var changed = FieldTouched(field, "y", fownerBefore, touchedFields, touchedInst) is string single ? $"(or {inTouched("y")} {single})" : inTouched("y");
+                f.Fields[field] = new Term($"(lambda ((y Int)) (ite {changed} (select {FreshMap(field)} y) (select {FieldMap(f, field)} y)))", MapSort(field));
+            }
             f.Root = _z3.Define("root", new Term($"(lambda ((y Int)) (ite {inTouched("y")} (select {_z3.Fresh("root", Sort.Row)} y) (select {f.Root} y)))", Sort.Row));
         }
 
@@ -189,7 +210,7 @@ namespace CsVerify.Verifier
         {
             if (SpecSymbols.IsOwnsField(field) && _codeMode)
                 Report("CSV1016", at, $"'{at}': an [Owns] field changes hands only through Own.Take and Own.Give", isError: true);
-            if (IsOwnedField(field)) RequireWriteView(o, f, at, field.ContainingType);
+            if (IsOwnedField(field)) RequireWriteField(o, field, f, at);
             else CheckWrite(o, at);
         }
 

@@ -366,7 +366,7 @@ namespace CsVerify.Verifier
                 {
                     // a view goes whole, so the callee may write: every share must be back
                     if (_codeMode && f.Perm != null)
-                        Require(CanWrite(f, args[p.Ordinal]), "CSV1016", a.Syntax, $"'{a.Value.Syntax}' might have read shares out: join them back (Own.Unshare) before handing the view over");
+                        Require(CanWrite(f, args[p.Ordinal]), "CSV1016", a.Syntax, $"'{a.Value.Syntax}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over");
                     touched.Add(args[p.Ordinal]);
                 }
                 if (p.RefKind == RefKind.Ref) Revoke(f, args[p.Ordinal], AmountOf(p.Type)); // lent: what comes back is granted again

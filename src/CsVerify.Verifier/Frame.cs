@@ -47,8 +47,12 @@ namespace CsVerify.Verifier
         /// program has no Spec.Acc.
         /// </summary>
         public Term ArrPerm;
+        /// <summary>Permissions to single fields of owned objects: object -> field -> amount (the whole object's are in Perm).</summary>
+        public Term FPerm;
+        /// <summary>The predicate instance a single field is folded into: object -> field -> instance, 0 for none.</summary>
+        public Term FOwner;
         /// <summary>Loops whose body exchanges permissions: the permissions held outside them (not their invariants'), on entry.</summary>
-        public Dictionary<int, (Term perm, Term inst, Term arr)> LoopPermFrames = new Dictionary<int, (Term, Term, Term)>();
+        public Dictionary<int, (Term perm, Term inst, Term arr, Term fperm)> LoopPermFrames = new Dictionary<int, (Term, Term, Term, Term)>();
         /// <summary>The Own&lt;T&gt; view variables in hand (not consumed, not read-only borrows).</summary>
         public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         /// <summary>The variables holding packages of views ([Linear] record structs) not yet given away or taken apart.</summary>
@@ -74,7 +78,9 @@ namespace CsVerify.Verifier
             Inst = Inst,
             Owner = Owner,
             ArrPerm = ArrPerm,
-            LoopPermFrames = new Dictionary<int, (Term, Term, Term)>(LoopPermFrames),
+            FPerm = FPerm,
+            FOwner = FOwner,
+            LoopPermFrames = new Dictionary<int, (Term, Term, Term, Term)>(LoopPermFrames),
             Link = Link,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),

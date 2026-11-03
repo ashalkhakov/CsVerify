@@ -251,5 +251,34 @@ public static class C { static void Copy(Holder h) { var w = h.View; Own.Drop(w)
             Assert.Contains("CSV0001", Harness.Analyze(decls + @"
 public static class C { static void Leak() { var c = Own.New(new Cell(), out var v); var h = new Holder(v, c); } }"));
         }
+
+        [Fact]
+        public void FieldPermissions_SplitAndRejoin()
+        {
+            var r = Harness.Verify(@"
+[Owned]
+public sealed class Pt { public int X, Y; }
+public static class C
+{
+    static void SetX(Pt p, int v) { Spec.Requires(Spec.Acc(p, nameof(Pt.X))); Spec.Ensures(Spec.Acc(p, nameof(Pt.X)) && p.X == v); p.X = v; }
+    static void Both(Pt p, ref Own<Pt> v) {
+        Spec.Requires(v.Obj.Value == p);
+        p.Y = 7; SetX(p, 3); Spec.Assert(p.Y == 7 && p.X == 3); p.Y = 8; p.X = 5; }
+    static void Whole(Pt p) {
+        Spec.Requires(Spec.Acc(p, nameof(Pt.X)) && Spec.Acc(p, nameof(Pt.Y))); Spec.Ensures(Spec.Acc(p)); }
+    static void Other(Pt p) { Spec.Requires(Spec.Acc(p, nameof(Pt.X))); p.Y = 1; }
+    static void Same(Pt p, Pt q) { Spec.Requires(Spec.Acc(p, nameof(Pt.X)) && Spec.Acc(q, nameof(Pt.X))); Spec.Assert(p != q); }
+    static void Lost(Pt p, ref Own<Pt> v) { Spec.Requires(v.Obj.Value == p); Give(p); Keep(ref v); }
+    static void Give(Pt p) { Spec.Requires(Spec.Acc(p, nameof(Pt.X))); }
+    static void Keep(ref Own<Pt> v) { }
+}");
+            // a field given out of a whole object leaves the others in hand; with all back it is whole again
+            Assert.Empty(r.Errors("SetX"));
+            Assert.Empty(r.Errors("Both"));
+            Assert.Empty(r.Errors("Whole"));
+            Assert.Empty(r.Errors("Same"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Other"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Lost"));
+        }
 }
 }

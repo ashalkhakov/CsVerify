@@ -1221,6 +1221,9 @@ namespace CsVerify.Verifier
                             return _atomsTrue > 0 || f.ArrPerm == null ? T.True
                                 : new Term($"(forall ((i Int)) (=> (and (<= {lo} i) (< i {hi})) (>= (select (select {f.ArrPerm} {o}) i) 1.0)))", Sort.Bool);
                         }
+                        if (inv.Arguments.Length == 2 && inv.Arguments[1].Value.ConstantValue is { HasValue: true, Value: string fieldName } &&
+                            WholeFields(Unconverted(inv.Arguments[0].Value).Type).FirstOrDefault(x => x.Name == fieldName) is ISymbol accField)
+                            return _atomsTrue > 0 || f.Perm == null ? T.True : CanWriteField(f, o, accField);
                         return _atomsTrue > 0 || f.Perm == null ? T.True : CanWrite(f, o);
                     }
                     default:
@@ -1308,8 +1311,9 @@ namespace CsVerify.Verifier
             // the permissions its preconditions ask for are given to it: what they cover may change
             var touchedInst = new List<Term>();
             var touchedCells = new List<Atom>();
+            var touchedFields = new List<(Term obj, ISymbol field)>();
             if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null) && _codeMode)
-                foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst, touchedCells);
+                foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst, touchedCells, touchedFields: touchedFields);
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {
@@ -1356,7 +1360,7 @@ namespace CsVerify.Verifier
                     Report("CSV1016", inv.Syntax, $"'{m.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes", isError: true);
                 f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
             }
-            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst);
+            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst, touchedFields);
             if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
             else TakeBack(inv, receiver, f, callee);
             post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
