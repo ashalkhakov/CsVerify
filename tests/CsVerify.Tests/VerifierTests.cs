@@ -684,6 +684,35 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void NonNullableFields_AreNeverNullOnceBuilt()
+        {
+            static string[] Of(string method, string source) => Harness.Verify(source).Errors(method);
+            // writes prove it, reads assume it
+            const string node = "public sealed class Node { public string Name; public Node? Next; public Node(string n) { Name = n; } } ";
+            Assert.Empty(Of("Node..ctor", node));
+            Assert.Empty(Of("M", node + "public static class C { static int M(Node n) => n.Name.Length; }"));
+            Assert.Equal(new[] { "CSV1013" }, Of("M", node + "public static class C { static Node? M(Node n) => n.Next.Next; }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("M", node + "public static class C { static void M(Node n, string? s) { n.Name = s!; } }"));
+            Assert.Empty(Of("M", node + "public static class C { static void M(Node n, string? s) { if (s != null) n.Name = s; } }"));
+            // a constructor must set them
+            Assert.Equal(new[] { "CSV1014" }, Of("Node..ctor", "public sealed class Node { public string Name; public Node(bool b) { if (b) Name = \"x\"; } }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("Node..ctor", "public sealed class Node { public string Name = null!; public Node() { } }"));
+            Assert.Empty(Of("Node..ctor", "public sealed class Node { public string Name = \"\"; public Node() { } }"));
+            // ... except required ones, which every object initializer sets
+            const string req = "public sealed class R { public required string Name; public int K; } ";
+            Assert.Empty(Of("M", req + "public static class C { static int M() { var r = new R { Name = \"ab\" }; return r.Name.Length; } }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("M", req + "public static class C { static R M(string? s) => new R { Name = s! }; }"));
+            // and this may not escape before they are set
+            Assert.Equal(new[] { "CSV1015" }, Of("Node..ctor", "public sealed class Node { public string Name; public Node() { C.Use(this); Name = \"\"; } } " +
+                "public static class C { public static int Use(Node n) => n.Name.Length; }"));
+            // a static field starting with an object stays one
+            const string st = "public static class S { public static string Text = \"\"; public static string? Maybe; ";
+            Assert.Empty(Of("M", st + "static int M() => Text.Length; }"));
+            Assert.Equal(new[] { "CSV1013" }, Of("M", st + "static int M() => Maybe.Length; }"));
+            Assert.Equal(new[] { "CSV1014" }, Of("M", st + "static void M() { Text = Maybe!; } }"));
+        }
+
+        [Fact]
         public void ArrayElements_AreMaybeNull()
         {
             // C# lets string[] hold nulls (new string[n] is all nulls): only a specification says otherwise

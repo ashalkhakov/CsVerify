@@ -56,16 +56,22 @@ namespace CsVerify.Verifier
             finally { _invariantsInProgress.Remove(f.This.S); }
         }
 
-        /// <summary>In a constructor of a class with invariants, <c>this</c> may only have its own fields read and written.</summary>
+        /// <summary>
+        /// In a constructor of a class with invariants or non-nullable fields, <c>this</c> may only have its own fields
+        /// read and written.
+        /// </summary>
         private void CheckThisEscape(IOperation op)
         {
-            if (_method.MethodKind != MethodKind.Constructor || !HasImmutableInvariants(_method.ContainingType)) return;
+            if (_method.MethodKind != MethodKind.Constructor || _method.IsStatic ||
+                !HasImmutableInvariants(_method.ContainingType) && !HasNonNullFields(_method.ContainingType)) return;
             foreach (var use in op.DescendantsAndSelf().OfType<IInstanceReferenceOperation>())
             {
                 var parent = use.Parent;
                 if (parent is IFieldReferenceOperation || parent is IPropertyReferenceOperation pr && FieldEffects.IsHeapField(pr.Property)) continue;
                 if (parent is IInvocationOperation inv && inv.TargetMethod.MethodKind == MethodKind.Constructor) continue; // base(...)/this(...)
-                Report("CSV1015", use.Syntax, $"'this' escapes the constructor of {_method.ContainingType.Name} before its invariant is established", isError: true);
+                Report("CSV1015", use.Syntax, HasImmutableInvariants(_method.ContainingType)
+                    ? $"'this' escapes the constructor of {_method.ContainingType.Name} before its invariant is established"
+                    : $"'this' escapes the constructor of {_method.ContainingType.Name}, whose non-nullable fields may not be set yet", isError: true);
             }
         }
     }

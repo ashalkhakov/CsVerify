@@ -488,6 +488,7 @@ namespace CsVerify.Verifier
             var at = f.ReturnSyntax ?? MethodLocationNode();
             ExitOwned(f, at);
             ProveImmutableInvariants(f, at);
+            ProveConstructorSetFields(f, at);
             // a non-nullable return type or out/ref parameter is a postcondition the callers assume
             if (f.Result != null && IsNonNullableReturn(_method))
                 Prove(NotNull(f.Result), "CSV1014", at, $"'{_method.Name}' might return null, but its return type '{_method.ReturnType}' is not nullable");
