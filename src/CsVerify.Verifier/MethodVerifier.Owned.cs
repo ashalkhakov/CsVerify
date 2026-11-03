@@ -56,6 +56,8 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsSharedType(TypeOf(view))) { Grant(f, v, ShareAmount); return; }
             foreach (var other in f.LiveViews.Where(o => !SymbolEqualityComparer.Default.Equals(o, view)).ToList())
                 if (f.Vars.TryGetValue(other, out var ov)) _z3.Assume(T.Not(T.Eq(ov, v)));
+            foreach (var s in f.LivePackages.Where(f.Vars.ContainsKey).ToList())
+                foreach (var leaf in ViewsIn(f.Vars[s], TypeOf(s))) _z3.Assume(T.Not(T.Eq(leaf, v)));
             f.LiveViews.Add(view);
             Grant(f, v);
         }
@@ -142,6 +144,89 @@ namespace CsVerify.Verifier
                          .Where(i => SpecSymbols.IsCsVerifyType(i.TargetMethod.ContainingType, "Own") && i.TargetMethod.Name == "Tree"))
                 roots.Add(RootOf(state, EvalForeignSpec(tree.Arguments[0].Value, state, env)));
             return roots;
+        }
+
+        // ------------------------------------------------------------------------------------------ packages
+
+        /// <summary>
+        /// <c>new Holder(view, obj)</c> for a [Linear] record struct: the views (and shares) going in are handed over,
+        /// as to a call: their invariants hold, and the variables no longer hold them (nor their permissions).
+        /// </summary>
+        private void Pack(IObjectCreationOperation oc, Term[] args, Frame f)
+        {
+            foreach (var a in oc.Arguments)
+            {
+                if (a.Parameter == null || !SpecSymbols.IsViewType(a.Parameter.Type)) continue;
+                ProveOwnedInvariant(OwnedType(a.Parameter.Type), args[a.Parameter.Ordinal], f, a.Syntax, $"when it is packed into {oc.Type.Name}");
+                if (VariableOf(a.Value) is ISymbol packed) Release(f, packed);
+            }
+        }
+
+        /// <summary>
+        /// <c>var (view, obj) = holder;</c>: each part comes out of the package. A view comes alive again (with its
+        /// permission), its object at rest: its invariant holds, and it is the root of its tree.
+        /// </summary>
+        private void Unpack(IOperation target, Term package, INamedTypeSymbol type, Frame f, SpecEnv spec)
+        {
+            if (target is IDeclarationExpressionOperation d) target = d.Expression;
+            if (!(target is ITupleOperation tuple)) { Unsupported(target); return; }
+            for (int i = 0; i < tuple.Elements.Length; i++)
+            {
+                var p = DataTypes.PositionalProperty(type, i);
+                if (p == null) { Unsupported(target); return; }
+                var item = Field(p, package, type);
+                var element = tuple.Elements[i] is IDeclarationExpressionOperation de ? de.Expression : tuple.Elements[i];
+                var elementType = p.Type;
+                if (element is ITupleOperation && SpecSymbols.IsLinearPackage(elementType)) { Unpack(element, item, (INamedTypeSymbol)elementType, f, spec); continue; }
+                if (element is IDiscardOperation) continue;
+                if (SpecSymbols.IsViewType(elementType))
+                {
+                    AssumeOwnedInvariant(OwnedType(elementType), item, f);
+                    if (SpecSymbols.IsOwnType(elementType)) IsRoot(f, item);
+                }
+                Write(element, T.Coerce(item, SortOf(element.Type)), f, spec);
+            }
+        }
+
+        /// <summary>
+        /// A package arrives (a parameter, a call's result or ref/out argument): its views are linear, so their
+        /// objects are not null, none is another's, and none is that of a view in hand.
+        /// </summary>
+        private void ViewsArrive(Term v, ITypeSymbol type, Frame f, List<Term> others = null)
+        {
+            if (!SpecSymbols.IsLinearPackage(type)) return;
+            _z3.Assume(NotNull(v)); // a struct: there is always one
+            var leaves = ViewsIn(v, type).ToList();
+            if (leaves.Count == 0) return;
+            var held = ViewsHeld(f, v).Concat(others ?? new List<Term>()).ToList();
+            for (int i = 0; i < leaves.Count; i++)
+            {
+                _z3.Assume(NotNull(leaves[i]));
+                foreach (var h in held.Concat(leaves.Take(i))) _z3.Assume(T.Not(T.Eq(leaves[i], h)));
+            }
+            others?.AddRange(leaves);
+        }
+
+        /// <summary>The objects whose views are in hand: live view variables, and the views in live packages (but <paramref name="except"/>).</summary>
+        private IEnumerable<Term> ViewsHeld(Frame f, Term except = null)
+        {
+            foreach (var s in f.LiveViews.Where(f.Vars.ContainsKey)) yield return f.Vars[s];
+            foreach (var s in f.LivePackages.Where(f.Vars.ContainsKey))
+                if (except == null || f.Vars[s].S != except.S)
+                    foreach (var leaf in ViewsIn(f.Vars[s], TypeOf(s))) yield return leaf;
+        }
+
+        /// <summary>The objects whose views a value of this type carries: itself for a view, the parts of a package.</summary>
+        private IEnumerable<Term> ViewsIn(Term v, ITypeSymbol type)
+        {
+            if (!SpecSymbols.IsLinearPackage(type)) yield break;
+            var t = (INamedTypeSymbol)type;
+            foreach (var p in Data.Fields(t))
+            {
+                var part = Selector(p, v);
+                if (SpecSymbols.IsOwnType(p.Type)) yield return part;
+                else foreach (var inner in ViewsIn(part, p.Type)) yield return inner;
+            }
         }
 
         /// <summary>The local or parameter an operand names, if it is one.</summary>
@@ -234,6 +319,13 @@ namespace CsVerify.Verifier
             }
             foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsOwnType(p.Type) && p.RefKind == RefKind.In))
                 foreach (var other in received) _z3.Assume(T.Not(T.Eq(other, f.Vars[p])));
+            // packages received: their views too are distinct from each other and from the views in hand
+            var packed = new List<Term>();
+            foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsLinearPackage(p.Type) && p.RefKind != RefKind.Out && p.RefKind != RefKind.In))
+            {
+                ViewsArrive(f.Vars[p], p.Type, f, packed);
+                f.LivePackages.Add(p);
+            }
             if (ThisIsView && _method.MethodKind != MethodKind.Constructor) AssumeOwnedInvariant(_method.ContainingType, f.This, f);
             if (ThisIsView || _method.MethodKind == MethodKind.Constructor && SpecSymbols.IsOwned(_method.ContainingType)) IsRoot(f, f.This);
         }
@@ -264,6 +356,8 @@ namespace CsVerify.Verifier
             foreach (var a in inv.Arguments)
             {
                 var p = a.Parameter;
+                // a package's views go with it: the call may change their objects
+                if (p != null && p.RefKind != RefKind.Out && p.RefKind != RefKind.In) touched.AddRange(ViewsIn(args[p.Ordinal], p.Type));
                 if (p == null || !SpecSymbols.IsViewType(p.Type) || p.RefKind == RefKind.Out) continue;
                 // whoever receives a view or a share relies on the invariant, even if lent read-only
                 ProveOwnedInvariant(OwnedType(p.Type), args[p.Ordinal], f, a.Syntax, $"when its view is handed to '{m.Name}'");
@@ -278,6 +372,8 @@ namespace CsVerify.Verifier
                 if (p.RefKind == RefKind.Ref) Revoke(f, args[p.Ordinal], AmountOf(p.Type)); // lent: what comes back is granted again
                 if (p.RefKind == RefKind.None && VariableOf(a.Value) is ISymbol consumed) Release(f, consumed);
             }
+            foreach (var a in inv.Arguments.Where(a => a.Parameter?.RefKind == RefKind.None && SpecSymbols.IsLinearPackage(a.Parameter.Type)))
+                if (VariableOf(a.Value) is ISymbol given) f.LivePackages.Remove(given);
             return touched;
         }
 

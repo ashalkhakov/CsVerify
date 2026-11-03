@@ -252,6 +252,7 @@ namespace CsVerify.Verifier
                 }
                 var o = Construct(type, FieldValues(type, args, f, spec));
                 ProveInvariants(type, o, oc.Syntax);
+                if (CsVerify.Analyzers.SpecSymbols.IsLinearPackage(type)) Pack(oc, args, f);
                 return o;
             }
 

@@ -51,6 +51,8 @@ namespace CsVerify.Verifier
         public Dictionary<int, (Term perm, Term inst, Term arr)> LoopPermFrames = new Dictionary<int, (Term, Term, Term)>();
         /// <summary>The Own&lt;T&gt; view variables in hand (not consumed, not read-only borrows).</summary>
         public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The variables holding packages of views ([Linear] record structs) not yet given away or taken apart.</summary>
+        public HashSet<ISymbol> LivePackages = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
         public HashSet<int> ActiveLoops = new HashSet<int>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
@@ -65,6 +67,7 @@ namespace CsVerify.Verifier
             Fields = new Dictionary<ISymbol, Term>(Fields, SymbolEqualityComparer.Default),
             FieldEpoch = FieldEpoch,
             LiveViews = new HashSet<ISymbol>(LiveViews, SymbolEqualityComparer.Default),
+            LivePackages = new HashSet<ISymbol>(LivePackages, SymbolEqualityComparer.Default),
             Alloc = Alloc,
             Root = Root,
             Perm = Perm,

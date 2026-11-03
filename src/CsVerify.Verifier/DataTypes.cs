@@ -26,7 +26,7 @@ namespace CsVerify.Verifier
             {
                 var model = compilation.GetSemanticModel(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<RecordDeclarationSyntax>())
-                    if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && t.TypeKind == TypeKind.Class) candidates.Add(t);
+                    if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (t.TypeKind == TypeKind.Class || SpecSymbols.IsLinearPackage(t))) candidates.Add(t);
             }
             // a record is data if its own state is positional and its base (if any) is data too
             bool changed = true;
@@ -35,7 +35,8 @@ namespace CsVerify.Verifier
             {
                 changed = false;
                 foreach (var t in candidates)
-                    if (!data.Contains(t) && HasDataShape(t) && (t.BaseType?.SpecialType == SpecialType.System_Object || data.Contains(Def(t.BaseType))))
+                    if (!data.Contains(t) && HasDataShape(t) && (t.BaseType?.SpecialType == SpecialType.System_Object ||
+                        t.BaseType?.SpecialType == SpecialType.System_ValueType || data.Contains(Def(t.BaseType))))
                         changed = data.Add(t) || changed;
             }
             int tag = 1;

@@ -687,13 +687,19 @@ namespace CsVerify.Verifier
                     var v = T.Coerce(Eval(a.Value, f, spec), SortOf(a.Target.Type));
                     // moving a view (w = v) retires the variable it came from
                     if (SpecSymbols.IsViewType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) Release(f, moved);
+                    if (SpecSymbols.IsLinearPackage(a.Value.Type) && VariableOf(a.Value) is ISymbol movedPackage) f.LivePackages.Remove(movedPackage);
                     Write(a.Target, v, f, spec);
                     return v;
                 }
                 case IDeconstructionAssignmentOperation da:
                 {
                     var v = Eval(da.Value, f, spec);
-                    Deconstruct(da.Target, v, f, spec);
+                    if (SpecSymbols.IsLinearPackage(da.Value.Type))
+                    {
+                        if (VariableOf(da.Value) is ISymbol unpacked) f.LivePackages.Remove(unpacked);
+                        Unpack(da.Target, v, (INamedTypeSymbol)da.Value.Type, f, spec);
+                    }
+                    else Deconstruct(da.Target, v, f, spec);
                     return v;
                 }
                 case ICompoundAssignmentOperation ca:
@@ -1036,10 +1042,12 @@ namespace CsVerify.Verifier
                     if (l.Local.RefKind != RefKind.None) NotModeled(l.Syntax, $"ref local '{l.Local.Name}' is not supported (it may alias the heap)");
                     f.Vars[l.Local] = v;
                     if (IsViewVariable(l.Local)) ViewAlive(l.Local, v, f);
+                    if (SpecSymbols.IsLinearPackage(l.Local.Type)) f.LivePackages.Add(l.Local);
                     break;
                 case IParameterReferenceOperation p:
                     f.Vars[p.Parameter] = v;
                     if (IsViewVariable(p.Parameter) && p.Parameter.RefKind != RefKind.In) ViewAlive(p.Parameter, v, f);
+                    if (SpecSymbols.IsLinearPackage(p.Parameter.Type) && p.Parameter.RefKind != RefKind.In) f.LivePackages.Add(p.Parameter);
                     break;
                 case IDeclarationExpressionOperation d: Write(d.Expression, v, f, spec); break;
                 case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && hf.Instance != null:
@@ -1330,6 +1338,15 @@ namespace CsVerify.Verifier
                 post.Vars[callee.Method.Parameters[a.Parameter.Ordinal]] = nv;
                 Write(a.Value, nv, f, spec);
                 if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
+                touched.AddRange(ViewsIn(nv, a.Parameter.Type));          // or views in a package
+                ViewsArrive(nv, a.Parameter.Type, f);
+            }
+            // a package that comes back carries views: the call may have changed their objects (and only those it got)
+            Term packageResult = null;
+            if (SpecSymbols.IsLinearPackage(m.ReturnType))
+            {
+                packageResult = FreshOf(m.ReturnType, m.Name);
+                touched.AddRange(ViewsIn(packageResult, m.ReturnType));
             }
             if (f.ArrPerm != null && MentionsCells(callee))
                 f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc); // it writes only the cells it got
@@ -1346,7 +1363,8 @@ namespace CsVerify.Verifier
             post.FieldEpoch = f.FieldEpoch;
             post.Link = f.Link;
 
-            var result = m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name);
+            var result = packageResult ?? (m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name));
+            if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
             if (result != null && IsNonNullableReturn(callee.Method)) _z3.Assume(NotNull(result));
             if (!callee.IsPure && !callee.IsLemma)
             {

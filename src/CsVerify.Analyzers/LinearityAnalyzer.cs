@@ -73,6 +73,8 @@ namespace CsVerify.Analyzers
             var type = context.Operation.Type;
             if (type == null || !SpecSymbols.IsLinear(type) || SpecSymbols.IsTrusted(context.ContainingSymbol)) return;
             if (SpecSymbols.IsInGhostContext(context.Operation.Syntax, context.Operation.SemanticModel)) return;
+            // a package is made of linear values already had: building it consumes them
+            if (context.Operation is IObjectCreationOperation && SpecSymbols.IsLinearPackage(type)) return;
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Forged, context.Operation.Syntax.GetLocation(), type.Name));
         }
 
@@ -254,6 +256,14 @@ namespace CsVerify.Analyzers
             if (op == null) return;
             if (op is IAnonymousFunctionOperation || op is ILocalFunctionOperation) return; // captures are checked separately
 
+            if (op is IDeconstructionAssignmentOperation da && SpecSymbols.IsLinearPackage(da.Value.Type))
+            {
+                // taking a package apart consumes it and gives each linear part a variable of its own
+                Visit(da.Value, state, ctx);
+                foreach (var target in Leaves(da.Target))
+                    if (TryVar(target, ctx, out int t)) Define(t, target, state, ctx);
+                return;
+            }
             if (op is ISimpleAssignmentOperation asg)
             {
                 Visit(asg.Value, state, ctx);
@@ -286,6 +296,14 @@ namespace CsVerify.Analyzers
                 case IFlowCaptureOperation _:
                     Consume(i, op, state, ctx);
                     break;
+                case IDeconstructionAssignmentOperation d when d.Value == self:
+                    Consume(i, op, state, ctx);
+                    break;
+                case IPropertyReferenceOperation pr when SpecSymbols.IsLinear(pr.Type):
+                case IFieldReferenceOperation fr when SpecSymbols.IsLinear(fr.Type):
+                    ctx.Report(Descriptors.Copied, parent.Syntax.GetLocation(), "taken out of '" + ctx.Vars[i].Name + "', which still holds it: deconstruct it instead");
+                    Borrow(i, op, state, ctx);
+                    break;
                 case IConversionOperation conv:
                     ctx.Report(Descriptors.Copied, conv.Syntax.GetLocation(), "converted to '" + conv.Type?.Name + "' (boxing copies it)");
                     Consume(i, op, state, ctx);
@@ -294,6 +312,18 @@ namespace CsVerify.Analyzers
                     Borrow(i, op, state, ctx);
                     break;
             }
+        }
+
+        /// <summary>The variables a deconstruction writes (through nested tuples and declarations).</summary>
+        private static IEnumerable<IOperation> Leaves(IOperation target)
+        {
+            if (target is IDeclarationExpressionOperation d) target = d.Expression;
+            if (target is ITupleOperation tuple)
+            {
+                foreach (var e in tuple.Elements)
+                    foreach (var leaf in Leaves(e)) yield return leaf;
+            }
+            else yield return target;
         }
 
         private static ITypeSymbol ContainingTypeOf(IOperation target) =>

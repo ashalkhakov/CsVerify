@@ -193,5 +193,63 @@ public static class C
             Assert.Equal(new[] { "CSV1016" }, r.Errors("NoView"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Outside"));
         }
+
+        [Fact]
+        public void Packages_CarryTheirViews()
+        {
+            var r = Harness.Verify(@"
+[Owned]
+public sealed class Cell
+{
+    public int V;
+    [Invariant, Pure] public bool Valid() => V >= 0;
+    public Cell() { Spec.Ensures(V == 0); V = 0; }
+}
+[Linear]
+public readonly record struct Holder(Own<Cell> View, Cell Obj)
+{
+    [Invariant, GhostFunction] public bool Valid() => View.Obj.Value == Obj;
+}
+public static class C
+{
+    static Holder Make() { var c = Own.New(new Cell(), out var v); return new Holder(v, c); }
+    static void Poke(ref Holder h) { var (v, c) = h; c.V = 5; h = new Holder(v, c); }
+    static void Other(Cell d, ref Own<Cell> dv) {
+        Spec.Requires(dv.Obj.Value == d);
+        d.V = 1; var h = Make(); Poke(ref h); Spec.Assert(d.V == 1);
+        var (v, c) = h; Own.Drop(v); }
+    static void Stale(ref Holder h) {
+        var (v, c) = h; int before = c.V; h = new Holder(v, c); Poke(ref h); Spec.Assert(c.V == before); }
+    static void Inside(ref Holder h) { h.Obj.V = 3; }
+}");
+            // a package hands its views over when built and back when taken apart; a call sees the views in it
+            Assert.Empty(r.Errors("Make"));
+            Assert.Empty(r.Errors("Poke"));
+            Assert.Empty(r.Errors("Other"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Stale"));
+            Assert.Contains("CSV1016", r.Errors("Inside"));
+        }
+
+        [Fact]
+        public void Packages_AreLinear()
+        {
+            const string decls = @"
+[Owned] public sealed class Cell { public int V; }
+[Linear] public readonly record struct Holder(Own<Cell> View, Cell Obj);
+";
+            // built from views, taken apart into views: nothing is lost or copied
+            Assert.Empty(Harness.Analyze(decls + @"
+public static class C
+{
+    static Holder Make() { var c = Own.New(new Cell(), out var v); return new Holder(v, c); }
+    static void Use() { var (v, c) = Make(); Own.Drop(v); }
+}"));
+            // a view read out of a package that still holds it would be a second copy
+            Assert.Contains("CSV0004", Harness.Analyze(decls + @"
+public static class C { static void Copy(Holder h) { var w = h.View; Own.Drop(w); var (v, c) = h; Own.Drop(v); } }"));
+            // a package not taken apart loses its views
+            Assert.Contains("CSV0001", Harness.Analyze(decls + @"
+public static class C { static void Leak() { var c = Own.New(new Cell(), out var v); var h = new Holder(v, c); } }"));
+        }
 }
 }

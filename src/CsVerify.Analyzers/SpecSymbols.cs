@@ -54,6 +54,7 @@ namespace CsVerify.Analyzers
         {
             for (var t = type as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
             {
+                if (IsLinearPackage(t)) return true;
                 if (!t.IsRecord || t.TypeKind != TypeKind.Class) return false;
                 foreach (var f in t.GetMembers().OfType<IFieldSymbol>())
                     if (!f.IsStatic && !(f.AssociatedSymbol is IPropertySymbol p && p.SetMethod?.IsInitOnly != false &&
@@ -82,6 +83,14 @@ namespace CsVerify.Analyzers
                 if (HasAttribute(cur, "TrustedAttribute")) return true;
             return false;
         }
+
+        /// <summary>
+        /// A package of linear values: a user's [Linear] positional readonly record struct (say, a view together with
+        /// the object it owns). Built with <c>new</c>, which consumes what goes in; taken apart by deconstruction.
+        /// </summary>
+        public static bool IsLinearPackage(ITypeSymbol type) =>
+            type is INamedTypeSymbol t && t.TypeKind == TypeKind.Struct && t.IsRecord && t.IsReadOnly &&
+            HasAttribute(t.OriginalDefinition, "LinearAttribute") && t.ContainingNamespace?.ToDisplayString() != Namespace;
 
         public static bool IsLinear(ITypeSymbol type)
         {

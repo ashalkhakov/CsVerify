@@ -177,6 +177,9 @@ namespace CsVerify.Verifier
 
             private void TypeDeclaration(BaseTypeDeclarationSyntax type)
             {
+                // a package keeps its run-time parts: its proof-typed positional parameters go
+                if (type is RecordDeclarationSyntax record && record.ParameterList != null && _model.GetDeclaredSymbol(type) is INamedTypeSymbol rt && !IsProofType(rt))
+                    RemoveFromList(record.ParameterList.Parameters, p => p.Type != null && _model.GetTypeInfo(p.Type).Type is ITypeSymbol pt && IsProofType(pt));
                 if (!_library) return;
                 // the runtime keeps no ghost types: a leftover use of one in the program is a compile error
                 if (_model.GetDeclaredSymbol(type) is INamedTypeSymbol t &&
@@ -227,6 +230,10 @@ namespace CsVerify.Verifier
                             case InvocationExpressionSyntax inv when IsErasedMethod(_model.GetSymbolInfo(inv).Symbol as IMethodSymbol):
                                 DeleteStatement(es);
                                 break;
+                            case AssignmentExpressionSyntax unpack when (unpack.Left is DeclarationExpressionSyntax || unpack.Left is TupleExpressionSyntax) &&
+                                                                        SpecSymbols.IsLinearPackage(_model.GetTypeInfo(unpack.Right).Type):
+                                Unpack(es, unpack);
+                                break;
                             case AssignmentExpressionSyntax asg when IsProof(asg.Left):
                                 // a view moved or produced: keep a call that does real work, drop the rest
                                 if (IsKeptCall(asg.Right)) Delete(TextSpan.FromBounds(es.SpanStart, asg.Right.SpanStart));
@@ -248,6 +255,31 @@ namespace CsVerify.Verifier
                         else Replace(ret.Span, "return;");
                         break;
                 }
+            }
+
+            /// <summary>
+            /// <c>var (view, obj) = package;</c>: the proof parts are not there at run time. What is left is a smaller
+            /// deconstruction, or for one part a read of its property (C# has no one-element deconstruction).
+            /// </summary>
+            private void Unpack(ExpressionStatementSyntax stmt, AssignmentExpressionSyntax unpack)
+            {
+                var type = (INamedTypeSymbol)_model.GetTypeInfo(unpack.Right).Type;
+                bool declared = unpack.Left is DeclarationExpressionSyntax;
+                var parts = declared
+                    ? ((ParenthesizedVariableDesignationSyntax)((DeclarationExpressionSyntax)unpack.Left).Designation).Variables.Select(v => "var " + v.ToString()).ToList()
+                    : ((TupleExpressionSyntax)unpack.Left).Arguments.Select(a => a.Expression.ToString()).ToList();
+                var kept = new List<(string target, string property)>();
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    var p = DataTypes.PositionalProperty(type, i);
+                    if (p != null && !IsProofType(p.Type)) kept.Add((parts[i], p.Name));
+                }
+                if (kept.Count == parts.Count) return;
+                var right = unpack.Right.ToString();
+                string text = kept.Count == 0 ? "_ = " + right + ";"
+                    : kept.Count == 1 ? $"{kept[0].target} = ({right}).{kept[0].property};"
+                    : $"({string.Join(", ", kept.Select(k => k.target))}) = {right};";
+                Replace(stmt.Span, text);
             }
 
             private void Arguments(ArgumentListSyntax args)
