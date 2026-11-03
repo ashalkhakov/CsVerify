@@ -666,7 +666,7 @@ namespace CsVerify.Verifier
                 {
                     var v = T.Coerce(Eval(a.Value, f, spec), SortOf(a.Target.Type));
                     // moving a view (w = v) retires the variable it came from
-                    if (SpecSymbols.IsOwnType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) f.LiveViews.Remove(moved);
+                    if (SpecSymbols.IsOwnType(a.Value.Type) && VariableOf(a.Value) is ISymbol moved) Release(f, moved);
                     Write(a.Target, v, f, spec);
                     return v;
                 }
@@ -1240,6 +1240,14 @@ namespace CsVerify.Verifier
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
             if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
             var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax);
+            // lending trees through Spec.Modifies(Own.Tree(x)): the caller must hold them; the call may change them
+            if (!callee.IsPure && f.Perm != null)
+                foreach (var root in LentTrees(callee, pre, preEnv))
+                {
+                    if (_codeMode)
+                        Require(CanWrite(f, root), "CSV1016", inv.Syntax, $"'{m.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here");
+                    touched.Add(root);
+                }
 
             if (_engine.IsRecursiveCall(_method, callee.Method))
             {

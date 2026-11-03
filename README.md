@@ -251,6 +251,15 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
   
   So a query on one list keeps its value across any change to another list. `Spec.Reads` may be given on owned classes; `Spec.Modifies` may not, since writes go through views.
 
+**Permissions and lending (the permission core).** Internally, write access to owned objects is a permission mask: object → fraction, where 1 lets the holder write. It's granted by:
+- a view in hand;
+- `this` in the class's own methods;
+- a tree lent through a frame.
+
+It's revoked when the view goes: consumed, moved, dropped, or lent by `ref`. Writes check it (CSV1016).
+- **Lending.** A Dafny-style method with `Spec.Modifies(Own.Tree(x))` borrows `x`'s whole ownership tree for the call. Its caller must hold that tree (its root's view), the method may then write any object in it without a view, and afterwards the caller knows that tree, and nothing else, may have changed. That bridges ATS-style ownership and Dafny-style frames: framed code works on owned data without threading views through its signature.
+- **What stays.** This is the Carbon-style encoding of permissions (Viper's VC-generating backend): the heap stays a map per field, so reads remain free, and the ownership `Root` map and the frame links stay. Fractions below 1 (shared read access) and user-defined predicates are the next steps.
+
 **One write rule.** A write of `o.F` is allowed if:
 - `o` is `[Owned]` and its view is in hand (a live view, or `this` in its class's methods) — a `Spec.Modifies` frame does not count, since the view's holder relies on its invariant;
 - or `o` is in the method's `Spec.Modifies` frame;
@@ -614,7 +623,7 @@ tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted
 samples/Good, samples/Buggy
 ```
 
-`dotnet build` builds everything; `dotnet test` runs the 183 tests (they need Z3 on `PATH`).
+`dotnet build` builds everything; `dotnet test` runs the 184 tests (they need Z3 on `PATH`).
 
 ## Limitations (honest list)
 

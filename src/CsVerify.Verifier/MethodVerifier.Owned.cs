@@ -56,6 +56,7 @@ namespace CsVerify.Verifier
             foreach (var other in f.LiveViews.Where(o => !SymbolEqualityComparer.Default.Equals(o, view)).ToList())
                 if (f.Vars.TryGetValue(other, out var ov)) _z3.Assume(T.Not(T.Eq(ov, v)));
             f.LiveViews.Add(view);
+            Grant(f, v);
         }
 
         /// <summary>The [Owns] field an Own.Take/Own.Give slot names, and its container; null if it is something else.</summary>
@@ -117,13 +118,27 @@ namespace CsVerify.Verifier
             if (f.Root != null)
                 Require(T.Not(T.Eq(RootOf(f, c), x)), "CSV1016", inv.Syntax, $"'{inv.Arguments[1].Value.Syntax}' might own the container: ownership would be a cycle");
             ProveOwnedInvariant(field.Type, x, f, inv.Syntax, "when it is given to its owner");
-            if (VariableOf(inv.Arguments[2].Value) is ISymbol consumed) f.LiveViews.Remove(consumed);
+            if (VariableOf(inv.Arguments[2].Value) is ISymbol consumed) Release(f, consumed);
             var state = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), c, x);
             f.Link = new StateLink { Before = state, Changed = TreeOf(state, c) }; // only c's tree changed (x joins it)
             if (f.Root != null)
                 f.Root = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {x}) {RootOf(f, c)} (select {f.Root} y)))", Sort.Row);
             return T.True;
+        }
+
+        /// <summary>
+        /// Lending: the trees a method's Spec.Modifies names with Own.Tree(x). Its caller must hold x's tree (full
+        /// permission to its root); the method gets write permission to the whole tree for the call.
+        /// </summary>
+        private List<Term> LentTrees(Contract c, Frame state, SpecEnv env)
+        {
+            var roots = new List<Term>();
+            if (c.Modifies == null || state.Root == null) return roots;
+            foreach (var tree in c.Modifies.DescendantsAndSelf().OfType<IInvocationOperation>()
+                         .Where(i => SpecSymbols.IsCsVerifyType(i.TargetMethod.ContainingType, "Own") && i.TargetMethod.Name == "Tree"))
+                roots.Add(RootOf(state, EvalForeignSpec(tree.Arguments[0].Value, state, env)));
+            return roots;
         }
 
         /// <summary>The local or parameter an operand names, if it is one.</summary>
@@ -139,13 +154,32 @@ namespace CsVerify.Verifier
 
         private static ITypeSymbol OwnedType(ITypeSymbol ownType) => ((INamedTypeSymbol)ownType).TypeArguments[0];
 
+        /// <summary>Full (write) permission to <paramref name="o"/> in state f.</summary>
+        private static Term CanWrite(Frame f, Term o) => new Term($"(= (select {f.Perm} {T.Coerce(o, Sort.Int)}) 1.0)", Sort.Bool);
+
+        private static void Grant(Frame f, Term o)
+        {
+            if (f.Perm != null) f.Perm = new Term($"(store {f.Perm} {T.Coerce(o, Sort.Int)} 1.0)", Sort.Perm);
+        }
+
+        private static void Revoke(Frame f, Term o)
+        {
+            if (f.Perm != null) f.Perm = new Term($"(store {f.Perm} {T.Coerce(o, Sort.Int)} 0.0)", Sort.Perm);
+        }
+
+        /// <summary>A view variable goes (consumed, moved, dropped): so does the permission it held.</summary>
+        private void Release(Frame f, ISymbol view)
+        {
+            if (f.Vars.TryGetValue(view, out var o)) Revoke(f, o);
+            f.LiveViews.Remove(view);
+        }
+
+        /// <summary>Writing an [Owned] object needs full permission to it (CSV1016).</summary>
         private void RequireWriteView(Term o, Frame f, SyntaxNode at, ITypeSymbol type)
         {
-            if (!_codeMode || _foreignSpec > 0) return;
-            var holders = f.LiveViews.Select(v => Read(f, v)).ToList();
-            if (ThisIsView || _method.MethodKind == MethodKind.Constructor && SpecSymbols.IsOwned(_method.ContainingType)) holders.Add(f.This);
-            Require(T.Or(holders.Select(h => T.Eq(h, o)).ToArray()), "CSV1016", at,
-                $"'{at}' changes an [Owned] {type.Name} without holding its view (Own<{type.Name}>)");
+            if (!_codeMode || _foreignSpec > 0 || f.Perm == null) return;
+            Require(CanWrite(f, o), "CSV1016", at,
+                $"'{at}' changes an [Owned] {type.Name} without holding its view (Own<{type.Name}>) or a frame lent to it");
         }
 
         private Term OwnedInvariant(ITypeSymbol type, Term o, Frame f) =>
@@ -169,9 +203,11 @@ namespace CsVerify.Verifier
         private void EnterOwned(Frame f)
         {
             var received = new List<Term>();
+            if (_engine.UsesOwnership) f.Perm = new Term("((as const (Array Int Real)) 0.0)", Sort.Perm);
+            if (ThisIsView || _method.MethodKind == MethodKind.Constructor && SpecSymbols.IsOwned(_method.ContainingType)) Grant(f, f.This);
             foreach (var p in _method.Parameters.Where(p => SpecSymbols.IsOwnType(p.Type) && p.RefKind != RefKind.Out))
             {
-                if (p.RefKind != RefKind.In) f.LiveViews.Add(p);
+                if (p.RefKind != RefKind.In) { f.LiveViews.Add(p); Grant(f, f.Vars[p]); }
                 AssumeOwnedInvariant(OwnedType(p.Type), f.Vars[p], f);
                 IsRoot(f, f.Vars[p]);
                 // views are linear: two in hand at once own two different objects
@@ -211,7 +247,8 @@ namespace CsVerify.Verifier
                 if (p == null || !SpecSymbols.IsOwnType(p.Type) || p.RefKind == RefKind.Out || p.RefKind == RefKind.In) continue;
                 ProveOwnedInvariant(OwnedType(p.Type), args[p.Ordinal], f, a.Syntax, $"when its view is handed to '{m.Name}'");
                 touched.Add(args[p.Ordinal]);
-                if (p.RefKind == RefKind.None && VariableOf(a.Value) is ISymbol consumed) f.LiveViews.Remove(consumed);
+                if (p.RefKind == RefKind.Ref) Revoke(f, args[p.Ordinal]); // lent: what comes back is granted again
+                if (p.RefKind == RefKind.None && VariableOf(a.Value) is ISymbol consumed) Release(f, consumed);
             }
             return touched;
         }
@@ -242,7 +279,7 @@ namespace CsVerify.Verifier
             {
                 var view = inv.Arguments[0].Value;
                 Eval(view, f, spec);
-                if (VariableOf(view) is ISymbol dropped) f.LiveViews.Remove(dropped);
+                if (VariableOf(view) is ISymbol dropped) Release(f, dropped);
                 return T.True;
             }
             // a view is made once, for a new object: from an existing one it would be a second view

@@ -76,6 +76,8 @@ namespace CsVerify.Verifier
             var (fields, all) = _engine.Fields.WritesOf(callee);
             if (fields.Count == 0 && !all) return;
             var owned = all ? _engine.Fields.OwnedFields() : fields.Where(IsOwnedField).ToList();
+            // a tree lent through Spec.Modifies may have any owned field changed (the callee's own may be few)
+            if (touched != null && touched.Count > 0 && owned.Count == 0) owned = _engine.Fields.OwnedFields().ToList();
             var before = f.Clone();
             if (all && modifiable != null)
             {

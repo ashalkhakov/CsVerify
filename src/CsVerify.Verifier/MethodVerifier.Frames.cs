@@ -45,6 +45,10 @@ namespace CsVerify.Verifier
             if (_contract.Modifies != null && SpecSymbols.IsOwned(_method.ContainingType))
                 Report("CSV1017", MethodLocationNode(), $"{_method.ContainingType.Name} is [Owned]: its objects are changed through their views, not by Spec.Modifies", isError: true);
             if (_contract.Modifies != null) _modifiesEntry = EvalOwnSpec(_contract.Modifies, f, spec);
+            // trees lent to this method: it may write all of them
+            if (f.Perm != null)
+                foreach (var root in LentTrees(_contract, f, spec))
+                    f.Perm = new Term($"(lambda ((y Int)) (ite (= (select {f.Root} y) {root}) 1.0 (select {f.Perm} y)))", Sort.Perm);
             if (_contract.Reads != null) _readsEntry = EvalOwnSpec(_contract.Reads, f, spec);
             else if (ReadsItsTree(_contract) && f.This != null) _readsEntry = TreeOf(f, f.This);
         }

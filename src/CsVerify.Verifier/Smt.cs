@@ -7,7 +7,7 @@ using System.Text;
 
 namespace CsVerify.Verifier
 {
-    public enum Sort { Int, Bool, Heap, Row }
+    public enum Sort { Int, Bool, Heap, Row, Perm }
 
     /// <summary>An SMT-LIB2 term with its sort.</summary>
     public sealed class Term
@@ -29,6 +29,7 @@ namespace CsVerify.Verifier
             Sort.Int => "Int",
             Sort.Bool => "Bool",
             Sort.Row => "(Array Int Int)",
+            Sort.Perm => "(Array Int Real)",
             _ => "(Array Int (Array Int Int))",
         };
 

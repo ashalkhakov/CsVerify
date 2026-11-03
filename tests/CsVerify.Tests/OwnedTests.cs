@@ -166,5 +166,32 @@ public static class C { BODY }";
             // a query reads only its own tree
             Assert.Equal(new[] { "CSV1017" }, r.Errors("get_PeerVal"));
         }
+
+        [Fact]
+        public void Trees_CanBeLentThroughModifies()
+        {
+            var r = Harness.Verify(@"
+[Owned]
+public sealed class Node
+{
+    public int Val;
+    [Owns] public Node? Next;
+    [Pure] public int First => Val;
+}
+public static class C
+{
+    static void Reset(Node n) { Spec.Modifies(Own.Tree(n)); Spec.Ensures(n.Val == 0); n.Val = 0; if (n.Next != null) n.Next.Val = 0; }
+    static void Use(Node a, ref Own<Node> av, Node b, ref Own<Node> bv) {
+        Spec.Requires(av.Obj.Value == a && bv.Obj.Value == b);
+        int bf = b.First; Reset(a); Spec.Assert(a.Val == 0 && b.First == bf); }
+    static void NoView(Node a) { Reset(a); }
+    static void Outside(Node a, Node b) { Spec.Modifies(Own.Tree(a)); b.Val = 1; }
+}");
+            // a Dafny-style method borrows a whole tree from a caller that holds its view; nothing else changes
+            Assert.Empty(r.Errors("Reset"));
+            Assert.Empty(r.Errors("Use"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("NoView"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("Outside"));
+        }
 }
 }

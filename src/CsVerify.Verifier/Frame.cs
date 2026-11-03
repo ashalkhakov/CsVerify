@@ -28,6 +28,12 @@ namespace CsVerify.Verifier
         public Term Alloc;
         /// <summary>How the heap fields came to be: the state before the last change and what it may have touched.</summary>
         public StateLink Link;
+        /// <summary>
+        /// Permissions to [Owned] objects: object -> fraction (1 lets the holder write it; step 2 adds fractions in
+        /// between for shared reading). Granted by a view in hand, <c>this</c> in the class's methods, or a frame lent
+        /// through Spec.Modifies; revoked when the view goes. Null when the program has no [Owned] classes.
+        /// </summary>
+        public Term Perm;
         /// <summary>The Own&lt;T&gt; view variables in hand (not consumed, not read-only borrows).</summary>
         public HashSet<ISymbol> LiveViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
@@ -46,6 +52,7 @@ namespace CsVerify.Verifier
             LiveViews = new HashSet<ISymbol>(LiveViews, SymbolEqualityComparer.Default),
             Alloc = Alloc,
             Root = Root,
+            Perm = Perm,
             Link = Link,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),
