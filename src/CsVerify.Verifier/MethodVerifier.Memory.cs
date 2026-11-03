@@ -128,8 +128,18 @@ namespace CsVerify.Verifier
         {
             if (held == null || !_engine.UsesMemory) return heapAfter;
             var fresh = _z3.Fresh("mem", Sort.Row);
-            return _z3.Define("heap", new Term(
-                $"(lambda ((x Int)) (ite (= x {MemRow}) (lambda ((i Int)) (ite (>= (select (select {held} {MemRow}) i) 1.0) (select (select {heapBefore} {MemRow}) i) (select {fresh} i))) (select {heapAfter} x)))", Sort.Heap));
+            return CellwiseHeap($"(ite (= x {MemRow}) (ite (>= (select (select {held} {MemRow}) i) 1.0) (select (select {heapBefore} {MemRow}) i) (select {fresh} i)) (select (select {heapAfter} x) i))");
+        }
+
+        /// <summary>
+        /// A heap defined cell by cell (x, i): a constant of its own and an axiom, not a lambda term, so quantified
+        /// facts about cells (postconditions over arrays, [Pure] applications) are instantiated through it.
+        /// </summary>
+        private Term CellwiseHeap(string cell)
+        {
+            var heap = _z3.Fresh("heap", Sort.Heap);
+            _z3.Assume(new Term($"(forall ((x Int) (i Int)) (! (= (select (select {heap} x) i) {cell}) :pattern ((select (select {heap} x) i))))", Sort.Bool));
+            return heap;
         }
 
         /// <summary>A loop that changes memory: only cells of views not touched in it keep their contents.</summary>
@@ -140,8 +150,7 @@ namespace CsVerify.Verifier
                 .Select(v => InView(f.Vars[v], TypeOf(v), "i")).ToList();
             var fresh = _z3.Fresh("mem", Sort.Row);
             var keep = kept.Count == 0 ? "false" : $"(or {string.Join(" ", kept)})";
-            f.Heap = _z3.Define("heap", new Term(
-                $"(lambda ((x Int)) (ite (= x {MemRow}) (lambda ((i Int)) (ite {keep} (select (select {heapBefore} {MemRow}) i) (select {fresh} i))) (select {f.Heap} x)))", Sort.Heap));
+            f.Heap = CellwiseHeap($"(ite (= x {MemRow}) (ite {keep} (select (select {heapBefore} {MemRow}) i) (select {fresh} i)) (select (select {f.Heap} x) i))");
         }
     }
 }

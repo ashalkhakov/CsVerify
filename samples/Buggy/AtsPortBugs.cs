@@ -32,6 +32,18 @@ namespace Samples.Buggy
         }
     }
 
+    [Owned]
+    public sealed class Rgn
+    {
+        public int[] Twin;
+
+        public Rgn(int[] twin)
+        {
+            Spec.Ensures(Twin == twin);
+            Twin = twin;
+        }
+    }
+
     public static class AtsPortBugs
     {
         [Predicate]
@@ -138,6 +150,22 @@ namespace Samples.Buggy
             Spec.Unfold(Grows(d, n));
             d.Data = new int[m1];
             Spec.Fold(Grows(d, n));
+        }
+
+        /// <summary>half-edge-mesh's region: every twin is a half-edge of it, or none.</summary>
+        [Predicate]
+        public static bool Region(Rgn r) =>
+            r != null && Spec.Acc(r) && r.Twin != null && Spec.Acc(r.Twin) &&
+            Spec.Forall(0, r.Twin.Length, h => -1 <= r.Twin[h] && r.Twin[h] < r.Twin.Length);
+
+        // BUG: a twin one past the last half-edge, a dangling region pointer: the region cannot be folded (CSV1019)
+        public static void DanglingTwin(Rgn r)
+        {
+            Spec.Requires(Region(r));
+            Spec.Ensures(Region(r));
+            Spec.Unfold(Region(r));
+            if (r.Twin.Length > 0) r.Twin[0] = r.Twin.Length;
+            Spec.Fold(Region(r));
         }
 
         // BUG: inserts the same node twice: its permission went into the list the first time (CSV1016)

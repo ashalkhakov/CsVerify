@@ -1375,7 +1375,7 @@ namespace CsVerify.Verifier
                 packageResult = FreshOf(m.ReturnType, m.Name);
                 touched.AddRange(ViewsIn(packageResult, m.ReturnType));
             }
-            if (f.ArrPerm != null && MentionsCells(callee))
+            if (f.ArrPerm != null && MentionsCells(callee) && !callee.IsPure)
                 f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
             else if (HavocsHeap(m))
             {

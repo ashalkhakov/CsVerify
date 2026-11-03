@@ -123,7 +123,7 @@ namespace CsVerify.Verifier
             if (f.Owner != null) f.Owner = _z3.Define("owner", f.Owner);
             if (f.Root != null) f.Root = _z3.Define("root", f.Root);
             var ownerBefore = f.Owner; // (footprints as they were when the call began)
-            HavocOwners(f, touched, touchedInst, touchedFields);
+            if (!_engine.ContractOf(callee).IsPure) HavocOwners(f, touched, touchedInst, touchedFields); // (a [Pure] call folds nothing)
             var (fields, all) = _engine.Fields.WritesOf(callee);
             if (fields.Count == 0 && !all) return;
             var owned = all ? _engine.Fields.OwnedFields() : fields.Where(IsOwnedField).ToList();
