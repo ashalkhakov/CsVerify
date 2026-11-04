@@ -160,7 +160,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [How it works](docs/how-it-works.md): the analyzers, and how the verifier turns code into verification conditions.
 - [Data types and objects](docs/objects.md): data types and invariants, mutable and owned objects, predicates,
   dynamic frames, object-oriented code.
-- [Integers, exceptions, floating point and null](docs/semantics.md).
+- [Integers, exceptions, async, floating point and null](docs/semantics.md).
 - [Contracts for code without sources](docs/library-contracts.md): `[ContractsFor]` stubs and `[Model]` functions for
   the BCL and other assemblies, and the BCL contracts CsVerify ships.
 - [Proof erasure](docs/erasure.md).

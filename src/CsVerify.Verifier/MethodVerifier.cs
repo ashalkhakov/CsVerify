@@ -165,6 +165,7 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType) || IsImmutableClass(_method.ContainingType)) &&
                 _engine.Fields.InvariantDependence(_method, !Data.IsData(_method.ContainingType)) is string why)
                 Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
+            if (ProofCode && _method.IsAsync) NotModeled(MethodLocationNode(), "a lemma or [Pure] function cannot be async");
             FindLoops(cfg);
             _cfg = cfg;
 
@@ -333,6 +334,11 @@ namespace CsVerify.Verifier
                     case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression): Target(post.Operand); break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
                     case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m: CalledInLoop(loop, m); break;
+                    case AwaitExpressionSyntax _:
+                        // other code runs at an await: as after a call to unknown code
+                        loop.HavocHeap = loop.HavocAllFields = loop.HavocRoot = true;
+                        loop.Havoc.UnionWith(ClosureWritten());
+                        break;
                     case BaseObjectCreationExpressionSyntax oc when _model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor:
                         AddFieldWrites(loop, ctor);
                         loop.HavocFields.UnionWith(FieldEffects.FieldsOf(ctor.ContainingType)); // the new object's fields are set
@@ -353,6 +359,7 @@ namespace CsVerify.Verifier
 
         private void CalledInLoop(Loop loop, IMethodSymbol m)
         {
+            if (RunsCode(m)) loop.Havoc.UnionWith(ClosureWritten());
             if (HavocsHeap(m)) loop.HavocHeap = true;
             if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) loop.HavocRoot = true;
             if (!SpecSymbols.IsSpecClass(m.ContainingType)) AddFieldWrites(loop, m);
@@ -866,6 +873,7 @@ namespace CsVerify.Verifier
                     return fv;
                 }
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
+                case IAwaitOperation aw: return EvalAwait(aw, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
                 case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : IsFloating(op.Type) ? Zero(SortOf(op.Type)) : T.Int(0);
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
@@ -1450,6 +1458,7 @@ namespace CsVerify.Verifier
 
             var callee = _engine.ContractOf(m);
             if (callee.IsStub && _codeMode) Assumed(callee);
+            CheckNotAwaited(inv, callee);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
             if (receiver != null) Deref(inv.Instance, receiver, inv.Syntax);
             var argTerms = new Term[m.Parameters.Length];
@@ -1525,6 +1534,7 @@ namespace CsVerify.Verifier
                     if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                 AllocAfterCall(f, libResult);
                 LibraryNullFacts(inv, argTerms, libResult);
+                if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
                 return libResult;
             }
 
@@ -1623,7 +1633,7 @@ namespace CsVerify.Verifier
             post.FieldEpoch = f.FieldEpoch;
             post.Link = f.Link;
 
-            var result = packageResult ?? (m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name));
+            var result = packageResult ?? (m.ReturnsVoid || m.IsAsync && _awaitedCall == inv && AsyncResultType(m) == null ? null : FreshOf(ResultTypeOf(inv), m.Name));
             if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
             if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
             // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it
@@ -1646,6 +1656,7 @@ namespace CsVerify.Verifier
                 foreach (var (value, when) in outNotNull)
                     if (result?.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(value)));
             }
+            if (RunsCode(m)) HavocClosureLocals(f); // (a local function, or a delegate it was handed, may write them)
             return result ?? T.True;
         }
 
@@ -2006,7 +2017,8 @@ namespace CsVerify.Verifier
             IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute");
 
         private static bool IsNonNullableReturn(IMethodSymbol m) =>
-            !m.ReturnsVoid && IsNonNullableType(m.OriginalDefinition.ReturnType) &&
+            !m.ReturnsVoid && (m.IsAsync ? AsyncResultType(m.OriginalDefinition) is ITypeSymbol t && IsNonNullableType(t) // (what it returns: its task's result)
+                                         : IsNonNullableType(m.OriginalDefinition.ReturnType)) &&
             !HasAttribute(m.OriginalDefinition.GetReturnTypeAttributes(), "MaybeNullAttribute");
 
         private static bool HasAttribute(IEnumerable<AttributeData> attributes, string name) =>

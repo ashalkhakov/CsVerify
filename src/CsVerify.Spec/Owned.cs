@@ -37,6 +37,7 @@ namespace CsVerify
             return obj;
         }
 
+#nullable enable annotations // (the slot is an [Owns] field, empty when null)
         /// <summary>
         /// Unfolds one level of an ownership tree: takes the object an <see cref="OwnsAttribute"/> field owns out of
         /// it, with its view (ATS: getting the view of a node out of its parent's). The field becomes null. Needs the
@@ -60,6 +61,7 @@ namespace CsVerify
         {
             slot = obj;
         }
+#nullable restore
 
         /// <summary>
         /// The footprint of an ownership tree, as a ghost set of objects (for Dafny-style frames): every object in the
@@ -83,13 +85,13 @@ namespace CsVerify
         public static void Unshare<T>(ref Own<T> view, Shared<T> share) where T : class { }
 
         /// <summary>
-        /// Lets a view go, keeping its permission in hand as <see cref="Spec.Acc"/> (for predicates and contracts
+        /// Lets a view go, keeping its permission in hand as <see cref="Spec.Acc(object)"/> (for predicates and contracts
         /// that speak of permissions, Viper style).
         /// </summary>
         [Trusted]
         public static void ToAcc<T>(Own<T> view) where T : class { }
 
-        /// <summary>Makes a view of an object whose permission is in hand (<see cref="Spec.Acc"/>, not already a view).</summary>
+        /// <summary>Makes a view of an object whose permission is in hand (<see cref="Spec.Acc(object)"/>, not already a view).</summary>
         [Trusted]
         public static void FromAcc<T>(T obj, out Own<T> view) where T : class
         {

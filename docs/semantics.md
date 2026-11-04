@@ -1,4 +1,4 @@
-# Integers, exceptions, floating point and null
+# Integers, exceptions, async, floating point and null
 
 ## Bounded integers
 
@@ -22,6 +22,28 @@ Methods are verified for partial correctness: any call may throw anything, and a
 - **Proofs** (lemmas, `[Pure]`) may not throw at all (CSV1011): a lemma that escapes by throwing would prove nothing.
 - **Cost.** An exceptional path is explored only where something sees it: inside a try, or in a method with `EnsuresOnThrow`. Elsewhere a throw ends the path, as before.
 - **Not modeled.** Exceptions from property accessors with code, and from operations the verifier proves cannot fail (null dereference, array bounds, division by zero), are not raised. Catching a generic exception type is not supported (CSV1901). Neither are stack overflow and out-of-memory.
+
+## Async and concurrency
+
+**The guarantee.** A verified method is correct in every run where no other thread writes the state it uses while it runs. That covers single-threaded programs, data confined to one thread, and data handed between threads with proper synchronization when no thread is working on it. Races are not ruled out: two threads writing one object at once are outside what is proved.
+
+**`async` and `await`** fit this guarantee: an async method runs one piece at a time, and between pieces (at an `await`) other code may run.
+- **Contracts** of an async method speak of what it returns, the `T` of its `Task<T>`/`ValueTask<T>`: `Spec.Ensures<int>(r => r == 2 * x)`. A non-nullable `T` is a postcondition, as for any method. The contract holds when the task completes.
+- **`await F(...)`** of an async method of the program is a call: `F`'s precondition is checked at the call, and its postcondition is assumed for the awaited value. `ConfigureAwait(...)` is seen through.
+- **At every `await`, other code may run.** So afterwards the verifier forgets everything the method does not hold: arrays, fields, statics, and the locals that lambdas or local functions write. What it holds stays:
+  - locals and parameters;
+  - the fields of `[Owned]` objects whose views or permissions are in hand;
+  - array cells its `Spec.Acc` contract gave it;
+  - memory cells whose views it holds.
+
+  A loop with an `await` forgets the same things at its head. *Soundness:* views are linear and permissions add up to one, so no code that runs in between can hold what this method holds, and so none can write it. Everything else is forgotten, which is what any code could have done to it.
+- **An async method of the program called without being awaited at once** (`var t = F(); …; await t;`, or an `async void` method) is rejected (CSV1901). It would run interleaved with its caller, each changing what the other relies on. Lending it permissions explicitly is the next step (step 2 below).
+- **Library tasks** are values like any other. Awaiting one gives an unknown result, non-null as the library declares it, and may throw.
+- **Lemmas and `[Pure]` functions** cannot be async.
+
+**Lambdas and local functions** that write the method's locals (`l.ForEach(x => s += x)`) are not verified on their own. Any call may run one of them, so after every call, other than to a `[Pure]` function or a lemma, and at every `await`, the locals they write are unknown.
+
+**Not covered (yet).** Threads started with `Task.Run` or `new Thread` are ordinary library calls: the fields and arrays their delegate may write are forgotten at the call, but not afterwards, while the thread runs. `lock`, `Interlocked` and `volatile` are ordinary calls and reads, with no meaning about other threads. Deadlock freedom and progress are not checked, and neither is lock-free code. The plan (step 2) is permission-based, as in Viper and VerCors. Starting a thread would hand it the permissions its delegate's precondition names, and joining it would give back its postcondition's. A lock would get an invariant saying what it protects. Then every verified program would be race-free.
 
 ## Floating point
 

@@ -32,7 +32,7 @@ namespace CsVerify
 
     /// <summary>
     /// A predicate (Viper's, or ATS's dataview): a static bool method whose body, one expression, describes a
-    /// footprint of permissions (<see cref="Spec.Acc"/>, other predicates, conjoined with <c>&amp;&amp;</c> or in the branches
+    /// footprint of permissions (<see cref="Spec.Acc(object)"/>, other predicates, conjoined with <c>&amp;&amp;</c> or in the branches
     /// of <c>?:</c>) and facts about it. Holding an instance <c>P(args)</c> holds those permissions, folded:
     /// <see cref="Spec.Unfold"/> trades it for its body, <see cref="Spec.Fold"/> back. Specification only; never
     /// unfolded on its own, so it may be recursive.
