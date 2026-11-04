@@ -112,7 +112,17 @@ The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined.
    - other unsupported operations.
    **Ref locals** name a location: a variable, or an array cell fixed when the local is bound (`ref int r = ref a[i]` keeps naming that cell after `a` is reassigned, as in C#). Reading and writing `r` read and write the location, so an alias is never out of date. *Soundness:* the binding is evaluated once, as C# does, and every access goes to the current value of the location. A loop that writes through `r` havocs every location `r` is ever bound to in the method. A loop that rebinds `r` makes its location unknown at the head, and a later use is CSV1901.
    **Mutable struct members** (fields and settable auto-properties of the program's structs, not data records or views) are uninterpreted functions of the struct's value, as readonly ones are. `s.X = v` makes `s` a fresh value whose `X` is `v` and whose other members are `s`'s, and writes it back to where `s` lives: a local, a parameter (a `ref` one is the caller's variable), a ref local, an array cell, an enclosing struct's member, or `this` in the struct's constructor. *Soundness:* this is value semantics, because a copy (`var t = s`, an argument by value) holds the old value, which no later write changes. A write inside an array element is a heap write for callers' frames (`a[i].X = 1` counts like `a[i] = …`), and a loop writing a member havocs the struct that holds it. In-place writes the caller could not see are rejected: through a class's field, or to `this` outside a constructor.
-   Constructors are calls (see [Mutable objects](objects.md#mutable-objects)). Span elements are not tracked, since a span may view any array at an offset: reading one gives an unknown value, and writing one havocs the heap. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
+   Constructors are calls (see [Mutable objects](objects.md#mutable-objects)). **Spans** are views of memory: two functions of a span, its base and its offset, with its `length`. `s[i]` is
+   the base's cell at offset + i, read from and written to the heap as an array's cell is. So a write through a span is
+   seen in its array, and a write to the array is seen through the span. A span made from an array (a conversion,
+   `new Span<T>(a, start, length)`, `a.AsSpan(start, length)`) has the array as its base. `Slice` keeps the base
+   and moves the offset, and `CopyTo` (as `memmove`: overlapping spans copy right), `TryCopyTo`, `Fill` and `Clear` write
+   the cells they cover. `ToArray` makes a new array of the same cells, and `stackalloc` a new base. The ranges are
+   checked as C# checks them (CSV1001: they would throw). A span from elsewhere (a parameter, a library call) has some
+   base and offset, its cells within that base's length. *Soundness:* the base stands for whatever memory the span
+   views: an array, a string's characters, stack or native memory, each a row of the heap that only what can reach
+   it writes. Under array permissions (`Spec.Acc`), spans are as before: a read is an unknown value, and a write is
+   refused. Constructs whose result is merely unknown, such as shifts and bitwise operators, are still sound and stay CSV1900 warnings.
 
 Multisets (`Bag`) are SMT arrays from value to count. `Spec.Multiset(a, n)` is a function of the array's contents and `n`, and three axioms say what a write does to it:
 - the empty prefix is the empty multiset;

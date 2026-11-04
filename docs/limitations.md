@@ -41,7 +41,8 @@
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
 - Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, library properties without a `[Pure]` stub, non-pure calls in specifications, the elements of a `foreach` over a library collection (a `List<T>` whose loop may change a list included), a string or a span.
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
-- Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
+- Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans (their indexer, `Slice`, `CopyTo`, `TryCopyTo`, `Fill`, `Clear`, `ToArray`, `AsSpan`) and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
+- **Spans** of a string have the string as their base, but its characters are unknown values. A method with array permissions (`Spec.Acc`) can't write through a span, and reads through one are unknown. `ReadOnlySequence<byte>` and System.IO.Pipelines are not modeled.
 - Not verified as separate units: local functions and lambdas. The method's locals they write are forgotten after every call and at every `await`.
 
 **Completeness limits** (true things that may not be proved)
