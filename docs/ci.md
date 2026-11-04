@@ -139,12 +139,14 @@ This repository's workflows, in [`.github/workflows`](../.github/workflows):
   packs `CsVerify` and `dotnet-csverify`, runs `e2e.sh` on those packages, creates the GitHub release with them,
   and pushes them to nuget.org.
 
-To release:
+To release, push a tag:
 
 ```sh
 git tag v0.2.0
 git push origin v0.2.0
 ```
+
+or publish a release on GitHub, which makes the tag: the workflow attaches the packages to that release.
 
 Between releases, the packages are versioned `0.1.0-dev` (`Directory.Build.props`); nothing in the sources is
 changed per release.

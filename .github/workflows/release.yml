@@ -42,14 +42,19 @@ jobs:
 
       # CsVerify (the specification library, with the analyzers and the MSBuild targets) and dotnet-csverify (the
       # verifier, a .NET tool)
-      - name: Packages (the ones already released, if the tag has a release)
+      # a release made by hand on GitHub (which also makes the tag) has no packages yet: they are packed here and
+      # attached to it
+      - name: Packages (the ones already released, if the tag's release has them)
         run: |
-          if gh release view "$TAG" > /dev/null 2>&1; then
+          if gh release view "$TAG" --json assets --jq '.assets[].name' 2> /dev/null | grep -q '\.nupkg$'; then
             gh release download "$TAG" --pattern '*.nupkg' --dir nupkg
             echo "RELEASED=true" >> "$GITHUB_ENV"
           else
             dotnet pack src/CsVerify.Spec -c Release -o nupkg -p:Version=$VERSION
             dotnet pack src/CsVerify.Verifier -c Release -o nupkg -p:Version=$VERSION
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "HAS_RELEASE=true" >> "$GITHUB_ENV"
+            fi
           fi
 
       - name: Check the packages end to end
@@ -57,7 +62,12 @@ jobs:
 
       - name: GitHub release with the packages
         if: env.RELEASED != 'true'
-        run: gh release create "$TAG" nupkg/*.nupkg --title "$TAG" --generate-notes
+        run: |
+          if [ "$HAS_RELEASE" = true ]; then
+            gh release upload "$TAG" nupkg/*.nupkg
+          else
+            gh release create "$TAG" nupkg/*.nupkg --title "$TAG" --generate-notes
+          fi
 
       - name: nuget.org login (trusted publishing)
         id: nuget-login
