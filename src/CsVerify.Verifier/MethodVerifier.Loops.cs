@@ -102,6 +102,20 @@ namespace CsVerify.Verifier
                         break;
                     }
             foreach (var l in ForEachLocals(fe)) if (l is ILocalSymbol local) _forEachOf[local] = loop;
+            // through an enumerator of a versioned collection: "the version is still the enumerator's", inferred as the
+            // loop facts are (held on entry, kept at every back edge; else MoveNext reports the change)
+            if (!array && listElement == null && interfaceElement == null && capture.Value is IInvocationOperation ge &&
+                VersionModel(ge.TargetMethod.ContainingType) is IMethodSymbol version)
+            {
+                var id = capture.Id;
+                loop.Facts.Add(new LoopFact
+                {
+                    Key = loop.Id + ":version",
+                    Make = fr => fr.Captures.TryGetValue(id, out var e)
+                        ? T.Eq(T.Coerce(ModelAt(version, new[] { EnumeratorOf(e) }, fr), Sort.Int), EnumeratorVersion(e))
+                        : T.True,
+                });
+            }
             // a foreach over an array ends by itself: its index goes up to the array's (fixed) length
             AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null && interfaceElement == null);
         }

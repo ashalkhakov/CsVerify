@@ -154,6 +154,20 @@ index. Compare them with each other, not with typed values. `Array.Copy` says no
 because it converts between element types (`int[]` to `long[]` or `object[]`), and the converted values are not the ones
 stored.
 
+**A collection changed while it is enumerated.** `List`, `Dictionary`, `HashSet`, `Stack` and `Queue` each have a
+`Version()` model, which a change of the collection (within its stub's `Spec.Modifies`) may change. An enumerator
+remembers its collection and the version from `GetEnumerator`, and each `MoveNext` requires the version to be the same
+still. Otherwise it would throw `InvalidOperationException` ("Collection was modified"), and that is reported (CSV1001):
+
+```csharp
+foreach (var x in list) { if (x > 0) list.Add(x); }   // reported: the next MoveNext throws
+```
+
+In a `foreach`, "the version is still the enumerator's" is inferred as a loop fact. It holds where the loop changes
+another collection (one shown to be different), or changes this one and leaves at once (`break`): the next `MoveNext`
+is what fails, and it never runs. `Dictionary.Remove` keeps the version, since removing during enumeration is allowed
+from .NET Core 3.0 on. The conformance tests check that against the collections' own `_version`.
+
 **Lists through their interfaces.** `Count` and the indexer of `IReadOnlyList<T>`, `IList<T>`,
 `IReadOnlyCollection<T>` and `ICollection<T>` read what the object is. For a `List<T>` they read its models, so a list
 passed as an `IReadOnlyList<T>` keeps its facts, and a change made through the list is seen through the interface.

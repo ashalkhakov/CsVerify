@@ -67,6 +67,15 @@ namespace Wrong
 
         public static void Clear(List<T> @this) { throw null!; }
 
+        // (Insert changes the list's version: its enumerators would throw)
+        public static void Insert(List<T> @this, int index, T item)
+        {
+            Spec.Requires(0 <= index && index <= @this.Size());
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Version() == Spec.Old(@this.Version()));
+            throw null!;
+        }
+
         [Pure]
         public static T get_Item(List<T> @this, int index)
         {
@@ -95,13 +104,14 @@ namespace Wrong
 }";
             var compilation = SpecCompilation(wrong);
             var pairs = ContractStubs.For(compilation).Pairs.Where(p => p.stub.ContainingNamespace.Name == "Wrong").ToList();
-            Assert.Equal(5, pairs.Count);
+            Assert.Equal(6, pairs.Count);
             var failures = string.Join("\n", Run(compilation, pairs));
             Assert.Contains("List<T>.Add(T): postcondition does not hold: @this.Size() == Spec.Old(@this.Size()) + 2", failures);
             Assert.Contains("List<T>.Clear(): changed List`1, outside its Spec.Modifies", failures);
             Assert.Contains("List<T>.this[int].get: [Pure], but threw ArgumentOutOfRangeException", failures);
             Assert.Contains("List<T>.Reverse(): postcondition does not hold: Spec.Forall", failures);
             Assert.Contains("string.Substring(int): postcondition does not hold: r => r.Length == startIndex", failures);
+            Assert.Contains("List<T>.Insert(int, T): postcondition does not hold: @this.Version() == Spec.Old(@this.Version())", failures);
         }
 
         /// <summary>Runs each stub's checker on random inputs: what fails, one line each.</summary>
@@ -475,6 +485,8 @@ namespace CsVerify.Bcl
         public static Map<K, bool> Domain<K, V>(this Dictionary<K, V> d) where K : notnull => new Map<K, bool>(d.Keys.ToDictionary(k => k, k => true), Ghost.Of(false));
         public static Map<K, V> Entries<K, V>(this Dictionary<K, V> d) where K : notnull => new Map<K, V>(new Dictionary<K, V>(d), default);
         public static int Size<K, V>(this Dictionary<K, V> d) where K : notnull => d.Count;
+        public static int Version<T>(this List<T> l) => CsVerify.Conformance.Models.VersionOf(l);
+        public static int Version<K, V>(this Dictionary<K, V> d) where K : notnull => CsVerify.Conformance.Models.VersionOf(d);
     }
 
     public static class CollectionModels
@@ -485,6 +497,9 @@ namespace CsVerify.Bcl
         public static int Size<T>(this Stack<T> stack) => stack.Count;
         public static Seq<T> Items<T>(this Queue<T> queue) => Seq<T>.Of(queue);
         public static int Size<T>(this Queue<T> queue) => queue.Count;
+        public static int Version<T>(this HashSet<T> s) => CsVerify.Conformance.Models.VersionOf(s);
+        public static int Version<T>(this Stack<T> s) => CsVerify.Conformance.Models.VersionOf(s);
+        public static int Version<T>(this Queue<T> q) => CsVerify.Conformance.Models.VersionOf(q);
     }
 
     public static class TextModels
@@ -516,16 +531,23 @@ namespace CsVerify.Conformance
 
         public static (object? o, object? state)[] Snapshot(object?[] objects) => objects.Select(o => (o, State(o))).ToArray();
 
+        // a collection's version: its private _version (what its enumerators check); a copy made for Spec.Old has its original's
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, object> Versions = new System.Runtime.CompilerServices.ConditionalWeakTable<object, object>();
+        public static int VersionOf(object o) =>
+            Versions.TryGetValue(o, out var v) ? (int)v
+            : (int)o.GetType().GetField(""_version"", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(o)!;
+        private static C Versioned<C>(C copy, object original) where C : class { Versions.AddOrUpdate(copy, VersionOf(original)); return copy; }
+
         // an argument as it was before the call, for Spec.Old
         public static T Copy<T>(T x) => x;
         public static T[]? Copy<T>(T[]? a) => (T[]?)a?.Clone();
         public static Array? Copy(Array? a) => (Array?)a?.Clone();
-        public static List<T>? Copy<T>(List<T>? l) => l == null ? null : new List<T>(l);
-        public static Dictionary<K, V>? Copy<K, V>(Dictionary<K, V>? d) where K : notnull => d == null ? null : new Dictionary<K, V>(d);
+        public static List<T>? Copy<T>(List<T>? l) => l == null ? null : Versioned(new List<T>(l), l);
+        public static Dictionary<K, V>? Copy<K, V>(Dictionary<K, V>? d) where K : notnull => d == null ? null : Versioned(new Dictionary<K, V>(d), d);
         public static StringBuilder? Copy(StringBuilder? sb) => sb == null ? null : new StringBuilder(sb.ToString());
-        public static HashSet<T>? Copy<T>(HashSet<T>? s) => s == null ? null : new HashSet<T>(s, s.Comparer);
-        public static Stack<T>? Copy<T>(Stack<T>? s) => s == null ? null : new Stack<T>(s.Reverse());
-        public static Queue<T>? Copy<T>(Queue<T>? q) => q == null ? null : new Queue<T>(q);
+        public static HashSet<T>? Copy<T>(HashSet<T>? s) => s == null ? null : Versioned(new HashSet<T>(s, s.Comparer), s);
+        public static Stack<T>? Copy<T>(Stack<T>? s) => s == null ? null : Versioned(new Stack<T>(s.Reverse()), s);
+        public static Queue<T>? Copy<T>(Queue<T>? q) => q == null ? null : Versioned(new Queue<T>(q), q);
 
         // the first object outside the frame whose models changed, or null
         public static string? Changed((object? o, object? state)[] before, ObjSet frame)

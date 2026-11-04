@@ -20,6 +20,15 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        /// <summary>
+        /// The list's version: what its enumerators check (each MoveNext throws InvalidOperationException if the list
+        /// changed since GetEnumerator). A change of the list (within its Spec.Modifies) may change it.
+        /// </summary>
+        [Model] public static int Version<T>(this List<T> list) => throw null!;
+
+        /// <summary>The dictionary's version, as for a list's.</summary>
+        [Model] public static int Version<K, V>(this Dictionary<K, V> dictionary) where K : notnull => throw null!;
+
         /// <summary>Which keys a dictionary has.</summary>
         [Model] public static Map<K, bool> Domain<K, V>(this Dictionary<K, V> dictionary) where K : notnull => throw null!;
 
@@ -284,9 +293,11 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        // (since .NET Core 3.0, removing does not invalidate enumerators: removing in a foreach is allowed)
         public static bool Remove(Dictionary<K, V> @this, K key)
         {
             Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Version() == Spec.Old(@this.Version()));
             Spec.Ensures<bool>(r => r == Spec.Old(@this.Domain())[key].Value);
             Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(false)));
             Spec.Ensures(@this.Entries() == Spec.Old(@this.Entries()));

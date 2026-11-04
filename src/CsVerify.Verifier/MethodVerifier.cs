@@ -1576,8 +1576,9 @@ namespace CsVerify.Verifier
             finally { _instantiations.Pop(); _equalityEpochs.Pop(); }
         }
 
-        private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec)
+        private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec, bool enumerators = true)
         {
+            if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
             if (IsGetLength(inv)) return GetLength(inv, f, spec);
             if (SpecSymbols.IsSpecClass(m.ContainingType))
