@@ -220,8 +220,13 @@ These make views too, read the same way:
 
 - `Select((x, i) => ...)` with the element's index.
 - `Distinct()`: the first occurrence of each value, in order, by `EqualityComparer<T>.Default` (as `Spec.Equal`).
-- `OrderBy` and `OrderByDescending`: a permutation of the source, stable, in key order where the key is an integer, a
-  char or an enum. For other keys (strings, which order by culture) only the permutation is known.
+- `OrderBy` and `OrderByDescending`, then `ThenBy` and `ThenByDescending`: a permutation of the source, stable, in
+  the keys' order (the first key, then the next among equal ones) where the keys are integers, chars or enums. From
+  the first key of another type (strings, which order by culture) on, only the keys before it are known.
+- `Zip(other, (x, y) => ...)`: the selector's values on the pairs at each index, as many as the shorter source has.
+- `Join(inner, x => key, y => key, (x, y) => ...)`: for each outer element in order, the inner elements with an equal
+  key (by `EqualityComparer<TKey>.Default`), in order. It is a filter over all the pairs, the normal form of a join
+  comprehension in Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013).
 - `SelectMany(x => x.Items)`, where the inner sequence is a List, an array or a list interface: the inner sequences one
   after another.
 - `GroupBy(x => key)`: the groups in the order their keys first appear, each with its key (`g.Key`) and its elements,

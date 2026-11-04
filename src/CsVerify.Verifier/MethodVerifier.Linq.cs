@@ -22,13 +22,13 @@ namespace CsVerify.Verifier
         private IOperation PureLambdaBody(IOperation arg, out IParameterSymbol parameter) => PureLambdaBody(arg, out parameter, out var index) is IOperation b && index == null ? b : null;
 
         /// <summary>As above, for a lambda that may also take the element's index (Select((x, i) => ...)).</summary>
-        private IOperation PureLambdaBody(IOperation arg, out IParameterSymbol parameter, out IParameterSymbol index)
+        private IOperation PureLambdaBody(IOperation arg, out IParameterSymbol parameter, out IParameterSymbol index, bool pair = false)
         {
             parameter = null;
             index = null;
             var target = (arg as IDelegateCreationOperation)?.Target as IAnonymousFunctionOperation;
             if (target == null || target.Symbol.Parameters.Length < 1 || target.Symbol.Parameters.Length > 2 ||
-                target.Symbol.Parameters.Length == 2 && target.Symbol.Parameters[1].Type.SpecialType != SpecialType.System_Int32 || target.Body.Operations.Length != 1 ||
+                target.Symbol.Parameters.Length == 2 && !pair && target.Symbol.Parameters[1].Type.SpecialType != SpecialType.System_Int32 || target.Body.Operations.Length != 1 ||
                 !(target.Body.Operations[0] is IReturnOperation ret) || ret.ReturnedValue == null) return null;
             foreach (var op in ret.ReturnedValue.DescendantsAndSelf())
             {
@@ -211,7 +211,13 @@ namespace CsVerify.Verifier
             public IParameterSymbol Parameter;
             public Term Count;                // Take's and Skip's
             public ITypeSymbol ElementType;
-            public IParameterSymbol Index;    // Select((x, i) => ...)'s index
+            public IParameterSymbol Index;    // Select((x, i) => ...)'s index, Zip's second element
+            public View Inner2;               // Zip's and Join's second source
+            public Term Source2;
+            public ITypeSymbol SourceType2;
+            public IOperation Lambda2, Lambda3;              // Join's inner key and result selector
+            public IParameterSymbol Parameter2, Parameter3, Parameter3b;
+            public List<(IOperation key, IParameterSymbol parameter, bool down)> Keys; // OrderBy's, then ThenBy's
         }
 
         /// <summary>
@@ -280,10 +286,36 @@ namespace CsVerify.Verifier
             };
         }
 
+        /// <summary>
+        /// Sequences one after another, one for each element of src: offsets o(j) (o(0) = 0, o(j + 1) = o(j) + the
+        /// length of j's), element i at outer index outer(i) and index i - o(outer(i)) within it.
+        /// </summary>
+        private Sequence Flatten(Sequence src, System.Func<Term, Sequence> inner, ITypeSymbol elementType, Term known,
+                                 out System.Func<Term, Term> outerIndex, out System.Func<Term, Term> withinIndex)
+        {
+            var o = Recur("flatten.offset", src.Length, T.Int(0), (acc, j) => T.Add(acc, inner(j).Length), src.Known);
+            var n = o(src.Length);
+            int id = _materialized++;
+            Term Outer(Term i) => _z3.Apply("flatten.outer#" + id, Sort.Int, new[] { i });
+            AssumeSide(T.Implies(src.Known, OverIndices("forall", T.Int(0), n, i =>
+                T.And(T.Le(T.Int(0), Outer(i)), T.Lt(Outer(i), src.Length), T.Le(o(Outer(i)), i), T.Lt(i, o(T.Add(Outer(i), T.Int(1))))))));
+            // (and the other way: the elements of j's sequence are at o(j) up to o(j + 1))
+            var jn = _z3.FreshName("k"); var inn = _z3.FreshName("k");
+            var jv = new Term(jn, Sort.Int); var iv = new Term(inn, Sort.Int);
+            var guard = T.And(T.Le(T.Int(0), jv), T.Lt(jv, src.Length), T.Le(o(jv), iv), T.Lt(iv, o(T.Add(jv, T.Int(1)))));
+            var inverse = new Term($"(forall (({jn} Int) ({inn} Int)) (! {T.Implies(guard, T.Eq(Outer(iv), jv))} :pattern ({Outer(iv)} {o(jv)})))", Sort.Bool);
+            AssumeSide(T.Implies(src.Known, T.And(
+                OverIndices("forall", T.Int(0), src.Length, j => T.Le(o(j), o(T.Add(j, T.Int(1))))), Monotone(o, src.Length), inverse)));
+            outerIndex = Outer;
+            withinIndex = i => T.Sub(i, o(Outer(i)));
+            return new Sequence { Length = n, Element = i => inner(Outer(i)).Element(T.Sub(i, o(Outer(i)))), ElementType = elementType, Known = known };
+        }
+
         /// <summary>A view read now: from its source as it is, with its lambda applied now.</summary>
         private Sequence Materialize(View v, Frame f)
         {
             var src = v.Inner != null ? Materialize(v.Inner, f) : ListSequence(v.Source, v.SourceType, f);
+            var src2 = v.Inner2 != null ? Materialize(v.Inner2, f) : v.Source2 != null ? ListSequence(v.Source2, v.SourceType2, f) : null;
             switch (v.Kind)
             {
                 case "Select":
@@ -295,57 +327,62 @@ namespace CsVerify.Verifier
                     return Filter(src, j => OverIndices("forall", T.Int(0), j, i => T.Not(eq(src.Element(i), src.Element(j)))), v.ElementType, out _);
                 }
                 case "OrderBy":
-                case "OrderByDescending":
                 {
-                    // a stable permutation: element i is source element p(i), p a bijection (q its inverse), in key order;
-                    // equal keys keep the source's order. (Keys are ordered only if they are integers.)
+                    // a stable permutation: element i is source element p(i), p a bijection (q its inverse), in the keys'
+                    // order (the first key, then ThenBy's), equal keys keeping the source's order. Keys are ordered if
+                    // they are integers, chars or enums; from the first that is not, only the keys before it are.
                     int id = _materialized++;
                     Term Pi(Term i) => _z3.Apply("order.p#" + id, Sort.Int, new[] { i });
                     Term Qi(Term j) => _z3.Apply("order.q#" + id, Sort.Int, new[] { j });
                     var n = src.Length;
-                    Term Key(Term j) => T.Coerce(ApplyValue(v.Lambda, v.Parameter, src.Element(j), f), Sort.Int);
-                    bool ordered = IsIntegral(v.Lambda.Type) || v.Lambda.Type?.TypeKind == TypeKind.Enum || v.Lambda.Type?.SpecialType == SpecialType.System_Char;
-                    ordered &= v.Lambda.Type != null && SortOf(v.Lambda.Type) == Sort.Int;
-                    bool down = v.Kind == "OrderByDescending";
+                    var keys = v.Keys;
+                    bool Orderable(ITypeSymbol t) => t != null && (IsIntegral(t) || t.TypeKind == TypeKind.Enum || t.SpecialType == SpecialType.System_Char) && SortOf(t) == Sort.Int;
+                    int prefix = keys.TakeWhile(k => Orderable(k.key.Type)).Count();
+                    Term KeyOf(int k, Term j) => T.Coerce(ApplyValue(keys[k].key, keys[k].parameter, src.Element(j), f), Sort.Int);
+                    Term InOrder(Term a, Term b, int level)
+                    {
+                        if (level == prefix) return prefix == keys.Count ? T.Lt(a, b) : T.True;
+                        var x = KeyOf(level, a); var y = KeyOf(level, b);
+                        return T.Or(keys[level].down ? T.Gt(x, y) : T.Lt(x, y), T.And(T.Eq(x, y), InOrder(a, b, level + 1)));
+                    }
                     var facts = new List<Term>
                     {
                         OverIndices("forall", T.Int(0), n, i => T.And(T.Le(T.Int(0), Pi(i)), T.Lt(Pi(i), n), T.Eq(Qi(Pi(i)), i))),
                         OverIndices("forall", T.Int(0), n, j => T.And(T.Le(T.Int(0), Qi(j)), T.Lt(Qi(j), n), T.Eq(Pi(Qi(j)), j))),
                     };
-                    if (ordered)
-                        facts.Add(OverIndices("forall", T.Int(0), T.Sub(n, T.Int(1)), i =>
-                        {
-                            var a = Key(Pi(i)); var b = Key(Pi(T.Add(i, T.Int(1))));
-                            return T.And(down ? T.Ge(a, b) : T.Le(a, b), T.Implies(T.Eq(a, b), T.Lt(Pi(i), Pi(T.Add(i, T.Int(1))))));
-                        }));
+                    if (prefix > 0)
+                        facts.Add(OverIndices("forall", T.Int(0), T.Sub(n, T.Int(1)), i => InOrder(Pi(i), Pi(T.Add(i, T.Int(1))), 0)));
                     AssumeSide(T.Implies(src.Known, T.And(facts.ToArray())));
                     return new Sequence { Length = n, Element = i => src.Element(Pi(i)), ElementType = v.ElementType, Known = src.Known };
                 }
+                case "Zip":
+                {
+                    // pairs at the same index, as many as the shorter has
+                    var n = T.Ite(T.Le(src.Length, src2.Length), src.Length, src2.Length);
+                    return new Sequence
+                    {
+                        Length = n, ElementType = v.ElementType, Known = T.And(src.Known, src2.Known),
+                        Element = i => ApplyValue(v.Lambda, v.Parameter, src.Element(i), f, v.Index, src2.Element(i)),
+                    };
+                }
+                case "Join":
+                {
+                    // for x in outer, for y in inner, if keys equal, yield result(x, y) (Cheney, Lindley and Wadler's
+                    // normal form): a filter over the pairs, which are a SelectMany whose inner list is the inner source
+                    var eq = EqualityOf(v.Lambda.Type);
+                    var known = T.And(src.Known, src2.Known);
+                    var product = Flatten(src, _ => src2, v.ElementType, known, out var outer, out var within);
+                    Term X(Term i) => src.Element(outer(i));
+                    Term Y(Term i) => src2.Element(within(i));
+                    var pairs = new Sequence { Length = product.Length, ElementType = v.ElementType, Known = known,
+                        Element = i => ApplyValue(v.Lambda3, v.Parameter3, X(i), f, v.Parameter3b, Y(i)) };
+                    return Filter(pairs, i => eq(ApplyValue(v.Lambda, v.Parameter, X(i), f), ApplyValue(v.Lambda2, v.Parameter2, Y(i), f)), v.ElementType, out _);
+                }
                 case "SelectMany":
                 {
-                    // the inner lists one after another: offsets o(j), each element at an outer index and an index within
                     Sequence Inner(Term j) => ListSequence(T.Coerce(ApplyValue(v.Lambda, v.Parameter, src.Element(j), f), Sort.Int), Unconverted(v.Lambda).Type, f);
-                    var o = Recur("selectmany.offset", src.Length, T.Int(0), (acc, j) => T.Add(acc, Inner(j).Length), src.Known);
-                    var n = o(src.Length);
-                    int id = _materialized++;
-                    Term Outer(Term i) => _z3.Apply("selectmany.outer#" + id, Sort.Int, new[] { i });
-                    AssumeSide(T.Implies(src.Known, OverIndices("forall", T.Int(0), n, i =>
-                        T.And(T.Le(T.Int(0), Outer(i)), T.Lt(Outer(i), src.Length), T.Le(o(Outer(i)), i), T.Lt(i, o(T.Add(Outer(i), T.Int(1))))))));
-                    // (and the other way: the elements of inner list j are at o(j) up to o(j + 1))
-                    AssumeSide(T.Implies(src.Known, T.And(
-                        OverIndices("forall", T.Int(0), src.Length, j => T.Le(o(j), o(T.Add(j, T.Int(1))))),
-                        Monotone(o, src.Length),
-                        Inverse())));
-                    Term Inverse()
-                    {
-                        // forall j, i: 0 <= j < length && o(j) <= i < o(j + 1) ==> outer(i) == j, triggered by outer(i) with o(j)
-                        var jn = _z3.FreshName("k"); var inn = _z3.FreshName("k");
-                        var j = new Term(jn, Sort.Int); var i = new Term(inn, Sort.Int);
-                        var guard = T.And(T.Le(T.Int(0), j), T.Lt(j, src.Length), T.Le(o(j), i), T.Lt(i, o(T.Add(j, T.Int(1)))));
-                        return new Term($"(forall (({jn} Int) ({inn} Int)) (! {T.Implies(guard, T.Eq(Outer(i), j))} :pattern ({Outer(i)} {o(j)})))", Sort.Bool);
-                    }
                     var known = T.And(src.Known, OverIndices("forall", T.Int(0), src.Length, j => Inner(j).Known));
-                    return new Sequence { Length = n, Element = i => Inner(Outer(i)).Element(T.Sub(i, o(Outer(i)))), ElementType = v.ElementType, Known = known };
+                    return Flatten(src, Inner, v.ElementType, known, out _, out _);
                 }
                 case "GroupBy":
                 {
@@ -409,32 +446,79 @@ namespace CsVerify.Verifier
             return ListSequence(x, type, f);
         }
 
-        /// <summary>Select, Where, Take, Skip of what this can read: a view (read when it is enumerated); null for others.</summary>
+        /// <summary>A LINQ view's source: a view, or a List, an array or a list interface (dereferenced); false for others.</summary>
+        private bool ViewSourceOf(IOperation op, SyntaxNode at, Frame f, SpecEnv spec, out View inner, out Term source, out ITypeSymbol type)
+        {
+            source = null;
+            type = Unconverted(op).Type;
+            var x = T.Coerce(Eval(op, f, spec), Sort.Int);
+            if (_views.TryGetValue(x.S, out inner)) return true;
+            if (!Indexable(type)) return false;
+            Deref(op, x, at);
+            source = x;
+            return true;
+        }
+
+        private static int ViewArity(string name) => name switch
+        {
+            "Distinct" => 1,
+            "Select" or "Where" or "Take" or "Skip" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or "SelectMany" or "GroupBy" => 2,
+            "Zip" => 3,
+            "Join" => 5,
+            _ => -1,
+        };
+
+        /// <summary>The lazy LINQ methods of what this can read: a view (read when it is enumerated); null for others.</summary>
         private Term LazyLinqCall(IInvocationOperation inv, IInvocationOperation original, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
-            bool unary = m.Name == "Distinct" && m.Parameters.Length == 1;
-            if (!unary && (!(m.Name == "Select" || m.Name == "Where" || m.Name == "Take" || m.Name == "Skip" || m.Name == "OrderBy" ||
-                             m.Name == "OrderByDescending" || m.Name == "SelectMany" || m.Name == "GroupBy") || m.Parameters.Length != 2)) return null;
-            var sourceOp = inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value;
-            var type = Unconverted(sourceOp).Type;
+            if (ViewArity(m.Name) != m.Parameters.Length) return null;
+            IOperation Arg(int k) => inv.Arguments.First(a => a.Parameter.Ordinal == k).Value;
+            IOperation LambdaArg(int k) => (original ?? inv).Arguments.First(a => a.Parameter.Ordinal == k).Value;
             var view = new View { Kind = m.Name, ElementType = ((INamedTypeSymbol)inv.Type).TypeArguments[0] };
-            if (m.Name == "Take" || m.Name == "Skip")
+            switch (m.Name)
             {
-                if (m.Parameters[1].Type.SpecialType != SpecialType.System_Int32) return null;
+                case "Take":
+                case "Skip":
+                    if (m.Parameters[1].Type.SpecialType != SpecialType.System_Int32) return null;
+                    break;
+                case "Distinct":
+                    break;
+                case "Select":
+                    if ((view.Lambda = PureLambdaBody(LambdaArg(1), out view.Parameter, out view.Index)) == null) return null;
+                    break;
+                case "Zip":
+                    if ((view.Lambda = PureLambdaBody(LambdaArg(2), out view.Parameter, out view.Index, pair: true)) == null || view.Index == null) return null;
+                    break;
+                case "Join":
+                    view.Lambda = PureLambdaBody(LambdaArg(2), out view.Parameter);
+                    view.Lambda2 = PureLambdaBody(LambdaArg(3), out view.Parameter2);
+                    view.Lambda3 = PureLambdaBody(LambdaArg(4), out view.Parameter3, out view.Parameter3b, pair: true);
+                    if (view.Lambda == null || view.Lambda2 == null || view.Lambda3 == null || view.Parameter3b == null) return null;
+                    break;
+                default:
+                    // (an impure lambda: the library's)
+                    if ((view.Lambda = PureLambdaBody(LambdaArg(1), out view.Parameter)) == null) return null;
+                    if (m.Name == "SelectMany" && !Indexable(Unconverted(view.Lambda).Type)) return null; // (inner sequences the verifier reads)
+                    break;
             }
-            else if (!unary)
+            if (!ViewSourceOf(Arg(0), inv.Syntax, f, spec, out view.Inner, out view.Source, out view.SourceType)) return null;
+            if ((m.Name == "Zip" || m.Name == "Join") && !ViewSourceOf(Arg(1), inv.Syntax, f, spec, out view.Inner2, out view.Source2, out view.SourceType2)) return null;
+            if (m.Name == "OrderBy" || m.Name == "OrderByDescending")
             {
-                var lambdaArg = (original ?? inv).Arguments.First(a => a.Parameter.Ordinal == 1).Value;
-                view.Lambda = m.Name == "Select" ? PureLambdaBody(lambdaArg, out view.Parameter, out view.Index) : PureLambdaBody(lambdaArg, out view.Parameter);
-                if (view.Lambda == null) return null; // (an impure lambda: the library's)
-                if (m.Name == "SelectMany" && !Indexable(Unconverted(view.Lambda).Type)) return null; // (inner sequences the verifier reads)
+                view.Kind = "OrderBy";
+                view.Keys = new List<(IOperation, IParameterSymbol, bool)> { (view.Lambda, view.Parameter, m.Name == "OrderByDescending") };
             }
-            var x = T.Coerce(Eval(sourceOp, f, spec), Sort.Int);
-            if (_views.TryGetValue(x.S, out var inner)) view.Inner = inner;
-            else if (Indexable(type)) { Deref(sourceOp, x, inv.Syntax); view.Source = x; view.SourceType = type; }
-            else return null;
-            if (view.Kind == "Take" || view.Kind == "Skip") view.Count = T.Coerce(Eval(inv.Arguments.First(a => a.Parameter.Ordinal == 1).Value, f, spec), Sort.Int);
+            else if (m.Name == "ThenBy" || m.Name == "ThenByDescending")
+            {
+                // (a further key of the sort its source is)
+                var sorted = view.Inner;
+                if (sorted?.Keys == null) return null;
+                view.Kind = "OrderBy";
+                (view.Inner, view.Source, view.SourceType) = (sorted.Inner, sorted.Source, sorted.SourceType);
+                view.Keys = sorted.Keys.Concat(new[] { (view.Lambda, view.Parameter, m.Name == "ThenByDescending") }).ToList();
+            }
+            if (m.Name == "Take" || m.Name == "Skip") view.Count = T.Coerce(Eval(Arg(1), f, spec), Sort.Int);
             var result = _z3.Fresh("view", Sort.Int);
             AssumeSide(NotNull(result));
             _views[result.S] = view;
@@ -449,23 +533,34 @@ namespace CsVerify.Verifier
         {
             var op = Unconverted(collection);
             var call = _model.GetOperation(op.Syntax) as IInvocationOperation ?? op as IInvocationOperation;
-            for (var c = call; ; )
-            {
-                if (c == null && op.Type is INamedTypeSymbol grouping && grouping.Name == "IGrouping" && grouping.TypeArguments.Length == 2)
-                    return grouping.TypeArguments[1]; // (a group: read if it is one this made)
-                if (c == null || !IsEnumerableMethod(c.TargetMethod)) return null;
-                var name = c.TargetMethod.Name;
-                if (name == "Distinct" && c.TargetMethod.Parameters.Length == 1) { }
-                else if (c.TargetMethod.Parameters.Length != 2) return null;
-                else if (name == "Select") { if (PureLambdaBody(c.Arguments.First(a => a.Parameter.Ordinal == 1).Value, out _, out _) == null) return null; }
-                else if (name == "Where" || name == "OrderBy" || name == "OrderByDescending" || name == "SelectMany" || name == "GroupBy")
-                { if (PureLambdaBody(c.Arguments.First(a => a.Parameter.Ordinal == 1).Value, out _) == null) return null; }
-                else if (name != "Take" && name != "Skip") return null;
-                var source = Unconverted(c.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
-                if (Indexable(source.Type)) break;
-                c = source as IInvocationOperation;
-            }
+            if (call == null && op.Type is INamedTypeSymbol grouping && grouping.Name == "IGrouping" && grouping.TypeArguments.Length == 2)
+                return grouping.TypeArguments[1]; // (a group: read if it is one this made)
+            if (!ReadableView(call)) return null;
             return call.Type is INamedTypeSymbol t && t.TypeArguments.Length == 1 ? t.TypeArguments[0] : null;
+        }
+
+        /// <summary>Is this call a view LazyLinqCall makes, over sources it reads (as the syntax shows)?</summary>
+        private bool ReadableView(IInvocationOperation c)
+        {
+            if (c == null || !IsEnumerableMethod(c.TargetMethod) || ViewArity(c.TargetMethod.Name) != c.TargetMethod.Parameters.Length) return false;
+            IOperation A(int k) => c.Arguments.First(a => a.Parameter.Ordinal == k).Value;
+            bool Src(int k) { var s = Unconverted(A(k)); return Indexable(s.Type) || ReadableView(_model.GetOperation(s.Syntax) as IInvocationOperation ?? s as IInvocationOperation); }
+            bool L(int k) => PureLambdaBody(A(k), out _) != null;
+            switch (c.TargetMethod.Name)
+            {
+                case "Distinct":
+                case "Take":
+                case "Skip":
+                    return Src(0);
+                case "Select":
+                    return PureLambdaBody(A(1), out _, out _) != null && Src(0);
+                case "Zip":
+                    return PureLambdaBody(A(2), out _, out var second, pair: true) != null && second != null && Src(0) && Src(1);
+                case "Join":
+                    return L(2) && L(3) && PureLambdaBody(A(4), out _, out var inner, pair: true) != null && inner != null && Src(0) && Src(1);
+                default:
+                    return L(1) && Src(0);
+            }
         }
 
         /// <summary>The view a foreach over one runs over: read when the loop began.</summary>
@@ -489,7 +584,7 @@ namespace CsVerify.Verifier
             // (in a flow graph, a lambda argument is lowered: the original tree has it; the rest is evaluated as the flow graph has it)
             var original = _model.GetOperation(inv.Syntax) as IInvocationOperation;
             if (original != null && !SymbolEqualityComparer.Default.Equals(original.TargetMethod, m)) original = null;
-            if (linq && !(m.Parameters[0].Type is INamedTypeSymbol pt && pt.Name == "IEnumerable")) return null;
+            if (linq && !(m.Parameters[0].Type is INamedTypeSymbol pt && (pt.Name == "IEnumerable" || pt.Name == "IOrderedEnumerable"))) return null;
             if (linq && LazyLinqCall(inv, original, f, spec) is Term lazy) return lazy;
             var sourceOp = linq ? inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value : inv.Instance;
             if (sourceOp == null) return null;

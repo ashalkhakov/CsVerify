@@ -108,5 +108,30 @@ namespace Samples.Linq
             Spec.Ensures<int>(r => r == a[2]);
             return a.Select((x, i) => i % 2 == 0 ? x : 0).Last();
         }
+
+        // two readings agree where every pair of them does
+        public static bool Agree(int[] a, int[] b)
+        {
+            Spec.Requires(a.Length == b.Length);
+            Spec.Ensures<bool>(r => r == Spec.Forall(0, a.Length, i => a[i] == b[i]));
+            return a.Zip(b, (x, y) => x == y).All(same => same);
+        }
+
+        // each order joined to its customer is that customer's
+        public static bool Matched(int[] customers, List<Order> orders)
+        {
+            Spec.Requires(Spec.Forall(0, orders.Count, i => orders[i] != null));
+            Spec.Ensures<bool>(r => r);
+            return customers.Join(orders, c => c, o => o.Customer, (c, o) => c == o.Customer).All(ok => ok);
+        }
+
+        // by tens, then by value within the same ten: in that order
+        public static int[] ByTens(int[] a)
+        {
+            Spec.Requires(Spec.Forall(0, a.Length, i => 0 <= a[i]));
+            Spec.Ensures<int[]>(r => r.Length == a.Length);
+            Spec.Ensures<int[]>(r => Spec.Forall(0, r.Length - 1, i => r[i] / 10 < r[i + 1] / 10 || r[i] / 10 == r[i + 1] / 10 && r[i] <= r[i + 1]));
+            return a.OrderBy(x => x / 10).ThenBy(x => x).ToArray();
+        }
     }
 }

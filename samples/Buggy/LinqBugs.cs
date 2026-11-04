@@ -51,5 +51,23 @@ namespace Samples.Linq
             Spec.Requires(baskets.Count > 0);
             return baskets.SelectMany(b => b.Items).First();
         }
+
+        // Zip stops at the shorter: b may have fewer readings (CSV1002)
+        public static int Pairs(int[] a, int[] b)
+        {
+            Spec.Ensures<int>(r => r == a.Length);
+            return a.Zip(b, (x, y) => x == y).Count();
+        }
+
+        // no basket may match the customer: then the join is empty (CSV1001)
+        public static int FirstMatch(int[] customers, int[] owners) => customers.Join(owners, c => c, o => o, (c, o) => c).First();
+
+        // ThenByDescending puts 21 before 11 within the ones (CSV1002)
+        public static int Smallest(int[] a)
+        {
+            Spec.Requires(a.Length == 3 && a[0] == 21 && a[1] == 12 && a[2] == 11);
+            Spec.Ensures<int>(r => r == 11);
+            return a.OrderBy(x => x % 10).ThenByDescending(x => x).First();
+        }
     }
 }

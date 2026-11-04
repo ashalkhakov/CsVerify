@@ -197,6 +197,60 @@ public static class P
         }
 
         [Fact]
+        public void Views_ZipJoinThenBy()
+        {
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Collections.Generic;
+using System.Linq;
+public static class P
+{
+    public static int Zip(int[] a, List<int> b) { Spec.Requires(a.Length == 3 && b.Count == 2 && a[1] == 4 && b[1] == 5); Spec.Ensures<int>(r => r == 9); return a.Zip(b, (x, y) => x + y).Last(); }
+    public static int ZipShorter(int[] a, int[] b) { Spec.Requires(a.Length == 3 && b.Length == 5); Spec.Ensures<int>(r => r == 3); return a.Zip(b, (x, y) => x).Count(); }
+    public static int Join(int[] ids, int[] owners)
+    {
+        Spec.Requires(ids.Length == 2 && ids[0] == 1 && ids[1] == 2 && owners.Length == 3 && owners[0] == 2 && owners[1] == 3 && owners[2] == 2);
+        Spec.Ensures<int>(r => r == 2);
+        return ids.Join(owners, i => i, o => o, (i, o) => i).Count();
+    }
+    public static int JoinFirst(int[] ids, int[] owners)
+    {
+        Spec.Requires(ids.Length == 2 && ids[0] == 1 && ids[1] == 2 && owners.Length == 2 && owners[0] == 2 && owners[1] == 1);
+        Spec.Ensures<int>(r => r == 10 + 1);
+        return ids.Join(owners, i => i, o => o, (i, o) => 10 * i + o / o).First();
+    }
+    public static void Matches(int[] ids, int[] owners)
+    {
+        foreach (var p in ids.Join(owners, i => i % 4, o => o % 4, (i, o) => i - o)) Spec.Assert(p % 4 == 0);
+    }
+    public static int ThenBy(int[] a)
+    {
+        Spec.Requires(a.Length == 3 && a[0] == 21 && a[1] == 12 && a[2] == 11);
+        Spec.Ensures<int>(r => r == 11);
+        return a.OrderBy(x => x % 10).ThenBy(x => x).First();
+    }
+    public static int ThenDown(int[] a)
+    {
+        Spec.Requires(a.Length == 3 && a[0] == 21 && a[1] == 12 && a[2] == 11);
+        Spec.Ensures<int>(r => r == 21);
+        return a.OrderBy(x => x % 10).ThenByDescending(x => x).First();
+    }
+    public static int WrongZip(int[] a, int[] b) { Spec.Requires(a.Length == 3 && b.Length == 5); Spec.Ensures<int>(r => r == 5); return a.Zip(b, (x, y) => y).Count(); }
+    public static int WrongJoin(int[] ids, int[] owners) { Spec.Requires(ids.Length == 2 && owners.Length == 2); Spec.Ensures<int>(r => r == 2); return ids.Join(owners, i => i, o => o, (i, o) => i).Count(); }
+    public static int WrongThen(int[] a)
+    {
+        Spec.Requires(a.Length == 3 && a[0] == 21 && a[1] == 12 && a[2] == 11);
+        Spec.Ensures<int>(r => r == 11);
+        return a.OrderBy(x => x % 10).ThenByDescending(x => x).First();
+    }
+}", overflow: false);
+            foreach (var m in new[] { "Zip", "ZipShorter", "Join", "JoinFirst", "Matches", "ThenBy", "ThenDown" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            foreach (var m in new[] { "WrongZip", "WrongJoin", "WrongThen" })
+                Assert.Equal(new[] { "CSV1002" }, r.Errors("P." + m));
+        }
+
+        [Fact]
         public void ImpureLambdas_LeaveTheCallALibraryCall()
         {
             var r = Harness.Verify(@"
