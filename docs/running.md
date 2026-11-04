@@ -60,7 +60,7 @@ csverify: 21 of 21 methods verified, 1004/1004 obligations proved; checks: null,
 | kind | what it proves |
 |---|---|
 | `null` | dereferences (CSV1013), and non-nullable types' promises (CSV1014) |
-| `linear` | the linearity analyzer's rules (CSV0001–CSV0007) and owned objects' views (CSV1016) |
+| `linear` | the linearity analyzer's rules (CSV0001–CSV0007), owned objects' views (CSV1016), and disposal (CSV0020–CSV0022) |
 | `bounds` | array and span indices, and array sizes (CSV1003) |
 | `overflow` | arithmetic and conversions (CSV1010), and division by zero (CSV1009) |
 | `contracts` | the rest of the specifications: preconditions, postconditions, assertions, invariants, measures, frames, well-definedness |
@@ -139,6 +139,9 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV0007 | analyzer | one linear value passed to two parameters of a call |
 | CSV0012 | analyzer | `Spec.Result` outside `Spec.Ensures`; `Spec.Old` outside `Ensures`/`Invariant`/`Assert` |
 | CSV0013 | analyzer | side effect in a proof (lemma, `[Pure]`, `[GhostFunction]`) or a specification argument |
+| CSV0020 | analyzer | a disposable this method owns is not disposed on every path (or is overwritten while it holds one) |
+| CSV0021 | analyzer | a disposable used, or disposed again, after it may have been disposed |
+| CSV0022 | analyzer | a class owns a disposable field but is not IDisposable, or its Dispose never disposes the field |
 | CSV1001 | verifier | callee precondition might not hold |
 | CSV1002 | verifier | postcondition might not hold on a return path |
 | CSV1003 | verifier | index might be out of range / negative array size |

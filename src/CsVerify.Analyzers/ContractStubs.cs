@@ -18,6 +18,9 @@ namespace CsVerify.Analyzers
         /// <summary>The [Model] functions, in a fixed order.</summary>
         public readonly IReadOnlyList<IMethodSymbol> Models;
 
+        /// <summary>The library types a [MustDispose] stub class marks (FileStream): their objects must be disposed.</summary>
+        public readonly HashSet<INamedTypeSymbol> MustDisposeTargets = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+
         /// <summary>Stub methods that match no member of their type, or are not well-formed, and why.</summary>
         public readonly IReadOnlyList<(IMethodSymbol method, string message)> Errors;
 
@@ -48,6 +51,7 @@ namespace CsVerify.Analyzers
                 }
                 var target = SpecSymbols.ContractsForTarget(type)?.OriginalDefinition;
                 if (target == null) continue;
+                if (SpecSymbols.HasAttribute(type, "MustDisposeAttribute")) MustDisposeTargets.Add(target);
                 if (type.TypeParameters.Length != target.TypeParameters.Length)
                 {
                     errors.Add((type.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(), $"stub {type.Name} must have the type parameters of {target.Name} ({target.TypeParameters.Length})"));

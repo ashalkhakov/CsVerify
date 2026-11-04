@@ -28,6 +28,7 @@ namespace CsVerify.Verifier
                 case "CSV1009": case "CSV1010": return Overflow;
                 case "CSV0001": case "CSV0002": case "CSV0003": case "CSV0004": case "CSV0005": case "CSV0006": case "CSV0007":
                 case "CSV1016":
+                case "CSV0020": case "CSV0021": case "CSV0022":
                     return Linear;
                 case "CSV1001": case "CSV1002": case "CSV1004": case "CSV1005": case "CSV1006": case "CSV1007": case "CSV1008":
                 case "CSV1011": case "CSV1012": case "CSV1015": case "CSV1017": case "CSV1018": case "CSV1019":

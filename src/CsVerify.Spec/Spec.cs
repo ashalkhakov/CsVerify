@@ -68,6 +68,12 @@ namespace CsVerify
         /// <summary>Unchecked assumption at this point (the specification analogue of <c>$UNSAFE</c>).</summary>
         [Conditional(Symbol)] public static void Assume(bool condition) { }
 
+        /// <summary>
+        /// Hands a disposable over to whoever will dispose it (a container, a dependency-injection scope, a framework):
+        /// the disposal check counts it as handed over here. Trusted, like Assume.
+        /// </summary>
+        [Conditional(Symbol)] public static void HandOver(object resource) { }
+
         /// <summary>The method's return value; only meaningful inside <see cref="Ensures(bool)"/>.</summary>
         public static T Result<T>() => throw GhostException.Instance;
 

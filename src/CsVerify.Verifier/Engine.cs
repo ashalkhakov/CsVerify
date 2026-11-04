@@ -597,7 +597,7 @@ namespace CsVerify.Verifier
             List<(SyntaxNode decl, MethodResult result)> declarations, VerificationResult result, VerifierOptions options)
         {
             var analyzers = System.Collections.Immutable.ImmutableArray.Create<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer>(
-                new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer());
+                new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer(), new DisposalAnalyzer());
             var diagnostics = compilation.WithAnalyzers(analyzers).GetAnalyzerDiagnosticsAsync().GetAwaiter().GetResult();
             foreach (var d in diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error && userTrees.Contains(d.Location.SourceTree) && options.Checked(d.Id)))
             {
