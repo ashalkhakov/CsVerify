@@ -71,5 +71,12 @@ the C, jsmn's `Parse` trusts its caller and the state of its parser. Nothing say
 `numTokens <= tokens.Length`, or that `Pos`, `TokNext` and `TokSuper`, left by earlier calls, are in range. Those are
 preconditions and an object invariant to write, or to infer from the methods' callers.
 
+### After the span model (Phase 5)
+
+A span's cells are tracked now, and its `Slice` and `CopyTo` ranges are checked as C# checks them. Before, those were
+library calls without contracts, so a bad range was a possible exception, not a failure. The parsers' failures go
+from 87 to 93. The new ones are 9 range checks in `DecodeChunked`, and they are real: nothing relates `bufSize`, which
+the caller passes by reference, to `buf.Length`. The C takes the buffer's size on trust the same way.
+
 The stubs themselves are checked against the BCL: see
 [Conformance tests](../docs/library-contracts.md#conformance-tests).

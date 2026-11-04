@@ -139,6 +139,8 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 | `TextWriter` | | `Write`, `WriteLine` (for `string`, `char`, `int`, `long`, `bool`, `object`, format strings, a `char[]` range) and `Flush`: they change nothing modeled |
 | `Stream` | | `Read(byte[], int, int)` and `ReadAsync(byte[], int, int)` (an async stub): the range is in the buffer, only the buffer changes, at most `count` bytes are read |
 | `ArgumentException` | | `ThrowIfNullOrEmpty`, `ThrowIfNullOrWhiteSpace`: the argument is not null and not empty when they return |
+| `MemoryExtensions` | spans (built in) | `IndexOf`, `LastIndexOf`, `IndexOfAny` (their ranges), `SequenceEqual` (equal lengths when true), `StartsWith` (the prefix fits): what they say of elements would depend on `T`'s `Equals` |
+| `BinaryPrimitives` | | `Read{Int16,UInt16,Int32,UInt32,Int64}{Big,Little}Endian`: the span holds the bytes |
 | `string` | its `Length` (built in) | `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith`, `EndsWith`, `Contains`, `IndexOf(char)`, `LastIndexOf(char)`, `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
 | `int` | | `Parse(string)`, `TryParse(string, out int)` |
 | `Math` | | `Clamp` and `Sign` for `int` and `long` |

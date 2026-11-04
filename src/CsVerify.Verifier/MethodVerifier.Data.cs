@@ -270,6 +270,7 @@ namespace CsVerify.Verifier
         /// <summary><c>new R(...)</c>: a data value, or an object whose constructor's contract is checked and assumed.</summary>
         private Term NewObject(IObjectCreationOperation oc, Frame f, SpecEnv spec)
         {
+            if (SpanConstruction(oc, f, spec) is Term span) return span;
             var ctor = oc.Constructor;
             var args = new Term[ctor?.Parameters.Length ?? 0];
             foreach (var a in oc.Arguments)

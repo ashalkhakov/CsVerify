@@ -821,6 +821,7 @@ namespace CsVerify.Verifier
             var t = _z3.Fresh(hint, SortOf(type));
             if (IsIntegral(type)) { var (lo, hi) = RangeOf(type); _z3.Assume(T.InRange(t, lo, hi)); }
             if (IsSequence(type)) Len(t);
+            if (IsSpan(type)) SomeSpan(t);
             HasType(t, type);
             return t;
         }
@@ -857,6 +858,7 @@ namespace CsVerify.Verifier
         private Term Eval(IOperation op, Frame f, SpecEnv spec = null)
         {
             if (op == null) return _z3.Fresh("missing", Sort.Int);
+            if (op.Syntax is StackAllocArrayCreationExpressionSyntax && !(op is IConversionOperation)) return StackAlloc(op, f, spec);
             // null as an int? (a literal typed so, or a conversion of one): no value, not the null reference
             if (op.ConstantValue.HasValue && op.ConstantValue.Value == null && IsNullableValue(op.Type)) return None();
             if (op.ConstantValue.HasValue && !(op is IAssignmentOperation))
@@ -1066,6 +1068,8 @@ namespace CsVerify.Verifier
             var v = Eval(c.Operand, f, spec);
             var from = c.Operand.Type;
             if (c.OperatorMethod == null && (IsNullableValue(c.Type) || IsNullableValue(from))) return NullableConversion(c, v);
+            // T[] -> Span<T> / ReadOnlySpan<T> (a span conversion in C# 14, an operator before): the array's own cells
+            if (from is IArrayTypeSymbol && IsSpan(c.Type)) return SpanOfArray(v);
             if (c.IsTryCast && c.Conversion.IsReference && ClassTest(v, c.Type) is Term isInstance)
                 return T.Ite(isInstance, T.Coerce(v, Sort.Int), T.Int(0)); // as: the object, or null
             if (!c.IsImplicit && c.Conversion.IsReference && from != null && !DataTypes.Derives(from, c.Type) && !Data.IsData(c.Type) &&
@@ -1095,7 +1099,7 @@ namespace CsVerify.Verifier
             if (c.OperatorMethod != null)
             {
                 // T[] -> Span<T> / ReadOnlySpan<T> keeps the same storage.
-                if (from is IArrayTypeSymbol && IsSequence(c.Type)) return v;
+                if (from is IArrayTypeSymbol && IsSequence(c.Type)) return IsSpan(c.Type) ? SpanOfArray(v) : v;
                 Unsupported(c);
                 return Unknown(c.Type);
             }
@@ -1386,7 +1390,9 @@ namespace CsVerify.Verifier
                     BoundsCheck(arr, idx, pr.Syntax);
                     if (IsSpan(pr.Instance.Type))
                     {
-                        if (_arrayMode && _codeMode)
+                        // a cell of the span's base (MethodVerifier.Spans); under array permissions, not supported
+                        if (!_arrayMode) { SpanWrite(arr, idx, v, f); break; }
+                        if (_codeMode)
                             Report("CSV1016", pr.Syntax, $"'{pr.Syntax}' writes through a span, which could be any array's cells: this method's array permissions cannot cover it", isError: true);
                         f.Heap = _z3.Fresh("heap", Sort.Heap); // could be any array's cell
                         break;
@@ -1424,6 +1430,7 @@ namespace CsVerify.Verifier
                 return T.Coerce(T.Select(Eval(pr.Instance, f, spec), T.Coerce(Eval(pr.Arguments[0].Value, f, spec), Sort.Int), Sort.Int), SortOf(pr.Type));
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
             {
+                if (prop.Name == "IsEmpty" && IsSpan(pr.Instance.Type)) return T.Eq(Len(T.Coerce(Eval(pr.Instance, f, spec), Sort.Int)), T.Int(0));
                 if (prop.Name == "Length")
                 {
                     var seq = Eval(pr.Instance, f, spec);
@@ -1438,8 +1445,8 @@ namespace CsVerify.Verifier
                     Deref(pr.Instance, arr, pr.Syntax);
                     BoundsCheck(arr, idx, pr.Syntax);
                     if (pr.Instance.Type.SpecialType == SpecialType.System_String) return Unknown(pr.Type, "char");
-                    // a span may view an array at an offset; its contents are not tracked (only its bounds)
-                    if (IsSpan(pr.Instance.Type)) return Unknown(pr.Type, "spanElem");
+                    // a span views its base at an offset (MethodVerifier.Spans); under array permissions, its contents are unknown
+                    if (IsSpan(pr.Instance.Type)) return _arrayMode ? Unknown(pr.Type, "spanElem") : SpanRead(arr, idx, pr.Type, f);
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type)), pr.Type);
                 }
             }
@@ -1602,6 +1609,7 @@ namespace CsVerify.Verifier
 
             if (IsNullableValue(m.ContainingType) && NullableInvocation(inv, f, spec) is Term nullableResult) return nullableResult;
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
+            if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 

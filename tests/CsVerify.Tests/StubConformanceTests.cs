@@ -259,12 +259,17 @@ namespace Wrong
             sb.AppendLine($"    // {member.ToDisplayString()}");
             sb.AppendLine($"    public static class {className}{classTps}{(stub.TypeParameters.Length == 0 ? constraints : "")}");
             sb.AppendLine("    {");
-            var sig = ps.Select(p => $"{RefKindText(p.RefKind)}{p.Type.ToDisplayString(Full)} {Name(p.Name)}");
+            // a span can't be boxed for reflection: the checker takes an array and makes the span of it
+            bool IsSpanParam(IParameterSymbol p) => p.Type is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>");
+            var sig = ps.Select(p => IsSpanParam(p)
+                ? $"{((INamedTypeSymbol)p.Type).TypeArguments[0].ToDisplayString(Full)}[] __span_{p.Name}"
+                : $"{RefKindText(p.RefKind)}{p.Type.ToDisplayString(Full)} {Name(p.Name)}");
             sb.AppendLine($"        public static string Check{methodTps}({string.Join(", ", sig)}){(stub.TypeParameters.Length > 0 ? constraints : "")}");
             sb.AppendLine("        {");
+            foreach (var p in ps.Where(IsSpanParam)) sb.AppendLine($"            {p.Type.ToDisplayString(Full)} {Name(p.Name)} = __span_{p.Name};");
             foreach (var p in ps.Where(p => p.RefKind == RefKind.Out)) sb.AppendLine($"            {Name(p.Name)} = default!;");
             if (pre.Count > 0) sb.AppendLine($"            if (!({string.Join(") || !(", pre)})) return \"skip\";");
-            foreach (var p in ps.Where(p => p.RefKind != RefKind.Out))
+            foreach (var p in ps.Where(p => p.RefKind != RefKind.Out && !IsSpanParam(p)))
                 sb.AppendLine($"            var __pre_{p.Name} = global::CsVerify.Conformance.Models.Copy({Name(p.Name)});");
             sb.AppendLine($"            var __objects = new object?[] {{ {string.Join(", ", objects)} }};");
             sb.AppendLine("            global::CsVerify.Spec.Args = __objects;");
