@@ -156,11 +156,31 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
-        // (equality is the element type's Equals, which the verifier does not know: only the range)
+        // (equality is EqualityComparer<T>.Default's, Spec.Equal: exact where the verifier knows T's Equals)
         [Pure]
         public static int IndexOf(List<T> @this, T item)
         {
             Spec.Ensures<int>(r => -1 <= r && r < @this.Size());
+            Spec.Ensures<int>(r => r < 0 || Spec.Equal(@this.Items()[r], Ghost.Of(item)));
+            Spec.Ensures<int>(r => Spec.Forall(0, r < 0 ? @this.Size() : r, i => !Spec.Equal(@this.Items()[i], Ghost.Of(item))));
+            throw null!;
+        }
+
+        [Pure]
+        public static bool Contains(List<T> @this, T item)
+        {
+            Spec.Ensures<bool>(r => r == Spec.Exists(0, @this.Size(), i => Spec.Equal(@this.Items()[i], Ghost.Of(item))));
+            throw null!;
+        }
+
+        // (the first element equal to item goes, as RemoveAt(IndexOf(item)) would)
+        public static bool Remove(List<T> @this, T item)
+        {
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures<bool>(r => r == (Spec.Old(@this.IndexOf(item)) >= 0));
+            Spec.Ensures(Spec.Old(@this.IndexOf(item)) < 0 || @this.Size() == Spec.Old(@this.Size()) - 1 &&
+                         @this.Items() == Spec.Old(@this.Items()).Concat(Spec.Old(@this.IndexOf(item)), Spec.Old(@this.Items()).Drop(Spec.Old(@this.IndexOf(item)) + 1)));
+            Spec.Ensures(Spec.Old(@this.IndexOf(item)) >= 0 || @this.Size() == Spec.Old(@this.Size()) && @this.Items() == Spec.Old(@this.Items()));
             throw null!;
         }
 

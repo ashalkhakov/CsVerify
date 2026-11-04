@@ -132,9 +132,12 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 
 | type | models | members |
 |---|---|---|
-| `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `Insert`, `AddRange` (keeps the elements, grows), `RemoveAt`, `RemoveRange`, `Clear`, `Reverse`, `Sort` (frame and count), `ToArray`, `GetRange`, `IndexOf` (its range), `GetEnumerator`; `foreach` (below) |
+| `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `Insert`, `AddRange` (keeps the elements, grows), `RemoveAt`, `RemoveRange`, `Clear`, `Reverse`, `Sort` (frame and count), `ToArray`, `GetRange`, `IndexOf`, `Contains`, `Remove(T)` (by `Spec.Equal`: below), `GetEnumerator`; `foreach` (below) |
 | `Array` | the arrays' contents (built in) | `Empty`, `Fill` (whole and a range), `Reverse<T>`, `Copy` (bounds, the frame, and the destination's other elements), `Resize` (the new length), `IndexOf<T>` (its range), `Sort<T>` (the frame) |
-| `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructor, `Count`, `ContainsKey`, the indexer (get and set), `Add`, `Remove`, `TryGetValue` |
+| `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructor, `Count`, `ContainsKey`, the indexer (get and set), `Add`, `Remove`, `TryGetValue`: keys compare as the dictionary does (below) |
+| `HashSet<T>` | `Members()`: `Map<T, bool>`, `Size()` | constructor, `Count`, `Contains`, `Add`, `Remove` (their results), `Clear` |
+| `Stack<T>` | `Items()` from the bottom, `Size()` | constructor, `Count`, `Push`, `Pop`, `Peek` (not empty: a precondition), `Clear` |
+| `Queue<T>` | `Items()` from the head, `Size()` | constructor, `Count`, `Enqueue`, `Dequeue`, `Peek` (not empty: a precondition), `Clear` |
 | `StringBuilder` | `Size()` (its `Length`; the characters are not modeled) | constructors, `Length` (get and set), the indexer (its range), `Append` (`char`, a repeated `char`, `string`, part of a `string`, `StringBuilder`, `int`, `long`, `object`), `AppendLine`, `Insert(int, string)`, `Remove`, `Clear`, `ToString` (whole and a range): each `Append` returns the builder |
 | `TextWriter` | | `Write`, `WriteLine` (for `string`, `char`, `int`, `long`, `bool`, `object`, format strings, a `char[]` range) and `Flush`: they change nothing modeled |
 | `Stream` | | `Read(byte[], int, int)` and `ReadAsync(byte[], int, int)` (an async stub): the range is in the buffer, only the buffer changes, at most `count` bytes are read |
@@ -148,8 +151,17 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 `Seq.Contents(a)` is an array's elements whatever its type, for contracts over `System.Array`, whose elements C# cannot
 index. Compare them with each other, not with typed values. `Array.Copy` says nothing of the elements it copies,
 because it converts between element types (`int[]` to `long[]` or `object[]`), and the converted values are not the ones
-stored. `IndexOf`, `Contains` and `Sort` depend on the elements' `Equals` and comparers, which a stub cannot know for a
-type parameter, so they give ranges and frames only.
+stored.
+
+**Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
+instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their
+contents), classes that do not override `Equals` (references), and data records. For other types (a class with its own
+`Equals`, a struct, `double`, whose `NaN.Equals(NaN)` is true) it is a relation the verifier knows nothing of, fixed
+within one call's contract. So `List<int>.IndexOf(7)` is exact, and `List<Customer>.Contains(c)`, with
+`Customer.Equals` overridden, says nothing it should not. A `Map`'s keys compare the same way: by value where `T`'s
+equality is known, and otherwise through a key function, which is sound as long as a key does not change while it is
+one (which .NET's dictionaries and sets require too). A dictionary or set built with a custom comparer is not modeled
+apart from this. `Sort` gives the frame and the count only.
 
 **`foreach` over a `List<T>`** runs like a `foreach` over an array, over the list's model: the iteration variable is
 `Items()[i]` for `i` from 0 to `Size()`, `Spec.Index(x)` is `i`, and the loop ends by itself. That holds only if the loop

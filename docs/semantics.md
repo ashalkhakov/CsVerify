@@ -59,6 +59,17 @@ Methods are verified for partial correctness: any call may throw anything, and a
 - **What proves well.** Comparisons, min and max, and casts to integers within constant bounds prove quickly: the bounding-box code of samples/Good/Floats.cs does. Proofs about rounded arithmetic (`lo + (hi - lo) / 2` stays within `[lo, hi]`) are bit-precise and can be slow, or beyond the solver. Relating a float to a symbolic integer (`x < n` for an `int n`) often is.
 - **`Ieee` lemmas.** The monotonicity of rounded operations, which the solver decides only by bit-blasting whole multipliers (minutes, for one `x * z <= y * z`), is a trusted library of lemmas: `Ieee.MulMonotone`, `AddMonotone`, `SubMonotone`, `DivMonotone` and `SqrtMonotone`, for `float` and `double`. Each states exactly when it holds: finite operands, since an infinity times zero is NaN. Call one where a proof needs it.
 
+## Strings
+
+A string is its value. Two strings with the same characters are the same to the verifier, so `==`, `!=`, `Equals`
+(ordinal, or with `StringComparison.Ordinal`), a `switch` on strings, and a dictionary's string keys compare contents,
+as .NET does. `Length` is a function of the value. A literal is the same value wherever it appears, and different
+literals are different values. `a + b` is never null, and as long as both (null counts as empty). The characters
+themselves are not modeled: `s[i]` is an unknown character, and so are the results of most string methods beyond their
+stubs (see [Contracts for code without sources](library-contracts.md)). Comparing strings as objects
+(`ReferenceEquals(a, b)`, `(object)a == (object)b`) is unknown, since equal strings may or may not be one object.
+Comparisons other than ordinal (culture, `OrdinalIgnoreCase`) are unknown.
+
 ## Disposables
 
 Objects that hold a file, a socket, a timer or a connection must be disposed. CsVerify checks them as linear

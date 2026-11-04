@@ -69,6 +69,13 @@ namespace CsVerify
         [Conditional(Symbol)] public static void Assume(bool condition) { }
 
         /// <summary>
+        /// What <c>EqualityComparer&lt;T&gt;.Default.Equals(a, b)</c> gives: equal values for numbers, enums, strings
+        /// and classes that do not override Equals; whatever T's Equals says otherwise (which the verifier does not know).
+        /// For library contracts over any T (List&lt;T&gt;.IndexOf). Ghost.
+        /// </summary>
+        public static bool Equal<T>(Ghost<T> a, Ghost<T> b) => throw GhostException.Instance;
+
+        /// <summary>
         /// Hands a disposable over to whoever will dispose it (a container, a dependency-injection scope, a framework):
         /// the disposal check counts it as handed over here. Trusted, like Assume.
         /// </summary>
