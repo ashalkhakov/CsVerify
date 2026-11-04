@@ -1427,6 +1427,7 @@ namespace CsVerify.Verifier
         {
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
+            if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
             if ((SpecSymbols.IsObjSet(prop.ContainingType) || SpecSymbols.IsBag(prop.ContainingType)) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
@@ -1540,6 +1541,7 @@ namespace CsVerify.Verifier
                 if (_codeMode) Prove(T.Le(T.Int(0), n), "CSV1003", ac.Syntax, $"array size in '{ac.Syntax}' might be negative");
             var r = _z3.Fresh("array", Sort.Int);
             _z3.Assume(NotNull(r));
+            ListKind(r, ac.Type);
             if (sizes.Count == 1) _z3.Assume(T.Eq(Len(r), sizes[0]));
             NewArrayIsDistinct(r, f);
             var row = sizes.Count > 1 ? NewMultiArray(ac, r, sizes, f, spec) : T.ZeroRow();

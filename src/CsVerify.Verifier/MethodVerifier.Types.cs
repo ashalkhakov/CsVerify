@@ -61,6 +61,7 @@ namespace CsVerify.Verifier
         /// <summary>A value of static type <paramref name="type"/> (if not null) is an instance of it: <paramref name="exact"/> for a new object.</summary>
         private void HasType(Term o, ITypeSymbol type, bool exact = false)
         {
+            ListKind(o, type);
             if (!(ModeledType(type) is INamedTypeSymbol t) || o.Sort != Sort.Int || Data.IsData(t)) return;
             AssumeSide(T.Implies(NotNull(o), Isa(o, t)));
             foreach (var s in Supertypes(t)) AssumeSide(T.Implies(NotNull(o), Isa(o, s)));

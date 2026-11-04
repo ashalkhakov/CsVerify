@@ -134,7 +134,8 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 |---|---|---|
 | `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `Insert`, `AddRange` (keeps the elements, grows), `RemoveAt`, `RemoveRange`, `Clear`, `Reverse`, `Sort` (frame and count), `ToArray`, `GetRange`, `IndexOf`, `Contains`, `Remove(T)` (by `Spec.Equal`: below), `GetEnumerator`; `foreach` (below) |
 | `Array` | the arrays' contents (built in) | `Empty`, `Fill` (whole and a range), `Reverse<T>`, `Copy` (bounds, the frame, and the destination's other elements), `Resize` (the new length), `IndexOf<T>` (its range), `Sort<T>` (the frame) |
-| `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructor, `Count`, `ContainsKey`, the indexer (get and set), `Add`, `Remove`, `TryGetValue`: keys compare as the dictionary does (below) |
+| `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructors (with a capacity too), `Count`, `ContainsKey`, the indexer (get and set), `Add`, `TryAdd`, `Remove` (and with the value out), `TryGetValue`: keys compare as the dictionary does (below) |
+| `IReadOnlyList<T>`, `IList<T>`, `IReadOnlyCollection<T>`, `ICollection<T>` | a `List`'s, an array's (built in) | `Count` and the indexer (get), by what the object is (below) |
 | `HashSet<T>` | `Members()`: `Map<T, bool>`, `Size()` | constructor, `Count`, `Contains`, `Add`, `Remove` (their results), `Clear` |
 | `Stack<T>` | `Items()` from the bottom, `Size()` | constructor, `Count`, `Push`, `Pop`, `Peek` (not empty: a precondition), `Clear` |
 | `Queue<T>` | `Items()` from the head, `Size()` | constructor, `Count`, `Enqueue`, `Dequeue`, `Peek` (not empty: a precondition), `Clear` |
@@ -152,6 +153,15 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 index. Compare them with each other, not with typed values. `Array.Copy` says nothing of the elements it copies,
 because it converts between element types (`int[]` to `long[]` or `object[]`), and the converted values are not the ones
 stored.
+
+**Lists through their interfaces.** `Count` and the indexer of `IReadOnlyList<T>`, `IList<T>`,
+`IReadOnlyCollection<T>` and `ICollection<T>` read what the object is. For a `List<T>` they read its models, so a list
+passed as an `IReadOnlyList<T>` keeps its facts, and a change made through the list is seen through the interface.
+For an array they read its length and cells. For anything else (a library wrapper, a collection the verifier does not
+model) they read a function of the heap and the model state, which is the same between two reads and changes whenever
+those might. The indexer's range is checked as the list's (CSV1003). If a class of the program implements one of these
+interfaces, that last case is an unknown value at each read, since the program's own list could change in ways no
+model follows. Writes and other members through the interfaces (`IList<T>.Add`) are library calls without contracts.
 
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their

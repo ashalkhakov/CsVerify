@@ -213,6 +213,36 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        public static Dictionary<K, V> @new(int capacity)
+        {
+            Spec.Requires(capacity >= 0);
+            Spec.Ensures<Dictionary<K, V>>(r => r.Size() == 0 && r.Domain() == Map.Const<K, bool>(false));
+            throw null!;
+        }
+
+        // (adds only a key it does not have yet: its result says which)
+        public static bool TryAdd(Dictionary<K, V> @this, K key, V value)
+        {
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures<bool>(r => r == !Spec.Old(@this.Domain())[key].Value);
+            Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(true)));
+            Spec.Ensures(@this.Entries() == (Spec.Old(@this.Domain())[key].Value ? Spec.Old(@this.Entries()) : Spec.Old(@this.Entries()).Update(key, Ghost.Of(value))));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) + (Spec.Old(@this.Domain())[key].Value ? 0 : 1));
+            throw null!;
+        }
+
+        public static bool Remove(Dictionary<K, V> @this, K key, out V value)
+        {
+            value = default!;
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures<bool>(r => r == Spec.Old(@this.Domain())[key].Value);
+            Spec.Ensures(!Spec.Result<bool>() || Ghost.Of(value) == Spec.Old(@this.Entries())[key]);
+            Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(false)));
+            Spec.Ensures(@this.Entries() == Spec.Old(@this.Entries()));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) - (Spec.Old(@this.Domain())[key].Value ? 1 : 0));
+            throw null!;
+        }
+
         [Pure]
         public static int get_Count(Dictionary<K, V> @this)
         {
