@@ -241,8 +241,12 @@ namespace Samples
             var (mid, axis, dist) = Split(ids, lo, hi, p, n, b);
             var bl = BBoxFor(ids, lo, mid, p, n, b);
             var br = BBoxFor(ids, mid, hi, p, n, b);
+            // each half's points are in its box, which is within b: said as each half is built, before the other
+            // half's call changes the array
             var l = Build(ids, lo, mid, p, n, bl);
+            Spec.Assert(Spec.Forall(lo, mid, i => 0 <= ids[i] && ids[i] < n && InBox(p, ids[i], b)));
             var r = Build(ids, mid, hi, p, n, br);
+            Spec.Assert(Spec.Forall(mid, hi, i => 0 <= ids[i] && ids[i] < n && InBox(p, ids[i], b)));
             Widen(l, p, n, bl, b);
             Widen(r, p, n, br, b);
             return new Bvh.Node(b, axis, dist, l, r);
