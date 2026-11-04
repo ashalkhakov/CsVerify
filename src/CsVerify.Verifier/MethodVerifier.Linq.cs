@@ -84,13 +84,25 @@ namespace CsVerify.Verifier
             Term Idx(Term i) => _z3.Apply("filter.idx#" + id, Sort.Int, new[] { i });
             var c = Recur("filter.count", src.Length, T.Int(0), (acc, j) => T.Add(acc, T.Ite(test(j), T.Int(1), T.Int(0))), src.Known);
             var facts = T.And(
-                T.Eq(m, c(src.Length)), T.Le(T.Int(0), m), T.Le(m, src.Length),
+                T.Eq(m, c(src.Length)), T.Le(T.Int(0), m), T.Le(m, src.Length), Monotone(c, src.Length),
                 OverIndices("forall", T.Int(0), src.Length, j => T.And(T.Le(T.Int(0), c(j)), T.Le(c(j), j), T.Implies(test(j), T.And(T.Lt(c(j), m), T.Eq(Idx(c(j)), j))))),
                 OverIndices("forall", T.Int(0), m, i => T.And(T.Le(T.Int(0), Idx(i)), T.Lt(Idx(i), src.Length), test(Idx(i)))),
                 OverIndices("forall", T.Int(0), T.Sub(m, T.Int(1)), i => T.Lt(Idx(i), Idx(T.Add(i, T.Int(1))))));
             AssumeSide(T.Implies(src.Known, facts));
             sourceIndex = Idx;
             return new Sequence { Length = m, Element = i => src.Element(Idx(i)), ElementType = elementType, Known = src.Known };
+        }
+
+        /// <summary>
+        /// A running count or offset never decreases: acc(j) &lt;= acc(k) for 0 &lt;= j &lt;= k &lt;= n. (It follows from its
+        /// steps by induction, which the solver does not do: stated, so acc(n) &gt;= acc(1) needs no unfolding.)
+        /// </summary>
+        private Term Monotone(System.Func<Term, Term> acc, Term n)
+        {
+            var jn = _z3.FreshName("k"); var kn = _z3.FreshName("k");
+            var j = new Term(jn, Sort.Int); var k = new Term(kn, Sort.Int);
+            var guard = T.And(T.Le(T.Int(0), j), T.Le(j, k), T.Le(k, n));
+            return new Term($"(forall (({jn} Int) ({kn} Int)) (! {T.Implies(guard, T.Le(acc(j), acc(k)))} :pattern ({acc(j)} {acc(k)})))", Sort.Bool);
         }
 
         /// <summary>EqualityComparer&lt;T&gt;.Default's equality of two elements (Spec.Equal), with a relation for one read.</summary>
@@ -134,6 +146,24 @@ namespace CsVerify.Verifier
                 _codeMode = wasCode;
                 _quantDepth--;
             }
+        }
+
+        /// <summary>
+        /// A sequence's element at Pointwise's bound "y", as an Int; the side facts reading it gives (an element's range,
+        /// say) are assumed for every y in 0..n, not left naming y outside its quantifier.
+        /// </summary>
+        private Term ElementAtY(System.Func<Term, Term> element, Term n)
+        {
+            var y = new Term("y", Sort.Int);
+            _quantFacts.Push(new List<Term>());
+            Term e;
+            try { e = T.Coerce(element(y), Sort.Int); }
+            finally
+            {
+                var facts = _quantFacts.Pop();
+                if (facts.Count > 0) AssumeSide(T.Quant("forall", "y", T.Implies(T.And(T.Le(T.Int(0), y), T.Lt(y, n)), T.And(facts.ToArray()))));
+            }
+            return e;
         }
 
         /// <summary>A pure lambda's body for one element (in spec mode, without obligations).</summary>
@@ -304,6 +334,7 @@ namespace CsVerify.Verifier
                     // (and the other way: the elements of inner list j are at o(j) up to o(j + 1))
                     AssumeSide(T.Implies(src.Known, T.And(
                         OverIndices("forall", T.Int(0), src.Length, j => T.Le(o(j), o(T.Add(j, T.Int(1))))),
+                        Monotone(o, src.Length),
                         Inverse())));
                     Term Inverse()
                     {
@@ -617,8 +648,7 @@ namespace CsVerify.Verifier
                     Fact(T.Eq(Len(arr), n));
                     ListKind(arr, inv.Type);
                     NewArrayIsDistinct(arr, f);
-                    var y = new Term("y", Sort.Int);
-                    var row = Pointwise("toArray", Sort.Row, T.Coerce(Elem(y), Sort.Int).S);
+                    var row = Pointwise("toArray", Sort.Row, ElementAtY(Elem, n).S);
                     f.Heap = T.Store(f.Heap, arr, T.Ite(seq.Known, row, _z3.Fresh("toArray", Sort.Row)));
                     return arr;
                 }
@@ -632,8 +662,7 @@ namespace CsVerify.Verifier
                         AssumeSide(T.Not(InSet(f.Alloc, list)));
                         f.Alloc = T.Store(f.Alloc, list, T.Int(1));
                     }
-                    var y = new Term("y", Sort.Int);
-                    var row = Pointwise("toList", Sort.Row, T.Coerce(Elem(y), Sort.Int).S);
+                    var row = Pointwise("toList", Sort.Row, ElementAtY(Elem, n).S);
                     var size = _z3.Fresh("toList", Sort.Int);
                     Fact(T.Eq(size, n));
                     AssumeSide(T.Le(T.Int(0), size));

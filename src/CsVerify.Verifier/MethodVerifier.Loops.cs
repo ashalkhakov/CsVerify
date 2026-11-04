@@ -136,7 +136,10 @@ namespace CsVerify.Verifier
                 });
             }
             // a foreach over an array ends by itself: its index goes up to the array's (fixed) length
-            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null && interfaceElement == null);
+            // (over a view: its query is evaluated once, before the loop, and its enumerator is replaced by the index,
+            // so the loop changes what its body changes, and its iteration variables)
+            AddLoop(loop, new SyntaxNode[] { loop.OverView ? (SyntaxNode)fe.Statement : fe }, needsMeasure: !array && listElement == null && interfaceElement == null);
+            if (loop.OverView) foreach (var l in ForEachLocals(fe)) loop.Havoc.Add(l);
         }
 
         private static bool IsMoveNext(IOperation op, CaptureId enumerator) =>

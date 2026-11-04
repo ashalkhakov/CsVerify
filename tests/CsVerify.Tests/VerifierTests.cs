@@ -424,6 +424,14 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1002" }, r.Errors("AddTwice"));
             Assert.Equal(new[] { "CSV1017" }, r.Errors("AddOutsideFrame"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("Tail"));
+            // LINQ (LinqBugs.cs)
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("LinqBugs.Total"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("LinqBugs.Best"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("LinqBugs.FirstFailing"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("LinqBugs.Lowest"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("LinqBugs.Distinct"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("LinqBugs.Groups"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("LinqBugs.FirstItem"));
             Assert.Equal(new[] { "CSV1012" }, r.Errors("SpecTooEarly"));
             Assert.Equal(new[] { "CSV1011" }, r.Errors("Key"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("DataBugs.Size"));
