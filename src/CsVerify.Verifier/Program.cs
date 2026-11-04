@@ -26,6 +26,12 @@ options:
   --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
+  --each              verify each argument as a program of its own (a comma joins paths into one), and
+                      combine the results: for programs that cannot be compiled together
+  --library-report    after the results, rank what the failures come from: library members without
+                      contracts (by the failures they cause, and their calls), methods without
+                      postconditions, loops without invariants; and the failures by kind, the
+                      unsupported constructs and the unknown values
   -h, --help          this text
 
        csverify erase --out <dir> ...   writes the program with every proof erased (csverify erase -h)";
@@ -36,6 +42,8 @@ options:
             var options = new VerifierOptions();
             var inputs = new List<string>();
             bool verbose = false;
+            bool libraryReport = false;
+            bool each = false;
             string smtLog = null;
             try
             {
@@ -55,6 +63,8 @@ options:
                         case "--smt-log": smtLog = args[++i]; options.SmtLog = new System.Text.StringBuilder(); break;
                         case "--only": options.Only.Add(args[++i]); break;
                         case "-v": verbose = true; break;
+                        case "--library-report": libraryReport = true; break;
+                        case "--each": each = true; break;
                         case "-h": case "--help": Console.WriteLine(Usage); return 0;
                         default:
                             if (args[i].StartsWith("-")) throw new ArgumentException("unknown option " + args[i]);
@@ -66,8 +76,10 @@ options:
 
                 // @file.rsp: one path per line (what the MSBuild target passes).
                 inputs = inputs.SelectMany(i => i.StartsWith("@") ? File.ReadAllLines(i.Substring(1)).Where(l => l.Trim().Length > 0) : new[] { i }).ToList();
-                var files = inputs.SelectMany(Expand).Distinct().ToList();
-                var result = Engine.VerifyFiles(files, options);
+                var programs = each
+                    ? inputs.Select(i => i.Split(',', StringSplitOptions.RemoveEmptyEntries)).ToList()
+                    : new List<string[]> { inputs.ToArray() };
+                var result = VerificationResult.Combine(programs.Select(p => Engine.VerifyFiles(p.SelectMany(Expand).Distinct().ToList(), options)).ToList());
                 if (smtLog != null) File.WriteAllText(smtLog, options.SmtLog.ToString());
 
                 foreach (var d in result.Diagnostics) Console.WriteLine(d);
@@ -83,6 +95,11 @@ options:
                     : $"csverify: {result.Methods.Count - failed} of {result.Methods.Count} methods verified, " +
                       $"{result.Methods.Sum(m => m.Proved)}/{result.Methods.Sum(m => m.Obligations)} obligations proved" +
                       (result.Assumptions.Count > 0 ? $", {result.Assumptions.Count} library contract(s) assumed" : ""));
+                if (libraryReport && result.CompilationErrors.Count == 0)
+                {
+                    Console.WriteLine();
+                    Console.Write(LibraryReport.Render(result));
+                }
                 return result.Success ? 0 : 1;
             }
             catch (Exception e) when (e is ArgumentException || e is FileNotFoundException || e is DirectoryNotFoundException || e is FormatException)

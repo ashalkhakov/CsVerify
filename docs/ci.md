@@ -135,6 +135,8 @@ This repository's workflows, in [`.github/workflows`](../.github/workflows):
     verify `samples/Shop` (with the build and with `dotnet csverify`), check that a planted bug fails the build,
     erase it, and test it with Tarp;
   - `lemon`: verifies CsLemon and checks it against the C lemon (see [CsLemon](../lemon/README.md)).
+- **The library report** (`library-report` in `ci.yml`): `corpus/report.sh`, the [library report](running.md#the-library-report)
+  on the [corpus](../corpus/README.md), in the job's summary. It does not fail on what it finds.
 - **Release** (`release.yml`), on a `v*` tag: the version is the tag's (`v0.2.0` → `0.2.0`). It runs the tests,
   packs `CsVerify` and `dotnet-csverify`, runs `e2e.sh` on those packages, creates the GitHub release with them,
   and pushes them to nuget.org.

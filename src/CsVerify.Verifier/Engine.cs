@@ -51,6 +51,13 @@ namespace CsVerify.Verifier
 
         public int Line => Span.StartLinePosition.Line + 1;
 
+        /// <summary>
+        /// For a failed obligation, where the unknown values its condition mentions come from (the library report):
+        /// "library M" (a library member without a contract: its result, or what it may have changed), "source M" (a
+        /// method of the program without postconditions), "a loop without invariants". Empty if it mentions none.
+        /// </summary>
+        public IReadOnlyCollection<string> Causes = Array.Empty<string>();
+
         public override string ToString() =>
             $"{Span.Path}({Span.StartLinePosition.Line + 1},{Span.StartLinePosition.Character + 1}): {(IsError ? "error" : "warning")} {Id}: {Message}";
     }
@@ -62,6 +69,9 @@ namespace CsVerify.Verifier
         public readonly List<VerificationDiagnostic> Diagnostics = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts the proof of this method assumed.</summary>
         public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
+        /// <summary>The calls (and property reads) in this method of library members without a contract: each
+        /// member, and where (file and position).</summary>
+        public readonly HashSet<(string member, string at)> LibraryCalls = new HashSet<(string, string)>();
         public bool Verified => Diagnostics.All(d => !d.IsError);
     }
 
@@ -77,6 +87,21 @@ namespace CsVerify.Verifier
             CompilationErrors.Concat(AnalyzerErrors).Concat(Methods.SelectMany(m => m.Diagnostics));
         public bool Success => !Diagnostics.Any(d => d.IsError);
         public MethodResult this[string name] => Methods.FirstOrDefault(m => m.Name == name || m.Name.EndsWith("." + name));
+
+        /// <summary>The results of programs verified separately, as one.</summary>
+        public static VerificationResult Combine(IReadOnlyList<VerificationResult> results)
+        {
+            if (results.Count == 1) return results[0];
+            var all = new VerificationResult();
+            foreach (var r in results)
+            {
+                all.Methods.AddRange(r.Methods);
+                all.CompilationErrors.AddRange(r.CompilationErrors);
+                all.AnalyzerErrors.AddRange(r.AnalyzerErrors);
+                all.Assumptions.UnionWith(r.Assumptions);
+            }
+            return all;
+        }
     }
 
     /// <summary>Builds the compilation (with CSVERIFY_SPEC defined) and verifies every method with a body.</summary>
