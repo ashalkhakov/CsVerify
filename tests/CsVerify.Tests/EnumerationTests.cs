@@ -27,6 +27,29 @@ public static class P
         }
 
         [Fact]
+        public void KeysAndValues_AreViewsOfTheirDictionary()
+        {
+            var r = Harness.Verify(@"
+using System.Collections.Generic;
+public static class P
+{
+    // a new key, or Clear: the view's next MoveNext throws
+    public static void KeysAdd(Dictionary<int, int> d) { foreach (var k in d.Keys) { d[k + 1000] = 0; } }
+    public static void ValuesClear(Dictionary<int, int> d) { foreach (var v in d.Values) { if (v < 0) d.Clear(); } }
+    // a key's value overwritten (the version stays), or a key removed (allowed since .NET Core 3.0): fine
+    public static void KeysAssign(Dictionary<string, int> d) { foreach (var k in d.Keys) { d[k] = 0; } }
+    public static void PairsAssign(Dictionary<int, int> d) { foreach (var kv in d) { d[kv.Key] = 1; } }
+    public static void KeysRemove(Dictionary<int, int> d) { foreach (var k in d.Keys) { d.Remove(k); } }
+    // a foreach's pair is one the dictionary has; a view's Count is the dictionary's
+    public static int Pair(Dictionary<int, int> d) { foreach (var kv in d) { Spec.Assert(d.ContainsKey(kv.Key) && d[kv.Key] == kv.Value); return kv.Value; } return 0; }
+    public static int Count(Dictionary<int, int> d) { Spec.Ensures<int>(r => r == d.Count); return d.Keys.Count; }
+}", overflow: false);
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.KeysAdd"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.ValuesClear"));
+            foreach (var m in new[] { "KeysAssign", "PairsAssign", "KeysRemove", "Pair", "Count" }) Assert.Empty(r.Errors("P." + m));
+        }
+
+        [Fact]
         public void WhatDoesNotThrow_IsNotReported()
         {
             var r = Harness.Verify(@"

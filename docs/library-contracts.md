@@ -165,8 +165,14 @@ foreach (var x in list) { if (x > 0) list.Add(x); }   // reported: the next Move
 
 In a `foreach`, "the version is still the enumerator's" is inferred as a loop fact. It holds where the loop changes
 another collection (one shown to be different), or changes this one and leaves at once (`break`): the next `MoveNext`
-is what fails, and it never runs. `Dictionary.Remove` keeps the version, since removing during enumeration is allowed
-from .NET Core 3.0 on. The conformance tests check that against the collections' own `_version`.
+is what fails, and it never runs. `Dictionary.Remove`, and overwriting an existing key's value (`d[k] = v`), keep the
+version, since both are allowed during enumeration from .NET Core 3.0 on. The conformance tests check that against
+the collections' own `_version`.
+
+A dictionary's `Keys` and `Values` are views of it: their enumerators check the dictionary's version, and their
+`Count` is its `Count`. In a `foreach` over a dictionary, the current pair is one the dictionary has
+(`d.ContainsKey(kv.Key)`, `d[kv.Key] == kv.Value`); over its `Keys`, the current key is one of them. So
+`foreach (var kv in d) d[kv.Key] = 0;` is fine, and `foreach (var k in d.Keys) d[k + 1] = 0;` is reported.
 
 **Lists through their interfaces.** `Count` and the indexer of `IReadOnlyList<T>`, `IList<T>`,
 `IReadOnlyCollection<T>` and `ICollection<T>` read what the object is. For a `List<T>` they read its models, so a list

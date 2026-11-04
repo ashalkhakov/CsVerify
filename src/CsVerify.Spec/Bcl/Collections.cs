@@ -280,6 +280,8 @@ namespace CsVerify.Bcl
             Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(true)));
             Spec.Ensures(@this.Entries() == Spec.Old(@this.Entries()).Update(key, Ghost.Of(value)));
             Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) + (Spec.Old(@this.Domain())[key].Value ? 0 : 1));
+            // (overwriting a key's value keeps the version: a foreach over the dictionary may do it)
+            Spec.Ensures(!Spec.Old(@this.Domain())[key].Value || @this.Version() == Spec.Old(@this.Version()));
             throw null!;
         }
 

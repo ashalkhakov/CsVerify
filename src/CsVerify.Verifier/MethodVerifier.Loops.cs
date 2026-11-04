@@ -33,6 +33,9 @@ namespace CsVerify.Verifier
         /// <summary>Their MoveNext calls and Current reads (with the conversion to the iteration variable's type).</summary>
         private readonly Dictionary<IOperation, Loop> _arrayMoveNext = new Dictionary<IOperation, Loop>();
         private readonly Dictionary<IOperation, Loop> _arrayCurrent = new Dictionary<IOperation, Loop>();
+        // a foreach's own Current, read right after its MoveNext (nothing runs in between): of a dictionary's enumerator,
+        // a pair the dictionary has (MethodVerifier.Enumerators)
+        private readonly HashSet<IOperation> _foreachCurrent = new HashSet<IOperation>();
         /// <summary>The foreach loop of each iteration variable (for Spec.Index).</summary>
         private readonly Dictionary<ILocalSymbol, Loop> _forEachOf = new Dictionary<ILocalSymbol, Loop>(SymbolEqualityComparer.Default);
         /// <summary>The try/finally regions of foreach loops over arrays: C# emits neither (there is no enumerator to dispose).</summary>
@@ -102,6 +105,10 @@ namespace CsVerify.Verifier
                         break;
                     }
             foreach (var l in ForEachLocals(fe)) if (l is ILocalSymbol local) _forEachOf[local] = loop;
+            if (!array && listElement == null && interfaceElement == null)
+                foreach (var op in cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()))
+                    if (op is IPropertyReferenceOperation cur && cur.Property.Name == "Current" && cur.Instance is IFlowCaptureReferenceOperation cr && cr.Id.Equals(capture.Id))
+                        _foreachCurrent.Add(cur);
             // through an enumerator of a versioned collection: "the version is still the enumerator's", inferred as the
             // loop facts are (held on entry, kept at every back edge; else MoveNext reports the change)
             if (!array && listElement == null && interfaceElement == null && capture.Value is IInvocationOperation ge &&
