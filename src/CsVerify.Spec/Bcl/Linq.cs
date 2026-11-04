@@ -34,8 +34,7 @@ namespace CsVerify.Bcl
 
         // the first occurrence of each value (EqualityComparer<T>.Default), in order
         public static IEnumerable<T> Distinct<T>(IEnumerable<T> source) =>
-            Q.For(Q.Range(0, Q.Count(source)), j =>
-                Q.If(Spec.Forall(0, j, i => !Spec.Equal(Ghost.Of(Q.At(source, i)), Ghost.Of(Q.At(source, j)))), Q.Yield(Q.At(source, j))));
+            Q.For(Q.Range(0, Q.Count(source)), j => Q.If(Q.Unseen(source, j), Q.Yield(Q.At(source, j))));
 
         public static IOrderedEnumerable<T> OrderBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector) => Q.Sort(source, keySelector, false);
 
@@ -49,10 +48,12 @@ namespace CsVerify.Bcl
             Q.For(source, x => Q.For(selector(x), y => Q.Yield(y)));
 
         // the groups in the order their keys first appear, each with the source's elements of its key, in order
-        public static IEnumerable<IGrouping<K, T>> GroupBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector) =>
-            Q.For(Q.Range(0, Q.Count(source)), j =>
-                Q.If(Spec.Forall(0, j, i => !Spec.Equal(Ghost.Of(keySelector(Q.At(source, i))), Ghost.Of(keySelector(Q.At(source, j))))),
-                    Q.Yield(Q.Group(keySelector(Q.At(source, j)), k => Q.For(source, x => Q.If(Spec.Equal(Ghost.Of(keySelector(x)), Ghost.Of(k)), Q.Yield(x)))))));
+        public static IEnumerable<IGrouping<K, T>> GroupBy<T, K>(IEnumerable<T> source, Func<T, K> keySelector)
+        {
+            var keys = Select(source, keySelector);
+            return Q.For(Q.Range(0, Q.Count(keys)), j => Q.If(Q.Unseen(keys, j),
+                Q.Yield(Q.Group(Q.At(keys, j), k => Q.For(source, x => Q.If(Spec.Equal(Ghost.Of(keySelector(x)), Ghost.Of(k)), Q.Yield(x)))))));
+        }
 
         public static IEnumerable<R> Zip<A, B, R>(IEnumerable<A> first, IEnumerable<B> second, Func<A, B, R> resultSelector) =>
             Q.For(Q.Range(0, Math.Min(Q.Count(first), Q.Count(second))), i => Q.Yield(resultSelector(Q.At(first, i), Q.At(second, i))));

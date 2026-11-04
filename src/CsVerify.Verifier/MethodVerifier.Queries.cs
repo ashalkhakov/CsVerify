@@ -59,7 +59,13 @@ namespace CsVerify.Verifier
             public Qry Then;
         }
 
-        private sealed class QYield : Qry { public Term Value; }
+        /// <summary>One value, evaluated when it is read (not where only the comprehension's shape or condition is).</summary>
+        private sealed class QYield : Qry
+        {
+            public Func<Term> Make;
+            private Term _value;
+            public Term Value => _value ??= Make();
+        }
 
         private sealed class QEmpty : Qry { }
 
@@ -108,6 +114,8 @@ namespace CsVerify.Verifier
         private readonly Dictionary<string, GroupFamily> _groupFamilies = new Dictionary<string, GroupFamily>(StringComparer.Ordinal);
         private readonly Stack<QueryContext> _queryContexts = new Stack<QueryContext>();
         private int _queryIds, _boundCompile;
+        private readonly Dictionary<Qry, Func<Term, Term>> _seen = new Dictionary<Qry, Func<Term, Term>>();
+        private readonly HashSet<string> _nonNegative = new HashSet<string>(StringComparer.Ordinal); // (lengths)
 
         /// <summary>A sequence made for each element of another (its source read at a bound index) must have no axioms.</summary>
         private void BoundCompileCheck()
@@ -430,25 +438,61 @@ namespace CsVerify.Verifier
                 case "If":
                     return QueryTerm(new QIf { Condition = AsBool(A(0)), Then = S(1), ElementType = element });
                 case "Yield":
-                    return QueryTerm(new QYield { Value = A(0), ElementType = element });
+                {
+                    var op = Op(0);
+                    return QueryTerm(new QYield { Make = () => InContext(ctx, () => Eval(op, f, spec)), ElementType = element });
+                }
                 case "Empty":
                     return QueryTerm(new QEmpty { ElementType = element });
                 case "Range":
                 {
                     var lo = T.Coerce(A(0), Sort.Int);
                     var hi = T.Coerce(A(1), Sort.Int);
+                    // (from 0 to a count: as many as the count, each its index)
+                    bool fromZero = lo.S == "0";
+                    var length = fromZero && _nonNegative.Contains(hi.S) ? hi : T.Ite(T.Lt(lo, hi), T.Sub(hi, lo), T.Int(0));
                     return QueryTerm(new QSeq
                     {
                         ElementType = element,
-                        Make = () => new Sequence { Length = T.Ite(T.Lt(lo, hi), T.Sub(hi, lo), T.Int(0)), Element = i => T.Add(lo, i), ElementType = element },
+                        Make = () => new Sequence { Length = length, Element = i => fromZero ? i : T.Add(lo, i), ElementType = element },
                     });
                 }
                 case "Count":
-                    return Read(S(0)).Length;
+                {
+                    var n = Read(S(0)).Length;
+                    _nonNegative.Add(n.S);
+                    return n;
+                }
                 case "At":
                 {
                     var s = Read(S(0));
                     return T.Coerce(s.Element(T.Coerce(A(1), Sort.Int)), SortOf(Resolve(inv.Type)));
+                }
+                case "Unseen":
+                {
+                    // none before it equal: for keys compared as SMT values, a running set of those seen (one store a
+                    // step, no quantifier inside); for others, a quantifier over the earlier ones
+                    var q = S(0);
+                    var s = Read(q);
+                    var j = T.Coerce(A(1), Sort.Int);
+                    var t = Resolve(m.TypeArguments[0]);
+                    if (!KnownEquality(t))
+                    {
+                        var relation = "equals:" + t.ToDisplayString();
+                        return OverIndices("forall", T.Int(0), j, i => T.Not(_z3.Apply(relation, Sort.Bool,
+                            new[] { T.Coerce(s.Element(i), Sort.Int), T.Coerce(s.Element(j), Sort.Int), ctx.Epoch })));
+                    }
+                    if (!_seen.TryGetValue(q, out var seen))
+                    {
+                        BoundCompileCheck();
+                        var name = "seen#" + _materialized++;
+                        Term Seen(Term i) => _z3.Apply(name, Sort.Row, new[] { i });
+                        AssumeSide(T.Implies(s.Known, T.And(T.Eq(Seen(T.Int(0)), T.ZeroRow()),
+                            OverIndices("forall", T.Int(0), s.Length, i => T.Eq(Seen(T.Add(i, T.Int(1))), T.Store(Seen(i), T.Coerce(s.Element(i), Sort.Int), T.Int(1))),
+                                        pattern: i => Seen(T.Add(i, T.Int(1))), pattern2: Seen))));
+                        _seen[q] = seen = Seen;
+                    }
+                    return T.Eq(T.Select(seen(j), T.Coerce(s.Element(j), Sort.Int), Sort.Int), T.Int(0));
                 }
                 case "Fold":
                 case "Scan":
@@ -676,7 +720,7 @@ namespace CsVerify.Verifier
                     }
                     default:
                         // a sequence as a For's body: its elements
-                        rest = i => new QFor { Source = r0(i), Body = y => new QYield { Value = y, ElementType = elementType }, ElementType = elementType };
+                        rest = i => new QFor { Source = r0(i), Body = y => new QYield { Make = () => y, ElementType = elementType }, ElementType = elementType };
                         continue;
                 }
             }

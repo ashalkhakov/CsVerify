@@ -63,6 +63,21 @@ namespace CsVerify
             throw new ArgumentOutOfRangeException(nameof(index));
         }
 
+        /// <summary>Is the element at the index equal (EqualityComparer&lt;T&gt;.Default) to none before it?</summary>
+        public static bool Unseen<T>(IEnumerable<T> source, int index)
+        {
+            var c = EqualityComparer<T>.Default;
+            var at = At(source, index);
+            int i = 0;
+            foreach (var x in source)
+            {
+                if (i == index) return true;
+                if (c.Equals(x, at)) return false;
+                i++;
+            }
+            return true;
+        }
+
         /// <summary>The seed, stepped by each element in order.</summary>
         public static A Fold<T, A>(IEnumerable<T> source, A seed, Func<A, T, A> step)
         {
