@@ -36,7 +36,7 @@ namespace CsVerify.Verifier
 
         /// <summary>The type a call's result has where it is used: an awaited async method's T, otherwise its return type.</summary>
         private ITypeSymbol ResultTypeOf(IInvocationOperation inv) =>
-            inv == _awaitedCall && AsyncResultType(inv.TargetMethod) is ITypeSymbol t ? t : inv.TargetMethod.ReturnType;
+            inv == _awaitedCall && AwaitedType(inv.TargetMethod) is ITypeSymbol t ? t : inv.TargetMethod.ReturnType;
 
         /// <summary>A call of an async method of the program that is not awaited at once.</summary>
         private bool CheckNotAwaited(IInvocationOperation inv, Contract callee)
@@ -54,16 +54,17 @@ namespace CsVerify.Verifier
             while (operand is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null && ca.TargetMethod.DeclaringSyntaxReferences.Length == 0)
                 operand = ca.Instance;
             Term result;
-            if (operand is IInvocationOperation call && call.TargetMethod.IsAsync && _engine.ContractOf(call.TargetMethod).HasSource)
+            if (operand is IInvocationOperation call && (call.TargetMethod.IsAsync && _engine.ContractOf(call.TargetMethod).HasSource || IsAsyncStubbed(call.TargetMethod)))
             {
-                // an async method of the program: a call whose postcondition holds when its task completes
+                // an async method of the program, or a library one with an async stub: a call whose postcondition
+                // holds when its task completes
                 var outer = _awaitedCall;
                 _awaitedCall = call;
                 try { result = Eval(call, f, spec); }
                 finally { _awaitedCall = outer; }
                 for (var w = aw.Operation; w != call; w = ((IInvocationOperation)w).Instance)
                     foreach (var a in ((IInvocationOperation)w).Arguments) Eval(a.Value, f, spec); // (ConfigureAwait's argument)
-                if (AsyncResultType(call.TargetMethod) == null) result = T.True;
+                if (AwaitedType(call.TargetMethod) == null) result = T.True;
             }
             else
             {

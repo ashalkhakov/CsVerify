@@ -244,7 +244,9 @@ namespace Wrong
                     break;
                 }
             }
-            bool returns = !stub.ReturnsVoid && member.MethodKind != MethodKind.PropertySet;
+            bool returns = !stub.ReturnsVoid && member.MethodKind != MethodKind.PropertySet &&
+                           !(stub.IsAsync && stub.ReturnType is INamedTypeSymbol { TypeArguments.Length: 0 });
+            var resultType = stub.IsAsync && stub.ReturnType is INamedTypeSymbol { TypeArguments.Length: 1 } task ? task.TypeArguments[0] : stub.ReturnType;
 
             // the objects whose models are compared before and after: the arguments of reference type
             var objects = ps.Where(p => p.RefKind != RefKind.Out && !p.Type.IsValueType && p.Type.SpecialType != SpecialType.System_String)
@@ -268,10 +270,11 @@ namespace Wrong
             sb.AppendLine("            global::CsVerify.Spec.Args = __objects;");
             sb.AppendLine("            var __before = global::CsVerify.Conformance.Models.Snapshot(__objects);");
             sb.AppendLine($"            var __frame = {frame ?? "global::CsVerify.ObjSet.Empty"};");
-            if (returns) sb.AppendLine($"            {stub.ReturnType.ToDisplayString(Full)} __r;");
+            if (returns) sb.AppendLine($"            {resultType.ToDisplayString(Full)} __r;");
             sb.AppendLine("            try");
             sb.AppendLine("            {");
-            sb.AppendLine($"                {(returns ? "__r = " : "")}{call};");
+            // an async stub: its contract is of what the task gives
+            sb.AppendLine($"                {(returns ? "__r = " : "")}{(stub.IsAsync ? $"({call}).GetAwaiter().GetResult()" : call)};");
             sb.AppendLine("            }");
             sb.AppendLine("            catch (global::System.Exception __x) when (!(__x is global::CsVerify.Conformance.Undetermined))");
             sb.AppendLine("            {");
@@ -566,6 +569,8 @@ namespace CsVerify.Conformance
             }
             else if (t == typeof(StringBuilder)) made = new StringBuilder(Strings[r.Next(Strings.Length)]);
             else if (t == typeof(TextWriter)) made = new StringWriter();
+            else if (t == typeof(byte[])) made = Enumerable.Range(0, r.Next(9)).Select(_ => (byte)r.Next(256)).ToArray();
+            else if (t == typeof(Stream)) made = new MemoryStream(Enumerable.Range(0, r.Next(12)).Select(_ => (byte)r.Next(256)).ToArray());
             else throw new NotSupportedException(t.ToString());
             pool.Add(made);
             return made;

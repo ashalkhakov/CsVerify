@@ -1601,10 +1601,13 @@ namespace CsVerify.Verifier
             }
 
             if (IsNullableValue(m.ContainingType) && NullableInvocation(inv, f, spec) is Term nullableResult) return nullableResult;
+            if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
             var callee = _engine.ContractOf(m);
+            // an async stub's contract is of what the task gives when awaited: a task not awaited at once is the library's
+            if (callee.IsStub && callee.Stub.IsAsync && inv != _awaitedCall) callee = _engine.LibraryContractOf(m);
             if (callee.IsStub && _codeMode) Assumed(callee);
             CheckNotAwaited(inv, callee);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
@@ -1694,7 +1697,8 @@ namespace CsVerify.Verifier
                     foreach (var (a, nv) in cellsOut) WriteCell(cells[a], nv, f, a.Syntax);
                     FlushTies(f);
                     CalleeModifies(callee, pre, f, inv.Syntax);
-                    HavocFields(f, m, touched);
+                    // (a library can run the program's code only through overrides and interfaces: none, none written)
+                    if (_engine.Fields.WritesFieldsAt(inv)) HavocFields(f, m, touched);
                     CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                     var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
                     if (!m.ReturnsVoid && MayBeNullType(inv.Type)) _z3.Origins[libResult.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
@@ -1702,6 +1706,7 @@ namespace CsVerify.Verifier
                         if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                     AllocAfterCall(f, libResult);
                     LibraryNullFacts(inv, argTerms, libResult);
+                    GuardFacts(inv, argTerms);
                     if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
                     return libResult;
                 }
@@ -1801,9 +1806,11 @@ namespace CsVerify.Verifier
                 post.FieldEpoch = f.FieldEpoch;
                 post.Link = f.Link;
 
-                var result = packageResult ?? (m.ReturnsVoid || m.IsAsync && _awaitedCall == inv && AsyncResultType(m) == null ? null : FreshOf(ResultTypeOf(inv), m.Name));
+                var result = packageResult ?? (m.ReturnsVoid || _awaitedCall == inv && AwaitedType(m) == null && (m.IsAsync || IsAsyncStubbed(m)) ? null : FreshOf(ResultTypeOf(inv), m.Name));
                 if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
-                if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
+                bool awaitedStub = callee.IsStub && callee.Stub.IsAsync && _awaitedCall == inv;
+                if (result != null && (awaitedStub ? IsNonNullableType(AwaitedType(m)) : IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m)))
+                    _z3.Assume(NotNull(result));
                 else if (result != null && MayBeNullType(result.Sort == Sort.Int ? ResultTypeOf(inv) : null))
                     _z3.Origins[result.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
                 // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it

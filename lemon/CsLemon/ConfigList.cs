@@ -192,8 +192,8 @@ namespace CsLemon
             for (; cfp != null; cfp = nextcfp)
             {
                 nextcfp = cfp.next;
-                System.Diagnostics.Debug.Assert(cfp.fplp == null);
-                System.Diagnostics.Debug.Assert(cfp.bplp == null);
+                Checks.That(cfp.fplp == null);
+                Checks.That(cfp.bplp == null);
                 cfp.fws = null;
             }
         }

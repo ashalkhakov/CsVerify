@@ -72,7 +72,7 @@ namespace CsLemon
                     for (i = 0; i < rp.nrhs; i++)
                     {
                         Symbol sp = rp.Rhs(i);
-                        System.Diagnostics.Debug.Assert(sp.type == SymbolType.NONTERMINAL || sp.lambda == false);
+                        Checks.That(sp.type == SymbolType.NONTERMINAL || sp.lambda == false);
                         if (sp.lambda == false) break;
                     }
                     if (i == rp.nrhs)
@@ -364,7 +364,7 @@ namespace CsLemon
 
             for (i = 0; i < lemp.nstate; i++)
             {
-                System.Diagnostics.Debug.Assert(lemp.Sorted(i) != null);
+                Checks.That(lemp.Sorted(i) != null);
                 for (cfp = lemp.Sorted(i).cfp; cfp != null; cfp = cfp.next)
                 {
                     cfp.status = CfgStatus.INCOMPLETE;
@@ -376,7 +376,7 @@ namespace CsLemon
                 progress = false;
                 for (i = 0; i < lemp.nstate; i++)
                 {
-                    System.Diagnostics.Debug.Assert(lemp.Sorted(i) != null);
+                    Checks.That(lemp.Sorted(i) != null);
                     for (cfp = lemp.Sorted(i).cfp; cfp != null; cfp = cfp.next)
                     {
                         if (cfp.status == CfgStatus.COMPLETE) continue;
@@ -502,7 +502,7 @@ namespace CsLemon
         {
             Symbol? spx, spy;
             int errcnt = 0;
-            System.Diagnostics.Debug.Assert(apx.sp == apy.sp);  /* Otherwise there would be no conflict */
+            Checks.That(apx.sp == apy.sp);  /* Otherwise there would be no conflict */
             if (apx.type == ActionType.SHIFT && apy.type == ActionType.SHIFT)
             {
                 apy.type = ActionType.SSCONFLICT;
@@ -536,7 +536,7 @@ namespace CsLemon
                 }
                 else
                 {
-                    System.Diagnostics.Debug.Assert(spx.prec == spy.prec && spx.assoc == Assoc.NONE);
+                    Checks.That(spx.prec == spy.prec && spx.assoc == Assoc.NONE);
                     apx.type = ActionType.ERROR;
                 }
             }

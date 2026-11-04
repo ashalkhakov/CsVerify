@@ -191,7 +191,7 @@ public static class P
         public void NullDiagnostics_SayWhereTheNullComesFrom()
         {
             var r = Harness.Verify(@"
-public sealed class User { public string Name = """"; public User? Boss; }
+public sealed class User { public string Name = """"; public User? Boss; public override string ToString() => Name; }
 public sealed class Repo { public User? Find(int id) => null; }
 public static class P
 {

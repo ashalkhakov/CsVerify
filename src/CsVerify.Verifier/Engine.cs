@@ -382,6 +382,15 @@ namespace CsVerify.Verifier
             return _underInvariants.Contains((m.ReducedFrom ?? m).OriginalDefinition);
         }
 
+        private readonly Dictionary<IMethodSymbol, Contract> _libraryContracts = new Dictionary<IMethodSymbol, Contract>(SymbolEqualityComparer.Default);
+
+        /// <summary>A library member's contract as if it had no stub: what an async stub's member gives when not awaited.</summary>
+        internal Contract LibraryContractOf(IMethodSymbol m)
+        {
+            var key = (m.ReducedFrom ?? m).OriginalDefinition;
+            return _libraryContracts.TryGetValue(key, out var c) ? c : _libraryContracts[key] = Contract.Read(key, _compilation);
+        }
+
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
@@ -521,6 +530,23 @@ namespace CsVerify.Verifier
                     RunMethod(engine, engine.ContractOf(accessor), mr, node.GetLocation());
                 }
             }
+            // classes with no constructor body of their own: their fields' initializers, which no method verifies
+            if (options.Checked("CSV1014"))
+                foreach (var tree in userTrees)
+                {
+                    var model = compilation.GetSemanticModel(tree);
+                    foreach (var cd in tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>())
+                    {
+                        if (!(model.GetDeclaredSymbol(cd) is INamedTypeSymbol type) || SpecSymbols.IsContractsClass(type)) continue;
+                        var nulls = MethodVerifier.ImplicitConstructorNulls(type, t => compilation.GetSemanticModel(t)).ToList();
+                        var mr = new MethodResult { Name = type.Name + "..ctor" };
+                        if (nulls.Count == 0 || !options.Selects(mr.Name)) continue;
+                        mr.Obligations = nulls.Count;
+                        foreach (var (_, at, message) in nulls)
+                            mr.Diagnostics.Add(new VerificationDiagnostic("CSV1014", true, message, at.GetLocation().GetLineSpan()));
+                        result.Methods.Add(mr);
+                    }
+                }
             // a stub that specifies nothing (a typo in a name or a parameter type) would silently leave a member unspecified
             foreach (var (stubMethod, message) in engine.Stubs.Errors)
             {
