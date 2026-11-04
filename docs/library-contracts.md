@@ -194,6 +194,33 @@ list of its own) runs over `Count` and the indexer, like a foreach over an array
 by itself, and its enumerator's `Dispose` is taken to do nothing. Library collections are trusted to enumerate as they
 index.
 
+**LINQ's definitions.** LINQ is not specified with contracts but defined: each `System.Linq.Enumerable` member
+(and `List`'s predicate methods) has a definition in `CsVerify.Bcl` (`src/CsVerify.Spec/Bcl/Linq.cs`), a method of a
+`[ContractsFor(typeof(Enumerable)), Comprehensions]` class written with `CsVerify.Q`'s comprehensions:
+
+```csharp
+public static IEnumerable<T> Where<T>(IEnumerable<T> source, Func<T, bool> predicate) =>
+    Q.For(source, x => Q.If(predicate(x), Q.Yield(x)));
+
+public static T First<T>(IEnumerable<T> source, Func<T, bool> predicate)
+{
+    Spec.Requires(Q.Count(Where(source, predicate)) > 0); // (else InvalidOperationException)
+    return Q.At(Where(source, predicate), 0);
+}
+```
+
+`Q.For(s, x => body)` is the body's elements for each x of s, one after another, `Q.If(c, q)` is q where c holds and
+nothing otherwise, and `Q.Yield(v)` is v alone; `Q.Count`, `Q.At`, `Q.Range`, `Q.Fold`, `Q.Scan`, `Q.Sort`/`Q.ThenSort`
+(stable) and `Q.Group` are the rest. A definition's Spec.Requires is where the member throws (proved at each call), and
+its Spec.Ensures are facts of its result (Min and Max are no larger, and no smaller, than every element: induction the
+solver would not do). The verifier runs a definition symbolically on what the call is given: it puts the comprehension
+into the normal form of Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013),
+whose sources are never comprehensions and whose conditions in a row are one (their union rule, which reorders, is not
+used, so LINQ to Objects' order is kept), and compiles that into its encodings: a filter for each condition, sequences
+one after another for each nested For. The definitions are code that runs (`Q` is written without System.Linq), and
+`QueryConformanceTests` runs each against the member it defines on random inputs: the same elements in the same order,
+a throw exactly where its precondition fails, its Ensures holding. Adding a member is adding its definition there.
+
 **LINQ.** Over a `List`, an array, an `IReadOnlyList<T>` or an `IList<T>` (read as above), `Count`, `Any`, `All`,
 `Contains`, `First`, `FirstOrDefault`, `Last`, `LastOrDefault`, `ElementAt`, `ToList` and `ToArray`, and `List`'s `Find`,
 `FindIndex`, `Exists` and `TrueForAll`, are exact. A predicate that is a pure lambda (an expression with no assignments,
@@ -202,7 +229,7 @@ calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as
 sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
 it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
 
-`Sum`, `Min` and `Max` of `int` or `long` elements, or of a pure selector's values, are exact too: a running total,
+`Sum` of `int` elements, and `Min` and `Max` of `int` or `long` elements, or of a pure selector's `int` values, are exact too: a running total,
 minimum or maximum, defined one element at a time. `Sum` checks its additions, as .NET does, so a partial sum out of
 range is reported (CSV1001, it would throw `OverflowException`); `Min` and `Max` of an empty sequence are reported (they
 throw `InvalidOperationException`). Over `double` or `float` the result is unknown (a sum's rounding and NaN's ordering

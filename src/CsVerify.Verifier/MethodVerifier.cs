@@ -1590,7 +1590,8 @@ namespace CsVerify.Verifier
 
         /// <summary>A call, with the callee's type parameters as it instantiates them (for its contract's equalities).</summary>
         private Term EvalInvocation(IInvocationOperation inv, Frame f, SpecEnv spec) =>
-            WithInstantiation(inv.TargetMethod, () => EvalInvocationCore(inv, f, spec));
+            // (inside a LINQ definition: Q, the lambdas, other definitions; in the definition's own instantiation)
+            QueryOperation(inv, f, spec) ?? WithInstantiation(inv.TargetMethod, () => EvalInvocationCore(inv, f, spec));
 
         private T2 WithInstantiation<T2>(IMethodSymbol called, System.Func<T2> eval)
         {
