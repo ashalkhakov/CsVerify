@@ -194,6 +194,14 @@ list of its own) runs over `Count` and the indexer, like a foreach over an array
 by itself, and its enumerator's `Dispose` is taken to do nothing. Library collections are trusted to enumerate as they
 index.
 
+**LINQ.** Over a `List`, an array, an `IReadOnlyList<T>` or an `IList<T>` (read as above), `Count`, `Any`, `All`,
+`Contains`, `First`, `FirstOrDefault`, `Last`, `LastOrDefault`, `ElementAt`, `ToList` and `ToArray`, and `List`'s `Find`,
+`FindIndex`, `Exists` and `TrueForAll`, are exact. A predicate that is a pure lambda (an expression with no assignments,
+calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as a condition on each element, so
+`a.First(x => x > 5)` is the first element above 5 and `a.All(x => x > 0)` a quantifier. What would throw (`First` of a
+sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
+it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
+
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their
 contents), classes that do not override `Equals` (references), and data records. For other types (a class with its own

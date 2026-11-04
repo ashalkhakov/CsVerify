@@ -8,6 +8,8 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
+using Microsoft.CodeAnalysis.FlowAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 using Microsoft.CodeAnalysis.Operations;
 
 namespace CsVerify.Verifier
@@ -509,6 +511,15 @@ namespace CsVerify.Verifier
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
                     RunMethod(engine, contract, mr, decl.GetLocation());
+                    // its lambdas and local functions, each a unit of its own
+                    foreach (var (nested, graph) in NestedFunctions(decl, model))
+                    {
+                        var nmr = new MethodResult { Name = mr.Name + "." + NestedName(nested) };
+                        if (!options.Selects(nmr.Name)) continue;
+                        result.Methods.Add(nmr);
+                        declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
+                        RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
+                    }
                 }
             }
             // accessors with code: properties are methods too
@@ -570,7 +581,45 @@ namespace CsVerify.Verifier
         /// their heads; a run in which one might not hold at a back edge is redone without it, until a run assumes only
         /// facts it also proved. (After a few rounds, the last is run with none.)
         /// </summary>
-        private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at)
+        /// <summary>
+        /// The lambdas and local functions of a method (nested in each other too), with their flow graphs: each is
+        /// verified as a method of its own. Its parameters are as its delegate type declares them, and what it captures
+        /// is some value of its type, since it may run at any time. Lambdas in specifications are ghost, not code.
+        /// </summary>
+        private static IEnumerable<(IMethodSymbol symbol, ControlFlowGraph graph)> NestedFunctions(BaseMethodDeclarationSyntax decl, SemanticModel model)
+        {
+            ControlFlowGraph root;
+            switch (model.GetOperation(decl))
+            {
+                case IMethodBodyOperation mb: root = ControlFlowGraph.Create(mb); break;
+                case IConstructorBodyOperation cb: root = ControlFlowGraph.Create(cb); break;
+                default: yield break;
+            }
+            var todo = new Stack<ControlFlowGraph>();
+            todo.Push(root);
+            while (todo.Count > 0)
+            {
+                var g = todo.Pop();
+                foreach (var lf in g.LocalFunctions)
+                {
+                    var lg = g.GetLocalFunctionControlFlowGraph(lf);
+                    todo.Push(lg);
+                    if (!SpecSymbols.IsTrusted(lf)) yield return (lf, lg);
+                }
+                foreach (var fa in g.Blocks.SelectMany(b => b.Operations.Concat(b.BranchValue != null ? new[] { b.BranchValue } : new IOperation[0]))
+                             .SelectMany(o => o.DescendantsAndSelf()).OfType<IFlowAnonymousFunctionOperation>())
+                {
+                    var ag = g.GetAnonymousFunctionControlFlowGraph(fa);
+                    todo.Push(ag);
+                    if (!SpecSymbols.IsInGhostContext(fa.Syntax, model)) yield return (fa.Symbol, ag);
+                }
+            }
+        }
+
+        private static string NestedName(IMethodSymbol m) =>
+            m.MethodKind == MethodKind.LocalFunction ? m.Name : "<lambda:" + (m.Locations[0].GetLineSpan().StartLinePosition.Line + 1) + ">";
+
+        private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested = null)
         {
             const int Rounds = 8;
             var excluded = new HashSet<string>(StringComparer.Ordinal);
@@ -578,7 +627,7 @@ namespace CsVerify.Verifier
             {
                 mr.Clear();
                 engine.Solver.Reset();
-                var verifier = new MethodVerifier(engine, contract, mr, round == Rounds ? null : excluded);
+                var verifier = new MethodVerifier(engine, contract, mr, round == Rounds ? null : excluded) { NestedGraph = nested };
                 if (round == Rounds) verifier.InferNoLoopFacts = true;
                 bool failed = false;
                 try { verifier.Run(); }

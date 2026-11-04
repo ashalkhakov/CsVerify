@@ -46,7 +46,8 @@
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
 - Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans (their indexer, `Slice`, `CopyTo`, `TryCopyTo`, `Fill`, `Clear`, `ToArray`, `AsSpan`) and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
 - **Spans** of a string have the string as their base, but its characters are unknown values. A method with array permissions (`Spec.Acc`) can't write through a span, and reads through one are unknown. `ReadOnlySequence<byte>` and System.IO.Pipelines are not modeled.
-- Not verified as separate units: local functions and lambdas. The method's locals they write are forgotten after every call and at every `await`.
+- Lambdas and local functions are verified as units of their own: their parameters are as their delegate type declares them, and what they capture is some value of its type (they may run at any time), so a fact about a captured variable at the lambda's creation is not known in its body. A local function's contract may name what it captures. The method's locals they write are forgotten after every call and at every `await`.
+- LINQ: eager methods over a List, an array or a list interface, with pure lambdas, are modeled (see [Contracts for code without sources](library-contracts.md)); lazy ones (`Select`, `Where`, `OrderBy`), `Sum`/`Min`/`Max`, and LINQ over other enumerables are library calls without contracts.
 
 **Completeness limits** (true things that may not be proved)
 - A new array is known to differ from the arrays in local variables and fields where it is created, not from arrays held elsewhere (inside other arrays).

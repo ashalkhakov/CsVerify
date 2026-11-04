@@ -152,11 +152,15 @@ namespace CsVerify.Verifier
 
         // ================================================================================== driver
 
+        /// <summary>A lambda's or local function's flow graph, from its enclosing method's (Engine's nested functions).</summary>
+        public ControlFlowGraph NestedGraph;
+
         public void Run()
         {
             var body = _model.GetOperation(_contract.Declaration);
             ControlFlowGraph cfg;
-            switch (body)
+            if (NestedGraph != null) cfg = NestedGraph;
+            else switch (body)
             {
                 case IMethodBodyOperation mb: cfg = ControlFlowGraph.Create(mb); break;
                 case IConstructorBodyOperation cb: cfg = ControlFlowGraph.Create(cb); break;
@@ -219,7 +223,8 @@ namespace CsVerify.Verifier
 
         private void FindContractStatements()
         {
-            BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body;
+            BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body ??
+                                (_contract.Declaration as LocalFunctionStatementSyntax)?.Body ?? (_contract.Declaration as AnonymousFunctionExpressionSyntax)?.Block;
             if (block == null) return;
             foreach (var s in block.Statements.OfType<ExpressionStatementSyntax>())
                 if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "EnsuresOnThrow" || n == "Decreases" || n == "Modifies" || n == "Reads"))
@@ -839,6 +844,11 @@ namespace CsVerify.Verifier
         {
             if (f.Vars.TryGetValue(s, out var t)) return t;
             t = FreshOf(TypeOf(s), s.Name);
+            // a variable a lambda or local function captures: some value of its type (it may run at any time), not null
+            // if its type says so (each write of the outer variable is checked)
+            if (!SymbolEqualityComparer.Default.Equals(s.ContainingSymbol, _method) &&
+                (s is IParameterSymbol cp && IsNonNullable(cp) || s is ILocalSymbol && IsNonNullVariable(s)))
+                _z3.Assume(NotNull(t));
             if (s is IParameterSymbol p && MayBeNullType(p.Type) && !IsNonNullable(p))
                 _z3.Origins[t.S] = $"parameter '{p.Name}' is declared '{NullableNote(p.Type)}'";
             f.Vars[s] = t;
@@ -1644,6 +1654,7 @@ namespace CsVerify.Verifier
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
             if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
+            if (LinqCall(inv, f, spec) is Term linqResult) return linqResult;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
@@ -2016,6 +2027,12 @@ namespace CsVerify.Verifier
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)
         {
             var frame = new Frame { This = receiver, Heap = heap };
+            // a local function's contract may name what it captures: the caller's variables, as they are at the call
+            if (callee.Method?.MethodKind == MethodKind.LocalFunction && state != null)
+            {
+                foreach (var kv in state.Vars) frame.Vars[kv.Key] = kv.Value;
+                frame.This ??= state.This;
+            }
             foreach (var alias in callee.Aliases.Where(a => !SymbolEqualityComparer.Default.Equals(a, callee.Stub))) AliasParameters(frame, alias, args);
             if (callee.IsStub)
             {

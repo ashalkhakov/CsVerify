@@ -139,6 +139,7 @@ namespace CsVerify.Verifier
                 case ConstructorDeclarationSyntax ctor: block = ctor.Body; exprBody = ctor.ExpressionBody?.Expression; break;
                 case AccessorDeclarationSyntax acc: block = acc.Body; exprBody = acc.ExpressionBody?.Expression; break;
                 case ArrowExpressionClauseSyntax arrow: block = null; exprBody = arrow.Expression; break; // int P => ...
+                case AnonymousFunctionExpressionSyntax lambda: block = lambda.Block; exprBody = lambda.ExpressionBody; break; // x => ...
                 default: return c;
             }
             c.Declaration = syntax;
