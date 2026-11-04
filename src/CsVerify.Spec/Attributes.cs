@@ -32,7 +32,7 @@ namespace CsVerify
 
     /// <summary>
     /// A predicate (Viper's, or ATS's dataview): a static bool method whose body, one expression, describes a
-    /// footprint of permissions (<see cref="Spec.Acc"/>, other predicates, conjoined with <c>&amp;&amp;</c> or in the branches
+    /// footprint of permissions (<see cref="Spec.Acc(object)"/>, other predicates, conjoined with <c>&amp;&amp;</c> or in the branches
     /// of <c>?:</c>) and facts about it. Holding an instance <c>P(args)</c> holds those permissions, folded:
     /// <see cref="Spec.Unfold"/> trades it for its body, <see cref="Spec.Fold"/> back. Specification only; never
     /// unfolded on its own, so it may be recursive.
@@ -81,4 +81,40 @@ namespace CsVerify
         public ContractClassForAttribute(Type type) { Type = type; }
         public Type Type { get; }
     }
+
+    /// <summary>
+    /// Marks a stub: a class that gives contracts to the members of a type whose sources the program does not have
+    /// (the BCL, a third-party assembly). Its methods match the external type's members by signature, and each one's
+    /// leading Spec.Requires/Ensures/EnsuresOnThrow/Modifies statements are that member's contract:
+    /// <list type="bullet">
+    /// <item>a static method matches the static method of the same name and parameters;</item>
+    /// <item>a static method whose first parameter is named <c>@this</c>, of the external type, matches the instance
+    /// method of that name taking the other parameters (<c>@this</c> is the receiver);</item>
+    /// <item>property accessors are methods named <c>get_P</c> and <c>set_P</c> (an indexer's are <c>get_Item</c> and
+    /// <c>set_Item</c>); a getter may also be named <c>P</c>;</item>
+    /// <item>a static method named <c>@new</c>, returning the external type, matches the constructor with its parameters.</item>
+    /// </list>
+    /// A generic stub (<c>[ContractsFor(typeof(List&lt;&gt;))] class ListContracts&lt;T&gt;</c>) has the type's type
+    /// parameters, in order. The contracts are trusted: they are assumed at calls, never proved, so a wrong one makes
+    /// wrong things provable (the verifier counts the ones it used). A stub's preconditions are proved at every call;
+    /// without Spec.Modifies, a member changes no [Model] state. Its bodies are never run or verified; the erasure
+    /// pass removes the class.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class ContractsForAttribute : Attribute
+    {
+        public ContractsForAttribute(Type type) { Type = type; }
+        public Type Type { get; }
+    }
+
+    /// <summary>
+    /// A model function: ghost state of an object whose class the program has no sources of, such as the elements
+    /// of a <c>List&lt;T&gt;</c>. A static method whose first parameter is the object, and optionally a second one, a key
+    /// (a dictionary's value at a key); it is a ghost field of the object, which stubs ([ContractsFor]) and
+    /// specifications read, and calls of stubbed members change within their Spec.Modifies. Its Spec.Ensures hold of
+    /// every value it has (a size is not negative; trusted); nothing else in its body is used (write
+    /// <c>throw null!</c>). Calls to it are specification only, and are erased.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class ModelAttribute : Attribute { }
 }

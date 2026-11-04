@@ -125,6 +125,7 @@ namespace CsLemon
         private static char At(string x, int i)
         {
             Spec.Requires(0 <= i);
+            Spec.Ensures<char>(r => i < x.Length || r == '\0');
             return i < x.Length ? x[i] : '\0';
         }
 
@@ -926,7 +927,7 @@ namespace CsLemon
                     {
                         Symbol msp = psp.tkclass!;
                         AddSubsym(msp);
-                        if (!Chars.ISUPPER(At(x, 0))) x = x.Substring(1);
+                        if (At(x, 0) == '|' || At(x, 0) == '/') x = x.Substring(1); // (not upper case: Lemon's !ISUPPER)
                         msp.subsym![msp.nsubsym - 1] = Tables.Symbol_new(x);
                     }
                     else

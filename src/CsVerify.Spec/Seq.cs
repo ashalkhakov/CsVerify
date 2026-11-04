@@ -28,5 +28,11 @@ namespace CsVerify
     {
         /// <summary>The sequence with every element equal to <paramref name="value"/>.</summary>
         public static Seq<T> Const<T>(T value) => throw GhostException.Instance;
+
+        /// <summary>
+        /// The elements of an array of any type, as the verifier stores them (for contracts over <see cref="System.Array"/>,
+        /// whose elements C# cannot index): compare them with each other, not with typed values.
+        /// </summary>
+        public static Seq<object> Contents(System.Array array) => throw GhostException.Instance;
     }
 }

@@ -24,7 +24,8 @@ options:
   -r <assembly.dll>   extra metadata reference
   --smt-log <file>    write the SMT-LIB2 conversation with Z3
   --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
-  -v                  list every method with its proved obligations
+  -v                  list every method with its proved obligations, and the library contracts
+                      ([ContractsFor] stubs, trusted) the proofs assumed
   -h, --help          this text
 
        csverify erase --out <dir> ...   writes the program with every proof erased (csverify erase -h)";
@@ -73,11 +74,15 @@ options:
                 if (verbose)
                     foreach (var m in result.Methods)
                         Console.WriteLine($"  {(m.Verified ? "ok  " : "FAIL")} {m.Name}: {m.Proved}/{m.Obligations} obligations proved");
+                // the stub contracts the proofs relied on: trusted, not proved
+                if (verbose)
+                    foreach (var a in result.Assumptions) Console.WriteLine($"  assumed {a}");
                 int failed = result.Methods.Count(m => !m.Verified);
                 Console.WriteLine(result.CompilationErrors.Count > 0
                     ? $"csverify: {result.CompilationErrors.Count} compilation error(s); nothing verified"
                     : $"csverify: {result.Methods.Count - failed} of {result.Methods.Count} methods verified, " +
-                      $"{result.Methods.Sum(m => m.Proved)}/{result.Methods.Sum(m => m.Obligations)} obligations proved");
+                      $"{result.Methods.Sum(m => m.Proved)}/{result.Methods.Sum(m => m.Obligations)} obligations proved" +
+                      (result.Assumptions.Count > 0 ? $", {result.Assumptions.Count} library contract(s) assumed" : ""));
                 return result.Success ? 0 : 1;
             }
             catch (Exception e) when (e is ArgumentException || e is FileNotFoundException || e is DirectoryNotFoundException || e is FormatException)

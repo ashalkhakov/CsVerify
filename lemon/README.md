@@ -61,10 +61,12 @@ test grammars (below).
 dotnet run --project src/CsVerify.Verifier -- lemon/CsLemon lemon/CsLemon.Runtime
 ```
 
-verifies every method (310 of 310, the validated parser of the next section included). What that proves, beyond what C# already guarantees (no memory corruption):
+verifies every method (330 of 330, the validated parser of the next section included). What that proves, beyond what C# already guarantees (no memory corruption):
 
 - **No unexpected exceptions.** Every array and string index is in range, nothing null is dereferenced, nothing is
-  divided by zero, and every call's precondition holds.
+  divided by zero, and every call's precondition holds, including those of the BCL members CsVerify has contracts for
+  (`List<T>` indices, `Substring` bounds, dictionary keys: see [Contracts for code without sources](../docs/library-contracts.md);
+  those contracts are trusted, and the run lists how many it assumed).
 - **No silent overflow.** C# integers wrap by default; every arithmetic operation is proved not to overflow, or is
   `checked` (counters such as line numbers and error counts: they throw rather than wrap).
 - **Non-null means non-null.** Fields, locals and parameters of non-nullable type never hold null (`null!` is not

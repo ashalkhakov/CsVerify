@@ -60,9 +60,19 @@ namespace CsVerify.Verifier
             var loop = new Loop { Id = _loops.Count, Syntax = fe, Head = head.Ordinal };
             ReadLoopSpecs(fe.Statement is BlockSyntax bs ? bs.Statements : new SyntaxList<StatementSyntax>(fe.Statement), loop);
             bool array = IsArrayForEach(fe);
-            if (array)
+            // a List whose loop changes no model state (else MoveNext would throw): like an array, over its model
+            var listElement = array ? null : ListForEachElement(fe, fo);
+            if (listElement != null)
             {
-                loop.ArrayElement = ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
+                var trial = new Loop();
+                CollectHavoc(new SyntaxNode[] { fe }, trial);
+                if (trial.HavocAllFields || trial.HavocFields.Any(x => x is IMethodSymbol model && SpecSymbols.IsModel(model))) listElement = null;
+            }
+            if (array || listElement != null)
+            {
+                loop.ArrayElement = listElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
+                loop.OverList = listElement != null;
+                if (loop.OverList) Assumed("System.Collections.Generic.List<T>.GetEnumerator()");
                 _arrayForEach[capture.Id] = loop;
                 _arrayMoveNext[head.BranchValue] = loop;
                 foreach (var op in cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()))
@@ -71,16 +81,18 @@ namespace CsVerify.Verifier
                         _arrayCurrent[pr] = loop;
                         if (pr.Parent is IConversionOperation conv) _arrayCurrent[conv] = loop;
                     }
+            }
+            // the enumerator's Dispose: an array has none, and a List's does nothing
+            if (array || IsList(Unconverted(fo.Collection).Type))
                 for (var region = head.EnclosingRegion; region != null; region = region.EnclosingRegion)
                     if (region.Kind == ControlFlowRegionKind.Try && region.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally)
                     {
                         _erasedTry.Add(region.EnclosingRegion);
                         break;
                     }
-            }
             foreach (var l in ForEachLocals(fe)) if (l is ILocalSymbol local) _forEachOf[local] = loop;
             // a foreach over an array ends by itself: its index goes up to the array's (fixed) length
-            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array);
+            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null);
         }
 
         private static bool IsMoveNext(IOperation op, CaptureId enumerator) =>
@@ -99,6 +111,29 @@ namespace CsVerify.Verifier
             return c.IsIdentity || c.IsImplicit && c.IsReference ||
                    c.IsImplicit && c.IsNumeric && IsIntegral(at.ElementType) && target != null && IsIntegral(target);
         }
+
+        /// <summary>
+        /// A foreach over a List&lt;T&gt; (with CsVerify.Bcl's model functions in use) whose elements become the iteration
+        /// variable unchanged: the element type; else null.
+        /// </summary>
+        private ITypeSymbol ListForEachElement(CommonForEachStatementSyntax fe, IForEachLoopOperation fo)
+        {
+            if (!IsList(Unconverted(fo.Collection).Type) || ListModel("Items") == null || ListModel("Size") == null) return null;
+            var lt = (INamedTypeSymbol)Unconverted(fo.Collection).Type;
+            var c = _model.GetForEachStatementInfo(fe).ElementConversion;
+            var target = fo.Locals.FirstOrDefault()?.Type;
+            var element = lt.TypeArguments[0];
+            return c.IsIdentity || c.IsImplicit && c.IsReference ||
+                   c.IsImplicit && c.IsNumeric && IsIntegral(element) && target != null && IsIntegral(target) ? element : null;
+        }
+
+        private static bool IsList(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.List<T>";
+
+        /// <summary>CsVerify.Bcl's model function of a list: Items or Size.</summary>
+        private IMethodSymbol ListModel(string name) =>
+            _engine.Models.FirstOrDefault(m => m.Name == name && m.ContainingType.ToDisplayString() == "CsVerify.Bcl.Models" &&
+                (m.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.List<T>");
 
         /// <summary>The variables a foreach assigns in each iteration: its iteration variable, or what it deconstructs into.</summary>
         private IEnumerable<ISymbol> ForEachLocals(CommonForEachStatementSyntax fe)
@@ -127,12 +162,14 @@ namespace CsVerify.Verifier
             if (_arrayMoveNext.TryGetValue(op, out loop))
             {
                 var (arr, i) = f.ForEach[loop.Id];
-                return T.Lt(i, Len(arr));
+                return T.Lt(i, ForEachLength(loop, arr, f));
             }
             if (_arrayCurrent.TryGetValue(op, out loop))
             {
                 // MoveNext was true: 0 <= i < a.Length
                 var (arr, i) = f.ForEach[loop.Id];
+                if (loop.OverList)
+                    return T.Coerce(InRangeOf(T.Coerce(T.Select(ModelAt(ListModel("Items"), new[] { arr }, f), i, Sort.Int), SortOf(loop.ArrayElement)), loop.ArrayElement), SortOf(op.Type));
                 CheckCellFraming(arr, i, f, op.Syntax);
                 var elem = InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), i, Sort.Int), SortOf(loop.ArrayElement)), loop.ArrayElement);
                 return T.Coerce(elem, SortOf(op.Type));
@@ -145,9 +182,13 @@ namespace CsVerify.Verifier
         {
             if (loop.ArrayElement == null || !f.ForEach.TryGetValue(loop.Id, out var st)) return;
             var i = _z3.Fresh("index", Sort.Int);
-            _z3.Assume(T.And(T.Le(T.Int(0), i), T.Le(i, Len(st.arr))));
+            _z3.Assume(T.And(T.Le(T.Int(0), i), T.Le(i, ForEachLength(loop, st.arr, f))));
             f.ForEach[loop.Id] = (st.arr, i);
         }
+
+        /// <summary>How far a foreach's index goes: the array's length, or the list's Size().</summary>
+        private Term ForEachLength(Loop loop, Term collection, Frame f) =>
+            loop.OverList ? T.Coerce(ModelAt(ListModel("Size"), new[] { collection }, f), Sort.Int) : Len(collection);
 
         /// <summary>The end of an iteration (or a continue): the index goes on to the next element.</summary>
         private void ArrayForEachNext(Loop loop, Frame f)
@@ -164,7 +205,7 @@ namespace CsVerify.Verifier
                 if (loop.ArrayElement != null && f.ForEach.TryGetValue(loop.Id, out var st)) return st.idx;
                 if (loop.ArrayElement == null)
                 {
-                    Warn(inv.Syntax, $"'{inv.Syntax}': only a foreach over an array has an index; its value is unknown");
+                    Warn(inv.Syntax, $"'{inv.Syntax}': only a foreach over an array or a List has an index; its value is unknown");
                     return Unknown(inv.Type, "index");
                 }
             }

@@ -46,13 +46,15 @@ namespace CsLemon.Lr
                 trees.Add(c.T);
                 cur = c.Below;
             }
+            // (an array: reduce may run any code, but an array's length stays as it is)
+            Tree[] bottomUp = trees.ToArray();
             int next = 0;
-            int i = trees.Count;
+            int i = bottomUp.Length;
             while (i > 0)
             {
-                Spec.Invariant(0 <= next);
+                Spec.Invariant(0 <= next && i <= bottomUp.Length);
                 i--;
-                Evaluate(trees[i], values, ref next, reduce);
+                if (bottomUp[i] is Tree t) Evaluate(t, values, ref next, reduce);
             }
         }
 

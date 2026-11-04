@@ -26,6 +26,8 @@ samples/Buggy/Bugs.cs(71,21): error CSV1001: precondition 'view.Addr == p.Addr' 
 ...
 ```
 
+When proofs used library contracts, the summary line says how many (`csverify: 6 of 6 methods verified, 151/151 obligations proved, 13 library contract(s) assumed`). They are assumptions, not proofs (see [Contracts for code without sources](library-contracts.md)).
+
 Arguments are `.cs` files, directories (searched recursively, skipping `bin/` and `obj/`), `.csproj` files (meaning their directory), or `@file.rsp`. The exit code is 0 when everything is proved, 1 on verification errors, 2 on usage errors.
 
 | option | meaning |
@@ -37,7 +39,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
 | `--smt-log <file>` | dump the whole SMT-LIB2 conversation |
 | `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
-| `-v` | list every method with its proved/total obligations |
+| `-v` | list every method with its proved/total obligations, and the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed |
 
 **From MSBuild:** the `CsVerify` package brings the targets (`build/CsVerify.targets`), so a project referencing it is verified when built with:
 
@@ -81,6 +83,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1020 | verifier | two arguments passed by reference (one of them `ref`/`out`) might be the same array cell or variable |
 | CSV1017 | verifier | a dynamic frame broken: a write outside `Spec.Modifies`, a read outside `Spec.Reads`, a callee with no or a wider frame, or `Spec.Modifies`/`Reads` on an `[Owned]` class |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
+| CSV1021 | verifier | an ill-formed `[ContractsFor]` stub or `[Model]` function: a stub method that matches no member of its type, a stub without the type's type parameters, a model function of the wrong shape |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1999 | verifier | internal or solver error |

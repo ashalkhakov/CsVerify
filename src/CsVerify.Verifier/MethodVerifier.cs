@@ -35,6 +35,8 @@ namespace CsVerify.Verifier
             public bool HavocRoot; // ownership changes hands in the loop (Own.New/Take/Give)
             public bool Permissions; // permissions are exchanged in the loop (folds, unfolds, calls whose contracts speak of them)
             public ITypeSymbol ArrayElement;
+            /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
+            public bool OverList;
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
 
@@ -163,6 +165,7 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType) || IsImmutableClass(_method.ContainingType)) &&
                 _engine.Fields.InvariantDependence(_method, !Data.IsData(_method.ContainingType)) is string why)
                 Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
+            if (ProofCode && _method.IsAsync) NotModeled(MethodLocationNode(), "a lemma or [Pure] function cannot be async");
             FindLoops(cfg);
             _cfg = cfg;
 
@@ -280,6 +283,12 @@ namespace CsVerify.Verifier
             var throughRefs = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             void Target(ExpressionSyntax e)
             {
+                // a stubbed setter (list[i] = x): what its stub may change
+                if (_model.GetSymbolInfo(e).Symbol is IPropertySymbol sp && sp.SetMethod != null && _engine.HasStub(sp.SetMethod))
+                {
+                    AddFieldWrites(loop, sp.SetMethod);
+                    return;
+                }
                 // a struct's member: the struct that holds it changes (this, in a struct's constructor)
                 if ((e is MemberAccessExpressionSyntax || e is IdentifierNameSyntax) && IsStructMember(_model.GetSymbolInfo(e).Symbol))
                 {
@@ -325,6 +334,11 @@ namespace CsVerify.Verifier
                     case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression): Target(post.Operand); break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword): Target(arg.Expression); break;
                     case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m: CalledInLoop(loop, m); break;
+                    case AwaitExpressionSyntax _:
+                        // other code runs at an await: as after a call to unknown code
+                        loop.HavocHeap = loop.HavocAllFields = loop.HavocRoot = true;
+                        loop.Havoc.UnionWith(ClosureWritten());
+                        break;
                     case BaseObjectCreationExpressionSyntax oc when _model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor:
                         AddFieldWrites(loop, ctor);
                         loop.HavocFields.UnionWith(FieldEffects.FieldsOf(ctor.ContainingType)); // the new object's fields are set
@@ -345,6 +359,7 @@ namespace CsVerify.Verifier
 
         private void CalledInLoop(Loop loop, IMethodSymbol m)
         {
+            if (RunsCode(m)) loop.Havoc.UnionWith(ClosureWritten());
             if (HavocsHeap(m)) loop.HavocHeap = true;
             if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) loop.HavocRoot = true;
             if (!SpecSymbols.IsSpecClass(m.ContainingType)) AddFieldWrites(loop, m);
@@ -685,7 +700,7 @@ namespace CsVerify.Verifier
             t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>");
 
         internal static bool IsSequence(ITypeSymbol t) =>
-            t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String ||
+            t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String || t?.SpecialType == SpecialType.System_Array ||
             (t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>"));
 
         /// <summary>
@@ -769,9 +784,13 @@ namespace CsVerify.Verifier
                         return spec.Result ?? Unknown(p.Type, "result");
                     return Read(f, p.Parameter);
                 case IInstanceReferenceOperation _: return f.This ?? (f.This = _z3.Fresh("this", Sort.Int));
-                case IFlowCaptureReferenceOperation r: return f.Captures.TryGetValue(r.Id, out var cv) ? cv : Unknown(r.Type, "capture");
+                case IFlowCaptureReferenceOperation r:
+                    if (f.Captures.TryGetValue(r.Id, out var cv)) return cv;
+                    // a stubbed property captured unread (the target of d[k] = c ? x : y): read where it is used
+                    return _captured.TryGetValue(r.Id, out var later) && IsStubbedProperty(later) ? f.Captures[r.Id] = Eval(later, f, spec) : Unknown(r.Type, "capture");
                 case IFlowCaptureOperation fc:
                     _captured[fc.Id] = fc.Value;
+                    if (IsStubbedProperty(fc.Value)) { f.Captures.Remove(fc.Id); return T.True; } // (its getter's precondition is for reads only)
                     return f.Captures[fc.Id] = Eval(fc.Value, f, spec);
                 case IBinaryOperation b: return EvalBinary(b, f, spec);
                 case IUnaryOperation u: return EvalUnary(u, f, spec);
@@ -854,6 +873,7 @@ namespace CsVerify.Verifier
                     return fv;
                 }
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
+                case IAwaitOperation aw: return EvalAwait(aw, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
                 case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : IsFloating(op.Type) ? Zero(SortOf(op.Type)) : T.Int(0);
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
@@ -1259,7 +1279,7 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
             if ((SpecSymbols.IsObjSet(prop.ContainingType) || SpecSymbols.IsBag(prop.ContainingType)) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
-                return T.Coerce(T.Select(Eval(pr.Instance, f, spec), Eval(pr.Arguments[0].Value, f, spec), Sort.Int), SortOf(pr.Type));
+                return T.Coerce(T.Select(Eval(pr.Instance, f, spec), T.Coerce(Eval(pr.Arguments[0].Value, f, spec), Sort.Int), Sort.Int), SortOf(pr.Type));
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
             {
                 if (prop.Name == "Length")
@@ -1291,7 +1311,7 @@ namespace CsVerify.Verifier
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
             if (pr.Instance != null && IsStructMember(prop)) return T.Coerce(StructMember(prop, Eval(pr.Instance, f, spec)), SortOf(pr.Type));
-            if (IsComputed(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
+            if (IsComputed(prop.GetMethod) || _engine.HasStub(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
             if (!IsStableProperty(prop) && _codeMode && prop.DeclaringSyntaxReferences.Length == 0)
             {
                 // a library property that may change (Console.Out, a list's Count): each read in code is a value of its own
@@ -1339,6 +1359,19 @@ namespace CsVerify.Verifier
             return prop.DeclaringSyntaxReferences.Length > 0;
         }
 
+        /// <summary>A new array is distinct from every array the method can already see, and from every array a field holds.</summary>
+        private void NewArrayIsDistinct(Term r, Frame f)
+        {
+            foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
+                _z3.Assume(T.Not(T.Eq(r, t)));
+            // (no field can hold it yet)
+            foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
+            {
+                var map = FieldMap(f, field);
+                _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
+            }
+        }
+
         private Term EvalArrayCreation(IArrayCreationOperation ac, Frame f, SpecEnv spec)
         {
             var sizes = ac.DimensionSizes.Select(d => Eval(d, f, spec)).ToList();
@@ -1347,15 +1380,7 @@ namespace CsVerify.Verifier
             var r = _z3.Fresh("array", Sort.Int);
             _z3.Assume(NotNull(r));
             if (sizes.Count == 1) _z3.Assume(T.Eq(Len(r), sizes[0]));
-            // A new array is distinct from every array the method can already see.
-            foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
-                _z3.Assume(T.Not(T.Eq(r, t)));
-            // and from every array a field holds (no field can hold it yet)
-            foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
-            {
-                var map = FieldMap(f, field);
-                _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
-            }
+            NewArrayIsDistinct(r, f);
             var row = sizes.Count > 1 ? NewMultiArray(ac, r, sizes, f, spec) : T.ZeroRow();
             if (ac.Initializer != null && sizes.Count == 1)
                 for (int i = 0; i < ac.Initializer.ElementValues.Length; i++)
@@ -1420,6 +1445,7 @@ namespace CsVerify.Verifier
             }
             if (SpecSymbols.IsSeqType(m.ContainingType)) return EvalSeq(inv, f, spec);
             if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) return OwnCall(inv, f, spec);
+            if (SpecSymbols.IsModel(m.ReducedFrom ?? m.OriginalDefinition)) return ModelRead(inv, f, spec);
             if (SpecSymbols.IsPredicate(m.OriginalDefinition))
             {
                 // as a condition: the instance is held here
@@ -1431,6 +1457,8 @@ namespace CsVerify.Verifier
             if (builtin != null) return builtin;
 
             var callee = _engine.ContractOf(m);
+            if (callee.IsStub && _codeMode) Assumed(callee);
+            CheckNotAwaited(inv, callee);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
             if (receiver != null) Deref(inv.Instance, receiver, inv.Syntax);
             var argTerms = new Term[m.Parameters.Length];
@@ -1491,11 +1519,7 @@ namespace CsVerify.Verifier
                 {
                     var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
                     if (IsNonNullable(a.Parameter.OriginalDefinition)) _z3.Assume(NotNull(nv));
-                    // [MaybeNullWhen(false)] out TValue value, with TValue a non-nullable type: not null when it returns true
-                    else if (IsNonNullableType(a.Parameter.Type) && a.Parameter.OriginalDefinition.GetAttributes().FirstOrDefault(x =>
-                                 x.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute") is AttributeData mnw &&
-                             mnw.ConstructorArguments.Length == 1 && mnw.ConstructorArguments[0].Value is bool maybeNullWhen)
-                        whenNotNull.Add((nv, !maybeNullWhen));
+                    else if (NotNullWhen(a.Parameter) is bool when) whenNotNull.Add((nv, when));
                     if (cells.ContainsKey(a)) cellsOut.Add((a, nv)); else Write(a.Value, nv, f, spec);
                 }
                 if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
@@ -1510,6 +1534,7 @@ namespace CsVerify.Verifier
                     if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                 AllocAfterCall(f, libResult);
                 LibraryNullFacts(inv, argTerms, libResult);
+                if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
                 return libResult;
             }
 
@@ -1521,7 +1546,7 @@ namespace CsVerify.Verifier
                     $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
             if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
             if (callee.IsPure && _codeMode) CheckPurePermissions(callee, pre, preEnv, f, inv.Syntax);
-            var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax);
+            var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax, m);
             // lending trees through Spec.Modifies(Own.Tree(x)): the caller must hold them; the call may change them
             if (!callee.IsPure && f.Perm != null)
                 foreach (var root in LentTrees(callee, pre, preEnv))
@@ -1562,11 +1587,14 @@ namespace CsVerify.Verifier
             var post = pre.Clone();
             var cellsBack = new List<(IArgumentOperation, Term)>();
             DeferTies();
+            var outNotNull = new List<(Term value, bool when)>();
             foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
             {
                 var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
                 if (IsNonNullable(callee.Method.Parameters[a.Parameter.Ordinal])) _z3.Assume(NotNull(nv));
+                else if (callee.IsStub && NotNullWhen(a.Parameter) is bool when) outNotNull.Add((nv, when));
                 post.Vars[callee.Method.Parameters[a.Parameter.Ordinal]] = nv;
+                if (callee.IsStub) post.Vars[StubParameter(callee, a.Parameter.Ordinal)] = nv;
                 if (cells.ContainsKey(a)) cellsBack.Add((a, nv)); else Write(a.Value, nv, f, spec);
                 if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
                 touched.AddRange(ViewsIn(nv, a.Parameter.Type));          // or views in a package
@@ -1581,6 +1609,12 @@ namespace CsVerify.Verifier
             }
             if (f.ArrPerm != null && MentionsCells(callee) && !callee.IsPure)
                 f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
+            else if (HavocsHeap(m) && callee.IsStub && callee.Modifies != null && !_arrayMode)
+            {
+                // a stub's Spec.Modifies names the arrays it writes: the others keep their contents
+                var frame = T.Coerce(EvalForeignSpec(callee.Modifies, pre, preEnv), Sort.Row);
+                f.Heap = post.Heap = _z3.Define("heap", new Term($"(cv_frameh {frame} {memoryBefore} {_z3.Fresh("heap", Sort.Heap)})", Sort.Heap));
+            }
             else if (HavocsHeap(m))
             {
                 if (_arrayMode && _codeMode)
@@ -1599,9 +1633,11 @@ namespace CsVerify.Verifier
             post.FieldEpoch = f.FieldEpoch;
             post.Link = f.Link;
 
-            var result = packageResult ?? (m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name));
+            var result = packageResult ?? (m.ReturnsVoid || m.IsAsync && _awaitedCall == inv && AsyncResultType(m) == null ? null : FreshOf(ResultTypeOf(inv), m.Name));
             if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
-            if (result != null && IsNonNullableReturn(callee.Method)) _z3.Assume(NotNull(result));
+            if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
+            // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it
+            if (result != null && callee.StubFreshResult && IsSequence(m.ReturnType)) NewArrayIsDistinct(result, f);
             if (!callee.IsPure && !callee.IsLemma)
             {
                 AllocAfterCall(f, inv.Arguments.Where(a => (a.Parameter?.RefKind == RefKind.Out || a.Parameter?.RefKind == RefKind.Ref) && !(a.Value is IDiscardOperation))
@@ -1614,8 +1650,25 @@ namespace CsVerify.Verifier
                 foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
             foreach (var ens in callee.Ensures)
                 _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }))));
+            if (callee.IsStub)
+            {
+                LibraryNullFacts(inv, argTerms, result ?? T.True);
+                foreach (var (value, when) in outNotNull)
+                    if (result?.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(value)));
+            }
+            if (RunsCode(m)) HavocClosureLocals(f); // (a local function, or a delegate it was handed, may write them)
             return result ?? T.True;
         }
+
+        /// <summary>
+        /// A library out parameter <c>[MaybeNullWhen(b)] out TValue value</c>, with TValue a non-nullable type: not null
+        /// when the method returns !b (null if the parameter says nothing of the kind).
+        /// </summary>
+        private static bool? NotNullWhen(IParameterSymbol p) =>
+            IsNonNullableType(p.Type) && p.OriginalDefinition.GetAttributes().FirstOrDefault(x =>
+                x.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute") is AttributeData mnw &&
+            mnw.ConstructorArguments.Length == 1 && mnw.ConstructorArguments[0].Value is bool maybeNullWhen
+                ? !maybeNullWhen : (bool?)null;
 
         /// <summary>Ghost sequences are SMT arrays; Drop and Concat are the array lambdas in <see cref="SeqTheory"/>.</summary>
         private Term EvalSeq(IInvocationOperation inv, Frame f, SpecEnv spec)
@@ -1635,13 +1688,14 @@ namespace CsVerify.Verifier
             switch (inv.TargetMethod.Name)
             {
                 case "Const": return T.ConstRow(T.Coerce(args[0], Sort.Int));
+                case "Contents": return T.Select(f.Heap, T.Coerce(args[0], Sort.Int), Sort.Row); // an array's elements, whatever their type
                 case "Of": return T.Store(T.ZeroRow(), T.Coerce(args[0], Sort.Int), T.Int(1));
                 case "Contains": return T.Not(T.Eq(T.Select(self, T.Coerce(args[0], Sort.Int), Sort.Int), T.Int(0)));
                 case "Add": return T.Store(self, T.Coerce(args[0], Sort.Int), T.Int(1));
                 case "Union": return new Term($"(cv_union {self} {args[0]})", Sort.Row);
                 case "IsSubsetOf": return new Term($"(cv_subset {self} {args[0]})", Sort.Bool);
                 case "IsDisjointFrom": return new Term($"(cv_disjoint {self} {args[0]})", Sort.Bool);
-                case "Update": return T.Store(self, args[0], T.Coerce(args[1], Sort.Int));
+                case "Update": return T.Store(self, T.Coerce(args[0], Sort.Int), T.Coerce(args[1], Sort.Int));
                 case "Drop": return new Term($"(cv_drop {self} {args[0]})", Sort.Row);
                 case "Concat": return new Term($"(cv_concat {self} {args[0]} {args[1]})", Sort.Row);
                 default: Unsupported(inv); return _z3.Fresh("seq", Sort.Row);
@@ -1739,7 +1793,14 @@ namespace CsVerify.Verifier
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)
         {
             var frame = new Frame { This = receiver, Heap = heap };
-            foreach (var alias in callee.Aliases) AliasParameters(frame, alias, args);
+            foreach (var alias in callee.Aliases.Where(a => !SymbolEqualityComparer.Default.Equals(a, callee.Stub))) AliasParameters(frame, alias, args);
+            if (callee.IsStub)
+            {
+                // the stub's parameters: @this is the receiver, the others are the member's
+                if (callee.StubReceiver != null && receiver != null) frame.Vars[callee.StubReceiver] = receiver;
+                for (int i = 0; i < args.Length; i++)
+                    if (args[i] != null && StubParameter(callee, i) is IParameterSymbol sp) frame.Vars[sp] = args[i];
+            }
             if (state != null)
             {
                 frame.Fields = new Dictionary<ISymbol, Term>(state.Fields, SymbolEqualityComparer.Default);
@@ -1763,6 +1824,8 @@ namespace CsVerify.Verifier
         private Term PureApply(Contract callee, Term receiver, Term[] args, Term heap, Sort sort, SyntaxNode specCall = null, Frame state = null)
         {
             var m = callee.Method;
+            if (callee.IsStub) Assumed(callee);
+            if (callee.StubDefinition != null && state != null) return StubValue(callee, receiver, args, heap, sort, specCall, state);
             var all = new List<Term>();
             if (receiver != null) all.Add(receiver);
             all.AddRange(args.Select(a => a ?? T.Int(0)));
@@ -1954,7 +2017,8 @@ namespace CsVerify.Verifier
             IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute");
 
         private static bool IsNonNullableReturn(IMethodSymbol m) =>
-            !m.ReturnsVoid && IsNonNullableType(m.OriginalDefinition.ReturnType) &&
+            !m.ReturnsVoid && (m.IsAsync ? AsyncResultType(m.OriginalDefinition) is ITypeSymbol t && IsNonNullableType(t) // (what it returns: its task's result)
+                                         : IsNonNullableType(m.OriginalDefinition.ReturnType)) &&
             !HasAttribute(m.OriginalDefinition.GetReturnTypeAttributes(), "MaybeNullAttribute");
 
         private static bool HasAttribute(IEnumerable<AttributeData> attributes, string name) =>

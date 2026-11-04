@@ -56,6 +56,7 @@ namespace CsVerify.Tests
             Assert.Equal(10 * 3 + 3, Run(asm, "Trees", "Demo")); // 1..7 inserted: AVL height 3, black height 3
             Assert.Equal(30 + 20, Run(asm, "Bank", "Demo", Activator.CreateInstance(asm.GetType("Samples.NullAudit")))); // owned accounts: views gone
             Assert.Equal(10, Run(asm, "DynamicFrames", "Demo")); // Dafny-style pairs: Repr and Valid() gone
+            Assert.Equal(4 + 9 + 2 + 1 + 9 + 3 + 3, Run(asm, "Library.LibraryContracts", "Demo")); // List, Dictionary, string: the BCL's own code runs
             Assert.Equal(5431, Run(asm, "OwnedList", "Demo")); // 1, 5, 3, 4 inserted: 1 3 4 5, last digit first; Take/Give run
             // INT2PROGINATS ch. 15-16: 3 1 4 1 5 sorted (54311), buffer 7 then 8, timer 40 ticks, tree of size 4
             Assert.Equal(54311L * 10000 + 78 * 100 + 40 + 4 * 1000, Run(asm, "AtsViewtypes", "Demo"));
@@ -112,6 +113,35 @@ namespace CsVerify.Tests
             var erased = Erase("public static class C { public static int M(int x) { if (x > 0) Spec.Assert(x != 0); return x; } }");
             Assert.True(erased.Success, string.Join("\n", erased.Errors));
             Assert.Contains("if (x > 0) { }", erased.Files[0].Text);
+        }
+
+        [Fact]
+        public void ProjectReferencingAnErasedProject_SharesItsRuntime()
+        {
+            // the library: erased, with the runtime compiled in, and a method taking a Ptr<int>
+            const string lib = "using CsVerify; namespace Lib { public static class Cells { " +
+                "public static Ptr<int> Next(Ptr<int> p) => p.Offset(1); } }";
+            var erasedLib = Erasure.Erase(new[] { ("Lib.cs", lib) }, Array.Empty<string>(), Array.Empty<string>());
+            Assert.True(erasedLib.Success, string.Join("\n", erasedLib.Errors));
+            Assert.Contains(erasedLib.Files, f => f.OutputName.StartsWith(Erasure.RuntimeFolder));
+            var libPath = Path.Combine(Path.GetTempPath(), "CsVerifyErasedLib" + Guid.NewGuid().ToString("N") + ".dll");
+            var libCompilation = CSharpCompilation.Create(Path.GetFileNameWithoutExtension(libPath),
+                erasedLib.Files.Select(f => CSharpSyntaxTree.ParseText(f.Text, new CSharpParseOptions(LanguageVersion.Latest), f.OutputName)),
+                Engine.FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
+            try
+            {
+                var emit = libCompilation.Emit(libPath);
+                Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
+                // the project using it: no runtime of its own, and its Ptr<int> is the library's
+                const string app = "using CsVerify; namespace App { public static class Use { " +
+                    "public static Ptr<int> Run(Ptr<int> p) => Lib.Cells.Next(p.Offset(1)); } }";
+                var framework = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")).Split(Path.PathSeparator)
+                    .Where(x => Path.GetDirectoryName(x) == Path.GetDirectoryName(typeof(object).Assembly.Location));
+                var erasedApp = Erasure.Erase(new[] { ("App.cs", app) }, framework.Append(libPath).ToList(), Array.Empty<string>());
+                Assert.True(erasedApp.Success, string.Join("\n", erasedApp.Errors));
+                Assert.DoesNotContain(erasedApp.Files, f => f.OutputName.StartsWith(Erasure.RuntimeFolder));
+            }
+            finally { try { File.Delete(libPath); } catch (IOException) { } }
         }
     }
 }

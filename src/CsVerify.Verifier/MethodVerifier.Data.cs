@@ -118,7 +118,7 @@ namespace CsVerify.Verifier
         /// <summary><c>v is matched</c>, for a <paramref name="v"/> of static type <paramref name="input"/>.</summary>
         private Term TypeTest(Term v, ITypeSymbol input, ITypeSymbol matched)
         {
-            if (matched == null || DataTypes.Derives(input, matched) || input.AllInterfaces.Contains(matched))
+            if (matched == null || DataTypes.Derives(input, matched) || input.AllInterfaces.Contains(matched, SymbolEqualityComparer.Default))
                 return MayBeNullType(input) ? NotNull(v) : T.True;
             if (matched is INamedTypeSymbol m && Data.Cases(m) is IReadOnlyList<INamedTypeSymbol> cases && Data.IsData(input))
             {
@@ -257,6 +257,7 @@ namespace CsVerify.Verifier
             }
 
             var callee = ctor != null ? _engine.ContractOf(ctor) : null;
+            if (callee?.IsStub == true && _codeMode) Assumed(callee);
             Frame pre = null;
             if (callee?.HasSource == true && _codeMode)
             {
@@ -278,9 +279,10 @@ namespace CsVerify.Verifier
             var obj = _z3.Fresh("new", Sort.Int);
             if (MayBeNullType(oc.Type)) _z3.Assume(NotNull(obj));
             HasType(obj, oc.Type, exact: true);
-            SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax) : null);
+            SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax, ctor) : null);
             if (pre != null) AllocAfterCall(f);
             if (ctor != null) CallMayThrow(callee ?? _engine.ContractOf(ctor), null, args, oc.Arguments, f, pre);
+            if (ctor != null && RunsCode(ctor)) HavocClosureLocals(f); // (a delegate it was handed may write them)
             if (pre != null)
             {
                 var post = pre.Clone();
