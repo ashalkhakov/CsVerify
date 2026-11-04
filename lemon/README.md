@@ -118,6 +118,7 @@ running into undefined behaviour as C would; the verifier assumes them after. Ea
 | Parser.cs | the pstate's first `nrhs` symbols are set; `nsubsym` is never negative |
 | Report.cs | counts are non-negative and consistent; a rule has `nrhs` aliases; lookaheads are symbols; C's `assert`s in `acttab_insert` and `CompressTables`; the sorts permute full tables |
 | Program.cs | the option table is full; `argv` holds strings |
+| Build.cs, ConfigList.cs | C's `assert`s: a terminal is never nullable, a conflict is between actions on one symbol, a configuration's propagation links are cleared before they are rebuilt (they were `Debug.Assert`s, which the verifier now proves like `Spec.Assert`; C's `assert` runs, so they run too) |
 
 Run `grep -n Checks.That lemon/CsLemon/*.cs` for each one with its reason.
 

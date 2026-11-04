@@ -11,6 +11,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 | guard `P ⊃ T` | `Spec.Requires(P)` (top-level statement of the body) |
 | assertion `∃r. P ∧ T` on the result | `Spec.Ensures<R>(r => P)`, or `Spec.Ensures(P)` with `Spec.Result<R>()` / `Spec.Old(x)` |
 | constraint solving over static terms | the verifier sends the constraints to Z3 (linear and non-linear integer arithmetic, quantifiers) |
+| `Debug.Assert(c)`, `Trace.Assert(c)` | proved like `Spec.Assert(c)` (CSV1004), and assumed after. At run time they are unchanged: `Debug.Assert` runs in debug builds only |
 | Xanadu loop invariant at the loop head | `Spec.Invariant(P)` as the first statements of a `while`/`for`/`do` body |
 | termination metric `.<n>.` | `Spec.Decreases(e)` on a recursive method or loop body |
 | lexicographic metric `.<m, n>.` | `Spec.Decreases(m, n)` (up to three components) |

@@ -38,7 +38,10 @@ Methods are verified for partial correctness: any call may throw anything, and a
 
   A loop with an `await` forgets the same things at its head. *Soundness:* views are linear and permissions add up to one, so no code that runs in between can hold what this method holds, and so none can write it. Everything else is forgotten, which is what any code could have done to it.
 - **An async method of the program called without being awaited at once** (`var t = F(); …; await t;`, or an `async void` method) is rejected (CSV1901). It would run interleaved with its caller, each changing what the other relies on. Lending it permissions explicitly is the next step (step 2 below).
-- **Library tasks** are values like any other. Awaiting one gives an unknown result, non-null as the library declares it, and may throw.
+- **Library tasks** are values like any other. Awaiting one gives an unknown result, non-null as the library declares
+  it, and may throw. An **async stub** (a `[ContractsFor]` stub method declared `async`, like `Stream.ReadAsync`'s)
+  gives the awaited call its contract: its precondition is checked at the call, and its postcondition is of the awaited
+  value (`n <= count`). A task of such a member that is not awaited at once is the library's, with no contract.
 - **Lemmas and `[Pure]` functions** cannot be async.
 
 **Lambdas and local functions** that write the method's locals (`l.ForEach(x => s += x)`) are not verified on their own. Any call may run one of them, so after every call, other than to a `[Pure]` function or a lemma, and at every `await`, the locals they write are unknown.
@@ -67,6 +70,26 @@ C#'s nullable reference types are only warnings, and deliberately unsound ones: 
 - **Oblivious types** (code with nullable disabled) promise nothing, so they are maybe-null too. Only an enabled nullable context lets the verifier know anything is not null. The MSBuild target passes the project's `<Nullable>`, and the command line takes `--nullable` (default `enable`).
 - **Library methods** are trusted for their annotations: a non-nullable return type, `[NotNull]` parameters after the call (`ArgumentNullException.ThrowIfNull`), `[NotNullWhen(b)]` parameters when the call returns `b` (`string.IsNullOrEmpty`), `[MaybeNullWhen(b)]` out parameters when it returns `!b` (`TryGetValue`), and `[AllowNull]` and `[MaybeNull]`; a type parameter as instantiated (a `List<string>`'s items).
 - **Fields** of non-nullable type are not null once their object is built (see [Mutable objects](objects.md#mutable-objects)), and positional fields of data records are not null either (see [Data types and object invariants](objects.md#data-types-and-object-invariants)). Fields and auto-properties of nullable type are maybe-null.
+- **A class with no constructor of its own** (or only a primary constructor) has no constructor body to verify, so its
+  non-nullable fields' initializers are checked instead. Each must make an object or array, be a string literal or
+  interpolation, `string.Empty`, a call to a method that returns non-null, or a non-nullable primary-constructor
+  parameter. `= null!`, or no initializer, is reported (CSV1014). Before this, such a class's `= null!` went unchecked,
+  and `new C().Name.Length` verified.
+- **Objects a framework builds.** `required` members are set by every object initializer, which the compiler checks.
+  `[JsonRequired]` members (System.Text.Json) are trusted to be set by whoever builds the object, as the deserializer
+  does or throws. Neither has to be set by a constructor, and both are not null on read. So a DTO can say
+  `[JsonRequired] public string Owner { get; set; } = null!;`. Code that builds one with `new` and leaves `Owner` out is
+  not checked for it.
+- **Guard clauses** say what they check: `ArgumentNullException.ThrowIfNull(x)` (its `[NotNull]`),
+  `ArgumentException.ThrowIfNullOrEmpty(s)` and `ThrowIfNullOrWhiteSpace(s)` (not null, not empty: stubs), and
+  `ArgumentOutOfRangeException.ThrowIfNegative`, `ThrowIfNegativeOrZero`, `ThrowIfZero`, `ThrowIfGreaterThan`,
+  `ThrowIfGreaterThanOrEqual`, `ThrowIfLessThan`, `ThrowIfLessThanOrEqual`, `ThrowIfEqual`, `ThrowIfNotEqual` for
+  integer types (built in). After the call, the relation holds; otherwise it threw.
+- **Library calls keep what they cannot touch.** A library can run the program's code only through overrides and
+  interfaces, and can read a field only through reflection, which is not covered. So a call handed an object whose
+  class (and its subclasses) overrides nothing and implements no interface keeps its fields' facts: after
+  `Console.WriteLine(dto)`, a checked `dto.Notes` is still not null. An object that may be a list or a dictionary,
+  or an `object` of unknown class, may still be changed.
 - **Locals** declared with a non-nullable type (`Config p`, not `var p`, whose type is nullable) have every write checked, so they stay not null through loops.
 - **Never null:** `this`, `new` objects and arrays, string concatenations and interpolations, lambdas and method groups made delegates.
 - **`Nullable<T>`** (`int?`) is a value with two parts: whether it has a value, and the value. Conversions wrap

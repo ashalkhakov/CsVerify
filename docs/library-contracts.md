@@ -88,6 +88,9 @@ public static class ListContracts<T>
   that writes a field). Your overrides inherit the stub's contract, and are checked against it like any override
   ([Object-oriented code](objects.md#object-oriented-code)). The library's own overrides (`StreamWriter.Write`) keep
   the contract of the member they override: trusted, like the rest.
+- **Async stubs.** A stub declared `async` (`public static async Task<int> ReadAsync(Stream @this, ...)`) specifies
+  what awaiting the member gives: `Spec.Ensures<int>(r => r <= count)` is of the awaited value. A call of the member
+  that is not awaited at once gets no contract. The conformance tests wait for the task.
 - **Fresh results.** A postcondition `Spec.Fresh(r)` makes a returned array a new one, distinct from every array in
   scope (`list.ToArray()`).
 - **`[Pure]` stubs** may be used in specifications (`l.Count`, `l[i]`, `d.ContainsKey(k)`, `string.IsNullOrEmpty(s)`).
@@ -134,6 +137,8 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 | `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructor, `Count`, `ContainsKey`, the indexer (get and set), `Add`, `Remove`, `TryGetValue` |
 | `StringBuilder` | `Size()` (its `Length`; the characters are not modeled) | constructors, `Length` (get and set), the indexer (its range), `Append` (`char`, a repeated `char`, `string`, part of a `string`, `StringBuilder`, `int`, `long`, `object`), `AppendLine`, `Insert(int, string)`, `Remove`, `Clear`, `ToString` (whole and a range): each `Append` returns the builder |
 | `TextWriter` | | `Write`, `WriteLine` (for `string`, `char`, `int`, `long`, `bool`, `object`, format strings, a `char[]` range) and `Flush`: they change nothing modeled |
+| `Stream` | | `Read(byte[], int, int)` and `ReadAsync(byte[], int, int)` (an async stub): the range is in the buffer, only the buffer changes, at most `count` bytes are read |
+| `ArgumentException` | | `ThrowIfNullOrEmpty`, `ThrowIfNullOrWhiteSpace`: the argument is not null and not empty when they return |
 | `string` | its `Length` (built in) | `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith`, `EndsWith`, `Contains`, `IndexOf(char)`, `LastIndexOf(char)`, `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
 | `int` | | `Parse(string)`, `TryParse(string, out int)` |
 | `Math` | | `Clamp` and `Sign` for `int` and `long` |

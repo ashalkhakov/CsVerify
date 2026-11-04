@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -85,24 +86,25 @@ namespace CsVerify.Verifier
         /// May a library method without a stub change model state: is it handed (as its receiver, an argument or a
         /// type argument) something that may be, or lead to, an object with [Model] functions?
         /// </summary>
-        private bool MayTouchModels(IMethodSymbol m)
+        private bool MayTouchModels(IMethodSymbol m) =>
+            _engine.Models.Count > 0 &&
+            (m.Parameters.Any(p => ReachesModels(p.Type)) || !m.IsStatic && m.MethodKind != MethodKind.Constructor && ReachesModels(m.ContainingType) ||
+             m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(ReachesModels));
+
+        /// <summary>Could a value of this type be, or hold where a library can reach it, an object with [Model] functions?</summary>
+        private bool ReachesModels(ITypeSymbol t)
         {
             if (_engine.Models.Count == 0) return false;
-            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(t => t != null).ToList();
-            bool Reaches(ITypeSymbol t)
+            switch (t)
             {
-                switch (t)
-                {
-                    case null: return false;
-                    case IArrayTypeSymbol a: return Reaches(a.ElementType);
-                    case ITypeParameterSymbol _: return true;
-                }
-                if (t.SpecialType == SpecialType.System_String || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.Delegate) return t.SpecialType != SpecialType.System_String;
-                if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t))) return true;
-                return t is INamedTypeSymbol n && n.TypeArguments.Any(Reaches);
+                case null: return false;
+                case IArrayTypeSymbol a: return ReachesModels(a.ElementType);
+                case ITypeParameterSymbol _: return true;
             }
-            return m.Parameters.Any(p => Reaches(p.Type)) || !m.IsStatic && m.MethodKind != MethodKind.Constructor && Reaches(m.ContainingType) ||
-                   m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(Reaches);
+            if (t.SpecialType == SpecialType.System_String || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.Delegate) return t.SpecialType != SpecialType.System_String;
+            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(x => x != null);
+            if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t))) return true;
+            return t is INamedTypeSymbol n && n.TypeArguments.Any(ReachesModels);
         }
 
         private List<INamedTypeSymbol> _ownable;
@@ -257,6 +259,32 @@ namespace CsVerify.Verifier
             m.Parameters.Any(p => HandsOver(p.Type)) ||
             (!m.IsStatic && HandsOver(m.ContainingType) && !(m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object)) ||
             m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
+
+        /// <summary>
+        /// At this call, may the library method change the program's fields or model state? As
+        /// <see cref="WritesOf"/> says for the method, but by what is actually handed to it: an <c>object</c> parameter
+        /// given a program object whose class (and its subclasses) overrides nothing and implements no interface leaves
+        /// the library nothing of the program's to run, no way to write its fields (reflection is not covered), and no
+        /// list or dictionary to reach.
+        /// </summary>
+        public bool WritesFieldsAt(IInvocationOperation inv)
+        {
+            var m = inv.TargetMethod;
+            bool May(ITypeSymbol declared, IOperation value) =>
+                (HandsOver(declared) || ReachesModels(declared)) && !(value?.ConstantValue.HasValue == true && value.ConstantValue.Value == null) &&
+                (value == null || HandsOver(Handed(value)) || ReachesModels(Handed(value)));
+            if (m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(t => HandsOver(t) || ReachesModels(t))) return true;
+            if (!m.IsStatic && m.MethodKind != MethodKind.Constructor && May(m.ContainingType, inv.Instance)) return true;
+            return inv.Arguments.Any(a => a.Parameter != null && May(a.Parameter.Type, a.ArgumentKind == ArgumentKind.Explicit ? a.Value : null));
+        }
+
+        /// <summary>The type of what is handed over: under implicit reference conversions (to object, to a base class).</summary>
+        private static ITypeSymbol Handed(IOperation op)
+        {
+            while (op is IConversionOperation c && c.IsImplicit && c.Conversion.IsReference && c.Operand.Type != null) op = c.Operand;
+            // a program class's object: only its class and subclasses can be there; a library type or interface: anything
+            return op.Type is INamedTypeSymbol t && t.TypeKind == TypeKind.Class && t.DeclaringSyntaxReferences.Length > 0 ? t : op.Type;
+        }
 
         /// <summary>
         /// Can a library method run user code through a value of this type: a delegate, an object of unknown class, or
