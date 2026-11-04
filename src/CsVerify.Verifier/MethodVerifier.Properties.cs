@@ -25,7 +25,11 @@ namespace CsVerify.Verifier
 
         /// <summary>A call of a property's getter (<paramref name="value"/> null) or setter.</summary>
         private Term CallAccessor(IMethodSymbol accessor, IOperation instance, IEnumerable<IOperation> indices, Term value, ITypeSymbol resultType,
-                                  SyntaxNode at, Frame f, SpecEnv spec)
+                                  SyntaxNode at, Frame f, SpecEnv spec) =>
+            WithInstantiation(accessor, () => CallAccessorCore(accessor, instance, indices, value, resultType, at, f, spec));
+
+        private Term CallAccessorCore(IMethodSymbol accessor, IOperation instance, IEnumerable<IOperation> indices, Term value, ITypeSymbol resultType,
+                                      SyntaxNode at, Frame f, SpecEnv spec)
         {
             var callee = _engine.ContractOf(accessor);
             if (callee.IsStub && _codeMode) Assumed(callee);

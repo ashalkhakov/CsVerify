@@ -32,7 +32,7 @@
 - **`[Trusted]` and `Spec.Assume`** are axioms by definition.
 - **Library contracts** (`[ContractsFor]` stubs, CsVerify's and yours) are trusted: their postconditions, the frames they declare, and the facts their `[Model]` functions state are assumed, not checked against the library. The summary line counts the ones a run used, and `-v` lists them. In particular (see [Contracts for code without sources](library-contracts.md)):
   - a stub without `Spec.Modifies` is taken to change no model state, and a `[Pure]` one to have no effects at all;
-  - `Dictionary` keys are compared as the verifier compares values of their type. That is the dictionary's own comparison for integers, enums and other values, and for classes with reference equality, but not for strings (compared by contents in .NET, by reference here) or for classes that override `Equals`, nor with a custom comparer;
+  - `Dictionary` and `HashSet` keys compare as `EqualityComparer<T>.Default` does (see [Equality](library-contracts.md)): exactly for numbers, enums, strings and classes without their own `Equals`, through an unknown key function otherwise. A custom comparer (`new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)`) is not taken into account: its contracts still compare by the default;
   - running out of memory is not modelled: a list can grow without bound (its `Size()` is a mathematical integer), as in Dafny;
   - model state over strings never changes (they are immutable);
   - a library class's overrides of a stubbed member (`StreamWriter.Write`) keep its contract, and a `TextWriter`'s writes change nothing the verifier models;

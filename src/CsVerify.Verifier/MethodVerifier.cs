@@ -868,13 +868,7 @@ namespace CsVerify.Verifier
                     case bool b: return T.Bool(b);
                     case char c: return T.Int(c);
                     case null: return T.Int(0);
-                    case string str:
-                    {
-                        var v = _z3.Fresh("str", Sort.Int);
-                        AssumeSide(NotNull(v));
-                        AssumeSide(T.Eq(Len(v), T.Int(str.Length)));
-                        return v;
-                    }
+                    case string str: return StringLiteral(str, op.Type); // a string is its value (MethodVerifier.Values)
                     case float _:
                     case double _: return FloatLiteral(op.ConstantValue.Value);
                     case ulong ul: return T.Int(new BigInteger(ul));
@@ -1172,6 +1166,15 @@ namespace CsVerify.Verifier
                 case BinaryOperatorKind.And when boolean: return T.And(l, r);
                 case BinaryOperatorKind.Or when boolean: return T.Or(l, r);
                 case BinaryOperatorKind.ExclusiveOr when boolean: return T.Xor(l, r);
+                case BinaryOperatorKind.Add when b.Type?.SpecialType == SpecialType.System_String &&
+                                                 b.LeftOperand.Type?.SpecialType == SpecialType.System_String && b.RightOperand.Type?.SpecialType == SpecialType.System_String:
+                {
+                    // a + b: a string of unknown characters, never null, as long as both (null counts as empty)
+                    var cat = Unknown(b.Type, "concat");
+                    Term LengthOf(Term x) => IsNullConstant(b.LeftOperand) && x == l || IsNullConstant(b.RightOperand) && x == r ? T.Int(0) : T.Ite(T.Eq(x, T.Int(0)), T.Int(0), Len(x));
+                    AssumeSide(T.And(NotNull(cat), T.Eq(Len(cat), T.Add(LengthOf(l), LengthOf(r)))));
+                    return cat;
+                }
                 default: return Arith(b.OperatorKind, l, r, b.Type, b.Syntax, false, b.IsChecked);
             }
         }
@@ -1427,7 +1430,11 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
             if ((SpecSymbols.IsObjSet(prop.ContainingType) || SpecSymbols.IsBag(prop.ContainingType)) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
-                return T.Coerce(T.Select(Eval(pr.Instance, f, spec), T.Coerce(Eval(pr.Arguments[0].Value, f, spec), Sort.Int), Sort.Int), SortOf(pr.Type));
+            {
+                var index = Eval(pr.Arguments[0].Value, f, spec);
+                index = MapKeyType(prop.ContainingType) is ITypeSymbol keyType ? KeyOf(index, keyType) : T.Coerce(index, Sort.Int);
+                return T.Coerce(T.Select(Eval(pr.Instance, f, spec), index, Sort.Int), SortOf(pr.Type));
+            }
             if (pr.Instance != null && IsSequence(pr.Instance.Type))
             {
                 if (prop.Name == "IsEmpty" && IsSpan(pr.Instance.Type)) return T.Eq(Len(T.Coerce(Eval(pr.Instance, f, spec), Sort.Int)), T.Int(0));
@@ -1549,7 +1556,21 @@ namespace CsVerify.Verifier
         private bool HavocsHeap(IMethodSymbol m) =>
             !SpecSymbols.IsSpecClass(m.ContainingType) && !SpecSymbols.IsGhostOf(m) && _engine.MayWriteHeap(m);
 
-        private Term EvalInvocation(IInvocationOperation inv, Frame f, SpecEnv spec)
+        /// <summary>A call, with the callee's type parameters as it instantiates them (for its contract's equalities).</summary>
+        private Term EvalInvocation(IInvocationOperation inv, Frame f, SpecEnv spec) =>
+            WithInstantiation(inv.TargetMethod, () => EvalInvocationCore(inv, f, spec));
+
+        private T2 WithInstantiation<T2>(IMethodSymbol called, System.Func<T2> eval)
+        {
+            if (called == null || SpecSymbols.IsSpecClass(called.ContainingType)) return eval();
+            var callee = _engine.ContractOf(called);
+            _instantiations.Push(InstantiationOf(called, callee));
+            _equalityEpochs.Push(_z3.Fresh("equals", Sort.Int));
+            try { return eval(); }
+            finally { _instantiations.Pop(); _equalityEpochs.Pop(); }
+        }
+
+        private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
             if (IsGetLength(inv)) return GetLength(inv, f, spec);
@@ -1570,6 +1591,8 @@ namespace CsVerify.Verifier
                         return MultisetOf(inv, f, spec);
                     case "Index":
                         return ForEachIndex(inv, f);
+                    case "Equal":
+                        return SpecEqual(inv, f, spec);
                     case "Acc":
                     {
                         var o = Eval(inv.Arguments[0].Value, f, spec);
@@ -1610,6 +1633,7 @@ namespace CsVerify.Verifier
             if (IsNullableValue(m.ContainingType) && NullableInvocation(inv, f, spec) is Term nullableResult) return nullableResult;
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
+            if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
@@ -1882,7 +1906,9 @@ namespace CsVerify.Verifier
                 case "Union": return new Term($"(cv_union {self} {args[0]})", Sort.Row);
                 case "IsSubsetOf": return new Term($"(cv_subset {self} {args[0]})", Sort.Bool);
                 case "IsDisjointFrom": return new Term($"(cv_disjoint {self} {args[0]})", Sort.Bool);
-                case "Update": return T.Store(self, T.Coerce(args[0], Sort.Int), T.Coerce(args[1], Sort.Int));
+                case "Update":
+                    return T.Store(self, MapKeyType(inv.TargetMethod.ContainingType) is ITypeSymbol keyType ? KeyOf(args[0], keyType) : T.Coerce(args[0], Sort.Int),
+                                   T.Coerce(args[1], Sort.Int));
                 case "Drop": return new Term($"(cv_drop {self} {args[0]})", Sort.Row);
                 case "Concat": return new Term($"(cv_concat {self} {args[0]} {args[1]})", Sort.Row);
                 default: Unsupported(inv); return _z3.Fresh("seq", Sort.Row);

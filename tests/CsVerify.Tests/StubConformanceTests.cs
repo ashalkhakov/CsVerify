@@ -383,6 +383,7 @@ namespace CsVerify
         public static bool Exists(int lo, int hi, Func<int, bool> p) { for (int i = lo; i < hi; i++) if (p(i)) return true; return false; }
         // a result distinct from every object the call was handed
         public static bool Fresh(object? o) => o != null && !Args.Any(a => ReferenceEquals(a, o));
+        public static bool Equal<T>(Ghost<T> a, Ghost<T> b) => !a.Known || !b.Known || EqualityComparer<T>.Default.Equals(a.V, b.V);
     }
 
     // a ghost value, or an undetermined one (a model where it means nothing), which matches anything
@@ -476,6 +477,16 @@ namespace CsVerify.Bcl
         public static int Size<K, V>(this Dictionary<K, V> d) where K : notnull => d.Count;
     }
 
+    public static class CollectionModels
+    {
+        public static Map<T, bool> Members<T>(this HashSet<T> set) where T : notnull => new Map<T, bool>(set.ToDictionary(x => x, x => true), Ghost.Of(false));
+        public static int Size<T>(this HashSet<T> set) => set.Count;
+        public static Seq<T> Items<T>(this Stack<T> stack) => Seq<T>.Of(stack.Reverse());
+        public static int Size<T>(this Stack<T> stack) => stack.Count;
+        public static Seq<T> Items<T>(this Queue<T> queue) => Seq<T>.Of(queue);
+        public static int Size<T>(this Queue<T> queue) => queue.Count;
+    }
+
     public static class TextModels
     {
         public static int Size(this StringBuilder builder) => builder.Length;
@@ -499,6 +510,7 @@ namespace CsVerify.Conformance
             StringBuilder sb => sb.Length,
             IDictionary d => d.Keys.Cast<object>().OrderBy(k => k.ToString(), StringComparer.Ordinal).Select(k => (k, d[k])).ToArray(),
             IList l => l.Cast<object?>().ToArray(),
+            IEnumerable e when !(o is string) => e.Cast<object?>().ToArray(),
             _ => null,
         };
 
@@ -511,6 +523,9 @@ namespace CsVerify.Conformance
         public static List<T>? Copy<T>(List<T>? l) => l == null ? null : new List<T>(l);
         public static Dictionary<K, V>? Copy<K, V>(Dictionary<K, V>? d) where K : notnull => d == null ? null : new Dictionary<K, V>(d);
         public static StringBuilder? Copy(StringBuilder? sb) => sb == null ? null : new StringBuilder(sb.ToString());
+        public static HashSet<T>? Copy<T>(HashSet<T>? s) => s == null ? null : new HashSet<T>(s, s.Comparer);
+        public static Stack<T>? Copy<T>(Stack<T>? s) => s == null ? null : new Stack<T>(s.Reverse());
+        public static Queue<T>? Copy<T>(Queue<T>? q) => q == null ? null : new Queue<T>(q);
 
         // the first object outside the frame whose models changed, or null
         public static string? Changed((object? o, object? state)[] before, ObjSet frame)
@@ -573,6 +588,9 @@ namespace CsVerify.Conformance
                 made = d;
             }
             else if (t == typeof(StringBuilder)) made = new StringBuilder(Strings[r.Next(Strings.Length)]);
+            else if (t == typeof(HashSet<int>)) made = new HashSet<int>(Enumerable.Range(0, r.Next(6)).Select(_ => SmallInt(r)));
+            else if (t == typeof(Stack<int>)) made = new Stack<int>(Enumerable.Range(0, r.Next(6)).Select(_ => SmallInt(r)));
+            else if (t == typeof(Queue<int>)) made = new Queue<int>(Enumerable.Range(0, r.Next(6)).Select(_ => SmallInt(r)));
             else if (t == typeof(TextWriter)) made = new StringWriter();
             else if (t == typeof(System.Text.Encoding)) made = new[] { System.Text.Encoding.UTF8, System.Text.Encoding.Latin1, System.Text.Encoding.ASCII }[r.Next(3)];
             else if (t.IsEnum) { var values = Enum.GetValues(t); return values.GetValue(r.Next(values.Length)); }

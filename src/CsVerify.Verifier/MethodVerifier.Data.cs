@@ -140,6 +140,8 @@ namespace CsVerify.Verifier
                     return T.True;
                 case IConstantPatternOperation c when IsNullConstant(c.Value):
                     return MayBeNullType(p.InputType) ? T.Eq(v, T.Int(0)) : T.False;
+                case IConstantPatternOperation c when c.Value.ConstantValue.HasValue && c.Value.ConstantValue.Value is string:
+                    return T.Eq(T.Coerce(v, Sort.Int), Eval(c.Value, f, spec)); // a string is its value
                 case IConstantPatternOperation c when IsIntegral(c.Value.Type) || c.Value.Type?.SpecialType == SpecialType.System_Boolean:
                     return T.Eq(v, T.Coerce(Eval(c.Value, f, spec), v.Sort));
                 case IRelationalPatternOperation r when IsIntegral(r.Value.Type) && v.Sort == Sort.Int:
@@ -268,8 +270,19 @@ namespace CsVerify.Verifier
         }
 
         /// <summary><c>new R(...)</c>: a data value, or an object whose constructor's contract is checked and assumed.</summary>
-        private Term NewObject(IObjectCreationOperation oc, Frame f, SpecEnv spec)
+        private Term NewObject(IObjectCreationOperation oc, Frame f, SpecEnv spec) =>
+            WithInstantiation(oc.Constructor, () => NewObjectCore(oc, f, spec));
+
+        private Term NewObjectCore(IObjectCreationOperation oc, Frame f, SpecEnv spec)
         {
+            if (oc.Type?.SpecialType == SpecialType.System_String)
+            {
+                // a string is a value: a new one may equal any other (no object identity to be fresh)
+                foreach (var a in oc.Arguments) Eval(a.Value, f, spec);
+                var s = Unknown(oc.Type, "string");
+                AssumeSide(NotNull(s));
+                return s;
+            }
             if (SpanConstruction(oc, f, spec) is Term span) return span;
             var ctor = oc.Constructor;
             var args = new Term[ctor?.Parameters.Length ?? 0];

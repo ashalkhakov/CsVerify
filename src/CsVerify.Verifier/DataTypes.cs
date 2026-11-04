@@ -19,8 +19,11 @@ namespace CsVerify.Verifier
     {
         private readonly Dictionary<INamedTypeSymbol, int> _tags = new Dictionary<INamedTypeSymbol, int>(SymbolEqualityComparer.Default);
 
+        private readonly HashSet<ITypeSymbol> _stringInterfaces = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
         public DataTypes(Compilation compilation, IEnumerable<SyntaxTree> userTrees)
         {
+            foreach (var i in compilation.GetSpecialType(SpecialType.System_String).AllInterfaces) _stringInterfaces.Add(i.OriginalDefinition);
             var candidates = new List<INamedTypeSymbol>();
             foreach (var tree in userTrees)
             {
@@ -79,9 +82,14 @@ namespace CsVerify.Verifier
         public int TagOf(INamedTypeSymbol t) => _tags[Def(t)];
 
         /// <summary>Could a value of this static type be a data value (so its reference identity is not modeled)?</summary>
+        /// <summary>
+        /// Could a value of this static type be a data value (so its reference identity is not modeled)? Strings are
+        /// values too, so an interface a string implements (IComparable, IEnumerable&lt;char&gt;) may hold one.
+        /// </summary>
         public bool MayHoldData(ITypeSymbol t) =>
             t != null && (IsData(t) || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.TypeParameter ||
-                          t.TypeKind == TypeKind.Interface && _tags.Keys.Any(r => r.AllInterfaces.Contains(t, SymbolEqualityComparer.Default)));
+                          t.TypeKind == TypeKind.Interface && (_tags.Keys.Any(r => r.AllInterfaces.Contains(t, SymbolEqualityComparer.Default)) ||
+                                                               _stringInterfaces.Contains(t.OriginalDefinition)));
 
         /// <summary>The primary constructor of the definition (its parameters are what the record header's base arguments refer to).</summary>
         public static IMethodSymbol PrimaryConstructor(INamedTypeSymbol t) => Def(t).InstanceConstructors.FirstOrDefault(IsPrimary);
