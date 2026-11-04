@@ -26,7 +26,8 @@
 
 **Unsupported constructs**
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
-- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, non-pure calls in specifications.
+- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, non-pure calls in specifications, the elements of a `foreach` over a library collection, a string or a span.
+- `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
 - Not verified as separate units: local functions and lambdas.
 
 **Completeness limits** (true things that may not be proved)

@@ -78,6 +78,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1016 | verifier | an [Owned] object written without its view in hand, or a view made for an object that is not new |
 | CSV1019 | verifier | a predicate's body might not hold where it is folded |
 | CSV1018 | verifier | an override breaks behavioural subtyping: it requires more than the member it overrides, or its `Spec.Modifies` is wider |
+| CSV1020 | verifier | two arguments passed by reference (one of them `ref`/`out`) might be the same array cell or variable |
 | CSV1017 | verifier | a dynamic frame broken: a write outside `Spec.Modifies`, a read outside `Spec.Reads`, a callee with no or a wider frame, or `Spec.Modifies`/`Reads` on an `[Owned]` class |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |

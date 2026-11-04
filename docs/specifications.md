@@ -48,7 +48,8 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 ## Specification rules
 
 - `Requires`, `Ensures` and `Decreases` must be **top-level statements of the method body** (anywhere among them, conventionally first). An `out` parameter must be assigned before an `Ensures` mentions it, because C#'s definite assignment applies to the erased call too.
-- `Invariant` and a loop `Decreases` must be the **leading statements of the loop body**. They hold each time the loop condition is tested, Xanadu-style, not only inside the body.
+- `Invariant` and a loop `Decreases` must be the **leading statements of the loop body**. They hold each time the loop condition is tested, Xanadu-style, not only inside the body. For a `goto` loop they are the statements right after the label the `goto` jumps back to.
+- `Spec.Index(x)` is the index of `x`, the iteration variable of a `foreach` over an array. In the loop's invariants it is the number of elements gone through.
 - `Spec.Ensures<R>(r => …)` binds `r` to the return value. Lambdas cannot capture `ref`/`in` parameters, so for those use `Spec.Ensures(bool)` with `Spec.Result<R>()` and `Spec.Old(x)`.
 - `Spec.Forall(lo, hi, i => P)` / `Spec.Exists(...)` are bounded integer quantifiers.
 - Specification expressions should be side-effect free. Calls in them must be `[Pure]`.

@@ -63,6 +63,10 @@ namespace CsVerify.Verifier
         public HashSet<ISymbol> LiveMemViews = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public Dictionary<CaptureId, Term> Captures = new Dictionary<CaptureId, Term>();
         public HashSet<int> ActiveLoops = new HashSet<int>();
+        /// <summary>What each ref local names: a variable, or an array cell.</summary>
+        public Dictionary<ISymbol, RefTarget> Refs = new Dictionary<ISymbol, RefTarget>(SymbolEqualityComparer.Default);
+        /// <summary>The foreach loops over arrays: the array, and the index of the element the iteration is at.</summary>
+        public Dictionary<int, (Term arr, Term idx)> ForEach = new Dictionary<int, (Term, Term)>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
         public Term Result;
         /// <summary>The exception being handled (in a catch or filter), or thrown (in a finally run by it).</summary>
@@ -97,12 +101,21 @@ namespace CsVerify.Verifier
             Link = Link,
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),
+            ForEach = new Dictionary<int, (Term, Term)>(ForEach),
+            Refs = new Dictionary<ISymbol, RefTarget>(Refs, SymbolEqualityComparer.Default),
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
             Result = Result,
             Exception = Exception,
             Pending = Pending,
             ReturnSyntax = ReturnSyntax,
         };
+    }
+
+    /// <summary>The location a ref local names: a variable, or the cell Idx of array Arr.</summary>
+    public sealed class RefTarget
+    {
+        public ISymbol Variable;
+        public Term Arr, Idx;
     }
 
     /// <summary>

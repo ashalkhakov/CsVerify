@@ -522,7 +522,7 @@ namespace CsVerify.Verifier
 
         /// <summary>A loop that exchanges permissions: its invariant's permissions go round it, everything else stays outside.</summary>
         private bool LoopExchangesPermissions(SyntaxNode loopSyntax) =>
-            (_engine.UsesOwnership || _engine.UsesPermissions) && loopSyntax.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
+            (_engine.UsesOwnership || _engine.UsesPermissions) && loopSyntax.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
                 .Any(inv => _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m &&
                             (SpecSymbols.IsSpecClass(m.ContainingType) ? m.Name == "Fold" || m.Name == "Unfold"
                              : SpecSymbols.IsCsVerifyType(m.ContainingType, "Own") ? m.Name == "ToAcc" || m.Name == "FromAcc"

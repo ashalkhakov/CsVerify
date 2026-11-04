@@ -112,6 +112,12 @@ namespace CsVerify
         /// <summary>Unfolds a held predicate instance: its body's permissions come out, and its facts hold.</summary>
         [Conditional(Symbol)] public static void Unfold(bool predicate) { }
 
+        /// <summary>
+        /// The index of <paramref name="element"/>, the iteration variable of a <c>foreach</c> over an array: in the
+        /// loop's invariants, the number of elements already gone through; in its body, the index of the element.
+        /// </summary>
+        public static int Index<T>(T element) => throw GhostException.Instance;
+
         /// <summary>The value an expression had on method entry; only meaningful inside <see cref="Ensures(bool)"/>.</summary>
         public static T Old<T>(T value) => throw GhostException.Instance;
     }

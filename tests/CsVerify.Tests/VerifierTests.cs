@@ -517,8 +517,8 @@ namespace CsVerify.Tests
         [Fact]
         public void UnmodeledControlFlow_FailsVerification()
         {
-            Assert.Contains("CSV1901", Errors("M", "static int M(int[] a) { int s = 0; foreach (var x in a) s += x; return s; }"));
-            Assert.Contains("CSV1901", Errors("M", "static int M(int x) { again: x++; if (x < 3) goto again; return x; }"));
+            // (foreach and goto loops: see LoopTests) a cycle entered in two places has no head to cut it at
+            Assert.Contains("CSV1901", Errors("M", "static int M(int x, bool c) { if (c) goto inside; again: x++; inside: x++; if (x < 5) goto again; return x; }"));
         }
 
         [Fact]
@@ -550,8 +550,9 @@ namespace CsVerify.Tests
         [Fact]
         public void HeapAliases_FailVerification()
         {
-            Assert.Contains("CSV1901", Errors("M", "static void M(int[] a) { Spec.Requires(a.Length > 0); ref int x = ref a[0]; x = 1; }"));
-            Assert.Equal(new[] { "CSV1901" }, Errors("M", "static void Set(ref int x) { x = 1; } static void M(int[] a) { Spec.Requires(a.Length > 0); Set(ref a[0]); }"));
+            // (a ref local names its cell, and a cell lent by ref is copied in and out: see RefTests) a callee that
+            // could also reach the cell through the array would see the two disagree
+            Assert.Equal(new[] { "CSV1901" }, Errors("M", "static void Set(int[] b, ref int x) { x = b[0]; } static void M(int[] a) { Spec.Requires(a.Length > 0); Set(a, ref a[0]); }"));
         }
 
         [Fact]
