@@ -60,7 +60,7 @@ namespace CsVerify.Verifier
             asCalled.OriginalDefinition.ReturnType is ITypeParameterSymbol && IsNonNullableType(asCalled.ReturnType);
 
         private bool IsStubbedProperty(IOperation op) =>
-            op is IPropertyReferenceOperation pr && pr.Property.GetMethod != null && _engine.Stubs.StubOf(pr.Property.GetMethod) != null;
+            op is IPropertyReferenceOperation pr && pr.Property.GetMethod != null && _engine.HasStub(pr.Property.GetMethod);
 
         /// <summary><c>M(o)</c> or <c>M(o, k)</c> of a [Model] function M: the ghost field M of o (at key k).</summary>
         private Term ModelRead(IInvocationOperation inv, Frame f, SpecEnv spec)

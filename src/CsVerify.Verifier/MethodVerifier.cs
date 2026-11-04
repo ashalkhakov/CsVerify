@@ -283,7 +283,7 @@ namespace CsVerify.Verifier
             void Target(ExpressionSyntax e)
             {
                 // a stubbed setter (list[i] = x): what its stub may change
-                if (_model.GetSymbolInfo(e).Symbol is IPropertySymbol sp && sp.SetMethod != null && _engine.Stubs.StubOf(sp.SetMethod) != null)
+                if (_model.GetSymbolInfo(e).Symbol is IPropertySymbol sp && sp.SetMethod != null && _engine.HasStub(sp.SetMethod))
                 {
                     AddFieldWrites(loop, sp.SetMethod);
                     return;
@@ -1303,7 +1303,7 @@ namespace CsVerify.Verifier
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
             if (pr.Instance != null && IsStructMember(prop)) return T.Coerce(StructMember(prop, Eval(pr.Instance, f, spec)), SortOf(pr.Type));
-            if (IsComputed(prop.GetMethod) || _engine.Stubs.StubOf(prop.GetMethod) != null) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
+            if (IsComputed(prop.GetMethod) || _engine.HasStub(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
             if (!IsStableProperty(prop) && _codeMode && prop.DeclaringSyntaxReferences.Length == 0)
             {
                 // a library property that may change (Console.Out, a list's Count): each read in code is a value of its own

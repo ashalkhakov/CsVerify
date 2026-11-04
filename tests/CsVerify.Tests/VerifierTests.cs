@@ -533,10 +533,10 @@ namespace CsVerify.Tests
             // a library type's computed property without a contract (a stub, see StubTests): its value may change in
             // ways the verifier does not track, so each read in code is a value of its own (fields of source classes
             // are modeled: see HeapTests), and a specification cannot mention it
-            const string sb = "System.Text.StringBuilder";
-            Assert.Empty(Harness.Verify("public static class C { public static int M(" + sb + " b) => b.Length; }").Errors("M"));
-            Assert.Equal(new[] { "CSV1004" }, Harness.Verify("public static class C { public static void M(" + sb + " s) { int a = s.Length, b = s.Length; Spec.Assert(a == b); } }").Errors("M"));
-            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static int M(" + sb + " b) { Spec.Ensures((int r) => r == b.Length); return b.Length; } }").Errors("M"));
+            const string ms = "System.IO.MemoryStream";
+            Assert.Empty(Harness.Verify("public static class C { public static long M(" + ms + " m) => m.Position; }").Errors("M"));
+            Assert.Equal(new[] { "CSV1004" }, Harness.Verify("public static class C { public static void M(" + ms + " m) { long a = m.Position, b = m.Position; Spec.Assert(a == b); } }").Errors("M"));
+            Assert.Contains("CSV1901", Harness.Verify("public static class C { public static long M(" + ms + " m) { Spec.Ensures((long r) => r == m.Position); return m.Position; } }").Errors("M"));
             // as the library declares it: Console.Out is not null
             Assert.Empty(Harness.Verify("public static class C { public static void M() { System.Console.Out.Write(1); } }").Errors("M"));
             Assert.Empty(Harness.Verify("public class C { public int P { get; } public int M() => P; }").Errors("M"));

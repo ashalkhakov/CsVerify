@@ -168,7 +168,14 @@ namespace CsVerify.Verifier
             // Mem and Ptr change only Mem's memory, whose cells change by their own rule (MethodVerifier.KeepHeldMemory)
             if (SpecSymbols.IsCsVerifyType(key.ContainingType, "Mem") || SpecSymbols.IsCsVerifyType(key.ContainingType, "Ptr`1"))
                 return _writesHeap[key] = false;
-            // which override runs is not known: any of them may write arrays
+            // which override runs is not known: any of them may write arrays (a stubbed library member's own
+            // overrides in the library are trusted to keep its contract; the sources' are looked at)
+            if (IsOverridable(key) && c.IsStub)
+            {
+                _writesHeap[key] = false; // (for recursion while computing)
+                return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsWritableSequence(p.Type)) || Fields.RunsUserCode(key) ||
+                                          Fields.Overrides(key).Any(MayWriteHeap);
+            }
             if (IsOverridable(key)) return _writesHeap[key] = true;
             // a library method: through arrays (or spans) it is handed, not strings, or user code it runs (a delegate writing arrays it captured)
             if (!c.HasSource || c.IsStub) return _writesHeap[key] = key.Parameters.Any(p => MethodVerifier.IsWritableSequence(p.Type)) || Fields.RunsUserCode(key);
@@ -338,7 +345,7 @@ namespace CsVerify.Verifier
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
             if (_contracts.TryGetValue(key, out var c)) return c;
             // a member without sources, specified by a stub
-            if (key.DeclaringSyntaxReferences.Length == 0 && Stubs.StubOf(key) is IMethodSymbol stub)
+            if (key.DeclaringSyntaxReferences.Length == 0 && StubOrInherited(key) is IMethodSymbol stub)
                 return _contracts[key] = Contract.ReadStub(key, stub, _compilation);
             // a contract class's member, named in its own specifications, stands for the member it specifies
             if (SpecSymbols.ContractClassTarget(key.ContainingType) != null && SpecifiedMember(key) is IMethodSymbol target)
@@ -350,6 +357,21 @@ namespace CsVerify.Verifier
             c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, BaseMembers(key).Select(ContractOf));
             return c;
         }
+
+        /// <summary>
+        /// The stub of a library member, or else of the member it overrides (StreamWriter.Write(string) keeps
+        /// TextWriter.Write(string)'s contract: behavioural subtyping, trusted for the library's own overrides).
+        /// </summary>
+        private IMethodSymbol StubOrInherited(IMethodSymbol m)
+        {
+            for (var cur = m; cur != null && cur.DeclaringSyntaxReferences.Length == 0; cur = cur.OverriddenMethod?.OriginalDefinition)
+                if (Stubs.StubOf(cur) is IMethodSymbol stub) return stub;
+            return null;
+        }
+
+        /// <summary>Does this library member have a contract from a stub (its own, or the member's it overrides)?</summary>
+        internal bool HasStub(IMethodSymbol m) =>
+            m != null && (m.ReducedFrom ?? m).OriginalDefinition is IMethodSymbol key && key.DeclaringSyntaxReferences.Length == 0 && StubOrInherited(key) != null;
 
         private Dictionary<INamedTypeSymbol, INamedTypeSymbol> _contractClasses;
 

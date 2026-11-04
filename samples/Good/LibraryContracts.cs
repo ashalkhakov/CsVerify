@@ -2,6 +2,8 @@
 namespace Samples.Library
 {
     using System.Collections.Generic;
+    using System.IO;
+    using System.Text;
     using CsVerify;
     using CsVerify.Bcl;
 
@@ -68,6 +70,23 @@ namespace Samples.Library
             return zeroes;
         }
 
+        /// <summary>Writes a list as "[a, b, c]", built with a StringBuilder; the writer changes nothing else.</summary>
+        public static int WriteList(List<int> l, TextWriter w)
+        {
+            Spec.Ensures<int>(r => r >= 2 + l.Count);
+            var b = new StringBuilder();
+            b.Append('[');
+            for (int i = 0; i < l.Count; i++)
+            {
+                Spec.Invariant(0 <= i && i <= l.Count && b.Length >= 1 + i);
+                if (i > 0) b.Append(", ");
+                b.Append(l[i]);
+            }
+            b.Append(']');
+            w.WriteLine(b.ToString());
+            return b.Length;
+        }
+
         /// <summary>Moves the last element of one list to another: only those two change (Spec.Modifies).</summary>
         public static void MoveLast(List<int> from, List<int> to)
         {
@@ -115,7 +134,7 @@ namespace Samples.Library
             Spec.Assert(h.ContainsKey(values[1]));
             var arr = a.ToArray();
             Spec.Assert(arr.Length == 3);
-            return unchecked(Max(a) + b[0] + h.Count + ValueOf("k=v").Length + Sum(b) + arr.Length); // 4 + 9 + 2 + 1 + 9 + 3
+            return unchecked(Max(a) + b[0] + h.Count + ValueOf("k=v").Length + Sum(b) + arr.Length + WriteList(b, new StringWriter())); // 4 + 9 + 2 + 1 + 9 + 3 + "[9]".Length
         }
     }
 }

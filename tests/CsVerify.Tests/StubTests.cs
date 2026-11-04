@@ -88,6 +88,37 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void StringBuilders_TrackTheirLength()
+        {
+            const string sb = "System.Text.StringBuilder";
+            Assert.Empty(Errors("M", "static string M(string name) { Spec.Ensures<string>(r => r.Length == name.Length + 2); var b = new " + sb + "(); b.Append('<').Append(name).Append('>'); return b.ToString(); }"));
+            Assert.Empty(Errors("M", "static void M(" + sb + " b) { Spec.Modifies(ObjSet.Of(b)); b.Clear().Append(\"ab\"); Spec.Assert(b.Length == 2); b.Append(42); Spec.Assert(b.Length > 2); }"));
+            Assert.Empty(Errors("M", "static void M(" + sb + " b, List<int> l) { Spec.Requires(l.Count == 1); Spec.Modifies(ObjSet.Of(b)); b.Append(1); Spec.Assert(l.Count == 1); }"));
+            Assert.Equal(new[] { "CSV1001" }, Errors("M", "static char M(" + sb + " b) => b[0];"));
+            Assert.Equal(new[] { "CSV1001" }, Errors("M", "static void M(" + sb + " b) { Spec.Modifies(ObjSet.Of(b)); b.Remove(0, 1); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(" + sb + " b, object o) { Spec.Modifies(ObjSet.Of(b)); b.Clear().Append(o); Spec.Assert(b.Length > 0); }"));
+        }
+
+        [Fact]
+        public void TextWriters_ChangeNothingModeled()
+        {
+            // a write keeps arrays, fields and lists, through TextWriter and a library override (StreamWriter)
+            const string box = "public sealed class Box { public int V; } ";
+            var r = Verify(box + "public static class C { " +
+                           "static void M(System.IO.TextWriter w, int[] a, Box b) { Spec.Requires(a.Length == 1 && a[0] == 4 && b.V == 3); w.Write(\"x\"); w.WriteLine(a[0]); Spec.Assert(a[0] == 4 && b.V == 3); } " +
+                           "static void N(System.IO.StreamWriter w, List<int> l) { Spec.Requires(l.Count == 2); w.Write(\"hi\"); Spec.Assert(l.Count == 2); } " +
+                           "static void Bad(System.IO.TextWriter w, char[] c) { w.Write(c, 1, 2); } }");
+            Assert.Empty(r.Errors("M"));
+            Assert.Empty(r.Errors("N"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Bad"));
+            // a writer of yours may do anything its override does: that is not forgotten
+            var mine = Verify(box + "public sealed class Noisy : System.IO.TextWriter { public Box Log = new Box(); " +
+                              "public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8; public override void Write(string? value) { Log.V = 1; } } " +
+                              "public static class C { static void M(System.IO.TextWriter w, Box b) { Spec.Requires(b.V == 3); w.Write(\"x\"); Spec.Assert(b.V == 3); } }");
+            Assert.Equal(new[] { "CSV1004" }, mine.Errors("M"));
+        }
+
+        [Fact]
         public void Dictionaries_StringsAndParsing()
         {
             Assert.Empty(Errors("M", "static int M(int x) { Spec.Requires(x < 100); var d = new Dictionary<int, int>(); d[x] = 10; d[x + 1] = 20; Spec.Assert(d.ContainsKey(x) && d.Count == 2 && d[x + 1] == 20); " +

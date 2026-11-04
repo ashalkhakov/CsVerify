@@ -827,6 +827,7 @@ namespace CsLemon
             {
                 if (n < 0)
                 {
+                    Checks.That(z.Length + n >= 0); /* (C: assert( used>=0 )) */
                     z.Length = checked(z.Length + n);
                 }
                 n = zText.Length - zOff;

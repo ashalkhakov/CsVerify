@@ -92,7 +92,7 @@ The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined.
 8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
    - a `goto` into the middle of a loop (a cycle with two entries), `await foreach`, and hitting the path limit;
    - fields of library classes, a struct held in a class's field written in place (`o.p.X = 1`), and a struct method other than a constructor that writes `this`;
-   - in specifications, library properties that may change and have no `[Pure]` stub (`StringBuilder.Length` is not a function of its object). Read in code, each is a value of its own, of its declared type (a CSV1900 warning). Properties with code in the sources are calls (see [Object-oriented code](objects.md#object-oriented-code)), and so are stubbed ones (`List<T>.Count`);
+   - in specifications, library properties that may change and have no `[Pure]` stub (`MemoryStream.Position` is not a function of its object). Read in code, each is a value of its own, of its declared type (a CSV1900 warning). Properties with code in the sources are calls (see [Object-oriented code](objects.md#object-oriented-code)), and so are stubbed ones (`List<T>.Count`);
    - assignments to anything but locals, parameters, array elements and heap fields;
    - `ref` locals bound to anything but locals, parameters and array elements, or rebound inside a loop; passing fields by `ref`/`in`; an array element by reference to a callee that may touch arrays (see *Calls*);
    - other unsupported operations.

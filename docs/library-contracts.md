@@ -82,6 +82,11 @@ public static class ListContracts<T>
 - **Arrays.** A stubbed member that may write arrays (one it is handed) writes only the arrays its `Spec.Modifies`
   names: `Array.Fill(a, 0)` leaves every other array as it was. A library method without a stub, handed an array, may
   still write any array.
+- **Virtual members.** A stub may specify a virtual or abstract member (`TextWriter.Write`). A call through it gets the
+  stub's contract and effects, plus whatever the overrides in your sources may do (a `TextWriter` subclass of yours
+  that writes a field). Your overrides inherit the stub's contract, and are checked against it like any override
+  ([Object-oriented code](objects.md#object-oriented-code)). The library's own overrides (`StreamWriter.Write`) keep
+  the contract of the member they override: trusted, like the rest.
 - **Fresh results.** A postcondition `Spec.Fresh(r)` makes a returned array a new one, distinct from every array in
   scope (`list.ToArray()`).
 - **`[Pure]` stubs** may be used in specifications (`l.Count`, `l[i]`, `d.ContainsKey(k)`, `string.IsNullOrEmpty(s)`).
@@ -126,6 +131,8 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 | `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `Insert`, `AddRange` (keeps the elements, grows), `RemoveAt`, `RemoveRange`, `Clear`, `Reverse`, `Sort` (frame and count), `ToArray`, `GetRange`, `IndexOf` (its range), `GetEnumerator`; `foreach` (below) |
 | `Array` | the arrays' contents (built in) | `Empty`, `Fill` (whole and a range), `Reverse<T>`, `Copy` (bounds, the frame, and the destination's other elements), `Resize` (the new length), `IndexOf<T>` (its range), `Sort<T>` (the frame) |
 | `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructor, `Count`, `ContainsKey`, the indexer (get and set), `Add`, `Remove`, `TryGetValue` |
+| `StringBuilder` | `Size()` (its `Length`; the characters are not modeled) | constructors, `Length` (get and set), the indexer (its range), `Append` (`char`, a repeated `char`, `string`, part of a `string`, `StringBuilder`, `int`, `long`, `object`), `AppendLine`, `Insert(int, string)`, `Remove`, `Clear`, `ToString` (whole and a range): each `Append` returns the builder |
+| `TextWriter` | | `Write`, `WriteLine` (for `string`, `char`, `int`, `long`, `bool`, `object`, format strings, a `char[]` range) and `Flush`: they change nothing modeled |
 | `string` | its `Length` (built in) | `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith`, `EndsWith`, `Contains`, `IndexOf(char)`, `LastIndexOf(char)`, `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
 | `int` | | `Parse(string)`, `TryParse(string, out int)` |
 | `Math` | | `Clamp` and `Sign` for `int` and `long` |

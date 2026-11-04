@@ -28,6 +28,7 @@
   - `Dictionary` keys are compared as the verifier compares values of their type. That is the dictionary's own comparison for integers, enums and other values, and for classes with reference equality, but not for strings (compared by contents in .NET, by reference here) or for classes that override `Equals`, nor with a custom comparer;
   - running out of memory is not modelled: a list can grow without bound (its `Size()` is a mathematical integer), as in Dafny;
   - model state over strings never changes (they are immutable);
+  - a library class's overrides of a stubbed member (`StreamWriter.Write`) keep its contract, and a `TextWriter`'s writes change nothing the verifier models;
   - `List<T>.Enumerator.Dispose` is taken to do nothing, and a `foreach` over a list to see the list as it was when the loop began.
 
 **Unsupported constructs**

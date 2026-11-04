@@ -196,7 +196,7 @@ namespace CsVerify.Verifier
                     {
                         ExpressionSyntax access = pe.Parent is MemberAccessExpressionSyntax pm && pm.Name == pe ? pm : pe;
                         var (read, write) = Usage(access);
-                        if (read && sp.GetMethod != null && _engine.Stubs.StubOf(sp.GetMethod) != null) AddCallee(d, sp.GetMethod);
+                        if (read && sp.GetMethod != null && _engine.HasStub(sp.GetMethod)) AddCallee(d, sp.GetMethod);
                         if (write && sp.SetMethod != null) AddCallee(d, sp.SetMethod);
                         break;
                     }
@@ -227,7 +227,7 @@ namespace CsVerify.Verifier
                 }
             // (and the stubbed members its contract names: list.Count)
             foreach (var name in stub.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
-                if (stub.Model.GetSymbolInfo(name).Symbol is IPropertySymbol p && p.GetMethod != null && _engine.Stubs.StubOf(p.GetMethod) != null)
+                if (stub.Model.GetSymbolInfo(name).Symbol is IPropertySymbol p && p.GetMethod != null && _engine.HasStub(p.GetMethod))
                     AddCallee(d, p.GetMethod);
         }
 
