@@ -89,6 +89,7 @@ The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined.
    `[GhostFunction]` bodies are verified too, for this.
 8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
    - a `goto` into the middle of a loop (a cycle with two entries), `await foreach`, and hitting the path limit;
+   - an async method of the program called without being awaited at once, and async lemmas or `[Pure]` functions (see [Async and concurrency](semantics.md#async-and-concurrency));
    - fields of library classes, a struct held in a class's field written in place (`o.p.X = 1`), and a struct method other than a constructor that writes `this`;
    - in specifications, library properties that may change (`List<T>.Count` is not a function of its object). Read in code, each is a value of its own, of its declared type (a CSV1900 warning); properties with code in the sources are calls (see [Object-oriented code](objects.md#object-oriented-code));
    - assignments to anything but locals, parameters, array elements and heap fields;

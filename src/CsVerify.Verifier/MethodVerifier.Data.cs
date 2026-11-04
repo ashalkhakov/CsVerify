@@ -281,6 +281,7 @@ namespace CsVerify.Verifier
             SetNewObjectFields(f, obj, oc.Type, ctor, pre != null ? CalleeModifies(callee, pre, f, oc.Syntax) : null);
             if (pre != null) AllocAfterCall(f);
             if (ctor != null) CallMayThrow(callee ?? _engine.ContractOf(ctor), null, args, oc.Arguments, f, pre);
+            if (ctor != null && RunsCode(ctor)) HavocClosureLocals(f); // (a delegate it was handed may write them)
             if (pre != null)
             {
                 var post = pre.Clone();

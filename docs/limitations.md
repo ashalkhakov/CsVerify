@@ -2,6 +2,7 @@
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers** are bounded by default (see [Bounded integers](semantics.md#bounded-integers)). `--no-overflow` makes them mathematical, as ATS's constraint solver does, which is unsound where code can overflow.
+- **Threads.** A method is proved correct for runs where no other thread writes the state it uses while it runs (see [Async and concurrency](semantics.md#async-and-concurrency)). Races, deadlocks and lock-free code are not covered, and an async method of the program must be awaited where it is called.
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws need not meet the postcondition, only `Spec.EnsuresOnThrow` clauses. Handlers are verified (see Exceptions). Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014), and so never reach a handler.
 - **Mutable objects.**
   - **Dynamic frames.**
@@ -28,7 +29,7 @@
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
 - Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, non-pure calls in specifications, the elements of a `foreach` over a library collection, a string or a span.
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
-- Not verified as separate units: local functions and lambdas.
+- Not verified as separate units: local functions and lambdas. The method's locals they write are forgotten after every call and at every `await`.
 
 **Completeness limits** (true things that may not be proved)
 - A new array is known to differ from the arrays in local variables and fields where it is created, not from arrays held elsewhere (inside other arrays).

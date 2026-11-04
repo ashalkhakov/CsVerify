@@ -160,7 +160,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [How it works](docs/how-it-works.md): the analyzers, and how the verifier turns code into verification conditions.
 - [Data types and objects](docs/objects.md): data types and invariants, mutable and owned objects, predicates,
   dynamic frames, object-oriented code.
-- [Integers, exceptions, floating point and null](docs/semantics.md).
+- [Integers, exceptions, async, floating point and null](docs/semantics.md).
 - [Proof erasure](docs/erasure.md).
 - [Running the verifier](docs/running.md): the command line, MSBuild, diagnostics.
 - [CI](docs/ci.md): GitHub Actions, Azure DevOps, with Tarp; building and releasing CsVerify.
