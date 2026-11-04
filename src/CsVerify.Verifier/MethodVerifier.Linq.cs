@@ -19,11 +19,16 @@ namespace CsVerify.Verifier
         private static bool IsEnumerableMethod(IMethodSymbol m) => m.ContainingType?.ToDisplayString() == "System.Linq.Enumerable";
 
         /// <summary>The lambda of a predicate argument, if it is one this can inline (a pure expression of its parameter).</summary>
-        private IOperation PureLambdaBody(IOperation arg, out IParameterSymbol parameter)
+        private IOperation PureLambdaBody(IOperation arg, out IParameterSymbol parameter) => PureLambdaBody(arg, out parameter, out var index) is IOperation b && index == null ? b : null;
+
+        /// <summary>As above, for a lambda that may also take the element's index (Select((x, i) => ...)).</summary>
+        private IOperation PureLambdaBody(IOperation arg, out IParameterSymbol parameter, out IParameterSymbol index)
         {
             parameter = null;
+            index = null;
             var target = (arg as IDelegateCreationOperation)?.Target as IAnonymousFunctionOperation;
-            if (target == null || target.Symbol.Parameters.Length != 1 || target.Body.Operations.Length != 1 ||
+            if (target == null || target.Symbol.Parameters.Length < 1 || target.Symbol.Parameters.Length > 2 ||
+                target.Symbol.Parameters.Length == 2 && target.Symbol.Parameters[1].Type.SpecialType != SpecialType.System_Int32 || target.Body.Operations.Length != 1 ||
                 !(target.Body.Operations[0] is IReturnOperation ret) || ret.ReturnedValue == null) return null;
             foreach (var op in ret.ReturnedValue.DescendantsAndSelf())
             {
@@ -43,20 +48,66 @@ namespace CsVerify.Verifier
                         return null;
                     case IPropertyReferenceOperation pr when !(FieldEffects.IsHeapField(pr.Property) || IsStructMember(pr.Property) ||
                                                                pr.Instance != null && IsSequence(pr.Instance.Type) ||
+                                                               pr.Property.Name == "Key" && pr.Property.ContainingType?.Name == "IGrouping" ||
                                                                IsNullableValue(pr.Property.ContainingType) || IsListInterface(pr.Property.ContainingType) ||
                                                                _engine.HasStub(pr.Property.GetMethod) && _engine.Stubs.IsPureMember(pr.Property.GetMethod)):
                         return null;
                 }
             }
             parameter = target.Symbol.Parameters[0];
+            if (target.Symbol.Parameters.Length == 2) index = target.Symbol.Parameters[1];
             return ret.ReturnedValue;
+        }
+
+        /// <summary>
+        /// A function of 0..n defined one step at a time: acc(0) = init, acc(j + 1) = step(acc(j), j), under the
+        /// sequence's condition. Each step is a quantified axiom triggered by acc(j + 1) (unfolding back from acc(n)) or
+        /// by acc(j) (forward from acc(0), for a length the solver knows only as a value, not as a successor term).
+        /// </summary>
+        private System.Func<Term, Term> Recur(string hint, Term n, Term init, System.Func<Term, Term, Term> step, Term known)
+        {
+            var name = hint + "#" + _materialized++;
+            Term Acc(Term j) => _z3.Apply(name, Sort.Int, new[] { j });
+            AssumeSide(T.Implies(known, T.And(T.Eq(Acc(T.Int(0)), init),
+                OverIndices("forall", T.Int(0), n, j => T.Eq(Acc(T.Add(j, T.Int(1))), step(Acc(j), j)), pattern: j => Acc(T.Add(j, T.Int(1))), pattern2: Acc))));
+            return Acc;
+        }
+
+        /// <summary>
+        /// The elements of a sequence that pass a test, in order and all of them: a prefix count c (m = c(n) of them),
+        /// the match at j being element c(j), the elements matches at increasing indices. Also the map to the source.
+        /// </summary>
+        private Sequence Filter(Sequence src, System.Func<Term, Term> test, ITypeSymbol elementType, out System.Func<Term, Term> sourceIndex)
+        {
+            int id = _materialized++;
+            var m = _z3.Fresh("matches", Sort.Int);
+            Term Idx(Term i) => _z3.Apply("filter.idx#" + id, Sort.Int, new[] { i });
+            var c = Recur("filter.count", src.Length, T.Int(0), (acc, j) => T.Add(acc, T.Ite(test(j), T.Int(1), T.Int(0))), src.Known);
+            var facts = T.And(
+                T.Eq(m, c(src.Length)), T.Le(T.Int(0), m), T.Le(m, src.Length),
+                OverIndices("forall", T.Int(0), src.Length, j => T.And(T.Le(T.Int(0), c(j)), T.Le(c(j), j), T.Implies(test(j), T.And(T.Lt(c(j), m), T.Eq(Idx(c(j)), j))))),
+                OverIndices("forall", T.Int(0), m, i => T.And(T.Le(T.Int(0), Idx(i)), T.Lt(Idx(i), src.Length), test(Idx(i)))),
+                OverIndices("forall", T.Int(0), T.Sub(m, T.Int(1)), i => T.Lt(Idx(i), Idx(T.Add(i, T.Int(1))))));
+            AssumeSide(T.Implies(src.Known, facts));
+            sourceIndex = Idx;
+            return new Sequence { Length = m, Element = i => src.Element(Idx(i)), ElementType = elementType, Known = src.Known };
+        }
+
+        /// <summary>EqualityComparer&lt;T&gt;.Default's equality of two elements (Spec.Equal), with a relation for one read.</summary>
+        private System.Func<Term, Term, Term> EqualityOf(ITypeSymbol t)
+        {
+            if (KnownEquality(t)) return (a, b) => T.Eq(T.Coerce(a, Sort.Int), T.Coerce(b, Sort.Int));
+            var epoch = _z3.Fresh("equals", Sort.Int);
+            var name = "equals:" + Resolve(t).ToDisplayString();
+            return (a, b) => _z3.Apply(name, Sort.Bool, new[] { T.Coerce(a, Sort.Int), T.Coerce(b, Sort.Int), epoch });
         }
 
         /// <summary>
         /// A condition on the elements of [lo, hi) as a quantifier over their index: the body is evaluated for a bound
         /// variable, without obligations (they are checked where the lambda is), its side facts quantified the same way.
         /// </summary>
-        private Term OverIndices(string quantifier, Term lo, Term hi, System.Func<Term, Term> body, System.Func<Term, Term> pattern = null)
+        private Term OverIndices(string quantifier, Term lo, Term hi, System.Func<Term, Term> body, System.Func<Term, Term> pattern = null,
+                                 System.Func<Term, Term> pattern2 = null)
         {
             var name = _z3.FreshName("k");
             var bound = new Term(name, Sort.Int);
@@ -74,7 +125,7 @@ namespace CsVerify.Verifier
                 var facts = T.And(collected.Where(x => x.S.Contains(name)).ToArray());
                 if (facts != T.True) AssumeSide(T.Quant("forall", name, T.Implies(range, facts)));
                 if (pattern != null)
-                    return new Term($"(forall (({name} Int)) (! {T.Implies(range, b)} :pattern ({pattern(bound)})))", Sort.Bool);
+                    return new Term($"(forall (({name} Int)) (! {T.Implies(range, b)} :pattern ({pattern(bound)}){(pattern2 != null ? $" :pattern ({pattern2(bound)})" : "")}))", Sort.Bool);
                 return quantifier == "forall" ? T.Quant("forall", name, T.Implies(range, b)) : T.Quant("exists", name, T.And(range, b));
             }
             finally
@@ -130,16 +181,55 @@ namespace CsVerify.Verifier
             public IParameterSymbol Parameter;
             public Term Count;                // Take's and Skip's
             public ITypeSymbol ElementType;
+            public IParameterSymbol Index;    // Select((x, i) => ...)'s index
         }
+
+        /// <summary>
+        /// GroupBy's groups, read when the result is enumerated: a group is an element of the result, a term
+        /// "(group#id g)", whose key is its first element's key and whose elements are the source's with that key.
+        /// </summary>
+        private sealed class Groups
+        {
+            public string Name;
+            public Sequence Source;
+            public System.Func<Term, Term> Key;        // of a source index
+            public System.Func<Term, Term, Term> Same; // keys equal
+            public System.Func<Term, Term> First;      // a group's first source index
+            public ITypeSymbol KeyType, ElementType;
+        }
+
+        private readonly Dictionary<string, Groups> _groups = new Dictionary<string, Groups>(System.StringComparer.Ordinal);
+
+        /// <summary>A group term's groups and its index in them, if it is one.</summary>
+        private (Groups groups, Term g)? GroupOf(Term t)
+        {
+            foreach (var kv in _groups)
+                if (t.S.StartsWith("(" + kv.Key + " ", System.StringComparison.Ordinal))
+                    return (kv.Value, new Term(t.S.Substring(kv.Key.Length + 2, t.S.Length - kv.Key.Length - 3), Sort.Int));
+            return null;
+        }
+
+        /// <summary>IGrouping.Key of a group this made: its first element's key.</summary>
+        private Term GroupKey(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
+        {
+            if (pr.Instance == null || pr.Property.Name != "Key" || pr.Property.ContainingType?.Name != "IGrouping") return null;
+            var x = T.Coerce(Eval(pr.Instance, f, spec), Sort.Int);
+            if (!(GroupOf(x) is (Groups gs, Term g))) return null;
+            return T.Coerce(gs.Key(gs.First(g)), SortOf(pr.Type));
+        }
+
+        private Sequence GroupSequence(Groups gs, Term g) =>
+            Filter(gs.Source, j => gs.Same(gs.Key(j), gs.Key(gs.First(g))), gs.ElementType, out _);
 
         private readonly Dictionary<string, View> _views = new Dictionary<string, View>(System.StringComparer.Ordinal);
         private int _materialized;
 
         /// <summary>A pure lambda's body for one element, as a value of its type (in spec mode, without obligations).</summary>
-        private Term ApplyValue(IOperation body, IParameterSymbol parameter, Term element, Frame f)
+        private Term ApplyValue(IOperation body, IParameterSymbol parameter, Term element, Frame f, IParameterSymbol index = null, Term at = null)
         {
             var inner = f.Clone();
             inner.Vars[parameter] = element;
+            if (index != null) inner.Vars[index] = at;
             bool wasCode = _codeMode;
             _codeMode = false;
             _foreignSpec++;
@@ -167,7 +257,80 @@ namespace CsVerify.Verifier
             switch (v.Kind)
             {
                 case "Select":
-                    return new Sequence { Length = src.Length, Element = i => ApplyValue(v.Lambda, v.Parameter, src.Element(i), f), ElementType = v.ElementType, Known = src.Known };
+                    return new Sequence { Length = src.Length, Element = i => ApplyValue(v.Lambda, v.Parameter, src.Element(i), f, v.Index, i), ElementType = v.ElementType, Known = src.Known };
+                case "Distinct":
+                {
+                    // the first occurrence of each value, in order
+                    var eq = EqualityOf(v.ElementType);
+                    return Filter(src, j => OverIndices("forall", T.Int(0), j, i => T.Not(eq(src.Element(i), src.Element(j)))), v.ElementType, out _);
+                }
+                case "OrderBy":
+                case "OrderByDescending":
+                {
+                    // a stable permutation: element i is source element p(i), p a bijection (q its inverse), in key order;
+                    // equal keys keep the source's order. (Keys are ordered only if they are integers.)
+                    int id = _materialized++;
+                    Term Pi(Term i) => _z3.Apply("order.p#" + id, Sort.Int, new[] { i });
+                    Term Qi(Term j) => _z3.Apply("order.q#" + id, Sort.Int, new[] { j });
+                    var n = src.Length;
+                    Term Key(Term j) => T.Coerce(ApplyValue(v.Lambda, v.Parameter, src.Element(j), f), Sort.Int);
+                    bool ordered = IsIntegral(v.Lambda.Type) || v.Lambda.Type?.TypeKind == TypeKind.Enum || v.Lambda.Type?.SpecialType == SpecialType.System_Char;
+                    ordered &= v.Lambda.Type != null && SortOf(v.Lambda.Type) == Sort.Int;
+                    bool down = v.Kind == "OrderByDescending";
+                    var facts = new List<Term>
+                    {
+                        OverIndices("forall", T.Int(0), n, i => T.And(T.Le(T.Int(0), Pi(i)), T.Lt(Pi(i), n), T.Eq(Qi(Pi(i)), i))),
+                        OverIndices("forall", T.Int(0), n, j => T.And(T.Le(T.Int(0), Qi(j)), T.Lt(Qi(j), n), T.Eq(Pi(Qi(j)), j))),
+                    };
+                    if (ordered)
+                        facts.Add(OverIndices("forall", T.Int(0), T.Sub(n, T.Int(1)), i =>
+                        {
+                            var a = Key(Pi(i)); var b = Key(Pi(T.Add(i, T.Int(1))));
+                            return T.And(down ? T.Ge(a, b) : T.Le(a, b), T.Implies(T.Eq(a, b), T.Lt(Pi(i), Pi(T.Add(i, T.Int(1))))));
+                        }));
+                    AssumeSide(T.Implies(src.Known, T.And(facts.ToArray())));
+                    return new Sequence { Length = n, Element = i => src.Element(Pi(i)), ElementType = v.ElementType, Known = src.Known };
+                }
+                case "SelectMany":
+                {
+                    // the inner lists one after another: offsets o(j), each element at an outer index and an index within
+                    Sequence Inner(Term j) => ListSequence(T.Coerce(ApplyValue(v.Lambda, v.Parameter, src.Element(j), f), Sort.Int), Unconverted(v.Lambda).Type, f);
+                    var o = Recur("selectmany.offset", src.Length, T.Int(0), (acc, j) => T.Add(acc, Inner(j).Length), src.Known);
+                    var n = o(src.Length);
+                    int id = _materialized++;
+                    Term Outer(Term i) => _z3.Apply("selectmany.outer#" + id, Sort.Int, new[] { i });
+                    AssumeSide(T.Implies(src.Known, OverIndices("forall", T.Int(0), n, i =>
+                        T.And(T.Le(T.Int(0), Outer(i)), T.Lt(Outer(i), src.Length), T.Le(o(Outer(i)), i), T.Lt(i, o(T.Add(Outer(i), T.Int(1))))))));
+                    // (and the other way: the elements of inner list j are at o(j) up to o(j + 1))
+                    AssumeSide(T.Implies(src.Known, T.And(
+                        OverIndices("forall", T.Int(0), src.Length, j => T.Le(o(j), o(T.Add(j, T.Int(1))))),
+                        Inverse())));
+                    Term Inverse()
+                    {
+                        // forall j, i: 0 <= j < length && o(j) <= i < o(j + 1) ==> outer(i) == j, triggered by outer(i) with o(j)
+                        var jn = _z3.FreshName("k"); var inn = _z3.FreshName("k");
+                        var j = new Term(jn, Sort.Int); var i = new Term(inn, Sort.Int);
+                        var guard = T.And(T.Le(T.Int(0), j), T.Lt(j, src.Length), T.Le(o(j), i), T.Lt(i, o(T.Add(j, T.Int(1)))));
+                        return new Term($"(forall (({jn} Int) ({inn} Int)) (! {T.Implies(guard, T.Eq(Outer(i), j))} :pattern ({Outer(i)} {o(j)})))", Sort.Bool);
+                    }
+                    var known = T.And(src.Known, OverIndices("forall", T.Int(0), src.Length, j => Inner(j).Known));
+                    return new Sequence { Length = n, Element = i => Inner(Outer(i)).Element(T.Sub(i, o(Outer(i)))), ElementType = v.ElementType, Known = known };
+                }
+                case "GroupBy":
+                {
+                    // the groups in the order their keys first appear (a key's first occurrence), each its key's elements
+                    var keyType = v.Lambda.Type;
+                    var eq = EqualityOf(keyType);
+                    Term Key(Term j) => ApplyValue(v.Lambda, v.Parameter, src.Element(j), f);
+                    var firsts = Filter(src, j => OverIndices("forall", T.Int(0), j, i => T.Not(eq(Key(i), Key(j)))), v.ElementType, out var first);
+                    var name = "group#" + _materialized++;
+                    Term Group(Term g) => _z3.Apply(name, Sort.Int, new[] { g });
+                    var probe = Group(T.Int(0)).S;
+                    var head = probe.Substring(1, probe.IndexOf(' ') - 1);
+                    _groups[head] = new Groups { Name = head, Source = src, Key = Key, Same = eq, First = first, KeyType = keyType, ElementType = src.ElementType };
+                    AssumeSide(OverIndices("forall", T.Int(0), firsts.Length, g => NotNull(Group(g))));
+                    return new Sequence { Length = firsts.Length, Element = Group, ElementType = v.ElementType, Known = src.Known };
+                }
                 case "Take":
                 {
                     var n = T.Ite(T.Le(v.Count, T.Int(0)), T.Int(0), T.Ite(T.Lt(v.Count, src.Length), v.Count, src.Length));
@@ -209,6 +372,7 @@ namespace CsVerify.Verifier
             var type = Unconverted(sourceOp).Type;
             var x = T.Coerce(Eval(sourceOp, f, spec), Sort.Int);
             if (_views.TryGetValue(x.S, out var view)) return Materialize(view, f);
+            if (GroupOf(x) is (Groups gs, Term g)) return GroupSequence(gs, g);
             if (!Indexable(type)) return null;
             Deref(sourceOp, x, sourceOp.Syntax);
             return ListSequence(x, type, f);
@@ -218,7 +382,9 @@ namespace CsVerify.Verifier
         private Term LazyLinqCall(IInvocationOperation inv, IInvocationOperation original, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
-            if (!(m.Name == "Select" || m.Name == "Where" || m.Name == "Take" || m.Name == "Skip") || m.Parameters.Length != 2) return null;
+            bool unary = m.Name == "Distinct" && m.Parameters.Length == 1;
+            if (!unary && (!(m.Name == "Select" || m.Name == "Where" || m.Name == "Take" || m.Name == "Skip" || m.Name == "OrderBy" ||
+                             m.Name == "OrderByDescending" || m.Name == "SelectMany" || m.Name == "GroupBy") || m.Parameters.Length != 2)) return null;
             var sourceOp = inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value;
             var type = Unconverted(sourceOp).Type;
             var view = new View { Kind = m.Name, ElementType = ((INamedTypeSymbol)inv.Type).TypeArguments[0] };
@@ -226,11 +392,12 @@ namespace CsVerify.Verifier
             {
                 if (m.Parameters[1].Type.SpecialType != SpecialType.System_Int32) return null;
             }
-            else
+            else if (!unary)
             {
                 var lambdaArg = (original ?? inv).Arguments.First(a => a.Parameter.Ordinal == 1).Value;
-                view.Lambda = PureLambdaBody(lambdaArg, out view.Parameter);
-                if (view.Lambda == null) return null; // (Select with an index, or an impure lambda: the library's)
+                view.Lambda = m.Name == "Select" ? PureLambdaBody(lambdaArg, out view.Parameter, out view.Index) : PureLambdaBody(lambdaArg, out view.Parameter);
+                if (view.Lambda == null) return null; // (an impure lambda: the library's)
+                if (m.Name == "SelectMany" && !Indexable(Unconverted(view.Lambda).Type)) return null; // (inner sequences the verifier reads)
             }
             var x = T.Coerce(Eval(sourceOp, f, spec), Sort.Int);
             if (_views.TryGetValue(x.S, out var inner)) view.Inner = inner;
@@ -253,9 +420,15 @@ namespace CsVerify.Verifier
             var call = _model.GetOperation(op.Syntax) as IInvocationOperation ?? op as IInvocationOperation;
             for (var c = call; ; )
             {
-                if (c == null || !IsEnumerableMethod(c.TargetMethod) || c.TargetMethod.Parameters.Length != 2) return null;
+                if (c == null && op.Type is INamedTypeSymbol grouping && grouping.Name == "IGrouping" && grouping.TypeArguments.Length == 2)
+                    return grouping.TypeArguments[1]; // (a group: read if it is one this made)
+                if (c == null || !IsEnumerableMethod(c.TargetMethod)) return null;
                 var name = c.TargetMethod.Name;
-                if (name == "Select" || name == "Where") { if (PureLambdaBody(c.Arguments.First(a => a.Parameter.Ordinal == 1).Value, out _) == null) return null; }
+                if (name == "Distinct" && c.TargetMethod.Parameters.Length == 1) { }
+                else if (c.TargetMethod.Parameters.Length != 2) return null;
+                else if (name == "Select") { if (PureLambdaBody(c.Arguments.First(a => a.Parameter.Ordinal == 1).Value, out _, out _) == null) return null; }
+                else if (name == "Where" || name == "OrderBy" || name == "OrderByDescending" || name == "SelectMany" || name == "GroupBy")
+                { if (PureLambdaBody(c.Arguments.First(a => a.Parameter.Ordinal == 1).Value, out _) == null) return null; }
                 else if (name != "Take" && name != "Skip") return null;
                 var source = Unconverted(c.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
                 if (Indexable(source.Type)) break;
@@ -268,7 +441,7 @@ namespace CsVerify.Verifier
         private Sequence ViewSequenceOf(Loop loop, Term view, Frame f)
         {
             if (f.ViewSequences.TryGetValue(loop.Id, out var known)) return (Sequence)known;
-            var seq = _views.TryGetValue(view.S, out var v) ? Materialize(v, f) : null;
+            var seq = _views.TryGetValue(view.S, out var v) ? Materialize(v, f) : GroupOf(view) is (Groups gs, Term g) ? GroupSequence(gs, g) : null;
             f.ViewSequences[loop.Id] = seq;
             return seq;
         }
@@ -303,7 +476,7 @@ namespace CsVerify.Verifier
             var name = m.Name;
             if (listMethod) name = name switch { "Find" => "FirstOrDefault", "Exists" => "Any", "TrueForAll" => "All", _ => name };
             if (!(name == "Count" || name == "Any" || name == "All" || name == "Contains" || name == "ElementAt" || name.StartsWith("First") ||
-                  name.StartsWith("Last") || name == "FindIndex" || name == "ToArray" || name == "ToList")) return null;
+                  name.StartsWith("Last") || name == "FindIndex" || name == "ToArray" || name == "ToList" || name == "Sum" || name == "Min" || name == "Max")) return null;
 
             var seq = SequenceOf(sourceOp, f, spec);
             if (seq == null) return null;
@@ -314,6 +487,47 @@ namespace CsVerify.Verifier
             // facts that hold of a List or an array, and of a library collection (not of the program's own lists)
             void Fact(Term t) => AssumeSide(T.Implies(seq.Known, t));
             Term Default() => SortOf(inv.Type) == Sort.Bool ? T.False : IsFloating(inv.Type) ? Zero(SortOf(inv.Type)) : T.Int(0);
+
+            // Sum, Min and Max (of the elements, or of a selector's values): by a running total, minimum or maximum
+            if (name == "Sum" || name == "Min" || name == "Max")
+            {
+                if (m.Parameters.Length != (takesPredicate ? 2 : 1)) return null;
+                var valueType = inv.Type;
+                if (IsNullableValue(valueType) || !(IsIntegral(valueType) || IsFloating(valueType))) return null; // (nullable sums, comparers: not modeled)
+                Term Value(Term i) => T.Coerce(takesPredicate ? ApplyValue(predicate, parameter, Elem(i), f) : Elem(i), SortOf(valueType));
+                var sort = SortOf(valueType);
+                if (IsIntegral(valueType) && sort != Sort.Int) return null; // (bit-vector integers: not modeled)
+                if (IsFloating(valueType))
+                {
+                    // (floating point sums and NaN ordering: not modeled, the result is unknown)
+                    if (name != "Sum")
+                        Require(T.Implies(seq.Known, T.Lt(T.Int(0), n)), "CSV1001", inv.Syntax, $"'{inv.Syntax}': the sequence might be empty (it would throw InvalidOperationException)");
+                    return Unknown(valueType, name.ToLowerInvariant());
+                }
+                if (name == "Sum")
+                {
+                    var acc = Recur("sum", n, T.Int(0), (a, j) => T.Add(a, Value(j)), seq.Known);
+                    var (lo, hi) = RangeOf(valueType);
+                    // checked: a partial sum out of range throws OverflowException. (As a recurrence of its own, so that
+                    // the obligation is a ground term the solver unfolds, not a quantifier over the running sum.)
+                    var ok = Recur("sum.ok", n, T.Int(1), (a, j) => T.Ite(T.And(T.Eq(a, T.Int(1)), T.InRange(acc(T.Add(j, T.Int(1))), lo, hi)), T.Int(1), T.Int(0)), seq.Known);
+                    AssumeSide(T.Implies(seq.Known, OverIndices("forall", T.Int(0), n, j => T.Implies(T.Eq(ok(T.Add(j, T.Int(1))), T.Int(1)), T.Eq(ok(j), T.Int(1))))));
+                    Require(T.Implies(seq.Known, T.Eq(ok(n), T.Int(1))), "CSV1001", inv.Syntax,
+                        $"'{inv.Syntax}' might overflow (it would throw OverflowException)");
+                    var r = _z3.Fresh("sum", sort);
+                    Fact(T.Eq(r, acc(n)));
+                    return r;
+                }
+                Require(T.Implies(seq.Known, T.Lt(T.Int(0), n)), "CSV1001", inv.Syntax, $"'{inv.Syntax}': the sequence might be empty (it would throw InvalidOperationException)");
+                bool min = name == "Min";
+                var best = Recur(name.ToLowerInvariant(), n, Value(T.Int(0)),
+                    (a, j) => T.Ite(min ? T.Lt(Value(j), a) : T.Lt(a, Value(j)), Value(j), a), seq.Known);
+                var result = _z3.Fresh(name.ToLowerInvariant(), sort);
+                Fact(T.Eq(result, best(n)));
+                Fact(T.And(OverIndices("forall", T.Int(0), n, j => min ? T.Le(result, Value(j)) : T.Le(Value(j), result)),
+                           OverIndices("exists", T.Int(0), n, j => T.Eq(result, Value(j)))));
+                return result;
+            }
 
             switch (name)
             {
@@ -346,7 +560,8 @@ namespace CsVerify.Verifier
                 {
                     var r = _z3.Fresh("count", Sort.Int);
                     AssumeSide(T.And(T.Le(T.Int(0), r), T.Le(r, n)));
-                    Fact(T.And(T.Eq(T.Eq(r, T.Int(0)), T.Not(OverIndices("exists", T.Int(0), n, P))), T.Eq(T.Eq(r, n), OverIndices("forall", T.Int(0), n, P))));
+                    var c = Recur("count", n, T.Int(0), (a, j) => T.Add(a, T.Ite(P(j), T.Int(1), T.Int(0))), seq.Known);
+                    Fact(T.And(T.Eq(r, c(n)), T.Eq(T.Eq(r, T.Int(0)), T.Not(OverIndices("exists", T.Int(0), n, P))), T.Eq(T.Eq(r, n), OverIndices("forall", T.Int(0), n, P))));
                     return r;
                 }
                 case "Contains" when !takesPredicate && m.Parameters.Length == 2:
@@ -388,6 +603,7 @@ namespace CsVerify.Verifier
                     }
                     else facts.Add(T.Eq(j, first ? T.Int(0) : T.Sub(n, T.Int(1))));
                     Fact(T.Implies(found, T.And(facts.ToArray())));
+                    if (!orDefault && GroupOf(Elem(j)) != null) return Elem(j); // (a group: the term its key and elements are read from)
                     var result = _z3.Fresh(name, SortOf(inv.Type));
                     var value = name == "FindIndex" ? T.Ite(found, j, T.Int(-1))
                         : orDefault ? T.Ite(found, T.Coerce(Elem(j), SortOf(inv.Type)), Default()) : T.Coerce(Elem(j), SortOf(inv.Type));

@@ -202,6 +202,12 @@ calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as
 sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
 it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
 
+`Sum`, `Min` and `Max` of `int` or `long` elements, or of a pure selector's values, are exact too: a running total,
+minimum or maximum, defined one element at a time. `Sum` checks its additions, as .NET does, so a partial sum out of
+range is reported (CSV1001, it would throw `OverflowException`); `Min` and `Max` of an empty sequence are reported (they
+throw `InvalidOperationException`). Over `double` or `float` the result is unknown (a sum's rounding and NaN's ordering
+are not modeled), but `Min` and `Max` still need a non-empty sequence. Nullable sums and comparers are library calls.
+
 **Lazy LINQ.** `Select`, `Where`, `Take` and `Skip` (with pure lambdas, over what the verifier reads or over each
 other) make views. A view is read when it is enumerated: by the eager methods above, `ToList`, `ToArray`, or a
 `foreach`. It reads its source as it is then, and runs its lambda then, on what it captures as it is then. So
@@ -209,6 +215,21 @@ other) make views. A view is read when it is enumerated: by the eager methods ab
 `Where`'s elements are the matching ones, in order and all of them: `a.Where(x => x > 5).Count()` is exact. A
 `foreach` over such a chain, whose loop changes no state, runs over the view like a foreach over an array. A view
 kept in a variable is known in its own method only.
+
+These make views too, read the same way:
+
+- `Select((x, i) => ...)` with the element's index.
+- `Distinct()`: the first occurrence of each value, in order, by `EqualityComparer<T>.Default` (as `Spec.Equal`).
+- `OrderBy` and `OrderByDescending`: a permutation of the source, stable, in key order where the key is an integer, a
+  char or an enum. For other keys (strings, which order by culture) only the permutation is known.
+- `SelectMany(x => x.Items)`, where the inner sequence is a List, an array or a list interface: the inner sequences one
+  after another.
+- `GroupBy(x => key)`: the groups in the order their keys first appear, each with its key (`g.Key`) and its elements,
+  the source's with that key, in order. A group can be enumerated, counted and read like a view, and a `foreach`
+  over the groups may contain one over each group.
+
+These model `System.Linq.Enumerable`, which runs in memory. `Queryable` (Entity Framework and other providers, which
+translate the query instead of running it) is not modeled: its methods are library calls.
 
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their

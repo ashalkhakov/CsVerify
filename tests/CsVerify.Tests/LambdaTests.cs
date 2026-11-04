@@ -112,6 +112,91 @@ public static class P
         }
 
         [Fact]
+        public void Aggregates_SumMinMax_AndAnExactCount()
+        {
+            var r = Harness.Verify(@"
+using System.Collections.Generic;
+using System.Linq;
+public static class P
+{
+    public static int Sum(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 2 && a[2] == 3); Spec.Ensures<int>(r => r == 6); return a.Sum(); }
+    public static int SumOf(List<int> l) { Spec.Requires(l.Count == 2 && l[0] == 4 && l[1] == 5); Spec.Ensures<int>(r => r == 18); return l.Sum(x => x * 2); }
+    public static int Min(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 4 && a[1] == -1 && a[2] == 9); Spec.Ensures<int>(r => r == -1); return a.Min(); }
+    public static int Max(int[] a) { Spec.Requires(a.Length > 0); Spec.Ensures<int>(r => Spec.Forall(0, a.Length, i => a[i] <= r)); return a.Max(); }
+    public static int MaxOf(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 3 && a[1] == 1); Spec.Ensures<int>(r => r == 2); return a.Max(x => x - 1); }
+    public static int CountP(int[] a) { Spec.Requires(a.Length == 4 && a[0] == 1 && a[1] == -6 && a[2] == 7 && a[3] == 0); Spec.Ensures<int>(r => r == 2); return a.Count(x => x > 0); }
+    public static int SumBounded(int[] a) { Spec.Requires(a.Length == 2 && 0 <= a[0] && a[0] < 10 && 0 <= a[1] && a[1] < 10); return a.Sum(); }
+    public static int Overflows(int[] a) => a.Sum();
+    public static int EmptyMin(List<int> l) => l.Min();
+}");
+            foreach (var m in new[] { "Sum", "SumOf", "Min", "Max", "MaxOf", "CountP", "SumBounded" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.Overflows"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.EmptyMin"));
+        }
+
+        [Fact]
+        public void Views_DistinctOrderBySelectManyGroupBy_AndSelectWithAnIndex()
+        {
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Collections.Generic;
+using System.Linq;
+public sealed class Box { public List<int> Items = new List<int>(); }
+public static class P
+{
+    public static int Indexed(int[] a) { Spec.Requires(a.Length == 3); Spec.Ensures<int>(r => r == a[2] + 2); return a.Select((x, i) => x + i).Last(); }
+    public static int Distinct(int[] a) { Spec.Requires(a.Length == 4 && a[0] == 1 && a[1] == 2 && a[2] == 1 && a[3] == 3); Spec.Ensures<int>(r => r == 3); return a.Distinct().Count(); }
+    public static int DistinctLast(List<int> l) { Spec.Requires(l.Count == 3 && l[0] == 5 && l[1] == 5 && l[2] == 5); Spec.Ensures<int>(r => r == 5); return l.Distinct().Last(); }
+    public static int Smallest(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 4 && a[1] == 2 && a[2] == 9); Spec.Ensures<int>(r => r == 2); return a.OrderBy(x => x).First(); }
+    public static int Largest(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 4 && a[1] == 2 && a[2] == 9); Spec.Ensures<int>(r => r == 9); return a.OrderByDescending(x => x).First(); }
+    public static int Sorted(int[] a)
+    {
+        int s = 0;
+        foreach (var x in a.OrderBy(y => y)) { s = x; }
+        return a.OrderBy(y => y).Count() - a.Length;
+    }
+    public static int Flat(List<Box> boxes)
+    {
+        Spec.Requires(boxes.Count == 2 && boxes[0] != null && boxes[1] != null && boxes[0] != boxes[1] && boxes[0].Items.Count == 1 && boxes[1].Items.Count == 2 && boxes[1].Items[1] == 7);
+        Spec.Ensures<int>(r => r == 7);
+        return boxes.SelectMany(b => b.Items).Last();
+    }
+    public static int FlatCount(List<Box> boxes)
+    {
+        Spec.Requires(boxes.Count == 2 && boxes[0] != null && boxes[1] != null && boxes[0] != boxes[1] && boxes[0].Items.Count == 1 && boxes[1].Items.Count == 2);
+        Spec.Ensures<int>(r => r == 3);
+        return boxes.SelectMany(b => b.Items).Count();
+    }
+    public static int Groups(int[] a) { Spec.Requires(a.Length == 4 && a[0] == 1 && a[1] == 2 && a[2] == 1 && a[3] == 4); Spec.Ensures<int>(r => r == 3); return a.GroupBy(x => x % 2 == 0 ? x : 1).Count(); }
+    public static int FirstKey(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 6 && a[1] == 3); Spec.Ensures<int>(r => r == 6); return a.GroupBy(x => x).First().Key; }
+    public static int Members(int[] a)
+    {
+        int s = 0;
+        foreach (var g in a.GroupBy(x => x % 3))
+            foreach (var x in g) { Spec.Assert(x % 3 == g.Key); s = x; }
+        return s;
+    }
+    public static int Keys(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 2 && a[1] == 2 && a[2] == 5); Spec.Ensures<int>(r => r == 5); return a.GroupBy(x => x).Select(g => g.Key).Last(); }
+    public static int GroupSize(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 2 && a[1] == 2 && a[2] == 5); Spec.Ensures<int>(r => r == 2); return a.GroupBy(x => x).First().Count(); }
+    public static int WrongGroup(int[] a)
+    {
+        int s = 0;
+        foreach (var g in a.GroupBy(x => x % 3))
+            foreach (var x in g) { Spec.Assert(x % 3 == 0); s = x; }
+        return s;
+    }
+    public static int EmptyOrdered(List<int> l) => l.OrderBy(x => x).First();
+    public static int WrongSort(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); Spec.Ensures<int>(r => r == 1); return a.OrderByDescending(x => x).First(); }
+}", overflow: false);
+            foreach (var m in new[] { "Indexed", "Distinct", "DistinctLast", "Smallest", "Largest", "Sorted", "Flat", "FlatCount", "Groups", "FirstKey", "Members", "Keys", "GroupSize" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.EmptyOrdered"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("P.WrongSort"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.WrongGroup"));
+        }
+
+        [Fact]
         public void ImpureLambdas_LeaveTheCallALibraryCall()
         {
             var r = Harness.Verify(@"

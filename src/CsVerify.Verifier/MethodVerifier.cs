@@ -361,7 +361,7 @@ namespace CsVerify.Verifier
                     case CommonForEachStatementSyntax fe:
                         // the iteration variables, and what the enumerator's methods do in each iteration
                         foreach (var l in ForEachLocals(fe)) loop.Havoc.Add(l);
-                        if (!IsArrayForEach(fe))
+                        if (!IsArrayForEach(fe) && !NestedViewForEach(fe))
                         {
                             var info = _model.GetForEachStatementInfo(fe);
                             foreach (var m in new[] { info.MoveNextMethod, info.CurrentProperty?.GetMethod }.Where(m => m != null)) CalledInLoop(loop, m);
@@ -370,6 +370,17 @@ namespace CsVerify.Verifier
                 }
             }
             foreach (var a in loop.HavocArrays) if (loop.Havoc.Contains(a)) loop.HavocHeap = true;
+        }
+
+        /// <summary>
+        /// A foreach over a LINQ view (or a group) whose enumerator the verifier replaces by an index, if its own body
+        /// leaves it one (what that body does is collected with the outer loop's anyway).
+        /// </summary>
+        private bool NestedViewForEach(CommonForEachStatementSyntax fe)
+        {
+            if (!(_model.GetOperation(fe.Expression) is IOperation collection) || ViewForEachElement(collection) == null) return false;
+            var c = _model.GetForEachStatementInfo(fe).ElementConversion;
+            return c.IsIdentity || c.IsImplicit && c.IsReference;
         }
 
         private void CalledInLoop(Loop loop, IMethodSymbol m)
@@ -1444,6 +1455,7 @@ namespace CsVerify.Verifier
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
+            if (GroupKey(pr, f, spec) is Term groupKey) return groupKey;
             if (DictionaryView(pr, f, spec) is Term dictionaryView) return dictionaryView;
             if (DictionaryCurrent(pr, f, spec) is Term dictionaryCurrent) return dictionaryCurrent;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
