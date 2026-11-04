@@ -147,7 +147,7 @@ namespace CsVerify.Tests
         // ---- erasure ---------------------------------------------------------------------------------------------
 
         [Fact]
-        public void Erased_Async_Runs()
+        public async Task Erased_Async_Runs()
         {
             const string source = "using System.Diagnostics; using System.Threading.Tasks; using CsVerify;\nnamespace Samples { public static class Async {\n" + Twice +
                 "public static async Task<int> Demo() { Spec.Ensures<int>(r => r == 6 + 8); var a = await Twice(3); var b = await Twice(4).ConfigureAwait(false); return a + b; }\n} }";
@@ -161,7 +161,7 @@ namespace CsVerify.Tests
             var emit = compilation.Emit(ms);
             Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
             var task = (Task<int>)Assembly.Load(ms.ToArray()).GetType("Samples.Async").GetMethod("Demo").Invoke(null, null);
-            Assert.Equal(6 + 8, task.GetAwaiter().GetResult());
+            Assert.Equal(6 + 8, await task);
         }
     }
 }

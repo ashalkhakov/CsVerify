@@ -70,13 +70,16 @@ namespace CsVerify.Verifier
                     OutputName = $"{n++:D3}_{Path.GetFileName(tree.FilePath)}",
                     Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: false).Run(),
                 });
-            foreach (var tree in specTrees)
-                result.Files.Add(new ErasedFile
-                {
-                    OriginalPath = tree.FilePath,
-                    OutputName = Path.Combine(RuntimeFolder, Path.GetFileName(tree.FilePath)),
-                    Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: true).Run(),
-                });
+            // A project referencing another erased project gets the runtime from it: a copy of its own would be a
+            // second CsVerify.Ptr<T> (CS0436), not the one the referenced project's methods take.
+            if (!RuntimeIn(refs))
+                foreach (var tree in specTrees)
+                    result.Files.Add(new ErasedFile
+                    {
+                        OriginalPath = tree.FilePath,
+                        OutputName = Path.Combine(RuntimeFolder, Path.GetFileName(tree.FilePath)),
+                        Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: true).Run(),
+                    });
 
             // The check: the erased program compiles on its own, without CSVERIFY_SPEC and without the CsVerify assembly.
             var erasedParse = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: defines);
@@ -89,6 +92,13 @@ namespace CsVerify.Verifier
             if (!result.Success) result.Errors.InsertRange(0, bindingErrors);
             return result;
         }
+
+        /// <summary>
+        /// Does exactly one reference carry the erased runtime (an erased project, which compiled it in)? With two,
+        /// neither can be chosen: the project gets a copy of its own, as with none.
+        /// </summary>
+        private static bool RuntimeIn(IReadOnlyList<MetadataReference> refs) =>
+            CSharpCompilation.Create("CsVerifyRuntimeProbe", null, refs).GetTypesByMetadataName("CsVerify.Ptr`1").Length == 1;
 
         /// <summary>The project's references minus the CsVerify assembly itself (the runtime comes in as source).</summary>
         internal static List<MetadataReference> ReferencesFor(IReadOnlyList<string> references)

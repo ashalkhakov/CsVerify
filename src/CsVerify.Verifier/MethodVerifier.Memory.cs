@@ -146,7 +146,7 @@ namespace CsVerify.Verifier
         private void LoopMemory(Frame f, IReadOnlyCollection<ISymbol> havocked, Term heapBefore)
         {
             if (!_engine.UsesMemory || f.ArrPerm == null) return;
-            var kept = f.LiveMemViews.Where(v => !havocked.Contains(v) && f.Vars.ContainsKey(v))
+            var kept = f.LiveMemViews.Where(v => !havocked.Contains(v, SymbolEqualityComparer.Default) && f.Vars.ContainsKey(v))
                 .Select(v => InView(f.Vars[v], TypeOf(v), "i")).ToList();
             var fresh = _z3.Fresh("mem", Sort.Row);
             var keep = kept.Count == 0 ? "false" : $"(or {string.Join(" ", kept)})";

@@ -118,7 +118,7 @@ namespace CsVerify.Verifier
         /// <summary><c>v is matched</c>, for a <paramref name="v"/> of static type <paramref name="input"/>.</summary>
         private Term TypeTest(Term v, ITypeSymbol input, ITypeSymbol matched)
         {
-            if (matched == null || DataTypes.Derives(input, matched) || input.AllInterfaces.Contains(matched))
+            if (matched == null || DataTypes.Derives(input, matched) || input.AllInterfaces.Contains(matched, SymbolEqualityComparer.Default))
                 return MayBeNullType(input) ? NotNull(v) : T.True;
             if (matched is INamedTypeSymbol m && Data.Cases(m) is IReadOnlyList<INamedTypeSymbol> cases && Data.IsData(input))
             {
