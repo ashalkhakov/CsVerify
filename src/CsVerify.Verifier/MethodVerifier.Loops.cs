@@ -68,10 +68,20 @@ namespace CsVerify.Verifier
                 CollectHavoc(new SyntaxNode[] { fe }, trial);
                 if (trial.HavocAllFields || trial.HavocFields.Any(x => x is IMethodSymbol model && SpecSymbols.IsModel(model))) listElement = null;
             }
-            if (array || listElement != null)
+            // an IReadOnlyList or IList whose loop changes no state: over its Count and indexer
+            var interfaceElement = array || listElement != null ? null : InterfaceForEachElement(fe, fo);
+            if (interfaceElement != null)
             {
-                loop.ArrayElement = listElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
+                // (what its body changes: the enumerator's own MoveNext and Current are replaced by the index)
+                var trial = new Loop();
+                CollectHavoc(new SyntaxNode[] { fe.Statement }, trial);
+                if (trial.HavocAllFields || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0) interfaceElement = null;
+            }
+            if (array || listElement != null || interfaceElement != null)
+            {
+                loop.ArrayElement = listElement ?? interfaceElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
                 loop.OverList = listElement != null;
+                loop.OverInterface = interfaceElement != null;
                 if (loop.OverList) Assumed("System.Collections.Generic.List<T>.GetEnumerator()");
                 _arrayForEach[capture.Id] = loop;
                 _arrayMoveNext[head.BranchValue] = loop;
@@ -82,8 +92,9 @@ namespace CsVerify.Verifier
                         if (pr.Parent is IConversionOperation conv) _arrayCurrent[conv] = loop;
                     }
             }
-            // the enumerator's Dispose: an array has none, and a List's does nothing
-            if (array || IsList(Unconverted(fo.Collection).Type))
+            // the enumerator's Dispose: an array has none, and a List's does nothing; neither does a library
+            // collection's (trusted, as its Count and indexer are: the program has no list of its own then)
+            if (array || IsList(Unconverted(fo.Collection).Type) || interfaceElement != null)
                 for (var region = head.EnclosingRegion; region != null; region = region.EnclosingRegion)
                     if (region.Kind == ControlFlowRegionKind.Try && region.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally)
                     {
@@ -92,7 +103,7 @@ namespace CsVerify.Verifier
                     }
             foreach (var l in ForEachLocals(fe)) if (l is ILocalSymbol local) _forEachOf[local] = loop;
             // a foreach over an array ends by itself: its index goes up to the array's (fixed) length
-            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null);
+            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null && interfaceElement == null);
         }
 
         private static bool IsMoveNext(IOperation op, CaptureId enumerator) =>
@@ -168,6 +179,8 @@ namespace CsVerify.Verifier
             {
                 // MoveNext was true: 0 <= i < a.Length
                 var (arr, i) = f.ForEach[loop.Id];
+                if (loop.OverInterface)
+                    return T.Coerce(InRangeOf(ListItemOf(arr, i, loop.ArrayElement, f), loop.ArrayElement), SortOf(op.Type));
                 if (loop.OverList)
                     return T.Coerce(InRangeOf(T.Coerce(T.Select(ModelAt(ListModel("Items"), new[] { arr }, f), i, Sort.Int), SortOf(loop.ArrayElement)), loop.ArrayElement), SortOf(op.Type));
                 CheckCellFraming(arr, i, f, op.Syntax);
@@ -188,6 +201,7 @@ namespace CsVerify.Verifier
 
         /// <summary>How far a foreach's index goes: the array's length, or the list's Size().</summary>
         private Term ForEachLength(Loop loop, Term collection, Frame f) =>
+            loop.OverInterface ? ListSizeOf(collection, f) :
             loop.OverList ? T.Coerce(ModelAt(ListModel("Size"), new[] { collection }, f), Sort.Int) : Len(collection);
 
         /// <summary>The end of an iteration (or a continue): the index goes on to the next element.</summary>

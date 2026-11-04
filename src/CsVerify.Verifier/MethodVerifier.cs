@@ -37,6 +37,8 @@ namespace CsVerify.Verifier
             public ITypeSymbol ArrayElement;
             /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
             public bool OverList;
+            /// <summary>A foreach over an IReadOnlyList or IList: its index runs over the interface's Count and indexer.</summary>
+            public bool OverInterface;
             public List<LoopFact> Facts = new List<LoopFact>(); // inferred, for a loop without invariants (MethodVerifier.LoopFacts)
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
@@ -1380,6 +1382,8 @@ namespace CsVerify.Verifier
                 case IPropertyReferenceOperation ps when IsComputed(ps.Property.SetMethod):
                     CallAccessor(ps.Property.SetMethod, ps.Instance, ps.Arguments.Select(a => a.Value), v, null, ps.Syntax, f, spec);
                     break;
+                case IPropertyReferenceOperation ip when InterfaceListSet(ip, v, f, spec):
+                    break;
                 case IPropertyReferenceOperation ls when _codeMode && ls.Property.SetMethod != null && ls.Property.DeclaringSyntaxReferences.Length == 0 &&
                                                         ls.Property.ContainingType.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace && !IsSequence(ls.Instance?.Type):
                     // a library setter (a dictionary's indexer): a call of a library method
@@ -1636,6 +1640,7 @@ namespace CsVerify.Verifier
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
+            if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 

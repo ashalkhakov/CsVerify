@@ -135,7 +135,7 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 | `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `Insert`, `AddRange` (keeps the elements, grows), `RemoveAt`, `RemoveRange`, `Clear`, `Reverse`, `Sort` (frame and count), `ToArray`, `GetRange`, `IndexOf`, `Contains`, `Remove(T)` (by `Spec.Equal`: below), `GetEnumerator`; `foreach` (below) |
 | `Array` | the arrays' contents (built in) | `Empty`, `Fill` (whole and a range), `Reverse<T>`, `Copy` (bounds, the frame, and the destination's other elements), `Resize` (the new length), `IndexOf<T>` (its range), `Sort<T>` (the frame) |
 | `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructors (with a capacity too), `Count`, `ContainsKey`, the indexer (get and set), `Add`, `TryAdd`, `Remove` (and with the value out), `TryGetValue`: keys compare as the dictionary does (below) |
-| `IReadOnlyList<T>`, `IList<T>`, `IReadOnlyCollection<T>`, `ICollection<T>` | a `List`'s, an array's (built in) | `Count` and the indexer (get), by what the object is (below) |
+| `IReadOnlyList<T>`, `IList<T>`, `IReadOnlyCollection<T>`, `ICollection<T>` | a `List`'s, an array's (built in) | `Count`, the indexer (get and set), `Contains`, `IndexOf`, `Add`, `Insert`, `RemoveAt`, `Remove`, `Clear`, and `foreach`: by what the object is (below) |
 | `HashSet<T>` | `Members()`: `Map<T, bool>`, `Size()` | constructor, `Count`, `Contains`, `Add`, `Remove` (their results), `Clear` |
 | `Stack<T>` | `Items()` from the bottom, `Size()` | constructor, `Count`, `Push`, `Pop`, `Peek` (not empty: a precondition), `Clear` |
 | `Queue<T>` | `Items()` from the head, `Size()` | constructor, `Count`, `Enqueue`, `Dequeue`, `Peek` (not empty: a precondition), `Clear` |
@@ -161,7 +161,18 @@ For an array they read its length and cells. For anything else (a library wrappe
 model) they read a function of the heap and the model state, which is the same between two reads and changes whenever
 those might. The indexer's range is checked as the list's (CSV1003). If a class of the program implements one of these
 interfaces, that last case is an unknown value at each read, since the program's own list could change in ways no
-model follows. Writes and other members through the interfaces (`IList<T>.Add`) are library calls without contracts.
+model follows.
+
+`Contains` and `IndexOf` search as `Spec.Equal` compares, over the same reads. Writes (the indexer, `Add`, `Insert`,
+`RemoveAt`, `Remove`, `Clear`) change, by what the object is:
+- a `List`'s models, as its own contracts say;
+- an array's cells for the indexer. The other writes throw `NotSupportedException`, since arrays are fixed-size.
+- anything at all for another collection, as a library call without a contract may.
+
+A `foreach` over an `IReadOnlyList<T>` or `IList<T>` whose loop changes no state (and when the program implements no
+list of its own) runs over `Count` and the indexer, like a foreach over an array: `Spec.Index(x)` is its index, it ends
+by itself, and its enumerator's `Dispose` is taken to do nothing. Library collections are trusted to enumerate as they
+index.
 
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their

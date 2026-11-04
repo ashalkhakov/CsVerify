@@ -70,6 +70,38 @@ public static class P
         }
 
         [Fact]
+        public void SearchesWritesAndForeach_ThroughTheInterfaces()
+        {
+            var r = Harness.Verify(Common + @"
+public static class P
+{
+    public static bool Has(IList<int> l) { Spec.Requires(l.Count == 2 && l[0] == 3 && l[1] == 4); Spec.Ensures<bool>(r => r); return l.Contains(4); }
+    public static int Index(IList<string> l) { Spec.Requires(l.Count == 2 && l[0] == ""a"" && l[1] == ""b""); Spec.Ensures<int>(r => r == 1); return l.IndexOf(""b""); }
+    public static void Add(List<int> list) { Spec.Requires(list.Count == 0); Spec.Modifies(ObjSet.Of(list)); IList<int> l = list; l.Add(5); Spec.Assert(list.Count == 1 && list[0] == 5); }
+    public static void Set(int[] a) { Spec.Requires(a.Length == 2); IList<int> l = a; l[1] = 9; Spec.Assert(a[1] == 9); }
+    public static void SetList(List<int> list) { Spec.Requires(list.Count == 2); Spec.Modifies(ObjSet.Of(list)); IList<int> l = list; l[0] = 7; Spec.Assert(list[0] == 7 && list.Count == 2); }
+    public static void Removed(List<int> list)
+    {
+        Spec.Requires(list.Count == 2 && list[0] == 1 && list[1] == 2);
+        Spec.Modifies(ObjSet.Of(list));
+        ICollection<int> c = list;
+        var ok = c.Remove(1);
+        Spec.Assert(ok && list.Count == 1 && list[0] == 2);
+    }
+    // an array is fixed-size: Add throws, so nothing after it runs
+    public static void ArrayAdd(int[] a) { IList<int> l = a; l.Add(1); Spec.Assert(false); }
+    public static int Each(IReadOnlyList<int> xs) { int s = 0; foreach (var x in xs) { Spec.Assert(x == xs[Spec.Index(x)]); s = x; } return s; }
+    public static int Count(IList<int> xs) { Spec.Ensures<int>(r => r == xs.Count); int n = 0; foreach (var x in xs) { Spec.Invariant(n == Spec.Index(x)); n = n + 1; } return n; }
+    // false claims: il may be a; c may be any collection
+    public static void Alias(int[] a, IList<int> il) { Spec.Requires(a.Length > 0 && a[0] == 1 && il.Count > 0); il[0] = 5; Spec.Assert(a[0] == 1); }
+    public static void Anything(ICollection<int> c) { Spec.Requires(c.Count == 0); c.Add(1); Spec.Assert(c.Count == 1); }
+}", overflow: false);
+            foreach (var m in new[] { "Has", "Index", "Add", "Set", "SetList", "Removed", "ArrayAdd", "Each", "Count" }) Assert.Empty(r.Errors("P." + m));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Alias"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Anything"));
+        }
+
+        [Fact]
         public void DictionaryExtras()
         {
             var r = Harness.Verify(@"
