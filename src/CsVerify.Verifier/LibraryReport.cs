@@ -18,6 +18,9 @@ namespace CsVerify.Verifier
     {
         private static readonly Dictionary<string, string> Kinds = new Dictionary<string, string>
         {
+            ["CSV0020"] = "disposable not disposed",
+            ["CSV0021"] = "disposable used after disposal",
+            ["CSV0022"] = "owned field not disposed",
             ["CSV1001"] = "callee precondition",
             ["CSV1002"] = "postcondition",
             ["CSV1003"] = "index out of range",

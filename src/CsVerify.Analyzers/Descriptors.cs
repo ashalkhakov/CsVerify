@@ -38,6 +38,20 @@ namespace CsVerify.Analyzers
             "Linear value passed twice in one call",
             "Linear value '{0}' is passed to more than one parameter of this call; only several read-only (in) borrows may share it");
 
+        private const string Disposal = "CsVerify.Disposal";
+
+        public static readonly DiagnosticDescriptor NotDisposed = Error("CSV0020", Disposal,
+            "Disposable not disposed",
+            "'{0}' ({1}) is not disposed on every path{2}: dispose it (using, Dispose()), return it, or hand it over");
+
+        public static readonly DiagnosticDescriptor UsedAfterDispose = Error("CSV0021", Disposal,
+            "Disposable used after it was disposed",
+            "'{0}' may already have been disposed{1}");
+
+        public static readonly DiagnosticDescriptor OwnerDoesNotDispose = Error("CSV0022", Disposal,
+            "Owned disposable field not disposed",
+            "'{0}' holds a {1} that {2} owns, but {3}");
+
         public static readonly DiagnosticDescriptor GhostOutsideSpec = Error("CSV0010", Ghosts,
             "Ghost value read outside a specification",
             "'{0}' is ghost and can only be used inside Spec.* arguments, lemma arguments or lemma bodies");

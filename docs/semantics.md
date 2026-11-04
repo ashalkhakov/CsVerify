@@ -59,6 +59,31 @@ Methods are verified for partial correctness: any call may throw anything, and a
 - **What proves well.** Comparisons, min and max, and casts to integers within constant bounds prove quickly: the bounding-box code of samples/Good/Floats.cs does. Proofs about rounded arithmetic (`lo + (hi - lo) / 2` stays within `[lo, hi]`) are bit-precise and can be slow, or beyond the solver. Relating a float to a symbolic integer (`x < n` for an `int n`) often is.
 - **`Ieee` lemmas.** The monotonicity of rounded operations, which the solver decides only by bit-blasting whole multipliers (minutes, for one `x * z <= y * z`), is a trusted library of lemmas: `Ieee.MulMonotone`, `AddMonotone`, `SubMonotone`, `DivMonotone` and `SqrtMonotone`, for `float` and `double`. Each states exactly when it holds: finite operands, since an infinity times zero is NaN. Call one where a proof needs it.
 
+## Disposables
+
+Objects that hold a file, a socket, a timer or a connection must be disposed. CsVerify checks them as linear
+resources (the `DisposalAnalyzer`, part of the analyzers):
+- **Which ones:**
+  - objects of a class marked `[MustDispose]`;
+  - objects of a library type that a `[ContractsFor]` stub marks `[MustDispose]`: `FileStream`, `StreamReader`/`StreamWriter`, `BinaryReader`/`BinaryWriter`, `GZipStream`, timers, `CancellationTokenSource`, `Mutex`, `Process`, `FileSystemWatcher`, `Socket`, `TcpClient`, `HttpResponseMessage`, `DbConnection`/`DbCommand`/`DbDataReader`;
+  - objects of a class that owns a field of such a type.
+
+  `MemoryStream`, `StringReader`, `Task` and `HttpClient` (meant to be shared) are not marked: disposing them is
+  harmless or wrong, not required.
+- **Who owns one:** a local holding a new one, or one a call or an `await` returns (`File.OpenRead(path)`, `await
+  client.GetAsync(url)`). A parameter is borrowed from the caller, unless it is `[TakesOwnership]`.
+- **On every path** an owned one is disposed (`Dispose()`, `DisposeAsync()`, `x?.Dispose()`, a `using` declaration or
+  statement, a `finally` that disposes it), returned, or handed over. Handing over means storing it in a field (the
+  object owns it then), passing it to a `[TakesOwnership]` parameter (`new StreamReader(stream)` takes its stream), or
+  giving it to `Spec.HandOver(x)` (a container or a dependency-injection scope that will dispose it; trusted). A path
+  where it is null (`if (fs != null)`) holds nothing. Otherwise it leaks (CSV0020), including when the variable is
+  overwritten while it holds one. Using it, or disposing it again, after it may have been disposed is CSV0021.
+- **Owners.** A class with a field (or auto-property) of a disposable type owns it, unless the field is `[NotOwned]`.
+  The class must be IDisposable, and its `Dispose` (or `Dispose(bool)`, `DisposeAsync`) must dispose the field
+  (CSV0022). Its own objects must then be disposed in turn.
+- **Not checked:** a path that ends in an exception (that is what `using` is for), a disposable captured by a lambda,
+  and one kept in a collection without `Spec.HandOver`.
+
 ## Null references
 
 C#'s nullable reference types are only warnings, and deliberately unsound ones: `null!` silences them, `new string[n]` is an array of nulls typed `string[]`, and a field can be read before the constructor sets it. CsVerify takes the annotations as contracts and proves them instead:

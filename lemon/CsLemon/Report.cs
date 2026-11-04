@@ -105,7 +105,8 @@ namespace CsLemon
             }
         }
 
-        private static TextWriter NewWriter(Stream s)
+        // (the writer disposes the stream it is given: so does whoever disposes the writer)
+        private static TextWriter NewWriter([TakesOwnership] Stream s)
         {
             return new StreamWriter(s, Encoding.Latin1);
         }

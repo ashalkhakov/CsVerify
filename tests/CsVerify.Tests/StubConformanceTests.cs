@@ -574,6 +574,8 @@ namespace CsVerify.Conformance
             }
             else if (t == typeof(StringBuilder)) made = new StringBuilder(Strings[r.Next(Strings.Length)]);
             else if (t == typeof(TextWriter)) made = new StringWriter();
+            else if (t == typeof(System.Text.Encoding)) made = new[] { System.Text.Encoding.UTF8, System.Text.Encoding.Latin1, System.Text.Encoding.ASCII }[r.Next(3)];
+            else if (t.IsEnum) { var values = Enum.GetValues(t); return values.GetValue(r.Next(values.Length)); }
             else if (t == typeof(byte[])) made = Enumerable.Range(0, r.Next(9)).Select(_ => (byte)r.Next(256)).ToArray();
             else if (t == typeof(Stream)) made = new MemoryStream(Enumerable.Range(0, r.Next(12)).Select(_ => (byte)r.Next(256)).ToArray());
             else throw new NotSupportedException(t.ToString());

@@ -10,6 +10,24 @@ namespace CsVerify
     public sealed class LinearAttribute : Attribute { }
 
     /// <summary>
+    /// Objects of this class hold a resource and must be disposed: each one created (or returned by a call) is disposed
+    /// exactly once on every path (<c>Dispose()</c>, <c>using</c>), not used after, or handed over (returned, stored in
+    /// a field, passed to a <see cref="TakesOwnershipAttribute"/> parameter, <see cref="Spec.HandOver"/>). On a
+    /// [ContractsFor] stub class, it marks the library type the stub is for (FileStream). A class with a field of such
+    /// a type owns it: it must be IDisposable, its Dispose must dispose the field, and it must be disposed itself.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, Inherited = true)]
+    public sealed class MustDisposeAttribute : Attribute { }
+
+    /// <summary>A parameter that takes the disposable it is handed: its caller need not (and must not) dispose it.</summary>
+    [AttributeUsage(AttributeTargets.Parameter)]
+    public sealed class TakesOwnershipAttribute : Attribute { }
+
+    /// <summary>A field of a disposable type that its object does not own (someone else disposes it).</summary>
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
+    public sealed class NotOwnedAttribute : Attribute { }
+
+    /// <summary>
     /// A proof function (ATS <c>prfun</c>): must be <c>void</c> and <c>[Conditional("CSVERIFY_SPEC")]</c>, so calls are
     /// erased. Its body is the proof; callers gain its postconditions.
     /// </summary>
