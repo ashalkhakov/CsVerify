@@ -96,6 +96,9 @@ namespace CsVerify.Analyzers
             return _stubOf.TryGetValue(member, out var s) ? s : null;
         }
 
+        /// <summary>Every member with a stub, and its stub (for the conformance tests, which run them).</summary>
+        public IEnumerable<(IMethodSymbol member, IMethodSymbol stub)> Pairs => _stubOf.Select(kv => (kv.Key, kv.Value));
+
         /// <summary>Is this method a stub (one that specifies an external member)?</summary>
         public bool IsStub(IMethodSymbol m) => m != null && _stubs.Contains(m.OriginalDefinition);
 

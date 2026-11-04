@@ -497,6 +497,9 @@ namespace CsVerify.Verifier
             if (loop.Permissions) LoopPermissionsEntry(loop.Id, loop.Invariants, f, spec);
 
             var memoryBefore = f.Heap;
+            // what a loop without invariants changes is unknown at its head (charged to it in the library report)
+            var wasCause = _z3.Cause;
+            if (loop.Invariants.Count == 0) _z3.Cause = "a loop without invariants";
             DeferTies();
             foreach (var s in loop.Havoc)
             {
@@ -522,6 +525,7 @@ namespace CsVerify.Verifier
             LoopMemory(f, loop.Havoc, memoryBefore);
             FlushTies(f);
             ArrayForEachHead(loop, f);
+            _z3.Cause = wasCause;
 
             if (loop.Permissions) LoopPermissionsHead(loop.Invariants, f, spec);
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
@@ -625,16 +629,43 @@ namespace CsVerify.Verifier
             else
             {
                 if (r != "sat") message += $" (solver: {r})";
-                Report(id, at, message, isError: true);
+                Report(id, at, message, isError: true, causes: _z3.CausesIn(goal));
             }
             if (assume) _z3.Assume(goal); // continue as if it held, so one failure does not cascade
             _codeMode = wasCode;
         }
 
-        private void Report(string id, SyntaxNode at, string message, bool isError)
+        private void Report(string id, SyntaxNode at, string message, bool isError, IReadOnlyCollection<string> causes = null)
         {
             if (!_reported.Add((id, at.Span))) return;
-            _result.Diagnostics.Add(new VerificationDiagnostic(id, isError, message, at.GetLocation().GetLineSpan()));
+            _result.Diagnostics.Add(new VerificationDiagnostic(id, isError, message, at.GetLocation().GetLineSpan())
+            {
+                Causes = causes ?? (IReadOnlyCollection<string>)Array.Empty<string>(),
+            });
+        }
+
+        private static string Where(SyntaxNode at) => at.SyntaxTree.FilePath + ":" + at.SpanStart;
+
+        /// <summary>
+        /// What a call's unknown values are charged to in the library report: a library member without a contract, or
+        /// a method of the program without postconditions (whose callers know only its types). Null for a call with a
+        /// contract, and for CsVerify's own library.
+        /// </summary>
+        private static string CallCause(IMethodSymbol m, Contract callee)
+        {
+            if (SpecSymbols.IsSpecClass(m.ContainingType) || IsCsVerifyNamespace(m.ContainingNamespace)) return null;
+            if (m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object) return null; // base()
+            if (m.IsImplicitlyDeclared && m.ContainingType.Locations.Any(l => l.IsInSource)) return null; // a class's default constructor
+            if (!callee.HasSource) return "library " + m.OriginalDefinition.ToDisplayString();
+            if (callee.IsStub || callee.IsPure || callee.IsLemma || callee.Ensures.Count > 0 || callee.ThrowEnsures.Count > 0) return null;
+            return "source " + m.OriginalDefinition.ToDisplayString();
+        }
+
+        private static bool IsCsVerifyNamespace(INamespaceSymbol ns)
+        {
+            for (; ns != null && !ns.IsGlobalNamespace; ns = ns.ContainingNamespace)
+                if (ns.ContainingNamespace?.IsGlobalNamespace == true && ns.Name == "CsVerify") return true;
+            return false;
         }
 
         private void Warn(SyntaxNode at, string message) => Report("CSV1900", at, message, isError: false);
@@ -1318,7 +1349,12 @@ namespace CsVerify.Verifier
                 if (pr.Instance != null) Deref(pr.Instance, Eval(pr.Instance, f, spec), pr.Syntax);
                 foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
                 Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
+                var member = prop.OriginalDefinition.ToDisplayString();
+                _result.LibraryCalls.Add((member, Where(pr.Syntax)));
+                var wasCause = _z3.Cause;
+                _z3.Cause = "library " + member;
                 var lv = Unknown(pr.Type, prop.Name);
+                _z3.Cause = wasCause;
                 // as the library declares it, a type parameter as instantiated (a List<string>'s items are strings)
                 if (IsNonNullableType(prop.OriginalDefinition.Type) ||
                     prop.OriginalDefinition.Type is ITypeParameterSymbol && IsNonNullableType(prop.Type)) AssumeSide(NotNull(lv));
@@ -1505,159 +1541,170 @@ namespace CsVerify.Verifier
                 return Unknown(inv.Type);
             }
 
-            bool chained = m.MethodKind == MethodKind.Constructor; // base(...) or this(...): the object is not built yet
-            var touched = chained ? new List<Term>() : HandOver(inv, receiver, argTerms, f, callee);
-            var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
-            if (!callee.HasSource)
+            // the unknown values the call makes are charged to it in the library report
+            var wasCause = _z3.Cause;
+            if (CallCause(m, callee) is string cause)
             {
-                var libraryMemory = f.Heap;
-                var libraryHeld = f.ArrPerm;
+                _z3.Cause = cause;
+                if (!callee.HasSource) _result.LibraryCalls.Add((cause.Substring("library ".Length), Where(inv.Syntax)));
+            }
+            try
+            {
+                bool chained = m.MethodKind == MethodKind.Constructor; // base(...) or this(...): the object is not built yet
+                var touched = chained ? new List<Term>() : HandOver(inv, receiver, argTerms, f, callee);
+                var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
+                if (!callee.HasSource)
+                {
+                    var libraryMemory = f.Heap;
+                    var libraryHeld = f.ArrPerm;
+                    DeferTies();
+                    var whenNotNull = new List<(Term value, bool when)>();
+                    var cellsOut = new List<(IArgumentOperation, Term)>();
+                    foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
+                    {
+                        var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
+                        if (IsNonNullable(a.Parameter.OriginalDefinition)) _z3.Assume(NotNull(nv));
+                        else if (NotNullWhen(a.Parameter) is bool when) whenNotNull.Add((nv, when));
+                        if (cells.ContainsKey(a)) cellsOut.Add((a, nv)); else Write(a.Value, nv, f, spec);
+                    }
+                    if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                    f.Heap = KeepHeldMemory(f.Heap, libraryMemory, libraryHeld);
+                    foreach (var (a, nv) in cellsOut) WriteCell(cells[a], nv, f, a.Syntax);
+                    FlushTies(f);
+                    CalleeModifies(callee, pre, f, inv.Syntax);
+                    HavocFields(f, m, touched);
+                    CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
+                    var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                    foreach (var (value, when) in whenNotNull)
+                        if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
+                    AllocAfterCall(f, libResult);
+                    LibraryNullFacts(inv, argTerms, libResult);
+                    if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
+                    return libResult;
+                }
+
+                var preEnv = new SpecEnv { Old = pre };
+                // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
+                // quantifier, the obligation is closed over its variable with the others made there)
+                foreach (var req in callee.Requires)
+                    Require(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
+                        $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
+                if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
+                if (callee.IsPure && _codeMode) CheckPurePermissions(callee, pre, preEnv, f, inv.Syntax);
+                var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax, m);
+                // lending trees through Spec.Modifies(Own.Tree(x)): the caller must hold them; the call may change them
+                if (!callee.IsPure && f.Perm != null)
+                    foreach (var root in LentTrees(callee, pre, preEnv))
+                    {
+                        if (_codeMode)
+                            Require(CanWrite(f, root), "CSV1016", inv.Syntax, $"'{m.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here");
+                        touched.Add(root);
+                    }
+                // the permissions its preconditions ask for are given to it: what they cover may change
+                var touchedInst = new List<Term>();
+                var touchedCells = new List<Atom>();
+                var touchedFields = new List<(Term obj, ISymbol field)>();
+                if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null) && _codeMode)
+                    foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst, touchedCells, touchedFields: touchedFields);
+                // the memory cells still in hand: the call cannot change them
+                var heldMemory = f.ArrPerm;
+                var memoryBefore = f.Heap;
+
+                if (_engine.IsRecursiveCall(_method, callee.Method))
+                {
+                    bool self = SymbolEqualityComparer.Default.Equals(callee.Method, _method);
+                    if ((_entryMeasure == null || callee.Decreases == null) && ProofCode)
+                        NotTotal(inv.Syntax, self
+                            ? $"recursive lemma or [Pure] function '{_method.Name}' needs Spec.Decreases"
+                            : $"mutually recursive call from '{_method.Name}' to '{m.Name}' needs Spec.Decreases on both");
+                    else if (_entryMeasure == null || callee.Decreases == null)
+                        Warn(inv.Syntax, self
+                            ? $"recursive call without Spec.Decreases in '{_method.Name}'; termination is not checked"
+                            : $"mutually recursive call from '{_method.Name}' to '{m.Name}' without Spec.Decreases on both; termination is not checked");
+                    else if (callee.Decreases.Count != _entryMeasure.Length)
+                        Prove(T.False, "CSV1008", inv.Syntax,
+                            $"cannot prove termination: '{m.Name}' and '{_method.Name}' call each other but their measures have different numbers of components");
+                    else
+                        Prove(LexDecreases(EvalMeasure(callee.Decreases, pre, preEnv), _entryMeasure), "CSV1008", inv.Syntax,
+                            $"cannot prove termination: measure '{MeasureText(callee.Decreases)}' of '{m.Name}' might not decrease or might be negative");
+                }
+
+                var post = pre.Clone();
+                var cellsBack = new List<(IArgumentOperation, Term)>();
                 DeferTies();
-                var whenNotNull = new List<(Term value, bool when)>();
-                var cellsOut = new List<(IArgumentOperation, Term)>();
+                var outNotNull = new List<(Term value, bool when)>();
                 foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
                 {
                     var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
-                    if (IsNonNullable(a.Parameter.OriginalDefinition)) _z3.Assume(NotNull(nv));
-                    else if (NotNullWhen(a.Parameter) is bool when) whenNotNull.Add((nv, when));
-                    if (cells.ContainsKey(a)) cellsOut.Add((a, nv)); else Write(a.Value, nv, f, spec);
+                    if (IsNonNullable(callee.Method.Parameters[a.Parameter.Ordinal])) _z3.Assume(NotNull(nv));
+                    else if (callee.IsStub && NotNullWhen(a.Parameter) is bool when) outNotNull.Add((nv, when));
+                    post.Vars[callee.Method.Parameters[a.Parameter.Ordinal]] = nv;
+                    if (callee.IsStub) post.Vars[StubParameter(callee, a.Parameter.Ordinal)] = nv;
+                    if (cells.ContainsKey(a)) cellsBack.Add((a, nv)); else Write(a.Value, nv, f, spec);
+                    if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
+                    touched.AddRange(ViewsIn(nv, a.Parameter.Type));          // or views in a package
+                    ViewsArrive(nv, a.Parameter.Type, f);
                 }
-                if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
-                f.Heap = KeepHeldMemory(f.Heap, libraryMemory, libraryHeld);
-                foreach (var (a, nv) in cellsOut) WriteCell(cells[a], nv, f, a.Syntax);
-                FlushTies(f);
-                CalleeModifies(callee, pre, f, inv.Syntax);
-                HavocFields(f, m, touched);
-                CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
-                var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
-                foreach (var (value, when) in whenNotNull)
-                    if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
-                AllocAfterCall(f, libResult);
-                LibraryNullFacts(inv, argTerms, libResult);
-                if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
-                return libResult;
-            }
-
-            var preEnv = new SpecEnv { Old = pre };
-            // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
-            // quantifier, the obligation is closed over its variable with the others made there)
-            foreach (var req in callee.Requires)
-                Require(AsBool(EvalForeignSpec(req, pre, preEnv)), "CSV1001", inv.Syntax,
-                    $"precondition '{req.Syntax}' of '{m.Name}' might not hold");
-            if (callee.IsPure) CheckPureCallReads(callee, pre, inv.Syntax);
-            if (callee.IsPure && _codeMode) CheckPurePermissions(callee, pre, preEnv, f, inv.Syntax);
-            var modifiable = callee.IsPure || callee.IsLemma ? null : CalleeModifies(callee, pre, f, inv.Syntax, m);
-            // lending trees through Spec.Modifies(Own.Tree(x)): the caller must hold them; the call may change them
-            if (!callee.IsPure && f.Perm != null)
-                foreach (var root in LentTrees(callee, pre, preEnv))
+                // a package that comes back carries views: the call may have changed their objects (and only those it got)
+                Term packageResult = null;
+                if (SpecSymbols.IsLinearPackage(m.ReturnType))
                 {
-                    if (_codeMode)
-                        Require(CanWrite(f, root), "CSV1016", inv.Syntax, $"'{m.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here");
-                    touched.Add(root);
+                    packageResult = FreshOf(m.ReturnType, m.Name);
+                    touched.AddRange(ViewsIn(packageResult, m.ReturnType));
                 }
-            // the permissions its preconditions ask for are given to it: what they cover may change
-            var touchedInst = new List<Term>();
-            var touchedCells = new List<Atom>();
-            var touchedFields = new List<(Term obj, ISymbol field)>();
-            if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null) && _codeMode)
-                foreach (var req in callee.Requires) Exhale(req, pre, preEnv, f, inv.Syntax, touched, touchedInst, touchedCells, touchedFields: touchedFields);
-            // the memory cells still in hand: the call cannot change them
-            var heldMemory = f.ArrPerm;
-            var memoryBefore = f.Heap;
+                if (f.ArrPerm != null && MentionsCells(callee) && !callee.IsPure)
+                    f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
+                else if (HavocsHeap(m) && callee.IsStub && callee.Modifies != null && !_arrayMode)
+                {
+                    // a stub's Spec.Modifies names the arrays it writes: the others keep their contents
+                    var frame = T.Coerce(EvalForeignSpec(callee.Modifies, pre, preEnv), Sort.Row);
+                    f.Heap = post.Heap = _z3.Define("heap", new Term($"(cv_frameh {frame} {memoryBefore} {_z3.Fresh("heap", Sort.Heap)})", Sort.Heap));
+                }
+                else if (HavocsHeap(m))
+                {
+                    if (_arrayMode && _codeMode)
+                        Report("CSV1016", inv.Syntax, $"'{m.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes", isError: true);
+                    f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
+                }
+                if (!IsMemoryNeutral(callee)) f.Heap = post.Heap = KeepHeldMemory(f.Heap, memoryBefore, heldMemory);
+                // (the callee's postconditions speak of the heap as it left it: the cells it was lent are written after)
+                foreach (var (a, nv) in cellsBack) WriteCell(cells[a], nv, f, a.Syntax);
+                FlushTies(f);
+                HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst, touchedFields);
+                if (!chained) CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
+                if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
+                else TakeBack(inv, receiver, f, callee);
+                post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
+                post.FieldEpoch = f.FieldEpoch;
+                post.Link = f.Link;
 
-            if (_engine.IsRecursiveCall(_method, callee.Method))
-            {
-                bool self = SymbolEqualityComparer.Default.Equals(callee.Method, _method);
-                if ((_entryMeasure == null || callee.Decreases == null) && ProofCode)
-                    NotTotal(inv.Syntax, self
-                        ? $"recursive lemma or [Pure] function '{_method.Name}' needs Spec.Decreases"
-                        : $"mutually recursive call from '{_method.Name}' to '{m.Name}' needs Spec.Decreases on both");
-                else if (_entryMeasure == null || callee.Decreases == null)
-                    Warn(inv.Syntax, self
-                        ? $"recursive call without Spec.Decreases in '{_method.Name}'; termination is not checked"
-                        : $"mutually recursive call from '{_method.Name}' to '{m.Name}' without Spec.Decreases on both; termination is not checked");
-                else if (callee.Decreases.Count != _entryMeasure.Length)
-                    Prove(T.False, "CSV1008", inv.Syntax,
-                        $"cannot prove termination: '{m.Name}' and '{_method.Name}' call each other but their measures have different numbers of components");
-                else
-                    Prove(LexDecreases(EvalMeasure(callee.Decreases, pre, preEnv), _entryMeasure), "CSV1008", inv.Syntax,
-                        $"cannot prove termination: measure '{MeasureText(callee.Decreases)}' of '{m.Name}' might not decrease or might be negative");
+                var result = packageResult ?? (m.ReturnsVoid || m.IsAsync && _awaitedCall == inv && AsyncResultType(m) == null ? null : FreshOf(ResultTypeOf(inv), m.Name));
+                if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
+                if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
+                // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it
+                if (result != null && callee.StubFreshResult && IsSequence(m.ReturnType)) NewArrayIsDistinct(result, f);
+                if (!callee.IsPure && !callee.IsLemma)
+                {
+                    AllocAfterCall(f, inv.Arguments.Where(a => (a.Parameter?.RefKind == RefKind.Out || a.Parameter?.RefKind == RefKind.Ref) && !(a.Value is IDiscardOperation))
+                        .Select(a => Eval(a.Value, f)).Append(result).ToArray());
+                    post.Alloc = f.Alloc;
+                }
+                if (result != null && callee.IsPure)
+                    _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
+                if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null))
+                    foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
+                foreach (var ens in callee.Ensures)
+                    _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }))));
+                if (callee.IsStub)
+                {
+                    LibraryNullFacts(inv, argTerms, result ?? T.True);
+                    foreach (var (value, when) in outNotNull)
+                        if (result?.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(value)));
+                }
+                if (RunsCode(m)) HavocClosureLocals(f); // (a local function, or a delegate it was handed, may write them)
+                return result ?? T.True;
             }
-
-            var post = pre.Clone();
-            var cellsBack = new List<(IArgumentOperation, Term)>();
-            DeferTies();
-            var outNotNull = new List<(Term value, bool when)>();
-            foreach (var a in inv.Arguments.Where(a => a.Parameter.RefKind == RefKind.Ref || a.Parameter.RefKind == RefKind.Out))
-            {
-                var nv = FreshOf(a.Parameter.Type, a.Parameter.Name);
-                if (IsNonNullable(callee.Method.Parameters[a.Parameter.Ordinal])) _z3.Assume(NotNull(nv));
-                else if (callee.IsStub && NotNullWhen(a.Parameter) is bool when) outNotNull.Add((nv, when));
-                post.Vars[callee.Method.Parameters[a.Parameter.Ordinal]] = nv;
-                if (callee.IsStub) post.Vars[StubParameter(callee, a.Parameter.Ordinal)] = nv;
-                if (cells.ContainsKey(a)) cellsBack.Add((a, nv)); else Write(a.Value, nv, f, spec);
-                if (SpecSymbols.IsOwnType(a.Parameter.Type)) touched.Add(nv); // a view that comes out (or another one in its place)
-                touched.AddRange(ViewsIn(nv, a.Parameter.Type));          // or views in a package
-                ViewsArrive(nv, a.Parameter.Type, f);
-            }
-            // a package that comes back carries views: the call may have changed their objects (and only those it got)
-            Term packageResult = null;
-            if (SpecSymbols.IsLinearPackage(m.ReturnType))
-            {
-                packageResult = FreshOf(m.ReturnType, m.Name);
-                touched.AddRange(ViewsIn(packageResult, m.ReturnType));
-            }
-            if (f.ArrPerm != null && MentionsCells(callee) && !callee.IsPure)
-                f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
-            else if (HavocsHeap(m) && callee.IsStub && callee.Modifies != null && !_arrayMode)
-            {
-                // a stub's Spec.Modifies names the arrays it writes: the others keep their contents
-                var frame = T.Coerce(EvalForeignSpec(callee.Modifies, pre, preEnv), Sort.Row);
-                f.Heap = post.Heap = _z3.Define("heap", new Term($"(cv_frameh {frame} {memoryBefore} {_z3.Fresh("heap", Sort.Heap)})", Sort.Heap));
-            }
-            else if (HavocsHeap(m))
-            {
-                if (_arrayMode && _codeMode)
-                    Report("CSV1016", inv.Syntax, $"'{m.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes", isError: true);
-                f.Heap = post.Heap = _z3.Fresh("heap", Sort.Heap);
-            }
-            if (!IsMemoryNeutral(callee)) f.Heap = post.Heap = KeepHeldMemory(f.Heap, memoryBefore, heldMemory);
-            // (the callee's postconditions speak of the heap as it left it: the cells it was lent are written after)
-            foreach (var (a, nv) in cellsBack) WriteCell(cells[a], nv, f, a.Syntax);
-            FlushTies(f);
-            HavocFields(f, m, SpecSymbols.IsOwnType(m.ReturnType) ? null : touched, modifiable, touchedInst, touchedFields);
-            if (!chained) CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
-            if (chained && receiver != null) AfterChainedConstructor(f, m, receiver);
-            else TakeBack(inv, receiver, f, callee);
-            post.Fields = new Dictionary<ISymbol, Term>(f.Fields, SymbolEqualityComparer.Default);
-            post.FieldEpoch = f.FieldEpoch;
-            post.Link = f.Link;
-
-            var result = packageResult ?? (m.ReturnsVoid || m.IsAsync && _awaitedCall == inv && AsyncResultType(m) == null ? null : FreshOf(ResultTypeOf(inv), m.Name));
-            if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
-            if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
-            // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it
-            if (result != null && callee.StubFreshResult && IsSequence(m.ReturnType)) NewArrayIsDistinct(result, f);
-            if (!callee.IsPure && !callee.IsLemma)
-            {
-                AllocAfterCall(f, inv.Arguments.Where(a => (a.Parameter?.RefKind == RefKind.Out || a.Parameter?.RefKind == RefKind.Ref) && !(a.Value is IDiscardOperation))
-                    .Select(a => Eval(a.Value, f)).Append(result).ToArray());
-                post.Alloc = f.Alloc;
-            }
-            if (result != null && callee.IsPure)
-                _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
-            if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null))
-                foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
-            foreach (var ens in callee.Ensures)
-                _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }))));
-            if (callee.IsStub)
-            {
-                LibraryNullFacts(inv, argTerms, result ?? T.True);
-                foreach (var (value, when) in outNotNull)
-                    if (result?.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? result : T.Not(result), NotNull(value)));
-            }
-            if (RunsCode(m)) HavocClosureLocals(f); // (a local function, or a delegate it was handed, may write them)
-            return result ?? T.True;
+            finally { _z3.Cause = wasCause; }
         }
 
         /// <summary>

@@ -112,6 +112,7 @@ dotnet build                 # everything
 dotnet test                  # the tests (they need Z3)
 dotnet run --project src/CsVerify.Verifier -- -v samples/Good
 bash samples/e2e.sh          # the packages end to end: verify, erase and test with Tarp a copy of samples/Shop
+bash corpus/report.sh        # the library report on the corpus: what real code's failures come from, ranked
 ```
 
 ```
@@ -125,6 +126,7 @@ docs                     the documentation
 lemon/CsLemon            cslemon: Lemon ported to C# and verified
 lemon/CsLemon.Runtime    the verified LR interpreter and validators, the run time of its C# parsers
 lemon/tests              differential tests against C Lemon and its parsers, grammars
+corpus                   C code ported without specifications (jsmn, picohttpparser): what the library report measures
 ```
 
 `dotnet pack src/CsVerify.Spec` and `dotnet pack src/CsVerify.Verifier` make the two packages. CI and releases are

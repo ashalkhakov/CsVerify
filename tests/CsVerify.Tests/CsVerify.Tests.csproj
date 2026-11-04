@@ -14,5 +14,7 @@
     <ProjectReference Include="..\..\src\CsVerify.Spec\CsVerify.Spec.csproj" />
     <ProjectReference Include="..\..\src\CsVerify.Analyzers\CsVerify.Analyzers.csproj" />
     <ProjectReference Include="..\..\src\CsVerify.Verifier\CsVerify.Verifier.csproj" />
+    <!-- the corpus's ports run here against their C originals' behaviour (CorpusTests) -->
+    <ProjectReference Include="..\..\corpus\CsVerify.Corpus.csproj" />
   </ItemGroup>
 </Project>

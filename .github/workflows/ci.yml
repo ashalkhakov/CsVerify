@@ -38,6 +38,20 @@ jobs:
       - run: bash samples/e2e.sh
         shell: bash
 
+  # the library report on the corpus (corpus/README.md): what stands between real code and its proof, ranked, in the
+  # job's summary. It informs; the corpus is not expected to verify, so this fails only if the verifier cannot run
+  library-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+      - run: |
+          bash corpus/report.sh | tee report.txt
+          { echo '## Library report'; echo; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   # CsLemon: verified, and against the C lemon it was ported from (its outputs, its parsers). On macOS: the C lemon
   # breaks its last tie between actions by their addresses (actioncmp's ap2 - ap1), and CsLemon models them as
   # growing with allocation order, as macOS's malloc gives them; glibc's doesn't always (sqlite_parse -p differs)

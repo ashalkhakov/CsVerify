@@ -164,6 +164,8 @@ namespace CsVerify.Verifier
         {
             Send("(reset)");
             _declared.Clear();
+            _defines.Clear();
+            Causes.Clear();
             _defined = 0;
             _fresh = 0; // the same names for the same method, whatever was verified before: Z3's search depends on them
             Depth = 0;
@@ -199,7 +201,36 @@ namespace CsVerify.Verifier
         {
             var name = T.Quote(hint + "!" + (_fresh++));
             Send($"(declare-const {name} {T.SortName(sort)})");
+            if (Cause != null) Causes[name] = Cause;
             return new Term(name, sort);
+        }
+
+        /// <summary>
+        /// Where the unknown values made now come from (a library call, a loop without invariants), for the library
+        /// report: a fresh constant declared while it is set is charged to it. Null for none.
+        /// </summary>
+        public string Cause;
+        /// <summary>The fresh constants made while <see cref="Cause"/> was set, and their causes.</summary>
+        public readonly Dictionary<string, string> Causes = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _defines = new Dictionary<string, string>(StringComparer.Ordinal);
+        private static readonly System.Text.RegularExpressions.Regex Symbol = new System.Text.RegularExpressions.Regex(@"\|[^|]*\|");
+
+        /// <summary>The causes of the fresh constants a term mentions, through the names <see cref="Define"/> gave.</summary>
+        public SortedSet<string> CausesIn(Term t)
+        {
+            var found = new SortedSet<string>(StringComparer.Ordinal);
+            if (Causes.Count == 0) return found;
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var todo = new Stack<string>();
+            todo.Push(t.S);
+            while (todo.Count > 0)
+                foreach (System.Text.RegularExpressions.Match m in Symbol.Matches(todo.Pop()))
+                {
+                    if (!seen.Add(m.Value)) continue;
+                    if (Causes.TryGetValue(m.Value, out var cause)) found.Add(cause);
+                    else if (_defines.TryGetValue(m.Value, out var body)) todo.Push(body);
+                }
+            return found;
         }
 
         /// <summary>
@@ -212,6 +243,7 @@ namespace CsVerify.Verifier
             // (a counter of its own: the fresh constants keep their names, and Z3's search, which depends on them)
             var name = T.Quote(hint + "#" + (_defined++));
             Send($"(define-fun {name} () {T.SortName(t.Sort)} {t.S})");
+            if (Causes.Count > 0) _defines[name] = t.S;
             return new Term(name, t.Sort);
         }
 

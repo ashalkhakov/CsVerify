@@ -72,7 +72,8 @@ public static class ListContracts<T>
 
 - **Preconditions are proved** at every call (CSV1001), like any callee's.
 - **Postconditions are assumed, never proved.** A stub's contract is trusted, like `[Trusted]`. A wrong stub makes
-  wrong things provable (`StubTests.StubContracts_AreTrusted_AndCounted` shows one). Every run counts the stubbed
+  wrong things provable (`StubTests.StubContracts_AreTrusted_AndCounted` shows one). CsVerify's own stubs are tested
+  against the real BCL instead ([below](#conformance-tests)). Every run counts the stubbed
   members its proofs used: the summary line ends with `, N library contract(s) assumed`, and `-v` lists them
   (`assumed System.Collections.Generic.List<T>.Add(T)`).
 - **Frames.** A stub's `Spec.Modifies` says which objects' model state the member may change, as for source methods:
@@ -154,6 +155,26 @@ unknown values (CSV1900). Either way the enumerator's `Dispose`, which does noth
 `Math.Min`, `Max` and `Abs` stay built into the verifier. Their definitions are needed inside the definitions of
 `[Pure]` functions, which unfold only one level, and `Abs(int.MinValue)` throws `OverflowException`, which is not a
 precondition. The floating-point functions are built in too (see [Floating point](semantics.md#floating-point)).
+
+## Conformance tests
+
+Every stub in `CsVerify.Bcl` is run against the real BCL on random inputs (`StubConformanceTests`). For each stub
+method the test generates a checker and compiles it:
+1. it assumes the preconditions, skipping inputs that break them;
+2. it copies the arguments, for `Spec.Old`;
+3. it calls the real member;
+4. it checks the postconditions, and that only the objects `Spec.Modifies` names changed their models.
+
+The model functions get their run-time meanings: `Items()` is the list's elements, `Size()` its `Count`, `Domain()`
+its keys. Where a model means nothing (`Items()` past `Size()`, `Entries()` at a missing key) its value is
+undetermined, and matches anything.
+
+A `[Pure]` stub's member must not throw where its preconditions hold, because the verifier assumes it returns. Any
+other member may throw, since every call may in CsVerify's model; then its `EnsuresOnThrow` and its frame are checked.
+Type parameters are `int`, and `string` for a dictionary's keys. `WrongStubs_AreCaught` checks that the checkers
+catch wrong stubs: a wrong count, a write outside the frame, a `[Pure]` member that throws, a wrong `Spec.Old` under a
+quantifier. A stub added to `CsVerify.Bcl` is tested the same way, with no test to write, as long as its parameter
+types have random inputs in the test.
 
 Where the contracts are weaker than the library, or trusted for more than they say, see
 [Limitations](limitations.md).

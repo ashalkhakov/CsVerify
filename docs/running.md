@@ -40,6 +40,50 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--smt-log <file>` | dump the whole SMT-LIB2 conversation |
 | `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
 | `-v` | list every method with its proved/total obligations, and the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed |
+| `--each` | verify each argument as a program of its own (a comma joins paths into one: `lemon/CsLemon,lemon/CsLemon.Runtime`), and combine the results, for programs that cannot be compiled together |
+| `--library-report` | after the results, the [library report](#the-library-report) |
+
+## The library report
+
+`--library-report` ranks what stands between a program and its proof, so the contracts and verifier features worth
+adding first are the ones that unblock the most:
+
+```bash
+dotnet csverify --library-report corpus
+```
+
+```
+library report
+  21 methods: 7 verified, 13 with failed obligations, 1 not verified (unsupported constructs)
+  95 failed obligations
+
+library members without contracts, by the failures they cause
+  failures  calls  member
+         1      1  System.CharEnumerator.Current
+         0      3  System.Span<T>.Slice(int, int)
+  ...
+methods of the program without postconditions, by the failures their calls cause
+  failures  method
+         5  Corpus.Json.Jsmn.AllocToken(Corpus.Json.JsmnParser, Corpus.Json.JsmnToken[], int)
+  ...
+failed obligations by cause (one may have several)
+         1  a library member without a contract
+        15  a method without postconditions
+        76  a loop without invariants
+         8  none of these (the code's own values)
+  ...
+```
+
+A failed obligation is charged to where the unknown values its condition mentions come from:
+- **a library member without a contract:** its result, its `out` values, or the memory and fields it may have changed;
+- **a method of the program without postconditions:** what its callers know of its result is only its type;
+- **a loop without invariants:** what the loop changes is unknown at its head.
+
+A failure may have several causes, or none: the code's own arithmetic and checks over values it knows. The charge is
+a guide, not a proof: a fact can also go missing through a path condition (an `if` on a library result) that the
+failed condition does not mention. Below that come the failures by kind (diagnostic id), the unsupported constructs
+(CSV1901, each leaving its method unverified), and the unknown values (CSV1900), each grouped by message.
+`corpus/report.sh` runs it on the [corpus](../corpus/README.md).
 
 **From MSBuild:** the `CsVerify` package brings the targets (`build/CsVerify.targets`), so a project referencing it is verified when built with:
 
