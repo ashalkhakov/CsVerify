@@ -75,9 +75,15 @@ public static class ListContracts<T>
   wrong things provable (`StubTests.StubContracts_AreTrusted_AndCounted` shows one). Every run counts the stubbed
   members its proofs used: the summary line ends with `, N library contract(s) assumed`, and `-v` lists them
   (`assumed System.Collections.Generic.List<T>.Add(T)`).
-- **Frames.** A stub's `Spec.Modifies` says which objects' model state the member may change, as for source methods.
-  Without one, the member changes no model state, except that a constructor sets up the new object's. A caller with
-  `Spec.Modifies` must cover what the stubbed callee changes (CSV1017).
+- **Frames.** A stub's `Spec.Modifies` says which objects' model state the member may change, as for source methods:
+  only the model functions of its own type (a list's for `List<T>`'s stub). Without one, the member changes no model
+  state, except that a constructor sets up the new object's. A caller with `Spec.Modifies` must cover what the stubbed
+  callee changes (CSV1017).
+- **Arrays.** A stubbed member that may write arrays (one it is handed) writes only the arrays its `Spec.Modifies`
+  names: `Array.Fill(a, 0)` leaves every other array as it was. A library method without a stub, handed an array, may
+  still write any array.
+- **Fresh results.** A postcondition `Spec.Fresh(r)` makes a returned array a new one, distinct from every array in
+  scope (`list.ToArray()`).
 - **`[Pure]` stubs** may be used in specifications (`l.Count`, `l[i]`, `d.ContainsKey(k)`, `string.IsNullOrEmpty(s)`).
   If one has a postcondition `r == E`, or `Ghost.Of(r) == E`, its value is E itself. So `l[i]` is the model's element,
   and a quantified fact about `l[j]` carries across a change to another element. A `[Pure]` stub has no effects
@@ -117,11 +123,24 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 
 | type | models | members |
 |---|---|---|
-| `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `RemoveAt`, `Clear` |
+| `List<T>` | `Items()`: `Seq<T>`, `Size()` | constructors, `Count`, the indexer (get and set), `Add`, `Insert`, `AddRange` (keeps the elements, grows), `RemoveAt`, `RemoveRange`, `Clear`, `Reverse`, `Sort` (frame and count), `ToArray`, `GetRange`, `IndexOf` (its range), `GetEnumerator`; `foreach` (below) |
+| `Array` | the arrays' contents (built in) | `Empty`, `Fill` (whole and a range), `Reverse<T>`, `Copy` (bounds, the frame, and the destination's other elements), `Resize` (the new length), `IndexOf<T>` (its range), `Sort<T>` (the frame) |
 | `Dictionary<K, V>` | `Domain()`: `Map<K, bool>`, `Entries()`: `Map<K, V>`, `Size()` | constructor, `Count`, `ContainsKey`, the indexer (get and set), `Add`, `Remove`, `TryGetValue` |
 | `string` | its `Length` (built in) | `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith`, `EndsWith`, `Contains`, `IndexOf(char)`, `LastIndexOf(char)`, `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
 | `int` | | `Parse(string)`, `TryParse(string, out int)` |
 | `Math` | | `Clamp` and `Sign` for `int` and `long` |
+
+`Seq.Contents(a)` is an array's elements whatever its type, for contracts over `System.Array`, whose elements C# cannot
+index. Compare them with each other, not with typed values. `Array.Copy` says nothing of the elements it copies,
+because it converts between element types (`int[]` to `long[]` or `object[]`), and the converted values are not the ones
+stored. `IndexOf`, `Contains` and `Sort` depend on the elements' `Equals` and comparers, which a stub cannot know for a
+type parameter, so they give ranges and frames only.
+
+**`foreach` over a `List<T>`** runs like a `foreach` over an array, over the list's model: the iteration variable is
+`Items()[i]` for `i` from 0 to `Size()`, `Spec.Index(x)` is `i`, and the loop ends by itself. That holds only if the loop
+changes no list. In .NET, changing the list makes the next `MoveNext` throw. So if the loop may change any model state,
+it goes through the enumerator instead: `GetEnumerator`, `MoveNext` and `Current` are calls, and the elements are
+unknown values (CSV1900). Either way the enumerator's `Dispose`, which does nothing for a list, is left out.
 
 `Map<K, V>` is a ghost total map, like `Seq<T>` but indexed by keys: `m[k]`, `m.Update(k, v)`, `Map.Const<K, V>(v)`, `==`.
 

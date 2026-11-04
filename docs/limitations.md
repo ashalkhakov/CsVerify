@@ -27,11 +27,12 @@
   - a stub without `Spec.Modifies` is taken to change no model state, and a `[Pure]` one to have no effects at all;
   - `Dictionary` keys are compared as the verifier compares values of their type. That is the dictionary's own comparison for integers, enums and other values, and for classes with reference equality, but not for strings (compared by contents in .NET, by reference here) or for classes that override `Equals`, nor with a custom comparer;
   - running out of memory is not modelled: a list can grow without bound (its `Size()` is a mathematical integer), as in Dafny;
-  - model state over strings never changes (they are immutable).
+  - model state over strings never changes (they are immutable);
+  - `List<T>.Enumerator.Dispose` is taken to do nothing, and a `foreach` over a list to see the list as it was when the loop began.
 
 **Unsupported constructs**
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
-- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, library properties without a `[Pure]` stub, non-pure calls in specifications, the elements of a `foreach` over a library collection, a string or a span.
+- Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, library properties without a `[Pure]` stub, non-pure calls in specifications, the elements of a `foreach` over a library collection (a `List<T>` whose loop may change a list included), a string or a span.
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
 - Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
 - Not verified as separate units: local functions and lambdas.

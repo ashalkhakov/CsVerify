@@ -35,6 +35,8 @@ namespace CsVerify.Verifier
             public bool HavocRoot; // ownership changes hands in the loop (Own.New/Take/Give)
             public bool Permissions; // permissions are exchanged in the loop (folds, unfolds, calls whose contracts speak of them)
             public ITypeSymbol ArrayElement;
+            /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
+            public bool OverList;
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
 
@@ -691,7 +693,7 @@ namespace CsVerify.Verifier
             t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>");
 
         internal static bool IsSequence(ITypeSymbol t) =>
-            t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String ||
+            t is IArrayTypeSymbol || t?.SpecialType == SpecialType.System_String || t?.SpecialType == SpecialType.System_Array ||
             (t is INamedTypeSymbol n && (n.OriginalDefinition.ToDisplayString() == "System.Span<T>" || n.OriginalDefinition.ToDisplayString() == "System.ReadOnlySpan<T>"));
 
         /// <summary>
@@ -1349,6 +1351,19 @@ namespace CsVerify.Verifier
             return prop.DeclaringSyntaxReferences.Length > 0;
         }
 
+        /// <summary>A new array is distinct from every array the method can already see, and from every array a field holds.</summary>
+        private void NewArrayIsDistinct(Term r, Frame f)
+        {
+            foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
+                _z3.Assume(T.Not(T.Eq(r, t)));
+            // (no field can hold it yet)
+            foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
+            {
+                var map = FieldMap(f, field);
+                _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
+            }
+        }
+
         private Term EvalArrayCreation(IArrayCreationOperation ac, Frame f, SpecEnv spec)
         {
             var sizes = ac.DimensionSizes.Select(d => Eval(d, f, spec)).ToList();
@@ -1357,15 +1372,7 @@ namespace CsVerify.Verifier
             var r = _z3.Fresh("array", Sort.Int);
             _z3.Assume(NotNull(r));
             if (sizes.Count == 1) _z3.Assume(T.Eq(Len(r), sizes[0]));
-            // A new array is distinct from every array the method can already see.
-            foreach (var t in f.Vars.Where(kv => IsSequence(TypeOf(kv.Key))).Select(kv => kv.Value))
-                _z3.Assume(T.Not(T.Eq(r, t)));
-            // and from every array a field holds (no field can hold it yet)
-            foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
-            {
-                var map = FieldMap(f, field);
-                _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
-            }
+            NewArrayIsDistinct(r, f);
             var row = sizes.Count > 1 ? NewMultiArray(ac, r, sizes, f, spec) : T.ZeroRow();
             if (ac.Initializer != null && sizes.Count == 1)
                 for (int i = 0; i < ac.Initializer.ElementValues.Length; i++)
@@ -1592,6 +1599,12 @@ namespace CsVerify.Verifier
             }
             if (f.ArrPerm != null && MentionsCells(callee) && !callee.IsPure)
                 f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
+            else if (HavocsHeap(m) && callee.IsStub && callee.Modifies != null && !_arrayMode)
+            {
+                // a stub's Spec.Modifies names the arrays it writes: the others keep their contents
+                var frame = T.Coerce(EvalForeignSpec(callee.Modifies, pre, preEnv), Sort.Row);
+                f.Heap = post.Heap = _z3.Define("heap", new Term($"(cv_frameh {frame} {memoryBefore} {_z3.Fresh("heap", Sort.Heap)})", Sort.Heap));
+            }
             else if (HavocsHeap(m))
             {
                 if (_arrayMode && _codeMode)
@@ -1613,6 +1626,8 @@ namespace CsVerify.Verifier
             var result = packageResult ?? (m.ReturnsVoid ? null : FreshOf(m.ReturnType, m.Name));
             if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
             if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
+            // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it
+            if (result != null && callee.StubFreshResult && IsSequence(m.ReturnType)) NewArrayIsDistinct(result, f);
             if (!callee.IsPure && !callee.IsLemma)
             {
                 AllocAfterCall(f, inv.Arguments.Where(a => (a.Parameter?.RefKind == RefKind.Out || a.Parameter?.RefKind == RefKind.Ref) && !(a.Value is IDiscardOperation))
@@ -1662,6 +1677,7 @@ namespace CsVerify.Verifier
             switch (inv.TargetMethod.Name)
             {
                 case "Const": return T.ConstRow(T.Coerce(args[0], Sort.Int));
+                case "Contents": return T.Select(f.Heap, T.Coerce(args[0], Sort.Int), Sort.Row); // an array's elements, whatever their type
                 case "Of": return T.Store(T.ZeroRow(), T.Coerce(args[0], Sort.Int), T.Int(1));
                 case "Contains": return T.Not(T.Eq(T.Select(self, T.Coerce(args[0], Sort.Int), Sort.Int), T.Int(0)));
                 case "Add": return T.Store(self, T.Coerce(args[0], Sort.Int), T.Int(1));

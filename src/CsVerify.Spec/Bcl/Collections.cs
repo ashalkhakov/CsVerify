@@ -96,6 +96,80 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        public static void Insert(List<T> @this, int index, T item)
+        {
+            Spec.Requires(0 <= index && index <= @this.Size());
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) + 1);
+            Spec.Ensures(@this.Items()[index] == Ghost.Of(item));
+            Spec.Ensures(Spec.Forall(0, index, i => @this.Items()[i] == Spec.Old(@this.Items())[i]));
+            Spec.Ensures(Spec.Forall(index + 1, @this.Size(), i => @this.Items()[i] == Spec.Old(@this.Items())[i - 1]));
+            throw null!;
+        }
+
+        public static void RemoveRange(List<T> @this, int index, int count)
+        {
+            Spec.Requires(0 <= index && 0 <= count && index <= @this.Size() - count);
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) - count);
+            Spec.Ensures(@this.Items() == Spec.Old(@this.Items()).Concat(index, Spec.Old(@this.Items()).Drop(index + count)));
+            throw null!;
+        }
+
+        // (what the collection holds is not known: the list keeps its elements and grows)
+        public static void AddRange(List<T> @this, IEnumerable<T> collection)
+        {
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Size() >= Spec.Old(@this.Size()));
+            Spec.Ensures(Spec.Forall(0, Spec.Old(@this.Size()), i => @this.Items()[i] == Spec.Old(@this.Items())[i]));
+            throw null!;
+        }
+
+        public static void Reverse(List<T> @this)
+        {
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()));
+            Spec.Ensures(Spec.Forall(0, @this.Size(), i => @this.Items()[i] == Spec.Old(@this.Items())[@this.Size() - 1 - i]));
+            throw null!;
+        }
+
+        // (how it orders elements is the comparer's: only that it keeps the count)
+        public static void Sort(List<T> @this)
+        {
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()));
+            throw null!;
+        }
+
+        public static T[] ToArray(List<T> @this)
+        {
+            Spec.Ensures<T[]>(r => Spec.Fresh(r) && r.Length == @this.Size());
+            Spec.Ensures<T[]>(r => Spec.Forall(0, r.Length, i => Ghost.Of(r[i]) == @this.Items()[i]));
+            throw null!;
+        }
+
+        public static List<T> GetRange(List<T> @this, int index, int count)
+        {
+            Spec.Requires(0 <= index && 0 <= count && index <= @this.Size() - count);
+            Spec.Ensures<List<T>>(r => Spec.Fresh(r) && r.Size() == count);
+            Spec.Ensures<List<T>>(r => Spec.Forall(0, count, i => r.Items()[i] == @this.Items()[index + i]));
+            throw null!;
+        }
+
+        // (equality is the element type's Equals, which the verifier does not know: only the range)
+        [Pure]
+        public static int IndexOf(List<T> @this, T item)
+        {
+            Spec.Ensures<int>(r => -1 <= r && r < @this.Size());
+            throw null!;
+        }
+
+        // (it changes nothing: a foreach over a list that a loop may change goes through it, and its MoveNext and Current)
+        public static List<T>.Enumerator GetEnumerator(List<T> @this)
+        {
+            throw null!;
+        }
+
         public static void Clear(List<T> @this)
         {
             Spec.Modifies(ObjSet.Of(@this));

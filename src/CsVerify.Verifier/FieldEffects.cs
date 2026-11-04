@@ -76,6 +76,11 @@ namespace CsVerify.Verifier
         private IEnumerable<ISymbol> MutableModels() =>
             _engine.Models.Where(m => m.Parameters[0].Type.SpecialType != SpecialType.System_String);
 
+        /// <summary>The model functions of a stub's own type (a list's, for List's stub; none for Array's).</summary>
+        private IEnumerable<ISymbol> ModelsOf(INamedTypeSymbol type) =>
+            MutableModels().Cast<IMethodSymbol>().Where(x => x.Parameters[0].Type is INamedTypeSymbol o &&
+                (DataTypes.Derives(o.OriginalDefinition, type.OriginalDefinition) || DataTypes.Derives(type.OriginalDefinition, o.OriginalDefinition)));
+
         /// <summary>
         /// May a library method without a stub change model state: is it handed (as its receiver, an argument or a
         /// type argument) something that may be, or lead to, an object with [Model] functions?
@@ -161,7 +166,8 @@ namespace CsVerify.Verifier
                 // (its receiver included: a delegate's Invoke)
                 d.All = RunsUserCode(m) && !c.IsPure; // (a [Pure] stub says it has no effects: trusted, like all it says)
                 // model state: a stub says what it changes (Spec.Modifies, or nothing); without one, anything it reaches
-                if (c.IsStub ? c.Modifies != null || m.MethodKind == MethodKind.Constructor : MayTouchModels(m)) d.Writes.UnionWith(MutableModels());
+                if (!c.IsStub && MayTouchModels(m)) d.Writes.UnionWith(MutableModels());
+                if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor)) d.Writes.UnionWith(ModelsOf(m.ContainingType));
                 if (c.IsStub) AddModelReads(d, c);
                 return d;
             }

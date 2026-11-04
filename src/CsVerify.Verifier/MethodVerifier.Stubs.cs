@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
@@ -14,7 +15,10 @@ namespace CsVerify.Verifier
     internal sealed partial class MethodVerifier
     {
         /// <summary>A stub's contract is used: an assumption of this proof.</summary>
-        private void Assumed(Contract callee) => _result.Assumptions.Add(callee.Method.ToDisplayString());
+        private void Assumed(Contract callee) => Assumed(callee.Method.ToDisplayString());
+
+        /// <summary>A library member the verifier models with the stubs' model functions (foreach over a list).</summary>
+        private void Assumed(string member) => _result.Assumptions.Add(member);
 
         /// <summary>The stub's parameter that stands for the member's i-th (after <c>@this</c>, for an instance member).</summary>
         private static IParameterSymbol StubParameter(Contract callee, int i)
@@ -68,12 +72,22 @@ namespace CsVerify.Verifier
                 NotModeled(inv.Syntax, $"[Model] '{model.Name}' is not known here");
                 return Unknown(inv.Type, model.Name);
             }
+            return ModelAt(model, args, f, inv.Type);
+        }
+
+        /// <summary>
+        /// The value of model function M at (o) or (o, k) in a state: the ghost field M of o (at key k), with what M's own
+        /// postconditions say of it.
+        /// </summary>
+        private Term ModelAt(IMethodSymbol model, IReadOnlyList<Term> args, Frame f, ITypeSymbol type = null)
+        {
+            type ??= model.ReturnType;
             var o = T.Coerce(args[0], Sort.Int);
             var map = FieldMap(f, model);
             var value = model.Parameters.Length == 2
-                ? InRangeOf(T.Coerce(T.Select(T.Select(map, o, Sort.Row), T.Coerce(args[1], Sort.Int), Sort.Int), SortOf(inv.Type)), inv.Type)
+                ? InRangeOf(T.Coerce(T.Select(T.Select(map, o, Sort.Row), T.Coerce(args[1], Sort.Int), Sort.Int), SortOf(type)), type)
                 : ValueSort(model) == Sort.Row ? T.Select(map, o, Sort.Row)
-                : InRangeOf(T.Coerce(T.Select(map, o, Sort.Int), SortOf(inv.Type)), inv.Type);
+                : InRangeOf(T.Coerce(T.Select(map, o, Sort.Int), SortOf(type)), type);
             // what the model function's own postconditions say of every value (a size is not negative): trusted
             var contract = _engine.ContractOf(model);
             if (contract.Ensures.Count > 0)

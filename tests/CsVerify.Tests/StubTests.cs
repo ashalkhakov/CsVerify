@@ -43,7 +43,48 @@ namespace CsVerify.Tests
             // a stubbed call is checked against the caller's frame
             Assert.Equal(new[] { "CSV1017" }, Errors("M", "static void M(List<int> a, List<int> b) { Spec.Modifies(ObjSet.Of(a)); b.Add(5); }"));
             // a library method without a stub that is handed the list may change it
-            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(List<int> a) { Spec.Requires(a.Count == 1); a.Reverse(); Spec.Assert(a.Count == 1); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(List<int> a) { Spec.Requires(a.Count == 1); a.TrimExcess(); Spec.Assert(a.Count == 1); }"));
+        }
+
+        [Fact]
+        public void ArrayHelpers_WriteOnlyTheirFrame()
+        {
+            Assert.Empty(Errors("M", "static void M(int[] a, int[] b) { Spec.Requires(a != b && b.Length > 0 && b[0] == 7); System.Array.Fill(a, 3); Spec.Assert(b[0] == 7 && (a.Length == 0 || a[0] == 3)); }"));
+            Assert.Empty(Errors("M", "static void M(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); System.Array.Reverse(a); Spec.Assert(a[0] == 2 && a[1] == 1); }"));
+            Assert.Empty(Errors("M", "static void M(int[] a, int[] b) { Spec.Requires(a.Length == 3 && b.Length == 4 && b[3] == 9); System.Array.Copy(a, b, 3); Spec.Assert(b[3] == 9); }"));
+            Assert.Empty(Errors("M", "static void M() { int[]? a = new int[2]; System.Array.Resize(ref a, 5); Spec.Assert(a.Length == 5); }"));
+            Assert.Empty(Errors("M", "static void M(List<int> l, int[] a) { Spec.Requires(l.Count == 1); Spec.Modifies(ObjSet.Of(l)); System.Array.Fill(a, 0); Spec.Assert(l.Count == 1); }"));
+            // refuted: a copy longer than the arrays; the copied elements themselves are not described (Copy converts)
+            Assert.Equal(new[] { "CSV1001" }, Errors("M", "static void M(int[] a, int[] b) { System.Array.Copy(a, b, 3); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(int[] a, int[] b) { Spec.Requires(a.Length == 1 && b.Length == 1 && a[0] == 1); System.Array.Copy(a, b, 1); Spec.Assert(b[0] == 1); }"));
+            // a library method without a stub, handed an array, may still write any array
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(int[] a, int[] b) { Spec.Requires(a != b && b.Length > 0 && b[0] == 7); System.Array.Clear(a); Spec.Assert(b[0] == 7); }"));
+        }
+
+        [Fact]
+        public void ListMembers_FollowTheirModel()
+        {
+            Assert.Empty(Errors("M", "static void M() { var l = new List<int>(); l.Add(1); l.Add(3); l.Insert(1, 2); Spec.Assert(l.Count == 3 && l[0] == 1 && l[1] == 2 && l[2] == 3); }"));
+            Assert.Empty(Errors("M", "static void M() { var l = new List<int>(); l.Add(1); l.Add(2); l.Add(3); l.RemoveRange(0, 2); Spec.Assert(l.Count == 1 && l[0] == 3); }"));
+            Assert.Empty(Errors("M", "static void M(int[] other) { var l = new List<int>(); l.Add(5); var a = l.ToArray(); Spec.Assert(a.Length == 1 && a[0] == 5 && a != other); }"));
+            Assert.Empty(Errors("M", "static void M() { var l = new List<int>(); l.Add(5); l.Add(6); var g = l.GetRange(1, 1); Spec.Assert(g.Count == 1 && g[0] == 6 && l.Count == 2); }"));
+            Assert.Empty(Errors("M", "static void M() { var l = new List<int>(); l.Add(5); l.Add(6); l.Reverse(); Spec.Assert(l[0] == 6 && l[1] == 5); }"));
+            Assert.Equal(new[] { "CSV1001" }, Errors("M", "static void M(List<int> l) { Spec.Modifies(ObjSet.Of(l)); l.Insert(1, 0); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(List<int> l) { Spec.Requires(l.Count == 2); Spec.Modifies(ObjSet.Of(l)); l.Sort(); Spec.Assert(l[0] <= l[1]); }"));
+        }
+
+        [Fact]
+        public void ForEachOverAList_RunsOverItsModel()
+        {
+            Assert.Empty(Errors("M", "static int M(List<int> l) { Spec.Requires(l.Count <= 1000 && Spec.Forall(0, l.Count, i => 0 <= l[i] && l[i] <= 100)); Spec.Ensures<int>(r => r >= 0); " +
+                                     "int s = 0; foreach (var x in l) { Spec.Invariant(0 <= s && s <= 100 * Spec.Index(x)); s += x; } return s; }"));
+            Assert.Empty(Errors("M", "static bool M(List<int> l) { Spec.Ensures<bool>(r => !r || Spec.Forall(0, l.Count, i => l[i] > 0)); " +
+                                     "foreach (var x in l) { Spec.Invariant(Spec.Forall(0, Spec.Index(x), i => l[i] > 0)); if (x <= 0) return false; } return true; }"));
+            Assert.Equal(new[] { "CSV1010" }, Errors("M", "static int M(List<int> l) { int s = 0; foreach (var x in l) s += x; return s; }"));
+            // a loop that may change a list goes through the enumerator: its elements are unknown, but it is still verified
+            var r = Verify("public static class C { static void M(List<int> l, List<int> o) { Spec.Modifies(ObjSet.Of(o)); foreach (var x in l) o.Add(x); } }");
+            Assert.Empty(r.Errors("M"));
+            Assert.Contains(r["M"].Diagnostics, d => d.Id == "CSV1900" && d.Message.Contains("Current"));
         }
 
         [Fact]

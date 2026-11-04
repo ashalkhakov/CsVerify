@@ -68,6 +68,8 @@ namespace CsVerify.Verifier
         /// the member's value, used in its place (list[i] is the model's element itself, not a function of it).
         /// </summary>
         public IOperation StubDefinition;
+        /// <summary>A stub that promises a fresh result (<c>Spec.Fresh(r)</c>): a returned array is a new one.</summary>
+        public bool StubFreshResult;
 
         /// <summary>The contract an external member gets from its stub.</summary>
         public static Contract ReadStub(IMethodSymbol member, IMethodSymbol stub, Compilation compilation)
@@ -79,6 +81,8 @@ namespace CsVerify.Verifier
             c.Aliases.Add(c.Stub);
             if (c.IsPure)
                 c.StubDefinition = c.Ensures.Select(e => Definition(e.Expr, e.ResultParameter)).FirstOrDefault(d => d != null);
+            c.StubFreshResult = c.Ensures.Any(e => e.Expr != null && e.Expr.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i =>
+                SpecSymbols.IsSpecClass(i.TargetMethod.ContainingType) && i.TargetMethod.Name == "Fresh" && Mentions(i.Arguments[0].Value, e.ResultParameter)));
             return c;
         }
 

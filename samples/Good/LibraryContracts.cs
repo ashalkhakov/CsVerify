@@ -44,6 +44,30 @@ namespace Samples.Library
             return best;
         }
 
+        /// <summary>The sum of a list of small numbers, with foreach (over the list's model).</summary>
+        public static int Sum(List<int> l)
+        {
+            Spec.Requires(l.Count <= 1000 && Spec.Forall(0, l.Count, i => 0 <= l[i] && l[i] <= 100));
+            Spec.Ensures<int>(r => 0 <= r && r <= 100 * l.Count);
+            int s = 0;
+            foreach (int x in l)
+            {
+                Spec.Invariant(0 <= s && s <= 100 * Spec.Index(x));
+                s += x;
+            }
+            return s;
+        }
+
+        /// <summary>A copy of an array with its first element replaced: Array.Fill writes only its own array.</summary>
+        public static int[] Zeroes(int[] keep)
+        {
+            Spec.Requires(keep.Length > 0 && keep[0] == 1);
+            Spec.Ensures<int[]>(r => r.Length == 3 && r[0] == 0 && keep[0] == 1);
+            var zeroes = new int[3];
+            System.Array.Fill(zeroes, 0);
+            return zeroes;
+        }
+
         /// <summary>Moves the last element of one list to another: only those two change (Spec.Modifies).</summary>
         public static void MoveLast(List<int> from, List<int> to)
         {
@@ -89,7 +113,9 @@ namespace Samples.Library
             var values = new[] { 1, 2, 1 };
             var h = Histogram(values);
             Spec.Assert(h.ContainsKey(values[1]));
-            return unchecked(Max(a) + b[0] + h.Count + ValueOf("k=v").Length); // 4 + 9 + 2 + 1
+            var arr = a.ToArray();
+            Spec.Assert(arr.Length == 3);
+            return unchecked(Max(a) + b[0] + h.Count + ValueOf("k=v").Length + Sum(b) + arr.Length); // 4 + 9 + 2 + 1 + 9 + 3
         }
     }
 }
