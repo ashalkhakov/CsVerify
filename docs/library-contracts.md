@@ -202,6 +202,14 @@ calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as
 sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
 it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
 
+**Lazy LINQ.** `Select`, `Where`, `Take` and `Skip` (with pure lambdas, over what the verifier reads or over each
+other) make views. A view is read when it is enumerated: by the eager methods above, `ToList`, `ToArray`, or a
+`foreach`. It reads its source as it is then, and runs its lambda then, on what it captures as it is then. So
+`var q = list.Select(x => x); list.Add(5); q.First()` is 5. A `Select`'s elements are its selector's values. A
+`Where`'s elements are the matching ones, in order and all of them: `a.Where(x => x > 5).Count()` is exact. A
+`foreach` over such a chain, whose loop changes no state, runs over the view like a foreach over an array. A view
+kept in a variable is known in its own method only.
+
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their
 contents), classes that do not override `Equals` (references), and data records. For other types (a class with its own

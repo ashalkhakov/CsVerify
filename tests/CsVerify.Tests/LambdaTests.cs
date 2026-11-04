@@ -78,6 +78,40 @@ public static class P
         }
 
         [Fact]
+        public void LazyLinq_IsReadWhenItIsEnumerated()
+        {
+            var r = Harness.Verify(@"
+using System.Collections.Generic;
+using System.Linq;
+public static class P
+{
+    public static int Doubled(int[] a) { Spec.Requires(a.Length == 2 && a[1] == 4); Spec.Ensures<int>(r => r == 8); return a.Select(x => x * 2).Last(); }
+    public static int WhereFirst(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 6 && a[2] == 7); Spec.Ensures<int>(r => r == 6); return a.Where(x => x > 5).First(); }
+    public static int WhereCount(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 6 && a[2] == 7); Spec.Ensures<int>(r => r == 2); return a.Where(x => x > 5).Count(); }
+    public static bool WhereAll(int[] a) { Spec.Ensures<bool>(r => r); return a.Where(x => x > 5).All(x => x > 0); }
+    public static List<int> Chain(List<int> l)
+    {
+        Spec.Requires(l.Count == 2 && l[0] == 3 && l[1] == 9);
+        var r = l.Where(x => x > 4).Select(x => x + 1).ToList();
+        Spec.Assert(r.Count == 1 && r[0] == 10);
+        return r;
+    }
+    // a view reads its source when it is enumerated: it sees the 5 added after it was made
+    public static int Later(List<int> l) { Spec.Requires(l.Count == 0); Spec.Modifies(ObjSet.Of(l)); var q = l.Select(x => x); l.Add(5); return q.First(); }
+    public static int Take(int[] a) { Spec.Requires(a.Length == 5); Spec.Ensures<int>(r => r == 2); return a.Take(2).Count(); }
+    public static int Skip(int[] a) { Spec.Requires(a.Length == 3 && a[2] == 7); Spec.Ensures<int>(r => r == 7); return a.Skip(2).First(); }
+    public static int Each(int[] a) { int s = 0; foreach (var x in a.Where(y => y > 5)) { Spec.Assert(x > 5); s = x; } return s; }
+    public static int Mapped(List<int> l) { int s = 0; foreach (var x in l.Select(y => y * 0)) { Spec.Assert(x == 0); s = x; } return s; }
+    public static int Empty(int[] a) => a.Where(x => x > 100).First();
+    public static int TooStrong(int[] a) { int s = 0; foreach (var x in a.Where(y => y > 5)) { Spec.Assert(x > 6); s = x; } return s; }
+}", overflow: false);
+            foreach (var m in new[] { "Doubled", "WhereFirst", "WhereCount", "WhereAll", "Chain", "Later", "Take", "Skip", "Each", "Mapped" })
+                Assert.Empty(r.Errors("P." + m));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.Empty"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.TooStrong"));
+        }
+
+        [Fact]
         public void ImpureLambdas_LeaveTheCallALibraryCall()
         {
             var r = Harness.Verify(@"

@@ -73,6 +73,17 @@ namespace CsVerify.Verifier
             }
             // an IReadOnlyList or IList whose loop changes no state: over its Count and indexer
             var interfaceElement = array || listElement != null ? null : InterfaceForEachElement(fe, fo);
+            // a LINQ view of what the verifier reads, whose loop changes no state: over the view, read once
+            var viewElement = array || listElement != null || interfaceElement != null ? null : ViewForEachElement(fo.Collection);
+            if (viewElement != null)
+            {
+                var trial = new Loop();
+                CollectHavoc(new SyntaxNode[] { fe.Statement }, trial);
+                var c = _model.GetForEachStatementInfo(fe).ElementConversion;
+                if (trial.HavocAllFields || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0 ||
+                    !(c.IsIdentity || c.IsImplicit && c.IsReference)) viewElement = null;
+            }
+            if (viewElement != null) interfaceElement = viewElement;
             if (interfaceElement != null)
             {
                 // (what its body changes: the enumerator's own MoveNext and Current are replaced by the index)
@@ -84,7 +95,8 @@ namespace CsVerify.Verifier
             {
                 loop.ArrayElement = listElement ?? interfaceElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
                 loop.OverList = listElement != null;
-                loop.OverInterface = interfaceElement != null;
+                loop.OverInterface = interfaceElement != null && viewElement == null;
+                loop.OverView = viewElement != null;
                 if (loop.OverList) Assumed("System.Collections.Generic.List<T>.GetEnumerator()");
                 _arrayForEach[capture.Id] = loop;
                 _arrayMoveNext[head.BranchValue] = loop;
@@ -189,6 +201,7 @@ namespace CsVerify.Verifier
                 Deref(collection, arr, fc.Syntax);
                 _captured[fc.Id] = fc.Value;
                 f.ForEach[loop.Id] = (arr, T.Int(0));
+                f.ViewSequences.Remove(loop.Id); // (a view is read anew each time its loop begins)
                 return f.Captures[fc.Id] = arr;
             }
             if (_arrayMoveNext.TryGetValue(op, out loop))
@@ -200,6 +213,8 @@ namespace CsVerify.Verifier
             {
                 // MoveNext was true: 0 <= i < a.Length
                 var (arr, i) = f.ForEach[loop.Id];
+                if (loop.OverView)
+                    return ViewSequenceOf(loop, arr, f) is Sequence vs ? T.Coerce(vs.Element(i), SortOf(op.Type)) : Unknown(op.Type, "element");
                 if (loop.OverInterface)
                     return T.Coerce(InRangeOf(ListItemOf(arr, i, loop.ArrayElement, f), loop.ArrayElement), SortOf(op.Type));
                 if (loop.OverList)
@@ -222,6 +237,7 @@ namespace CsVerify.Verifier
 
         /// <summary>How far a foreach's index goes: the array's length, or the list's Size().</summary>
         private Term ForEachLength(Loop loop, Term collection, Frame f) =>
+            loop.OverView ? (ViewSequenceOf(loop, collection, f) is Sequence vs ? vs.Length : _z3.Fresh("viewLength", Sort.Int)) :
             loop.OverInterface ? ListSizeOf(collection, f) :
             loop.OverList ? T.Coerce(ModelAt(ListModel("Size"), new[] { collection }, f), Sort.Int) : Len(collection);
 

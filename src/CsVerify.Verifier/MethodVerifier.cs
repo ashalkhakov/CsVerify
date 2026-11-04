@@ -39,6 +39,8 @@ namespace CsVerify.Verifier
             public bool OverList;
             /// <summary>A foreach over an IReadOnlyList or IList: its index runs over the interface's Count and indexer.</summary>
             public bool OverInterface;
+            /// <summary>A foreach over a LINQ view (Select, Where, Take, Skip of what the verifier reads): over the view, read once.</summary>
+            public bool OverView;
             public List<LoopFact> Facts = new List<LoopFact>(); // inferred, for a loop without invariants (MethodVerifier.LoopFacts)
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
