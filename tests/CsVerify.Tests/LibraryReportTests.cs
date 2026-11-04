@@ -25,12 +25,12 @@ public static class P
         return a[Next(0)];
     }
 
-    // a loop without invariants: what it changes is unknown at its head
+    // a loop without invariants: what it changes is unknown at its head (j: the inferred facts are about i)
     public static int Loop(int[] a)
     {
-        int s = 0;
-        for (int i = 0; i < a.Length; i++) s = a[i];
-        return s;
+        int j = 0;
+        for (int i = 0; i < a.Length; i++) j = i + 1;
+        return a[j];
     }
 
     // the code's own values: none of these

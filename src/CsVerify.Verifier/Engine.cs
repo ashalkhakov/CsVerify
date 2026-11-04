@@ -81,6 +81,15 @@ namespace CsVerify.Verifier
         /// <summary>Constructs the verifier does not model, treated as unknown values (only within a check profile).</summary>
         public int Unmodeled;
         public bool Verified => Diagnostics.All(d => !d.IsError);
+
+        /// <summary>Starts the method's results over (for a run again: see Engine.RunMethod).</summary>
+        internal void Clear()
+        {
+            Obligations = Proved = AssumedObligations = Unmodeled = 0;
+            Diagnostics.Clear();
+            Assumptions.Clear();
+            LibraryCalls.Clear();
+        }
     }
 
     public sealed class VerificationResult
@@ -488,16 +497,7 @@ namespace CsVerify.Verifier
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
-                    engine.Solver.Reset();
-                    try { new MethodVerifier(engine, contract, mr).Run(); }
-                    catch (Exception e)
-                    {
-                        mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message,
-                            decl.GetLocation().GetLineSpan()));
-                    }
-                    foreach (var err in engine.Solver.Errors)
-                        mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, decl.GetLocation().GetLineSpan()));
-                    engine.Solver.Errors.Clear();
+                    RunMethod(engine, contract, mr, decl.GetLocation());
                 }
             }
             // accessors with code: properties are methods too
@@ -518,15 +518,7 @@ namespace CsVerify.Verifier
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
-                    engine.Solver.Reset();
-                    try { new MethodVerifier(engine, engine.ContractOf(accessor), mr).Run(); }
-                    catch (Exception e)
-                    {
-                        mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, node.GetLocation().GetLineSpan()));
-                    }
-                    foreach (var err in engine.Solver.Errors)
-                        mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, node.GetLocation().GetLineSpan()));
-                    engine.Solver.Errors.Clear();
+                    RunMethod(engine, engine.ContractOf(accessor), mr, node.GetLocation());
                 }
             }
             // a stub that specifies nothing (a typo in a name or a parameter type) would silently leave a member unspecified
@@ -545,6 +537,36 @@ namespace CsVerify.Verifier
         /// Runs the CsVerify analyzers over the same compilation. Their checks (linearity, ghost hygiene, purity of
         /// proofs) are premises of the verification, so their errors count against the method they are in.
         /// </summary>
+        /// <summary>
+        /// Verifies one method. Facts inferred for loops without invariants (MethodVerifier.LoopFacts) are assumed at
+        /// their heads; a run in which one might not hold at a back edge is redone without it, until a run assumes only
+        /// facts it also proved. (After a few rounds, the last is run with none.)
+        /// </summary>
+        private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at)
+        {
+            const int Rounds = 8;
+            var excluded = new HashSet<string>(StringComparer.Ordinal);
+            for (int round = 0; ; round++)
+            {
+                mr.Clear();
+                engine.Solver.Reset();
+                var verifier = new MethodVerifier(engine, contract, mr, round == Rounds ? null : excluded);
+                if (round == Rounds) verifier.InferNoLoopFacts = true;
+                bool failed = false;
+                try { verifier.Run(); }
+                catch (Exception e)
+                {
+                    mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan()));
+                    failed = true;
+                }
+                foreach (var err in engine.Solver.Errors)
+                    mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, at.GetLineSpan()));
+                engine.Solver.Errors.Clear();
+                if (failed || verifier.FailedLoopFacts.Count == 0 || round == Rounds) return;
+                excluded.UnionWith(verifier.FailedLoopFacts);
+            }
+        }
+
         private static void AddAnalyzerErrors(Compilation compilation, List<SyntaxTree> userTrees,
             List<(SyntaxNode decl, MethodResult result)> declarations, VerificationResult result, VerifierOptions options)
         {

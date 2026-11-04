@@ -37,6 +37,7 @@ namespace CsVerify.Verifier
             public ITypeSymbol ArrayElement;
             /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
             public bool OverList;
+            public List<LoopFact> Facts = new List<LoopFact>(); // inferred, for a loop without invariants (MethodVerifier.LoopFacts)
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
 
@@ -136,8 +137,9 @@ namespace CsVerify.Verifier
         /// </summary>
         private bool ProofCode => (_contract.IsLemma || _contract.IsPure) && !_contract.IsTrusted;
 
-        public MethodVerifier(Engine engine, Contract contract, MethodResult result)
+        public MethodVerifier(Engine engine, Contract contract, MethodResult result, ISet<string> excludedLoopFacts = null)
         {
+            _excludedFacts = excludedLoopFacts;
             _engine = engine;
             _z3 = engine.Solver;
             _contract = contract;
@@ -250,6 +252,7 @@ namespace CsVerify.Verifier
                 if (!heads.Any()) continue;
                 loop.Head = heads.Min(b => b.Ordinal);
                 ReadLoopSpecs(loopBody is BlockSyntax bs ? bs.Statements : new SyntaxList<StatementSyntax>(loopBody), loop);
+                InferLoopFacts(loop, cond);
                 AddLoop(loop, new[] { stmt }, needsMeasure: true);
             }
             FindGotoLoops(cfg);
@@ -499,6 +502,7 @@ namespace CsVerify.Verifier
                 Prove(AsBool(EvalForeignSpec(inv, f, spec)), "CSV1005", inv.Syntax, $"loop invariant '{inv.Syntax}' might not hold on entry");
             if (loop.Permissions) LoopPermissionsEntry(loop.Id, loop.Invariants, f, spec);
 
+            LoopFactsEntry(loop, f);
             var memoryBefore = f.Heap;
             // what a loop without invariants changes is unknown at its head (charged to it in the library report)
             var wasCause = _z3.Cause;
@@ -539,12 +543,14 @@ namespace CsVerify.Verifier
             if (loop.Permissions) LoopPermissionsHead(loop.Invariants, f, spec);
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
             foreach (var inv in loop.Invariants) _z3.Assume(AsBool(EvalOwnSpec(inv, f, spec)));
+            LoopFactsHead(loop, f);
             if (loop.Decreases != null) f.LoopMeasures[loop.Id] = loop.Decreases.Select(m => ToMeasure(m, EvalOwnSpec(m, f, spec))).ToArray();
             f.ActiveLoops.Add(loop.Id);
         }
 
         private void LoopBackEdge(Loop loop, Frame f)
         {
+            LoopFactsBackEdge(loop, f);
             ArrayForEachNext(loop, f);
             var spec = new SpecEnv { Old = _entry };
             foreach (var inv in loop.Invariants)
