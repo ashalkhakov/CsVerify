@@ -63,5 +63,13 @@ With `--checks null` both parsers verify: 21 of 21 methods, with 1213 obligation
 `out` arguments treated as unknown values. One false alarm on the way was fixed: a `static readonly` array set by a
 method call (`TokenCharMap = BuildTokenCharMap()`) is not null.
 
+### After the loop facts
+
+Facts inferred for loops without invariants (see [How it works](../docs/how-it-works.md)) take the parsers from 95
+failed obligations to 87: loops without invariants now cause 69 of them, down from 76. The rest are mostly real. Like
+the C, jsmn's `Parse` trusts its caller and the state of its parser. Nothing says `len <= js.Length`, or
+`numTokens <= tokens.Length`, or that `Pos`, `TokNext` and `TokSuper`, left by earlier calls, are in range. Those are
+preconditions and an object invariant to write, or to infer from the methods' callers.
+
 The stubs themselves are checked against the BCL: see
 [Conformance tests](../docs/library-contracts.md#conformance-tests).

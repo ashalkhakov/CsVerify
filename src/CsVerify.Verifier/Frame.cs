@@ -68,6 +68,9 @@ namespace CsVerify.Verifier
         /// <summary>The foreach loops over arrays: the array, and the index of the element the iteration is at.</summary>
         public Dictionary<int, (Term arr, Term idx)> ForEach = new Dictionary<int, (Term, Term)>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
+        /// <summary>The inferred loop facts assumed at each loop's head on this path, and the entry values they compare with.</summary>
+        public Dictionary<int, List<string>> LoopFacts = new Dictionary<int, List<string>>();
+        public Dictionary<string, Term> LoopFactEntry = new Dictionary<string, Term>();
         public Term Result;
         /// <summary>The exception being handled (in a catch or filter), or thrown (in a finally run by it).</summary>
         public Term Exception;
@@ -104,6 +107,8 @@ namespace CsVerify.Verifier
             ForEach = new Dictionary<int, (Term, Term)>(ForEach),
             Refs = new Dictionary<ISymbol, RefTarget>(Refs, SymbolEqualityComparer.Default),
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
+            LoopFacts = new Dictionary<int, List<string>>(LoopFacts),
+            LoopFactEntry = new Dictionary<string, Term>(LoopFactEntry),
             Result = Result,
             Exception = Exception,
             Pending = Pending,
