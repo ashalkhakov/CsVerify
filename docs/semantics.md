@@ -68,6 +68,24 @@ C#'s nullable reference types are only warnings, and deliberately unsound ones: 
 - **Library methods** are trusted for their annotations: a non-nullable return type, `[NotNull]` parameters after the call (`ArgumentNullException.ThrowIfNull`), `[NotNullWhen(b)]` parameters when the call returns `b` (`string.IsNullOrEmpty`), `[MaybeNullWhen(b)]` out parameters when it returns `!b` (`TryGetValue`), and `[AllowNull]` and `[MaybeNull]`; a type parameter as instantiated (a `List<string>`'s items).
 - **Fields** of non-nullable type are not null once their object is built (see [Mutable objects](objects.md#mutable-objects)), and positional fields of data records are not null either (see [Data types and object invariants](objects.md#data-types-and-object-invariants)). Fields and auto-properties of nullable type are maybe-null.
 - **Locals** declared with a non-nullable type (`Config p`, not `var p`, whose type is nullable) have every write checked, so they stay not null through loops.
-- **Never null:** `this`, `new` objects and arrays, string concatenations, lambdas and method groups made delegates.
+- **Never null:** `this`, `new` objects and arrays, string concatenations and interpolations, lambdas and method groups made delegates.
+- **`Nullable<T>`** (`int?`) is a value with two parts: whether it has a value, and the value. Conversions wrap
+  (`int?  x = 3`) and unwrap it. An explicit unwrap, `(int)x` or `x.Value`, of one with no value is reported (CSV1013),
+  since it throws. `HasValue`, `GetValueOrDefault`, `x == null`, `x ?? d`, and patterns (`x is int v`, `x is > 0`)
+  read it. Lifted operators work as C# defines them: `x + y` has no value if either has none, `x < y` is false then, and
+  `x == y` is true when neither has a value. `bool?` `&`/`|` and floating-point comparisons are unknown values, with a
+  warning.
+
+**Why it might be null.** A failed null check says where the value came from, as far as the verifier knows:
+
+```
+'u' might be null in 'u.Name': 'Find' may return null (line 12)
+'s' might be null in 's.Length': parameter 's' is declared 'string?'
+'u.Boss' might be null in 'u.Boss.Name': the call to 'WriteLine' (line 9) may change what was checked before it
+  (a check made before a call does not hold after it: copy the value to a local, check that, and use the local)
+```
+
+The reasons are a call that may return null, a parameter declared nullable, a call after which a checked field may
+have changed, and a loop without invariants.
 
 On `samples/Buggy/NullBugs.cs` the C# compiler warns about 3 of the 5 planted bugs. It says nothing about the two `null!` ones and `new string[2]`, and it warns falsely after the precondition that rules null out.

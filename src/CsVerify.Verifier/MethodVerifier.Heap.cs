@@ -16,6 +16,8 @@ namespace CsVerify.Verifier
     {
         private readonly Dictionary<string, Term> _fieldStates = new Dictionary<string, Term>();
         private int _fieldEpochs;
+        // what began each epoch (a call, a loop): its maps, made when first read, are charged to it
+        private readonly Dictionary<int, (string cause, string origin)> _epochCauses = new Dictionary<int, (string, string)>();
 
         /// <summary>
         /// A field's map: object to Int (to a set, for an ObjSet-valued ghost field such as Repr). A [Model] function
@@ -36,7 +38,12 @@ namespace CsVerify.Verifier
             if (f.Fields.TryGetValue(field, out var map)) return map;
             var key = field.ToDisplayString() + "#" + f.FieldEpoch;
             if (!_fieldStates.TryGetValue(key, out map))
-                _fieldStates[key] = map = FreshMap(field);
+            {
+                var (wasCause, wasOrigin) = (_z3.Cause, _z3.Origin);
+                if (_epochCauses.TryGetValue(f.FieldEpoch, out var began)) (_z3.Cause, _z3.Origin) = began;
+                try { _fieldStates[key] = map = FreshMap(field); }
+                finally { (_z3.Cause, _z3.Origin) = (wasCause, wasOrigin); }
+            }
             return map;
         }
 
@@ -229,6 +236,7 @@ namespace CsVerify.Verifier
             f.Link = null;
             f.Fields.Clear();
             f.FieldEpoch = ++_fieldEpochs;
+            _epochCauses[f.FieldEpoch] = (_z3.Cause, _z3.Origin);
             if (kept != null) foreach (var kv in kept) f.Fields[kv.Key] = kv.Value;
         }
 

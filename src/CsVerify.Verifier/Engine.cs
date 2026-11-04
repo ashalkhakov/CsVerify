@@ -35,6 +35,10 @@ namespace CsVerify.Verifier
         public List<string> Defines = new List<string>();
         public List<string> References = new List<string>();
         public System.Text.StringBuilder SmtLog;
+        /// <summary>The kinds of check proved (<see cref="Verifier.Checks"/>); null for all. The rest are assumed.</summary>
+        public HashSet<string> CheckKinds;
+        /// <summary>Is an obligation (or a diagnostic) with this id checked in the profile?</summary>
+        internal bool Checked(string id) => CheckKinds == null || !(Verifier.Checks.KindOf(id) is string kind) || CheckKinds.Contains(kind);
     }
 
     public sealed class VerificationDiagnostic
@@ -72,6 +76,10 @@ namespace CsVerify.Verifier
         /// <summary>The calls (and property reads) in this method of library members without a contract: each
         /// member, and where (file and position).</summary>
         public readonly HashSet<(string member, string at)> LibraryCalls = new HashSet<(string, string)>();
+        /// <summary>Obligations outside the check profile: assumed, not proved.</summary>
+        public int AssumedObligations;
+        /// <summary>Constructs the verifier does not model, treated as unknown values (only within a check profile).</summary>
+        public int Unmodeled;
         public bool Verified => Diagnostics.All(d => !d.IsError);
     }
 
@@ -529,7 +537,7 @@ namespace CsVerify.Verifier
                 result.AnalyzerErrors.Add(new VerificationDiagnostic("CSV1021", true, message, location.GetLineSpan()));
             }
             result.Assumptions.UnionWith(result.Methods.SelectMany(mr => mr.Assumptions));
-            AddAnalyzerErrors(compilation, userTrees, declarations, result);
+            AddAnalyzerErrors(compilation, userTrees, declarations, result, options);
             return result;
         }
 
@@ -538,12 +546,12 @@ namespace CsVerify.Verifier
         /// proofs) are premises of the verification, so their errors count against the method they are in.
         /// </summary>
         private static void AddAnalyzerErrors(Compilation compilation, List<SyntaxTree> userTrees,
-            List<(SyntaxNode decl, MethodResult result)> declarations, VerificationResult result)
+            List<(SyntaxNode decl, MethodResult result)> declarations, VerificationResult result, VerifierOptions options)
         {
             var analyzers = System.Collections.Immutable.ImmutableArray.Create<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer>(
                 new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer());
             var diagnostics = compilation.WithAnalyzers(analyzers).GetAnalyzerDiagnosticsAsync().GetAwaiter().GetResult();
-            foreach (var d in diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error && userTrees.Contains(d.Location.SourceTree)))
+            foreach (var d in diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error && userTrees.Contains(d.Location.SourceTree) && options.Checked(d.Id)))
             {
                 var vd = new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan());
                 var owner = declarations.FirstOrDefault(x => x.decl.SyntaxTree == d.Location.SourceTree && x.decl.FullSpan.Contains(d.Location.SourceSpan));

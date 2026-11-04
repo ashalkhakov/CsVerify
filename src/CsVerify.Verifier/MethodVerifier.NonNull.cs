@@ -20,29 +20,34 @@ namespace CsVerify.Verifier
             field.OriginalDefinition is IFieldSymbol fd ? fd.Type : field.OriginalDefinition is IMethodSymbol model ? model.ReturnType : ((IPropertySymbol)field.OriginalDefinition).Type;
 
         /// <summary>A heap field whose value, once its object is built, is never null.</summary>
-        internal static bool IsNonNullField(ISymbol field)
+        internal bool IsNonNullField(ISymbol field)
         {
             if (!FieldEffects.IsHeapField(field) || !IsNonNullableType(FieldType(field))) return false;
             return !field.IsStatic || StartsWithObject(field);
         }
 
-        /// <summary>A static field whose initializer makes an object (or is a string literal): not null to begin with.</summary>
-        internal static bool StartsWithObject(ISymbol field)
+        /// <summary>
+        /// A static field whose initializer makes an object, is a string literal, or calls a method whose return type
+        /// is not nullable (which its return statements prove, or the library declares): not null to begin with.
+        /// </summary>
+        internal bool StartsWithObject(ISymbol field)
         {
             return field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().Any(v =>
                 v.Initializer?.Value is BaseObjectCreationExpressionSyntax || v.Initializer?.Value is ArrayCreationExpressionSyntax ||
                 v.Initializer?.Value is ImplicitArrayCreationExpressionSyntax || v.Initializer?.Value is CollectionExpressionSyntax ||
-                v.Initializer?.Value is LiteralExpressionSyntax l && l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression));
+                v.Initializer?.Value is LiteralExpressionSyntax l && l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression) ||
+                v.Initializer?.Value is InvocationExpressionSyntax call &&
+                _engine.ModelOf(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol m && IsNonNullableReturn(m));
         }
 
         private static bool IsRequired(ISymbol field) => field is IFieldSymbol f ? f.IsRequired : field is IPropertySymbol p && p.IsRequired;
 
         /// <summary>The non-null fields a constructor must set itself.</summary>
-        private static System.Collections.Generic.IEnumerable<ISymbol> SetByConstructor(IMethodSymbol ctor) =>
+        private System.Collections.Generic.IEnumerable<ISymbol> SetByConstructor(IMethodSymbol ctor) =>
             FieldEffects.FieldsOf(ctor.ContainingType).Where(IsNonNullField)
                 .Where(x => !IsRequired(x) || ctor.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"));
 
-        private static bool HasNonNullFields(ITypeSymbol type) => FieldEffects.FieldsOf(type).Any(IsNonNullField);
+        private bool HasNonNullFields(ITypeSymbol type) => FieldEffects.FieldsOf(type).Any(IsNonNullField);
 
         /// <summary>Reading a non-null field: not null, unless it is this object's own, still being built.</summary>
         private void AssumeNonNullRead(ISymbol field, IOperation instance, Term v)
@@ -56,7 +61,7 @@ namespace CsVerify.Verifier
         /// A static readonly field (not a heap field: it is set once) that starts with an object never changes, so it
         /// is never null (a static constructor could set it again, but only to what it then proves).
         /// </summary>
-        private static bool IsNonNullReadonlyStatic(IFieldSymbol field) =>
+        private bool IsNonNullReadonlyStatic(IFieldSymbol field) =>
             field.IsStatic && field.IsReadOnly && IsNonNullableType(field.OriginalDefinition.Type) && StartsWithObject(field) &&
             !(field.ContainingType.StaticConstructors.Any(c => c.DeclaringSyntaxReferences.Length > 0));
 

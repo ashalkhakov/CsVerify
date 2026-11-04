@@ -40,8 +40,39 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--smt-log <file>` | dump the whole SMT-LIB2 conversation |
 | `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
 | `-v` | list every method with its proved/total obligations, and the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed |
+| `--checks <kinds>` | prove only these kinds of obligation: a comma-separated list of `null`, `linear`, `bounds`, `overflow`, `contracts` (or `all`). See [Check profiles](#check-profiles) |
 | `--each` | verify each argument as a program of its own (a comma joins paths into one: `lemon/CsLemon,lemon/CsLemon.Runtime`), and combine the results, for programs that cannot be compiled together |
 | `--library-report` | after the results, the [library report](#the-library-report) |
+
+## Check profiles
+
+`--checks` proves only the kinds of obligation a program is ready for. An application might start with null safety and
+its resources, a parser with its bounds and overflow:
+
+```bash
+dotnet csverify --checks null corpus
+```
+
+```
+csverify: 21 of 21 methods verified, 1004/1004 obligations proved; checks: null, 1213 obligation(s) outside them assumed, 2 construct(s) not modeled
+```
+
+| kind | what it proves |
+|---|---|
+| `null` | dereferences (CSV1013), and non-nullable types' promises (CSV1014) |
+| `linear` | the linearity analyzer's rules (CSV0001–CSV0007) and owned objects' views (CSV1016) |
+| `bounds` | array and span indices, and array sizes (CSV1003) |
+| `overflow` | arithmetic and conversions (CSV1010), and division by zero (CSV1009) |
+| `contracts` | the rest of the specifications: preconditions, postconditions, assertions, invariants, measures, frames, well-definedness |
+
+Obligations of the other kinds are assumed, so a result holds only where they do. The summary line counts them.
+Some diagnostics are reported whatever the profile, because the verifier's own soundness depends on them: the ghost
+analyzer (CSV0010–CSV0013), aliased by-reference arguments (CSV1020), and ill-formed stubs (CSV1021).
+
+Within a profile, a construct the verifier does not model is a warning (CSV1901, "not modeled: treated as unknown")
+instead of an error. Its value is unknown (not null, if its type is not nullable), and the method is verified around
+it. What the construct does (a write, say) is not checked. The summary counts these constructs, and the library report
+lists them. Without `--checks`, everything is proved, and an unsupported construct leaves its method unverified.
 
 ## The library report
 

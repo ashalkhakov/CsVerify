@@ -63,8 +63,9 @@ namespace CsVerify.Verifier
             foreach (var other in member.ContainingType.GetMembers().Where(o => IsStructMember(o) && !SymbolEqualityComparer.Default.Equals(o, member)))
                 _z3.Assume(T.Eq(StructMember(other, updated), StructMember(other, old)));
             if (Unconverted(container) is IInstanceReferenceOperation) f.This = updated;
-            else if (Unconverted(container) is IFlowCaptureReferenceOperation r && !(_captured.TryGetValue(r.Id, out var c) && IsVariableReference(c)))
-                f.Captures[r.Id] = updated; // a new value being initialized: new S { X = 1 }
+            else if (Unconverted(container) is IFlowCaptureReferenceOperation r &&
+                     (!(_captured.TryGetValue(r.Id, out var c) && IsVariableReference(c)) || r.Syntax.AncestorsAndSelf().OfType<WithExpressionSyntax>().Any()))
+                f.Captures[r.Id] = updated; // a new value being initialized: new S { X = 1 }, or s with { X = 1 } (a copy of s)
             else Write(container, updated, f, spec);
         }
     }

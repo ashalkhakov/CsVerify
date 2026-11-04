@@ -26,6 +26,9 @@ options:
   --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
+  --checks <kinds>    prove only these kinds of obligation, a comma-separated list of null, linear,
+                      bounds, overflow, contracts (or all); the others are assumed, and counted.
+                      Within a profile an unsupported construct is a warning, its value unknown
   --each              verify each argument as a program of its own (a comma joins paths into one), and
                       combine the results: for programs that cannot be compiled together
   --library-report    after the results, rank what the failures come from: library members without
@@ -65,6 +68,7 @@ options:
                         case "-v": verbose = true; break;
                         case "--library-report": libraryReport = true; break;
                         case "--each": each = true; break;
+                        case "--checks": options.CheckKinds = Checks.Parse(args[++i]); break;
                         case "-h": case "--help": Console.WriteLine(Usage); return 0;
                         default:
                             if (args[i].StartsWith("-")) throw new ArgumentException("unknown option " + args[i]);
@@ -94,7 +98,10 @@ options:
                     ? $"csverify: {result.CompilationErrors.Count} compilation error(s); nothing verified"
                     : $"csverify: {result.Methods.Count - failed} of {result.Methods.Count} methods verified, " +
                       $"{result.Methods.Sum(m => m.Proved)}/{result.Methods.Sum(m => m.Obligations)} obligations proved" +
-                      (result.Assumptions.Count > 0 ? $", {result.Assumptions.Count} library contract(s) assumed" : ""));
+                      (result.Assumptions.Count > 0 ? $", {result.Assumptions.Count} library contract(s) assumed" : "") +
+                      (options.CheckKinds != null ? $"; checks: {string.Join(",", Checks.All.Where(options.CheckKinds.Contains))}" +
+                                                    $", {result.Methods.Sum(m => m.AssumedObligations)} obligation(s) outside them assumed" +
+                                                    $", {result.Methods.Sum(m => m.Unmodeled)} construct(s) not modeled" : ""));
                 if (libraryReport && result.CompilationErrors.Count == 0)
                 {
                     Console.WriteLine();
