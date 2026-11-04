@@ -130,8 +130,10 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>Does <paramref name="v"/> match the pattern? Its variables are bound in <paramref name="f"/>.</summary>
-        private Term Pattern(IPatternOperation p, Term v, Frame f, SpecEnv spec)
+        /// <param name="unwrapped">v is the value of a nullable input (whose type the pattern still names)</param>
+        private Term Pattern(IPatternOperation p, Term v, Frame f, SpecEnv spec, bool unwrapped = false)
         {
+            if (!unwrapped && IsNullableValue(p.InputType)) return NullablePattern(p, v, f, spec);
             switch (p)
             {
                 case IDiscardPatternOperation _:
@@ -172,24 +174,59 @@ namespace CsVerify.Verifier
                     return TypeTest(v, p.InputType, tp.MatchedType);
                 case IRecursivePatternOperation r:
                 {
-                    var test = TypeTest(v, p.InputType, r.MatchedType);
+                    // the input type itself matches anything but null ({ } is "not null"), and a struct always
+                    var test = r.MatchedType == null || SymbolEqualityComparer.Default.Equals(r.MatchedType, p.InputType)
+                        ? (MayBeNullType(p.InputType) ? NotNull(v) : T.True)
+                        : TypeTest(v, p.InputType, r.MatchedType);
                     if (r.DeclaredSymbol != null) f.Vars[r.DeclaredSymbol] = v;
-                    var matched = r.MatchedType as INamedTypeSymbol;
+                    var matched = (r.MatchedType ?? p.InputType) as INamedTypeSymbol;
                     var parts = new List<Term> { test };
                     for (int i = 0; i < r.DeconstructionSubpatterns.Length; i++)
                     {
-                        var prop = matched != null && Data.IsData(matched) ? DataTypes.PositionalProperty(matched, i) : null;
-                        if (prop == null) { Unsupported(r); return _z3.Fresh("match", Sort.Bool); }
-                        var item = T.Coerce(Field(prop, v, matched), SortOf(prop.Type));
+                        Term item;
+                        if (matched != null && matched.IsTupleType && i < matched.TupleElements.Length)
+                            item = T.Coerce(TupleItem(v, matched.TupleElements[i]), SortOf(matched.TupleElements[i].Type));
+                        else if (matched != null && Data.IsData(matched) && DataTypes.PositionalProperty(matched, i) is IPropertySymbol prop)
+                            item = T.Coerce(Field(prop, v, matched), SortOf(prop.Type));
+                        else { Unsupported(r); return _z3.Fresh("match", Sort.Bool); }
                         var sub = r.DeconstructionSubpatterns[i];
                         WithGuard(T.And(parts.ToArray()), () => parts.Add(Pattern(sub, item, f, spec)));
                     }
                     foreach (var ps in r.PropertySubpatterns)
                     {
-                        if (!(ps.Member is IPropertyReferenceOperation pr && DataTypes.IsPositional(pr.Property) && Data.IsData(pr.Property.ContainingType)))
-                        { Unsupported(ps); return _z3.Fresh("match", Sort.Bool); }
-                        var item = T.Coerce(Field(pr.Property, v, matched ?? p.InputType), SortOf(pr.Property.Type));
+                        Term item;
+                        if (ps.Member is IPropertyReferenceOperation pr && DataTypes.IsPositional(pr.Property) && Data.IsData(pr.Property.ContainingType))
+                            item = T.Coerce(Field(pr.Property, v, matched ?? p.InputType), SortOf(pr.Property.Type));
+                        else if (ps.Member is IPropertyReferenceOperation || ps.Member is IFieldReferenceOperation)
+                        {
+                            // { P: ... } reads P of the input, as code would (it is not null here: the test above)
+                            Term read = null;
+                            _patternInputs.Push(v);
+                            try { WithGuard(T.And(parts.ToArray()), () => read = Eval(ps.Member, f, spec)); }
+                            finally { _patternInputs.Pop(); }
+                            item = read;
+                        }
+                        else { Unsupported(ps); return _z3.Fresh("match", Sort.Bool); }
                         WithGuard(T.And(parts.ToArray()), () => parts.Add(Pattern(ps.Pattern, item, f, spec)));
+                    }
+                    return T.And(parts.ToArray());
+                }
+                case IListPatternOperation lp when p.InputType is IArrayTypeSymbol at && at.Rank == 1:
+                {
+                    // [a, b, .., z] on an array: its length, then each element by its position from the start or the end
+                    var slice = lp.Patterns.Select((q, i) => (q, i)).Where(x => x.q is ISlicePatternOperation).Select(x => x.i).DefaultIfEmpty(-1).First();
+                    if (slice >= 0 && ((ISlicePatternOperation)lp.Patterns[slice]).Pattern != null)
+                    { Unsupported(lp); return _z3.Fresh("match", Sort.Bool); }
+                    int n = lp.Patterns.Length - (slice >= 0 ? 1 : 0);
+                    var len = Len(v);
+                    var parts = new List<Term> { NotNull(v), slice >= 0 ? T.Ge(len, T.Int(n)) : T.Eq(len, T.Int(n)) };
+                    for (int i = 0; i < lp.Patterns.Length; i++)
+                    {
+                        if (i == slice) continue;
+                        var idx = slice < 0 || i < slice ? T.Int(i) : T.Sub(len, T.Int(lp.Patterns.Length - i));
+                        var elem = InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, v, Sort.Row), idx, Sort.Int), SortOf(at.ElementType)), at.ElementType);
+                        var sub = lp.Patterns[i];
+                        WithGuard(T.And(parts.ToArray()), () => parts.Add(Pattern(sub, elem, f, spec)));
                     }
                     return T.And(parts.ToArray());
                 }

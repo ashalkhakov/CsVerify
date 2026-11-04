@@ -55,6 +55,7 @@ namespace CsVerify.Verifier
         private int _paths, _unfoldDepth, _quantDepth;
         private readonly Stack<List<Term>> _quantFacts = new Stack<List<Term>>();
         private readonly Stack<Term> _conditionalInstances = new Stack<Term>(); // the receiver of the a?.b being evaluated
+        private readonly Stack<Term> _patternInputs = new Stack<Term>(); // the value a property pattern { P: ... } reads P of
 
         /// <summary>A condition a partial operation needs: an index in bounds, a pure function's precondition, a divisor.</summary>
         private sealed class Obligation
@@ -181,6 +182,8 @@ namespace CsVerify.Verifier
                     f.Vars[p] = FreshOf(p.Type, p.Name);
                     // a non-nullable parameter is a precondition: each caller proves it (an out parameter is not set yet)
                     if (p.RefKind != RefKind.Out && IsNonNullable(p)) _z3.Assume(NotNull(f.Vars[p]));
+                    else if (p.RefKind != RefKind.Out && MayBeNullType(p.Type))
+                        _z3.Origins[f.Vars[p].S] = $"parameter '{p.Name}' is declared '{NullableNote(p.Type)}'";
                 }
                 foreach (var alias in _contract.Aliases) AliasParameters(f, alias, _method.Parameters.Select(p => f.Vars.TryGetValue(p, out var v) ? v : null).ToArray());
                 EnterAlloc(f);
@@ -499,7 +502,12 @@ namespace CsVerify.Verifier
             var memoryBefore = f.Heap;
             // what a loop without invariants changes is unknown at its head (charged to it in the library report)
             var wasCause = _z3.Cause;
-            if (loop.Invariants.Count == 0) _z3.Cause = "a loop without invariants";
+            var wasOrigin = _z3.Origin;
+            if (loop.Invariants.Count == 0)
+            {
+                _z3.Cause = "a loop without invariants";
+                _z3.Origin = $"the loop at line {LineOf(loop.Syntax)} may change it (it has no invariants to say how)";
+            }
             DeferTies();
             foreach (var s in loop.Havoc)
             {
@@ -526,6 +534,7 @@ namespace CsVerify.Verifier
             FlushTies(f);
             ArrayForEachHead(loop, f);
             _z3.Cause = wasCause;
+            _z3.Origin = wasOrigin;
 
             if (loop.Permissions) LoopPermissionsHead(loop.Invariants, f, spec);
             // well-definedness of invariants and measure, in an arbitrary iteration (each given the invariants before it)
@@ -622,12 +631,20 @@ namespace CsVerify.Verifier
         /// facts would only crowd the solver's instantiation)</param>
         private void Prove(Term goal, string id, SyntaxNode at, string message, bool assume = true)
         {
+            if (!_engine.Options.Checked(id))
+            {
+                // outside the check profile: assumed (counted), not proved
+                _result.AssumedObligations++;
+                if (assume) _z3.Assume(goal);
+                return;
+            }
             bool wasCode = _codeMode;
             _result.Obligations++;
             var r = _z3.Check(T.Not(goal));
             if (r == "unsat") _result.Proved++;
             else
             {
+                if (id == "CSV1013" || id == "CSV1014") message += NullReasons(goal);
                 if (r != "sat") message += $" (solver: {r})";
                 Report(id, at, message, isError: true, causes: _z3.CausesIn(goal));
             }
@@ -637,6 +654,7 @@ namespace CsVerify.Verifier
 
         private void Report(string id, SyntaxNode at, string message, bool isError, IReadOnlyCollection<string> causes = null)
         {
+            if (isError && !_engine.Options.Checked(id)) return;
             if (!_reported.Add((id, at.Span))) return;
             _result.Diagnostics.Add(new VerificationDiagnostic(id, isError, message, at.GetLocation().GetLineSpan())
             {
@@ -645,6 +663,26 @@ namespace CsVerify.Verifier
         }
 
         private static string Where(SyntaxNode at) => at.SyntaxTree.FilePath + ":" + at.SpanStart;
+
+        private static int LineOf(SyntaxNode at) => at.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        /// <summary>
+        /// Why a value might be null, from where the values the failed condition mentions came from: a parameter
+        /// declared nullable, a call that may return null, a call after which what was checked may have changed (with
+        /// the usual fix). Empty if nothing is known.
+        /// </summary>
+        private string NullReasons(Term goal)
+        {
+            var origins = _z3.OriginsIn(goal);
+            if (origins.Count == 0) return "";
+            var text = ": " + string.Join("; ", origins.Take(3));
+            if (origins.Any(o => o.Contains(" may change ")))
+                text += " (a check made before a call does not hold after it: copy the value to a local, check that, and use the local)";
+            return text;
+        }
+
+        private static string NullableNote(ITypeSymbol t) => t.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat.WithMiscellaneousOptions(
+            SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
 
         /// <summary>
         /// What a call's unknown values are charged to in the library report: a library member without a contract, or
@@ -661,6 +699,27 @@ namespace CsVerify.Verifier
             return "source " + m.OriginalDefinition.ToDisplayString();
         }
 
+        /// <summary>
+        /// For a member of a program's struct (s.X, a[i].P.X), the variable or array cell that holds the struct; null for
+        /// anything else (a class's field, which the callee could also reach).
+        /// </summary>
+        private IOperation StructMemberRoot(IOperation value)
+        {
+            bool member = false;
+            while (true)
+            {
+                switch (value)
+                {
+                    case IFieldReferenceOperation sf when sf.Instance != null && IsStructMember(sf.Field): value = sf.Instance; member = true; continue;
+                    case IPropertyReferenceOperation sp when sp.Instance != null && IsStructMember(sp.Property): value = sp.Instance; member = true; continue;
+                    case ILocalReferenceOperation l when member && l.Local.RefKind == RefKind.None: return value;
+                    case IParameterReferenceOperation _ when member: return value;
+                    case IArrayElementReferenceOperation _ when member: return value;
+                    default: return null;
+                }
+            }
+        }
+
         private static bool IsCsVerifyNamespace(INamespaceSymbol ns)
         {
             for (; ns != null && !ns.IsGlobalNamespace; ns = ns.ContainingNamespace)
@@ -674,7 +733,14 @@ namespace CsVerify.Verifier
         /// Something the verifier cannot model soundly: a path it does not follow, an effect it does not track. The
         /// method is then not verified (an error), instead of reporting "ok" for what was not checked.
         /// </summary>
-        private void NotModeled(SyntaxNode at, string message) => Report("CSV1901", at, message, isError: true);
+        private void NotModeled(SyntaxNode at, string message)
+        {
+            // within a check profile, a warning: the method is verified around it, with its value unknown
+            bool degrade = _engine.Options.CheckKinds != null;
+            int before = _result.Diagnostics.Count;
+            Report("CSV1901", at, degrade ? message + " (not modeled: treated as unknown)" : message, isError: !degrade);
+            if (degrade && _result.Diagnostics.Count > before) _result.Unmodeled++;
+        }
         private void NotModeled(SyntaxToken at, string message) => NotModeled(at.Parent, message);
 
         /// <summary>A proof (lemma, [Pure], [GhostFunction]) that might not terminate.</summary>
@@ -764,6 +830,8 @@ namespace CsVerify.Verifier
         {
             if (f.Vars.TryGetValue(s, out var t)) return t;
             t = FreshOf(TypeOf(s), s.Name);
+            if (s is IParameterSymbol p && MayBeNullType(p.Type) && !IsNonNullable(p))
+                _z3.Origins[t.S] = $"parameter '{p.Name}' is declared '{NullableNote(p.Type)}'";
             f.Vars[s] = t;
             return t;
         }
@@ -783,6 +851,8 @@ namespace CsVerify.Verifier
         private Term Eval(IOperation op, Frame f, SpecEnv spec = null)
         {
             if (op == null) return _z3.Fresh("missing", Sort.Int);
+            // null as an int? (a literal typed so, or a conversion of one): no value, not the null reference
+            if (op.ConstantValue.HasValue && op.ConstantValue.Value == null && IsNullableValue(op.Type)) return None();
             if (op.ConstantValue.HasValue && !(op is IAssignmentOperation))
             {
                 switch (op.ConstantValue.Value)
@@ -814,6 +884,8 @@ namespace CsVerify.Verifier
                     if (spec?.ResultParameter != null && SymbolEqualityComparer.Default.Equals(p.Parameter, spec.ResultParameter))
                         return spec.Result ?? Unknown(p.Type, "result");
                     return Read(f, p.Parameter);
+                case IInstanceReferenceOperation ir when ir.ReferenceKind == InstanceReferenceKind.PatternInput && _patternInputs.Count > 0:
+                    return _patternInputs.Peek();
                 case IInstanceReferenceOperation _: return f.This ?? (f.This = _z3.Fresh("this", Sort.Int));
                 case IFlowCaptureReferenceOperation r:
                     if (f.Captures.TryGetValue(r.Id, out var cv)) return cv;
@@ -906,6 +978,7 @@ namespace CsVerify.Verifier
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
                 case IAwaitOperation aw: return EvalAwait(aw, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
+                case IDefaultValueOperation _ when IsNullableValue(op.Type): return None();
                 case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : IsFloating(op.Type) ? Zero(SortOf(op.Type)) : T.Int(0);
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
                 case IArgumentOperation arg: return Eval(arg.Value, f, spec);
@@ -915,6 +988,7 @@ namespace CsVerify.Verifier
                 {
                     // the lowering of ?. and ?? in code
                     var v = Eval(isn.Operand, f, spec);
+                    if (IsNullableValue(isn.Operand.Type)) return T.Not(HasValue(v));
                     return MayBeNullType(isn.Operand.Type) ? T.Eq(v, T.Int(0)) : _z3.Fresh("isnull", Sort.Bool);
                 }
                 case IIsPatternOperation ip: return Pattern(ip.Pattern, Eval(ip.Value, f, spec), f, spec);
@@ -932,6 +1006,28 @@ namespace CsVerify.Verifier
                 }
                 case IConditionalAccessInstanceOperation _:
                     return _conditionalInstances.Peek();
+                case ICoalesceOperation co when IsNullableValue(co.Value.Type):
+                {
+                    // x ?? y on a nullable value: x's value (or x, if the result is nullable too), else y
+                    var v = Eval(co.Value, f, spec);
+                    var has = HasValue(v);
+                    Term w = null;
+                    WithGuard(T.Not(has), () => w = Eval(co.WhenNull, f, spec));
+                    var present = IsNullableValue(co.Type) ? v : ValueOf(v, co.Value.Type);
+                    return T.Ite(has, T.Coerce(present, SortOf(co.Type)), T.Coerce(w, SortOf(co.Type)));
+                }
+                case IInterpolatedStringOperation interpolated:
+                {
+                    // $"...": its holes are evaluated (and checked); the string is one of unknown contents, never null
+                    foreach (var part in interpolated.Parts.OfType<IInterpolationOperation>())
+                    {
+                        Eval(part.Expression, f, spec);
+                        if (part.Alignment != null) Eval(part.Alignment, f, spec);
+                    }
+                    var str = Unknown(op.Type, "interpolated");
+                    AssumeSide(NotNull(str));
+                    return str;
+                }
                 case ICoalesceOperation co when MayBeNullType(co.Value.Type) && MayBeNullType(co.Type):
                 {
                     var v = Eval(co.Value, f, spec);
@@ -952,7 +1048,10 @@ namespace CsVerify.Verifier
                 default:
                     foreach (var child in op.ChildOperations) Eval(child, f, spec);
                     Unsupported(op);
-                    return Unknown(op.Type);
+                    var unknown = Unknown(op.Type);
+                    // (within a check profile, the value is what its type declares: not null if not nullable)
+                    if (_engine.Options.CheckKinds != null && IsNonNullableType(op.Type)) AssumeSide(NotNull(unknown));
+                    return unknown;
             }
         }
 
@@ -960,6 +1059,7 @@ namespace CsVerify.Verifier
         {
             var v = Eval(c.Operand, f, spec);
             var from = c.Operand.Type;
+            if (c.OperatorMethod == null && (IsNullableValue(c.Type) || IsNullableValue(from))) return NullableConversion(c, v);
             if (c.IsTryCast && c.Conversion.IsReference && ClassTest(v, c.Type) is Term isInstance)
                 return T.Ite(isInstance, T.Coerce(v, Sort.Int), T.Int(0)); // as: the object, or null
             if (!c.IsImplicit && c.Conversion.IsReference && from != null && !DataTypes.Derives(from, c.Type) && !Data.IsData(c.Type) &&
@@ -1006,6 +1106,9 @@ namespace CsVerify.Verifier
 
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
+            // (x == null on an int? is not marked lifted, but compares the same way)
+            if (b.IsLifted || b.OperatorMethod == null && (IsNullableValue(b.LeftOperand.Type) || IsNullableValue(b.RightOperand.Type)))
+                return LiftedBinary(b, f, spec);
             if (IsRecordEquality(b)) return RecordEquality(b, f, spec);
             if (b.OperatorMethod != null && b.OperatorMethod.IsImplicitlyDeclared && Data.IsData(b.OperatorMethod.ContainingType))
             {
@@ -1107,7 +1210,8 @@ namespace CsVerify.Verifier
                 _z3.Assume(T.InRange(v, lo, hi));
                 return v;
             }
-            Prove(T.InRange(v, lo, hi), "CSV1010", at, message);
+            // (where the operation is evaluated only under conditions: the right operand of &&, a lifted operator's values)
+            Prove(T.Implies(T.And(_guards.ToArray()), T.InRange(v, lo, hi)), "CSV1010", at, message);
             return v;
         }
 
@@ -1307,6 +1411,7 @@ namespace CsVerify.Verifier
         private Term EvalProperty(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
         {
             var prop = pr.Property;
+            if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
             if ((SpecSymbols.IsObjSet(prop.ContainingType) || SpecSymbols.IsBag(prop.ContainingType)) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
@@ -1489,6 +1594,7 @@ namespace CsVerify.Verifier
                 return _atomsTrue > 0 || f.Inst == null ? T.True : Held(f, instance);
             }
 
+            if (IsNullableValue(m.ContainingType) && NullableInvocation(inv, f, spec) is Term nullableResult) return nullableResult;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
@@ -1516,7 +1622,15 @@ namespace CsVerify.Verifier
                     if (a.Parameter.RefKind != RefKind.None && !(a.Value is ILocalReferenceOperation || a.Value is IParameterReferenceOperation ||
                                                                  a.Value is IDeclarationExpressionOperation || a.Value is IDiscardOperation) &&
                         a.ArgumentKind == ArgumentKind.Explicit && !SpecSymbols.IsSpecClass(m.ContainingType))
-                        NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals, parameters and array elements");
+                    {
+                        // a struct's member (s.X, a[i].X): a variable of the callee's, written back into the struct after the call
+                        var root = StructMemberRoot(a.Value);
+                        if (root == null)
+                            NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals, parameters, array elements and their structs' members");
+                        else if (root is IArrayElementReferenceOperation && _engine.MayTouchArrays(m))
+                            NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by reference to '{m.Name}', which may read or write array contents itself, is not supported: " +
+                                                 "the cell and the parameter would disagree (copy the member into a local)");
+                    }
                     argTerms[i] = a.Parameter.RefKind == RefKind.Out ? FreshOf(a.Parameter.Type, a.Parameter.Name + "$unset") : Eval(a.Value, f, spec);
                 }
                 if (a.Parameter.RefKind != RefKind.Out) NonNullArgument(a, argTerms[i], m);
@@ -1543,6 +1657,8 @@ namespace CsVerify.Verifier
 
             // the unknown values the call makes are charged to it in the library report
             var wasCause = _z3.Cause;
+            var wasOrigin = _z3.Origin;
+            if (_codeMode && !SpecSymbols.IsSpecClass(m.ContainingType)) _z3.Origin = $"the call to '{m.Name}' (line {LineOf(inv.Syntax)}) may change what was checked before it";
             if (CallCause(m, callee) is string cause)
             {
                 _z3.Cause = cause;
@@ -1575,6 +1691,7 @@ namespace CsVerify.Verifier
                     HavocFields(f, m, touched);
                     CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                     var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
+                    if (!m.ReturnsVoid && MayBeNullType(inv.Type)) _z3.Origins[libResult.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
                     foreach (var (value, when) in whenNotNull)
                         if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                     AllocAfterCall(f, libResult);
@@ -1681,6 +1798,8 @@ namespace CsVerify.Verifier
                 var result = packageResult ?? (m.ReturnsVoid || m.IsAsync && _awaitedCall == inv && AsyncResultType(m) == null ? null : FreshOf(ResultTypeOf(inv), m.Name));
                 if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
                 if (result != null && (IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m))) _z3.Assume(NotNull(result));
+                else if (result != null && MayBeNullType(result.Sort == Sort.Int ? ResultTypeOf(inv) : null))
+                    _z3.Origins[result.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
                 // an array a stub says is fresh (list.ToArray()) is a new one: no other array is it
                 if (result != null && callee.StubFreshResult && IsSequence(m.ReturnType)) NewArrayIsDistinct(result, f);
                 if (!callee.IsPure && !callee.IsLemma)
@@ -1704,7 +1823,7 @@ namespace CsVerify.Verifier
                 if (RunsCode(m)) HavocClosureLocals(f); // (a local function, or a delegate it was handed, may write them)
                 return result ?? T.True;
             }
-            finally { _z3.Cause = wasCause; }
+            finally { _z3.Cause = wasCause; _z3.Origin = wasOrigin; }
         }
 
         /// <summary>

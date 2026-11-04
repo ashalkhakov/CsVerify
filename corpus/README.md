@@ -55,5 +55,13 @@ What it says about the order of the plan:
    `CopyTo` (Phase 5) cause no failures yet, only because nothing around them is known. Strings' `==` (Phase 4) is
    the largest group of unknown values.
 
+### After Phase 1 (check profiles, language coverage)
+
+With every check on, the numbers are as above: Phase 1 adds no loop facts. The `out` to an array element's field is
+supported now, but this callee, `ParseToken`, reads a span, so the cell is still refused (the callee could see it).
+With `--checks null` both parsers verify: 21 of 21 methods, with 1213 obligations of other kinds assumed and the 2
+`out` arguments treated as unknown values. One false alarm on the way was fixed: a `static readonly` array set by a
+method call (`TokenCharMap = BuildTokenCharMap()`) is not null.
+
 The stubs themselves are checked against the BCL: see
 [Conformance tests](../docs/library-contracts.md#conformance-tests).

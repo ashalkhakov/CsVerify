@@ -166,6 +166,7 @@ namespace CsVerify.Verifier
             _declared.Clear();
             _defines.Clear();
             Causes.Clear();
+            Origins.Clear();
             _defined = 0;
             _fresh = 0; // the same names for the same method, whatever was verified before: Z3's search depends on them
             Depth = 0;
@@ -202,6 +203,7 @@ namespace CsVerify.Verifier
             var name = T.Quote(hint + "!" + (_fresh++));
             Send($"(declare-const {name} {T.SortName(sort)})");
             if (Cause != null) Causes[name] = Cause;
+            if (Origin != null) Origins[name] = Origin;
             return new Term(name, sort);
         }
 
@@ -215,11 +217,22 @@ namespace CsVerify.Verifier
         private readonly Dictionary<string, string> _defines = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly System.Text.RegularExpressions.Regex Symbol = new System.Text.RegularExpressions.Regex(@"\|[^|]*\|");
 
+        /// <summary>
+        /// Where the values made now come from, in words with a line, for the reasons of a failed null check
+        /// ("'Find' may return null (line 12)"). Null for none. Set like <see cref="Cause"/>, or after the fact.
+        /// </summary>
+        public string Origin;
+        public readonly Dictionary<string, string> Origins = new Dictionary<string, string>(StringComparer.Ordinal);
+
         /// <summary>The causes of the fresh constants a term mentions, through the names <see cref="Define"/> gave.</summary>
-        public SortedSet<string> CausesIn(Term t)
+        public SortedSet<string> CausesIn(Term t) => new SortedSet<string>(Lookup(t, Causes), StringComparer.Ordinal);
+
+        /// <summary>The origins of the fresh constants a term mentions, in the order they were made.</summary>
+        public List<string> OriginsIn(Term t) => Lookup(t, Origins).Distinct().ToList();
+
+        private IEnumerable<string> Lookup(Term t, Dictionary<string, string> notes)
         {
-            var found = new SortedSet<string>(StringComparer.Ordinal);
-            if (Causes.Count == 0) return found;
+            if (notes.Count == 0) yield break;
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var todo = new Stack<string>();
             todo.Push(t.S);
@@ -227,10 +240,9 @@ namespace CsVerify.Verifier
                 foreach (System.Text.RegularExpressions.Match m in Symbol.Matches(todo.Pop()))
                 {
                     if (!seen.Add(m.Value)) continue;
-                    if (Causes.TryGetValue(m.Value, out var cause)) found.Add(cause);
+                    if (notes.TryGetValue(m.Value, out var note)) yield return note;
                     else if (_defines.TryGetValue(m.Value, out var body)) todo.Push(body);
                 }
-            return found;
         }
 
         /// <summary>
@@ -243,7 +255,7 @@ namespace CsVerify.Verifier
             // (a counter of its own: the fresh constants keep their names, and Z3's search, which depends on them)
             var name = T.Quote(hint + "#" + (_defined++));
             Send($"(define-fun {name} () {T.SortName(t.Sort)} {t.S})");
-            if (Causes.Count > 0) _defines[name] = t.S;
+            if (Causes.Count > 0 || Origins.Count > 0) _defines[name] = t.S;
             return new Term(name, t.Sort);
         }
 
