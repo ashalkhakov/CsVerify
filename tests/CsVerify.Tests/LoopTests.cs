@@ -136,7 +136,7 @@ namespace CsVerify.Tests
             // over the list's model (CsVerify.Bcl, see StubTests): an index from 0 to Count
             Assert.Empty(Errors("M", "static void M(System.Collections.Generic.List<int> l) { foreach (var x in l) { Spec.Assert(0 <= Spec.Index(x) && Spec.Index(x) < l.Count); } }"));
             // a loop that may change a list goes through the enumerator: no index
-            const string source = "static void M(System.Collections.Generic.List<int> l, System.Collections.Generic.List<int> o) { foreach (var x in l) { o.Add(x); Spec.Assert(Spec.Index(x) >= 0); } }";
+            const string source = "static void M(System.Collections.Generic.List<int> l, System.Collections.Generic.List<int> o) { Spec.Requires(l != o); foreach (var x in l) { o.Add(x); Spec.Assert(Spec.Index(x) >= 0); } }";
             Assert.Equal(new[] { "CSV1004" }, Errors("M", source));
             Assert.Contains("CSV1900", Warnings("M", source));
         }

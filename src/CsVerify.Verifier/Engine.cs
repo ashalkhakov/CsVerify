@@ -165,8 +165,10 @@ namespace CsVerify.Verifier
         {
             _compilation = compilation;
             Stubs = ContractStubs.For(compilation);
+            // (and the list interfaces, which read a List's models: MethodVerifier.Interfaces)
             var names = new HashSet<string>(Stubs.Models.Select(m => m.Name)
-                .Concat(Stubs.Models.Select(m => m.Parameters[0].Type.Name)));
+                .Concat(Stubs.Models.Select(m => m.Parameters[0].Type.Name))
+                .Concat(new[] { "IReadOnlyList", "IList", "IReadOnlyCollection", "ICollection" }));
             Models = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Any(n => names.Contains(n.Identifier.Text)))
                 ? Stubs.Models : new List<IMethodSymbol>();
             Data = new DataTypes(compilation, userTrees);

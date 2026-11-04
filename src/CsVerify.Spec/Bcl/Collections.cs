@@ -20,6 +20,15 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        /// <summary>
+        /// The list's version: what its enumerators check (each MoveNext throws InvalidOperationException if the list
+        /// changed since GetEnumerator). A change of the list (within its Spec.Modifies) may change it.
+        /// </summary>
+        [Model] public static int Version<T>(this List<T> list) => throw null!;
+
+        /// <summary>The dictionary's version, as for a list's.</summary>
+        [Model] public static int Version<K, V>(this Dictionary<K, V> dictionary) where K : notnull => throw null!;
+
         /// <summary>Which keys a dictionary has.</summary>
         [Model] public static Map<K, bool> Domain<K, V>(this Dictionary<K, V> dictionary) where K : notnull => throw null!;
 
@@ -213,6 +222,36 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        public static Dictionary<K, V> @new(int capacity)
+        {
+            Spec.Requires(capacity >= 0);
+            Spec.Ensures<Dictionary<K, V>>(r => r.Size() == 0 && r.Domain() == Map.Const<K, bool>(false));
+            throw null!;
+        }
+
+        // (adds only a key it does not have yet: its result says which)
+        public static bool TryAdd(Dictionary<K, V> @this, K key, V value)
+        {
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures<bool>(r => r == !Spec.Old(@this.Domain())[key].Value);
+            Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(true)));
+            Spec.Ensures(@this.Entries() == (Spec.Old(@this.Domain())[key].Value ? Spec.Old(@this.Entries()) : Spec.Old(@this.Entries()).Update(key, Ghost.Of(value))));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) + (Spec.Old(@this.Domain())[key].Value ? 0 : 1));
+            throw null!;
+        }
+
+        public static bool Remove(Dictionary<K, V> @this, K key, out V value)
+        {
+            value = default!;
+            Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures<bool>(r => r == Spec.Old(@this.Domain())[key].Value);
+            Spec.Ensures(!Spec.Result<bool>() || Ghost.Of(value) == Spec.Old(@this.Entries())[key]);
+            Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(false)));
+            Spec.Ensures(@this.Entries() == Spec.Old(@this.Entries()));
+            Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) - (Spec.Old(@this.Domain())[key].Value ? 1 : 0));
+            throw null!;
+        }
+
         [Pure]
         public static int get_Count(Dictionary<K, V> @this)
         {
@@ -241,6 +280,8 @@ namespace CsVerify.Bcl
             Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(true)));
             Spec.Ensures(@this.Entries() == Spec.Old(@this.Entries()).Update(key, Ghost.Of(value)));
             Spec.Ensures(@this.Size() == Spec.Old(@this.Size()) + (Spec.Old(@this.Domain())[key].Value ? 0 : 1));
+            // (overwriting a key's value keeps the version: a foreach over the dictionary may do it)
+            Spec.Ensures(!Spec.Old(@this.Domain())[key].Value || @this.Version() == Spec.Old(@this.Version()));
             throw null!;
         }
 
@@ -254,9 +295,11 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        // (since .NET Core 3.0, removing does not invalidate enumerators: removing in a foreach is allowed)
         public static bool Remove(Dictionary<K, V> @this, K key)
         {
             Spec.Modifies(ObjSet.Of(@this));
+            Spec.Ensures(@this.Version() == Spec.Old(@this.Version()));
             Spec.Ensures<bool>(r => r == Spec.Old(@this.Domain())[key].Value);
             Spec.Ensures(@this.Domain() == Spec.Old(@this.Domain()).Update(key, Ghost.Of(false)));
             Spec.Ensures(@this.Entries() == Spec.Old(@this.Entries()));

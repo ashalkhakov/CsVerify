@@ -33,6 +33,9 @@ namespace CsVerify.Verifier
         /// <summary>Their MoveNext calls and Current reads (with the conversion to the iteration variable's type).</summary>
         private readonly Dictionary<IOperation, Loop> _arrayMoveNext = new Dictionary<IOperation, Loop>();
         private readonly Dictionary<IOperation, Loop> _arrayCurrent = new Dictionary<IOperation, Loop>();
+        // a foreach's own Current, read right after its MoveNext (nothing runs in between): of a dictionary's enumerator,
+        // a pair the dictionary has (MethodVerifier.Enumerators)
+        private readonly HashSet<IOperation> _foreachCurrent = new HashSet<IOperation>();
         /// <summary>The foreach loop of each iteration variable (for Spec.Index).</summary>
         private readonly Dictionary<ILocalSymbol, Loop> _forEachOf = new Dictionary<ILocalSymbol, Loop>(SymbolEqualityComparer.Default);
         /// <summary>The try/finally regions of foreach loops over arrays: C# emits neither (there is no enumerator to dispose).</summary>
@@ -68,10 +71,20 @@ namespace CsVerify.Verifier
                 CollectHavoc(new SyntaxNode[] { fe }, trial);
                 if (trial.HavocAllFields || trial.HavocFields.Any(x => x is IMethodSymbol model && SpecSymbols.IsModel(model))) listElement = null;
             }
-            if (array || listElement != null)
+            // an IReadOnlyList or IList whose loop changes no state: over its Count and indexer
+            var interfaceElement = array || listElement != null ? null : InterfaceForEachElement(fe, fo);
+            if (interfaceElement != null)
             {
-                loop.ArrayElement = listElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
+                // (what its body changes: the enumerator's own MoveNext and Current are replaced by the index)
+                var trial = new Loop();
+                CollectHavoc(new SyntaxNode[] { fe.Statement }, trial);
+                if (trial.HavocAllFields || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0) interfaceElement = null;
+            }
+            if (array || listElement != null || interfaceElement != null)
+            {
+                loop.ArrayElement = listElement ?? interfaceElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
                 loop.OverList = listElement != null;
+                loop.OverInterface = interfaceElement != null;
                 if (loop.OverList) Assumed("System.Collections.Generic.List<T>.GetEnumerator()");
                 _arrayForEach[capture.Id] = loop;
                 _arrayMoveNext[head.BranchValue] = loop;
@@ -82,8 +95,9 @@ namespace CsVerify.Verifier
                         if (pr.Parent is IConversionOperation conv) _arrayCurrent[conv] = loop;
                     }
             }
-            // the enumerator's Dispose: an array has none, and a List's does nothing
-            if (array || IsList(Unconverted(fo.Collection).Type))
+            // the enumerator's Dispose: an array has none, and a List's does nothing; neither does a library
+            // collection's (trusted, as its Count and indexer are: the program has no list of its own then)
+            if (array || IsList(Unconverted(fo.Collection).Type) || interfaceElement != null)
                 for (var region = head.EnclosingRegion; region != null; region = region.EnclosingRegion)
                     if (region.Kind == ControlFlowRegionKind.Try && region.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally)
                     {
@@ -91,8 +105,26 @@ namespace CsVerify.Verifier
                         break;
                     }
             foreach (var l in ForEachLocals(fe)) if (l is ILocalSymbol local) _forEachOf[local] = loop;
+            if (!array && listElement == null && interfaceElement == null)
+                foreach (var op in cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()))
+                    if (op is IPropertyReferenceOperation cur && cur.Property.Name == "Current" && cur.Instance is IFlowCaptureReferenceOperation cr && cr.Id.Equals(capture.Id))
+                        _foreachCurrent.Add(cur);
+            // through an enumerator of a versioned collection: "the version is still the enumerator's", inferred as the
+            // loop facts are (held on entry, kept at every back edge; else MoveNext reports the change)
+            if (!array && listElement == null && interfaceElement == null && capture.Value is IInvocationOperation ge &&
+                VersionModel(ge.TargetMethod.ContainingType) is IMethodSymbol version)
+            {
+                var id = capture.Id;
+                loop.Facts.Add(new LoopFact
+                {
+                    Key = loop.Id + ":version",
+                    Make = fr => fr.Captures.TryGetValue(id, out var e)
+                        ? T.Eq(T.Coerce(ModelAt(version, new[] { EnumeratorOf(e) }, fr), Sort.Int), EnumeratorVersion(e))
+                        : T.True,
+                });
+            }
             // a foreach over an array ends by itself: its index goes up to the array's (fixed) length
-            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null);
+            AddLoop(loop, new SyntaxNode[] { fe }, needsMeasure: !array && listElement == null && interfaceElement == null);
         }
 
         private static bool IsMoveNext(IOperation op, CaptureId enumerator) =>
@@ -168,6 +200,8 @@ namespace CsVerify.Verifier
             {
                 // MoveNext was true: 0 <= i < a.Length
                 var (arr, i) = f.ForEach[loop.Id];
+                if (loop.OverInterface)
+                    return T.Coerce(InRangeOf(ListItemOf(arr, i, loop.ArrayElement, f), loop.ArrayElement), SortOf(op.Type));
                 if (loop.OverList)
                     return T.Coerce(InRangeOf(T.Coerce(T.Select(ModelAt(ListModel("Items"), new[] { arr }, f), i, Sort.Int), SortOf(loop.ArrayElement)), loop.ArrayElement), SortOf(op.Type));
                 CheckCellFraming(arr, i, f, op.Syntax);
@@ -188,6 +222,7 @@ namespace CsVerify.Verifier
 
         /// <summary>How far a foreach's index goes: the array's length, or the list's Size().</summary>
         private Term ForEachLength(Loop loop, Term collection, Frame f) =>
+            loop.OverInterface ? ListSizeOf(collection, f) :
             loop.OverList ? T.Coerce(ModelAt(ListModel("Size"), new[] { collection }, f), Sort.Int) : Len(collection);
 
         /// <summary>The end of an iteration (or a continue): the index goes on to the next element.</summary>

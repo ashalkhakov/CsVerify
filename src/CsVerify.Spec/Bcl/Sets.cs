@@ -19,6 +19,13 @@ namespace CsVerify.Bcl
             throw null!;
         }
 
+        /// <summary>The set's version: what its enumerators check (see Models.Version).</summary>
+        [Model] public static int Version<T>(this HashSet<T> set) => throw null!;
+
+        [Model] public static int Version<T>(this Stack<T> stack) => throw null!;
+
+        [Model] public static int Version<T>(this Queue<T> queue) => throw null!;
+
         [Model] public static Seq<T> Items<T>(this Stack<T> stack) => throw null!;
 
         [Model]

@@ -18,6 +18,15 @@ namespace CsVerify.Verifier
         private int _fieldEpochs;
         // what began each epoch (a call, a loop): its maps, made when first read, are charged to it
         private readonly Dictionary<int, (string cause, string origin)> _epochCauses = new Dictionary<int, (string, string)>();
+        // an epoch whose maps are the previous ones where a condition holds (a call through a list interface on a List)
+        private readonly Dictionary<int, (Term keep, Frame before)> _epochKeeps = new Dictionary<int, (Term, Frame)>();
+
+        /// <summary>Every field may change, unless <paramref name="keep"/> holds: then each is as in <paramref name="before"/>.</summary>
+        private void HavocAllFieldsUnless(Frame f, Term keep, Frame before)
+        {
+            HavocAllFields(f);
+            _epochKeeps[f.FieldEpoch] = (keep, before);
+        }
 
         /// <summary>
         /// A field's map: object to Int (to a set, for an ObjSet-valued ghost field such as Repr). A [Model] function
@@ -43,6 +52,8 @@ namespace CsVerify.Verifier
                 if (_epochCauses.TryGetValue(f.FieldEpoch, out var began)) (_z3.Cause, _z3.Origin) = began;
                 try { _fieldStates[key] = map = FreshMap(field); }
                 finally { (_z3.Cause, _z3.Origin) = (wasCause, wasOrigin); }
+                if (_epochKeeps.TryGetValue(f.FieldEpoch, out var kept))
+                    AssumeSide(T.Implies(kept.keep, T.Eq(map, FieldMap(kept.before, field))));
             }
             return map;
         }

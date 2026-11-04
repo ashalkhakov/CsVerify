@@ -37,6 +37,8 @@ namespace CsVerify.Verifier
             public ITypeSymbol ArrayElement;
             /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
             public bool OverList;
+            /// <summary>A foreach over an IReadOnlyList or IList: its index runs over the interface's Count and indexer.</summary>
+            public bool OverInterface;
             public List<LoopFact> Facts = new List<LoopFact>(); // inferred, for a loop without invariants (MethodVerifier.LoopFacts)
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
@@ -1380,6 +1382,8 @@ namespace CsVerify.Verifier
                 case IPropertyReferenceOperation ps when IsComputed(ps.Property.SetMethod):
                     CallAccessor(ps.Property.SetMethod, ps.Instance, ps.Arguments.Select(a => a.Value), v, null, ps.Syntax, f, spec);
                     break;
+                case IPropertyReferenceOperation ip when InterfaceListSet(ip, v, f, spec):
+                    break;
                 case IPropertyReferenceOperation ls when _codeMode && ls.Property.SetMethod != null && ls.Property.DeclaringSyntaxReferences.Length == 0 &&
                                                         ls.Property.ContainingType.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace && !IsSequence(ls.Instance?.Type):
                     // a library setter (a dictionary's indexer): a call of a library method
@@ -1427,6 +1431,9 @@ namespace CsVerify.Verifier
         {
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
+            if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
+            if (DictionaryView(pr, f, spec) is Term dictionaryView) return dictionaryView;
+            if (DictionaryCurrent(pr, f, spec) is Term dictionaryCurrent) return dictionaryCurrent;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
             if ((SpecSymbols.IsObjSet(prop.ContainingType) || SpecSymbols.IsBag(prop.ContainingType)) && prop.Name == "Empty") return T.ZeroRow();
             if (SpecSymbols.IsSeqType(prop.ContainingType) && prop.IsIndexer)
@@ -1540,6 +1547,7 @@ namespace CsVerify.Verifier
                 if (_codeMode) Prove(T.Le(T.Int(0), n), "CSV1003", ac.Syntax, $"array size in '{ac.Syntax}' might be negative");
             var r = _z3.Fresh("array", Sort.Int);
             _z3.Assume(NotNull(r));
+            ListKind(r, ac.Type);
             if (sizes.Count == 1) _z3.Assume(T.Eq(Len(r), sizes[0]));
             NewArrayIsDistinct(r, f);
             var row = sizes.Count > 1 ? NewMultiArray(ac, r, sizes, f, spec) : T.ZeroRow();
@@ -1570,8 +1578,9 @@ namespace CsVerify.Verifier
             finally { _instantiations.Pop(); _equalityEpochs.Pop(); }
         }
 
-        private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec)
+        private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec, bool enumerators = true)
         {
+            if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
             if (IsGetLength(inv)) return GetLength(inv, f, spec);
             if (SpecSymbols.IsSpecClass(m.ContainingType))
@@ -1634,6 +1643,7 @@ namespace CsVerify.Verifier
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
+            if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
