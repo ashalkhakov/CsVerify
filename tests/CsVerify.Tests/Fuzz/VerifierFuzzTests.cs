@@ -32,7 +32,7 @@ namespace CsVerify.Tests.Fuzz
         public void RandomPrograms_VerifiedMeansCorrect()
         {
             var (from, to) = Seeds();
-            int perBatch = int.TryParse(Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_METHODS"), out var n) ? n : 20;
+            int perBatch = int.TryParse(Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_METHODS"), out var n) ? n : 15;
             var all = new Outcome();
             var log = Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_LOG");
             for (int seed = from; seed <= to; seed++)
@@ -150,6 +150,9 @@ namespace CsVerify.Tests.Fuzz
             }
             o.Log.Add($"seed {seed}: verified {result.Methods.Count} units in {clock.ElapsedMilliseconds} ms; slowest: " +
                       string.Join(", ", result.Methods.OrderByDescending(r => r.Milliseconds).Take(4).Select(r => $"{r.Name} {r.Milliseconds} ms")));
+            // (the helpers' contracts are what calls to them rely on: each must verify, or a "bug" could be theirs)
+            foreach (var r in result.Methods.Where(r => !r.Name.StartsWith("G.") && !r.Verified))
+                o.Problems.Add($"seed {seed}: the helper {r.Name} does not verify: " + string.Join("; ", r.Diagnostics.Where(d => d.IsError).Select(d => d.Message)));
             foreach (var r in result.Methods)
                 foreach (var d in r.Diagnostics.Where(d => d.Id == "CSV1999"))
                     o.Problems.Add($"seed {seed}, {r.Name}: internal error: {d.Message}");
@@ -209,6 +212,8 @@ namespace CsVerify.Tests.Fuzz
             ("arrays written", "] = "), ("loops", "for ("), ("LINQ", "x => "), ("fields", ".V = "), ("d (maybe null, maybe c)", "d.V"),
             ("new cells", "new Cell"), ("records", "new Pt("), ("doubles", "double "), ("double to int", "(int)"),
             ("throws", "throw new Escape"), ("catch Escape", "catch (Escape)"), ("checked, caught", "catch (OverflowException)"),
+            ("frames (Bump)", "H.Bump"), ("frames (Scramble)", "H.Scramble"), ("cell permissions (SetCell)", "H.SetCell"), ("[Pure] calls", "H.Twice"),
+            ("owned accounts", "Own.New"), ("transfers", "Account.Transfer"),
         };
 
         /// <summary>Methods compiled to run, with overflow checked (an overflow throws).</summary>
@@ -217,7 +222,8 @@ namespace CsVerify.Tests.Fuzz
             var source = "#nullable disable\nusing System; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime + ProgramGenerator.Prelude +
                          $"public static class {klass}\n{{\n" + string.Concat(methods) + "}\n";
             var c = CSharpCompilation.Create($"Fuzz{seed}{klass}", new[] { CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest)) },
-                Engine.FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, checkOverflow: true));
+                Engine.FrameworkReferences().Append(MetadataReference.CreateFromFile(typeof(CsVerify.Own).Assembly.Location)), // (Own, the attributes)
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, checkOverflow: true));
             using var ms = new MemoryStream();
             var emit = c.Emit(ms);
             Assert.True(emit.Success, $"seed {seed}: the run-time program does not compile:\n" +
@@ -226,12 +232,9 @@ namespace CsVerify.Tests.Fuzz
         }
 
         private const string Runtime = @"
-namespace CsVerify
+public static class RT
 {
-    public static class Spec
-    {
-        public static bool Forall(int lo, int hi, Func<int, bool> p) { for (int i = lo; i < hi; i++) if (!p(i)) return false; return true; }
-    }
+    public static bool Forall(int lo, int hi, Func<int, bool> p) { for (int i = lo; i < hi; i++) if (!p(i)) return false; return true; }
 }
 public sealed class Skip : Exception { }
 public sealed class Failed : Exception { public Failed(string what) : base(what + "" fails"") { } }

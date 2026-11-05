@@ -39,11 +39,89 @@ namespace CsVerify.Tests.Fuzz
 
         public enum Mode { Verify, Run, Probe }
 
-        /// <summary>What both the verified and the running program declare.</summary>
+        /// <summary>
+        /// What both the verified and the running program declare: the types, and a library of helpers with real
+        /// contracts for the methods to call (frames, array permissions, an owned class with an invariant, a [Pure]
+        /// function). The helpers are verified too, in every batch.
+        /// </summary>
         public const string Prelude = @"
 public sealed class Cell { public int V; }
 public sealed record Pt(int X, int Y);
 public sealed class Escape : Exception { }
+
+public static class H
+{
+    // changes only x, by k
+    public static void Bump(Cell x, int k)
+    {
+        Spec.Requires(-1000 <= k && k <= 1000 && -100000 <= x.V && x.V <= 100000);
+        Spec.Modifies(ObjSet.Of(x));
+        Spec.Ensures(x.V == Spec.Old(x.V) + k);
+        x.V = x.V + k;
+    }
+
+    // changes only x, saying nothing of how
+    public static void Scramble(Cell x)
+    {
+        Spec.Modifies(ObjSet.Of(x));
+        x.V = 7;
+    }
+
+    // writes only a[i]: the permission to that cell
+    public static void SetCell(int[] a, int i, int v)
+    {
+        Spec.Requires(0 <= i && i < a.Length && Spec.Acc(a, i, i + 1));
+        Spec.Ensures(Spec.Acc(a, i, i + 1) && a[i] == v);
+        a[i] = v;
+    }
+
+    [Pure]
+    public static int Twice(int x)
+    {
+        Spec.Requires(-100000 <= x && x <= 100000);
+        return 2 * x;
+    }
+}
+
+// owned (ATS style): written only through its view, never overdrawn
+[Owned]
+public sealed class Account
+{
+    public int Balance;
+
+    [Invariant, Pure] public bool Valid() => Balance >= 0;
+
+    public Account(int initial)
+    {
+        Spec.Requires(0 <= initial && initial <= 100000);
+        Spec.Ensures(Balance == initial);
+        Balance = initial;
+    }
+
+    public void Deposit(int amount)
+    {
+        Spec.Requires(0 <= amount && amount <= 1000 && Balance <= 100000);
+        Spec.Ensures(Balance == Spec.Old(Balance) + amount);
+        Balance = Balance + amount;
+    }
+
+    public void Withdraw(int amount)
+    {
+        Spec.Requires(0 <= amount && amount <= Balance);
+        Spec.Ensures(Balance == Spec.Old(Balance) - amount);
+        Balance = Balance - amount;
+    }
+
+    // two views in hand: two different accounts
+    public static void Transfer(Account from, ref Own<Account> fromView, Account to, ref Own<Account> toView, int amount)
+    {
+        Spec.Requires(fromView.Obj.Value == from && toView.Obj.Value == to);
+        Spec.Requires(0 <= amount && amount <= from.Balance && to.Balance <= 100000 && amount <= 1000);
+        Spec.Ensures(from.Balance == Spec.Old(from.Balance) - amount && to.Balance == Spec.Old(to.Balance) + amount);
+        from.Withdraw(amount);
+        to.Deposit(amount);
+    }
+}
 ";
 
         /// <summary>An input: d is null (DMode 0), c itself (1), or a cell of its own (2).</summary>
@@ -95,7 +173,7 @@ public sealed class Escape : Exception { }
                     sb.AppendLine($"        Spec.Requires({Pre});");
                     if (post >= 0) sb.AppendLine($"        Spec.Ensures<int>(r => {Posts[post]});");
                 }
-                else sb.AppendLine($"        if (!({Pre})) throw new Skip();");
+                else sb.AppendLine($"        if (!({Pre.Replace("Spec.Forall", "RT.Forall")})) throw new Skip();");
                 bool Kept(int id) => mode == Mode.Probe || keep != null && keep.Contains(id) || id == planted;
                 foreach (var st in Body) Emit(sb, st, 2, mode, Kept);
                 if (mode == Mode.Verify) sb.AppendLine($"        return {Result};");
@@ -116,7 +194,8 @@ public sealed class Escape : Exception { }
         private sealed class Pools
         {
             public List<string> Ints = new List<string>(), Doubles = new List<string>(), Cells = new List<string>(), Pts = new List<string>();
-            public Pools Copy() => new Pools { Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList() };
+            public List<string> Accounts = new List<string>(); // (owned: account oK, its view wK)
+            public Pools Copy() => new Pools { Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList() };
         }
 
         public Method Next(string name)
@@ -188,6 +267,8 @@ public sealed class Escape : Exception { }
             var saved = _p.Copy();
             var list = new List<Stmt>();
             for (int k = 0; k < n; k++) list.Add(Statement());
+            // (the views made in the block are given up at its end: a view is linear, and must not be lost)
+            foreach (var o in _p.Accounts.Except(saved.Accounts)) list.Add(new Line { Text = $"Own.Drop(w{o.Substring(1)});" });
             _p = saved; // (a block's declarations end with it)
             return list;
         }
@@ -197,7 +278,12 @@ public sealed class Escape : Exception { }
             _depth++;
             try
             {
-                switch (_r.Next(_depth > 1 ? 9 : 13))
+                // (simple statements 0..8 and 13..15; compound ones 9..12 only near the top)
+                int pick = _r.Next(_depth > 1 ? 12 : 16);
+                if (_depth > 1 && pick >= 9) pick += 4;
+                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(3); // (calls and owned objects more often)
+                if (pick == 13 && _p.Accounts.Count == 1 && _r.Next(2) == 0) pick = 14;
+                switch (pick)
                 {
                     case 0:
                     {
@@ -259,6 +345,57 @@ public sealed class Escape : Exception { }
                             Handler = new List<Stmt> { new Line { Text = $"{v} = {Small()};" } },
                         };
                     }
+                    case 13:
+                    {
+                        // an owned account and its view (made with a balance that may break its precondition)
+                        // (often two, so that a transfer has both ends; and then often one at once)
+                        var text = new StringBuilder();
+                        var made = new List<string>();
+                        for (int k = _r.Next(2); k < 2; k++)
+                        {
+                            var o = "o" + _fresh++;
+                            text.Append($"var {o} = Own.New(new Account({(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100")}), out var w{o.Substring(1)}); ");
+                            _p.Accounts.Add(o);
+                            made.Add(o);
+                        }
+                        if (made.Count == 2 && _r.Next(2) == 0)
+                        {
+                            var amount = _r.Next(3) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 50";
+                            var (f, t) = _r.Next(2) == 0 ? (made[0], made[1]) : (made[1], made[0]);
+                            text.Append($"if ({amount} <= {f}.Balance && {t}.Balance <= 1000) Account.Transfer({f}, ref w{f.Substring(1)}, {t}, ref w{t.Substring(1)}, {amount});");
+                        }
+                        return new Line { Text = text.ToString().TrimEnd() };
+                    }
+                    case 14:
+                    {
+                        if (_p.Accounts.Count == 0) goto case 13;
+                        var o = Pick(_p.Accounts);
+                        var amount = _r.Next(3) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 50";
+                        switch (_r.Next(4))
+                        {
+                            case 0: return new Line { Text = $"{o}.Deposit({amount});" };
+                            case 1: return new Line { Text = $"if ({amount} <= {o}.Balance) {o}.Withdraw({amount});" };
+                            case var _ when _p.Accounts.Count > 1 && _r.Next(2) == 0:
+                            {
+                                var t = Pick(_p.Accounts.Where(x => x != o).ToList());
+                                return new Line { Text = $"if ({amount} <= {o}.Balance && {t}.Balance <= 1000) Account.Transfer({o}, ref w{o.Substring(1)}, {t}, ref w{t.Substring(1)}, {amount});" };
+                            }
+                            default: return new Line { Text = $"{o}.Withdraw({amount});" }; // (may overdraw: then it must not verify)
+                        }
+                    }
+                    case 15:
+                    {
+                        // calls to the helpers: what they may change, and what they may not
+                        var cell = _r.Next(3) == 0 ? "d" : Pick(_p.Cells);
+                        var call = new[]
+                        {
+                            $"H.Bump({cell}, {Int(1)});",
+                            $"H.Bump({cell}, Math.Abs({Int(1)}) % 100);",
+                            $"H.Scramble({cell});",
+                            $"if (xs.Length > 0) H.SetCell(xs, {Index()}, {Int(1)});",
+                        }[_r.Next(4)];
+                        return new Line { Text = cell == "d" && !call.StartsWith("if") ? $"if (d != null) {call}" : call };
+                    }
                     case 9:
                     case 10: return new If { Cond = Bool(2, null), Then = Block(_r.Next(1, 3)), Else = _r.Next(2) == 0 ? Block(_r.Next(1, 3)) : null };
                     case 11: return new Try { Body = Block(_r.Next(1, 3)), Catches = "Escape", Handler = Block(_r.Next(1, 2)) };
@@ -297,6 +434,7 @@ public sealed class Escape : Exception { }
                     case 1: return "xs.Length";
                     case 2: return _r.Next(2) == 0 ? $"{Pick(_p.Cells)}.V" : "(d == null ? 0 : d.V)";
                     case 3 when _p.Pts.Count > 0: return $"{Pick(_p.Pts)}.{(_r.Next(2) == 0 ? "X" : "Y")}";
+                    case 4 when _p.Accounts.Count > 0: return $"{Pick(_p.Accounts)}.Balance";
                     case 5: return extra;
                     default: return Pick(_p.Ints);
                 }
@@ -312,7 +450,7 @@ public sealed class Escape : Exception { }
                 case 4: return $"({Int(d, extra)} / {Divisor(d, extra)})";
                 case 5: return $"({Int(d, extra)} % {Divisor(d, extra)})";
                 case 6: return $"Math.{(_r.Next(2) == 0 ? "Min" : "Max")}({Int(d, extra)}, {Int(d, extra)})";
-                case 7: return $"Math.Abs({Int(d, extra)})";
+                case 7: return _r.Next(3) == 0 ? $"H.Twice({Int(d, extra)})" : $"Math.Abs({Int(d, extra)})";
                 case 8: return $"({Bool(d, extra)} ? {Int(d, extra)} : {Int(d, extra)})";
                 case 9:
                 {

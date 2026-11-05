@@ -141,6 +141,10 @@ were provable. The defences we have:
   null, `c` itself, or another cell. Their bodies have integer arithmetic, `Math`, array reads and writes, field reads
   and writes, new cells, data records and their equality, doubles (NaN, infinities, -0.0, `Sqrt`, casts back to
   `int`), `throw`, `try`/`catch`, `checked` arithmetic caught as `OverflowException`, ifs, `for` loops and LINQ.
+  They call a library of helpers with real contracts: a `Spec.Modifies` frame that says how its cell changes, and
+  one that does not; a writer of one array cell under `Spec.Acc`; a `[Pure]` function; and an `[Owned]` account with
+  an invariant, made with `Own.New` and changed through its view (deposits, withdrawals, transfers between two).
+  The helpers are verified in every batch, since the calls rely on their contracts.
   Each method is first run with every candidate assertion and postcondition recorded. Its *true variant* keeps those
   that held. Where it verifies, it is run again on fresh inputs with its specifications as run-time checks and
   overflow checked; a failed check, or an exception other than the program's own throw, is a soundness bug. Its
@@ -149,14 +153,14 @@ were provable. The defences we have:
   many true variants verify and the test bites; their share is a measure of completeness. CI runs three seeds;
   `CSVERIFY_FUZZ_SEEDS=from..to`, `CSVERIFY_FUZZ_METHODS`, `CSVERIFY_FUZZ_SIZE` and `CSVERIFY_FUZZ_LOG` run a soak.
 
-  Two soaks so far, 1,280 methods, found no soundness problem. In all, 751 true variants verified and passed their
-  checks, and 947 of 947 planted ones were rejected. They found one robustness bug: division, remainder and absolute
+  Three soaks so far, 1,820 methods, found no soundness problem. In all, 1,061 true variants verified and passed
+  their checks, and 1,353 of 1,353 planted ones were rejected. They found one robustness bug: division, remainder and absolute
   value were written out with their operands repeated, so nested ones grew exponentially. One method's term passed
   2^31 characters and crashed the verifier, and others took minutes. Long operands now go through solver macros.
 
-What would make it stronger: a generator that covers more of the language (owned objects, views and permissions,
-`Spec.Modifies` frames, calls between generated methods, strings); every generated feature is one the oracle then
-checks.
+What would make it stronger: a generator that covers more of the language (ownership trees and `Own.Take`/`Give`,
+predicates and their folding, read shares, `Mem` views, loops with invariants, strings, async); every generated
+feature is one the oracle then checks.
 
 ## References
 
