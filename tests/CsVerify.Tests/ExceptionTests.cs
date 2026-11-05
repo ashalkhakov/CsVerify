@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -11,6 +12,58 @@ namespace CsVerify.Tests
         Spec.EnsuresOnThrow<System.ArgumentException>(x < 0);
         if (x < 0) throw new System.ArgumentException(""negative"");
         return x; }";
+
+        // (a try's raises are merged at its handler: each call in a try may raise, and followed one by one, each
+        // ran the handler and the rest of the method again)
+        private const string Raising = @"
+    static int F(int x) { Spec.Requires(0 <= x && x <= 1000); Spec.Ensures((int r) => r == x); return x; }";
+
+        [Fact]
+        public void Raises_AreMergedAtTheHandler_Exactly()
+        {
+            var r = Harness.Verify("public static class C {" + Raising + @"
+    static int Exact(int a) {
+        Spec.Requires(0 <= a && a <= 10);
+        int r = 1;
+        try { r = 2; int t = F(a); r = 3; int u = F(a); r = 4; }
+        catch (System.InvalidOperationException) { Spec.Assert(r == 2 || r == 3); r = 5; }
+        Spec.Assert(r == 4 || r == 5);
+        return r; }
+    static int Wrong(int a) {
+        Spec.Requires(0 <= a && a <= 10);
+        int r = 1;
+        try { r = 2; int t = F(a); r = 3; int u = F(a); r = 4; }
+        catch (System.InvalidOperationException) { Spec.Assert(r == 3); }
+        return r; }
+}");
+            // the handler knows each raise's state (r is 2 or 3), and no more than that
+            Assert.Empty(r.Errors("Exact"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void Raises_AreMerged_SoTheRestIsExploredOnce()
+        {
+            var r = Harness.Verify("public static class C {" + Raising + @"
+    static int Many(int a, int b) {
+        Spec.Requires(0 <= a && a <= 1000 && 0 <= b && b <= 1000);
+        int r = 0;
+        try { int t1 = F(a); int t2 = F(b); int t3 = F(t1); int t4 = F(t2); int t5 = F(t3); int t6 = F(t4); int t7 = F(t5); int t8 = F(t6); r = t7 + t8; }
+        catch (System.InvalidOperationException) { r = 0; }
+        if (a > 1) r = r + 1;
+        if (b > 2) r = r + 1;
+        if (a > 3) r = r + 1;
+        if (b > 4) r = r + 1;
+        if (a > 5) r = r + 1;
+        if (b > 6) r = r + 1;
+        Spec.Assert(r >= 0);
+        return r; }
+}");
+            var many = r.Methods.Single(m => m.Name == "C.Many");
+            Assert.Empty(r.Errors("Many"));
+            // one by one, each of the 8 raises explored the handler and the 64 paths after it: 300 obligations
+            Assert.True(many.Obligations <= 100, $"{many.Obligations} obligations");
+        }
 
         [Fact]
         public void Catch_SeesWhatTheCalleePromisedOnThrow()

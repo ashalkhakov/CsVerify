@@ -420,6 +420,12 @@ namespace CsVerify.Verifier
         private void Exec(BasicBlock block, Frame f, HashSet<int> onPath)
         {
             if (BudgetSpent()) return;
+            // (a try with handlers: its raises collected and merged at the handlers; MethodVerifier.Exceptions)
+            if (!ProofCode && _codeMode && _foreignSpec == 0 && TryEntry(block) is ControlFlowRegion tryAndCatch)
+            {
+                CollectTry(tryAndCatch, block, f, onPath);
+                return;
+            }
             if (++_paths > _engine.Options.MaxPaths)
             {
                 if (_paths == _engine.Options.MaxPaths + 1)

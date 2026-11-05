@@ -180,6 +180,8 @@ namespace CsVerify.Verifier
         {
             Send("(reset)");
             _kept.Clear();
+            _recording = 0;
+            _log.Clear();
             _macros = false;
             _declared.Clear();
             _defines.Clear();
@@ -305,7 +307,29 @@ namespace CsVerify.Verifier
         public void Assume(Term t)
         {
             if (t == T.True) return;
+            if (_recording > 0) _log[Depth].Add(t);
             Send($"(assert {t.S})");
+        }
+
+        // ---- a log of what is assumed, per scope, while some try collects its raises (state merging)
+        private int _recording;
+        private readonly List<List<Term>> _log = new List<List<Term>>();
+
+        /// <summary>Starts logging assumptions, from this scope (just pushed) on.</summary>
+        public void StartRecording()
+        {
+            while (_log.Count <= Depth) _log.Add(new List<Term>());
+            if (_recording++ == 0) _log[Depth] = new List<Term>();
+        }
+
+        public void StopRecording() => _recording--;
+
+        /// <summary>What has been assumed in the scopes from <paramref name="baseDepth"/> to the current one.</summary>
+        public List<Term> Recorded(int baseDepth)
+        {
+            var all = new List<Term>();
+            for (int d = baseDepth; d <= Depth && d < _log.Count; d++) all.AddRange(_log[d]);
+            return all;
         }
 
         public void Push()
@@ -313,6 +337,11 @@ namespace CsVerify.Verifier
             Depth++; Scope = ++_scopes; Send("(push 1)");
             while (_frames.Count <= Depth) _frames.Add(0);
             _frames[Depth] = Scope;
+            if (_recording > 0)
+            {
+                while (_log.Count <= Depth) _log.Add(new List<Term>());
+                _log[Depth] = new List<Term>();
+            }
         }
 
         // the scope open at each depth (a fact asserted there lasts while that one is)
