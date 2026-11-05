@@ -988,8 +988,9 @@ public sealed class Duo
                 case 2:
                 {
                     var m = "map" + _fresh++;
+                    var text = $"var {m} = new Dictionary<int, int>(); {m}[{Key()}] = {Int(1)};";
                     _p.Maps.Add(m);
-                    return new Line { Text = $"var {m} = new Dictionary<int, int>(); {m}[{Key()}] = {Int(1)};" };
+                    return new Line { Text = text };
                 }
                 case 3 when _p.Maps.Count > 0:
                 {
@@ -1007,8 +1008,9 @@ public sealed class Duo
                 case 4:
                 {
                     var h = "set" + _fresh++;
+                    var text = $"var {h} = new HashSet<int>(); {h}.Add({Int(1)});";
                     _p.Sets.Add(h);
-                    return new Line { Text = $"var {h} = new HashSet<int>(); {h}.Add({Int(1)});" };
+                    return new Line { Text = text };
                 }
                 case 5 when _p.Sets.Count > 0:
                 {
@@ -1018,8 +1020,9 @@ public sealed class Duo
                 case 6:
                 {
                     var k = "stk" + _fresh++;
+                    var text = $"var {k} = new Stack<int>(); {k}.Push({Int(1)});";
                     _p.Stacks.Add(k);
-                    return new Line { Text = $"var {k} = new Stack<int>(); {k}.Push({Int(1)});" };
+                    return new Line { Text = text };
                 }
                 default:
                 {
@@ -1125,8 +1128,9 @@ public sealed class Duo
                 case 0:
                 {
                     var mt = "mt" + n;
+                    var text = $"var {mt} = new Meter({(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")});"; // (before it is in scope)
                     _p.Meters.Add(mt);
-                    return new Line { Text = $"var {mt} = new Meter({(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")});" };
+                    return new Line { Text = text };
                 }
                 case 1 when _p.Meters.Count > 0:
                     return new Line { Text = $"{Pick(_p.Meters)}.Level = {(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")};" };
@@ -1157,8 +1161,9 @@ public sealed class Duo
                 case 1:
                 {
                     var q = "que" + n;
+                    var text = $"var {q} = new Queue<int>(); {q}.Enqueue({Int(1)}); if ({q}.Count > 1) {q}.Dequeue();";
                     _p.Queues.Add(q);
-                    return new Line { Text = $"var {q} = new Queue<int>(); {q}.Enqueue({Int(1)}); if ({q}.Count > 1) {q}.Dequeue();" };
+                    return new Line { Text = text };
                 }
                 case 2:
                 {
@@ -1222,8 +1227,9 @@ public sealed class Duo
             if (_p.MemArrays.Count == 0 || _r.Next(3) == 0)
             {
                 var n = (_fresh++).ToString();
+                var text = $"var ap{n} = Mem.AllocArray(3, {Int(1)}, out ArrayView<int> av{n}, out FreeGc<int> gc{n});";
                 _p.MemArrays.Add(n);
-                return new Line { Text = $"var ap{n} = Mem.AllocArray(3, {Int(1)}, out ArrayView<int> av{n}, out FreeGc<int> gc{n});" };
+                return new Line { Text = text };
             }
             var m = Pick(_p.MemArrays);
             var i = _r.Next(4) == 0 ? Int(0) : $"Math.Abs({Int(0)}) % 3"; // (in range, mostly)
@@ -1332,8 +1338,9 @@ public sealed class Duo
             if (_p.Grids.Count == 0 || _r.Next(3) == 0)
             {
                 var g = "gr" + _fresh++;
+                var text = $"var {g} = new int[2, 3]; {g}[1, 2] = {Int(1)};";
                 _p.Grids.Add(g);
-                return new Line { Text = $"var {g} = new int[2, 3]; {g}[1, 2] = {Int(1)};" };
+                return new Line { Text = text };
             }
             var gr = Pick(_p.Grids);
             return new Line { Text = _r.Next(4) == 0 ? $"{gr}[{Int(0)}, 0] = {Int(1)};" : $"{gr}[Math.Abs({Int(0)}) % 2, Math.Abs({Int(0)}) % 3] = {Int(1)};" };

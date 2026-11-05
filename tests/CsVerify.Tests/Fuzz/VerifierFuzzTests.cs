@@ -86,6 +86,8 @@ namespace CsVerify.Tests.Fuzz
         {
             public readonly HashSet<int> Reached = new HashSet<int>(), False = new HashSet<int>(), Throws = new HashSet<int>();
             public readonly HashSet<int> PostFalse = new HashSet<int>(), ThrowFalse = new HashSet<int>();
+            // (candidates whose evaluation threw, a checked cast or division in it: neither false nor true, so neither kept nor planted)
+            public readonly HashSet<int> PostThrows = new HashSet<int>(), ThrowPostThrows = new HashSet<int>();
             public readonly Dictionary<int, string> Witness = new Dictionary<int, string>();
             public string Crash;
             public bool Escaped; // (it left by Escape on some input: its EnsuresOnThrow candidates were tested)
@@ -127,6 +129,8 @@ namespace CsVerify.Tests.Fuzz
                         if (p.PostFalse.Add(f)) p.Witness[1000 + f] = input.ToString();
                     foreach (var f in (HashSet<int>)hit.GetField("ThrowFalse").GetValue(null))
                         if (p.ThrowFalse.Add(f)) p.Witness[2000 + f] = input.ToString();
+                    p.PostThrows.UnionWith((HashSet<int>)hit.GetField("PostThrows").GetValue(null));
+                    p.ThrowPostThrows.UnionWith((HashSet<int>)hit.GetField("ThrowPostThrows").GetValue(null));
                 }
             }
 
@@ -137,7 +141,7 @@ namespace CsVerify.Tests.Fuzz
             {
                 var p = probed[m.Name];
                 var keep = new HashSet<int>(Enumerable.Range(0, m.Slots).Where(id => !p.False.Contains(id) && !p.Throws.Contains(id)));
-                int post = Enumerable.Range(0, m.Posts.Count).Where(k => !p.PostFalse.Contains(k)).DefaultIfEmpty(-1).First();
+                int post = Enumerable.Range(0, m.Posts.Count).Where(k => !p.PostFalse.Contains(k) && !p.PostThrows.Contains(k)).DefaultIfEmpty(-1).First();
                 // (to plant: a slot that failed where it was reached, or a ghost check, true by construction, that was reached:
                 // its negation; one of each kind in turn)
                 var failed = p.False.Where(id => p.Reached.Contains(id) && !p.Throws.Contains(id)).ToList();
@@ -145,11 +149,11 @@ namespace CsVerify.Tests.Fuzz
                 int planted = p.Crash != null ? -1
                     : ghosts.Count > 0 && (failed.Count == 0 || int.Parse(m.Name.Substring(1)) % 2 == 0) ? ghosts[0]
                     : failed.DefaultIfEmpty(-1).First();
-                int plantedPost = p.Crash != null || planted >= 0 ? -1 : p.PostFalse.DefaultIfEmpty(-1).First();
+                int plantedPost = p.Crash != null || planted >= 0 ? -1 : p.PostFalse.Where(k => !p.PostThrows.Contains(k)).DefaultIfEmpty(-1).First();
                 // (EnsuresOnThrow: one that held whenever it left by Escape; or planted, one that failed then)
                 // (only one that was tested: else it must hold after every call, any of which may throw, and rarely does)
-                int throwPost = !p.Escaped ? -1 : Enumerable.Range(0, m.ThrowPosts.Count).Where(k => !p.ThrowFalse.Contains(k)).DefaultIfEmpty(-1).First();
-                int plantedThrow = p.Crash != null || planted >= 0 || plantedPost >= 0 ? -1 : p.ThrowFalse.DefaultIfEmpty(-1).First();
+                int throwPost = !p.Escaped ? -1 : Enumerable.Range(0, m.ThrowPosts.Count).Where(k => !p.ThrowFalse.Contains(k) && !p.ThrowPostThrows.Contains(k)).DefaultIfEmpty(-1).First();
+                int plantedThrow = p.Crash != null || planted >= 0 || plantedPost >= 0 ? -1 : p.ThrowFalse.Where(k => !p.ThrowPostThrows.Contains(k)).DefaultIfEmpty(-1).First();
                 plan.Add((m, keep, post, planted, plantedPost, throwPost, plantedThrow));
                 verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "T", keep, -1, post, throwPost));
                 if (planted >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, planted, post, throwPost));
@@ -309,7 +313,12 @@ public sealed class Failed : Exception { public Failed(string what) : base(what 
 public static class Probe
 {
     public static HashSet<int> Reached = new HashSet<int>(), False = new HashSet<int>(), Throws = new HashSet<int>(), PostFalse = new HashSet<int>(), ThrowFalse = new HashSet<int>();
-    public static void Reset() { Reached = new HashSet<int>(); False = new HashSet<int>(); Throws = new HashSet<int>(); PostFalse = new HashSet<int>(); ThrowFalse = new HashSet<int>(); }
+    public static HashSet<int> PostThrows = new HashSet<int>(), ThrowPostThrows = new HashSet<int>();
+    public static void Reset()
+    {
+        Reached = new HashSet<int>(); False = new HashSet<int>(); Throws = new HashSet<int>(); PostFalse = new HashSet<int>(); ThrowFalse = new HashSet<int>();
+        PostThrows = new HashSet<int>(); ThrowPostThrows = new HashSet<int>();
+    }
     public static bool Quiet;
     public static void Hit(int id, Func<bool> c)
     {
@@ -317,8 +326,8 @@ public static class Probe
         Reached.Add(id);
         try { if (!c()) False.Add(id); } catch { Throws.Add(id); }
     }
-    public static void Post(int k, Func<bool> c) { if (Quiet) return; try { if (!c()) PostFalse.Add(k); } catch { PostFalse.Add(k); } }
-    public static void ThrowPost(int k, Func<bool> c) { try { if (!c()) ThrowFalse.Add(k); } catch { ThrowFalse.Add(k); } }
+    public static void Post(int k, Func<bool> c) { if (Quiet) return; try { if (!c()) PostFalse.Add(k); } catch { PostThrows.Add(k); } }
+    public static void ThrowPost(int k, Func<bool> c) { try { if (!c()) ThrowFalse.Add(k); } catch { ThrowPostThrows.Add(k); } }
 }
 ";
     }
