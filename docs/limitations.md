@@ -22,7 +22,12 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 - **List interfaces** (`IReadOnlyList<T>` and the others): library collections other than `List` and arrays are trusted to be consistent (`Contains` as the indexer reads, enumeration as indexing, a `Dispose` of their enumerator that does nothing). A `foreach` whose loop changes state goes through the enumerator, with unknown elements. A class of the program implementing one of the interfaces makes every read through them unknown, and every `foreach` over them go through the enumerator. `IEnumerable<T>` alone has no model.
 - **Objects a framework builds** (`[JsonRequired]` members) are trusted to have those members set: code that builds one itself and leaves one out is not checked.
 - **Disposables** are checked on normal paths only: an exception may leak one (as it may a linear value), unless a `using` or `finally` disposes it. Ownership is by variable: a disposable kept in a collection, or captured by a lambda, needs `Spec.HandOver`. `[TakesOwnership]` and `Spec.HandOver` are trusted.
-- **State across `await`** is still forgotten at each `await`, even for objects the method made itself and never let escape.
+- **State across `await`** is forgotten at each `await`, except for locals and what the method holds: views, permissions, and objects in confined locals ([Async and concurrency](semantics.md#async-and-concurrency)). Confinement is checked by syntax, conservatively:
+  - an object that is stored anywhere, even in another confined object, or passed to a method of the program, is forgotten;
+  - so are the objects reachable from a confined object's fields;
+  - base class library members are trusted not to keep their receiver.
+
+  Objects the method was given, such as a `DbContext` and the entities it tracks, are kept only through views.
 - **Check profiles** (`--checks`) assume the obligations of the kinds they leave out, and treat constructs the verifier does not model as unknown values. A method verified under a profile is correct only where those hold (see [Check profiles](running.md#check-profiles)).
 - **Patterns.** Positional patterns work on tuples and data records, list patterns on one-dimensional arrays (a slice with a pattern of its own, `[1, .. var rest]`, is not supported), and property patterns on any member. A type with a `Deconstruct` method of its own is not matched positionally.
 - **Struct members by reference** (`out a[i].X`, `ref s.X`) are written back after the call. A callee that may touch array contents itself can't be handed an array cell's member this way (CSV1901), since the cell and the parameter would disagree.

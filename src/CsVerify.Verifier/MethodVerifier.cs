@@ -31,6 +31,8 @@ namespace CsVerify.Verifier
             public bool HavocHeap;
             public HashSet<ISymbol> HavocFields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             public bool HavocAllFields;
+            /// <summary>The loop awaits: other code may run, changing everything but what the method holds or confines.</summary>
+            public bool Awaits;
             public bool HavocThis; // a struct constructor's loop writes this's members
             public bool HavocRoot; // ownership changes hands in the loop (Own.New/Take/Give)
             public bool Permissions; // permissions are exchanged in the loop (folds, unfolds, calls whose contracts speak of them)
@@ -368,7 +370,7 @@ namespace CsVerify.Verifier
                     case InvocationExpressionSyntax inv when _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m: CalledInLoop(loop, m); break;
                     case AwaitExpressionSyntax _:
                         // other code runs at an await: as after a call to unknown code
-                        loop.HavocHeap = loop.HavocAllFields = loop.HavocRoot = true;
+                        loop.Awaits = loop.HavocRoot = true;
                         loop.Havoc.UnionWith(ClosureWritten());
                         break;
                     case BaseObjectCreationExpressionSyntax oc when _model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor:
@@ -566,15 +568,21 @@ namespace CsVerify.Verifier
                 if (IsNonNullVariable(s)) _z3.Assume(NotNull(f.Vars[s])); // (every write proves it)
                 if (liveView) MemViewAlive(f, s, f.Vars[s]);
             }
+            // (other code at an await cannot reach the objects in confined locals the loop does not reassign)
+            var confined = loop.Awaits ? ConfinedValues(f, loop.Havoc) : null;
             if (loop.HavocAllFields) HavocAllFields(f);
+            else if (loop.Awaits) HavocAllFieldsKeeping(f, confined);
             foreach (var field in loop.HavocFields) f.Fields[field] = FreshMap(field);
-            if (loop.HavocAllFields || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
+            if (loop.HavocAllFields || loop.Awaits || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
             if (f.Root != null && (loop.HavocRoot || loop.HavocAllFields || loop.HavocFields.Any(IsOwnedField))) f.Root = _z3.Fresh("root", Sort.Row);
             if (loop.HavocThis && f.This != null) f.This = _z3.Fresh("this", Sort.Int);
             if (loop.HavocHeap) f.Heap = _z3.Fresh("heap", Sort.Heap);
             else
+            {
+                if (loop.Awaits) f.Heap = KeepConfinedArrays(_z3.Fresh("heap", Sort.Heap), f.Heap, confined);
                 foreach (var a in loop.HavocArrays)
                     f.Heap = T.Store(f.Heap, Read(f, a), _z3.Fresh(a.Name + "$elems", Sort.Row));
+            }
             // (a foreach's enumerator is captured once, before the loop: the same object in every iteration)
             foreach (var r in loop.Rebound) f.Refs.Remove(r);
             foreach (var key in f.Captures.Keys.Where(k => !_enumerators.Contains(k)).ToList()) f.Captures.Remove(key);

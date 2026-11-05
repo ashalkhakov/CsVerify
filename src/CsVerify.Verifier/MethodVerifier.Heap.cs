@@ -21,6 +21,18 @@ namespace CsVerify.Verifier
         // an epoch whose maps are the previous ones where a condition holds (a call through a list interface on a List)
         private readonly Dictionary<int, (Term keep, Frame before)> _epochKeeps = new Dictionary<int, (Term, Frame)>();
 
+        // an epoch whose maps are the previous ones at some objects (those in confined locals, across an await)
+        private readonly Dictionary<int, (IReadOnlyList<Term> objs, Frame before)> _epochKeepObjects = new Dictionary<int, (IReadOnlyList<Term>, Frame)>();
+
+        /// <summary>Every field may change, except at the objects <paramref name="objs"/> (when not null).</summary>
+        private void HavocAllFieldsKeeping(Frame f, IReadOnlyList<Term> objs)
+        {
+            if (objs == null || objs.Count == 0) { HavocAllFields(f); return; }
+            var before = f.Clone();
+            HavocAllFields(f);
+            _epochKeepObjects[f.FieldEpoch] = (objs, before);
+        }
+
         /// <summary>Every field may change, unless <paramref name="keep"/> holds: then each is as in <paramref name="before"/>.</summary>
         private void HavocAllFieldsUnless(Frame f, Term keep, Frame before)
         {
@@ -54,6 +66,9 @@ namespace CsVerify.Verifier
                 finally { (_z3.Cause, _z3.Origin) = (wasCause, wasOrigin); }
                 if (_epochKeeps.TryGetValue(f.FieldEpoch, out var kept))
                     AssumeSide(T.Implies(kept.keep, T.Eq(map, FieldMap(kept.before, field))));
+                if (_epochKeepObjects.TryGetValue(f.FieldEpoch, out var objects))
+                    foreach (var o in objects.objs)
+                        AssumeSide(T.Implies(NotNull(o), T.Eq(T.Select(map, o, ValueSort(field)), T.Select(FieldMap(objects.before, field), o, ValueSort(field)))));
             }
             return map;
         }

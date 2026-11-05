@@ -35,6 +35,8 @@ namespace CsVerify.Tests.Fuzz
         private int _tries;   // (try blocks in this method)
         private bool _inPost; // (in a postcondition: Spec.Old may be read)
         private bool _async;  // (the method is async)
+        // (one method in so many is async: CSVERIFY_FUZZ_ASYNC sets it, for a soak of await)
+        private static readonly int AsyncOneIn = int.TryParse(System.Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_ASYNC"), out var n) && n > 0 ? n : 6;
         private int _index;   // (its number: it may call the methods before it)
         private HashSet<string> _callees = new HashSet<string>();
         private readonly HashSet<int> _asyncMethods = new HashSet<int>();
@@ -642,7 +644,7 @@ public sealed class Duo
             _staticSlots = new HashSet<int>();
             var m = new Method { Name = name };
             m.Pinned = _pinned = _r.Next(3) > 0;
-            m.Async = _async = _r.Next(6) == 0;
+            m.Async = _async = _r.Next(AsyncOneIn) == 0;
             _index = int.Parse(name.Substring(1));
             _callees = m.Callees;
             if (m.Pinned)
