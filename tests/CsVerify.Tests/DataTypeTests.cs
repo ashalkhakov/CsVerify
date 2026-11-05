@@ -32,6 +32,18 @@ public abstract record List
         private static string[] Errors(string method, string source) =>
             Harness.Verify(ListType + "public static class C { " + ListFunctions + source + " }").Errors(method);
 
+        // (found by the fuzzer: a pattern on a value of another case assumed the value was of the pattern's case,
+        // so the code after it was unreachable, and anything provable there)
+        [Fact]
+        public void Patterns_OfAnotherCase_LeaveTheRestReachable()
+        {
+            Assert.Equal(new[] { "CSV1004" }, Errors("Prop", "static void Prop(int h) { List xs = new List.Nil(); bool t = xs is List.Cons { Tail: List.Nil }; Spec.Assert(false); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("Deconstructed", "static void Deconstructed(int h) { List xs = new List.Nil(); bool t = xs is List.Cons(var a, var b) && a > 0; Spec.Assert(false); }"));
+            // and they still mean what they say
+            Assert.Empty(Errors("Matches", "static void Matches(int h) { List xs = new List.Cons(h, new List.Nil()); Spec.Assert(xs is List.Cons { Tail: List.Nil }); Spec.Assert(xs is List.Cons(var a, _) && a == h); }"));
+            Assert.Empty(Errors("Misses", "static void Misses(int h) { List xs = new List.Nil(); Spec.Assert(!(xs is List.Cons { Tail: List.Nil })); }"));
+        }
+
         [Fact]
         public void StructuralRecursion_Terminates()
         {

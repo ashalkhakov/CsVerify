@@ -112,7 +112,7 @@ namespace CsVerify.Tests.Fuzz
                     hit.GetMethod("Reset").Invoke(null, null);
                     try { probe.GetMethod(m.Name + "_").Invoke(null, input.Arguments()); }
                     catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Skip") { continue; }
-                    catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Escape") { } // (it may leave by throwing)
+                    catch (TargetInvocationException e) when (Allowed(e)) { } // (it may leave by throwing)
                     catch (TargetInvocationException e) { p.Crash ??= $"{input}: {e.InnerException?.GetType().Name}"; }
                     var reached = (HashSet<int>)hit.GetField("Reached").GetValue(null);
                     var falses = (HashSet<int>)hit.GetField("False").GetValue(null);
@@ -139,7 +139,7 @@ namespace CsVerify.Tests.Fuzz
                 if (planted >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, planted, post));
                 else if (plantedPost >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, -1, plantedPost));
             }
-            var source = "#nullable enable\nusing System; using System.Diagnostics; using System.Linq; using CsVerify;\n" + ProgramGenerator.Prelude + "public static class G\n{\n" + verify + "}\n";
+            var source = "#nullable enable\nusing System; using System.Diagnostics; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + ProgramGenerator.Prelude + "public static class G\n{\n" + verify + "}\n";
             if (Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_SAVE") is string dir) File.WriteAllText(Path.Combine(dir, $"fuzz{seed}.cs"), source);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var result = Engine.VerifySources(new[] { ($"fuzz{seed}.cs", source) }, new VerifierOptions { CheckOverflow = true, TimeoutMs = 1000 });
@@ -185,7 +185,7 @@ namespace CsVerify.Tests.Fuzz
                     {
                         string failure = null;
                         try { run.GetMethod(m.Name + "T_").Invoke(null, input.Arguments()); }
-                        catch (TargetInvocationException e) when (e.InnerException?.GetType().Name is "Skip" or "Escape") { } // (partial correctness: leaving by a throw is allowed)
+                        catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Skip" || Allowed(e)) { } // (partial correctness: leaving by a throw is allowed)
                         catch (TargetInvocationException e) { failure = e.InnerException?.GetType().Name + ": " + e.InnerException?.Message; }
                         if (failure == null) continue;
                         o.Problems.Add($"seed {seed}, {m.Name}: verified, but on {input}: {failure}\n{Text(m, keep, -1, post)}");
@@ -207,6 +207,12 @@ namespace CsVerify.Tests.Fuzz
             return o;
         }
 
+        /// <summary>
+        /// The throws a verified method may end by (partial correctness): the program's own, and a failed downcast,
+        /// which ordinary code assumes did not fail. Any other exception from a verified method is a bug.
+        /// </summary>
+        private static bool Allowed(TargetInvocationException e) => e.InnerException?.GetType().Name is "Escape" or "InvalidCastException";
+
         private static readonly (string, string)[] FeatureMarks =
         {
             ("arrays written", "] = "), ("loops", "for ("), ("LINQ", "x => "), ("fields", ".V = "), ("d (maybe null, maybe c)", "d.V"),
@@ -217,6 +223,10 @@ namespace CsVerify.Tests.Fuzz
             ("loop invariants", "Spec.Invariant"), ("lemmas", "L.TriFormula"), ("recursion (Tri)", "L.Tri("),
             ("virtual calls", ".Next("), ("virtual queries", ".Weight()"),
             ("interface calls", ".Read(Math"), ("interface queries", ".Scale()"), ("dynamic frames", "new Duo()"), ("Mem cells", "Mem.Alloc"),
+            ("lists", "new List<int>"), ("dictionaries", "new Dictionary<int, int>"), ("hash sets", "new HashSet<int>"), ("stacks", "new Stack<int>"),
+            ("strings", "var str"), ("nullable ints", "int? nul"), ("unchecked", "unchecked("), ("foreach", "foreach ("),
+            ("data types", "Shape sh"), ("patterns", " is Shape."), ("switch expressions", "switch {"), ("downcasts", "((Shape.Seg)"),
+            ("record invariants", "new Range("), ("mutable structs", "new Pos"), ("ref locals", "ref int"),
             ("boxes", "new Box("), ("give", "Own.Give"), ("take", "Own.Take"), ("fold", "Spec.Fold"), ("unfold", "Spec.Unfold"),
         };
 

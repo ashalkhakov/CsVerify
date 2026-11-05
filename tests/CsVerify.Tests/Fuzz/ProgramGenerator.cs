@@ -32,6 +32,7 @@ namespace CsVerify.Tests.Fuzz
         private int _slots;
         private bool _spec; // (in a specification: no LINQ, which is not [Pure])
         private bool _pinned; // (the method's inputs are constants)
+        private int _tries;   // (try blocks in this method)
 
         /// <summary>The most statements a body has (a soak can ask for bigger programs).</summary>
         public int Size = 4;
@@ -48,6 +49,29 @@ namespace CsVerify.Tests.Fuzz
         public const string Prelude = @"
 public sealed class Cell { public int V; }
 public sealed record Pt(int X, int Y);
+
+// a closed hierarchy of data records: an algebraic data type
+public abstract record Shape
+{
+    private Shape() { }
+    public sealed record Dot(int X) : Shape;
+    public sealed record Seg(int Lo, int Hi) : Shape;
+    public sealed record Pair(Shape L, Shape R) : Shape;
+}
+
+// a record with an invariant: proved where one is made, known wherever one is read
+public sealed record Range(int Lo, int Hi)
+{
+    [Invariant, Pure] public bool Valid() => Lo <= Hi;
+}
+
+// a mutable struct: a value, copied by assignment
+public struct Pos { public int X; public int Y; }
+
+public static class Sh
+{
+    [Pure] public static int Kind(Shape s) => s switch { Shape.Dot => 0, Shape.Seg => 1, Shape.Pair => 2 };
+}
 public sealed class Escape : Exception { }
 
 public static class H
@@ -365,11 +389,16 @@ public sealed class Duo
             public List<string> Gauges = new List<string>();   // (an Exact or a Plus, as an IGauge)
             public List<string> Duos = new List<string>();     // (dynamic frames)
             public List<string> Mems = new List<string>();     // (Mem cells: pointer ptrK, view mK)
+            public List<string> Lists = new List<string>(), Maps = new List<string>(), Sets = new List<string>(), Stacks = new List<string>();
+            public List<string> Strings = new List<string>(), Nullables = new List<string>();
+            public List<string> Shapes = new List<string>(), Ranges = new List<string>(), Positions = new List<string>();
             public Pools Copy() => new Pools
             {
                 Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList(),
                 Shares = Shares.ToList(), Boxes = Boxes.ToList(), Held = Held.ToList(), Nodes = Nodes.ToList(), Folded = Folded.ToList(),
                 Counters = Counters.ToList(), Gauges = Gauges.ToList(), Duos = Duos.ToList(), Mems = Mems.ToList(),
+                Lists = Lists.ToList(), Maps = Maps.ToList(), Sets = Sets.ToList(), Stacks = Stacks.ToList(), Strings = Strings.ToList(), Nullables = Nullables.ToList(),
+                Shapes = Shapes.ToList(), Ranges = Ranges.ToList(), Positions = Positions.ToList(),
             };
             public IEnumerable<string> Writable => Nodes.Where(n => !Folded.Any(f => f.Item1 == n || f.Item2 == n));
         }
@@ -378,6 +407,7 @@ public sealed class Duo
         {
             _fresh = 0;
             _slots = 0;
+            _tries = 0;
             var m = new Method { Name = name };
             m.Pinned = _pinned = _r.Next(3) > 0;
             if (m.Pinned)
@@ -435,10 +465,12 @@ public sealed class Duo
         internal sealed class Line : Stmt { public string Text; }                       // a simple statement
         internal sealed class If : Stmt { public string Cond; public List<Stmt> Then, Else; }
         internal sealed class For : Stmt { public string Var; public List<Stmt> Body; public List<Assert> Invariants = new List<Assert>(); }
+        internal sealed class Foreach : Stmt { public string Var, Over; public List<Stmt> Body; }
         internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; }
         internal sealed class Assert : Stmt { public string Cond; public int Id; }
 
         private readonly Stack<Pools> _scopes = new Stack<Pools>();
+        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 13)).ToArray();
 
         private List<Stmt> Block(int n)
         {
@@ -461,10 +493,9 @@ public sealed class Duo
             _depth++;
             try
             {
-                // (simple statements 0..8 and 13..15; compound ones 9..12 only near the top)
-                int pick = _r.Next(_depth > 1 ? 15 : 19);
-                if (_depth > 1 && pick >= 9) pick += 4;
-                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(6); // (calls and owned objects more often)
+                // (simple statements 0..8 and 13..25; compound ones 9..12 only near the top)
+                int pick = _depth <= 1 && _r.Next(5) == 0 ? 9 + _r.Next(4) : Simple[_r.Next(Simple.Length)];
+                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(13); // (calls, objects, collections more often)
                 if (pick == 13 && _p.Accounts.Count == 1 && _r.Next(2) == 0) pick = 14;
                 switch (pick)
                 {
@@ -627,6 +658,12 @@ public sealed class Duo
                         }[_r.Next(4)];
                         return new Line { Text = cell == "d" && !call.StartsWith("if") ? $"if (d != null) {call}" : call };
                     }
+                    case 19: case 20: return CollectionStatement();
+                    case 21: return StringStatement();
+                    case 22: return NullableStatement();
+                    case 23: return DataStatement();
+                    case 24: return StructStatement();
+                    case 25: return RefStatement();
                     case 16: return BoxStatement();
                     case 17: return NodeStatement();
                     case 18:
@@ -641,10 +678,28 @@ public sealed class Duo
                     }
                     case 9:
                     case 10: return new If { Cond = Bool(2, null), Then = Block(_r.Next(1, 3)), Else = _r.Next(2) == 0 ? Block(_r.Next(1, 3)) : null };
-                    case 11: return new Try { Body = Block(_r.Next(1, 3)), Catches = "Escape", Handler = Block(_r.Next(1, 2)) };
+                    case 11:
+                    {
+                        // (one try per method, of one statement: in a try every call may throw, so each doubles the
+                        // paths, and two tries multiply them; the verifier explores paths one by one)
+                        if (_tries++ > 0) goto case 9;
+                        return new Try { Body = Block(1), Catches = "Escape", Handler = Block(1) };
+                    }
                     default:
                     {
                         if (_inLoop) goto case 3;
+                        if (_r.Next(3) == 0)
+                        {
+                            // a foreach over the array or a list (one whose body changes the list must be reported: .NET throws)
+                            var el = "el" + _fresh++;
+                            var over = _p.Lists.Count > 0 && _r.Next(2) == 0 ? Pick(_p.Lists) : "xs";
+                            _p.Ints.Add(el);
+                            _inLoop = true;
+                            var fbody = Block(_r.Next(1, 3));
+                            _inLoop = false;
+                            _p.Ints.Remove(el);
+                            return new Foreach { Var = el, Over = over, Body = fbody };
+                        }
                         var i = "i" + _fresh++;
                         _p.Ints.Add(i);
                         // invariants, as slots: what held at every head is kept, one that failed may be planted
@@ -660,6 +715,158 @@ public sealed class Duo
                 }
             }
             finally { _depth--; }
+        }
+
+        /// <summary>The BCL's collections, under CsVerify's contracts: List, Dictionary, HashSet, Stack.</summary>
+        private Stmt CollectionStatement()
+        {
+            string Key() => _r.Next(2) == 0 ? Small().ToString() : $"({Int(1)})";
+            switch (_r.Next(8))
+            {
+                case 0:
+                {
+                    var l = "lst" + _fresh++;
+                    var text = $"var {l} = new List<int>();";
+                    for (int k = _r.Next(3); k > 0; k--) text += $" {l}.Add({Int(1)});";
+                    _p.Lists.Add(l);
+                    return new Line { Text = text };
+                }
+                case 1 when _p.Lists.Count > 0:
+                {
+                    var l = Pick(_p.Lists);
+                    switch (_r.Next(5))
+                    {
+                        case 0: return new Line { Text = $"{l}.Add({Int(1)});" };
+                        case 1: return new Line { Text = $"if ({l}.Count > 0) {l}.RemoveAt({l}.Count - 1);" };
+                        case 2: return new Line { Text = $"if ({l}.Count > 1) {l}[1] = {Int(1)};" };
+                        case 3: return new Line { Text = $"{l}.Remove({Int(1)});" };
+                        default: return new Line { Text = $"{l}.RemoveAt(0);" }; // (may be empty: then it must not verify)
+                    }
+                }
+                case 2:
+                {
+                    var m = "map" + _fresh++;
+                    _p.Maps.Add(m);
+                    return new Line { Text = $"var {m} = new Dictionary<int, int>(); {m}[{Key()}] = {Int(1)};" };
+                }
+                case 3 when _p.Maps.Count > 0:
+                {
+                    var m = Pick(_p.Maps);
+                    var targets = _p.Ints.Where(x => x.StartsWith("v")).ToList();
+                    switch (_r.Next(5))
+                    {
+                        case 0: return new Line { Text = $"{m}[{Key()}] = {Int(1)};" };
+                        case 1: return new Line { Text = $"{m}.Remove({Key()});" };
+                        case 2: return new Line { Text = $"{m}.TryAdd({Key()}, {Int(1)});" };
+                        case 3 when targets.Count > 0: return new Line { Text = $"if ({m}.TryGetValue({Key()}, out var t{_fresh++})) {Pick(targets)} = t{_fresh - 1};" };
+                        default: return new Line { Text = $"{m}.Add({Key()}, {Int(1)});" }; // (may be there: then it must not verify)
+                    }
+                }
+                case 4:
+                {
+                    var h = "set" + _fresh++;
+                    _p.Sets.Add(h);
+                    return new Line { Text = $"var {h} = new HashSet<int>(); {h}.Add({Int(1)});" };
+                }
+                case 5 when _p.Sets.Count > 0:
+                {
+                    var h = Pick(_p.Sets);
+                    return new Line { Text = _r.Next(2) == 0 ? $"{h}.Add({Int(1)});" : $"{h}.Remove({Int(1)});" };
+                }
+                case 6:
+                {
+                    var k = "stk" + _fresh++;
+                    _p.Stacks.Add(k);
+                    return new Line { Text = $"var {k} = new Stack<int>(); {k}.Push({Int(1)});" };
+                }
+                default:
+                {
+                    if (_p.Stacks.Count == 0) goto case 6;
+                    var k = Pick(_p.Stacks);
+                    return new Line { Text = _r.Next(3) == 0 ? $"{k}.Pop();" : _r.Next(2) == 0 ? $"if ({k}.Count > 0) {k}.Pop();" : $"{k}.Push({Int(1)});" };
+                }
+            }
+        }
+
+        /// <summary>Strings: values, compared by contents; their lengths; concatenation and interpolation.</summary>
+        private Stmt StringStatement()
+        {
+            var str = "str" + _fresh++;
+            var value = Str(2);
+            _p.Strings.Add(str);
+            return new Line { Text = $"var {str} = {value};" };
+        }
+
+        private string Str(int depth)
+        {
+            if (depth <= 0 || _r.Next(3) == 0)
+                return _p.Strings.Count > 0 && _r.Next(2) == 0 ? Pick(_p.Strings) : new[] { "\"\"", "\"a\"", "\"hello\"", "\"ab\"" }[_r.Next(4)];
+            int d = depth - 1;
+            switch (_r.Next(3))
+            {
+                case 0: return $"({Str(d)} + {Str(d)})";
+                case 1: return $"$\"n{{{Int(0)}}}\"";
+                default: return $"({Bool(0, null)} ? {Str(d)} : {Str(d)})";
+            }
+        }
+
+        /// <summary>Data records: a closed hierarchy built and taken apart, and a record with an invariant.</summary>
+        private Stmt DataStatement()
+        {
+            if (_r.Next(3) == 0)
+            {
+                var rg = "rg" + _fresh++;
+                var lo = Int(1);
+                var hi = _r.Next(3) == 0 ? Int(1) : $"{lo} + Math.Abs({Int(0)}) % 10"; // (lo <= hi, mostly: else it must not verify)
+                _p.Ranges.Add(rg);
+                return new Line { Text = $"var {rg} = new Range({lo}, {hi});" };
+            }
+            var sh = "sh" + _fresh++;
+            var value = ShapeExpr(2);
+            _p.Shapes.Add(sh);
+            return new Line { Text = $"Shape {sh} = {value};" };
+        }
+
+        private string ShapeExpr(int depth)
+        {
+            if (depth <= 0 || _r.Next(3) == 0)
+            {
+                if (_p.Shapes.Count > 0 && _r.Next(2) == 0) return Pick(_p.Shapes);
+                return _r.Next(2) == 0 ? $"new Shape.Dot({Int(1)})" : $"new Shape.Seg({Int(1)}, {Int(1)})";
+            }
+            return _r.Next(3) == 0 ? $"({Bool(0, null)} ? {ShapeExpr(depth - 1)} : {ShapeExpr(depth - 1)})" : $"new Shape.Pair({ShapeExpr(depth - 1)}, {ShapeExpr(depth - 1)})";
+        }
+
+        /// <summary>A mutable struct: made, a member written, copied (a copy keeps what it had).</summary>
+        private Stmt StructStatement()
+        {
+            if (_p.Positions.Count == 0 || _r.Next(3) == 0)
+            {
+                var ps = "ps" + _fresh++;
+                var text = _p.Positions.Count > 0 && _r.Next(2) == 0 ? $"var {ps} = {Pick(_p.Positions)};" : $"var {ps} = new Pos {{ X = {Int(1)}, Y = {Int(1)} }};";
+                _p.Positions.Add(ps);
+                return new Line { Text = text };
+            }
+            return new Line { Text = $"{Pick(_p.Positions)}.{(_r.Next(2) == 0 ? "X" : "Y")} = {Int(1)};" };
+        }
+
+        /// <summary>A ref local: to an array cell (fixed when bound) or to a local; written through.</summary>
+        private Stmt RefStatement()
+        {
+            var r = "ref" + _fresh++;
+            var targets = _p.Ints.Where(x => x.StartsWith("v")).ToList();
+            if (targets.Count > 0 && _r.Next(2) == 0)
+                return new Line { Text = $"{{ ref int {r} = ref {Pick(targets)}; {r} = {Int(1)}; }}" };
+            return new Line { Text = $"if (xs.Length > 0) {{ ref int {r} = ref xs[{Index()}]; {r} = {r} + {Int(0)} % 10; }}" };
+        }
+
+        /// <summary>Nullable values (int?): with a value or none; unwrapped, lifted, coalesced.</summary>
+        private Stmt NullableStatement()
+        {
+            var n = "nul" + _fresh++;
+            var value = $"({Bool(1, null)} ? {Int(1)} : null)";
+            _p.Nullables.Add(n);
+            return new Line { Text = $"int? {n} = {value};" };
         }
 
         /// <summary>An ownership tree: make a box, write one in hand, give one made here into another, take one out.</summary>
@@ -790,6 +997,60 @@ public sealed class Duo
                     }
                     case 4 when _p.Nodes.Count > 0: return $"{Pick(_p.Nodes)}.Val";
                     case 4 when _p.Gauges.Count > 0: return $"{Pick(_p.Gauges)}.Scale()";
+                    case 4 when _p.Strings.Count > 0: return $"{Pick(_p.Strings)}.Length";
+                    case 4 when _p.Shapes.Count > 0:
+                    {
+                        var sh = Pick(_p.Shapes);
+                        var n = _fresh++;
+                        switch (_r.Next(5))
+                        {
+                            case 0: return $"Sh.Kind({sh})";
+                            // (is without a variable, then a cast: a pattern's variable is in scope in the whole statement, and
+                            // an expression may be used twice in one, a transfer's amount in its guard and its call)
+                            case 1: return $"({sh} is Shape.Dot ? ((Shape.Dot){sh}).X : 0)";
+                            case 2: return $"({sh} switch {{ Shape.Dot q{n} => q{n}.X, Shape.Seg q{n} => q{n}.Lo, _ => -1 }})";
+                            case 3 when !_spec: return $"((Shape.Seg){sh}).Hi"; // (a downcast: assumed; if it fails it throws)
+                            default: return $"({sh} is Shape.Pair {{ L: Shape.Dot }} ? ((Shape.Dot)((Shape.Pair){sh}).L).X : 0)";
+                        }
+                    }
+                    case 4 when _p.Ranges.Count > 0:
+                    {
+                        var rg = Pick(_p.Ranges);
+                        return _r.Next(2) == 0 ? $"({rg}.Hi - {rg}.Lo)" : $"{rg}.Lo";
+                    }
+                    case 4 when _p.Positions.Count > 0: return $"{Pick(_p.Positions)}.{(_r.Next(2) == 0 ? "X" : "Y")}";
+                    case 4 when _p.Nullables.Count > 0:
+                    {
+                        var n = Pick(_p.Nullables);
+                        switch (_r.Next(4))
+                        {
+                            case 0: return $"({n} ?? {Small()})";
+                            case 1: return $"({n}.HasValue ? {n}.Value : 0)";
+                            case 2: return $"(({n} + 1) ?? 0)";
+                            default: return $"{n}.Value"; // (may have none: then it must not verify)
+                        }
+                    }
+                    case 4 when !_spec && _p.Lists.Count > 0:
+                    {
+                        var l = Pick(_p.Lists);
+                        return new[] { $"{l}.Count", $"({l}.Count > 0 ? {l}[{l}.Count - 1] : 0)", $"({l}.Contains({Small()}) ? 1 : 0)", $"{l}[0]" }[_r.Next(4)];
+                    }
+                    case 4 when !_spec && _p.Maps.Count > 0:
+                    {
+                        var m = Pick(_p.Maps);
+                        var k = Small();
+                        return new[] { $"{m}.Count", $"({m}.ContainsKey({k}) ? {m}[{k}] : 0)", $"{m}[{k}]" }[_r.Next(3)];
+                    }
+                    case 4 when !_spec && _p.Sets.Count > 0:
+                    {
+                        var h = Pick(_p.Sets);
+                        return _r.Next(2) == 0 ? $"{h}.Count" : $"({h}.Contains({Small()}) ? 1 : 0)";
+                    }
+                    case 4 when !_spec && _p.Stacks.Count > 0:
+                    {
+                        var k = Pick(_p.Stacks);
+                        return _r.Next(2) == 0 ? $"{k}.Count" : $"({k}.Count > 0 ? {k}.Peek() : 0)";
+                    }
                     case 4 when _p.Duos.Count > 0: return $"{Pick(_p.Duos)}.{(_r.Next(2) == 0 ? "A" : "B")}!.V";
                     case 5: return extra;
                     default: return Pick(_p.Ints);
@@ -801,7 +1062,7 @@ public sealed class Duo
             switch (kind)
             {
                 case 0: case 1: return $"({Int(d, extra)} + {Int(d, extra)})";
-                case 2: return $"({Int(d, extra)} - {Int(d, extra)})";
+                case 2: return _r.Next(5) == 0 ? $"unchecked({Int(d, extra)} - {Int(d, extra)} * {_r.Next(2, 9)})" : $"({Int(d, extra)} - {Int(d, extra)})"; // (unchecked wraps, exactly)
                 case 3: return $"({_r.Next(-4, 5)} * {Int(d, extra)})"; // (by a constant: nonlinear arithmetic the solver cannot decide)
                 case 4: return $"({Int(d, extra)} / {Divisor(d, extra)})";
                 case 5: return $"({Int(d, extra)} % {Divisor(d, extra)})";
@@ -900,6 +1161,10 @@ public sealed class Duo
                     if (_p.Pts.Count > 0 && _r.Next(2) == 0) return $"{Pick(_p.Pts)} {(_r.Next(2) == 0 ? "==" : "!=")} {Pick(_p.Pts)}";
                     return $"{Pick(_p.Cells)} {(_r.Next(2) == 0 ? "==" : "!=")} {(_r.Next(2) == 0 ? "d" : Pick(_p.Cells))}";
                 }
+                case 6 when _p.Shapes.Count > 1 && _r.Next(2) == 0:
+                    return _r.Next(2) == 0 ? $"{Pick(_p.Shapes)} == {Pick(_p.Shapes)}" : $"{Pick(_p.Shapes)} is Shape.Seg";
+                case 6 when _p.Strings.Count > 0 && _r.Next(2) == 0:
+                    return _r.Next(2) == 0 ? $"{Pick(_p.Strings)} {(_r.Next(2) == 0 ? "==" : "!=")} {Pick(_p.Strings)}" : $"string.IsNullOrEmpty({Pick(_p.Strings)})";
                 case 6: return $"xs.Any(x => {Lambda()})";
                 default: return $"{Int(d, extra)} {Cmp()} {Int(d, extra)}";
             }
@@ -960,6 +1225,10 @@ public sealed class Duo
                     sb.AppendLine($"{pad}}}");
                     break;
                 }
+                case Foreach fe:
+                    sb.AppendLine($"{pad}foreach (var {fe.Var} in {fe.Over})");
+                    Body(fe.Body);
+                    break;
                 case Try t:
                     sb.AppendLine($"{pad}try");
                     Body(t.Body);
