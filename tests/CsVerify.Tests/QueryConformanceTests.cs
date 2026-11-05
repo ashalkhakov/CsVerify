@@ -32,7 +32,7 @@ namespace CsVerify.Tests
             var stubs = ContractStubs.For(compilation);
             Assert.Empty(stubs.Errors.Select(e => e.message));
             var pairs = stubs.QueryPairs.OrderBy(p => p.query.ContainingType.Name, StringComparer.Ordinal).ThenBy(p => p.query.ToDisplayString(), StringComparer.Ordinal).ToList();
-            Assert.True(pairs.Count >= 65, $"only {pairs.Count} definitions found");
+            Assert.True(pairs.Count >= 100, $"only {pairs.Count} definitions found");
             var failures = Run(compilation, pairs);
             Assert.True(failures.Count == 0, $"{failures.Count} of {pairs.Count} definitions disagree with LINQ:\n" + string.Join("\n", failures));
         }
@@ -198,6 +198,8 @@ namespace Wrong
                     "System.Func<int, System.Collections.Generic.IEnumerable<int>, int>" => "In.OfGroup(r, __shown)",
                     "System.Func<int, long>" => "In.ToLong(r, __shown)",
                     "System.Func<int, double>" => "In.ToDouble(r, __shown)",
+                    "System.Func<int, int, bool>" => "In.Test2(r, __shown)",
+                    "System.Func<int, int, System.Collections.Generic.IEnumerable<int>>" => "In.Many2(r, __shown)",
                     "System.Linq.IOrderedEnumerable<int>" => null,
                     _ => "",
                 };
@@ -371,6 +373,11 @@ namespace CsVerify.Conformance
             { (""(k, g) => g.Count()"", (k, g) => g.Count()), (""(k, g) => k"", (k, g) => k), (""(k, g) => g.Any() ? g.First() : -1"", (k, g) => g.Any() ? g.First() : -1),
               (""(k, g) => k * 100 + g.Count(x => x > 0)"", (k, g) => unchecked(k * 100 + g.Count(x => x > 0))) };
 
+        private static readonly (string, Func<int, int, bool>)[] Tests2 =
+            { (""x > i"", (x, i) => x > i), (""i % 2 == 0"", (x, i) => i % 2 == 0), (""x > 0"", (x, i) => x > 0), (""i < 2"", (x, i) => i < 2) };
+        private static readonly (string, Func<int, int, IEnumerable<int>>)[] Manys2 =
+            { (""(x, i) => i of x"", (x, i) => Enumerable.Repeat(x, i % 3).ToArray()), (""(x, i) => [x, i]"", (x, i) => new[] { x, i }) };
+
         private static F Pick<F>(Random r, (string, F)[] menu, List<string> shown)
         {
             var (name, f) = menu[r.Next(menu.Length)];
@@ -384,6 +391,8 @@ namespace CsVerify.Conformance
         public static Func<int, IEnumerable<int>> Many(Random r, List<string> shown) => Pick(r, Manys, shown);
         public static Func<int, long> ToLong(Random r, List<string> shown) => Pick(r, ToLongs, shown);
         public static Func<int, double> ToDouble(Random r, List<string> shown) => Pick(r, ToDoubles, shown);
+        public static Func<int, int, bool> Test2(Random r, List<string> shown) => Pick(r, Tests2, shown);
+        public static Func<int, int, IEnumerable<int>> Many2(Random r, List<string> shown) => Pick(r, Manys2, shown);
         public static Func<int, IEnumerable<int>, int> OfGroup(Random r, List<string> shown) => Pick(r, OfGroups, shown);
 
         public static string Show(object o) => o switch

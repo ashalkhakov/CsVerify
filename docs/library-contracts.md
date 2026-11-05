@@ -268,7 +268,16 @@ These make views too, read the same way:
   with a result selector, `(k, g) => ...` is applied to each key and group, and may read the group (`g.Count()`).
 - `GroupJoin(inner, x => key, y => key, (x, ys) => ...)`: for each outer element in order, the selector applied to it
   and its matches, the inner elements with an equal key, in order.
-- `Concat`, `Reverse`, and `Zip(other)` into tuples `(First, Second)`.
+- `Concat`, `Reverse`, `Append`, `Prepend`, `DefaultIfEmpty`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`,
+  `Where` and `SelectMany` with an index, `Index`, and `Zip(other)` into tuples `(First, Second)`.
+- `DistinctBy`, and the set operations `Union`, `Intersect`, `Except` (and their `By` forms): each value (key) once,
+  in the order it first appears, by `EqualityComparer<T>.Default`.
+
+`Single` and `SingleOrDefault` (with or without a predicate or a default) need exactly one, or at most one, element;
+`SequenceEqual` is element by element; `MinBy` and `MaxBy` are the first element with the least or greatest key (a
+stable sort's first), and need a non-empty source, which is more than .NET asks of a source of a reference type (it
+gives null) and says only "some element" for keys the verifier does not order. `ToDictionary` is a precondition only:
+no key is null, and none repeats (else it throws); the dictionary is a library value.
 
 A lambda the verifier inlines may call these members, as long as they cannot throw: `(k, g) => g.Count()` is read,
 `(x, ys) => ys.First()` is not (the call is a library call). Which lambdas .NET runs, and when, depends on the

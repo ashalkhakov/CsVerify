@@ -1,5 +1,7 @@
 # Limitations
 
+What "verified" claims, and the assumptions it rests on, are in [Soundness](soundness.md).
+
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers** are bounded by default (see [Bounded integers](semantics.md#bounded-integers)). `--no-overflow` makes them mathematical, as ATS's constraint solver does, which is unsound where code can overflow.
 - **Threads.** A method is proved correct for runs where no other thread writes the state it uses while it runs (see [Async and concurrency](semantics.md#async-and-concurrency)). Races, deadlocks and lock-free code are not covered, and an async method of the program must be awaited where it is called.
@@ -49,9 +51,10 @@
 - Lambdas and local functions are verified as units of their own: their parameters are as their delegate type declares them, and what they capture is some value of its type (they may run at any time), so a fact about a captured variable at the lambda's creation is not known in its body. A local function's contract may name what it captures. The method's locals they write are forgotten after every call and at every `await`.
 - LINQ (`System.Linq.Enumerable`, in memory) is read from its definitions (`Bcl/Linq.cs`; see [Contracts for code without sources](library-contracts.md)), over a List, an array, a list interface, or another query; a member without a definition is a library call without a contract. Lambdas are inlined when they are pure expressions. Not modeled, so library calls:
   - comparers (`IEqualityComparer`, `IComparer`), and `float`, `decimal` and nullable aggregates; `OrderBy` keys other than integers, chars and enums give only the permutation;
+  - on an array, with `using System`, C# 14 binds `Contains`, `SequenceEqual` and `IndexOf` to `MemoryExtensions`' span methods, not to LINQ's: those are library calls;
   - `Queryable` (Entity Framework and other providers), LINQ over other enumerables (an `IEnumerable<T>`-typed local or parameter the verifier cannot see through, an iterator method), and views passed to other methods;
   - a lambda that calls a member which may throw (`g => g.First()`, `g => g.Max()`), or one with statements, writes or allocations other than tuples and anonymous objects;
-  - `ToDictionary`, `ToLookup`, `Union`, `Intersect`, `Except`, `Chunk`, `Append`/`Prepend`, `DefaultIfEmpty` (so left joins), `TakeWhile`/`SkipWhile`, `MinBy`/`MaxBy`, `OfType`/`Cast`, `Single`, the index overloads of `Where` and `SelectMany`: each needs only its definition.
+  - members that make what comprehensions do not: `Chunk` (arrays), `CountBy` and `AggregateBy` (key-value pairs), `ToLookup` and `ToHashSet` (collections); `OfType` and `Cast` (a non-generic source, tested by type). `ToDictionary` gives only where it throws: what the dictionary holds is not known.
 
   Facts that need induction over an unknown length (every element of a `double[]` is 2.0, so is its average) are not proved; with a known length, or a specification that states them, they are. `==` between two anonymous objects is an unknown value. Exceptions a library call may throw (including a lambda's, in a call that is not inlined) are not reported.
 

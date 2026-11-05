@@ -346,6 +346,45 @@ public static class P
         }
 
         [Fact]
+        public void SetOperations_Single_While_By_AndTheRest()
+        {
+            var r = Harness.Verify(@"#nullable enable
+using System.Collections.Generic;
+using System.Linq;
+public static class P
+{
+    public static int Append(int[] a) { Spec.Requires(a.Length == 2); Spec.Ensures<int>(r => r == 7); return a.Append(7).Last(); }
+    public static int Prepend(int[] a) { Spec.Requires(a.Length == 2); Spec.Ensures<int>(r => r == 7); return a.Prepend(7).First(); }
+    public static int Default(int[] a) { Spec.Requires(a.Length == 0); Spec.Ensures<int>(r => r == 1); return a.DefaultIfEmpty().Count(); }
+    public static int TakeW(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 2 && a[2] == -1); Spec.Ensures<int>(r => r == 2); return a.TakeWhile(x => x > 0).Count(); }
+    public static int SkipW(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == -2 && a[2] == 3); Spec.Ensures<int>(r => r == -2); return a.SkipWhile(x => x > 0).First(); }
+    public static int Single(int[] a) { Spec.Requires(a.Length == 1 && a[0] == 4); Spec.Ensures<int>(r => r == 4); return a.Single(); }
+    public static int SingleBad(int[] a) => a.Single();
+    public static int SingleP(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 4 && a[1] == -1); Spec.Ensures<int>(r => r == 4); return a.Single(x => x > 0); }
+    public static int Union(int[] a, int[] b) { Spec.Requires(a.Length == 2 && b.Length == 1 && a[0] == 1 && a[1] == 2 && b[0] == 2); Spec.Ensures<int>(r => r == 2); return a.Union(b).Count(); }
+    public static int Inter(int[] a, int[] b) { Spec.Requires(a.Length == 2 && b.Length == 1 && a[0] == 1 && a[1] == 2 && b[0] == 2); Spec.Ensures<int>(r => r == 1); return a.Intersect(b).Count(); }
+    public static int Except(int[] a, int[] b) { Spec.Requires(a.Length == 2 && b.Length == 1 && a[0] == 1 && a[1] == 2 && b[0] == 2); Spec.Ensures<int>(r => r == 1); return a.Except(b).First(); }
+    public static int DistBy(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 3 && a[2] == 4); Spec.Ensures<int>(r => r == 2); return a.DistinctBy(x => x % 2).Count(); }
+    public static int MinBy(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 5 && a[1] == 3 && a[2] == 4); Spec.Ensures<int>(r => r == 3); return a.MinBy(x => x); }
+    public static int MaxBy(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 5 && a[1] == 3 && a[2] == 4); Spec.Ensures<int>(r => r == 5); return a.MaxBy(x => x); }
+    public static int WhereI(int[] a) { Spec.Requires(a.Length == 4); Spec.Ensures<int>(r => r == 2); return a.Where((x, i) => i % 2 == 0).Count(); }
+    public static int TakeL(int[] a) { Spec.Requires(a.Length == 4 && a[3] == 9); Spec.Ensures<int>(r => r == 9); return a.TakeLast(2).Last(); }
+    public static int SkipL(int[] a) { Spec.Requires(a.Length == 4); Spec.Ensures<int>(r => r == 1); return a.SkipLast(3).Count(); }
+    // (Lists: on arrays, with using System, SequenceEqual is MemoryExtensions' over spans)
+    public static bool SeqEq(List<int> a, List<int> b) { Spec.Requires(a.Count == 2 && b.Count == 2 && a[0] == b[0] && a[1] == b[1]); Spec.Ensures<bool>(r => r); return a.SequenceEqual(b); }
+    public static int Idx(int[] a) { Spec.Requires(a.Length == 3); Spec.Ensures<int>(r => r == 2); return a.Index().Last().Index; }
+    public static Dictionary<int, int> Dict(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); return a.ToDictionary(x => x); }
+    public static Dictionary<int, int> DictBad(int[] a) => a.ToDictionary(x => x);
+}
+", overflow: false);
+            foreach (var m in new[] { "Append", "Prepend", "Default", "TakeW", "SkipW", "Single", "SingleP", "Union", "Inter", "Except", "DistBy", "MinBy", "MaxBy", "WhereI", "TakeL", "SkipL", "SeqEq", "Idx", "Dict" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            // none or more than one; a repeated key
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.SingleBad"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("P.DictBad"));
+        }
+
+        [Fact]
         public void ImpureLambdas_LeaveTheCallALibraryCall()
         {
             var r = Harness.Verify(@"

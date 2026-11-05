@@ -282,7 +282,12 @@ namespace CsVerify.Verifier
                 var k = T.And(ctx.Known.ToArray());
                 var p = T.And(ctx.Requires.ToArray());
                 Term r;
-                if (value == null) r = Unknown(inv.Type, definition.Name);
+                if (value == null)
+                {
+                    // (a member with a precondition only: its value the library's, not null where it says so)
+                    r = Unknown(inv.Type, definition.Name);
+                    if (IsNonNullableReturn(inv.TargetMethod)) AssumeSide(NotNull(r));
+                }
                 else if (k == T.True) r = T.Coerce(value, SortOf(inv.Type));
                 else
                 {
