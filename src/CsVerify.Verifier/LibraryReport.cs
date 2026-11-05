@@ -42,6 +42,7 @@ namespace CsVerify.Verifier
             ["CSV1019"] = "predicate fold",
             ["CSV1020"] = "aliased by-reference arguments",
             ["CSV1021"] = "ill-formed stub or model",
+            ["CSV1022"] = "switch expression missing a value",
             ["CSV1999"] = "internal or solver error",
         };
 
