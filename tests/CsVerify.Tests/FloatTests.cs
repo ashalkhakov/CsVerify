@@ -52,6 +52,24 @@ public static class C {
             Assert.Empty(r.Errors("InRange"));
             Assert.Empty(r.Errors("Checked"));
         }
+
+        [Fact]
+        public void CastsToIntegers_InSpecifications_MustFitToo()
+        {
+            // a cast that does not fit has no value: in a specification it must be shown to fit, as a divisor is
+            var r = Harness.Verify(@"public static class C {
+    static void Unguarded(double d) { Spec.Assert((int)d >= int.MinValue); }
+    static void Guarded(double d) { Spec.Assert(!(0 <= d && d < 100) || (int)d < 100); }
+    static void ByTernary(double d) { Spec.Assert((d >= 0 && d <= 10 ? (int)d : 0) <= 10); }
+    static void InEnsures(double d) { Spec.Requires(0 <= d && d < 5); Spec.Ensures((int)d < 5); }
+    static void Big(double d) { Spec.Requires(d == 1e300); Spec.Assert((int)d != 0 || true); }
+}");
+            Assert.Equal(new[] { "CSV1012" }, r.Errors("Unguarded"));
+            Assert.Empty(r.Errors("Guarded"));
+            Assert.Empty(r.Errors("ByTernary"));
+            Assert.Empty(r.Errors("InEnsures"));
+            Assert.Equal(new[] { "CSV1012" }, r.Errors("Big"));
+        }
     
         [Fact]
         public void MonotonicityLemmas_ProveWhatBitBlastingCannotQuickly()

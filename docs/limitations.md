@@ -65,6 +65,12 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 **Precision limits**
 - `[Pure]` definitions are unfolded one level per use. Deeper facts need a lemma, as in ATS.
 - Verification explores paths depth-first (`MaxPaths` = 5000 per method), so many sequential branches can be slow.
+  `try` blocks multiply this: inside one, every call may throw, so each call doubles the paths through the block,
+  and the code after a `try` runs once for every path that leaves it (normally or through a handler). Two `try`
+  blocks in a row multiply again: the fuzzer met a 25-line method with 899 obligations that took five minutes. Keep
+  `try` bodies small, put the calls that cannot throw outside them, or give the method `--method-budget` so a slow
+  one is reported not verified rather than holding up the run. (A fix in the verifier would merge the paths that
+  reach a handler, or leave a `try`, into one state, instead of following each on its own.)
 - Every method is verified separately against its callees' contracts.
 
 **Views versus ATS/SV** (Zhu & Xi, *Safe Programming with Pointers through Stateful Views*)
