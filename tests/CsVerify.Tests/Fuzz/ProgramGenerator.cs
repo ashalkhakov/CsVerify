@@ -210,6 +210,79 @@ public sealed class Doubler : Counter
 
     [Pure] public override int Weight() => 2;
 }
+
+// an interface, its contract in a contract class, and two implementations checked against it
+public interface IGauge
+{
+    int Read(int k);
+    [Pure] int Scale();
+}
+
+[ContractClassFor(typeof(IGauge))]
+internal abstract class IGaugeContract : IGauge
+{
+    public int Read(int k)
+    {
+        Spec.Requires(0 <= k && k <= 1000);
+        Spec.Ensures((int r) => k <= r && r <= k + 10);
+        return 0;
+    }
+
+    public int Scale()
+    {
+        Spec.Ensures((int r) => 1 <= r && r <= 3);
+        return 0;
+    }
+}
+
+public sealed class Exact : IGauge
+{
+    public int Read(int k) => k;
+    [Pure] public int Scale() => 1;
+}
+
+public sealed class Plus : IGauge
+{
+    public int Read(int k) => k + 10;
+    [Pure] public int Scale() => 3;
+}
+
+// dynamic frames (Dafny's Valid()/Repr): two cells of its own; a change to one Duo leaves every other object
+public sealed class Duo
+{
+    public Cell? A, B;
+    public Ghost<ObjSet> Repr;
+
+    [GhostFunction] public bool Valid()
+    {
+        Spec.Reads(Repr.Value.Add(this));
+        return Repr.Value.Contains(this) && A != null && B != null && A != B && Repr.Value.Contains(A) && Repr.Value.Contains(B);
+    }
+
+    public Duo()
+    {
+        Spec.Ensures(Valid() && A!.V == 0 && B!.V == 0 && Spec.Fresh(Repr.Value));
+        A = new Cell();
+        B = new Cell();
+        Repr = Ghost.Of(ObjSet.Of(this).Add(A).Add(B));
+    }
+
+    public void IncA()
+    {
+        Spec.Requires(Valid() && A!.V < 1000);
+        Spec.Modifies(Repr.Value);
+        Spec.Ensures(Valid() && Repr.Value == Spec.Old(Repr.Value) && A!.V == Spec.Old(A!.V) + 1 && B!.V == Spec.Old(B!.V));
+        A!.V++;
+    }
+
+    public void Swap()
+    {
+        Spec.Requires(Valid());
+        Spec.Modifies(Repr.Value);
+        Spec.Ensures(Valid() && Repr.Value == Spec.Old(Repr.Value) && A == Spec.Old(B) && B == Spec.Old(A));
+        var t = A; A = B; B = t;
+    }
+}
 ";
 
         /// <summary>An input: d is null (DMode 0), c itself (1), or a cell of its own (2).</summary>
@@ -289,11 +362,14 @@ public sealed class Doubler : Counter
             public List<string> Nodes = new List<string>();    // (nodes qK whose permission is in hand, or folded)
             public List<(string, string)> Folded = new List<(string, string)>();
             public List<string> Counters = new List<string>(); // (a Counter or a Doubler)
+            public List<string> Gauges = new List<string>();   // (an Exact or a Plus, as an IGauge)
+            public List<string> Duos = new List<string>();     // (dynamic frames)
+            public List<string> Mems = new List<string>();     // (Mem cells: pointer ptrK, view mK)
             public Pools Copy() => new Pools
             {
                 Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList(),
                 Shares = Shares.ToList(), Boxes = Boxes.ToList(), Held = Held.ToList(), Nodes = Nodes.ToList(), Folded = Folded.ToList(),
-                Counters = Counters.ToList(),
+                Counters = Counters.ToList(), Gauges = Gauges.ToList(), Duos = Duos.ToList(), Mems = Mems.ToList(),
             };
             public IEnumerable<string> Writable => Nodes.Where(n => !Folded.Any(f => f.Item1 == n || f.Item2 == n));
         }
@@ -374,6 +450,7 @@ public sealed class Doubler : Counter
             foreach (var (sh, acct) in _p.Shares.Except(saved.Shares)) list.Add(new Line { Text = $"Own.Unshare(ref w{acct.Substring(1)}, {sh});" });
             foreach (var o in _p.Accounts.Except(saved.Accounts)) list.Add(new Line { Text = $"Own.Drop(w{o.Substring(1)});" });
             foreach (var b in _p.Held.Except(saved.Held).Where(b => !saved.Boxes.Contains(b))) list.Add(new Line { Text = $"Own.Drop(u{b.Substring(1)});" });
+            foreach (var m in _p.Mems.Except(saved.Mems)) list.Add(new Line { Text = $"Mem.Free(m{m}, ptr{m});" });
             _scopes.Pop();
             _p = saved; // (a block's declarations end with it)
             return list;
@@ -492,9 +569,41 @@ public sealed class Doubler : Counter
                     case 15:
                     {
                         // calls to the helpers: what they may change, and what they may not
-                        switch (_r.Next(6))
+                        switch (_r.Next(9))
                         {
                             case 0: return new Line { Text = $"L.TriFormula(Math.Abs({Int(1)}) % 30);" }; // (a lemma: a proof, erased)
+                            case 2:
+                            {
+                                // an interface call: the contract class's contract, whichever class it is
+                                var g = "g" + _fresh++;
+                                var v = "v" + _fresh++;
+                                var make = _r.Next(3) == 0 ? "new Plus()" : $"({Bool(1, null)} ? new Exact() : new Plus())";
+                                var use = _r.Next(2) == 0 ? $"{g}.Read(Math.Abs({Int(1)}) % 100)" : $"{g}.Scale()";
+                                _p.Gauges.Add(g);
+                                _p.Ints.Add(v);
+                                return new Line { Text = $"IGauge {g} = {make}; int {v} = {use};" };
+                            }
+                            case 3:
+                            {
+                                // a framed object: its methods change only its representation
+                                var e = "e" + _fresh++;
+                                var text = $"var {e} = new Duo();";
+                                for (int k = _r.Next(3); k > 0; k--) text += _r.Next(2) == 0 ? $" {e}.IncA();" : $" {e}.Swap();";
+                                _p.Duos.Add(e);
+                                return new Line { Text = text };
+                            }
+                            case 4:
+                            {
+                                // a Mem cell and its view: written and read, freed at the block's end
+                                var m = _fresh++.ToString();
+                                var v = "v" + _fresh++;
+                                var text = $"var ptr{m} = Mem.Alloc({Int(1)}, out PointsTo<int> m{m});";
+                                if (_r.Next(2) == 0) text += $" Mem.Write(ref m{m}, ptr{m}, {Int(1)});";
+                                text += $" int {v} = Mem.Read(in m{m}, ptr{m});";
+                                _p.Mems.Add(m);
+                                _p.Ints.Add(v);
+                                return new Line { Text = text };
+                            }
                             case 1:
                             {
                                 // a counter of either class: a call through the base type
@@ -680,6 +789,8 @@ public sealed class Doubler : Counter
                         return _r.Next(2) == 0 ? $"{b}.Val" : $"({b}.Inner == null ? 0 : {b}.Inner.Val)";
                     }
                     case 4 when _p.Nodes.Count > 0: return $"{Pick(_p.Nodes)}.Val";
+                    case 4 when _p.Gauges.Count > 0: return $"{Pick(_p.Gauges)}.Scale()";
+                    case 4 when _p.Duos.Count > 0: return $"{Pick(_p.Duos)}.{(_r.Next(2) == 0 ? "A" : "B")}!.V";
                     case 5: return extra;
                     default: return Pick(_p.Ints);
                 }

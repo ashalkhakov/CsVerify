@@ -216,17 +216,25 @@ namespace CsVerify.Tests.Fuzz
             ("owned accounts", "new Account("), ("transfers", "Account.Transfer"), ("read shares", "Own.Share"),
             ("loop invariants", "Spec.Invariant"), ("lemmas", "L.TriFormula"), ("recursion (Tri)", "L.Tri("),
             ("virtual calls", ".Next("), ("virtual queries", ".Weight()"),
+            ("interface calls", ".Read(Math"), ("interface queries", ".Scale()"), ("dynamic frames", "new Duo()"), ("Mem cells", "Mem.Alloc"),
             ("boxes", "new Box("), ("give", "Own.Give"), ("take", "Own.Take"), ("fold", "Spec.Fold"), ("unfold", "Spec.Unfold"),
         };
 
         /// <summary>Methods compiled to run, with overflow checked (an overflow throws).</summary>
+        /// <summary>
+        /// Methods compiled to run, as users run them: through the erasure pass (ghost state, views, specifications and
+        /// lemma calls removed; the Spec library replaced by its run-time part), then compiled with overflow checked,
+        /// so an overflow throws. So erasure is under test too: what it changed, the checks would see.
+        /// </summary>
         private static Type Compile(int seed, string klass, IEnumerable<string> methods)
         {
             var source = "#nullable disable\nusing System; using System.Diagnostics; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime + ProgramGenerator.Prelude +
                          $"public static class {klass}\n{{\n" + string.Concat(methods) + "}\n";
-            var c = CSharpCompilation.Create($"Fuzz{seed}{klass}", new[] { CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest)) },
-                Engine.FrameworkReferences().Append(MetadataReference.CreateFromFile(typeof(CsVerify.Own).Assembly.Location)), // (Own, the attributes)
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, checkOverflow: true));
+            var erased = Erasure.Erase(new[] { ($"fuzz{seed}{klass}.cs", source) }, Array.Empty<string>(), Array.Empty<string>());
+            Assert.True(erased.Success, $"seed {seed}: the run-time program does not erase:\n" + string.Join("\n", erased.Errors.Take(5).Select(e => e.Message)));
+            var c = CSharpCompilation.Create($"Fuzz{seed}{klass}",
+                erased.Files.Select(f => CSharpSyntaxTree.ParseText(f.Text, new CSharpParseOptions(LanguageVersion.Latest), f.OutputName)),
+                Engine.FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, checkOverflow: true));
             using var ms = new MemoryStream();
             var emit = c.Emit(ms);
             Assert.True(emit.Success, $"seed {seed}: the run-time program does not compile:\n" +

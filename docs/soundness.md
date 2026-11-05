@@ -148,7 +148,11 @@ were provable. The defences we have:
   invariant one level down (`Own.Give`/`Take`); and a predicate holding two nodes' permissions and their order
   (`Own.ToAcc`, `Spec.Fold`/`Unfold`, sometimes of one node twice); a `[Pure]` recursive function and a lemma
   proving its closed form by induction; and a class with a virtual method and a `[Pure]` virtual query, and a
-  sealed override, called through the base type. Loops get `Spec.Invariant`s, checked at every head when run.
+  sealed override, called through the base type; an interface whose contract is in a contract class, with two
+  implementations; a Dafny-style object with a ghost `Repr` and `Valid()`, framed by `Spec.Modifies(Repr.Value)`;
+  and `Mem` cells, allocated, written and read through their views and freed. Loops get `Spec.Invariant`s, checked at
+  every head when run. The programs that run are the erased ones (the erasure pass, then the compiler), as users
+  run them, so erasure is under the same oracle (A9).
   The helpers are verified in every batch, since the calls rely on their contracts.
   Each method is first run with every candidate assertion and postcondition recorded. Its *true variant* keeps those
   that held. Where it verifies, it is run again on fresh inputs with its specifications as run-time checks and
@@ -158,8 +162,8 @@ were provable. The defences we have:
   many true variants verify and the test bites; their share is a measure of completeness. CI runs three seeds;
   `CSVERIFY_FUZZ_SEEDS=from..to`, `CSVERIFY_FUZZ_METHODS`, `CSVERIFY_FUZZ_SIZE` and `CSVERIFY_FUZZ_LOG` run a soak.
 
-  Five soaks so far, 2,900 methods, found no soundness problem. In all, 1,634 true variants verified and passed
-  their checks, and 2,184 of 2,184 planted ones were rejected. They found two other bugs:
+  Six soaks so far, 3,440 methods, found no soundness problem. In all, 1,913 true variants verified and passed
+  their checks, and 2,601 of 2,601 planted ones were rejected. They found two other bugs:
   - **Division blow-up (robustness).** Division, remainder and absolute value were written out with their operands
     repeated, so nested ones grew exponentially. One method's term passed 2^31 characters and crashed the verifier,
     and others took minutes. Long operands now go through solver macros.
@@ -168,9 +172,9 @@ were provable. The defences we have:
     (CSV1901), and the linearity analyzer took capturing a view for consuming it (CSV0002), so correct code like
     `Transfer(a, ref va, b, ref vb, x > 0 ? 1 : 2)` did not verify.
 
-What would make it stronger: a generator that covers more of the language (recursive predicates, `Mem` views,
-strings, async, interfaces with contract classes, dynamic frames with `Repr`); every generated feature is one the
-oracle then checks.
+What would make it stronger: a generator that covers more of the language (recursive predicates, `Mem` array views
+and their splitting, strings, async, `Dictionary` and `List` contracts, nested calls between generated methods);
+every generated feature is one the oracle then checks.
 
 ## References
 
