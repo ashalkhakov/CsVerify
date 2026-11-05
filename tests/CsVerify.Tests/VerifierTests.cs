@@ -435,6 +435,9 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1002" }, r.Errors("LinqBugs.Pairs"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("LinqBugs.FirstMatch"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("LinqBugs.Smallest"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("LinqBugs.Mean"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("LinqBugs.Curved"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("LinqBugs.Same"));
             Assert.Equal(new[] { "CSV1012" }, r.Errors("SpecTooEarly"));
             Assert.Equal(new[] { "CSV1011" }, r.Errors("Key"));
             Assert.Equal(new[] { "CSV1008" }, r.Errors("DataBugs.Size"));

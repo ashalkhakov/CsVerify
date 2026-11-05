@@ -73,6 +73,8 @@ namespace CsVerify.Verifier
             if (IsIntegral(t) || t.SpecialType == SpecialType.System_Boolean || t.SpecialType == SpecialType.System_String || t.TypeKind == TypeKind.Enum)
                 return true;
             if (IsFloating(t) || IsNullableValue(t)) return false; // (NaN.Equals(NaN) is true, unlike ==; int? is a value)
+            if (t is INamedTypeSymbol { IsTupleType: true } tuple) return tuple.TupleElements.All(e => KnownEquality(e.Type)); // (item by item)
+            if (t.IsAnonymousType) return ((INamedTypeSymbol)t).GetMembers().OfType<IPropertySymbol>().All(p => KnownEquality(p.Type)); // (member by member)
             bool overrides = false;
             for (var b = t; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
                 if (b.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => !m.IsImplicitlyDeclared && !m.IsStatic && m.Parameters.Length == 1) ||

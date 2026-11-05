@@ -632,7 +632,7 @@ namespace CsVerify.Verifier
                 try { verifier.Run(); }
                 catch (Exception e)
                 {
-                    mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan()));
+                    mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null ? e.ToString() : e.Message), at.GetLineSpan()));
                     failed = true;
                 }
                 foreach (var err in engine.Solver.Errors)

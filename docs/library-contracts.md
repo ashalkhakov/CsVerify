@@ -229,11 +229,17 @@ calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as
 sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
 it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
 
-`Sum` of `int` elements, and `Min` and `Max` of `int` or `long` elements, or of a pure selector's `int` values, are exact too: a running total,
-minimum or maximum, defined one element at a time. `Sum` checks its additions, as .NET does, so a partial sum out of
-range is reported (CSV1001, it would throw `OverflowException`); `Min` and `Max` of an empty sequence are reported (they
-throw `InvalidOperationException`). Over `double` or `float` the result is unknown (a sum's rounding and NaN's ordering
-are not modeled), but `Min` and `Max` still need a non-empty sequence. Nullable sums and comparers are library calls.
+`Sum`, `Min`, `Max` and `Average` of `int`, `long` or `double` elements (or of a pure selector's values of those
+types), `LongCount` and `Aggregate` (with a seed, a result selector, or neither) are exact too: a running total,
+minimum, maximum or accumulator, defined one element at a time. `Sum` of integers checks its additions, as .NET
+does, so a partial sum out of range is reported (CSV1001, it would throw `OverflowException`); `Min`, `Max`,
+`Average` and an unseeded `Aggregate` of an empty sequence are reported (they throw `InvalidOperationException`).
+Over `double` the arithmetic is IEEE's ([Floating point](semantics.md#floating-point)): `Sum` adds in order from 0.0,
+rounding each step, so `{ 0.1, 0.2 }.Sum()` is not 0.3; `Min` is NaN if any element is, and `Max` skips NaN unless all
+are; `Average` is the sum over the count, but for the sign of a zero (.NET adds from 0.0 or from the first element
+by the source's kind, so an average of `-0.0`s is either zero). Sums and bounds that need induction over an unknown
+length (a `double[]` of 2.0s averages to 2.0) are not proved. `float`, `decimal`, nullable sums and comparers are
+library calls.
 
 **Lazy LINQ.** `Select`, `Where`, `Take` and `Skip` (with pure lambdas, over what the verifier reads or over each
 other) make views. A view is read when it is enumerated: by the eager methods above, `ToList`, `ToArray`, or a
@@ -255,10 +261,29 @@ These make views too, read the same way:
   key (by `EqualityComparer<TKey>.Default`), in order. It is a filter over all the pairs, the normal form of a join
   comprehension in Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013).
 - `SelectMany(x => x.Items)`, where the inner sequence is a List, an array or a list interface: the inner sequences one
-  after another.
+  after another; `SelectMany(x => ..., (x, y) => ...)` the result selector's values on each pair.
 - `GroupBy(x => key)`: the groups in the order their keys first appear, each with its key (`g.Key`) and its elements,
   the source's with that key, in order. A group can be enumerated, counted and read like a view, and a `foreach`
-  over the groups may contain one over each group.
+  over the groups may contain one over each group. With an element selector, a group's elements are its values;
+  with a result selector, `(k, g) => ...` is applied to each key and group, and may read the group (`g.Count()`).
+- `GroupJoin(inner, x => key, y => key, (x, ys) => ...)`: for each outer element in order, the selector applied to it
+  and its matches, the inner elements with an equal key, in order.
+- `Concat`, `Reverse`, and `Zip(other)` into tuples `(First, Second)`.
+
+A lambda the verifier inlines may call these members, as long as they cannot throw: `(k, g) => g.Count()` is read,
+`(x, ys) => ys.First()` is not (the call is a library call). Which lambdas .NET runs, and when, depends on the
+operator (`Count()` of a `GroupJoin` runs its selector, of an array's `Select` not); the definitions do not say, so a
+lambda's precondition could not be checked where it applies.
+
+**Query syntax** is the method calls it stands for (C#'s translation): `from x in a from y in b select e` is
+`SelectMany` with a result selector, `join ... into` a `GroupJoin`, `group ... by ... into g` a `GroupBy`. A `let`, or
+a second `from` followed by more clauses, makes an anonymous object carrying the range variables
+(`new { x, y }`), which the clauses after it read. Each clause's lambda is also verified as a unit of its own.
+
+**Tuples and anonymous objects** are values: one made of equal parts equals another (`EqualityComparer` compares
+them part by part), so `GroupBy(x => (x.A, x.B))`, `GroupBy(x => new { x.A, x.B })` and `Distinct()` over them are
+exact where the parts' equality is known. `==` between two anonymous objects compares references in C#, which is not
+modeled (an unknown value). An anonymous object is never null.
 
 These model `System.Linq.Enumerable`, which runs in memory. `Queryable` (Entity Framework and other providers, which
 translate the query instead of running it) is not modeled: its methods are library calls.

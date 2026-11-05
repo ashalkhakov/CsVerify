@@ -155,8 +155,9 @@ namespace CsVerify.Verifier
         {
             int facts = _quantFacts.Count, boundCompile = _boundCompile;
             try { return fn(); }
-            catch (NotQuery)
+            catch (NotQuery why)
             {
+                if (System.Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) System.Console.Error.WriteLine("not a query: " + why.Message);
                 while (_quantFacts.Count > facts) _quantFacts.Pop();
                 _boundCompile = boundCompile;
                 return fallback;
@@ -181,7 +182,8 @@ namespace CsVerify.Verifier
         /// <summary>The LINQ calls read from their definitions (and ToList and ToArray); null for others.</summary>
         private Term LinqCall(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
-            if (!_codeMode) return null;
+            // (in a lambda a definition applies, g => g.Count(): read there too)
+            if (!_codeMode && _queryContexts.Count == 0) return null;
             if (IsEnumerableMethod(inv.TargetMethod) && Copying(inv, f, spec) is Term copy) return copy;
             return QueryCall(inv, f, spec);
         }
@@ -207,6 +209,10 @@ namespace CsVerify.Verifier
             if (definition == null) return null;
             var original = _model.GetOperation(inv.Syntax) as IInvocationOperation;
             if (original != null && !SymbolEqualityComparer.Default.Equals(original.TargetMethod, m)) original = null;
+            // (a query clause's call is found in its query's translation, its clause's syntax being no invocation)
+            if (original == null && inv.Syntax.AncestorsAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.QueryExpressionSyntax>().LastOrDefault() is { } query)
+                original = _model.GetOperation(query)?.DescendantsAndSelf().OfType<IInvocationOperation>()
+                    .FirstOrDefault(c => c.Syntax == inv.Syntax && SymbolEqualityComparer.Default.Equals(c.TargetMethod, m));
             bool receiver = ContractStubs.TakesReceiver(definition);
             IOperation ArgOf(IInvocationOperation call, int k) =>
                 receiver && k == 0 ? call.Instance : call.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == k - (receiver ? 1 : 0))?.Value;
@@ -237,11 +243,23 @@ namespace CsVerify.Verifier
                         Deref(op, x, inv.Syntax);
                         _sourceTypes[x.S] = type;
                     }
-                    else if (!_lazy.ContainsKey(x.S) && GroupOf(x) == null) return null;
+                    else if (!_lazy.ContainsKey(x.S) && !_queries.ContainsKey(x.S) && GroupOf(x) == null) return null; // (_queries: GroupJoin's matches)
                 }
                 args.Add((p, x));
             }
             var instantiation = DefinitionInstantiation(definition, m);
+            if (!_codeMode && !IsSequenceType(definition.ReturnType))
+            {
+                // inside a definition (a lambda it applies): its value here. One that may throw is not read: a lambda
+                // runs where .NET runs it (Count of a GroupJoin runs its selector, of an array's Select not), which
+                // the definitions do not say, so its precondition could not be checked where it applies
+                var outer = _queryContexts.Peek();
+                var inner = NewContext(instantiation);
+                var value = InContext(inner, () => RunDefinition(definition, args, f).value);
+                if (inner.Requires.Any(r => r != T.True)) throw new NotQuery("a lambda's call that may throw: " + inv.Syntax);
+                outer.Known.AddRange(inner.Known);
+                return value ?? throw new NotQuery("a member without a value");
+            }
             if (IsSequenceType(definition.ReturnType))
             {
                 var result = _z3.Fresh("query", Sort.Int);
@@ -500,18 +518,28 @@ namespace CsVerify.Verifier
                     var s = Read(S(0));
                     var accType = Resolve(m.TypeArguments[1]);
                     var accSort = SortOf(accType);
-                    if (accSort != Sort.Int && accSort != Sort.Bool) throw new NotQuery("a fold of " + accType);
+                    // the accumulator in its own sort: an integer or a flag, or a float (IEEE, as the steps round)
+                    if (accSort != Sort.Int && accSort != Sort.Bool && accSort != Sort.F32 && accSort != Sort.F64) throw new NotQuery("a fold of " + accType);
+                    var runSort = accSort == Sort.Bool ? Sort.Int : accSort;
                     var seed = A(1);
-                    var fn = StubLambda(Op(2));
-                    var result = LambdaResult(fn);
-                    Term Step(Term acc, Term x) => InContext(ctx, () =>
+                    var elementSort = SortOf(Resolve(m.TypeArguments[0]));
+                    Func<Term, Term, Term> Step;
+                    if ((Op(2) as IDelegateCreationOperation)?.Target is IAnonymousFunctionOperation fn)
                     {
-                        var inner = f.Clone();
-                        inner.Vars[fn.Symbol.Parameters[0]] = T.Coerce(acc, accSort);
-                        inner.Vars[fn.Symbol.Parameters[1]] = x;
-                        return T.Coerce(Eval(result, inner, spec), Sort.Int);
-                    });
-                    var run = Recur(m.Name.ToLowerInvariant(), s.Length, T.Coerce(seed, Sort.Int), (a, j) => Step(a, s.Element(j)), s.Known);
+                        var result = LambdaResult(fn);
+                        Step = (acc, x) => InContext(ctx, () =>
+                        {
+                            var inner = f.Clone();
+                            inner.Vars[fn.Symbol.Parameters[0]] = T.Coerce(acc, accSort);
+                            inner.Vars[fn.Symbol.Parameters[1]] = T.Coerce(x, elementSort);
+                            return T.Coerce(Eval(result, inner, spec), runSort);
+                        });
+                    }
+                    else if (_lambdas.TryGetValue(T.Coerce(A(2), Sort.Int).S, out var given) && given.P2 != null)
+                        // the program's own lambda, passed on (Aggregate's func)
+                        Step = (acc, x) => T.Coerce(ApplyLambda(given, T.Coerce(acc, accSort), T.Coerce(x, elementSort)), runSort);
+                    else throw new NotQuery("a fold by what is not a lambda");
+                    var run = Recur(m.Name.ToLowerInvariant(), s.Length, T.Coerce(seed, runSort), (a, j) => Step(a, s.Element(j)), s.Known, runSort);
                     if (m.Name == "Fold") return T.Coerce(run(s.Length), accSort);
                     var scanned = new Sequence { Length = s.Length, Element = j => T.Coerce(run(T.Add(j, T.Int(1))), accSort), ElementType = accType, Known = s.Known };
                     return QueryTerm(new QSeq { Make = () => scanned, ElementType = accType });
@@ -535,12 +563,12 @@ namespace CsVerify.Verifier
                     var name = $"group#{ctx.Id}#{inv.Syntax.SpanStart}";
                     var g = _z3.Apply(name, Sort.Int, new[] { T.Coerce(key, Sort.Int) });
                     var head = g.S.Substring(1, g.S.IndexOf(' ') - 1);
-                    if (!_groupFamilies.ContainsKey(head))
+                    // groups are objects: not null (one axiom for the site, not a fact at each read)
+                    _z3.AssumeOnce(head, () =>
                     {
-                        // groups are objects: not null (one axiom for the site, not a fact at each read)
                         var k = _z3.FreshName("key");
-                        _z3.Assume(new Term($"(forall (({k} Int)) (! (not (= ({head} {k}) 0)) :pattern (({head} {k}))))", Sort.Bool));
-                    }
+                        return new Term($"(forall (({k} Int)) (! (not (= ({head} {k}) 0)) :pattern (({head} {k}))))", Sort.Bool);
+                    });
                     _groupFamilies[head] = new GroupFamily { ElementsOf = elementsOf };
                     return g;
                 }
@@ -735,7 +763,7 @@ namespace CsVerify.Verifier
         private Sequence SequenceOfTerm(Term x, ITypeSymbol type, Frame f)
         {
             x = T.Coerce(x, Sort.Int);
-            if (!(_lazy.ContainsKey(x.S) || GroupOf(x) != null || type != null && Indexable(type))) return null;
+            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || type != null && Indexable(type))) return null;
             var ctx = NewContext(null);
             return Guarded(() =>
             {
@@ -774,7 +802,9 @@ namespace CsVerify.Verifier
         private ITypeSymbol ViewForEachElement(IOperation collection)
         {
             var op = Unconverted(collection);
-            var call = _model.GetOperation(op.Syntax) as IInvocationOperation ?? op as IInvocationOperation;
+            var call = ViewCall(op);
+            if (call == null && Unconverted(_model.GetOperation(op.Syntax) ?? op) is IPropertyReferenceOperation { Property.ContainingType.IsAnonymousType: true } && IsSequenceType(op.Type))
+                return ((INamedTypeSymbol)op.Type).TypeArguments[0]; // (GroupJoin's matches carried in new { x, ys }: read if a query)
             if (call == null && op.Type is INamedTypeSymbol grouping && grouping.Name == "IGrouping" && grouping.TypeArguments.Length == 2)
                 return grouping.TypeArguments[1]; // (a group: read if it is one a definition made)
             if (!ReadableView(call)) return null;
@@ -796,10 +826,18 @@ namespace CsVerify.Verifier
                 if (IsSequenceType(p.Type) || receiver && k == 0)
                 {
                     var s = Unconverted(op);
-                    if (!(Indexable(s.Type) || ReadableView(_model.GetOperation(s.Syntax) as IInvocationOperation ?? s as IInvocationOperation))) return false;
+                    if (!(Indexable(s.Type) || ReadableView(ViewCall(s)))) return false;
                 }
             }
             return true;
+        }
+
+        /// <summary>The call an operation is (query syntax: the last call of its translation).</summary>
+        private IInvocationOperation ViewCall(IOperation op)
+        {
+            var o = _model.GetOperation(op.Syntax) ?? op;
+            if (o is ITranslatedQueryOperation tq) o = tq.Operation;
+            return o as IInvocationOperation ?? op as IInvocationOperation;
         }
 
         /// <summary>The query a foreach over one runs over: read when the loop began.</summary>

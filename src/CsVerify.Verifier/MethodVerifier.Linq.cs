@@ -34,6 +34,8 @@ namespace CsVerify.Verifier
             {
                 switch (op)
                 {
+                    case IAssignmentOperation a when a.Parent is IAnonymousObjectCreationOperation: // (new { x, y = e }: its members, not writes)
+                        break;
                     case IAssignmentOperation _:
                     case IIncrementOrDecrementOperation _:
                     case IObjectCreationOperation _:
@@ -41,7 +43,12 @@ namespace CsVerify.Verifier
                     case IAnonymousFunctionOperation _:
                     case IAwaitOperation _:
                         return null;
+                    // (LINQ by its definitions, those that do not throw: a lambda runs where .NET runs it, Count of a
+                    // GroupJoin running its selector and of an array's Select not, which the definitions do not say)
+                    case IInvocationOperation inv when _engine.Stubs.QueryOf(inv.TargetMethod) is IMethodSymbol definition && MayThrow(definition):
+                        return null;
                     case IInvocationOperation inv when !(SpecSymbols.IsPure(inv.TargetMethod) || _engine.Stubs.IsPureMember(inv.TargetMethod) ||
+                                                         _engine.Stubs.QueryOf(inv.TargetMethod) != null ||
                                                          inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Math" ||
                                                          IsNullableValue(inv.TargetMethod.ContainingType) || inv.TargetMethod.Name == "Equals" &&
                                                          inv.TargetMethod.ContainingType?.SpecialType == SpecialType.System_String):
@@ -49,6 +56,7 @@ namespace CsVerify.Verifier
                     case IPropertyReferenceOperation pr when !(FieldEffects.IsHeapField(pr.Property) || IsStructMember(pr.Property) ||
                                                                pr.Instance != null && IsSequence(pr.Instance.Type) ||
                                                                pr.Property.Name == "Key" && pr.Property.ContainingType?.Name == "IGrouping" ||
+                                                               pr.Property.ContainingType?.IsAnonymousType == true ||
                                                                IsNullableValue(pr.Property.ContainingType) || IsListInterface(pr.Property.ContainingType) ||
                                                                _engine.HasStub(pr.Property.GetMethod) && _engine.Stubs.IsPureMember(pr.Property.GetMethod)):
                         return null;
@@ -59,16 +67,33 @@ namespace CsVerify.Verifier
             return ret.ReturnedValue;
         }
 
+        /// <summary>Has a definition a precondition: a Spec.Requires, its own or a definition's it calls?</summary>
+        private bool MayThrow(IMethodSymbol definition, HashSet<IMethodSymbol> seen = null)
+        {
+            seen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            if (!seen.Add(definition.OriginalDefinition)) return false;
+            var decl = definition.OriginalDefinition.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+            if (decl == null) return true;
+            var model = _engine.ModelOf(decl.SyntaxTree);
+            foreach (var call in decl.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>())
+            {
+                if (!(model.GetSymbolInfo(call).Symbol is IMethodSymbol m)) continue;
+                if (SpecSymbols.IsSpecClass(m.ContainingType) && m.Name == "Requires") return true;
+                if (SpecSymbols.HasAttribute(m.ContainingType, "ComprehensionsAttribute") && MayThrow(m, seen)) return true;
+            }
+            return false;
+        }
+
         /// <summary>
-        /// A function of 0..n defined one step at a time: acc(0) = init, acc(j + 1) = step(acc(j), j), under the
+        /// A function of 0..n (of the given sort) defined one step at a time: acc(0) = init, acc(j + 1) = step(acc(j), j), under the
         /// sequence's condition. Each step is a quantified axiom triggered by acc(j + 1) (unfolding back from acc(n)) or
         /// by acc(j) (forward from acc(0), for a length the solver knows only as a value, not as a successor term).
         /// </summary>
-        private System.Func<Term, Term> Recur(string hint, Term n, Term init, System.Func<Term, Term, Term> step, Term known)
+        private System.Func<Term, Term> Recur(string hint, Term n, Term init, System.Func<Term, Term, Term> step, Term known, Sort sort = Sort.Int)
         {
             BoundCompileCheck();
             var name = hint + "#" + _materialized++;
-            Term Acc(Term j) => _z3.Apply(name, Sort.Int, new[] { j });
+            Term Acc(Term j) => _z3.Apply(name, sort, new[] { j });
             AssumeSide(T.Implies(known, T.And(T.Eq(Acc(T.Int(0)), init),
                 OverIndices("forall", T.Int(0), n, j => T.Eq(Acc(T.Add(j, T.Int(1))), step(Acc(j), j)), pattern: j => Acc(T.Add(j, T.Int(1))), pattern2: Acc))));
             return Acc;

@@ -32,7 +32,7 @@ namespace CsVerify.Tests
             var stubs = ContractStubs.For(compilation);
             Assert.Empty(stubs.Errors.Select(e => e.message));
             var pairs = stubs.QueryPairs.OrderBy(p => p.query.ContainingType.Name, StringComparer.Ordinal).ThenBy(p => p.query.ToDisplayString(), StringComparer.Ordinal).ToList();
-            Assert.True(pairs.Count >= 40, $"only {pairs.Count} definitions found");
+            Assert.True(pairs.Count >= 65, $"only {pairs.Count} definitions found");
             var failures = Run(compilation, pairs);
             Assert.True(failures.Count == 0, $"{failures.Count} of {pairs.Count} definitions disagree with LINQ:\n" + string.Join("\n", failures));
         }
@@ -188,12 +188,16 @@ namespace Wrong
                     "System.Collections.Generic.IEnumerable<long>" => "In.Longs(r)",
                     "System.Collections.Generic.IEnumerable<double>" => "In.Doubles(r)",
                     "System.Collections.Generic.List<int>" => "In.Ints(r).ToList()",
+                    "int[]" => "In.Ints(r).ToArray()",
                     "int" => "In.Int(r)",
                     "System.Func<int, bool>" => "In.Test(r, __shown)",
                     "System.Predicate<int>" => "new Predicate<int>(In.Test(r, __shown))",
                     "System.Func<int, int>" => "In.Map(r, __shown)",
                     "System.Func<int, int, int>" => "In.Map2(r, __shown)",
                     "System.Func<int, System.Collections.Generic.IEnumerable<int>>" => "In.Many(r, __shown)",
+                    "System.Func<int, System.Collections.Generic.IEnumerable<int>, int>" => "In.OfGroup(r, __shown)",
+                    "System.Func<int, long>" => "In.ToLong(r, __shown)",
+                    "System.Func<int, double>" => "In.ToDouble(r, __shown)",
                     "System.Linq.IOrderedEnumerable<int>" => null,
                     _ => "",
                 };
@@ -231,6 +235,7 @@ namespace Wrong
         private static string Substituted(ITypeSymbol t) => t switch
         {
             ITypeParameterSymbol _ => "int",
+            IArrayTypeSymbol a => Substituted(a.ElementType) + "[]",
             INamedTypeSymbol n when n.TypeArguments.Length > 0 =>
                 n.ContainingNamespace.ToDisplayString() + "." + n.Name + "<" + string.Join(", ", n.TypeArguments.Select(Substituted)) + ">",
             _ => t.ToDisplayString(),
@@ -340,7 +345,14 @@ namespace CsVerify.Conformance
 
         public static IEnumerable<long> Longs(Random r) => Ints(r).Select(x => r.Next(10) == 0 ? long.MaxValue : (long)x).ToList();
 
-        public static IEnumerable<double> Doubles(Random r) => Ints(r).Select(x => r.Next(10) == 0 ? double.NaN : (double)x).ToList();
+        // with NaN, the infinities, -0.0, fractions (sums that round) and a near overflow
+        private static readonly double[] Odd = { double.NaN, double.PositiveInfinity, double.NegativeInfinity, -0.0, 0.1, 0.3, 1e308, -1e308 };
+        public static IEnumerable<double> Doubles(Random r)
+        {
+            var a = Ints(r).Select(x => r.Next(6) == 0 ? Odd[r.Next(Odd.Length)] : (double)x).ToList();
+            if (r.Next(8) == 0) a = a.Select(_ => -0.0).ToList();
+            return r.Next(2) == 0 ? (IEnumerable<double>)a : a.ToArray();
+        }
 
         private static readonly (string, Func<int, bool>)[] Tests =
             { (""x > 0"", x => x > 0), (""x % 2 == 0"", x => x % 2 == 0), (""true"", x => true), (""false"", x => false), (""x < 3"", x => x < 3) };
@@ -350,6 +362,14 @@ namespace CsVerify.Conformance
             { (""a - b"", (a, b) => unchecked(a - b)), (""a"", (a, b) => a), (""b"", (a, b) => b), (""a % 3 + b"", (a, b) => unchecked(a % 3 + b)) };
         private static readonly (string, Func<int, IEnumerable<int>>)[] Manys =
             { (""x => x, x + 1, .. (|x| % 3 of them)"", x => Enumerable.Range(0, Math.Abs(x % 3)).Select(k => unchecked(x + k)).ToArray()), (""none"", x => new List<int>()), (""[x]"", x => new[] { x }) };
+
+        private static readonly (string, Func<int, long>)[] ToLongs =
+            { (""x"", x => x), (""x * 2^40"", x => (long)x << 40), (""long.MaxValue"", x => long.MaxValue) };
+        private static readonly (string, Func<int, double>)[] ToDoubles =
+            { (""x"", x => x), (""x / 10.0"", x => x / 10.0), (""1.0 / x"", x => 1.0 / x), (""x == 0 ? NaN : x"", x => x == 0 ? double.NaN : x), (""-0.0"", x => -0.0) };
+        private static readonly (string, Func<int, IEnumerable<int>, int>)[] OfGroups =
+            { (""(k, g) => g.Count()"", (k, g) => g.Count()), (""(k, g) => k"", (k, g) => k), (""(k, g) => g.Any() ? g.First() : -1"", (k, g) => g.Any() ? g.First() : -1),
+              (""(k, g) => k * 100 + g.Count(x => x > 0)"", (k, g) => unchecked(k * 100 + g.Count(x => x > 0))) };
 
         private static F Pick<F>(Random r, (string, F)[] menu, List<string> shown)
         {
@@ -362,6 +382,9 @@ namespace CsVerify.Conformance
         public static Func<int, int> Map(Random r, List<string> shown) => Pick(r, Maps, shown);
         public static Func<int, int, int> Map2(Random r, List<string> shown) => Pick(r, Maps2, shown);
         public static Func<int, IEnumerable<int>> Many(Random r, List<string> shown) => Pick(r, Manys, shown);
+        public static Func<int, long> ToLong(Random r, List<string> shown) => Pick(r, ToLongs, shown);
+        public static Func<int, double> ToDouble(Random r, List<string> shown) => Pick(r, ToDoubles, shown);
+        public static Func<int, IEnumerable<int>, int> OfGroup(Random r, List<string> shown) => Pick(r, OfGroups, shown);
 
         public static string Show(object o) => o switch
         {

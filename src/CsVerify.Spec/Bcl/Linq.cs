@@ -55,6 +55,27 @@ namespace CsVerify.Bcl
                 Q.Yield(Q.Group(Q.At(keys, j), k => Q.For(source, x => Q.If(Spec.Equal(Ghost.Of(keySelector(x)), Ghost.Of(k)), Q.Yield(x)))))));
         }
 
+        // (query syntax: a second from)
+        public static IEnumerable<R> SelectMany<T, C, R>(IEnumerable<T> source, Func<T, IEnumerable<C>> collectionSelector, Func<T, C, R> resultSelector) =>
+            Q.For(source, x => Q.For(collectionSelector(x), y => Q.Yield(resultSelector(x, y))));
+
+        // (query syntax: group e by k)
+        public static IEnumerable<IGrouping<K, E>> GroupBy<T, K, E>(IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector)
+        {
+            var keys = Select(source, keySelector);
+            return Q.For(Q.Range(0, Q.Count(keys)), j => Q.If(Q.Unseen(keys, j),
+                Q.Yield(Q.Group(Q.At(keys, j), k => Q.For(source, x => Q.If(Spec.Equal(Ghost.Of(keySelector(x)), Ghost.Of(k)), Q.Yield(elementSelector(x))))))));
+        }
+
+        public static IEnumerable<R> GroupBy<T, K, R>(IEnumerable<T> source, Func<T, K> keySelector, Func<K, IEnumerable<T>, R> resultSelector) =>
+            Q.For(GroupBy(source, keySelector), g => Q.Yield(resultSelector(g.Key, g)));
+
+        public static IEnumerable<R> GroupBy<T, K, E, R>(IEnumerable<T> source, Func<T, K> keySelector, Func<T, E> elementSelector, Func<K, IEnumerable<E>, R> resultSelector) =>
+            Q.For(GroupBy(source, keySelector, elementSelector), g => Q.Yield(resultSelector(g.Key, g)));
+
+        public static IEnumerable<(A First, B Second)> Zip<A, B>(IEnumerable<A> first, IEnumerable<B> second) =>
+            Q.For(Q.Range(0, Math.Min(Q.Count(first), Q.Count(second))), i => Q.Yield((Q.At(first, i), Q.At(second, i))));
+
         public static IEnumerable<R> Zip<A, B, R>(IEnumerable<A> first, IEnumerable<B> second, Func<A, B, R> resultSelector) =>
             Q.For(Q.Range(0, Math.Min(Q.Count(first), Q.Count(second))), i => Q.Yield(resultSelector(Q.At(first, i), Q.At(second, i))));
 
@@ -63,11 +84,30 @@ namespace CsVerify.Bcl
                                                       Func<B, K> innerKeySelector, Func<A, B, R> resultSelector) =>
             Q.For(outer, x => Q.For(inner, y => Q.If(Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(y))), Q.Yield(resultSelector(x, y)))));
 
+        // for each outer element in order, it and the inner ones with an equal key, in order (query syntax: join ... into)
+        public static IEnumerable<R> GroupJoin<A, B, K, R>(IEnumerable<A> outer, IEnumerable<B> inner, Func<A, K> outerKeySelector,
+                                                           Func<B, K> innerKeySelector, Func<A, IEnumerable<B>, R> resultSelector) =>
+            Q.For(outer, x => Q.Yield(resultSelector(x, Q.For(inner, y => Q.If(Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(y))), Q.Yield(y))))));
+
+        public static IEnumerable<T> Concat<T>(IEnumerable<T> first, IEnumerable<T> second) =>
+            Q.For(Q.Range(0, Q.Count(first) + Q.Count(second)), i => Q.Yield(i < Q.Count(first) ? Q.At(first, i) : Q.At(second, i - Q.Count(first))));
+
+        public static IEnumerable<T> Reverse<T>(IEnumerable<T> source) =>
+            Q.For(Q.Range(0, Q.Count(source)), i => Q.Yield(Q.At(source, Q.Count(source) - 1 - i)));
+
+        // (an array's own overload, which a call on an array binds to)
+        public static IEnumerable<T> Reverse<T>(T[] array) =>
+            Q.For(Q.Range(0, Q.Count(array)), i => Q.Yield(Q.At(array, Q.Count(array) - 1 - i)));
+
         // ------------------------------------------------------------------ values
 
         public static int Count<T>(IEnumerable<T> source) => Q.Count(source);
 
         public static int Count<T>(IEnumerable<T> source, Func<T, bool> predicate) => Q.Count(Where(source, predicate));
+
+        public static long LongCount<T>(IEnumerable<T> source) => Q.Count(source);
+
+        public static long LongCount<T>(IEnumerable<T> source, Func<T, bool> predicate) => Q.Count(Where(source, predicate));
 
         public static bool Any<T>(IEnumerable<T> source) => Q.Count(source) > 0;
 
@@ -157,18 +197,76 @@ namespace CsVerify.Bcl
             return Q.Fold(source, Q.At(source, 0), (a, x) => a < x ? x : a);
         }
 
-        // (floating point: the value is not modeled, only that an empty sequence throws)
+        // checked: no step overflows (said of the sum before it, exact while none has)
+        public static long Sum(IEnumerable<long> source)
+        {
+            Spec.Requires(Spec.Forall(0, Q.Count(source), i => Q.At(source, i) >= 0
+                ? (i == 0 ? 0L : Q.At(Q.Scan(source, 0L, (a, x) => a + x), i - 1)) <= long.MaxValue - Q.At(source, i)
+                : (i == 0 ? 0L : Q.At(Q.Scan(source, 0L, (a, x) => a + x), i - 1)) >= long.MinValue - Q.At(source, i)));
+            return Q.Fold(source, 0L, (a, x) => a + x);
+        }
+
+        public static long Sum<T>(IEnumerable<T> source, Func<T, long> selector) => Sum(Select(source, selector));
+
+        public static long Min<T>(IEnumerable<T> source, Func<T, long> selector) => Min(Select(source, selector));
+
+        public static long Max<T>(IEnumerable<T> source, Func<T, long> selector) => Max(Select(source, selector));
+
+        // the long sum over the count (a long sum of ints does not overflow: there are fewer than 2^31 of them)
+        public static double Average(IEnumerable<int> source)
+        {
+            Spec.Requires(Q.Count(source) > 0); // (else InvalidOperationException)
+            return (double)Q.Fold(source, 0L, (a, x) => a + x) / Q.Count(source);
+        }
+
+        public static double Average<T>(IEnumerable<T> source, Func<T, int> selector) => Average(Select(source, selector));
+
+        // floating point: IEEE, added in order from 0.0 (rounded at each step, as .NET adds them)
+        public static double Sum(IEnumerable<double> source) => Q.Fold(source, 0.0, (a, x) => a + x);
+
+        public static double Sum<T>(IEnumerable<T> source, Func<T, double> selector) => Sum(Select(source, selector));
+
+        // NaN if any is NaN; else the least, the first of equals (-0.0 and 0.0 are equal)
         public static double Min(IEnumerable<double> source)
         {
             Spec.Requires(Q.Count(source) > 0);
-            throw null!;
+            return Q.Fold(source, Q.At(source, 0), (a, x) => double.IsNaN(a) ? a : x < a || double.IsNaN(x) ? x : a);
         }
 
+        public static double Min<T>(IEnumerable<T> source, Func<T, double> selector) => Min(Select(source, selector));
+
+        // NaN only if all are NaN; else the greatest of the others, the first of equals
         public static double Max(IEnumerable<double> source)
         {
             Spec.Requires(Q.Count(source) > 0);
+            return Q.Fold(source, Q.At(source, 0), (a, x) => double.IsNaN(a) || x > a ? x : a);
+        }
+
+        public static double Max<T>(IEnumerable<T> source, Func<T, double> selector) => Max(Select(source, selector));
+
+        // the sum over the count, but for the sign of a zero (.NET adds from the first element or from 0.0, by the
+        // source's kind: an all -0.0 source averages to either zero)
+        public static double Average(IEnumerable<double> source)
+        {
+            Spec.Requires(Q.Count(source) > 0);
+            Spec.Ensures<double>(r => r == Sum(source) / Q.Count(source) || double.IsNaN(r) && double.IsNaN(Sum(source) / Q.Count(source)));
             throw null!;
         }
+
+        public static double Average<T>(IEnumerable<T> source, Func<T, double> selector) => Average(Select(source, selector));
+
+        // ------------------------------------------------------------------ folds
+
+        public static T Aggregate<T>(IEnumerable<T> source, Func<T, T, T> func)
+        {
+            Spec.Requires(Q.Count(source) > 0); // (else InvalidOperationException)
+            return Q.Fold(Skip(source, 1), Q.At(source, 0), func);
+        }
+
+        public static A Aggregate<T, A>(IEnumerable<T> source, A seed, Func<A, T, A> func) => Q.Fold(source, seed, func);
+
+        public static R Aggregate<T, A, R>(IEnumerable<T> source, A seed, Func<A, T, A> func, Func<A, R> resultSelector) =>
+            resultSelector(Q.Fold(source, seed, func));
     }
 
     /// <summary>List&lt;T&gt;'s predicate methods, as comprehensions over the list's elements.</summary>

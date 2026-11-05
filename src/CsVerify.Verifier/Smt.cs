@@ -163,6 +163,7 @@ namespace CsVerify.Verifier
         public void Reset()
         {
             Send("(reset)");
+            _kept.Clear();
             _declared.Clear();
             _defines.Clear();
             Causes.Clear();
@@ -275,7 +276,24 @@ namespace CsVerify.Verifier
             Send($"(assert {t.S})");
         }
 
-        public void Push() { Depth++; Scope = ++_scopes; Send("(push 1)"); }
+        public void Push()
+        {
+            Depth++; Scope = ++_scopes; Send("(push 1)");
+            while (_frames.Count <= Depth) _frames.Add(0);
+            _frames[Depth] = Scope;
+        }
+
+        // the scope open at each depth (a fact asserted there lasts while that one is)
+        private readonly List<long> _frames = new List<long> { 0 };
+        private readonly Dictionary<string, (int depth, long frame)> _kept = new Dictionary<string, (int, long)>();
+
+        /// <summary>A background fact, asserted once for its key: again only if the scope it was asserted in was left.</summary>
+        public void AssumeOnce(string key, Func<Term> fact)
+        {
+            if (_kept.TryGetValue(key, out var at) && at.depth <= Depth && _frames[at.depth] == at.frame) return;
+            Assume(fact());
+            _kept[key] = (Depth, _frames[Depth]);
+        }
         public void Pop() { Depth--; Scope = ++_scopes; Send("(pop 1)"); }
 
         /// <summary>Changes whenever an assertion scope is entered or left: a fact asserted under one Scope value is still there.</summary>

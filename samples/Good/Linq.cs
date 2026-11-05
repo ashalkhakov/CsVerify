@@ -133,5 +133,34 @@ namespace Samples.Linq
             Spec.Ensures<int[]>(r => Spec.Forall(0, r.Length - 1, i => r[i] / 10 < r[i + 1] / 10 || r[i] / 10 == r[i + 1] / 10 && r[i] <= r[i + 1]));
             return a.OrderBy(x => x / 10).ThenBy(x => x).ToArray();
         }
+
+        // query syntax, with a let: half the score plus 50, for those it brings to 75 or more
+        public static int[] Curved(int[] scores)
+        {
+            Spec.Requires(Spec.Forall(0, scores.Length, i => 0 <= scores[i] && scores[i] <= 100));
+            Spec.Ensures<int[]>(r => Spec.Forall(0, r.Length, i => 75 <= r[i] && r[i] <= 100));
+            return (from s in scores let b = s / 2 + 50 where b >= 75 select b).ToArray();
+        }
+
+        // the mean of the readings, at least one (floating point: IEEE, as .NET adds them)
+        public static double Mean(double[] readings)
+        {
+            Spec.Requires(readings.Length > 0);
+            return readings.Average();
+        }
+
+        // no more distinct (decade, parity) classes than scores: tuples compare by their parts
+        public static int Classes(int[] scores)
+        {
+            Spec.Ensures<int>(r => 0 <= r && r <= scores.Length);
+            return scores.Select(s => (s / 10, s % 2)).Distinct().Count();
+        }
+
+        // each customer's orders, by a group join: every one of them that customer's
+        public static void OrdersOf(int[] customers, int[] owners)
+        {
+            foreach (var c in from c in customers join o in owners on c equals o into os select new { c, os })
+                foreach (var o in c.os) Spec.Assert(o == c.c);
+        }
     }
 }

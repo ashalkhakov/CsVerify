@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -248,6 +249,100 @@ public static class P
                 Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
             foreach (var m in new[] { "WrongZip", "WrongJoin", "WrongThen" })
                 Assert.Equal(new[] { "CSV1002" }, r.Errors("P." + m));
+        }
+
+        [Fact]
+        public void Aggregates_FloatingPoint_Average_Aggregate_Long()
+        {
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Linq;
+public static class P
+{
+    public static double Sum(double[] a) { Spec.Requires(a.Length == 2 && a[0] == 1.5 && a[1] == 2.0); Spec.Ensures<double>(r => r == 3.5); return a.Sum(); }
+    // rounded at each step, as .NET adds them: 0.1 + 0.2 is not 0.3
+    public static double Rounded(double[] a) { Spec.Requires(a.Length == 2 && a[0] == 0.1 && a[1] == 0.2); Spec.Ensures<double>(r => r != 0.3); return a.Sum(); }
+    public static double MinNaN(double[] a) { Spec.Requires(a.Length == 2 && a[0] == 1.5 && double.IsNaN(a[1])); Spec.Ensures<double>(r => double.IsNaN(r)); return a.Min(); }
+    public static double MaxSkipsNaN(double[] a) { Spec.Requires(a.Length == 2 && a[0] == 1.5 && double.IsNaN(a[1])); Spec.Ensures<double>(r => r == 1.5); return a.Max(); }
+    public static double Average(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); Spec.Ensures<double>(r => r == 1.5); return a.Average(); }
+    public static double AverageD(double[] a) { Spec.Requires(a.Length == 2 && a[0] == 1.0 && a[1] == 2.0); Spec.Ensures<double>(r => r == 1.5); return a.Average(); }
+    public static int Aggregate(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 2 && a[2] == 3); Spec.Ensures<int>(r => r == 6); return a.Aggregate((x, y) => x + y); }
+    public static int Seeded(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); Spec.Ensures<int>(r => r == 13); return a.Aggregate(10, (x, y) => x + y); }
+    public static long Long(long[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); Spec.Ensures<long>(r => r == 3); return a.Sum(); }
+    public static long Counted(int[] a) { Spec.Requires(a.Length == 3); Spec.Ensures<long>(r => r == 3); return a.LongCount(); }
+    // an empty sequence has no average, nor an aggregate; a long sum may overflow
+    public static double Empty(double[] a) => a.Average();
+    public static int NoSeed(int[] a) => a.Aggregate((x, y) => x);
+    public static long Overflow(long[] a) => a.Sum();
+    public static double WrongMax(double[] a) { Spec.Requires(a.Length == 2 && a[0] == 1.5 && double.IsNaN(a[1])); Spec.Ensures<double>(r => double.IsNaN(r)); return a.Max(); }
+}", overflow: false);
+            foreach (var m in new[] { "Sum", "Rounded", "MinNaN", "MaxSkipsNaN", "Average", "AverageD", "Aggregate", "Seeded", "Long", "Counted" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            foreach (var m in new[] { "Empty", "NoSeed", "Overflow" })
+                Assert.Equal(new[] { "CSV1001" }, r.Errors("P." + m));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("P.WrongMax"));
+        }
+
+        [Fact]
+        public void Views_ConcatReverse_ResultSelectors_GroupJoin_Tuples()
+        {
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Linq;
+public static class P
+{
+    public static int Reverse(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[2] == 9); Spec.Ensures<int>(r => r == 9); return a.Reverse().First(); }
+    public static int Concat(int[] a, int[] b) { Spec.Requires(a.Length == 1 && b.Length == 2 && b[1] == 4); Spec.Ensures<int>(r => r == 4); return a.Concat(b).Last(); }
+    public static int Pairs(int[] a, int[] b) { Spec.Requires(a.Length == 2 && b.Length == 3); Spec.Ensures<int>(r => r == 6); return a.SelectMany(x => b, (x, y) => x + y).Count(); }
+    public static int Zip(int[] a, int[] b) { Spec.Requires(a.Length == 2 && b.Length == 2 && a[1] == 5 && b[1] == 6); Spec.Ensures<int>(r => r == 11); var t = a.Zip(b).Last(); return t.First + t.Second; }
+    public static int Elements(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 4 && a[1] == 4); Spec.Ensures<int>(r => r == 8); return a.GroupBy(x => x, x => x * 2).First().First(); }
+    public static int Sizes(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 4 && a[1] == 4); Spec.Ensures<int>(r => r == 2); return a.GroupBy(x => x, (k, g) => g.Count()).First(); }
+    public static int Matches(int[] a, int[] b) { Spec.Requires(a.Length == 1 && b.Length == 2 && a[0] == 1 && b[0] == 1 && b[1] == 2); Spec.Ensures<int>(r => r == 1); return a.GroupJoin(b, x => x, y => y, (x, ys) => ys.Count()).First(); }
+    // by a tuple, and by an anonymous object: equal when their parts are
+    public static int ByTuple(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 3 && a[2] == 5); Spec.Ensures<int>(r => r == 2); return a.GroupBy(x => (x % 2, x > 2)).Count(); }
+    public static int ByObject(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 3 && a[2] == 5); Spec.Ensures<int>(r => r == 2); return a.Select(x => new { odd = x % 2, big = x > 2 }).Distinct().Count(); }
+    // (a tuple made in a lambda is a value of its element, not one for all of them)
+    public static int WrongByTuple(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 3 && a[2] == 5); Spec.Ensures<int>(r => r == 3); return a.GroupBy(x => (x % 2, x > 2)).Count(); }
+    public static int WrongReverse(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 1 && a[2] == 9); Spec.Ensures<int>(r => r == 1); return a.Reverse().First(); }
+    public static int WrongSizes(int[] a) { Spec.Requires(a.Length == 3 && a[0] == 4 && a[1] == 4 && a[2] == 5); Spec.Ensures<int>(r => r == 3); return a.GroupBy(x => x, (k, g) => g.Count()).First(); }
+}", overflow: false);
+            foreach (var m in new[] { "Reverse", "Concat", "Pairs", "Zip", "Elements", "Sizes", "Matches", "ByTuple", "ByObject" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            foreach (var m in new[] { "WrongByTuple", "WrongReverse", "WrongSizes" })
+                Assert.Equal(new[] { "CSV1002" }, r.Errors("P." + m));
+        }
+
+        [Fact]
+        public void QuerySyntax_FromLetJoinGroupInto()
+        {
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Linq;
+public static class P
+{
+    public static int Select(int[] a) { Spec.Requires(a.Length == 2); Spec.Ensures<int>(r => r == 2); return (from x in a select x + 1).Count(); }
+    public static int TwoFroms(int[] a, int[] b) { Spec.Requires(a.Length == 2 && b.Length == 3); Spec.Ensures<int>(r => r == 6); return (from x in a from y in b select x + y).Count(); }
+    public static int Let(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 3 && a[1] == 1); Spec.Ensures<int>(r => r == 1); return (from x in a let y = x * 2 where y > 4 select y).Count(); }
+    public static int Join(int[] a, int[] b) { Spec.Requires(a.Length == 1 && b.Length == 2 && a[0] == 2 && b[0] == 2 && b[1] == 5); Spec.Ensures<int>(r => r == 1); return (from x in a join y in b on x equals y select x + y).Count(); }
+    public static int JoinInto(int[] a, int[] b)
+    {
+        Spec.Requires(a.Length == 1 && b.Length == 3 && a[0] == 2 && b[0] == 2 && b[1] == 5 && b[2] == 2);
+        Spec.Ensures<int>(r => r == 2);
+        return (from x in a join y in b on x equals y into ys select ys.Count()).First();
+    }
+    public static int GroupInto(int[] a)
+    {
+        Spec.Requires(a.Length == 3 && a[0] == 1 && a[1] == 4 && a[2] == 1);
+        Spec.Ensures<int>(r => r == 2);
+        return (from x in a group x by x into g select new { g.Key, n = g.Count() }).First().n;
+    }
+    public static int WrongLet(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 3 && a[1] == 1); Spec.Ensures<int>(r => r == 2); return (from x in a let y = x * 2 where y > 4 select y).Count(); }
+}", overflow: false);
+            foreach (var m in new[] { "Select", "TwoFroms", "Let", "Join", "JoinInto", "GroupInto" })
+                // (it and its clauses' lambdas, each a unit of its own)
+                Assert.True(r.Methods.Where(x => x.Name == "P." + m || x.Name.StartsWith("P." + m + ".")).All(x => !x.Diagnostics.Any(d => d.IsError)),
+                            string.Join("\n", r.Methods.Where(x => x.Name.StartsWith("P." + m)).Select(x => r.Explain(x.Name))));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("P.WrongLet"));
         }
 
         [Fact]

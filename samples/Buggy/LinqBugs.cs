@@ -69,5 +69,24 @@ namespace Samples.Linq
             Spec.Ensures<int>(r => r == 11);
             return a.OrderBy(x => x % 10).ThenByDescending(x => x).First();
         }
+
+        // there may be no readings, and an empty sequence has no mean (CSV1001)
+        public static double Mean(double[] readings) => readings.Average();
+
+        // selects the score, not the curved one (CSV1002)
+        public static int[] Curved(int[] scores)
+        {
+            Spec.Requires(Spec.Forall(0, scores.Length, i => 0 <= scores[i] && scores[i] <= 100));
+            Spec.Ensures<int[]>(r => Spec.Forall(0, r.Length, i => 75 <= r[i]));
+            return (from s in scores let b = s / 2 + 50 where b >= 75 select s).ToArray();
+        }
+
+        // two anonymous objects with equal parts are equal by Equals, but == compares references (CSV1004)
+        public static void Same(int x)
+        {
+            var a = new { x };
+            var b = new { x };
+            Spec.Assert(a == b);
+        }
     }
 }

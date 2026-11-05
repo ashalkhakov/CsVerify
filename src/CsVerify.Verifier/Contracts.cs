@@ -140,6 +140,11 @@ namespace CsVerify.Verifier
                 case AccessorDeclarationSyntax acc: block = acc.Body; exprBody = acc.ExpressionBody?.Expression; break;
                 case ArrowExpressionClauseSyntax arrow: block = null; exprBody = arrow.Expression; break; // int P => ...
                 case AnonymousFunctionExpressionSyntax lambda: block = lambda.Block; exprBody = lambda.ExpressionBody; break; // x => ...
+                case SyntaxNode clause when method.MethodKind == MethodKind.AnonymousFunction:
+                    // a query clause's lambda (select x + y, where p, let y = ...): its expression, without a specification
+                    c.Declaration = clause;
+                    c.Model = compilation.GetSemanticModel(clause.SyntaxTree);
+                    return c;
                 default: return c;
             }
             c.Declaration = syntax;

@@ -979,19 +979,13 @@ namespace CsVerify.Verifier
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
+                case ITranslatedQueryOperation tq: return Eval(tq.Operation, f, spec); // (query syntax: the calls it stands for)
+                case IAnonymousObjectCreationOperation ao: return AnonymousObject(ao, f, spec);
                 case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && (hf.Instance != null || hf.Field.IsStatic):
                     return ReadField(hf.Field, hf.Instance, hf.Type, hf.Syntax, f, spec);
                 case IFieldReferenceOperation fr when fr.Field.ContainingType?.IsTupleType == true && fr.Instance != null:
                     return T.Coerce(TupleItem(Eval(fr.Instance, f, spec), fr.Field), SortOf(fr.Type));
-                case ITupleOperation tuple:
-                {
-                    // a tuple is a value: a fresh reference whose items are fixed here and never change
-                    var elems = tuple.Elements.Select(e => Eval(e, f, spec)).ToArray();
-                    var t = _z3.Fresh("tuple", Sort.Int);
-                    var fields = ((INamedTypeSymbol)tuple.Type).TupleElements;
-                    for (int i = 0; i < elems.Length; i++) AssumeSide(T.Eq(TupleItem(t, fields[i]), elems[i]));
-                    return t;
-                }
+                case ITupleOperation tuple: return TupleValue(tuple, f, spec);
                 case IFieldReferenceOperation fr:
                 {
                     var args = fr.Instance != null ? new[] { Eval(fr.Instance, f, spec) } : Array.Empty<Term>();
@@ -1213,7 +1207,9 @@ namespace CsVerify.Verifier
             var t = b.LeftOperand.Type;
             if (t?.IsReferenceType != true) return false;
             if (IsNullConstant(b.LeftOperand) || IsNullConstant(b.RightOperand)) return true;
-            return !Data.MayHoldData(Unconverted(b.LeftOperand).Type) && !Data.MayHoldData(Unconverted(b.RightOperand).Type);
+            // (an anonymous object is a value here: which reference it is, is not known)
+            return !Data.MayHoldData(Unconverted(b.LeftOperand).Type) && !Data.MayHoldData(Unconverted(b.RightOperand).Type) &&
+                   Unconverted(b.LeftOperand).Type?.IsAnonymousType != true && Unconverted(b.RightOperand).Type?.IsAnonymousType != true;
         }
 
         /// <summary>The operand under implicit reference conversions (reference == converts both sides to object).</summary>
@@ -1456,6 +1452,7 @@ namespace CsVerify.Verifier
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
             if (GroupKey(pr, f, spec) is Term groupKey) return groupKey;
+            if (AnonymousMember(pr, f, spec) is Term anonymousMember) return anonymousMember;
             if (DictionaryView(pr, f, spec) is Term dictionaryView) return dictionaryView;
             if (DictionaryCurrent(pr, f, spec) is Term dictionaryCurrent) return dictionaryCurrent;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
@@ -2269,7 +2266,11 @@ namespace CsVerify.Verifier
             : MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
         private static bool IsNonNullable(IParameterSymbol p) =>
-            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute");
+            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
+            // (query syntax's own: the object its previous clause made, or the group of group ... into g)
+            p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn &&
+            !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax) &&
+            (p.Type.IsAnonymousType || p.Type.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
 
         private static bool IsNonNullableReturn(IMethodSymbol m) =>
             !m.ReturnsVoid && (m.IsAsync ? AsyncResultType(m.OriginalDefinition) is ITypeSymbol t && IsNonNullableType(t) // (what it returns: its task's result)
