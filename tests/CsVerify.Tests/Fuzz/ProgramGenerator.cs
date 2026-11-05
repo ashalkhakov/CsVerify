@@ -152,6 +152,88 @@ public static class AH
     }
 }
 
+// properties with code, and a constructor with a contract
+public sealed class Meter
+{
+    public int Base { get; private set; }
+
+    public Meter(int b)
+    {
+        Spec.Requires(0 <= b && b <= 1000);
+        Spec.Ensures(Base == b);
+        Base = b;
+    }
+
+    public int Doubled
+    {
+        get
+        {
+            Spec.Requires(0 <= Base && Base <= 1000);
+            Spec.Ensures((int r) => r == 2 * Base);
+            return 2 * Base;
+        }
+    }
+
+    public int Level
+    {
+        get { Spec.Ensures((int r) => r == Base); return Base; }
+        set { Spec.Requires(0 <= value && value <= 1000); Spec.Ensures(Base == value); Base = value; }
+    }
+}
+
+// a static field: a field of one statics object
+public static class Totals { public static int Total; }
+
+// an abstract class: its contract in a contract class, an override checked against it
+public abstract class Tool
+{
+    public abstract int Use(int k);
+}
+
+[ContractClassFor(typeof(Tool))]
+internal abstract class ToolContract : Tool
+{
+    public override int Use(int k)
+    {
+        Spec.Requires(0 <= k && k <= 100);
+        Spec.Ensures((int r) => k <= r && r <= k + 5);
+        return 0;
+    }
+}
+
+public sealed class Hammer : Tool
+{
+    public override int Use(int k) => k + 1;
+}
+
+// a generic data type: one for every element type
+public abstract record Opt<T>
+{
+    private Opt() { }
+    public sealed record Some(T V) : Opt<T>;
+    public sealed record None() : Opt<T>;
+}
+
+// a linear package: a view and its object, kept together, with an invariant tying them
+[Linear]
+public readonly record struct Wallet(Own<Account> View, Account Obj)
+{
+    [Invariant, GhostFunction] public bool Valid() => View.Obj.Value == Obj;
+}
+
+public static class Misc
+{
+    // a struct member, or any variable, by reference
+    public static void Inc(ref int x)
+    {
+        Spec.Requires(x < 1000000);
+        Spec.Ensures(x == Spec.Old(x) + 1);
+        x++;
+    }
+
+    [GhostFunction] public static int Sq(int n) => n * n;
+}
+
 // a mutable struct: a value, copied by assignment
 public struct Pos { public int X; public int Y; }
 
@@ -504,6 +586,7 @@ public sealed class Duo
             public List<string> Grids = new List<string>(); // (int[2, 3])
             public List<string> Fracs = new List<string>();
             public List<string> Particles = new List<string>(), MemArrays = new List<string>(), Segs = new List<string>(), Builders = new List<string>();
+            public List<string> Meters = new List<string>(), Queues = new List<string>(), Opts = new List<string>(), Floats = new List<string>();
             public Pools Copy() => new Pools
             {
                 Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList(),
@@ -512,6 +595,7 @@ public sealed class Duo
                 Lists = Lists.ToList(), Maps = Maps.ToList(), Sets = Sets.ToList(), Stacks = Stacks.ToList(), Strings = Strings.ToList(), Nullables = Nullables.ToList(),
                 Shapes = Shapes.ToList(), Ranges = Ranges.ToList(), Positions = Positions.ToList(), Grids = Grids.ToList(), Fracs = Fracs.ToList(),
                 Particles = Particles.ToList(), MemArrays = MemArrays.ToList(), Segs = Segs.ToList(), Builders = Builders.ToList(),
+                Meters = Meters.ToList(), Queues = Queues.ToList(), Opts = Opts.ToList(), Floats = Floats.ToList(),
             };
             public IEnumerable<string> Writable => Nodes.Where(n => !Folded.Any(f => f.Item1 == n || f.Item2 == n));
         }
@@ -586,15 +670,15 @@ public sealed class Duo
         internal abstract class Stmt { }
         internal sealed class Line : Stmt { public string Text; }                       // a simple statement
         internal sealed class If : Stmt { public string Cond; public List<Stmt> Then, Else; }
-        internal sealed class For : Stmt { public string Var; public List<Stmt> Body; public List<Assert> Invariants = new List<Assert>(); }
+        internal sealed class For : Stmt { public string Var; public List<Stmt> Body; public List<Assert> Invariants = new List<Assert>(); public int Measure = -1; }
         internal sealed class Foreach : Stmt { public string Var, Over; public List<Stmt> Body; }
-        internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; }
+        internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; public bool Rethrow; }
         internal sealed class Assert : Stmt { public string Cond; public int Id; }
         /// <summary>Ghost code and an assertion about it, true by construction (its negation is what may be planted).</summary>
         internal sealed class GhostCheck : Stmt { public string Template, True, False; public int Id; }
 
         private readonly Stack<Pools> _scopes = new Stack<Pools>();
-        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 26)).ToArray();
+        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 30)).ToArray();
 
         private List<Stmt> Block(int n)
         {
@@ -619,9 +703,9 @@ public sealed class Duo
             _depth++;
             try
             {
-                // (simple statements 0..8 and 13..38; compound ones 9..12 only near the top)
+                // (simple statements 0..8 and 13..42; compound ones 9..12 only near the top)
                 int pick = _depth <= 1 && _r.Next(5) == 0 ? 9 + _r.Next(4) : Simple[_r.Next(Simple.Length)];
-                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(26); // (calls, objects, collections more often)
+                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(30); // (calls, objects, collections more often)
                 if (pick == 13 && _p.Accounts.Count == 1 && _r.Next(2) == 0) pick = 14;
                 switch (pick)
                 {
@@ -801,6 +885,10 @@ public sealed class Duo
                     case 36: return LibraryStatement();
                     case 37: return CallStatement();
                     case 38: return AwaitStatement();
+                    case 39: return LoopStatement();
+                    case 40: return ObjectStatement();
+                    case 41: return ValueStatement();
+                    case 42: return MiscStatement();
                     case 32:
                     {
                         var fr = "fr" + _fresh++;
@@ -828,7 +916,13 @@ public sealed class Duo
                         // (one try per method, of one statement: in a try every call may throw, so each doubles the
                         // paths, and two tries multiply them; the verifier explores paths one by one)
                         if (_tries++ > 0) goto case 9;
-                        return new Try { Body = Block(1), Catches = "Escape", Handler = Block(1) };
+                        switch (_r.Next(4))
+                        {
+                            case 0: return new Try { Body = Block(1), Catches = null, Handler = Block(1) }; // (finally)
+                            case 1: return new Try { Body = Block(1), Catches = $"Escape) when ({Bool(0, null)}", Handler = Block(1) }; // (a filter)
+                            case 2: return new Try { Body = Block(1), Catches = "Escape", Handler = Block(1), Rethrow = true };
+                            default: return new Try { Body = Block(1), Catches = "Escape", Handler = Block(1) };
+                        }
                     }
                     default:
                     {
@@ -855,7 +949,10 @@ public sealed class Duo
                         var body = Block(_r.Next(1, 3));
                         _inLoop = false;
                         _p.Ints.Remove(i);
-                        return new For { Var = i, Body = body, Invariants = invariants };
+                        // (sometimes a termination measure: one that decreases, or planted, one that does not)
+                        int measure = -1;
+                        if (_r.Next(3) == 0) { measure = _slots++; _staticSlots.Add(measure); }
+                        return new For { Var = i, Body = body, Invariants = invariants, Measure = measure };
                     }
                 }
             }
@@ -1005,6 +1102,106 @@ public sealed class Duo
             return new Line { Text = $"if (xs.Length > 0) {{ ref int {r} = ref xs[{Index()}]; {r} = {r} + {Int(0)} % 10; }}" };
         }
 
+        /// <summary>while, do and switch statements (one line each: a counter and a target).</summary>
+        private Stmt LoopStatement()
+        {
+            var n = _fresh++;
+            var t = _p.Ints.Where(x => x.StartsWith("v")).DefaultIfEmpty("c.V").First();
+            var bound = $"Math.Abs({Int(0)}) % 4";
+            switch (_r.Next(3))
+            {
+                case 0: return new Line { Text = $"{{ int w{n} = 0; while (w{n} < {bound}) {{ {t} = Math.Max({t}, w{n}); w{n}++; }} }}" };
+                case 1: return new Line { Text = $"{{ int w{n} = 0; do {{ {t} = Math.Min({t}, w{n}); w{n}++; }} while (w{n} < {bound}); }}" };
+                default: return new Line { Text = $"switch ({Int(1)}) {{ case 0: {t} = {Int(0)}; break; case 1: case 2: {t} = {Int(0)}; break; default: {t} = {Small()}; break; }}" };
+            }
+        }
+
+        /// <summary>Properties with code, a constructor with a contract, a static field, an abstract class's override.</summary>
+        private Stmt ObjectStatement()
+        {
+            var n = _fresh++;
+            switch (_r.Next(4))
+            {
+                case 0:
+                {
+                    var mt = "mt" + n;
+                    _p.Meters.Add(mt);
+                    return new Line { Text = $"var {mt} = new Meter({(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")});" };
+                }
+                case 1 when _p.Meters.Count > 0:
+                    return new Line { Text = $"{Pick(_p.Meters)}.Level = {(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")};" };
+                case 2: return new Line { Text = $"Totals.Total = {Int(1)};" };
+                default:
+                {
+                    var v = "v" + _fresh++;
+                    var arg = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100"; // (before it is in scope)
+                    _p.Ints.Add(v);
+                    return new Line { Text = $"Tool tl{n} = new Hammer(); int {v} = tl{n}.Use({arg});" };
+                }
+            }
+        }
+
+        /// <summary>float, a Queue, a MemoryStream, a generic data type.</summary>
+        private Stmt ValueStatement()
+        {
+            var n = _fresh++;
+            switch (_r.Next(4))
+            {
+                case 0:
+                {
+                    var fl = "fl" + n;
+                    var value = $"(float){Double(1)}";
+                    _p.Floats.Add(fl);
+                    return new Line { Text = $"float {fl} = {value};" };
+                }
+                case 1:
+                {
+                    var q = "que" + n;
+                    _p.Queues.Add(q);
+                    return new Line { Text = $"var {q} = new Queue<int>(); {q}.Enqueue({Int(1)}); if ({q}.Count > 1) {q}.Dequeue();" };
+                }
+                case 2:
+                {
+                    var t = _p.Ints.Where(x => x.StartsWith("v")).DefaultIfEmpty("c.V").First();
+                    return new Line { Text = $"using (var st{n} = new System.IO.MemoryStream()) {{ st{n}.WriteByte((byte)(Math.Abs({Int(0)}) % 256)); {t} = st{n}.Length > 0 ? 1 : 0; }}" };
+                }
+                default:
+                {
+                    var o = "op" + n;
+                    var value = $"({Bool(0, null)} ? new Opt<int>.Some({Int(1)}) : new Opt<int>.None())";
+                    _p.Opts.Add(o);
+                    return new Line { Text = $"Opt<int> {o} = {value};" };
+                }
+            }
+        }
+
+        /// <summary>A lambda that writes a local, a struct member by ref, a linear package, a ghost function.</summary>
+        private Stmt MiscStatement()
+        {
+            var n = _fresh++;
+            var targets = _p.Ints.Where(x => x.StartsWith("v")).ToList();
+            switch (_r.Next(4))
+            {
+                case 0 when targets.Count > 0:
+                {
+                    // (after any call the local it writes is unknown)
+                    var t = Pick(targets);
+                    return new Line { Text = $"Action ac{n} = () => {{ {t} = Math.Max({t}, 3); }}; ac{n}();" };
+                }
+                case 1 when _p.Positions.Count > 0:
+                    return new Line { Text = $"if ({Pick(_p.Positions)}.X < 1000) Misc.Inc(ref {Pick(_p.Positions)}.X);" };
+                case 2:
+                    return new Line { Text = $"var ow{n} = Own.New(new Account(5), out var wv{n}); var pk{n} = new Wallet(wv{n}, ow{n}); var (pw{n}, po{n}) = pk{n}; po{n}.Deposit(1); Own.Drop(pw{n});" };
+                default:
+                {
+                    var id = _slots++;
+                    _staticSlots.Add(id);
+                    int k = _r.Next(-9, 10);
+                    return new GhostCheck { Id = id, Template = "⟨A⟩", True = $"Misc.Sq({k}) == {k * k}", False = $"Misc.Sq({k}) == {k * k + 1}" };
+                }
+            }
+        }
+
         /// <summary>An owned particle whose fields are lent apart: a call that gets one changes only it.</summary>
         private Stmt ParticleStatement()
         {
@@ -1084,8 +1281,9 @@ public sealed class Duo
         {
             if (!_async) return NullableStatement();
             var v = "v" + _fresh++;
+            var arg = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000"; // (before it is in scope)
             _p.Ints.Add(v);
-            return new Line { Text = $"int {v} = await AH.TwiceAsync({(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")});" };
+            return new Line { Text = $"int {v} = await AH.TwiceAsync({arg});" };
         }
 
         /// <summary>Ghost state: a multiset kept by a swap, a sequence read after an update (true by construction).</summary>
@@ -1307,6 +1505,11 @@ public sealed class Duo
                     case 4 when _p.Gauges.Count > 0: return $"{Pick(_p.Gauges)}.Scale()";
                     case 4 when _inPost && _r.Next(2) == 0: return _r.Next(2) == 0 ? "⟪oc⟫" : "⟪ox⟫";
                     case 4 when _p.Particles.Count > 0: return $"{Pick(_p.Particles)}.{(_r.Next(2) == 0 ? "Pos" : "Speed")}";
+                    case 4 when !_spec && _p.Meters.Count > 0: return $"{Pick(_p.Meters)}.{(_r.Next(2) == 0 ? "Doubled" : "Level")}";
+                    case 4 when !_spec && _p.Queues.Count > 0: { var q = Pick(_p.Queues); return _r.Next(2) == 0 ? $"{q}.Count" : $"({q}.Count > 0 ? {q}.Peek() : 0)"; }
+                    case 4 when _p.Opts.Count > 0: { var o = Pick(_p.Opts); return $"({o} is Opt<int>.Some ? ((Opt<int>.Some){o}).V : 0)"; }
+                    case 4 when _p.Floats.Count > 0: { var fl = Pick(_p.Floats); return $"({fl} > 0f ? 1 : 0)"; }
+                    case 4 when _r.Next(8) == 0: return "Totals.Total";
                     case 4 when !_spec && _p.Builders.Count > 0: return $"{Pick(_p.Builders)}.Length";
                     case 4 when _p.Segs.Count > 0: return $"{Pick(_p.Segs)}.Val";
                     case 4 when _p.Fracs.Count > 0:
@@ -1484,6 +1687,8 @@ public sealed class Duo
                     if (_p.Pts.Count > 0 && _r.Next(2) == 0) return $"{Pick(_p.Pts)} {(_r.Next(2) == 0 ? "==" : "!=")} {Pick(_p.Pts)}";
                     return $"{Pick(_p.Cells)} {(_r.Next(2) == 0 ? "==" : "!=")} {(_r.Next(2) == 0 ? "d" : Pick(_p.Cells))}";
                 }
+                case 6 when _p.Nullables.Count > 0 && _r.Next(3) == 0: return $"{Pick(_p.Nullables)} is > {Small()}"; // (a relational pattern on int?)
+                case 6 when _r.Next(4) == 0: return $"xs is [>= {Small()}, ..]"; // (a list pattern)
                 case 6 when _p.Shapes.Count > 1 && _r.Next(2) == 0:
                     return _r.Next(2) == 0 ? $"{Pick(_p.Shapes)} == {Pick(_p.Shapes)}" : $"{Pick(_p.Shapes)} is Shape.Seg";
                 case 6 when _p.Strings.Count > 0 && _r.Next(2) == 0:
@@ -1544,6 +1749,7 @@ public sealed class Duo
                         sb.AppendLine($"{pad}for (int {f.Var} = 0; {f.Var} < xs.Length; {f.Var}++)");
                         sb.AppendLine($"{pad}{{");
                         foreach (var a in invariants) sb.AppendLine($"{pad}    Spec.Invariant({a.Cond});");
+                        if (f.Measure >= 0 && kept(f.Measure)) sb.AppendLine($"{pad}    Spec.Decreases({(f.Measure == planted ? f.Var : $"xs.Length - {f.Var}")});");
                         foreach (var t in f.Body) Emit(sb, t, indent + 1, mode, kept, planted, name);
                         sb.AppendLine($"{pad}}}");
                         break;
@@ -1555,6 +1761,7 @@ public sealed class Duo
                     sb.AppendLine($"{pad}    {{");
                     foreach (var a in invariants)
                         sb.AppendLine(mode == Mode.Run ? $"{pad}        if (!({a.Cond})) throw new Failed(\"invariant {a.Id}\");" : $"{pad}        Probe.Hit({a.Id}, () => {a.Cond});");
+                    if (f.Measure >= 0 && mode == Mode.Probe) sb.AppendLine($"{pad}        Probe.Hit({f.Measure}, () => true);");
                     sb.AppendLine($"{pad}        if (!({f.Var} < xs.Length)) break;");
                     foreach (var t in f.Body) Emit(sb, t, indent + 2, mode, kept, planted, name);
                     sb.AppendLine($"{pad}        {f.Var}++;");
@@ -1569,8 +1776,15 @@ public sealed class Duo
                 case Try t:
                     sb.AppendLine($"{pad}try");
                     Body(t.Body);
-                    sb.AppendLine($"{pad}catch ({t.Catches})");
-                    Body(t.Handler);
+                    sb.AppendLine(t.Catches == null ? $"{pad}finally" : $"{pad}catch ({t.Catches})");
+                    if (!t.Rethrow) Body(t.Handler);
+                    else
+                    {
+                        sb.AppendLine($"{pad}{{");
+                        foreach (var h in t.Handler) Emit(sb, h, indent + 1, mode, kept, planted, name);
+                        sb.AppendLine($"{pad}    throw;");
+                        sb.AppendLine($"{pad}}}");
+                    }
                     break;
             }
         }

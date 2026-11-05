@@ -258,6 +258,11 @@ namespace CsVerify.Tests.Fuzz
             ("field permissions", "FP."), ("Mem arrays", "Mem.AllocArray"), ("split/join", "Mem.Split"), ("take-out", "Mem.TakeOut"),
             ("recursive predicates", "LS.Cons"), ("StringBuilder", "StringBuilder()"), ("disposables", "using (var ms"),
             ("calls between methods", "T(a, b, xs, c, d)"), ("async", "await AH."),
+            ("while/do", "while (w"), ("switch statements", "switch ("), ("finally", "finally"), ("filters", "when ("), ("rethrow", "throw;"),
+            ("properties with code", "new Meter("), ("static fields", "Totals.Total"), ("abstract classes", "new Hammer()"),
+            ("float", "float fl"), ("queues", "new Queue<int>"), ("streams", "MemoryStream()) { st"), ("generic data types", "Opt<int>"),
+            ("lambdas writing locals", "Action ac"), ("struct members by ref", "Misc.Inc(ref"), ("linear packages", "new Wallet("),
+            ("ghost functions", "Misc.Sq("), ("termination measures", "Spec.Decreases("), ("relational patterns", " is > "), ("list patterns", "xs is ["),
             ("boxes", "new Box("), ("give", "Own.Give"), ("take", "Own.Take"), ("fold", "Spec.Fold"), ("unfold", "Spec.Unfold"),
         };
 
@@ -271,6 +276,7 @@ namespace CsVerify.Tests.Fuzz
         {
             var source = "#nullable disable\nusing System; using System.Diagnostics; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime + ProgramGenerator.Prelude +
                          $"public static class {klass}\n{{\n" + string.Concat(methods) + "}\n";
+            if (Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_SAVE") is string saveTo) File.WriteAllText(Path.Combine(saveTo, $"fuzz{seed}{klass}.cs"), source);
             var erased = Erasure.Erase(new[] { ($"fuzz{seed}{klass}.cs", source) }, Array.Empty<string>(), Array.Empty<string>());
             Assert.True(erased.Success, $"seed {seed}: the run-time program does not erase:\n" + string.Join("\n", erased.Errors.Take(5).Select(e => e.Message)));
             var c = CSharpCompilation.Create($"Fuzz{seed}{klass}",

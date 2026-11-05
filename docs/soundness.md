@@ -172,9 +172,29 @@ were provable. The defences we have:
     (CSV1901), and the linearity analyzer took capturing a view for consuming it (CSV0002), so correct code like
     `Transfer(a, ref va, b, ref vb, x > 0 ? 1 : 2)` did not verify.
 
-What would make it stronger: a generator that covers more of the language (recursive predicates, `Mem` array views
-and their splitting, strings, async, `Dictionary` and `List` contracts, nested calls between generated methods);
-every generated feature is one the oracle then checks.
+**What the fuzzer covers.** Every feature the generator produces is one the oracle checks; the rest is tested only by
+the hand-written tests and samples. By area:
+
+| Area | Generated | Not yet generated |
+|---|---|---|
+| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math` | `decimal` |
+| Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
+| Strings | literals, concatenation, interpolation, `Length`, `==`, `IsNullOrEmpty` | other string members |
+| Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |
+| Arrays and memory | reads and writes with bounds, rectangular arrays, spans, `ref` locals, struct members by `ref`, list patterns, `foreach` | |
+| Control flow | `if`, `for` with and without invariants (inferred facts), termination measures, `while`, `do`, `switch` statements, `goto` loops, `foreach` | |
+| Exceptions | `throw`, `try`/`catch`, filters, rethrow, `finally`, `EnsuresOnThrow`, failed downcasts | |
+| Calls | helpers with contracts, `Spec.Modifies` frames, local functions, lambdas (also writing locals), calls between generated methods, async with `await` | |
+| Objects | fields and aliasing, new objects, mutable structs, properties with code, constructors with contracts, static fields | |
+| Data types | a closed record hierarchy and a generic one, `is`, `switch`, property and positional patterns, value equality, record and immutable-class invariants | |
+| OOP | virtual methods and `[Pure]` virtual queries, interfaces and abstract classes with contract classes | deeper hierarchies |
+| Ownership and permissions | views and transfers, ownership trees (`Give`/`Take`), read shares, predicates (also recursive), single-field and array-cell permissions, `Mem` cells and arrays (`Split`/`Join`, `TakeOut`/`PutBack`), dynamic frames (`Repr`/`Valid`, `Spec.Reads`, `Spec.Fresh` in the helpers), linear packages | deeper trees |
+| Proofs and ghost state | `[Pure]` recursion, a lemma by induction, `[GhostFunction]`s, multisets, sequences, `Spec.Old` | generated lemmas, ghost `Map` |
+| Library | LINQ, `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `StringBuilder`, `MemoryStream`, disposables | `TextWriter`, `BinaryPrimitives` and the other stubs |
+| Erasure | every program runs erased | |
+
+Out of scope by design: `--no-overflow` and check profiles, which assume rather than check, and threads, which are
+not supported.
 
 ## References
 
