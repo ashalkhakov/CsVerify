@@ -52,6 +52,19 @@ jobs:
           bash corpus/report.sh | tee report.txt
           { echo '## Library report'; echo; echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
+  # the linter benchmark (bench/Linters/README.md): which tool reports which bug, in the job's summary
+  linter-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+      - run: |
+          bash bench/linters.sh | tee bench.md
+          { echo '## Linter benchmark'; echo; cat bench.md; } >> "$GITHUB_STEP_SUMMARY"
+
   # CsLemon: verified, and against the C lemon it was ported from (its outputs, its parsers). On macOS: the C lemon
   # breaks its last tie between actions by their addresses (actioncmp's ap2 - ap1), and CsLemon models them as
   # growing with allocation order, as macOS's malloc gives them; glibc's doesn't always (sqlite_parse -p differs)

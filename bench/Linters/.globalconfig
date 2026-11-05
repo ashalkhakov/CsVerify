@@ -1,0 +1,3 @@
+is_global = true
+# every analyzer finding is a warning (some default to errors), so the build always completes and each is counted
+dotnet_analyzer_diagnostic.severity = warning
