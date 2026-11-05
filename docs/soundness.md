@@ -177,9 +177,9 @@ the hand-written tests and samples. By area:
 
 | Area | Generated | Not yet generated |
 |---|---|---|
-| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math` | `decimal` |
+| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math`, `decimal` (unknown values) | |
 | Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
-| Strings | literals, concatenation, interpolation, `Length`, `==`, `IsNullOrEmpty` | other string members |
+| Strings | literals, concatenation, interpolation, `Length`, `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
 | Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |
 | Arrays and memory | reads and writes with bounds, rectangular arrays, spans, `ref` locals, struct members by `ref`, list patterns, `foreach` | |
 | Control flow | `if`, `for` with and without invariants (inferred facts), termination measures, `while`, `do`, `switch` statements, `goto` loops, `foreach` | |
@@ -187,10 +187,10 @@ the hand-written tests and samples. By area:
 | Calls | helpers with contracts, `Spec.Modifies` frames, local functions, lambdas (also writing locals), calls between generated methods, async with `await` | |
 | Objects | fields and aliasing, new objects, mutable structs, properties with code, constructors with contracts, static fields | |
 | Data types | a closed record hierarchy and a generic one, `is`, `switch`, property and positional patterns, value equality, record and immutable-class invariants | |
-| OOP | virtual methods and `[Pure]` virtual queries, interfaces and abstract classes with contract classes | deeper hierarchies |
+| OOP | virtual methods and `[Pure]` virtual queries, interfaces and abstract classes with contract classes, a three-level hierarchy | |
 | Ownership and permissions | views and transfers, ownership trees (`Give`/`Take`), read shares, predicates (also recursive), single-field and array-cell permissions, `Mem` cells and arrays (`Split`/`Join`, `TakeOut`/`PutBack`), dynamic frames (`Repr`/`Valid`, `Spec.Reads`, `Spec.Fresh` in the helpers), linear packages | deeper trees |
-| Proofs and ghost state | `[Pure]` recursion, a lemma by induction, `[GhostFunction]`s, multisets, sequences, `Spec.Old` | generated lemmas, ghost `Map` |
-| Library | LINQ, `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `StringBuilder`, `MemoryStream`, disposables | `TextWriter`, `BinaryPrimitives` and the other stubs |
+| Proofs and ghost state | `[Pure]` recursion, lemmas by induction (a closed form, monotonicity), `[GhostFunction]`s, multisets, sequences, maps, `Spec.Old` | lemma bodies generated at random |
+| Library | LINQ, `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `StringBuilder`, `MemoryStream`, `TextWriter`, `BinaryPrimitives`, disposables | the remaining stubs (`Stream` reads, `BinaryReader`/`Writer`) |
 | Erasure | every program runs erased | |
 
 Out of scope by design: `--no-overflow` and check profiles, which assume rather than check, and threads, which are

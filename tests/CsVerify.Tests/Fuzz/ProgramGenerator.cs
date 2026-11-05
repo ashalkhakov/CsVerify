@@ -38,6 +38,9 @@ namespace CsVerify.Tests.Fuzz
         private int _index;   // (its number: it may call the methods before it)
         private HashSet<string> _callees = new HashSet<string>();
         private readonly HashSet<int> _asyncMethods = new HashSet<int>();
+        // (each method's precondition's shape: a call is made only where the caller's precondition implies the callee's)
+        private readonly Dictionary<int, (bool pinned, int bound, int minLength)> _shapes = new Dictionary<int, (bool, int, int)>();
+        private int _bound, _minLength; // (this method's: for pinned ones, the largest value and the array's length)
         private HashSet<int> _staticSlots = new HashSet<int>();
 
         /// <summary>The most statements a body has (a soak can ask for bigger programs).</summary>
@@ -183,6 +186,27 @@ public sealed class Meter
 
 // a static field: a field of one statics object
 public static class Totals { public static int Total; }
+
+// a deeper hierarchy: each override checked against the contract it inherits
+public class Base3
+{
+    public virtual int F(int k)
+    {
+        Spec.Requires(0 <= k && k <= 100);
+        Spec.Ensures((int r) => k < r && r <= k + 5);
+        return k + 1;
+    }
+}
+
+public class Mid : Base3
+{
+    public override int F(int k) => k + 2;
+}
+
+public sealed class Leaf : Mid
+{
+    public override int F(int k) => k + 3;
+}
 
 // an abstract class: its contract in a contract class, an override checked against it
 public abstract class Tool
@@ -372,6 +396,16 @@ public static class L
         Spec.Ensures((int r) => 0 <= r && r <= 1000 * n);
         Spec.Decreases(n);
         return n == 0 ? 0 : n + Tri(n - 1);
+    }
+
+    // monotone, by induction on the gap
+    [Lemma, Conditional(Spec.Symbol)]
+    public static void TriMono(int m, int n)
+    {
+        Spec.Requires(0 <= m && m <= n && n <= 1000);
+        Spec.Ensures(Tri(m) <= Tri(n));
+        Spec.Decreases(n - m);
+        if (m < n) TriMono(m, n - 1);
     }
 
     [Lemma, Conditional(Spec.Symbol)]
@@ -617,6 +651,8 @@ public sealed class Duo
                 string dPre = input.DMode == 0 ? "d == null" : input.DMode == 1 ? "d == c" : $"d != null && d != c && d.V == {input.DV}";
                 m.Pre = $"a == {input.A} && b == {input.B} && xs.Length == {input.Xs.Length}" + string.Concat(input.Xs.Select((x, i) => $" && xs[{i}] == {x}")) +
                         $" && c.V == {input.CV} && {dPre}";
+                _bound = new[] { input.A, input.B, input.CV, input.DV }.Concat(input.Xs).Select(Math.Abs).Max();
+                _minLength = input.Xs.Length;
                 m.Inputs.Add(input);
             }
             else
@@ -626,6 +662,8 @@ public sealed class Duo
                         $" && -{bound} <= c.V && c.V <= {bound} && (d == null || -{bound} <= d.V && d.V <= {bound})";
                 int minLength = _r.Next(2) == 0 ? _r.Next(1, 3) : 0;
                 if (minLength > 0) m.Pre += $" && xs.Length >= {minLength}";
+                _bound = bound;
+                _minLength = minLength;
                 int Any() => _r.Next(-bound, bound + 1);
                 int Extreme() => _r.Next(2) == 0 ? bound : -bound;
                 // (the extremes too: where overflow and off-by-one live)
@@ -637,7 +675,10 @@ public sealed class Duo
             _p.Ints.Add("a");
             _p.Ints.Add("b");
             _p.Cells.Add("c");
+            // (a call first, sometimes: before the body changes what the callee's precondition is about)
+            var first = _index > 0 && _r.Next(3) == 0 ? CallStatement() : null;
             m.Body = Block(_r.Next(1, 1 + Size));
+            if (first != null) m.Body.Insert(0, first);
             m.Result = Int(2);
             // (a postcondition is stated before the body's locals)
             _p = new Pools();
@@ -651,6 +692,7 @@ public sealed class Duo
             m.Slots = _slots;
             m.StaticSlots = _staticSlots;
             if (m.Async) _asyncMethods.Add(_index);
+            _shapes[_index] = (m.Pinned, _bound, _minLength);
             return m;
         }
 
@@ -678,7 +720,7 @@ public sealed class Duo
         internal sealed class GhostCheck : Stmt { public string Template, True, False; public int Id; }
 
         private readonly Stack<Pools> _scopes = new Stack<Pools>();
-        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 30)).ToArray();
+        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 31)).Concat(new[] { 37, 37, 42 }).ToArray();
 
         private List<Stmt> Block(int n)
         {
@@ -703,9 +745,9 @@ public sealed class Duo
             _depth++;
             try
             {
-                // (simple statements 0..8 and 13..42; compound ones 9..12 only near the top)
+                // (simple statements 0..8 and 13..43; compound ones 9..12 only near the top)
                 int pick = _depth <= 1 && _r.Next(5) == 0 ? 9 + _r.Next(4) : Simple[_r.Next(Simple.Length)];
-                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(30); // (calls, objects, collections more often)
+                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(31); // (calls, objects, collections more often)
                 if (pick == 13 && _p.Accounts.Count == 1 && _r.Next(2) == 0) pick = 14;
                 switch (pick)
                 {
@@ -878,7 +920,7 @@ public sealed class Duo
                     case 27: return GridStatement();
                     case 28: return GotoStatement();
                     case 29: case 30: return FunctionStatement();
-                    case 31: return GhostStatement();
+                    case 31: return _r.Next(2) == 0 ? GhostStatement() : GhostStatement2();
                     case 33: return ParticleStatement();
                     case 34: return MemArrayStatement();
                     case 35: return SegStatement();
@@ -889,6 +931,7 @@ public sealed class Duo
                     case 40: return ObjectStatement();
                     case 41: return ValueStatement();
                     case 42: return MiscStatement();
+                    case 43: return MoreLibraryStatement();
                     case 32:
                     {
                         var fr = "fr" + _fresh++;
@@ -1180,12 +1223,44 @@ public sealed class Duo
             }
         }
 
+        /// <summary>A TextWriter, BinaryPrimitives, decimal (unknown values: never where they could throw), a deeper hierarchy.</summary>
+        private Stmt MoreLibraryStatement()
+        {
+            var n = _fresh++;
+            var v = "v" + _fresh++;
+            string text;
+            switch (_r.Next(4))
+            {
+                case 0:
+                    return new Line { Text = $"using (var tw{n} = new System.IO.StringWriter()) {{ tw{n}.Write({Int(1)}); tw{n}.Write(\"x\"); }}" };
+                case 1:
+                {
+                    // (four bytes, mostly: two must not verify)
+                    var size = _r.Next(4) == 0 ? 2 : 4;
+                    text = $"var buf{n} = new byte[{size}]; buf{n}[0] = (byte)(Math.Abs({Int(0)}) % 256); int {v} = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(buf{n});";
+                    break;
+                }
+                case 2:
+                    text = $"decimal dm{n} = {Small()}m + {Small()}; int {v} = dm{n} > 1m ? 1 : 0;";
+                    break;
+                default:
+                {
+                    var make = _r.Next(3) == 0 ? "new Leaf()" : $"({Bool(1, null)} ? new Mid() : new Leaf())";
+                    var arg = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100";
+                    text = $"Base3 bh{n} = {make}; int {v} = bh{n}.F({arg});";
+                    break;
+                }
+            }
+            _p.Ints.Add(v);
+            return new Line { Text = text };
+        }
+
         /// <summary>A lambda that writes a local, a struct member by ref, a linear package, a ghost function.</summary>
         private Stmt MiscStatement()
         {
             var n = _fresh++;
             var targets = _p.Ints.Where(x => x.StartsWith("v")).ToList();
-            switch (_r.Next(4))
+            switch (_r.Next(5))
             {
                 case 0 when targets.Count > 0:
                 {
@@ -1196,6 +1271,7 @@ public sealed class Duo
                 case 1 when _p.Positions.Count > 0:
                     return new Line { Text = $"if ({Pick(_p.Positions)}.X < 1000) Misc.Inc(ref {Pick(_p.Positions)}.X);" };
                 case 2:
+                case 4:
                     return new Line { Text = $"var ow{n} = Own.New(new Account(5), out var wv{n}); var pk{n} = new Wallet(wv{n}, ow{n}); var (pw{n}, po{n}) = pk{n}; po{n}.Deposit(1); Own.Drop(pw{n});" };
                 default:
                 {
@@ -1273,7 +1349,9 @@ public sealed class Duo
         /// <summary>A call to a method generated before this one (its true variant): modular, by its contract.</summary>
         private Stmt CallStatement()
         {
-            var sync = Enumerable.Range(0, _index).Where(j => !_asyncMethods.Contains(j)).ToList();
+            // (a callee whose precondition this one's implies, as far as the inputs go: ranged, as wide, no longer an array)
+            var sync = Enumerable.Range(0, _index).Where(j => !_asyncMethods.Contains(j) && !_shapes[j].pinned &&
+                                                             _shapes[j].bound >= _bound && _shapes[j].minLength <= _minLength).ToList();
             if (sync.Count == 0 || _callees.Count > 0) return StringStatement();
             var j = sync[_r.Next(sync.Count)];
             var v = "v" + _fresh++;
@@ -1290,6 +1368,33 @@ public sealed class Duo
             var arg = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000"; // (before it is in scope)
             _p.Ints.Add(v);
             return new Line { Text = $"int {v} = await AH.TwiceAsync({arg});" };
+        }
+
+        /// <summary>More ghost state: a map read after an update, and a lemma by induction called for what it proves.</summary>
+        private Stmt GhostStatement2()
+        {
+            var n = _fresh++;
+            var id = _slots++;
+            _staticSlots.Add(id);
+            if (_r.Next(2) == 0)
+            {
+                int k = _r.Next(-5, 9), v = _r.Next(-9, 10);
+                return new GhostCheck
+                {
+                    Id = id,
+                    Template = $"{{ var mp{n} = Ghost.Of(Map.Const<int, int>(0).Update({k}, Ghost.Of({v}))); ⟨A⟩ }}",
+                    True = $"mp{n}.Value[{k}].Value == {v} && mp{n}.Value[{k + 1}].Value == 0",
+                    False = $"mp{n}.Value[{k}].Value == {v + 1}",
+                };
+            }
+            int lo = _r.Next(0, 10), hi = lo + _r.Next(1, 10);
+            return new GhostCheck
+            {
+                Id = id,
+                Template = $"L.TriMono({lo}, {hi}); ⟨A⟩",
+                True = $"L.Tri({lo}) <= L.Tri({hi})",
+                False = $"L.Tri({lo}) > L.Tri({hi})",
+            };
         }
 
         /// <summary>Ghost state: a multiset kept by a swap, a sequence read after an update (true by construction).</summary>
@@ -1525,6 +1630,15 @@ public sealed class Duo
                         var fr = Pick(_p.Fracs);
                         return new[] { $"{fr}.D", $"({fr}.N / {fr}.D)", $"{fr}.N" }[_r.Next(3)];
                     }
+                    case 4 when !_spec && _p.Strings.Count > 0 && _r.Next(2) == 0:
+                    {
+                        var st = Pick(_p.Strings);
+                        return new[]
+                        {
+                            $"{st}.IndexOf('a')", $"({st}.StartsWith(\"a\") ? 1 : 0)", $"({st}.Contains(\"l\") ? 1 : 0)", $"{st}.Trim().Length",
+                            $"{st}.Substring(Math.Min(1, {st}.Length)).Length", $"{st}.ToUpperInvariant().Length", $"{st}.Substring(1).Length", // (the last may throw: then it must not verify)
+                        }[_r.Next(7)];
+                    }
                     case 4 when _p.Strings.Count > 0: return $"{Pick(_p.Strings)}.Length";
                     case 4 when _p.Shapes.Count > 0:
                     {
@@ -1680,7 +1794,13 @@ public sealed class Duo
 
         private string Bool(int depth, string extra)
         {
-            if (depth <= 0 || _r.Next(3) == 0) return $"{Int(1, extra)} {Cmp()} {Int(1, extra)}";
+            if (depth <= 0 || _r.Next(3) == 0)
+            {
+                // (patterns: on the array, a list pattern; on an int?, a relational one)
+                if (_r.Next(10) == 0) return $"xs is [>= {Small()}, ..]";
+                if (_p.Nullables.Count > 0 && _r.Next(8) == 0) return $"{Pick(_p.Nullables)} is > {Small()}";
+                return $"{Int(1, extra)} {Cmp()} {Int(1, extra)}";
+            }
             int d = depth - 1;
             switch (_r.Next(_spec ? 6 : 7))
             {

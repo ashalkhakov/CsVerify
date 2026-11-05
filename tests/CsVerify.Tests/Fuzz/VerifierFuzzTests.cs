@@ -266,6 +266,8 @@ namespace CsVerify.Tests.Fuzz
             ("properties with code", "new Meter("), ("static fields", "Totals.Total"), ("abstract classes", "new Hammer()"),
             ("float", "float fl"), ("queues", "new Queue<int>"), ("streams", "MemoryStream()) { st"), ("generic data types", "Opt<int>"),
             ("lambdas writing locals", "Action ac"), ("struct members by ref", "Misc.Inc(ref"), ("linear packages", "new Wallet("),
+            ("string members", ".IndexOf('a')"), ("TextWriter", "StringWriter()"), ("BinaryPrimitives", "BinaryPrimitives."), ("decimal", "decimal dm"),
+            ("deeper hierarchies", "Base3 bh"), ("ghost maps", "Map.Const"), ("lemmas (monotone)", "L.TriMono("),
             ("ghost functions", "Misc.Sq("), ("termination measures", "Spec.Decreases("), ("relational patterns", " is > "), ("list patterns", "xs is ["),
             ("boxes", "new Box("), ("give", "Own.Give"), ("take", "Own.Take"), ("fold", "Spec.Fold"), ("unfold", "Spec.Unfold"),
         };
