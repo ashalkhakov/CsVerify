@@ -34,8 +34,20 @@ namespace CsVerify.Tests.Fuzz
             var (from, to) = Seeds();
             int perBatch = int.TryParse(Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_METHODS"), out var n) ? n : 20;
             var all = new Outcome();
-            for (int seed = from; seed <= to; seed++) all.Add(Batch(seed, perBatch));
+            var log = Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_LOG");
+            for (int seed = from; seed <= to; seed++)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var batch = Batch(seed, perBatch);
+                all.Add(batch);
+                // (a soak's progress, batch by batch, problems first)
+                if (log != null)
+                    File.AppendAllText(log, string.Concat(batch.Problems.Select(p => "PROBLEM " + p + "\n")) +
+                        $"seed {seed}: {batch.Verified}/{batch.Methods} verified, {batch.PlantedRejected}/{batch.Planted} planted rejected, " +
+                        $"{batch.Problems.Count} problem(s), {clock.Elapsed.TotalSeconds:F0} s; slowest {batch.Log.LastOrDefault()}\n");
+            }
             foreach (var line in all.Log) _out.WriteLine(line);
+            _out.WriteLine("verified methods with: " + string.Join(", ", all.Features.Select(f => $"{f.Key} {f.Value}")));
             _out.WriteLine($"{all.Verified} of {all.Methods} true variants verified ({all.PinnedVerified} of {all.Pinned} pinned); " +
                            $"{all.PlantedRejected} of {all.Planted} planted rejected; {all.Problems.Count} problem(s)");
             Assert.True(all.Problems.Count == 0, string.Join("\n\n", all.Problems.Take(5)));
@@ -56,10 +68,13 @@ namespace CsVerify.Tests.Fuzz
             public int Methods, Verified, Pinned, PinnedVerified, Planted, PlantedRejected;
             public readonly List<string> Problems = new List<string>();
             public readonly List<string> Log = new List<string>();
+            /// <summary>How many verified methods (whose run-time checks were run) have each feature.</summary>
+            public readonly SortedDictionary<string, int> Features = new SortedDictionary<string, int>();
             public void Add(Outcome o)
             {
                 Methods += o.Methods; Verified += o.Verified; Pinned += o.Pinned; PinnedVerified += o.PinnedVerified;
                 Planted += o.Planted; PlantedRejected += o.PlantedRejected; Problems.AddRange(o.Problems); Log.AddRange(o.Log);
+                foreach (var (k, v) in o.Features) Features[k] = (Features.TryGetValue(k, out var n) ? n : 0) + v;
             }
         }
 
@@ -95,16 +110,17 @@ namespace CsVerify.Tests.Fuzz
                 foreach (var input in m.Inputs)
                 {
                     hit.GetMethod("Reset").Invoke(null, null);
-                    try { probe.GetMethod(m.Name).Invoke(null, new object[] { input.a, input.b, input.xs.ToArray() }); }
+                    try { probe.GetMethod(m.Name + "_").Invoke(null, input.Arguments()); }
                     catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Skip") { continue; }
-                    catch (TargetInvocationException e) { p.Crash ??= $"{Show(input)}: {e.InnerException?.GetType().Name}"; }
+                    catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Escape") { } // (it may leave by throwing)
+                    catch (TargetInvocationException e) { p.Crash ??= $"{input}: {e.InnerException?.GetType().Name}"; }
                     var reached = (HashSet<int>)hit.GetField("Reached").GetValue(null);
                     var falses = (HashSet<int>)hit.GetField("False").GetValue(null);
                     p.Reached.UnionWith(reached);
                     p.Throws.UnionWith((HashSet<int>)hit.GetField("Throws").GetValue(null));
-                    foreach (var f in falses) if (p.False.Add(f)) p.Witness[f] = Show(input);
+                    foreach (var f in falses) if (p.False.Add(f)) p.Witness[f] = input.ToString();
                     foreach (var f in (HashSet<int>)hit.GetField("PostFalse").GetValue(null))
-                        if (p.PostFalse.Add(f)) p.Witness[1000 + f] = Show(input);
+                        if (p.PostFalse.Add(f)) p.Witness[1000 + f] = input.ToString();
                 }
             }
 
@@ -123,7 +139,7 @@ namespace CsVerify.Tests.Fuzz
                 if (planted >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, planted, post));
                 else if (plantedPost >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, -1, plantedPost));
             }
-            var source = "#nullable enable\nusing System; using System.Linq; using CsVerify;\npublic static class G\n{\n" + verify + "}\n";
+            var source = "#nullable enable\nusing System; using System.Linq; using CsVerify;\n" + ProgramGenerator.Prelude + "public static class G\n{\n" + verify + "}\n";
             if (Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_SAVE") is string dir) File.WriteAllText(Path.Combine(dir, $"fuzz{seed}.cs"), source);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var result = Engine.VerifySources(new[] { ($"fuzz{seed}.cs", source) }, new VerifierOptions { CheckOverflow = true, TimeoutMs = 1000 });
@@ -159,14 +175,17 @@ namespace CsVerify.Tests.Fuzz
                 {
                     o.Verified++;
                     if (counts) o.PinnedVerified++;
+                    var text = Text(m, keep, -1, post);
+                    foreach (var (feature, mark) in FeatureMarks)
+                        if (text.Contains(mark)) o.Features[feature] = (o.Features.TryGetValue(feature, out var k) ? k : 0) + 1;
                     foreach (var input in m.Inputs.Concat(m.Fresh))
                     {
                         string failure = null;
-                        try { run.GetMethod(m.Name + "T").Invoke(null, new object[] { input.a, input.b, input.xs.ToArray() }); }
-                        catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Skip") { }
+                        try { run.GetMethod(m.Name + "T_").Invoke(null, input.Arguments()); }
+                        catch (TargetInvocationException e) when (e.InnerException?.GetType().Name is "Skip" or "Escape") { } // (partial correctness: leaving by a throw is allowed)
                         catch (TargetInvocationException e) { failure = e.InnerException?.GetType().Name + ": " + e.InnerException?.Message; }
                         if (failure == null) continue;
-                        o.Problems.Add($"seed {seed}, {m.Name}: verified, but on {Show(input)}: {failure}\n{Text(m, keep, -1, post)}");
+                        o.Problems.Add($"seed {seed}, {m.Name}: verified, but on {input}: {failure}\n{Text(m, keep, -1, post)}");
                         break;
                     }
                 }
@@ -185,12 +204,17 @@ namespace CsVerify.Tests.Fuzz
             return o;
         }
 
-        private static string Show((int a, int b, int[] xs) input) => $"a = {input.a}, b = {input.b}, xs = [{string.Join(", ", input.xs)}]";
+        private static readonly (string, string)[] FeatureMarks =
+        {
+            ("arrays written", "] = "), ("loops", "for ("), ("LINQ", "x => "), ("fields", ".V = "), ("d (maybe null, maybe c)", "d.V"),
+            ("new cells", "new Cell"), ("records", "new Pt("), ("doubles", "double "), ("double to int", "(int)"),
+            ("throws", "throw new Escape"), ("catch Escape", "catch (Escape)"), ("checked, caught", "catch (OverflowException)"),
+        };
 
         /// <summary>Methods compiled to run, with overflow checked (an overflow throws).</summary>
         private static Type Compile(int seed, string klass, IEnumerable<string> methods)
         {
-            var source = "#nullable disable\nusing System; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime +
+            var source = "#nullable disable\nusing System; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime + ProgramGenerator.Prelude +
                          $"public static class {klass}\n{{\n" + string.Concat(methods) + "}\n";
             var c = CSharpCompilation.Create($"Fuzz{seed}{klass}", new[] { CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest)) },
                 Engine.FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, checkOverflow: true));

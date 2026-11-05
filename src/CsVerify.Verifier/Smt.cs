@@ -72,15 +72,31 @@ namespace CsVerify.Verifier
         public static Term InRange(Term x, System.Numerics.BigInteger lo, System.Numerics.BigInteger hi) =>
             And(Le(Int(lo), x), Le(x, Int(hi)));
 
-        /// <summary>C# integer division truncates toward zero; SMT-LIB <c>div</c> is Euclidean.</summary>
+        /// <summary>
+        /// C# integer division truncates toward zero; SMT-LIB <c>div</c> is Euclidean. Division, remainder and absolute
+        /// value repeat their operands when written out, so of compound operands they are macros of the background
+        /// theory (<see cref="IntTheory"/>), applied once: nested ones would otherwise grow exponentially (a term of a
+        /// few divisions deep passed 2^31 characters). Of short operands they are written out.
+        /// </summary>
         public static Term Div(Term a, Term b)
         {
+            if (!(Atom(a) && Atom(b))) return App("cv_div", Sort.Int, a, b);
             var q = App("div", Sort.Int, Abs(a), Abs(b));
             return Ite(Eq(Ge(a, Int(0)), Ge(b, Int(0))), q, Neg(q));
         }
 
-        public static Term Rem(Term a, Term b) => Sub(a, Mul(b, Div(a, b)));
-        public static Term Abs(Term a) => Ite(Ge(a, Int(0)), a, Neg(a));
+        public static Term Rem(Term a, Term b) => Atom(a) && Atom(b) ? Sub(a, Mul(b, Div(a, b))) : App("cv_rem", Sort.Int, a, b);
+        public static Term Abs(Term a) => Atom(a) ? Ite(Ge(a, Int(0)), a, Neg(a)) : App("cv_abs", Sort.Int, a);
+
+        // (an operand short enough to repeat: written out, as the solver searches best on those; a longer one, which
+        // nesting would multiply, through the macro)
+        private static bool Atom(Term t) => t.S.Length <= 400;
+
+        /// <summary>The macros for <see cref="Div"/>, <see cref="Rem"/> and <see cref="Abs"/>: Z3 expands them itself.</summary>
+        public const string IntTheory =
+            "(define-fun cv_abs ((x Int)) Int (ite (>= x 0) x (- x)))\n" +
+            "(define-fun cv_div ((x Int) (y Int)) Int (ite (= (>= x 0) (>= y 0)) (div (cv_abs x) (cv_abs y)) (- (div (cv_abs x) (cv_abs y)))))\n" +
+            "(define-fun cv_rem ((x Int) (y Int)) Int (- x (* y (cv_div x y))))";
 
         public static Term Select(Term array, Term index, Sort sort) => App("select", sort, array, index);
         public static Term Store(Term array, Term index, Term value) => App("store", array.Sort, array, index, value);
@@ -164,6 +180,7 @@ namespace CsVerify.Verifier
         {
             Send("(reset)");
             _kept.Clear();
+            _macros = false;
             _declared.Clear();
             _defines.Clear();
             Causes.Clear();
@@ -194,6 +211,21 @@ namespace CsVerify.Verifier
         }
 
         private void Send(string cmd)
+        {
+            // (T.IntTheory's macros, defined where a command first uses them: declaring them always would change
+            // Z3's search on queries that do not, which some proofs are sensitive to. Declarations are global, so
+            // once until the next reset.)
+            if (!_macros && cmd.Contains("cv_") && (cmd.Contains("cv_div") || cmd.Contains("cv_rem") || cmd.Contains("cv_abs")))
+            {
+                _macros = true;
+                foreach (var line in T.IntTheory.Split('\n')) Write(line);
+            }
+            Write(cmd);
+        }
+
+        private bool _macros;
+
+        private void Write(string cmd)
         {
             Log?.AppendLine(cmd);
             _in.WriteLine(cmd);

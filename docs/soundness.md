@@ -137,18 +137,26 @@ were provable. The defences we have:
 - the corpus and CsLemon runs, which catch proofs that change.
 
 - **the verifier tested on random programs** (`tests/CsVerify.Tests/Fuzz`), after Irfan et al. (ISSTA 2022), who
-  tested Dafny the same way. Each random method is first run with every candidate assertion and postcondition
-  recorded. Its *true variant* keeps those that held; where it verifies, it is run again on fresh inputs with its
-  specifications as run-time checks and overflow checked, and a failed check or an exception is a soundness bug. Its
-  *planted variant* adds one that failed on an input the precondition admits, and must not verify. Pinned inputs
-  (a precondition that fixes them) make the verifier all but exact, so many true variants verify and the test bites;
-  their share is a measure of completeness. CI runs three seeds; `CSVERIFY_FUZZ_SEEDS=from..to`,
-  `CSVERIFY_FUZZ_METHODS` and `CSVERIFY_FUZZ_SIZE` run a soak. The first soak, 740 methods, found no soundness
-  problem: all 403 true variants that verified passed their checks, and all 549 planted ones were rejected (377 of
-  394 pinned ones verified).
+  tested Dafny the same way. Random methods take integers, an array and two cells, `c` and `d`, where `d` may be
+  null, `c` itself, or another cell. Their bodies have integer arithmetic, `Math`, array reads and writes, field reads
+  and writes, new cells, data records and their equality, doubles (NaN, infinities, -0.0, `Sqrt`, casts back to
+  `int`), `throw`, `try`/`catch`, `checked` arithmetic caught as `OverflowException`, ifs, `for` loops and LINQ.
+  Each method is first run with every candidate assertion and postcondition recorded. Its *true variant* keeps those
+  that held. Where it verifies, it is run again on fresh inputs with its specifications as run-time checks and
+  overflow checked; a failed check, or an exception other than the program's own throw, is a soundness bug. Its
+  *planted variant* adds one that failed on an input the precondition admits, and must not verify. An internal error
+  (CSV1999) fails the test too. Pinned inputs (a precondition that fixes them) make the verifier all but exact, so
+  many true variants verify and the test bites; their share is a measure of completeness. CI runs three seeds;
+  `CSVERIFY_FUZZ_SEEDS=from..to`, `CSVERIFY_FUZZ_METHODS`, `CSVERIFY_FUZZ_SIZE` and `CSVERIFY_FUZZ_LOG` run a soak.
 
-What would make it stronger: a generator that covers more of the language (objects and fields, owned objects and
-permissions, floats, exceptions, data records); every generated feature is one the oracle then checks.
+  Two soaks so far, 1,280 methods, found no soundness problem. In all, 751 true variants verified and passed their
+  checks, and 947 of 947 planted ones were rejected. They found one robustness bug: division, remainder and absolute
+  value were written out with their operands repeated, so nested ones grew exponentially. One method's term passed
+  2^31 characters and crashed the verifier, and others took minutes. Long operands now go through solver macros.
+
+What would make it stronger: a generator that covers more of the language (owned objects, views and permissions,
+`Spec.Modifies` frames, calls between generated methods, strings); every generated feature is one the oracle then
+checks.
 
 ## References
 
