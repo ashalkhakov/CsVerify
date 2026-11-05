@@ -14,6 +14,7 @@ namespace CsVerify.Analyzers
     {
         private readonly Dictionary<IMethodSymbol, IMethodSymbol> _stubOf = new Dictionary<IMethodSymbol, IMethodSymbol>(SymbolEqualityComparer.Default);
         private readonly HashSet<IMethodSymbol> _stubs = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        private readonly Dictionary<IMethodSymbol, IMethodSymbol> _queryOf = new Dictionary<IMethodSymbol, IMethodSymbol>(SymbolEqualityComparer.Default);
 
         /// <summary>The [Model] functions, in a fixed order.</summary>
         public readonly IReadOnlyList<IMethodSymbol> Models;
@@ -67,9 +68,11 @@ namespace CsVerify.Analyzers
                         errors.Add((m, $"stub '{m.Name}' matches no member of {target.ToDisplayString()} (instance members take '@this' first, constructors are '@new', accessors are get_P/set_P)"));
                         continue;
                     }
-                    if (_stubOf.ContainsKey(member)) continue; // (a source stub came first)
-                    _stubOf[member] = m;
-                    _stubs.Add(m);
+                    // a [Comprehensions] class defines its members (as queries), and is not their contract
+                    var into = SpecSymbols.HasAttribute(type, "ComprehensionsAttribute") ? _queryOf : _stubOf;
+                    if (into.ContainsKey(member)) continue; // (a source stub came first)
+                    into[member] = m;
+                    if (into == _stubOf) _stubs.Add(m);
                 }
             }
             Models = models.OrderBy(m => m.ToDisplayString()).ToList();
@@ -99,6 +102,17 @@ namespace CsVerify.Analyzers
             member = (member.ReducedFrom ?? member).OriginalDefinition;
             return _stubOf.TryGetValue(member, out var s) ? s : null;
         }
+
+        /// <summary>The [Comprehensions] method defining <paramref name="member"/> (a LINQ method), if any.</summary>
+        public IMethodSymbol QueryOf(IMethodSymbol member)
+        {
+            if (member == null) return null;
+            member = (member.ReducedFrom ?? member).OriginalDefinition;
+            return _queryOf.TryGetValue(member, out var s) ? s : null;
+        }
+
+        /// <summary>Every member a [Comprehensions] method defines, and its definition (for the conformance tests).</summary>
+        public IEnumerable<(IMethodSymbol member, IMethodSymbol query)> QueryPairs => _queryOf.Select(kv => (kv.Key, kv.Value));
 
         /// <summary>Every member with a stub, and its stub (for the conformance tests, which run them).</summary>
         public IEnumerable<(IMethodSymbol member, IMethodSymbol stub)> Pairs => _stubOf.Select(kv => (kv.Key, kv.Value));

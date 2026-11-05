@@ -194,11 +194,115 @@ list of its own) runs over `Count` and the indexer, like a foreach over an array
 by itself, and its enumerator's `Dispose` is taken to do nothing. Library collections are trusted to enumerate as they
 index.
 
+**LINQ's definitions.** LINQ is not specified with contracts but defined: each `System.Linq.Enumerable` member
+(and `List`'s predicate methods) has a definition in `CsVerify.Bcl` (`src/CsVerify.Spec/Bcl/Linq.cs`), a method of a
+`[ContractsFor(typeof(Enumerable)), Comprehensions]` class written with `CsVerify.Q`'s comprehensions:
+
+```csharp
+public static IEnumerable<T> Where<T>(IEnumerable<T> source, Func<T, bool> predicate) =>
+    Q.For(source, x => Q.If(predicate(x), Q.Yield(x)));
+
+public static T First<T>(IEnumerable<T> source, Func<T, bool> predicate)
+{
+    Spec.Requires(Q.Count(Where(source, predicate)) > 0); // (else InvalidOperationException)
+    return Q.At(Where(source, predicate), 0);
+}
+```
+
+`Q.For(s, x => body)` is the body's elements for each x of s, one after another, `Q.If(c, q)` is q where c holds and
+nothing otherwise, and `Q.Yield(v)` is v alone; `Q.Count`, `Q.At`, `Q.Range`, `Q.Fold`, `Q.Scan`, `Q.Sort`/`Q.ThenSort`
+(stable) and `Q.Group` are the rest. A definition's Spec.Requires is where the member throws (proved at each call), and
+its Spec.Ensures are facts of its result (Min and Max are no larger, and no smaller, than every element: induction the
+solver would not do). The verifier runs a definition symbolically on what the call is given: it puts the comprehension
+into the normal form of Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013),
+whose sources are never comprehensions and whose conditions in a row are one (their union rule, which reorders, is not
+used, so LINQ to Objects' order is kept), and compiles that into its encodings: a filter for each condition, sequences
+one after another for each nested For. The definitions are code that runs (`Q` is written without System.Linq), and
+`QueryConformanceTests` runs each against the member it defines on random inputs: the same elements in the same order,
+a throw exactly where its precondition fails, its Ensures holding. Adding a member is adding its definition there.
+
+**LINQ.** Over a `List`, an array, an `IReadOnlyList<T>` or an `IList<T>` (read as above), `Count`, `Any`, `All`,
+`Contains`, `First`, `FirstOrDefault`, `Last`, `LastOrDefault`, `ElementAt`, `ToList` and `ToArray`, and `List`'s `Find`,
+`FindIndex`, `Exists` and `TrueForAll`, are exact. A predicate that is a pure lambda (an expression with no assignments,
+calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as a condition on each element, so
+`a.First(x => x > 5)` is the first element above 5 and `a.All(x => x > 0)` a quantifier. What would throw (`First` of a
+sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
+it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
+
+`Sum`, `Min`, `Max` and `Average` of `int`, `long` or `double` elements (or of a pure selector's values of those
+types), `LongCount` and `Aggregate` (with a seed, a result selector, or neither) are exact too: a running total,
+minimum, maximum or accumulator, defined one element at a time. `Sum` of integers checks its additions, as .NET
+does, so a partial sum out of range is reported (CSV1001, it would throw `OverflowException`); `Min`, `Max`,
+`Average` and an unseeded `Aggregate` of an empty sequence are reported (they throw `InvalidOperationException`).
+Over `double` the arithmetic is IEEE's ([Floating point](semantics.md#floating-point)): `Sum` adds in order from 0.0,
+rounding each step, so `{ 0.1, 0.2 }.Sum()` is not 0.3; `Min` is NaN if any element is, and `Max` skips NaN unless all
+are; `Average` is the sum over the count, but for the sign of a zero (.NET adds from 0.0 or from the first element
+by the source's kind, so an average of `-0.0`s is either zero). Sums and bounds that need induction over an unknown
+length (a `double[]` of 2.0s averages to 2.0) are not proved. `float`, `decimal`, nullable sums and comparers are
+library calls.
+
+**Lazy LINQ.** `Select`, `Where`, `Take` and `Skip` (with pure lambdas, over what the verifier reads or over each
+other) make views. A view is read when it is enumerated: by the eager methods above, `ToList`, `ToArray`, or a
+`foreach`. It reads its source as it is then, and runs its lambda then, on what it captures as it is then. So
+`var q = list.Select(x => x); list.Add(5); q.First()` is 5. A `Select`'s elements are its selector's values. A
+`Where`'s elements are the matching ones, in order and all of them: `a.Where(x => x > 5).Count()` is exact. A
+`foreach` over such a chain, whose loop changes no state, runs over the view like a foreach over an array. A view
+kept in a variable is known in its own method only.
+
+These make views too, read the same way:
+
+- `Select((x, i) => ...)` with the element's index.
+- `Distinct()`: the first occurrence of each value, in order, by `EqualityComparer<T>.Default` (as `Spec.Equal`).
+- `OrderBy` and `OrderByDescending`, then `ThenBy` and `ThenByDescending`: a permutation of the source, stable, in
+  the keys' order (the first key, then the next among equal ones) where the keys are integers, chars or enums. From
+  the first key of another type (strings, which order by culture) on, only the keys before it are known.
+- `Zip(other, (x, y) => ...)`: the selector's values on the pairs at each index, as many as the shorter source has.
+- `Join(inner, x => key, y => key, (x, y) => ...)`: for each outer element in order, the inner elements with an equal
+  key (by `EqualityComparer<TKey>.Default`), in order. It is a filter over all the pairs, the normal form of a join
+  comprehension in Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013).
+- `SelectMany(x => x.Items)`, where the inner sequence is a List, an array or a list interface: the inner sequences one
+  after another; `SelectMany(x => ..., (x, y) => ...)` the result selector's values on each pair.
+- `GroupBy(x => key)`: the groups in the order their keys first appear, each with its key (`g.Key`) and its elements,
+  the source's with that key, in order. A group can be enumerated, counted and read like a view, and a `foreach`
+  over the groups may contain one over each group. With an element selector, a group's elements are its values;
+  with a result selector, `(k, g) => ...` is applied to each key and group, and may read the group (`g.Count()`).
+- `GroupJoin(inner, x => key, y => key, (x, ys) => ...)`: for each outer element in order, the selector applied to it
+  and its matches, the inner elements with an equal key, in order.
+- `Concat`, `Reverse`, `Append`, `Prepend`, `DefaultIfEmpty`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`,
+  `Where` and `SelectMany` with an index, `Index`, and `Zip(other)` into tuples `(First, Second)`.
+- `DistinctBy`, and the set operations `Union`, `Intersect`, `Except` (and their `By` forms): each value (key) once,
+  in the order it first appears, by `EqualityComparer<T>.Default`.
+
+`Single` and `SingleOrDefault` (with or without a predicate or a default) need exactly one, or at most one, element;
+`SequenceEqual` is element by element; `MinBy` and `MaxBy` are the first element with the least or greatest key (a
+stable sort's first), and need a non-empty source, which is more than .NET asks of a source of a reference type (it
+gives null) and says only "some element" for keys the verifier does not order. `ToDictionary` is a precondition only:
+no key is null, and none repeats (else it throws); the dictionary is a library value.
+
+A lambda the verifier inlines may call these members, as long as they cannot throw: `(k, g) => g.Count()` is read,
+`(x, ys) => ys.First()` is not (the call is a library call). Which lambdas .NET runs, and when, depends on the
+operator (`Count()` of a `GroupJoin` runs its selector, of an array's `Select` not); the definitions do not say, so a
+lambda's precondition could not be checked where it applies.
+
+**Query syntax** is the method calls it stands for (C#'s translation): `from x in a from y in b select e` is
+`SelectMany` with a result selector, `join ... into` a `GroupJoin`, `group ... by ... into g` a `GroupBy`. A `let`, or
+a second `from` followed by more clauses, makes an anonymous object carrying the range variables
+(`new { x, y }`), which the clauses after it read. Each clause's lambda is also verified as a unit of its own.
+
+**Tuples and anonymous objects** are values: one made of equal parts equals another (`EqualityComparer` compares
+them part by part), so `GroupBy(x => (x.A, x.B))`, `GroupBy(x => new { x.A, x.B })` and `Distinct()` over them are
+exact where the parts' equality is known. `==` between two anonymous objects compares references in C#, which is not
+modeled (an unknown value). An anonymous object is never null.
+
+These model `System.Linq.Enumerable`, which runs in memory. `Queryable` (Entity Framework and other providers, which
+translate the query instead of running it) is not modeled: its methods are library calls.
+
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their
-contents), classes that do not override `Equals` (references), and data records. For other types (a class with its own
-`Equals`, a struct, `double`, whose `NaN.Equals(NaN)` is true) it is a relation the verifier knows nothing of, fixed
-within one call's contract. So `List<int>.IndexOf(7)` is exact, and `List<Customer>.Contains(c)`, with
+contents), classes that do not override `Equals` (references), and data records; and `float` and `double`, where it is
+IEEE `==` except that NaN equals NaN. For other types (a class with its own `Equals`, a struct) it is a relation the
+verifier knows nothing of, fixed within one call's contract (and so it is for floats in `Distinct`, `GroupBy` and the
+set operations, whose keys are compared as values). So `List<int>.IndexOf(7)` is exact, and `List<Customer>.Contains(c)`, with
 `Customer.Equals` overridden, says nothing it should not. A `Map`'s keys compare the same way: by value where `T`'s
 equality is known, and otherwise through a key function, which is sound as long as a key does not change while it is
 one (which .NET's dictionaries and sets require too). A dictionary or set built with a custom comparer is not modeled

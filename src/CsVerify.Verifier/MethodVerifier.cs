@@ -39,6 +39,8 @@ namespace CsVerify.Verifier
             public bool OverList;
             /// <summary>A foreach over an IReadOnlyList or IList: its index runs over the interface's Count and indexer.</summary>
             public bool OverInterface;
+            /// <summary>A foreach over a LINQ view (Select, Where, Take, Skip of what the verifier reads): over the view, read once.</summary>
+            public bool OverView;
             public List<LoopFact> Facts = new List<LoopFact>(); // inferred, for a loop without invariants (MethodVerifier.LoopFacts)
             public HashSet<ISymbol> Rebound = new HashSet<ISymbol>(SymbolEqualityComparer.Default); // ref locals bound anew in the loop // a foreach over an array of these: its enumerator is an index (Frame.ForEach)
         }
@@ -152,11 +154,15 @@ namespace CsVerify.Verifier
 
         // ================================================================================== driver
 
+        /// <summary>A lambda's or local function's flow graph, from its enclosing method's (Engine's nested functions).</summary>
+        public ControlFlowGraph NestedGraph;
+
         public void Run()
         {
             var body = _model.GetOperation(_contract.Declaration);
             ControlFlowGraph cfg;
-            switch (body)
+            if (NestedGraph != null) cfg = NestedGraph;
+            else switch (body)
             {
                 case IMethodBodyOperation mb: cfg = ControlFlowGraph.Create(mb); break;
                 case IConstructorBodyOperation cb: cfg = ControlFlowGraph.Create(cb); break;
@@ -219,7 +225,8 @@ namespace CsVerify.Verifier
 
         private void FindContractStatements()
         {
-            BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body;
+            BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body ??
+                                (_contract.Declaration as LocalFunctionStatementSyntax)?.Body ?? (_contract.Declaration as AnonymousFunctionExpressionSyntax)?.Block;
             if (block == null) return;
             foreach (var s in block.Statements.OfType<ExpressionStatementSyntax>())
                 if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "EnsuresOnThrow" || n == "Decreases" || n == "Modifies" || n == "Reads"))
@@ -354,7 +361,7 @@ namespace CsVerify.Verifier
                     case CommonForEachStatementSyntax fe:
                         // the iteration variables, and what the enumerator's methods do in each iteration
                         foreach (var l in ForEachLocals(fe)) loop.Havoc.Add(l);
-                        if (!IsArrayForEach(fe))
+                        if (!IsArrayForEach(fe) && !NestedViewForEach(fe))
                         {
                             var info = _model.GetForEachStatementInfo(fe);
                             foreach (var m in new[] { info.MoveNextMethod, info.CurrentProperty?.GetMethod }.Where(m => m != null)) CalledInLoop(loop, m);
@@ -363,6 +370,17 @@ namespace CsVerify.Verifier
                 }
             }
             foreach (var a in loop.HavocArrays) if (loop.Havoc.Contains(a)) loop.HavocHeap = true;
+        }
+
+        /// <summary>
+        /// A foreach over a LINQ view (or a group) whose enumerator the verifier replaces by an index, if its own body
+        /// leaves it one (what that body does is collected with the outer loop's anyway).
+        /// </summary>
+        private bool NestedViewForEach(CommonForEachStatementSyntax fe)
+        {
+            if (!(_model.GetOperation(fe.Expression) is IOperation collection) || ViewForEachElement(collection) == null) return false;
+            var c = _model.GetForEachStatementInfo(fe).ElementConversion;
+            return c.IsIdentity || c.IsImplicit && c.IsReference;
         }
 
         private void CalledInLoop(Loop loop, IMethodSymbol m)
@@ -839,6 +857,11 @@ namespace CsVerify.Verifier
         {
             if (f.Vars.TryGetValue(s, out var t)) return t;
             t = FreshOf(TypeOf(s), s.Name);
+            // a variable a lambda or local function captures: some value of its type (it may run at any time), not null
+            // if its type says so (each write of the outer variable is checked)
+            if (!SymbolEqualityComparer.Default.Equals(s.ContainingSymbol, _method) &&
+                (s is IParameterSymbol cp && IsNonNullable(cp) || s is ILocalSymbol && IsNonNullVariable(s)))
+                _z3.Assume(NotNull(t));
             if (s is IParameterSymbol p && MayBeNullType(p.Type) && !IsNonNullable(p))
                 _z3.Origins[t.S] = $"parameter '{p.Name}' is declared '{NullableNote(p.Type)}'";
             f.Vars[s] = t;
@@ -956,19 +979,13 @@ namespace CsVerify.Verifier
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
+                case ITranslatedQueryOperation tq: return Eval(tq.Operation, f, spec); // (query syntax: the calls it stands for)
+                case IAnonymousObjectCreationOperation ao: return AnonymousObject(ao, f, spec);
                 case IFieldReferenceOperation hf when FieldEffects.IsHeapField(hf.Field) && (hf.Instance != null || hf.Field.IsStatic):
                     return ReadField(hf.Field, hf.Instance, hf.Type, hf.Syntax, f, spec);
                 case IFieldReferenceOperation fr when fr.Field.ContainingType?.IsTupleType == true && fr.Instance != null:
                     return T.Coerce(TupleItem(Eval(fr.Instance, f, spec), fr.Field), SortOf(fr.Type));
-                case ITupleOperation tuple:
-                {
-                    // a tuple is a value: a fresh reference whose items are fixed here and never change
-                    var elems = tuple.Elements.Select(e => Eval(e, f, spec)).ToArray();
-                    var t = _z3.Fresh("tuple", Sort.Int);
-                    var fields = ((INamedTypeSymbol)tuple.Type).TupleElements;
-                    for (int i = 0; i < elems.Length; i++) AssumeSide(T.Eq(TupleItem(t, fields[i]), elems[i]));
-                    return t;
-                }
+                case ITupleOperation tuple: return TupleValue(tuple, f, spec);
                 case IFieldReferenceOperation fr:
                 {
                     var args = fr.Instance != null ? new[] { Eval(fr.Instance, f, spec) } : Array.Empty<Term>();
@@ -1190,7 +1207,9 @@ namespace CsVerify.Verifier
             var t = b.LeftOperand.Type;
             if (t?.IsReferenceType != true) return false;
             if (IsNullConstant(b.LeftOperand) || IsNullConstant(b.RightOperand)) return true;
-            return !Data.MayHoldData(Unconverted(b.LeftOperand).Type) && !Data.MayHoldData(Unconverted(b.RightOperand).Type);
+            // (an anonymous object is a value here: which reference it is, is not known)
+            return !Data.MayHoldData(Unconverted(b.LeftOperand).Type) && !Data.MayHoldData(Unconverted(b.RightOperand).Type) &&
+                   Unconverted(b.LeftOperand).Type?.IsAnonymousType != true && Unconverted(b.RightOperand).Type?.IsAnonymousType != true;
         }
 
         /// <summary>The operand under implicit reference conversions (reference == converts both sides to object).</summary>
@@ -1432,6 +1451,8 @@ namespace CsVerify.Verifier
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
+            if (GroupKey(pr, f, spec) is Term groupKey) return groupKey;
+            if (AnonymousMember(pr, f, spec) is Term anonymousMember) return anonymousMember;
             if (DictionaryView(pr, f, spec) is Term dictionaryView) return dictionaryView;
             if (DictionaryCurrent(pr, f, spec) is Term dictionaryCurrent) return dictionaryCurrent;
             if (SpecSymbols.IsGhostType(prop.ContainingType) && prop.Name == "Value") return Eval(pr.Instance, f, spec);
@@ -1566,7 +1587,8 @@ namespace CsVerify.Verifier
 
         /// <summary>A call, with the callee's type parameters as it instantiates them (for its contract's equalities).</summary>
         private Term EvalInvocation(IInvocationOperation inv, Frame f, SpecEnv spec) =>
-            WithInstantiation(inv.TargetMethod, () => EvalInvocationCore(inv, f, spec));
+            // (inside a LINQ definition: Q, the lambdas, other definitions; in the definition's own instantiation)
+            QueryOperation(inv, f, spec) ?? WithInstantiation(inv.TargetMethod, () => EvalInvocationCore(inv, f, spec));
 
         private T2 WithInstantiation<T2>(IMethodSymbol called, System.Func<T2> eval)
         {
@@ -1644,6 +1666,7 @@ namespace CsVerify.Verifier
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
             if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
+            if (LinqCall(inv, f, spec) is Term linqResult) return linqResult;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
@@ -2016,6 +2039,12 @@ namespace CsVerify.Verifier
         private Frame CalleeFrame(Contract callee, Term receiver, Term[] args, Term heap, Frame state = null)
         {
             var frame = new Frame { This = receiver, Heap = heap };
+            // a local function's contract may name what it captures: the caller's variables, as they are at the call
+            if (callee.Method?.MethodKind == MethodKind.LocalFunction && state != null)
+            {
+                foreach (var kv in state.Vars) frame.Vars[kv.Key] = kv.Value;
+                frame.This ??= state.This;
+            }
             foreach (var alias in callee.Aliases.Where(a => !SymbolEqualityComparer.Default.Equals(a, callee.Stub))) AliasParameters(frame, alias, args);
             if (callee.IsStub)
             {
@@ -2237,7 +2266,11 @@ namespace CsVerify.Verifier
             : MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
         private static bool IsNonNullable(IParameterSymbol p) =>
-            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute");
+            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
+            // (query syntax's own: the object its previous clause made, or the group of group ... into g)
+            p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn &&
+            !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax) &&
+            (p.Type.IsAnonymousType || p.Type.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
 
         private static bool IsNonNullableReturn(IMethodSymbol m) =>
             !m.ReturnsVoid && (m.IsAsync ? AsyncResultType(m.OriginalDefinition) is ITypeSymbol t && IsNonNullableType(t) // (what it returns: its task's result)

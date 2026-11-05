@@ -63,7 +63,8 @@ public static int BinarySearch(int[] a, int key)
 - **Used on real code.** [CsLemon](#cslemon), SQLite's parser generator ported to C#, verifies completely (and the
   proof found a bug in the C original); the [samples](#samples) port proofs from ATS, Dafny and *ACSL by Example*.
 
-What it does not prove, and why, is listed in [Limitations](docs/limitations.md).
+What it does not prove, and why, is listed in [Limitations](docs/limitations.md); what "verified" claims, what it
+rests on, and why each part keeps it, in [Soundness](docs/soundness.md).
 
 ## Using it in your project
 
@@ -170,6 +171,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [CI](docs/ci.md): GitHub Actions, Azure DevOps, with Tarp; building and releasing CsVerify.
 - [Samples](docs/samples.md).
 - [Limitations](docs/limitations.md).
+- [Soundness](docs/soundness.md): the claim, the trusted base, and the published result behind each mechanism.
 
 ## Licence
 

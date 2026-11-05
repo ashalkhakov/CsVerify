@@ -73,6 +73,8 @@ namespace CsVerify.Verifier
             if (IsIntegral(t) || t.SpecialType == SpecialType.System_Boolean || t.SpecialType == SpecialType.System_String || t.TypeKind == TypeKind.Enum)
                 return true;
             if (IsFloating(t) || IsNullableValue(t)) return false; // (NaN.Equals(NaN) is true, unlike ==; int? is a value)
+            if (t is INamedTypeSymbol { IsTupleType: true } tuple) return tuple.TupleElements.All(e => KnownEquality(e.Type)); // (item by item)
+            if (t.IsAnonymousType) return ((INamedTypeSymbol)t).GetMembers().OfType<IPropertySymbol>().All(p => KnownEquality(p.Type)); // (member by member)
             bool overrides = false;
             for (var b = t; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
                 if (b.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => !m.IsImplicitlyDeclared && !m.IsStatic && m.Parameters.Length == 1) ||
@@ -102,6 +104,12 @@ namespace CsVerify.Verifier
             var b = T.Coerce(Eval(inv.Arguments[1].Value, f, spec), Sort.Int);
             var t = inv.TargetMethod.TypeArguments[0];
             if (KnownEquality(t)) return T.Eq(a, b);
+            if (IsFloating(Resolve(t)))
+            {
+                // double.Equals: IEEE == (so -0.0 equals 0.0), and NaN equals NaN
+                var s = SortOf(Resolve(t));
+                return T.Or(FpTest("fp.eq", s, a, b), T.And(FpTest("fp.isNaN", s, a), FpTest("fp.isNaN", s, b)));
+            }
             // a relation fixed within one contract (a quantifier over it is consistent), fresh for each call
             var epoch = _equalityEpochs.Count > 0 ? _equalityEpochs.Peek() : _z3.Fresh("equals", Sort.Int);
             return _z3.Apply("equals:" + Resolve(t).ToDisplayString(), Sort.Bool, new[] { a, b, epoch });

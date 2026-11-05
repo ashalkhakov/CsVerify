@@ -126,6 +126,17 @@ namespace CsVerify
     }
 
     /// <summary>
+    /// On a [ContractsFor] class: its methods define their members as comprehensions (<see cref="Q"/>) rather than
+    /// specify them with contracts. The verifier reads each body as the member's meaning: a member returning a
+    /// sequence is a query, read when it is enumerated; any other's value is its body's, where its Spec.Requires hold
+    /// (and they are proved at the call: the member throws where they do not). Lambdas passed to the member are
+    /// inlined where they are pure; with others the member is a library call without a contract. The bodies run, so
+    /// they are tested against the members they define.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class ComprehensionsAttribute : Attribute { }
+
+    /// <summary>
     /// A model function: ghost state of an object whose class the program has no sources of, such as the elements
     /// of a <c>List&lt;T&gt;</c>. A static method whose first parameter is the object, and optionally a second one, a key
     /// (a dictionary's value at a key); it is a ghost field of the object, which stubs ([ContractsFor]) and

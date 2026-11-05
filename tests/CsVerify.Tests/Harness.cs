@@ -62,6 +62,11 @@ namespace CsVerify.Tests
             return matches[0].Diagnostics.Where(d => d.IsError).Select(d => d.Id).OrderBy(x => x).ToArray();
         }
 
+        /// <summary>One method's errors with their messages, for an assertion's failure message.</summary>
+        public static string Explain(this VerificationResult r, string method) =>
+            method + ": " + string.Join("; ", r.Methods.Where(m => m.Name == method || m.Name.EndsWith("." + method))
+                .SelectMany(m => m.Diagnostics.Where(d => d.IsError)).Select(d => d.Id + " " + d.Message));
+
         public static string RepoRoot()
         {
             var dir = AppContext.BaseDirectory;

@@ -71,6 +71,8 @@ namespace CsVerify.Verifier
         /// <summary>The inferred loop facts assumed at each loop's head on this path, and the entry values they compare with.</summary>
         public Dictionary<int, List<string>> LoopFacts = new Dictionary<int, List<string>>();
         public Dictionary<string, Term> LoopFactEntry = new Dictionary<string, Term>();
+        /// <summary>A foreach over a LINQ view: the view as it was read when the loop began (MethodVerifier.Linq).</summary>
+        public Dictionary<int, object> ViewSequences = new Dictionary<int, object>();
         public Term Result;
         /// <summary>The exception being handled (in a catch or filter), or thrown (in a finally run by it).</summary>
         public Term Exception;
@@ -109,6 +111,7 @@ namespace CsVerify.Verifier
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
             LoopFacts = new Dictionary<int, List<string>>(LoopFacts),
             LoopFactEntry = new Dictionary<string, Term>(LoopFactEntry),
+            ViewSequences = new Dictionary<int, object>(ViewSequences),
             Result = Result,
             Exception = Exception,
             Pending = Pending,
