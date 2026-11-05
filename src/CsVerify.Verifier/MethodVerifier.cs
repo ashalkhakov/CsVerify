@@ -1212,6 +1212,13 @@ namespace CsVerify.Verifier
                    Unconverted(b.LeftOperand).Type?.IsAnonymousType != true && Unconverted(b.RightOperand).Type?.IsAnonymousType != true;
         }
 
+        /// <summary>
+        /// What a flow capture captured, where it is a variable: a call whose arguments branch (a ?: among them) has
+        /// the flow graph capture the earlier ones first, by-ref ones too, and pass the captures.
+        /// </summary>
+        private IOperation Uncaptured(IOperation op) =>
+            op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var captured) && IsVariableReference(captured) ? captured : op;
+
         /// <summary>The operand under implicit reference conversions (reference == converts both sides to object).</summary>
         private static IOperation Unconverted(IOperation op)
         {
@@ -1693,19 +1700,23 @@ namespace CsVerify.Verifier
                 {
                     // a callee's ref/in parameter is a variable of its own; aliasing a field would let writes through the
                     // heap and through the parameter disagree
-                    if (a.Parameter.RefKind != RefKind.None && !(a.Value is ILocalReferenceOperation || a.Value is IParameterReferenceOperation ||
-                                                                 a.Value is IDeclarationExpressionOperation || a.Value is IDiscardOperation) &&
+                    var argument = Uncaptured(a.Value);
+                    if (a.Parameter.RefKind != RefKind.None && !(argument is ILocalReferenceOperation || argument is IParameterReferenceOperation ||
+                                                                 argument is IDeclarationExpressionOperation || argument is IDiscardOperation) &&
                         a.ArgumentKind == ArgumentKind.Explicit && !SpecSymbols.IsSpecClass(m.ContainingType))
                     {
                         // a struct's member (s.X, a[i].X): a variable of the callee's, written back into the struct after the call
-                        var root = StructMemberRoot(a.Value);
+                        var root = StructMemberRoot(argument);
                         if (root == null)
                             NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals, parameters, array elements and their structs' members");
                         else if (root is IArrayElementReferenceOperation && _engine.MayTouchArrays(m))
                             NotModeled(a.Syntax, $"passing '{a.Value.Syntax}' by reference to '{m.Name}', which may read or write array contents itself, is not supported: " +
                                                  "the cell and the parameter would disagree (copy the member into a local)");
                     }
-                    argTerms[i] = a.Parameter.RefKind == RefKind.Out ? FreshOf(a.Parameter.Type, a.Parameter.Name + "$unset") : Eval(a.Value, f, spec);
+                    // (a variable passed by reference is read as it is at the call, not when the flow graph captured it:
+                    // a later argument may have changed it)
+                    var value = a.Parameter.RefKind != RefKind.None && (argument is ILocalReferenceOperation || argument is IParameterReferenceOperation) ? argument : a.Value;
+                    argTerms[i] = a.Parameter.RefKind == RefKind.Out ? FreshOf(a.Parameter.Type, a.Parameter.Name + "$unset") : Eval(value, f, spec);
                 }
                 if (a.Parameter.RefKind != RefKind.Out) NonNullArgument(a, argTerms[i], m);
             }

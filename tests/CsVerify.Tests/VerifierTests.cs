@@ -213,6 +213,16 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void RefArguments_BeforeAConditionalArgument()
+        {
+            // the flow graph captures a ref argument before the ?: after it; the callee gets the variable as it is at the call
+            const string add = "static void Add(ref int x, int k) { Spec.Ensures(x == Spec.Old(x) + k); x = checked(x + k); } ";
+            Assert.Empty(Errors("Ok", add + "static int Ok(int a) { Spec.Requires(0 <= a && a <= 10); int x = 1; Add(ref x, a > 5 ? 2 : 3); Spec.Assert(x == 3 || x == 4); return x; }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("Wrong", add + "static int Wrong(int a) { Spec.Requires(0 <= a && a <= 10); int x = 1; Add(ref x, a > 5 ? 2 : 3); Spec.Assert(x == 3); return x; }"));
+            Assert.Empty(Errors("Later", add + "static int Later() { int x = 1; Add(ref x, (x = 10) > 5 ? 2 : 3); Spec.Assert(x == 12); return x; }"));
+        }
+
+        [Fact]
         public void TupleResults()
         {
             const string minMax = "static (int lo, int hi) M(int x, int y) { Spec.Ensures<(int lo, int hi)>(r => r.lo == Math.Min(x, y) && r.Item2 == Math.Max(x, y)); " +

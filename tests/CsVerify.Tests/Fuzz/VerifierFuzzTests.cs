@@ -139,7 +139,7 @@ namespace CsVerify.Tests.Fuzz
                 if (planted >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, planted, post));
                 else if (plantedPost >= 0) verify.Append(m.Render(ProgramGenerator.Mode.Verify, m.Name + "F", keep, -1, plantedPost));
             }
-            var source = "#nullable enable\nusing System; using System.Linq; using CsVerify;\n" + ProgramGenerator.Prelude + "public static class G\n{\n" + verify + "}\n";
+            var source = "#nullable enable\nusing System; using System.Diagnostics; using System.Linq; using CsVerify;\n" + ProgramGenerator.Prelude + "public static class G\n{\n" + verify + "}\n";
             if (Environment.GetEnvironmentVariable("CSVERIFY_FUZZ_SAVE") is string dir) File.WriteAllText(Path.Combine(dir, $"fuzz{seed}.cs"), source);
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var result = Engine.VerifySources(new[] { ($"fuzz{seed}.cs", source) }, new VerifierOptions { CheckOverflow = true, TimeoutMs = 1000 });
@@ -214,13 +214,15 @@ namespace CsVerify.Tests.Fuzz
             ("throws", "throw new Escape"), ("catch Escape", "catch (Escape)"), ("checked, caught", "catch (OverflowException)"),
             ("frames (Bump)", "H.Bump"), ("frames (Scramble)", "H.Scramble"), ("cell permissions (SetCell)", "H.SetCell"), ("[Pure] calls", "H.Twice"),
             ("owned accounts", "new Account("), ("transfers", "Account.Transfer"), ("read shares", "Own.Share"),
+            ("loop invariants", "Spec.Invariant"), ("lemmas", "L.TriFormula"), ("recursion (Tri)", "L.Tri("),
+            ("virtual calls", ".Next("), ("virtual queries", ".Weight()"),
             ("boxes", "new Box("), ("give", "Own.Give"), ("take", "Own.Take"), ("fold", "Spec.Fold"), ("unfold", "Spec.Unfold"),
         };
 
         /// <summary>Methods compiled to run, with overflow checked (an overflow throws).</summary>
         private static Type Compile(int seed, string klass, IEnumerable<string> methods)
         {
-            var source = "#nullable disable\nusing System; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime + ProgramGenerator.Prelude +
+            var source = "#nullable disable\nusing System; using System.Diagnostics; using System.Linq; using System.Collections.Generic; using CsVerify;\n" + Runtime + ProgramGenerator.Prelude +
                          $"public static class {klass}\n{{\n" + string.Concat(methods) + "}\n";
             var c = CSharpCompilation.Create($"Fuzz{seed}{klass}", new[] { CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest)) },
                 Engine.FrameworkReferences().Append(MetadataReference.CreateFromFile(typeof(CsVerify.Own).Assembly.Location)), // (Own, the attributes)

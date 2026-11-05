@@ -168,6 +168,48 @@ public static class Preds
         return a.Balance;
     }
 }
+
+// recursion and induction: Tri unfolds one level per use; the lemma, erased from the program, gives all of it
+public static class L
+{
+    [Pure]
+    public static int Tri(int n)
+    {
+        Spec.Requires(0 <= n && n <= 1000);
+        Spec.Ensures((int r) => 0 <= r && r <= 1000 * n);
+        Spec.Decreases(n);
+        return n == 0 ? 0 : n + Tri(n - 1);
+    }
+
+    [Lemma, Conditional(Spec.Symbol)]
+    public static void TriFormula(int n)
+    {
+        Spec.Requires(0 <= n && n <= 1000);
+        Spec.Ensures(2 * Tri(n) == n * (n + 1));
+        Spec.Decreases(n);
+        if (n > 0) TriFormula(n - 1);
+    }
+}
+
+// virtual calls: the base's contract, which the override inherits and is checked against; a [Pure] virtual query
+public class Counter
+{
+    public virtual int Next(int k)
+    {
+        Spec.Requires(0 <= k && k <= 1000);
+        Spec.Ensures((int r) => k < r && r <= 2 * k + 1);
+        return k + 1;
+    }
+
+    [Pure] public virtual int Weight() => 1;
+}
+
+public sealed class Doubler : Counter
+{
+    public override int Next(int k) => 2 * k + 1;
+
+    [Pure] public override int Weight() => 2;
+}
 ";
 
         /// <summary>An input: d is null (DMode 0), c itself (1), or a cell of its own (2).</summary>
@@ -246,10 +288,12 @@ public static class Preds
             public List<string> Held = new List<string>();
             public List<string> Nodes = new List<string>();    // (nodes qK whose permission is in hand, or folded)
             public List<(string, string)> Folded = new List<(string, string)>();
+            public List<string> Counters = new List<string>(); // (a Counter or a Doubler)
             public Pools Copy() => new Pools
             {
                 Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList(),
                 Shares = Shares.ToList(), Boxes = Boxes.ToList(), Held = Held.ToList(), Nodes = Nodes.ToList(), Folded = Folded.ToList(),
+                Counters = Counters.ToList(),
             };
             public IEnumerable<string> Writable => Nodes.Where(n => !Folded.Any(f => f.Item1 == n || f.Item2 == n));
         }
@@ -314,7 +358,7 @@ public static class Preds
         internal abstract class Stmt { }
         internal sealed class Line : Stmt { public string Text; }                       // a simple statement
         internal sealed class If : Stmt { public string Cond; public List<Stmt> Then, Else; }
-        internal sealed class For : Stmt { public string Var; public List<Stmt> Body; }
+        internal sealed class For : Stmt { public string Var; public List<Stmt> Body; public List<Assert> Invariants = new List<Assert>(); }
         internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; }
         internal sealed class Assert : Stmt { public string Cond; public int Id; }
 
@@ -448,6 +492,22 @@ public static class Preds
                     case 15:
                     {
                         // calls to the helpers: what they may change, and what they may not
+                        switch (_r.Next(6))
+                        {
+                            case 0: return new Line { Text = $"L.TriFormula(Math.Abs({Int(1)}) % 30);" }; // (a lemma: a proof, erased)
+                            case 1:
+                            {
+                                // a counter of either class: a call through the base type
+                                var k = "k" + _fresh++;
+                                var make = _r.Next(3) == 0 ? "new Doubler()" : $"({Bool(1, null)} ? new Counter() : new Doubler())";
+                                // (and a call at once, through the base type: Next, or the query Weight)
+                                var v = "v" + _fresh++;
+                                var use = _r.Next(2) == 0 ? $"{k}.Next(Math.Abs({Int(1)}) % 100)" : $"{k}.Weight()";
+                                _p.Counters.Add(k);
+                                _p.Ints.Add(v);
+                                return new Line { Text = $"Counter {k} = {make}; int {v} = {use};" };
+                            }
+                        }
                         var cell = _r.Next(3) == 0 ? "d" : Pick(_p.Cells);
                         var call = new[]
                         {
@@ -478,11 +538,15 @@ public static class Preds
                         if (_inLoop) goto case 3;
                         var i = "i" + _fresh++;
                         _p.Ints.Add(i);
+                        // invariants, as slots: what held at every head is kept, one that failed may be planted
+                        var invariants = new List<Assert>();
+                        for (int k = _r.Next(3); k > 0; k--)
+                            invariants.Add(new Assert { Id = _slots++, Cond = Spec(() => k == 1 && _r.Next(2) == 0 ? $"0 <= {i} && {i} <= xs.Length" : Bool(1, null)) });
                         _inLoop = true;
                         var body = Block(_r.Next(1, 3));
                         _inLoop = false;
                         _p.Ints.Remove(i);
-                        return new For { Var = i, Body = body };
+                        return new For { Var = i, Body = body, Invariants = invariants };
                     }
                 }
             }
@@ -631,7 +695,15 @@ public static class Preds
                 case 4: return $"({Int(d, extra)} / {Divisor(d, extra)})";
                 case 5: return $"({Int(d, extra)} % {Divisor(d, extra)})";
                 case 6: return $"Math.{(_r.Next(2) == 0 ? "Min" : "Max")}({Int(d, extra)}, {Int(d, extra)})";
-                case 7: return _r.Next(3) == 0 ? $"H.Twice({Int(d, extra)})" : $"Math.Abs({Int(d, extra)})";
+                case 7:
+                    switch (_r.Next(5))
+                    {
+                        case 0: return $"H.Twice({Int(d, extra)})";
+                        case 1: return $"L.Tri(Math.Abs({Int(d, extra)}) % 30)";
+                        case 2 when _p.Counters.Count > 0:
+                            return _spec || _r.Next(2) == 0 ? $"{Pick(_p.Counters)}.Weight()" : $"{Pick(_p.Counters)}.Next(Math.Abs({Int(d, extra)}) % 100)";
+                        default: return $"Math.Abs({Int(d, extra)})";
+                    }
                 case 8: return $"({Bool(d, extra)} ? {Int(d, extra)} : {Int(d, extra)})";
                 case 9:
                 {
@@ -752,9 +824,31 @@ public static class Preds
                     }
                     break;
                 case For f:
-                    sb.AppendLine($"{pad}for (int {f.Var} = 0; {f.Var} < xs.Length; {f.Var}++)");
-                    Body(f.Body);
+                {
+                    var invariants = f.Invariants.Where(a => kept(a.Id)).ToList();
+                    if (mode == Mode.Verify)
+                    {
+                        sb.AppendLine($"{pad}for (int {f.Var} = 0; {f.Var} < xs.Length; {f.Var}++)");
+                        sb.AppendLine($"{pad}{{");
+                        foreach (var a in invariants) sb.AppendLine($"{pad}    Spec.Invariant({a.Cond});");
+                        foreach (var t in f.Body) Emit(sb, t, indent + 1, mode, kept);
+                        sb.AppendLine($"{pad}}}");
+                        break;
+                    }
+                    // (to run: the loop as a while, its invariants checked at every head, the last, on leaving, too)
+                    sb.AppendLine($"{pad}{{");
+                    sb.AppendLine($"{pad}    int {f.Var} = 0;");
+                    sb.AppendLine($"{pad}    while (true)");
+                    sb.AppendLine($"{pad}    {{");
+                    foreach (var a in invariants)
+                        sb.AppendLine(mode == Mode.Run ? $"{pad}        if (!({a.Cond})) throw new Failed(\"invariant {a.Id}\");" : $"{pad}        Probe.Hit({a.Id}, () => {a.Cond});");
+                    sb.AppendLine($"{pad}        if (!({f.Var} < xs.Length)) break;");
+                    foreach (var t in f.Body) Emit(sb, t, indent + 2, mode, kept);
+                    sb.AppendLine($"{pad}        {f.Var}++;");
+                    sb.AppendLine($"{pad}    }}");
+                    sb.AppendLine($"{pad}}}");
                     break;
+                }
                 case Try t:
                     sb.AppendLine($"{pad}try");
                     Body(t.Body);

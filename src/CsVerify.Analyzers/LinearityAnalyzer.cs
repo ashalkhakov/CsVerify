@@ -106,6 +106,11 @@ namespace CsVerify.Analyzers
             public Dictionary<ISymbol, int> Index;
             public ISymbol[] Vars;
             public bool[] Borrowed;
+            /// <summary>
+            /// The flow graph's captures that are later passed by reference: a call whose arguments branch (a ?: among
+            /// them) captures the earlier ones first, ref ones too. Capturing those lends, or defines, rather than moves.
+            /// </summary>
+            public Dictionary<CaptureId, RefKind> RefCaptures = new Dictionary<CaptureId, RefKind>();
             public List<Diagnostic> Diags; // null while iterating to a fixpoint
             public void Report(DiagnosticDescriptor d, Location loc, params object[] args) =>
                 Diags?.Add(Diagnostic.Create(d, loc, args));
@@ -148,6 +153,11 @@ namespace CsVerify.Analyzers
                 Index = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default),
             };
             for (int i = 0; i < ctx.Vars.Length; i++) ctx.Index[ctx.Vars[i]] = i;
+            foreach (var block in cfg.Blocks)
+                foreach (var a in block.Operations.Concat(block.BranchValue != null ? new[] { block.BranchValue } : new IOperation[0])
+                             .SelectMany(o => o.DescendantsAndSelf()).OfType<IArgumentOperation>())
+                    if (a.Value is IFlowCaptureReferenceOperation r && (a.Parameter?.RefKind ?? RefKind.None) != RefKind.None)
+                        ctx.RefCaptures[r.Id] = a.Parameter.RefKind;
 
             var entry = new St[ctx.Vars.Length];
             for (int i = 0; i < entry.Length; i++)
@@ -366,6 +376,11 @@ namespace CsVerify.Analyzers
                         !SpecSymbols.IsLinear(ContainingTypeOf(a.Target)))
                         ctx.Report(Descriptors.Copied, a.Syntax.GetLocation(), "stored outside a linear variable");
                     Consume(i, op, state, ctx);
+                    break;
+                case IFlowCaptureOperation fc when ctx.RefCaptures.TryGetValue(fc.Id, out var captureRef):
+                    // (captured to be passed by reference: lent, or, for out, defined)
+                    if (captureRef == RefKind.Out) Define(i, op, state, ctx);
+                    else Borrow(i, op, state, ctx);
                     break;
                 case IReturnOperation _:
                 case IFlowCaptureOperation _:
