@@ -1369,6 +1369,16 @@ public sealed class Duo
             var v = "v" + _fresh++;
             var arg = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000"; // (before it is in scope)
             _p.Ints.Add(v);
+            if (_r.Next(2) == 0)
+            {
+                // a new object across the await: kept if nothing hands it out (later statements may, or may not)
+                var n = "n" + _fresh++;
+                var w = "v" + _fresh++;
+                var text = $"var {n} = new Cell {{ V = {Int(1)} }}; int {v} = await AH.TwiceAsync({arg}); int {w} = {n}.V;";
+                _p.Cells.Add(n);
+                _p.Ints.Add(w);
+                return new Line { Text = text };
+            }
             return new Line { Text = $"int {v} = await AH.TwiceAsync({arg});" };
         }
 
