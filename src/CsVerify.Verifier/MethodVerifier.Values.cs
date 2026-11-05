@@ -104,6 +104,12 @@ namespace CsVerify.Verifier
             var b = T.Coerce(Eval(inv.Arguments[1].Value, f, spec), Sort.Int);
             var t = inv.TargetMethod.TypeArguments[0];
             if (KnownEquality(t)) return T.Eq(a, b);
+            if (IsFloating(Resolve(t)))
+            {
+                // double.Equals: IEEE == (so -0.0 equals 0.0), and NaN equals NaN
+                var s = SortOf(Resolve(t));
+                return T.Or(FpTest("fp.eq", s, a, b), T.And(FpTest("fp.isNaN", s, a), FpTest("fp.isNaN", s, b)));
+            }
             // a relation fixed within one contract (a quantifier over it is consistent), fresh for each call
             var epoch = _equalityEpochs.Count > 0 ? _equalityEpochs.Peek() : _z3.Fresh("equals", Sort.Int);
             return _z3.Apply("equals:" + Resolve(t).ToDisplayString(), Sort.Bool, new[] { a, b, epoch });

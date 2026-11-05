@@ -299,9 +299,10 @@ translate the query instead of running it) is not modeled: its methods are libra
 
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their
-contents), classes that do not override `Equals` (references), and data records. For other types (a class with its own
-`Equals`, a struct, `double`, whose `NaN.Equals(NaN)` is true) it is a relation the verifier knows nothing of, fixed
-within one call's contract. So `List<int>.IndexOf(7)` is exact, and `List<Customer>.Contains(c)`, with
+contents), classes that do not override `Equals` (references), and data records; and `float` and `double`, where it is
+IEEE `==` except that NaN equals NaN. For other types (a class with its own `Equals`, a struct) it is a relation the
+verifier knows nothing of, fixed within one call's contract (and so it is for floats in `Distinct`, `GroupBy` and the
+set operations, whose keys are compared as values). So `List<int>.IndexOf(7)` is exact, and `List<Customer>.Contains(c)`, with
 `Customer.Equals` overridden, says nothing it should not. A `Map`'s keys compare the same way: by value where `T`'s
 equality is known, and otherwise through a key function, which is sound as long as a key does not change while it is
 one (which .NET's dictionaries and sets require too). A dictionary or set built with a custom comparer is not modeled

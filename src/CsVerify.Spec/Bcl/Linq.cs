@@ -407,7 +407,8 @@ namespace CsVerify.Bcl
         public static double Average(IEnumerable<double> source)
         {
             Spec.Requires(Q.Count(source) > 0);
-            Spec.Ensures<double>(r => r == Sum(source) / Q.Count(source) || double.IsNaN(r) && double.IsNaN(Sum(source) / Q.Count(source)));
+            // (double.Equals: == but NaN equals NaN, so equal but for a zero's sign)
+            Spec.Ensures<double>(r => Spec.Equal(Ghost.Of(r), Ghost.Of(Sum(source) / Q.Count(source))));
             throw null!;
         }
 
