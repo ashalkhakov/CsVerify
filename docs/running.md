@@ -64,7 +64,7 @@ csverify: 21 of 21 methods verified, 1004/1004 obligations proved; checks: null,
 | `linear` | the linearity analyzer's rules (CSV0001–CSV0007), owned objects' views (CSV1016), and disposal (CSV0020–CSV0022) |
 | `bounds` | array and span indices, and array sizes (CSV1003) |
 | `overflow` | arithmetic and conversions (CSV1010), and division by zero (CSV1009) |
-| `contracts` | the rest of the specifications: preconditions, postconditions, assertions, invariants, measures, frames, well-definedness |
+| `contracts` | the rest of the specifications: preconditions (library ones too, such as a format's arguments), postconditions, assertions, invariants, measures, frames, well-definedness, and switch expressions that cover what they get (CSV1022) |
 
 Obligations of the other kinds are assumed, so a result holds only where they do. The summary line counts them.
 Some diagnostics are reported whatever the profile, because the verifier's own soundness depends on them: the ghost
@@ -163,6 +163,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1017 | verifier | a dynamic frame broken: a write outside `Spec.Modifies`, a read outside `Spec.Reads`, a callee with no or a wider frame, or `Spec.Modifies`/`Reads` on an `[Owned]` class |
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1021 | verifier | an ill-formed `[ContractsFor]` stub or `[Model]` function: a stub method that matches no member of its type, a stub without the type's type parameters, a model function of the wrong shape |
+| CSV1022 | verifier | a switch expression might not cover every value it gets: it would throw `SwitchExpressionException` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1999 | verifier | internal or solver error |

@@ -29,7 +29,7 @@ CsVerify's column.
 hard-coded secrets, insecure TLS settings) that neither kind of tool here looks for. StyleCop is here only to show
 that a style checker reports none of these bugs.
 
-## Results (2026-11-05)
+## Results (2026-11-06)
 
 A cell lists the rules that reported the case. Only rules that speak of the case's bug count (`bench/score.py` lists
 them). Every other warning a tool raised on the cases is in the last row: style, naming, culture, and argument
@@ -51,13 +51,14 @@ validation.
 | Disposal.LeakHidden | bug | · | CA2000 | · | · | · | · | CSV0020 |
 | Disposal.UseAfterDispose | bug | · | · | · | · | · | · | CSV0021 |
 | Disposal.Harmless | no | · | · | · | · | · | · | · |
-| DisposableField.Direct | bug | · | · | SS066 | · | · | · | · |
+| DisposableField.Direct | bug | · | CA2213 | SS066 | · | · | · | CSV0022 |
 | DisposableField.Harmless | no | · | · | · | · | · | · | · |
-| FormatArguments.Direct | bug | · | CA2241 | SS014 | · | · | · | · |
-| FormatArguments.Hidden | bug | · | CA2241 | SS014 | · | · | · | · |
+| FormatArguments.Direct | bug | · | CA2241 | SS014 | · | · | · | CSV1001 |
+| FormatArguments.Hidden | bug | · | CA2241 | SS014 | · | · | · | CSV1001 |
 | FormatArguments.Harmless | no | · | · | · | · | · | · | · |
-| EnumSwitch.Direct | bug | CS8509 | · | SS018 | · | · | · | · |
-| EnumSwitch.Harmless | no | CS8509 | · | SS018 | · | · | · | · |
+| SwitchExpression.Direct | bug | CS8509 | · | SS018 | · | · | · | CSV1022 |
+| SwitchExpression.Hidden | bug | CS8524 | · | · | · | · | · | CSV1022 |
+| SwitchExpression.Harmless | no | CS8509 | · | · | · | · | · | · |
 | NaNComparison.Direct | bug | · | CA2242 | · | MA0082 | RCS1215 | · | · |
 | NaNComparison.Harmless | no | · | · | · | · | · | · | · |
 | UnusedResult.Direct | bug | · | CA1806 | SS040 | MA0060 | · | · | · |
@@ -75,44 +76,42 @@ validation.
 | Overflow.Harmless | no | · | · | · | · | · | · | · |
 | DivideByZero.Direct | bug | · | · | · | · | · | · | CSV1009 |
 | DivideByZero.Harmless | no | · | · | · | · | · | · | · |
-| **bugs reported** | 26 | 2 | 6 | 10 | 4 | 2 | 0 | 16 |
-| **harmless code reported** | 12 | 1 | 0 | 1 | 0 | 0 | 0 | 1 |
-| **other warnings** (noise) | | 0 | 25 | 8 | 26 | 40 | 101 | 0 |
-
-Bugs reported by some tool: 26 of 26.
+| **bugs reported** | 27 | 3 | 7 | 10 | 4 | 2 | 0 | 21 |
+| **harmless code reported** | 12 | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
+| **other warnings** (noise) | | 0 | 25 | 9 | 26 | 41 | 110 | 0 |
 
 ## What it shows
 
-- **The tools mostly catch different bugs.** Of the 26 bugs:
-  - the linters together report 15, and CsVerify 16;
-  - both report 5: throwing null, changing a list in its own `foreach`, a dropped task, and a stream never disposed
-    (two cases).
+- **CsVerify reports 21 of the 27 bugs. The linters together report 16, and both report 10.**
 - **What only CsVerify reports: bugs that depend on values or on paths** (11 bugs).
-  - **The hidden variants.** CsVerify reports 7 of the 8. The linters report 2, and only where the pattern stays
-    visible: a constant format string, and a leak with an early return. The linters match a syntactic pattern:
+  - **The hidden variants.** CsVerify reports all 9. The linters report 3, and only where the pattern stays visible:
+    a constant format string, a leak with an early return, and an enum switch that names every member. The linters
+    match a syntactic pattern:
     - `throw e!` where `e` may be null;
     - a list changed through an alias or a helper;
     - a task kept in a variable and never awaited;
     - a stream used after `Dispose`.
   - **The bug families no linter has a rule for:** null dereferences hidden by `!`, an index out of range, the
     midpoint overflow `(lo + hi) / 2`, and division by zero.
-- **What only the linters report: bugs about intent, and some CsVerify could check but does not** (10 bugs).
-  - **Intent:** `d == double.NaN`, a discarded `Trim()`, `OrderBy` twice, `new TimeSpan(5)`, blocking on `.Result`,
-    identical branches. Each of these runs without failing, but does something other than what was meant. CsVerify
-    would report them only against a specification that says what was meant.
-  - **Real gaps:**
-    - A format string with too few arguments. It throws `FormatException`, and a precondition on `string.Format`
-      could say so.
-    - A switch expression that misses an enum value. Its `SwitchExpressionException` counts as an exception the
-      method may throw.
-    - A disposable field its owner never disposes.
-- **False alarms.** One each from the compiler, SharpSource and CsVerify:
-  - **The compiler and SharpSource** report a switch that misses `Blue` even after `Blue` was handled earlier.
+- **What only the linters report: bugs about intent** (6 bugs): `d == double.NaN`, a discarded `Trim()`, `OrderBy`
+  twice, `new TimeSpan(5)`, blocking on `.Result`, identical branches. Each of these runs without failing, but does
+  something other than what was meant. CsVerify is about functional correctness: it reports such a bug only against a
+  specification that says what was meant.
+- **Gaps the first run found, and closed since:**
+  - **A format string with too few arguments.** CsVerify now checks a constant format against the arguments written
+    at the call (CSV1001).
+  - **A switch expression that misses a value.** CsVerify now reports it (CSV1022). That includes the hidden variant,
+    where every member of the enum is named but `(Color)7` still throws.
+  - **A disposable field its owner never disposes.** CsVerify already reported this (CSV0022). The first run used a
+    `MemoryStream`, whose `Dispose` releases nothing, so CsVerify rightly did not ask for it to be disposed. The case
+    now holds a `FileStream`.
+- **False alarms.** One each from the compiler and CsVerify.
+  - **The compiler** reports a switch whose missing value was returned for earlier.
   - **CsVerify** rejects a task that is stored and awaited later. That is not supported yet: it would run
     interleaved with the method.
-- **Noise.** The linters raised 200 other warnings on these 38 cases, StyleCop 101 of them. CsVerify raised none:
+- **Noise.** The linters raised 211 other warnings on these 39 cases, StyleCop 110 of them. CsVerify raised none:
   it reports only what may go wrong at run time.
 
 The cases were chosen from the linters' bug rules (style, naming and API-preference rules left out), plus four bug
-families that CsVerify checks and the linters do not. That choice favours bugs over style, but not CsVerify: ten of the
-bugs are ones only the linters report.
+families that CsVerify checks and the linters do not. That choice favours bugs over style, but not CsVerify: the first
+run had ten bugs that only the linters reported.

@@ -62,7 +62,7 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
   - a lambda that calls a member which may throw (`g => g.First()`, `g => g.Max()`), or one with statements, writes or allocations other than tuples and anonymous objects;
   - members that make what comprehensions do not: `Chunk` (arrays), `CountBy` and `AggregateBy` (key-value pairs), `ToLookup` and `ToHashSet` (collections); `OfType` and `Cast` (a non-generic source, tested by type). `ToDictionary` gives only where it throws: what the dictionary holds is not known.
 
-  Facts that need induction over an unknown length (every element of a `double[]` is 2.0, so is its average) are not proved; with a known length, or a specification that states them, they are. `==` between two anonymous objects is an unknown value. Exceptions a library call may throw (including a lambda's, in a call that is not inlined) are not reported.
+  Facts that need induction over an unknown length (every element of a `double[]` is 2.0, so is its average) are not proved; with a known length, or a specification that states them, they are. `==` between two anonymous objects is an unknown value. Exceptions a library call may throw (including a lambda's, in a call that is not inlined) are not reported, except a composite format's `FormatException` when the format is a constant and the arguments can be counted (CSV1001). A format built at run time, or arguments passed as one array, are not checked.
 
 **Completeness limits** (true things that may not be proved)
 - A new array is known to differ from the arrays in local variables and fields where it is created, not from arrays held elsewhere (inside other arrays).

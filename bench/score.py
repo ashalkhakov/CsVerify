@@ -11,7 +11,7 @@ RULES = {
     "Disposal": {"CA2000", "IDE0067"},
     "DisposableField": {"SS066", "CA2213", "CA1001"},
     "FormatArguments": {"SS014", "CA2241", "MA0183"},
-    "EnumSwitch": {"CS8509", "CS8524", "SS018"},
+    "SwitchExpression": {"CS8509", "CS8524", "SS018"},
     "NaNComparison": {"MA0082", "CA2242", "RCS1215"},
     "UnusedResult": {"SS040", "MA0060", "CA1806"},
     "OrderByTwice": {"SS055", "MA0030"},

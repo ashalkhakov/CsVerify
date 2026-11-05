@@ -473,6 +473,14 @@ namespace CsVerify.Verifier
             {
                 if (block.BranchValue != null && !InSpec(block.BranchValue))
                 {
+                    if (fall?.Semantics == ControlFlowBranchSemantics.Throw && !ProofCode && block.BranchValue.Syntax is SwitchExpressionSyntax missed)
+                    {
+                        // the throw the compiler adds to a switch expression, for a value no arm matches: the switch
+                        // must cover every value it gets (a failure the program did not write, as an index out of range)
+                        Require(T.False, "CSV1022", missed, $"switch expression '{missed.GoverningExpression} switch' might not cover every value: it would throw SwitchExpressionException");
+                        onPath.Remove(block.Ordinal);
+                        return;
+                    }
                     var v = Eval(block.BranchValue, f);
                     if (fall?.Semantics == ControlFlowBranchSemantics.Throw && !ProofCode)
                     {
@@ -810,6 +818,14 @@ namespace CsVerify.Verifier
         private void NotTotal(SyntaxNode at, string message) => Report("CSV1011", at, message, isError: true);
         private void Warn(SyntaxToken at, string message) => Warn(at.Parent, message);
 
+        private static bool ParamsOfLibraryCall(ICollectionExpressionOperation ce)
+        {
+            IOperation p = ce.Parent;
+            while (p is IConversionOperation) p = p.Parent;
+            return p is IArgumentOperation a && a.ArgumentKind == ArgumentKind.ParamCollection && !ce.Elements.Any(e => e is ISpreadOperation) &&
+                   a.Parent is IInvocationOperation inv && inv.TargetMethod.DeclaringSyntaxReferences.Length == 0;
+        }
+
         private void Unsupported(IOperation op)
         {
             NotModeled(op.Syntax, $"unsupported construct ({op.Kind})");
@@ -1036,6 +1052,13 @@ namespace CsVerify.Verifier
                 case IInvocationOperation inv: return EvalInvocation(inv, f, spec);
                 case IAwaitOperation aw: return EvalAwait(aw, f, spec);
                 case IArrayCreationOperation ac: return EvalArrayCreation(ac, f, spec);
+                case ICollectionExpressionOperation ce when ParamsOfLibraryCall(ce):
+                {
+                    // the arguments a library method takes as a params span (string.Format with four): evaluated, in
+                    // order, and handed over as a span the verifier does not look into
+                    foreach (var e in ce.Elements) Eval(e, f, spec);
+                    return Unknown(ce.Type, "params");
+                }
                 case IDefaultValueOperation _ when IsNullableValue(op.Type): return None();
                 case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : IsFloating(op.Type) ? Zero(SortOf(op.Type)) : T.Int(0);
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
@@ -1646,6 +1669,7 @@ namespace CsVerify.Verifier
 
         private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec, bool enumerators = true)
         {
+            if (_codeMode && !ProofCode) CheckFormatArguments(inv);
             if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
             if (IsGetLength(inv)) return GetLength(inv, f, spec);

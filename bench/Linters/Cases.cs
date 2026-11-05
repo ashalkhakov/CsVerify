@@ -152,11 +152,12 @@ namespace Bench
     }
 
     #region case DisposableField.Direct bug
-    /// <summary>SharpSource SS066: a disposable field its owner never disposes.</summary>
+    /// <summary>SharpSource SS066: a disposable field its owner never disposes, so the file stays open.</summary>
     public sealed class FieldNotDisposed : IDisposable
     {
-        private readonly MemoryStream _stream = new MemoryStream();
-        public long Length => _stream.Length;
+        private readonly FileStream _stream;
+        public FieldNotDisposed(string path) { _stream = File.OpenRead(path); }
+        public int Next() => _stream.ReadByte();
         public void Dispose() { }
     }
     #endregion
@@ -164,8 +165,9 @@ namespace Bench
     #region case DisposableField.Harmless ok
     public sealed class FieldDisposed : IDisposable
     {
-        private readonly MemoryStream _stream = new MemoryStream();
-        public long Length => _stream.Length;
+        private readonly FileStream _stream;
+        public FieldDisposed(string path) { _stream = File.OpenRead(path); }
+        public int Next() => _stream.ReadByte();
         public void Dispose() => _stream.Dispose();
     }
     #endregion
@@ -188,18 +190,24 @@ namespace Bench
         #endregion
     }
 
-    /// <summary>SharpSource SS018 (and the compiler's CS8509): a switch that misses a value throws.</summary>
-    public static class EnumSwitch
+    /// <summary>SharpSource SS018 (and the compiler's CS8509): a switch expression that misses a value throws.</summary>
+    public static class SwitchExpression
     {
-        #region case EnumSwitch.Direct bug
+        #region case SwitchExpression.Direct bug
         public static int Direct(Color c) => c switch { Color.Red => 1, Color.Green => 2 };
         #endregion
 
-        #region case EnumSwitch.Harmless ok
-        public static int Harmless(Color c)
+        #region case SwitchExpression.Hidden bug
+        /// <summary>Every member is named, but an enum may hold any int: (Color)7 throws.</summary>
+        public static int Hidden(Color c) => c switch { Color.Red => 1, Color.Green => 2, Color.Blue => 3 };
+        #endregion
+
+        #region case SwitchExpression.Harmless ok
+        /// <summary>The value no arm matches was returned for earlier.</summary>
+        public static int Harmless(int x)
         {
-            if (c == Color.Blue) return 3;
-            return c switch { Color.Red => 1, Color.Green => 2 };
+            if (x == 0) return 0;
+            return x switch { > 0 => 1, < 0 => -1 };
         }
         #endregion
     }
