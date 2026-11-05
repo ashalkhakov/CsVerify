@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
@@ -92,6 +93,12 @@ namespace CsVerify.Verifier
                 if (r.Kind != ControlFlowRegionKind.Try || parent == null || _erasedTry.Contains(parent)) continue;
                 if (parent.Kind == ControlFlowRegionKind.TryAndCatch)
                 {
+                    // (collected, where its try is: its handlers run once, from all the raises' states merged)
+                    if (_collecting.TryGetValue(parent, out var collector))
+                    {
+                        collector.Raises.Add((x, f.Clone(), _z3.Recorded(collector.BaseDepth)));
+                        return;
+                    }
                     TryHandlers(parent, 1, x, f);
                     return;
                 }
@@ -106,6 +113,165 @@ namespace CsVerify.Verifier
                 }
             }
             ExceptionalExit(x, f);
+        }
+
+        // ================================================================== state merging at a handler
+
+        /// <summary>The raises a try collects while its body is explored: the exception, the state, what was assumed.</summary>
+        private sealed class Collector
+        {
+            public int BaseDepth;
+            public readonly List<(Term x, Frame f, List<Term> facts)> Raises = new List<(Term, Frame, List<Term>)>();
+        }
+
+        private readonly Dictionary<ControlFlowRegion, Collector> _collecting = new Dictionary<ControlFlowRegion, Collector>();
+
+        /// <summary>The try/catch whose try begins at <paramref name="block"/>, if one does and its handlers are seen.</summary>
+        private ControlFlowRegion TryEntry(BasicBlock block)
+        {
+            var r = block.EnclosingRegion;
+            for (; r != null; r = r.EnclosingRegion)
+            {
+                if (r.FirstBlockOrdinal != block.Ordinal) return null;
+                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion is ControlFlowRegion tc &&
+                    tc.Kind == ControlFlowRegionKind.TryAndCatch && !_erasedTry.Contains(tc) && !_collecting.ContainsKey(tc))
+                    return tc;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A try/catch, explored as symbolic executors with state merging do (KeY's merge rule; Viper's Silicon): its
+        /// body is explored (and on, along its normal paths) with the raises that reach this handler collected rather
+        /// than followed; then, back where the try began, the handlers run once for all of them, from their states
+        /// merged. A fresh selector picks one raise: each part of the state is the selected raise's (an if-term
+        /// where they differ), and what was assumed on the way to each holds where it is selected. That is exact:
+        /// the merged state stands for each raise's state and for nothing else. (Followed one by one, each raise
+        /// ran the handler and the rest of the method again: in a try, every call may raise, so each doubled the
+        /// paths.) Raises whose states differ in more than values (which views are held, what is pending) are merged
+        /// with their like only.
+        /// </summary>
+        private void CollectTry(ControlFlowRegion tryAndCatch, BasicBlock block, Frame f, HashSet<int> onPath)
+        {
+            var collector = new Collector();
+            _z3.Push();
+            _z3.StartRecording();
+            collector.BaseDepth = _z3.Depth;
+            _collecting[tryAndCatch] = collector;
+            try { Exec(block, f, onPath); }
+            finally
+            {
+                _collecting.Remove(tryAndCatch);
+                _z3.StopRecording();
+                _z3.Pop();
+            }
+            var (saved, current, savedPath, codeMode) = (_block, _current, _onPath, _codeMode);
+            var guards = _guards.ToList();
+            _guards.Clear();
+            try
+            {
+                foreach (var group in collector.Raises.GroupBy(r => Shape(r.f)))
+                {
+                    var raises = group.ToList();
+                    _z3.Push();
+                    try
+                    {
+                        if (raises.Count == 1)
+                        {
+                            foreach (var fact in raises[0].facts) _z3.Assume(fact);
+                            _onPath = onPath;
+                            TryHandlers(tryAndCatch, 1, raises[0].x, raises[0].f);
+                            continue;
+                        }
+                        var sel = _z3.Fresh("raise", Sort.Int);
+                        _z3.Assume(T.Or(raises.Select((_, i) => T.Eq(sel, T.Int(i))).ToArray()));
+                        for (int i = 0; i < raises.Count; i++)
+                            _z3.Assume(T.Implies(T.Eq(sel, T.Int(i)), T.And(raises[i].facts.ToArray())));
+                        var merged = Merge(raises.Select(r => r.f).ToList(), sel);
+                        var x = Pick(raises.Select(r => r.x).ToList(), sel);
+                        merged.Exception = x;
+                        _onPath = onPath;
+                        TryHandlers(tryAndCatch, 1, x, merged);
+                    }
+                    finally { _z3.Pop(); }
+                }
+            }
+            finally
+            {
+                _guards.AddRange(guards);
+                (_block, _current, _onPath, _codeMode) = (saved, current, savedPath, codeMode);
+            }
+        }
+
+        /// <summary>ite(sel == 0, t0, ite(sel == 1, t1, ...)): the selected one (itself, where they are all one term).</summary>
+        private static Term Pick(List<Term> ts, Term sel)
+        {
+            if (ts.All(t => t?.S == ts[0]?.S)) return ts[0];
+            var r = ts[ts.Count - 1];
+            for (int i = ts.Count - 2; i >= 0; i--) r = T.Ite(T.Eq(sel, T.Int(i)), ts[i], r);
+            return r;
+        }
+
+        /// <summary>
+        /// What must be the same in states that are merged: all but values, and but what the merge can make one (the
+        /// resources in hand, held only if every raise holds them; the flow graph's captures, the try's own; field
+        /// maps, made where a state has none yet).
+        /// </summary>
+        private static string Shape(Frame f)
+        {
+            string Keys<K, V>(Dictionary<K, V> d) => string.Join(",", d.Keys.Select(k => k.ToString()).OrderBy(k => k, StringComparer.Ordinal));
+            string Set<K>(HashSet<K> h) => string.Join(",", h.Select(k => k.ToString()).OrderBy(k => k, StringComparer.Ordinal));
+            string Nulls(params Term[] ts) => string.Concat(ts.Select(t => t == null ? "0" : "1"));
+            return string.Join("|",
+                Set(f.ActiveLoops),
+                Keys(f.Refs) + ":" + string.Join(",", f.Refs.Values.Select(r => $"{r.Variable}/{r.Arr?.S}/{r.Idx?.S}")),
+                Keys(f.ForEach), Keys(f.LoopMeasures), Keys(f.LoopPermFrames), Keys(f.LoopFactEntry), Keys(f.ViewSequences),
+                string.Join(";", f.LoopFacts.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + string.Join(",", kv.Value))),
+                f.FieldEpoch.ToString(), System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(f.Pending).ToString(), f.ReturnSyntax?.SpanStart.ToString() ?? "-",
+                Nulls(f.This, f.Heap, f.Root, f.Alloc, f.Perm, f.Inst, f.Owner, f.ArrPerm, f.COwner, f.FPerm, f.FOwner, f.Result));
+        }
+
+        /// <summary>One state for states of one shape: each value the selected one's.</summary>
+        private Frame Merge(List<Frame> fs, Term sel)
+        {
+            Term P(Func<Frame, Term> part) => fs.Any(x => part(x) == null) ? null : Pick(fs.Select(part).ToList(), sel);
+            var m = fs[0].Clone();
+            m.Link = null; // (no earlier state is this one: the frame rule starts afresh)
+            foreach (var k in fs[0].Vars.Keys.Where(k => fs.All(x => x.Vars.ContainsKey(k))).ToList()) m.Vars[k] = Pick(fs.Select(x => x.Vars[k]).ToList(), sel);
+            foreach (var k in fs[0].Vars.Keys.Where(k => !fs.All(x => x.Vars.ContainsKey(k))).ToList()) m.Vars.Remove(k); // (declared in some only: the try's own)
+            // (a field map a state has not made yet is the one it would make: its epoch's)
+            foreach (var k in fs.SelectMany(x => x.Fields.Keys).Distinct(SymbolEqualityComparer.Default).ToList())
+                m.Fields[k] = Pick(fs.Select(x => x.Fields.TryGetValue(k, out var map) ? map : FieldMap(x, k)).ToList(), sel);
+            m.Captures.Clear();
+            foreach (var k in fs[0].Captures.Keys.Where(k => fs.All(x => x.Captures.ContainsKey(k))).ToList())
+                m.Captures[k] = Pick(fs.Select(x => x.Captures[k]).ToList(), sel);
+            // (a resource is in hand only if every raise has it: fewer in hand is sound, a lost view is lost)
+            m.LiveViews.IntersectWith(fs.SelectMany(x => x.LiveViews).Where(v => fs.All(x => x.LiveViews.Contains(v))).ToList());
+            m.LivePackages.IntersectWith(fs.SelectMany(x => x.LivePackages).Where(v => fs.All(x => x.LivePackages.Contains(v))).ToList());
+            m.LiveMemViews.IntersectWith(fs.SelectMany(x => x.LiveMemViews).Where(v => fs.All(x => x.LiveMemViews.Contains(v))).ToList());
+            foreach (var k in fs[0].ForEach.Keys.ToList())
+                m.ForEach[k] = (Pick(fs.Select(x => x.ForEach[k].arr).ToList(), sel), Pick(fs.Select(x => x.ForEach[k].idx).ToList(), sel));
+            foreach (var k in fs[0].LoopFactEntry.Keys.ToList()) m.LoopFactEntry[k] = Pick(fs.Select(x => x.LoopFactEntry[k]).ToList(), sel);
+            foreach (var k in fs[0].LoopMeasures.Keys.ToList())
+                m.LoopMeasures[k] = Enumerable.Range(0, fs[0].LoopMeasures[k].Length).Select(i => Pick(fs.Select(x => x.LoopMeasures[k][i]).ToList(), sel)).ToArray();
+            foreach (var k in fs[0].LoopPermFrames.Keys.ToList())
+                m.LoopPermFrames[k] = (P(x => x.LoopPermFrames[k].perm), P(x => x.LoopPermFrames[k].inst), P(x => x.LoopPermFrames[k].arr), P(x => x.LoopPermFrames[k].fperm));
+            m.This = P(x => x.This);
+            m.Heap = P(x => x.Heap);
+            m.Root = P(x => x.Root);
+            m.Alloc = P(x => x.Alloc);
+            m.Perm = P(x => x.Perm);
+            m.Inst = P(x => x.Inst);
+            m.Owner = P(x => x.Owner);
+            m.ArrPerm = P(x => x.ArrPerm);
+            m.COwner = P(x => x.COwner);
+            m.FPerm = P(x => x.FPerm);
+            m.FOwner = P(x => x.FOwner);
+            m.Result = P(x => x.Result);
+            // (the view sequences cached for loops: one only if they are one)
+            foreach (var k in fs[0].ViewSequences.Keys.ToList())
+                if (!fs.All(x => ReferenceEquals(x.ViewSequences[k], fs[0].ViewSequences[k]))) m.ViewSequences.Remove(k);
+            return m;
         }
 
         /// <summary>Handler <paramref name="index"/> of a try/catch, and the ones after it, for exception x.</summary>
