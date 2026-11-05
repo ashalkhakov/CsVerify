@@ -29,6 +29,11 @@ namespace CsVerify.Verifier
         public NullableContextOptions Nullable = NullableContextOptions.Enable;
         public int TimeoutMs = 10000;
         public int MaxPaths = 5000;
+        /// <summary>
+        /// The most time a method's verification may take, all rounds included (milliseconds; 0 for no limit). Past it,
+        /// its remaining obligations are not proved (CSV1901): the method is reported not verified, never verified.
+        /// </summary>
+        public int MethodBudgetMs;
         /// <summary>Verify only the methods whose name (Type.Method) contains one of these; all, if empty.</summary>
         public List<string> Only = new List<string>();
         internal bool Selects(string method) => Only.Count == 0 || Only.Any(o => method.Contains(o, StringComparison.Ordinal));
@@ -623,11 +628,13 @@ namespace CsVerify.Verifier
         private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested = null)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            try { RunRounds(engine, contract, mr, at, nested); }
+            long deadline = engine.Options.MethodBudgetMs > 0
+                ? System.Diagnostics.Stopwatch.GetTimestamp() + engine.Options.MethodBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000 : 0;
+            try { RunRounds(engine, contract, mr, at, nested, deadline); }
             finally { mr.Milliseconds = clock.ElapsedMilliseconds; }
         }
 
-        private static void RunRounds(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested)
+        private static void RunRounds(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested, long deadline)
         {
             const int Rounds = 8;
             var excluded = new HashSet<string>(StringComparer.Ordinal);
@@ -635,7 +642,7 @@ namespace CsVerify.Verifier
             {
                 mr.Clear();
                 engine.Solver.Reset();
-                var verifier = new MethodVerifier(engine, contract, mr, round == Rounds ? null : excluded) { NestedGraph = nested };
+                var verifier = new MethodVerifier(engine, contract, mr, round == Rounds ? null : excluded) { NestedGraph = nested, Deadline = deadline };
                 if (round == Rounds) verifier.InferNoLoopFacts = true;
                 bool failed = false;
                 try { verifier.Run(); }
@@ -647,7 +654,7 @@ namespace CsVerify.Verifier
                 foreach (var err in engine.Solver.Errors)
                     mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, at.GetLineSpan()));
                 engine.Solver.Errors.Clear();
-                if (failed || verifier.FailedLoopFacts.Count == 0 || round == Rounds) return;
+                if (failed || verifier.FailedLoopFacts.Count == 0 || round == Rounds || verifier.OverBudget) return;
                 excluded.UnionWith(verifier.FailedLoopFacts);
             }
         }

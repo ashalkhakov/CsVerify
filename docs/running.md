@@ -35,6 +35,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--nullable <ctx>` | the nullable context: `enable` (default), `disable`, `annotations`, `warnings`; only non-nullable reference types are known not to be null |
 | `--no-overflow` | make every integer mathematical, which is unsound where code can overflow (by default integers are bounded: see [Bounded integers](semantics.md#bounded-integers)) |
 | `--timeout <ms>` | per-query Z3 timeout (default 10000) |
+| `--method-budget <ms>` | the most time one method's verification may take, all rounds included; past it, its remaining obligations are not proved (CSV1901), so the method is reported not verified (default: no limit) |
 | `--z3 <path>` | Z3 executable |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
 | `--smt-log <file>` | dump the whole SMT-LIB2 conversation |

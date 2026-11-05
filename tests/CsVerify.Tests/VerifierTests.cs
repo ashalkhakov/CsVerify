@@ -223,6 +223,18 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void MethodBudget_LeavesTheRestNotVerified()
+        {
+            // past its time budget, a method is reported not verified (CSV1901), never verified
+            var src = "static void Slow(int[] a) { for (int i = 0; i < 6; i++) { if (a.Length > i && a[i] > 0) Spec.Assert(a[i] % 3 != 7 || a[i] > 1); } }";
+            var r = Harness.Verify(src.Replace("static void", "public static void").Insert(0, "public static class P { ") + " }");
+            Assert.Empty(r.Errors("Slow"));
+            var budgeted = CsVerify.Verifier.Engine.VerifySources(new[] { ("Test.cs", "using System; using CsVerify; public static class P { " + src.Replace("static void", "public static void") + " }") },
+                new CsVerify.Verifier.VerifierOptions { MethodBudgetMs = 1 });
+            Assert.Contains("CSV1901", budgeted.Methods.Single(m => m.Name == "P.Slow").Diagnostics.Where(d => d.IsError).Select(d => d.Id));
+        }
+
+        [Fact]
         public void TupleResults()
         {
             const string minMax = "static (int lo, int hi) M(int x, int y) { Spec.Ensures<(int lo, int hi)>(r => r.lo == Math.Min(x, y) && r.Item2 == Math.Max(x, y)); " +

@@ -157,6 +157,23 @@ namespace CsVerify.Verifier
         /// <summary>A lambda's or local function's flow graph, from its enclosing method's (Engine's nested functions).</summary>
         public ControlFlowGraph NestedGraph;
 
+        /// <summary>When the method's time budget runs out (a Stopwatch timestamp; 0 for none).</summary>
+        public long Deadline;
+        public bool OverBudget => Deadline > 0 && System.Diagnostics.Stopwatch.GetTimestamp() > Deadline;
+
+        /// <summary>Past the budget: reported once; the rest is not proved.</summary>
+        private bool BudgetSpent()
+        {
+            if (!OverBudget) return false;
+            if (!_budgetReported)
+            {
+                _budgetReported = true;
+                NotModeled(MethodLocationNode(), $"time budget ({_engine.Options.MethodBudgetMs} ms) reached; the rest of '{_method.Name}' is not verified");
+            }
+            return true;
+        }
+        private bool _budgetReported;
+
         public void Run()
         {
             var body = _model.GetOperation(_contract.Declaration);
@@ -402,6 +419,7 @@ namespace CsVerify.Verifier
 
         private void Exec(BasicBlock block, Frame f, HashSet<int> onPath)
         {
+            if (BudgetSpent()) return;
             if (++_paths > _engine.Options.MaxPaths)
             {
                 if (_paths == _engine.Options.MaxPaths + 1)
@@ -666,6 +684,11 @@ namespace CsVerify.Verifier
             }
             bool wasCode = _codeMode;
             _result.Obligations++;
+            if (BudgetSpent())
+            {
+                if (assume) _z3.Assume(goal);
+                return; // (not proved: the method is reported not verified)
+            }
             var r = _z3.Check(T.Not(goal));
             if (r == "unsat") _result.Proved++;
             else

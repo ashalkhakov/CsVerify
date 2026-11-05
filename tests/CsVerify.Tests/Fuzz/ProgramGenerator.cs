@@ -33,6 +33,12 @@ namespace CsVerify.Tests.Fuzz
         private bool _spec; // (in a specification: no LINQ, which is not [Pure])
         private bool _pinned; // (the method's inputs are constants)
         private int _tries;   // (try blocks in this method)
+        private bool _inPost; // (in a postcondition: Spec.Old may be read)
+        private bool _async;  // (the method is async)
+        private int _index;   // (its number: it may call the methods before it)
+        private HashSet<string> _callees = new HashSet<string>();
+        private readonly HashSet<int> _asyncMethods = new HashSet<int>();
+        private HashSet<int> _staticSlots = new HashSet<int>();
 
         /// <summary>The most statements a body has (a soak can ask for bigger programs).</summary>
         public int Size = 4;
@@ -63,6 +69,87 @@ public abstract record Shape
 public sealed record Range(int Lo, int Hi)
 {
     [Invariant, Pure] public bool Valid() => Lo <= Hi;
+}
+
+// an immutable class with an invariant: proved where each is made, assumed wherever its fields are read
+public sealed class Frac
+{
+    public readonly int N, D;
+
+    [Invariant, Pure] public bool Valid() => D > 0;
+
+    public Frac(int n, int d)
+    {
+        Spec.Requires(d > 0);
+        Spec.Ensures(N == n && D == d);
+        N = n;
+        D = d;
+    }
+}
+
+// single fields of an owned object, lent apart: a call that gets one changes only it
+[Owned]
+public sealed class Particle { public int Pos; public int Speed; }
+
+public static class FP
+{
+    public static void Move(Particle p, int by)
+    {
+        Spec.Requires(Spec.Acc(p, nameof(Particle.Pos)) && -1000 <= by && by <= 1000 && -1000000 <= p.Pos && p.Pos <= 1000000);
+        Spec.Ensures(Spec.Acc(p, nameof(Particle.Pos)) && p.Pos == Spec.Old(p.Pos) + by);
+        p.Pos += by;
+    }
+
+    public static void Accelerate(Particle p)
+    {
+        Spec.Requires(Spec.Acc(p, nameof(Particle.Speed)) && p.Speed < 1000);
+        Spec.Ensures(Spec.Acc(p, nameof(Particle.Speed)) && p.Speed == Spec.Old(p.Speed) + 1);
+        p.Speed++;
+    }
+}
+
+// a recursive predicate: a list segment's nodes' permissions (ATS's slseg_v)
+[Owned]
+public sealed class LNode
+{
+    public int Val;
+    public LNode? Next;
+
+    public LNode(int val, LNode? next)
+    {
+        Spec.Ensures(Val == val && Next == next);
+        Val = val;
+        Next = next;
+    }
+}
+
+public static class LS
+{
+    [Predicate]
+    public static bool Seg(LNode? from, LNode? to, int n) =>
+        n == 0 ? from == to : n > 0 && from != null && Spec.Acc(from) && Seg(from.Next, to, n - 1);
+
+    public static LNode Cons(int val, LNode? list, int n)
+    {
+        Spec.Requires(n >= 0 && n < 1000 && Seg(list, null, n));
+        Spec.Ensures((LNode r) => Seg(r, null, n + 1));
+        var node = Own.New(new LNode(val, list), out var view);
+        Own.ToAcc(view);
+        Spec.Fold(Seg(node, null, n + 1));
+        return node;
+    }
+}
+
+// async: a contract of what the task gives, and an await, after which what the method does not hold is forgotten
+public static class AH
+{
+    public static async System.Threading.Tasks.Task<int> TwiceAsync(int x)
+    {
+        Spec.Requires(0 <= x && x <= 1000);
+        Spec.Ensures((int r) => r == 2 * x);
+        await System.Threading.Tasks.Task.Yield();
+        return 2 * x;
+    }
 }
 
 // a mutable struct: a value, copied by assignment
@@ -327,10 +414,14 @@ public sealed class Duo
         {
             public string Name;
             public bool Pinned;
+            public bool Async;                                // (an async method: awaits, and its contract is of what its task gives)
+            public HashSet<string> Callees = new HashSet<string>(); // (the generated methods it calls: it is verified only if they are)
             internal string Pre, Result;
             internal List<Stmt> Body;
             public List<string> Posts = new List<string>();
+            public List<string> ThrowPosts = new List<string>(); // (candidate EnsuresOnThrow<Escape> conditions)
             public int Slots;
+            public HashSet<int> StaticSlots = new HashSet<int>(); // (ghost assertions true by construction: their negation may be planted)
             public List<Input> Inputs = new List<Input>();
             public List<Input> Fresh = new List<Input>();
 
@@ -339,41 +430,59 @@ public sealed class Duo
             /// candidate postcondition (Mode.Probe): with the slots in keep (and planted), and the postcondition post.
             /// Run and probe renderings add an entry, name + "_", that makes the cells from integers.
             /// </summary>
-            public string Render(Mode mode, string name, ISet<int> keep = null, int planted = -1, int post = -1)
+            public string Render(Mode mode, string name, ISet<int> keep = null, int planted = -1, int post = -1, int throwPost = -1)
             {
                 var sb = new StringBuilder();
                 if (mode != Mode.Verify)
                 {
+                    // (the entry makes the cells, and checks or records what holds when the method leaves by Escape)
                     sb.AppendLine($"    public static int {name}_(int a, int b, int[] xs, int cv, int dmode, int dv)");
                     sb.AppendLine("    {");
                     sb.AppendLine("        var c = new Cell { V = cv };");
                     sb.AppendLine("        var d = dmode == 0 ? null : dmode == 1 ? c : new Cell { V = dv };");
-                    sb.AppendLine($"        return {name}(a, b, xs, c, d);");
+                    sb.AppendLine($"        try {{ return {name}(a, b, xs, c, d){(Async ? ".GetAwaiter().GetResult()" : "")}; }}");
+                    sb.AppendLine("        catch (Escape)");
+                    sb.AppendLine("        {");
+                    if (mode == Mode.Probe)
+                        for (int k = 0; k < ThrowPosts.Count; k++) sb.AppendLine($"            Probe.ThrowPost({k}, () => {ThrowPosts[k]});");
+                    else if (throwPost >= 0) sb.AppendLine($"            if (!({ThrowPosts[throwPost]})) throw new Failed(\"EnsuresOnThrow\");");
+                    sb.AppendLine("            throw;");
+                    sb.AppendLine("        }");
                     sb.AppendLine("    }");
                 }
-                sb.AppendLine($"    public static int {name}(int a, int b, int[] xs, Cell c, Cell{(mode == Mode.Verify ? "?" : "")} d)");
+                sb.AppendLine($"    public static {(Async ? "async System.Threading.Tasks.Task<int>" : "int")} {name}(int a, int b, int[] xs, Cell c, Cell{(mode == Mode.Verify ? "?" : "")} d)");
                 sb.AppendLine("    {");
                 if (mode == Mode.Verify)
                 {
                     sb.AppendLine($"        Spec.Requires({Pre});");
-                    if (post >= 0) sb.AppendLine($"        Spec.Ensures<int>(r => {Posts[post]});");
+                    if (post >= 0) sb.AppendLine($"        Spec.Ensures<int>(r => {Old(Posts[post], mode)});");
+                    if (throwPost >= 0) sb.AppendLine($"        Spec.EnsuresOnThrow<Escape>({ThrowPosts[throwPost]});");
                 }
-                else sb.AppendLine($"        if (!({Pre.Replace("Spec.Forall", "RT.Forall")})) throw new Skip();");
+                // (an input the precondition does not admit is skipped; but in a call from another method, that its
+                // precondition fails is what the caller's verification said could not happen)
+                else sb.AppendLine($"        if (!({Pre.Replace("Spec.Forall", "RT.Forall")})) throw RT.Depth == 0 ? new Skip() : new Failed(\"a callee's precondition\");");
                 bool Kept(int id) => mode == Mode.Probe || keep != null && keep.Contains(id) || id == planted;
-                foreach (var st in Body) Emit(sb, st, 2, mode, Kept);
+                // (Spec.Old: in the program that runs, the values the method began with)
+                if (mode != Mode.Verify) sb.AppendLine("        int __oc = c.V; int __ox = xs.Length > 0 ? xs[0] : 0;");
+                foreach (var st in Body) Emit(sb, st, 2, mode, Kept, planted, name);
                 if (mode == Mode.Verify) sb.AppendLine($"        return {Result};");
                 else
                 {
                     sb.AppendLine($"        int r = {Result};");
-                    if (mode == Mode.Run && post >= 0) sb.AppendLine($"        if (!({Posts[post]})) throw new Failed(\"the postcondition\");");
+                    if (mode == Mode.Run && post >= 0) sb.AppendLine($"        if (!({Old(Posts[post], mode)})) throw new Failed(\"the postcondition\");");
                     if (mode == Mode.Probe)
-                        for (int k = 0; k < Posts.Count; k++) sb.AppendLine($"        Probe.Post({k}, () => {Posts[k]});");
+                        for (int k = 0; k < Posts.Count; k++) sb.AppendLine($"        Probe.Post({k}, () => {Old(Posts[k], mode)});");
                     sb.AppendLine("        return r;");
                 }
                 sb.AppendLine("    }");
                 return sb.ToString();
             }
         }
+
+        /// <summary>A postcondition's Spec.Old: the old values themselves, where the program runs.</summary>
+        private static string Old(string post, Mode mode) => mode == Mode.Verify
+            ? post.Replace("⟪oc⟫", "Spec.Old(c.V)").Replace("⟪ox⟫", "Spec.Old(xs.Length > 0 ? xs[0] : 0)")
+            : post.Replace("⟪oc⟫", "__oc").Replace("⟪ox⟫", "__ox");
 
         /// <summary>The variables in scope, by type.</summary>
         private sealed class Pools
@@ -392,13 +501,17 @@ public sealed class Duo
             public List<string> Lists = new List<string>(), Maps = new List<string>(), Sets = new List<string>(), Stacks = new List<string>();
             public List<string> Strings = new List<string>(), Nullables = new List<string>();
             public List<string> Shapes = new List<string>(), Ranges = new List<string>(), Positions = new List<string>();
+            public List<string> Grids = new List<string>(); // (int[2, 3])
+            public List<string> Fracs = new List<string>();
+            public List<string> Particles = new List<string>(), MemArrays = new List<string>(), Segs = new List<string>(), Builders = new List<string>();
             public Pools Copy() => new Pools
             {
                 Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList(),
                 Shares = Shares.ToList(), Boxes = Boxes.ToList(), Held = Held.ToList(), Nodes = Nodes.ToList(), Folded = Folded.ToList(),
                 Counters = Counters.ToList(), Gauges = Gauges.ToList(), Duos = Duos.ToList(), Mems = Mems.ToList(),
                 Lists = Lists.ToList(), Maps = Maps.ToList(), Sets = Sets.ToList(), Stacks = Stacks.ToList(), Strings = Strings.ToList(), Nullables = Nullables.ToList(),
-                Shapes = Shapes.ToList(), Ranges = Ranges.ToList(), Positions = Positions.ToList(),
+                Shapes = Shapes.ToList(), Ranges = Ranges.ToList(), Positions = Positions.ToList(), Grids = Grids.ToList(), Fracs = Fracs.ToList(),
+                Particles = Particles.ToList(), MemArrays = MemArrays.ToList(), Segs = Segs.ToList(), Builders = Builders.ToList(),
             };
             public IEnumerable<string> Writable => Nodes.Where(n => !Folded.Any(f => f.Item1 == n || f.Item2 == n));
         }
@@ -408,8 +521,12 @@ public sealed class Duo
             _fresh = 0;
             _slots = 0;
             _tries = 0;
+            _staticSlots = new HashSet<int>();
             var m = new Method { Name = name };
             m.Pinned = _pinned = _r.Next(3) > 0;
+            m.Async = _async = _r.Next(6) == 0;
+            _index = int.Parse(name.Substring(1));
+            _callees = m.Callees;
             if (m.Pinned)
             {
                 var input = new Input { A = Small(), B = Small(), Xs = Enumerable.Range(0, _r.Next(5)).Select(_ => Small()).ToArray(), CV = Small(), DMode = _r.Next(3), DV = Small() };
@@ -443,8 +560,13 @@ public sealed class Duo
             _p.Ints.Add("a");
             _p.Ints.Add("b");
             _p.Cells.Add("c");
+            _inPost = true;
             for (int k = 0; k < 4; k++) m.Posts.Add(Spec(() => Bool(2, "r")));
+            _inPost = false;
+            for (int k = 0; k < 2; k++) m.ThrowPosts.Add(Spec(() => Bool(1, null)));
             m.Slots = _slots;
+            m.StaticSlots = _staticSlots;
+            if (m.Async) _asyncMethods.Add(_index);
             return m;
         }
 
@@ -468,9 +590,11 @@ public sealed class Duo
         internal sealed class Foreach : Stmt { public string Var, Over; public List<Stmt> Body; }
         internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; }
         internal sealed class Assert : Stmt { public string Cond; public int Id; }
+        /// <summary>Ghost code and an assertion about it, true by construction (its negation is what may be planted).</summary>
+        internal sealed class GhostCheck : Stmt { public string Template, True, False; public int Id; }
 
         private readonly Stack<Pools> _scopes = new Stack<Pools>();
-        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 13)).ToArray();
+        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 26)).ToArray();
 
         private List<Stmt> Block(int n)
         {
@@ -483,6 +607,8 @@ public sealed class Duo
             foreach (var o in _p.Accounts.Except(saved.Accounts)) list.Add(new Line { Text = $"Own.Drop(w{o.Substring(1)});" });
             foreach (var b in _p.Held.Except(saved.Held).Where(b => !saved.Boxes.Contains(b))) list.Add(new Line { Text = $"Own.Drop(u{b.Substring(1)});" });
             foreach (var m in _p.Mems.Except(saved.Mems)) list.Add(new Line { Text = $"Mem.Free(m{m}, ptr{m});" });
+            foreach (var pt in _p.Particles.Except(saved.Particles)) list.Add(new Line { Text = $"Own.Drop(zp{pt.Substring(2)});" });
+            foreach (var ma in _p.MemArrays.Except(saved.MemArrays)) list.Add(new Line { Text = $"Mem.FreeArray(gc{ma}, av{ma}, ap{ma});" });
             _scopes.Pop();
             _p = saved; // (a block's declarations end with it)
             return list;
@@ -493,9 +619,9 @@ public sealed class Duo
             _depth++;
             try
             {
-                // (simple statements 0..8 and 13..25; compound ones 9..12 only near the top)
+                // (simple statements 0..8 and 13..38; compound ones 9..12 only near the top)
                 int pick = _depth <= 1 && _r.Next(5) == 0 ? 9 + _r.Next(4) : Simple[_r.Next(Simple.Length)];
-                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(13); // (calls, objects, collections more often)
+                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(26); // (calls, objects, collections more often)
                 if (pick == 13 && _p.Accounts.Count == 1 && _r.Next(2) == 0) pick = 14;
                 switch (pick)
                 {
@@ -664,6 +790,25 @@ public sealed class Duo
                     case 23: return DataStatement();
                     case 24: return StructStatement();
                     case 25: return RefStatement();
+                    case 26: return SpanStatement();
+                    case 27: return GridStatement();
+                    case 28: return GotoStatement();
+                    case 29: case 30: return FunctionStatement();
+                    case 31: return GhostStatement();
+                    case 33: return ParticleStatement();
+                    case 34: return MemArrayStatement();
+                    case 35: return SegStatement();
+                    case 36: return LibraryStatement();
+                    case 37: return CallStatement();
+                    case 38: return AwaitStatement();
+                    case 32:
+                    {
+                        var fr = "fr" + _fresh++;
+                        var dn = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(0)}) % 9 + 1"; // (d > 0, mostly: else it must not verify)
+                        var text = $"var {fr} = new Frac({Int(1)}, {dn});";
+                        _p.Fracs.Add(fr);
+                        return new Line { Text = text };
+                    }
                     case 16: return BoxStatement();
                     case 17: return NodeStatement();
                     case 18:
@@ -860,6 +1005,169 @@ public sealed class Duo
             return new Line { Text = $"if (xs.Length > 0) {{ ref int {r} = ref xs[{Index()}]; {r} = {r} + {Int(0)} % 10; }}" };
         }
 
+        /// <summary>An owned particle whose fields are lent apart: a call that gets one changes only it.</summary>
+        private Stmt ParticleStatement()
+        {
+            if (_p.Particles.Count == 0 || _r.Next(3) == 0)
+            {
+                var pt = "pt" + _fresh++;
+                _p.Particles.Add(pt);
+                return new Line { Text = $"var {pt} = Own.New(new Particle(), out var zp{pt.Substring(2)});" };
+            }
+            var p = Pick(_p.Particles);
+            var by = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100"; // (in range, mostly: else it must not verify)
+            return new Line { Text = _r.Next(2) == 0 ? $"FP.Move({p}, {by});" : $"FP.Accelerate({p});" };
+        }
+
+        /// <summary>ATS's arrays of memory: a view of three cells, read and written, split and joined, a cell taken out.</summary>
+        private Stmt MemArrayStatement()
+        {
+            if (_p.MemArrays.Count == 0 || _r.Next(3) == 0)
+            {
+                var n = (_fresh++).ToString();
+                _p.MemArrays.Add(n);
+                return new Line { Text = $"var ap{n} = Mem.AllocArray(3, {Int(1)}, out ArrayView<int> av{n}, out FreeGc<int> gc{n});" };
+            }
+            var m = Pick(_p.MemArrays);
+            var i = _r.Next(4) == 0 ? Int(0) : $"Math.Abs({Int(0)}) % 3"; // (in range, mostly)
+            var k = _fresh++;
+            var targets = _p.Ints.Where(x => x.StartsWith("v")).ToList();
+            switch (_r.Next(4))
+            {
+                case 0: return new Line { Text = $"Mem.Set(ref av{m}, ap{m}, {i}, {Int(1)});" };
+                case 1 when targets.Count > 0: return new Line { Text = $"{Pick(targets)} = Mem.Get(in av{m}, ap{m}, {i});" };
+                case 2: return new Line { Text = $"Mem.Split(av{m}, Ghost.Of(1), out var l{k}, out var r{k}); Mem.Set(ref r{k}, ap{m}.Offset(1), 0, {Int(1)}); Mem.Join(l{k}, r{k}, out av{m});" };
+                default: return new Line { Text = $"Mem.TakeOut(av{m}, Ghost.Of(1), out var cl{k}, out var hl{k}); Mem.Write(ref cl{k}, ap{m}.Offset(1), {Int(1)}); Mem.PutBack(cl{k}, hl{k}, out av{m});" };
+            }
+        }
+
+        /// <summary>A recursive predicate: a list built by Cons, each node's permission folded into the segment.</summary>
+        private Stmt SegStatement()
+        {
+            var n = _fresh++;
+            var text = $"Spec.Fold(LS.Seg(null, null, 0)); var ls{n} = LS.Cons({Int(1)}, null, 0); var lt{n} = LS.Cons({Int(1)}, ls{n}, 1);";
+            if (_r.Next(2) == 0) text += $" Spec.Unfold(LS.Seg(lt{n}, null, 2));";
+            _p.Segs.Add($"lt{n}");
+            return new Line { Text = text };
+        }
+
+        /// <summary>The library under its contracts: a StringBuilder; a writer disposed by using, or leaked (an error).</summary>
+        private Stmt LibraryStatement()
+        {
+            var n = _fresh++;
+            switch (_r.Next(3))
+            {
+                case 0:
+                    _p.Builders.Add($"sb{n}");
+                    return new Line { Text = $"var sb{n} = new System.Text.StringBuilder(); sb{n}.Append({Int(1)}); sb{n}.Append(\"x\");" };
+                case 1:
+                    return new Line { Text = $"using (var ms{n} = new System.IO.MemoryStream()) {{ using (var sw{n} = new System.IO.StreamWriter(ms{n})) {{ sw{n}.Write({Int(1)}); }} }}" };
+                default:
+                    return new Line { Text = $"var sw{n} = new System.IO.StreamWriter(new System.IO.MemoryStream()); sw{n}.Write({Int(1)});" }; // (never disposed: must not verify)
+            }
+        }
+
+        /// <summary>A call to a method generated before this one (its true variant): modular, by its contract.</summary>
+        private Stmt CallStatement()
+        {
+            var sync = Enumerable.Range(0, _index).Where(j => !_asyncMethods.Contains(j)).ToList();
+            if (sync.Count == 0 || _callees.Count > 0) return StringStatement();
+            var j = sync[_r.Next(sync.Count)];
+            var v = "v" + _fresh++;
+            _callees.Add($"M{j}");
+            _p.Ints.Add(v);
+            return new Line { Text = $"int {v} = ⟪call:{j}⟫(a, b, xs, c, d);" };
+        }
+
+        /// <summary>In an async method, an await of a call with a contract.</summary>
+        private Stmt AwaitStatement()
+        {
+            if (!_async) return NullableStatement();
+            var v = "v" + _fresh++;
+            _p.Ints.Add(v);
+            return new Line { Text = $"int {v} = await AH.TwiceAsync({(_r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 1000")});" };
+        }
+
+        /// <summary>Ghost state: a multiset kept by a swap, a sequence read after an update (true by construction).</summary>
+        private Stmt GhostStatement()
+        {
+            var n = _fresh++;
+            var id = _slots++;
+            _staticSlots.Add(id);
+            if (_r.Next(2) == 0)
+                return new GhostCheck
+                {
+                    Id = id,
+                    Template = $"if (xs.Length >= 2) {{ var ms{n} = Ghost.Of(Spec.Multiset(xs, xs.Length)); int t{n} = xs[0]; xs[0] = xs[1]; xs[1] = t{n}; ⟨A⟩ }}",
+                    True = $"Spec.Multiset(xs, xs.Length) == ms{n}.Value",
+                    False = $"Spec.Multiset(xs, xs.Length) != ms{n}.Value",
+                };
+            int k = _r.Next(1, 4), v = _r.Next(-5, 9), w = v + _r.Next(1, 5);
+            return new GhostCheck
+            {
+                Id = id,
+                Template = $"{{ var sq{n} = Ghost.Of(Seq.Const({w}).Update({k}, Ghost.Of({v}))); ⟨A⟩ }}",
+                True = $"sq{n}.Value[{k}].Value == {v} && sq{n}.Value[0].Value == {w}",
+                False = $"sq{n}.Value[{k}].Value == {w}",
+            };
+        }
+
+        /// <summary>A span of the array: written through (the array sees it), sliced, filled; its range checked.</summary>
+        private Stmt SpanStatement()
+        {
+            // (in a block of its own: a span cannot be captured, and the probe's checks are lambdas)
+            var sp = "sp" + _fresh++;
+            var start = _r.Next(4) == 0 ? Int(0) : "1";
+            var text = $"if (xs.Length >= 2) {{ var {sp} = xs.AsSpan({start}, xs.Length - 1);";
+            switch (_r.Next(3))
+            {
+                case 0: text += $" if ({sp}.Length > 0) {sp}[0] = {Int(1)};"; break;
+                case 1: text += $" {sp}.Slice(1).Fill({Int(1)});"; break;
+                default: text += $" {sp}[{sp}.Length - 1] = {sp}.Length;"; break;
+            }
+            return new Line { Text = text + " }" };
+        }
+
+        /// <summary>A rectangular array: its cells by both indices (each checked against its dimension).</summary>
+        private Stmt GridStatement()
+        {
+            if (_p.Grids.Count == 0 || _r.Next(3) == 0)
+            {
+                var g = "gr" + _fresh++;
+                _p.Grids.Add(g);
+                return new Line { Text = $"var {g} = new int[2, 3]; {g}[1, 2] = {Int(1)};" };
+            }
+            var gr = Pick(_p.Grids);
+            return new Line { Text = _r.Next(4) == 0 ? $"{gr}[{Int(0)}, 0] = {Int(1)};" : $"{gr}[Math.Abs({Int(0)}) % 2, Math.Abs({Int(0)}) % 3] = {Int(1)};" };
+        }
+
+        /// <summary>A loop made of a label and a goto back to it (cut at the head, like a while).</summary>
+        private Stmt GotoStatement()
+        {
+            var n = _fresh++;
+            var target = _p.Ints.Where(x => x.StartsWith("v")).Select(x => x).DefaultIfEmpty("c.V").First();
+            var bound = $"Math.Abs({Int(0)}) % 4";
+            return new Line { Text = $"{{ int gt{n} = 0; again{n}: if (gt{n} < {bound}) {{ {target} = Math.Max({target}, gt{n}); gt{n}++; goto again{n}; }} }}" };
+        }
+
+        /// <summary>A local function with a contract of its own, or a lambda: each verified as a unit of its own.</summary>
+        private Stmt FunctionStatement()
+        {
+            var n = _fresh++;
+            var v = "v" + _fresh++;
+            string text;
+            if (_r.Next(2) == 0)
+            {
+                // (called within its precondition, mostly: else it must not verify)
+                var arg = _r.Next(3) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100";
+                text = $"int lf{n}(int x) {{ Spec.Requires(0 <= x && x <= 100); Spec.Ensures((int r) => x <= r && r <= x + 2); return x + Math.Abs(x % 3); }} int {v} = lf{n}({arg});";
+            }
+            else
+                text = $"Func<int, int> fn{n} = x => x / 2 + 1; int {v} = fn{n}({Int(1)});";
+            _p.Ints.Add(v);
+            return new Line { Text = text };
+        }
+
         /// <summary>Nullable values (int?): with a value or none; unwrapped, lifted, coalesced.</summary>
         private Stmt NullableStatement()
         {
@@ -997,6 +1305,16 @@ public sealed class Duo
                     }
                     case 4 when _p.Nodes.Count > 0: return $"{Pick(_p.Nodes)}.Val";
                     case 4 when _p.Gauges.Count > 0: return $"{Pick(_p.Gauges)}.Scale()";
+                    case 4 when _inPost && _r.Next(2) == 0: return _r.Next(2) == 0 ? "⟪oc⟫" : "⟪ox⟫";
+                    case 4 when _p.Particles.Count > 0: return $"{Pick(_p.Particles)}.{(_r.Next(2) == 0 ? "Pos" : "Speed")}";
+                    case 4 when !_spec && _p.Builders.Count > 0: return $"{Pick(_p.Builders)}.Length";
+                    case 4 when _p.Segs.Count > 0: return $"{Pick(_p.Segs)}.Val";
+                    case 4 when _p.Fracs.Count > 0:
+                    {
+                        // (D > 0 by the invariant: N / D needs no guard)
+                        var fr = Pick(_p.Fracs);
+                        return new[] { $"{fr}.D", $"({fr}.N / {fr}.D)", $"{fr}.N" }[_r.Next(3)];
+                    }
                     case 4 when _p.Strings.Count > 0: return $"{Pick(_p.Strings)}.Length";
                     case 4 when _p.Shapes.Count > 0:
                     {
@@ -1019,6 +1337,11 @@ public sealed class Duo
                         return _r.Next(2) == 0 ? $"({rg}.Hi - {rg}.Lo)" : $"{rg}.Lo";
                     }
                     case 4 when _p.Positions.Count > 0: return $"{Pick(_p.Positions)}.{(_r.Next(2) == 0 ? "X" : "Y")}";
+                    case 4 when _p.Grids.Count > 0:
+                    {
+                        var g = Pick(_p.Grids);
+                        return new[] { $"{g}[1, 2]", $"{g}[0, 1]", $"{g}.GetLength(1)", $"{g}.Length" }[_r.Next(4)];
+                    }
                     case 4 when _p.Nullables.Count > 0:
                     {
                         var n = Pick(_p.Nullables);
@@ -1172,18 +1495,32 @@ public sealed class Duo
 
         // ------------------------------------------------------------------ rendering
 
-        private static void Emit(StringBuilder sb, Stmt s, int indent, Mode mode, Func<int, bool> kept)
+        /// <summary>A call to another generated method: its true variant (verified, run), or its probe, run quietly.</summary>
+        private static string Calls(string text, Mode mode) =>
+            System.Text.RegularExpressions.Regex.Replace(text, @"⟪call:(\d+)⟫\(a, b, xs, c, d\)", m => mode == Mode.Probe
+                ? $"RT.Call(() => M{m.Groups[1].Value}(a, b, xs, c, d))"
+                : mode == Mode.Run ? $"RT.Call(() => M{m.Groups[1].Value}T(a, b, xs, c, d))" : $"M{m.Groups[1].Value}T(a, b, xs, c, d)");
+
+        private static void Emit(StringBuilder sb, Stmt s, int indent, Mode mode, Func<int, bool> kept, int planted = -1, string name = null)
         {
             var pad = new string(' ', 4 * indent);
             void Body(List<Stmt> list)
             {
                 sb.AppendLine($"{pad}{{");
-                foreach (var t in list) Emit(sb, t, indent + 1, mode, kept);
+                foreach (var t in list) Emit(sb, t, indent + 1, mode, kept, planted, name);
                 sb.AppendLine($"{pad}}}");
             }
             switch (s)
             {
-                case Line l: sb.AppendLine(pad + l.Text); break;
+                case Line l: sb.AppendLine(pad + Calls(l.Text, mode)); break;
+                case GhostCheck g:
+                {
+                    // (verified: the assertion, or planted, its negation; run: the ghost code alone (erased); probed: reached?)
+                    var a = mode == Mode.Verify ? (kept(g.Id) ? $"Spec.Assert({(g.Id == planted ? g.False : g.True)});" : "")
+                          : mode == Mode.Probe ? $"Probe.Hit({g.Id}, () => true);" : "";
+                    sb.AppendLine(pad + g.Template.Replace("⟨A⟩", a));
+                    break;
+                }
                 case Assert a:
                     if (!kept(a.Id)) break;
                     sb.AppendLine(mode == Mode.Verify ? $"{pad}Spec.Assert({a.Cond});"
@@ -1207,7 +1544,7 @@ public sealed class Duo
                         sb.AppendLine($"{pad}for (int {f.Var} = 0; {f.Var} < xs.Length; {f.Var}++)");
                         sb.AppendLine($"{pad}{{");
                         foreach (var a in invariants) sb.AppendLine($"{pad}    Spec.Invariant({a.Cond});");
-                        foreach (var t in f.Body) Emit(sb, t, indent + 1, mode, kept);
+                        foreach (var t in f.Body) Emit(sb, t, indent + 1, mode, kept, planted, name);
                         sb.AppendLine($"{pad}}}");
                         break;
                     }
@@ -1219,7 +1556,7 @@ public sealed class Duo
                     foreach (var a in invariants)
                         sb.AppendLine(mode == Mode.Run ? $"{pad}        if (!({a.Cond})) throw new Failed(\"invariant {a.Id}\");" : $"{pad}        Probe.Hit({a.Id}, () => {a.Cond});");
                     sb.AppendLine($"{pad}        if (!({f.Var} < xs.Length)) break;");
-                    foreach (var t in f.Body) Emit(sb, t, indent + 2, mode, kept);
+                    foreach (var t in f.Body) Emit(sb, t, indent + 2, mode, kept, planted, name);
                     sb.AppendLine($"{pad}        {f.Var}++;");
                     sb.AppendLine($"{pad}    }}");
                     sb.AppendLine($"{pad}}}");
