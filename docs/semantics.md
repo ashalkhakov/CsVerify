@@ -34,9 +34,31 @@ Methods are verified for partial correctness: any call may throw anything, and a
   - locals and parameters;
   - the fields of `[Owned]` objects whose views or permissions are in hand;
   - array cells its `Spec.Acc` contract gave it;
-  - memory cells whose views it holds.
+  - memory cells whose views it holds;
+  - the fields and cells of objects in **confined locals**. A local is confined when it only ever holds objects the method made itself, and is used only in ways that cannot hand its object to other code:
+    - **What it may hold.** `new` arrays, and `new` objects of program classes whose constructors (and the ones they chain to) do not use `this` as a value or call its methods, and whose bases are program classes too. Objects of the base class library may also be held, outside `System.Threading`, `System.Runtime` and `System.Reflection`.
+    - **How it may be used.**
+      - reading and writing its fields, auto-properties and elements;
+      - comparing it with `null`;
+      - calling `[Pure]` members on it;
+      - calling base class library members on it. A result that may be the object itself (`StringBuilder.Append`) must be used the same way. A task must be awaited at once.
+      - `foreach` over it, and `using` it when its type is the library's;
+      - passing it to pure functions, specifications, and static library methods whose result cannot refer to it;
+      - returning it.
+    - **What disqualifies it.** Anything else: storing it in a field, an array or another local, passing it to a method of the program, capturing it in a lambda, or subscribing to its events.
 
-  A loop with an `await` forgets the same things at its head. *Soundness:* views are linear and permissions add up to one, so no code that runs in between can hold what this method holds, and so none can write it. Everything else is forgotten, which is what any code could have done to it.
+  ```csharp
+  var c = new Counter(); c.N = 1;
+  await Task.Yield();
+  Spec.Assert(c.N == 1);           // proved: nothing else can reach c
+  ```
+
+  A loop with an `await` forgets the same things at its head, except that a confined local the loop assigns is not kept.
+
+  *Soundness:*
+  - Views are linear and permissions add up to one, so no code that runs in between can hold what this method holds, and so none can write it.
+  - A confined local's object is reachable only through that local. It was new when stored there, and no use of the local passes it anywhere else, so code that runs at an await has no reference to it. Members of the base class library are trusted not to keep their receiver. Its threading types are excluded, because they hand objects to other threads.
+  - Everything else is forgotten, which is what any code could have done to it.
 - **An async method of the program called without being awaited at once** (`var t = F(); …; await t;`, or an `async void` method) is rejected (CSV1901). It would run interleaved with its caller, each changing what the other relies on. Lending it permissions explicitly is the next step (step 2 below).
 - **Library tasks** are values like any other. Awaiting one gives an unknown result, non-null as the library declares
   it, and may throw. An **async stub** (a `[ContractsFor]` stub method declared `async`, like `Stream.ReadAsync`'s)

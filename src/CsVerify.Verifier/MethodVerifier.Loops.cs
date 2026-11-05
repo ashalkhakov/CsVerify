@@ -69,7 +69,7 @@ namespace CsVerify.Verifier
             {
                 var trial = new Loop();
                 CollectHavoc(new SyntaxNode[] { fe }, trial);
-                if (trial.HavocAllFields || trial.HavocFields.Any(x => x is IMethodSymbol model && SpecSymbols.IsModel(model))) listElement = null;
+                if (trial.HavocAllFields || trial.Awaits || trial.HavocFields.Any(x => x is IMethodSymbol model && SpecSymbols.IsModel(model))) listElement = null;
             }
             // an IReadOnlyList or IList whose loop changes no state: over its Count and indexer
             var interfaceElement = array || listElement != null ? null : InterfaceForEachElement(fe, fo);
@@ -80,7 +80,7 @@ namespace CsVerify.Verifier
                 var trial = new Loop();
                 CollectHavoc(new SyntaxNode[] { fe.Statement }, trial);
                 var c = _model.GetForEachStatementInfo(fe).ElementConversion;
-                if (trial.HavocAllFields || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0 ||
+                if (trial.HavocAllFields || trial.Awaits || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0 ||
                     !(c.IsIdentity || c.IsImplicit && c.IsReference)) viewElement = null;
             }
             if (viewElement != null) interfaceElement = viewElement;
@@ -89,7 +89,7 @@ namespace CsVerify.Verifier
                 // (what its body changes: the enumerator's own MoveNext and Current are replaced by the index)
                 var trial = new Loop();
                 CollectHavoc(new SyntaxNode[] { fe.Statement }, trial);
-                if (trial.HavocAllFields || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0) interfaceElement = null;
+                if (trial.HavocAllFields || trial.Awaits || trial.HavocFields.Count > 0 || trial.HavocHeap || trial.HavocArrays.Count > 0) interfaceElement = null;
             }
             if (array || listElement != null || interfaceElement != null)
             {

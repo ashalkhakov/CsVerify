@@ -84,6 +84,75 @@ namespace CsVerify.Tests
         public void Await_ForgetsArrays() => Assert.Equal(new[] { "CSV1004" }, Errors("M",
             "static async Task M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 1; await Task.Yield(); Spec.Assert(a[0] == 1); }"));
 
+        // ---- confined objects: made by the method and never handed out, so no other code can reach them ------
+
+        private const string CounterType = "public sealed class Counter { public int N; } " +
+            "public sealed class Leaky { public static Leaky Last; public int N; public Leaky() { Last = this; } } " +
+            "public class Registering : System.Collections.ObjectModel.Collection<int> { public int N; protected override void InsertItem(int i, int x) { Holder.Last = this; base.InsertItem(i, x); } } " +
+            "public sealed class Disposing : System.IDisposable { public int N; public void Dispose() { Holder.Last = this; } } " +
+            "public static class Holder { public static object Last; public static Counter Kept; public static void Keep(Counter c) { Kept = c; } } ";
+
+        private static string[] Confined(string body) =>
+            Harness.Verify(Usings + CounterType + "public static class C { static async Task M() { " + body + " } }", overflow: false).Errors("M");
+
+        [Fact]
+        public void Await_KeepsAConfinedObject() => Assert.Empty(Confined("var c = new Counter(); c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_KeepsAConfinedArray() => Assert.Empty(Confined("var a = new int[3]; a[0] = 1; await Task.Yield(); Spec.Assert(a[0] == 1 && a.Length == 3);"));
+
+        [Fact]
+        public void Await_KeepsAConfinedList() => Assert.Empty(Confined(
+            "var l = new System.Collections.Generic.List<int>(); l.Add(4); await Task.Yield(); Spec.Assert(l.Count == 1 && l[0] == 4);"));
+
+        [Fact]
+        public void Await_KeepsAConfinedObject_ReassignedFresh() => Assert.Empty(Confined(
+            "var c = new Counter(); c.N = 1; await Task.Yield(); c = new Counter(); c.N = 2; await Task.Yield(); Spec.Assert(c.N == 2);"));
+
+        [Fact]
+        public void Await_ForgetsAnObjectStoredInAField() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Counter(); Holder.Kept = c; c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsAnObjectPassedToACall() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Counter(); Holder.Keep(c); c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsAnObjectItsConstructorHandsOut() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Leaky(); c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsAnObjectALibraryBaseMayHandOut() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Registering(); c.Add(3); c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsAnObjectItsDisposeMayHandOut() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var d = new Disposing(); using (d) { } d.N = 1; await Task.Yield(); Spec.Assert(d.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsACapturedObject() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Counter(); System.Action a = () => c.N = 2; c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsAnAliasedObject() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Counter(); var d = c; Holder.Kept = d; c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_ForgetsAnObjectFromElsewhere() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = Holder.Kept; Spec.Assume(c != null); c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_InALoop_KeepsAConfinedObject() => Assert.Empty(Confined(
+            "var c = new Counter(); c.N = 1; for (int i = 0; i < 3; i++) { await Task.Yield(); } Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_InALoop_ForgetsWhatTheLoopWrites() => Assert.Equal(new[] { "CSV1004" }, Confined(
+            "var c = new Counter(); c.N = 1; for (int i = 0; i < 3; i++) { await Task.Yield(); c.N = 2; } Spec.Assert(c.N == 1);"));
+
+        [Fact]
+        public void Await_InALoop_KeepsAConfinedArray() => Assert.Empty(Confined(
+            "var a = new int[2]; var b = new int[2]; a[0] = 7; for (int i = 0; i < 3; i++) { await Task.Yield(); b[1] = i; } Spec.Assert(a[0] == 7);"));
+
         [Fact]
         public void Await_KeepsLocals() => Assert.Empty(Errors("M",
             "static async Task M(int x) { int k = x + 1; await Task.Yield(); Spec.Assert(k == x + 1); }"));
