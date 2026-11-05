@@ -71,6 +71,8 @@ namespace CsVerify.Verifier
     {
         public string Name;
         public int Obligations, Proved;
+        /// <summary>How long verifying it took, all rounds included.</summary>
+        public long Milliseconds;
         public readonly List<VerificationDiagnostic> Diagnostics = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts the proof of this method assumed.</summary>
         public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
@@ -619,6 +621,13 @@ namespace CsVerify.Verifier
             m.MethodKind == MethodKind.LocalFunction ? m.Name : "<lambda:" + (m.Locations[0].GetLineSpan().StartLinePosition.Line + 1) + ">";
 
         private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested = null)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            try { RunRounds(engine, contract, mr, at, nested); }
+            finally { mr.Milliseconds = clock.ElapsedMilliseconds; }
+        }
+
+        private static void RunRounds(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested)
         {
             const int Rounds = 8;
             var excluded = new HashSet<string>(StringComparer.Ordinal);

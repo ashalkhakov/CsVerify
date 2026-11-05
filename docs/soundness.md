@@ -136,10 +136,19 @@ were provable. The defences we have:
 - conformance tests for every library definition;
 - the corpus and CsLemon runs, which catch proofs that change.
 
-What would make it stronger: differential testing of the verifier itself, as Irfan et al. (ISSTA 2022) did for
-Dafny. That means compiling the specifications of verified methods into run-time checks, running the methods on
-random inputs that meet their preconditions, and treating any failed check as a soundness bug. The conformance
-harness already does this for LINQ, and the same harness would do it for samples and corpus methods.
+- **the verifier tested on random programs** (`tests/CsVerify.Tests/Fuzz`), after Irfan et al. (ISSTA 2022), who
+  tested Dafny the same way. Each random method is first run with every candidate assertion and postcondition
+  recorded. Its *true variant* keeps those that held; where it verifies, it is run again on fresh inputs with its
+  specifications as run-time checks and overflow checked, and a failed check or an exception is a soundness bug. Its
+  *planted variant* adds one that failed on an input the precondition admits, and must not verify. Pinned inputs
+  (a precondition that fixes them) make the verifier all but exact, so many true variants verify and the test bites;
+  their share is a measure of completeness. CI runs three seeds; `CSVERIFY_FUZZ_SEEDS=from..to`,
+  `CSVERIFY_FUZZ_METHODS` and `CSVERIFY_FUZZ_SIZE` run a soak. The first soak, 740 methods, found no soundness
+  problem: all 403 true variants that verified passed their checks, and all 549 planted ones were rejected (377 of
+  394 pinned ones verified).
+
+What would make it stronger: a generator that covers more of the language (objects and fields, owned objects and
+permissions, floats, exceptions, data records); every generated feature is one the oracle then checks.
 
 ## References
 
