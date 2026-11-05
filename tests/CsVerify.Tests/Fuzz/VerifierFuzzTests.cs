@@ -213,7 +213,8 @@ namespace CsVerify.Tests.Fuzz
             ("new cells", "new Cell"), ("records", "new Pt("), ("doubles", "double "), ("double to int", "(int)"),
             ("throws", "throw new Escape"), ("catch Escape", "catch (Escape)"), ("checked, caught", "catch (OverflowException)"),
             ("frames (Bump)", "H.Bump"), ("frames (Scramble)", "H.Scramble"), ("cell permissions (SetCell)", "H.SetCell"), ("[Pure] calls", "H.Twice"),
-            ("owned accounts", "Own.New"), ("transfers", "Account.Transfer"),
+            ("owned accounts", "new Account("), ("transfers", "Account.Transfer"), ("read shares", "Own.Share"),
+            ("boxes", "new Box("), ("give", "Own.Give"), ("take", "Own.Take"), ("fold", "Spec.Fold"), ("unfold", "Spec.Unfold"),
         };
 
         /// <summary>Methods compiled to run, with overflow checked (an overflow throws).</summary>

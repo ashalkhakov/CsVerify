@@ -31,6 +31,7 @@ namespace CsVerify.Tests.Fuzz
         private bool _inLoop;
         private int _slots;
         private bool _spec; // (in a specification: no LINQ, which is not [Pure])
+        private bool _pinned; // (the method's inputs are constants)
 
         /// <summary>The most statements a body has (a soak can ask for bigger programs).</summary>
         public int Size = 4;
@@ -122,6 +123,51 @@ public sealed class Account
         to.Deposit(amount);
     }
 }
+
+// an ownership tree: a box owns the box inside it, and its invariant reads that one, one level down
+[Owned]
+public sealed class Box
+{
+    public int Val;
+    [Owns] public Box? Inner;
+
+    [Invariant, Pure] public bool Valid() => Val >= 0 && (Inner == null || Inner.Val <= Val);
+
+    public Box(int v)
+    {
+        Spec.Requires(0 <= v && v <= 100000);
+        Spec.Ensures(Val == v && Inner == null);
+        Val = v;
+    }
+}
+
+// a node a predicate holds the permission to
+[Owned]
+public sealed class Node
+{
+    public int Val;
+
+    public Node(int v)
+    {
+        Spec.Ensures(Val == v);
+        Val = v;
+    }
+}
+
+public static class Preds
+{
+    // two nodes' permissions, and their order: folded, nobody writes them
+    [Predicate]
+    public static bool Ordered(Node a, Node b) => Spec.Acc(a) && Spec.Acc(b) && a.Val <= b.Val;
+
+    // a reader with a share: the invariant holds, and nobody writes the account meanwhile
+    public static int Peek(in Shared<Account> s, Account a)
+    {
+        Spec.Requires(s.Obj.Value == a);
+        Spec.Ensures((int r) => r == a.Balance && r >= 0);
+        return a.Balance;
+    }
+}
 ";
 
         /// <summary>An input: d is null (DMode 0), c itself (1), or a cell of its own (2).</summary>
@@ -195,7 +241,17 @@ public sealed class Account
         {
             public List<string> Ints = new List<string>(), Doubles = new List<string>(), Cells = new List<string>(), Pts = new List<string>();
             public List<string> Accounts = new List<string>(); // (owned: account oK, its view wK)
-            public Pools Copy() => new Pools { Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList() };
+            public List<(string share, string account)> Shares = new List<(string, string)>();
+            public List<string> Boxes = new List<string>();    // (boxes bK readable; those in Held have their view uK in hand)
+            public List<string> Held = new List<string>();
+            public List<string> Nodes = new List<string>();    // (nodes qK whose permission is in hand, or folded)
+            public List<(string, string)> Folded = new List<(string, string)>();
+            public Pools Copy() => new Pools
+            {
+                Ints = Ints.ToList(), Doubles = Doubles.ToList(), Cells = Cells.ToList(), Pts = Pts.ToList(), Accounts = Accounts.ToList(),
+                Shares = Shares.ToList(), Boxes = Boxes.ToList(), Held = Held.ToList(), Nodes = Nodes.ToList(), Folded = Folded.ToList(),
+            };
+            public IEnumerable<string> Writable => Nodes.Where(n => !Folded.Any(f => f.Item1 == n || f.Item2 == n));
         }
 
         public Method Next(string name)
@@ -203,7 +259,7 @@ public sealed class Account
             _fresh = 0;
             _slots = 0;
             var m = new Method { Name = name };
-            m.Pinned = _r.Next(3) > 0;
+            m.Pinned = _pinned = _r.Next(3) > 0;
             if (m.Pinned)
             {
                 var input = new Input { A = Small(), B = Small(), Xs = Enumerable.Range(0, _r.Next(5)).Select(_ => Small()).ToArray(), CV = Small(), DMode = _r.Next(3), DV = Small() };
@@ -262,13 +318,19 @@ public sealed class Account
         internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; }
         internal sealed class Assert : Stmt { public string Cond; public int Id; }
 
+        private readonly Stack<Pools> _scopes = new Stack<Pools>();
+
         private List<Stmt> Block(int n)
         {
             var saved = _p.Copy();
+            _scopes.Push(saved);
             var list = new List<Stmt>();
             for (int k = 0; k < n; k++) list.Add(Statement());
-            // (the views made in the block are given up at its end: a view is linear, and must not be lost)
+            // (what the block made is given back at its end, shares before views: each is linear, and must not be lost)
+            foreach (var (sh, acct) in _p.Shares.Except(saved.Shares)) list.Add(new Line { Text = $"Own.Unshare(ref w{acct.Substring(1)}, {sh});" });
             foreach (var o in _p.Accounts.Except(saved.Accounts)) list.Add(new Line { Text = $"Own.Drop(w{o.Substring(1)});" });
+            foreach (var b in _p.Held.Except(saved.Held).Where(b => !saved.Boxes.Contains(b))) list.Add(new Line { Text = $"Own.Drop(u{b.Substring(1)});" });
+            _scopes.Pop();
             _p = saved; // (a block's declarations end with it)
             return list;
         }
@@ -279,9 +341,9 @@ public sealed class Account
             try
             {
                 // (simple statements 0..8 and 13..15; compound ones 9..12 only near the top)
-                int pick = _r.Next(_depth > 1 ? 12 : 16);
+                int pick = _r.Next(_depth > 1 ? 15 : 19);
                 if (_depth > 1 && pick >= 9) pick += 4;
-                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(3); // (calls and owned objects more often)
+                if (pick <= 2 && _r.Next(2) == 0) pick = 13 + _r.Next(6); // (calls and owned objects more often)
                 if (pick == 13 && _p.Accounts.Count == 1 && _r.Next(2) == 0) pick = 14;
                 switch (pick)
                 {
@@ -396,6 +458,18 @@ public sealed class Account
                         }[_r.Next(4)];
                         return new Line { Text = cell == "d" && !call.StartsWith("if") ? $"if (d != null) {call}" : call };
                     }
+                    case 16: return BoxStatement();
+                    case 17: return NodeStatement();
+                    case 18:
+                    {
+                        // a read share of an account: while it is out, the view cannot write (or be lent)
+                        var free = _p.Accounts.Where(o => !_p.Shares.Any(x => x.account == o)).ToList();
+                        if (free.Count == 0) goto case 13;
+                        var o = Pick(free);
+                        var sh = "s" + _fresh++;
+                        _p.Shares.Add((sh, o));
+                        return new Line { Text = $"Own.Share(ref w{o.Substring(1)}, out var {sh});" };
+                    }
                     case 9:
                     case 10: return new If { Cond = Bool(2, null), Then = Block(_r.Next(1, 3)), Else = _r.Next(2) == 0 ? Block(_r.Next(1, 3)) : null };
                     case 11: return new Try { Body = Block(_r.Next(1, 3)), Catches = "Escape", Handler = Block(_r.Next(1, 2)) };
@@ -413,6 +487,102 @@ public sealed class Account
                 }
             }
             finally { _depth--; }
+        }
+
+        /// <summary>An ownership tree: make a box, write one in hand, give one made here into another, take one out.</summary>
+        private Stmt BoxStatement()
+        {
+            var here = _p.Held.Except(_scopes.Peek().Held).ToList(); // (views made in this block: given only here)
+            switch (_r.Next(5))
+            {
+                case 1 when _p.Held.Count > 0:
+                    return new Line { Text = $"{Pick(_p.Held)}.Val = {(_r.Next(3) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100")};" };
+                case 2 when here.Count > 0 && _p.Held.Count > 1:
+                {
+                    var child = Pick(here);
+                    var parent = Pick(_p.Held.Where(b => b != child).ToList());
+                    _p.Held.Remove(child);
+                    return new Line { Text = $"Own.Give(ref {parent}.Inner, {child}, u{child.Substring(1)});" };
+                }
+                case 3 when _p.Held.Count > 0:
+                {
+                    var parent = Pick(_p.Held);
+                    var b = "b" + _fresh++;
+                    _p.Boxes.Add(b);
+                    _p.Held.Add(b);
+                    return new Line { Text = $"var {b} = Own.Take(ref {parent}.Inner, out var u{b.Substring(1)});" };
+                }
+                default:
+                {
+                    string NewBox(out string b)
+                    {
+                        b = "b" + _fresh++;
+                        var v = _r.Next(4) == 0 ? Int(1) : $"Math.Abs({Int(1)}) % 100"; // (before it is in scope)
+                        _p.Boxes.Add(b);
+                        _p.Held.Add(b);
+                        return $"var {b} = Own.New(new Box({v}), out var u{b.Substring(1)});";
+                    }
+                    var text = NewBox(out var outer);
+                    if (_r.Next(2) == 0)
+                    {
+                        // (often a tree at once: a second box given into the first, and perhaps taken out again)
+                        text += " " + NewBox(out var inner) + $" Own.Give(ref {outer}.Inner, {inner}, u{inner.Substring(1)});";
+                        _p.Held.Remove(inner);
+                        if (_r.Next(2) == 0)
+                        {
+                            var t = "b" + _fresh++;
+                            _p.Boxes.Add(t);
+                            _p.Held.Add(t);
+                            text += $" var {t} = Own.Take(ref {outer}.Inner, out var u{t.Substring(1)});";
+                        }
+                    }
+                    return new Line { Text = text };
+                }
+            }
+        }
+
+        /// <summary>A predicate: nodes whose permissions are in hand, folded into Ordered and unfolded, or written.</summary>
+        private Stmt NodeStatement()
+        {
+            var writable = _p.Writable.ToList();
+            switch (_r.Next(5))
+            {
+                case 1 when writable.Count > 0:
+                    return new Line { Text = $"{Pick(writable)}.Val = {Int(1)};" };
+                case 2 when writable.Count > 0:
+                {
+                    // (two of them, or one twice: a footprint cannot be held twice)
+                    var a = Pick(writable);
+                    var b = _r.Next(6) == 0 ? a : Pick(writable);
+                    _p.Folded.Add((a, b));
+                    return new Line { Text = $"Spec.Fold(Preds.Ordered({a}, {b}));" };
+                }
+                case 3 when _p.Folded.Count > 0:
+                {
+                    var f = Pick(_p.Folded);
+                    _p.Folded.Remove(f);
+                    return new Line { Text = $"Spec.Unfold(Preds.Ordered({f.Item1}, {f.Item2}));" };
+                }
+                default:
+                {
+                    string NewNode(out string q)
+                    {
+                        q = "q" + _fresh++;
+                        var v = Int(1); // (before it is in scope)
+                        _p.Nodes.Add(q);
+                        return $"var {q} = Own.New(new Node({v}), out var z{q.Substring(1)}); Own.ToAcc(z{q.Substring(1)});";
+                    }
+                    var text = NewNode(out var a);
+                    if (_r.Next(2) == 0)
+                    {
+                        // (often a fold at once, of two nodes, and perhaps the unfold)
+                        text += " " + NewNode(out var b) + $" Spec.Fold(Preds.Ordered({a}, {b}));";
+                        if (_r.Next(2) == 0) text += $" Spec.Unfold(Preds.Ordered({a}, {b}));";
+                        else _p.Folded.Add((a, b));
+                    }
+                    return new Line { Text = text };
+                }
+            }
         }
 
         // ------------------------------------------------------------------ expressions
@@ -434,7 +604,18 @@ public sealed class Account
                     case 1: return "xs.Length";
                     case 2: return _r.Next(2) == 0 ? $"{Pick(_p.Cells)}.V" : "(d == null ? 0 : d.V)";
                     case 3 when _p.Pts.Count > 0: return $"{Pick(_p.Pts)}.{(_r.Next(2) == 0 ? "X" : "Y")}";
-                    case 4 when _p.Accounts.Count > 0: return $"{Pick(_p.Accounts)}.Balance";
+                    case 4 when _p.Accounts.Count > 0:
+                    {
+                        var o = Pick(_p.Accounts);
+                        var sh = _p.Shares.Where(x => x.account == o).Select(x => x.share).FirstOrDefault();
+                        return sh != null && !_spec && _r.Next(2) == 0 ? $"Preds.Peek({sh}, {o})" : $"{o}.Balance";
+                    }
+                    case 4 when _p.Boxes.Count > 0:
+                    {
+                        var b = Pick(_p.Boxes);
+                        return _r.Next(2) == 0 ? $"{b}.Val" : $"({b}.Inner == null ? 0 : {b}.Inner.Val)";
+                    }
+                    case 4 when _p.Nodes.Count > 0: return $"{Pick(_p.Nodes)}.Val";
                     case 5: return extra;
                     default: return Pick(_p.Ints);
                 }
@@ -487,7 +668,8 @@ public sealed class Account
                         var lit = new[] { "0.5", "0.1", "-0.0", "1e300", "3.0", "double.NaN", "double.PositiveInfinity" }[_r.Next(7)];
                         return lit == "-0.0" ? "(-(double)(a - a))" : $"((double)(a - a) + {lit})";
                     }
-                    default: return $"(double){Int(0)}";
+                    // (an integer as a double: with symbolic inputs that is costly for the solver, so only pinned)
+                    default: return _pinned ? $"(double){Int(0)}" : $"((double)(a - a) + {new[] { "2.0", "-1.5", "1e10" }[_r.Next(3)]})";
                 }
             }
             int d = depth - 1;
