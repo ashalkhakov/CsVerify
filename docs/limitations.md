@@ -44,6 +44,7 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 
 **Unsupported constructs**
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
+- `decimal` arithmetic: its values are unknown (CSV1900), and the exceptions it throws, `DivideByZeroException` and `OverflowException` (decimal arithmetic is always checked), are not reported: a method that divides by a decimal zero can be verified.
 - Unknown values, which are sound (CSV1900 warning): shifts and bitwise operators on integers, floating-point `%` and transcendental functions, string characters, library properties without a `[Pure]` stub, non-pure calls in specifications, the elements of a `foreach` over a library collection (a `List<T>` whose loop may change a list included), a string or a span.
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
 - Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans (their indexer, `Slice`, `CopyTo`, `TryCopyTo`, `Fill`, `Clear`, `ToArray`, `AsSpan`) and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
@@ -65,6 +66,12 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 **Precision limits**
 - `[Pure]` definitions are unfolded one level per use. Deeper facts need a lemma, as in ATS.
 - Verification explores paths depth-first (`MaxPaths` = 5000 per method), so many sequential branches can be slow.
+  `try` blocks multiply this: inside one, every call may throw, so each call doubles the paths through the block,
+  and the code after a `try` runs once for every path that leaves it (normally or through a handler). Two `try`
+  blocks in a row multiply again: the fuzzer met a 25-line method with 899 obligations that took five minutes. Keep
+  `try` bodies small, put the calls that cannot throw outside them, or give the method `--method-budget` so a slow
+  one is reported not verified rather than holding up the run. (A fix in the verifier would merge the paths that
+  reach a handler, or leave a `try`, into one state, instead of following each on its own.)
 - Every method is verified separately against its callees' contracts.
 
 **Views versus ATS/SV** (Zhu & Xi, *Safe Programming with Pointers through Stateful Views*)

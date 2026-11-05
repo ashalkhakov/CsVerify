@@ -134,7 +134,12 @@ namespace CsVerify.Verifier
             // (the same number, as the solver's integer arithmetic sees it: a bridge from the bits to the bounds)
             AssumeSide(T.Implies(fits, new Term($"(= (to_real {asInt.S}) (fp.to_real {t.S}))", Sort.Bool)));
             if (!_codeMode || InGhostCode || !_engine.Options.CheckOverflow)
+            {
+                // in a specification, a cast that does not fit has no value (in code it is CSV1010, or throws where
+                // checked): like a divisor, it must be shown to fit where the specification reads it (CSV1012)
+                if (!_codeMode) Require(fits, "CSV1010", c.Syntax, $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)");
                 return T.Ite(fits, asInt, Unknown(to, "conv"));
+            }
             if (c.IsChecked && !ProofCode)
             {
                 if (_current != null) MayRaise(T.Not(fits), _current, KnownType("System.OverflowException"));

@@ -63,7 +63,7 @@ The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined.
    - loop invariants (on entry and when maintained),
    - loop and recursion measures. A measure goes down lexicographically: some component decreases from a non-negative value, and every component before it is unchanged. A call is recursive when the callee can reach the caller again through source methods (calls inside specifications don't count), so mutually recursive methods are checked against each other's measures. Their measures must have the same number of components.
    - postconditions at each return,
-   - well-definedness of the method's own specifications (CSV1012). Every array index in a spec must be in bounds, every dereference must be of a non-null reference, every `[Pure]` call must be within its precondition, and every divisor must be non-zero. Each condition is guarded by what protects it:
+   - well-definedness of the method's own specifications (CSV1012). Every array index in a spec must be in bounds, every dereference must be of a non-null reference, every `[Pure]` call must be within its precondition, every divisor must be non-zero, and every cast of a float to an integer type must fit. Each condition is guarded by what protects it:
      - the left side of `&&`/`||`;
      - the branch of `?:`;
      - the range of `Spec.Forall`/`Exists` (the obligation becomes `forall i. lo ≤ i < hi ⇒ …`);

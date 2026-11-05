@@ -213,6 +213,28 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void RefArguments_BeforeAConditionalArgument()
+        {
+            // the flow graph captures a ref argument before the ?: after it; the callee gets the variable as it is at the call
+            const string add = "static void Add(ref int x, int k) { Spec.Ensures(x == Spec.Old(x) + k); x = checked(x + k); } ";
+            Assert.Empty(Errors("Ok", add + "static int Ok(int a) { Spec.Requires(0 <= a && a <= 10); int x = 1; Add(ref x, a > 5 ? 2 : 3); Spec.Assert(x == 3 || x == 4); return x; }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("Wrong", add + "static int Wrong(int a) { Spec.Requires(0 <= a && a <= 10); int x = 1; Add(ref x, a > 5 ? 2 : 3); Spec.Assert(x == 3); return x; }"));
+            Assert.Empty(Errors("Later", add + "static int Later() { int x = 1; Add(ref x, (x = 10) > 5 ? 2 : 3); Spec.Assert(x == 12); return x; }"));
+        }
+
+        [Fact]
+        public void MethodBudget_LeavesTheRestNotVerified()
+        {
+            // past its time budget, a method is reported not verified (CSV1901), never verified
+            var src = "static void Slow(int[] a) { for (int i = 0; i < 6; i++) { if (a.Length > i && a[i] > 0) Spec.Assert(a[i] % 3 != 7 || a[i] > 1); } }";
+            var r = Harness.Verify(src.Replace("static void", "public static void").Insert(0, "public static class P { ") + " }");
+            Assert.Empty(r.Errors("Slow"));
+            var budgeted = CsVerify.Verifier.Engine.VerifySources(new[] { ("Test.cs", "using System; using CsVerify; public static class P { " + src.Replace("static void", "public static void") + " }") },
+                new CsVerify.Verifier.VerifierOptions { MethodBudgetMs = 1 });
+            Assert.Contains("CSV1901", budgeted.Methods.Single(m => m.Name == "P.Slow").Diagnostics.Where(d => d.IsError).Select(d => d.Id));
+        }
+
+        [Fact]
         public void TupleResults()
         {
             const string minMax = "static (int lo, int hi) M(int x, int y) { Spec.Ensures<(int lo, int hi)>(r => r.lo == Math.Min(x, y) && r.Item2 == Math.Max(x, y)); " +

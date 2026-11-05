@@ -36,6 +36,15 @@ namespace CsVerify.Tests
         public void BorrowAfterConsume_IsReported() =>
             Assert.Equal(new[] { "CSV0002" }, Body("var p = Mem.Alloc(1, out var v); Mem.Free(v, p); Mem.Read(in v, p);"));
 
+        // (a ?: among a call's arguments has the flow graph capture the earlier ones first, ref ones too)
+        [Fact]
+        public void LentBeforeAConditionalArgument_IsStillABorrow() =>
+            Assert.Empty(Body("var p = Mem.Alloc(1, out var v); Mem.Write(ref v, p, b ? 0 : 1); Mem.Free(v, p);", "bool b"));
+
+        [Fact]
+        public void MovedBeforeAConditionalArgument_IsStillAMove() =>
+            Assert.Equal(new[] { "CSV0002" }, Body("var p = Mem.Alloc(1, out var v); Mem.Free(v, b ? p : p); Mem.Free(v, p);", "bool b"));
+
         [Fact]
         public void ConsumeInLoop_IsReported() =>
             Assert.Contains("CSV0002", Body("var p = Mem.Alloc(1, out var v); for (int i = 0; i < 2; i++) Mem.Free(v, p);"));

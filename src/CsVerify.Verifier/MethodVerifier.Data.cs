@@ -23,6 +23,19 @@ namespace CsVerify.Verifier
         private DataTypes Data => _engine.Data;
 
         /// <summary>Assumes a fact once per solver scope (at the top level; under a quantifier, every time).</summary>
+        /// <summary>A value whose side facts hold only where <paramref name="guard"/> does: assumed as guard ⇒ facts.</summary>
+        private Term Under(Term guard, System.Func<Term> make)
+        {
+            if (guard == T.True) return make();
+            _quantFacts.Push(new List<Term>());
+            Term value;
+            List<Term> facts;
+            try { value = make(); }
+            finally { facts = _quantFacts.Pop(); }
+            if (facts.Count > 0) AssumeSide(T.Implies(guard, T.And(facts.ToArray())));
+            return value;
+        }
+
         private void AssumeOnce(string key, System.Func<Term> fact)
         {
             if (_quantFacts.Count == 0 && !_sideFactsDone.Add(_z3.Scope + ":" + key)) return;
@@ -189,7 +202,7 @@ namespace CsVerify.Verifier
                         if (matched != null && matched.IsTupleType && i < matched.TupleElements.Length)
                             item = T.Coerce(TupleItem(v, matched.TupleElements[i]), SortOf(matched.TupleElements[i].Type));
                         else if (matched != null && Data.IsData(matched) && DataTypes.PositionalProperty(matched, i) is IPropertySymbol prop)
-                            item = T.Coerce(Field(prop, v, matched), SortOf(prop.Type));
+                            item = T.Coerce(Under(test, () => Field(prop, v, matched)), SortOf(prop.Type)); // (see below)
                         else { Unsupported(r); return _z3.Fresh("match", Sort.Bool); }
                         var sub = r.DeconstructionSubpatterns[i];
                         WithGuard(T.And(parts.ToArray()), () => parts.Add(Pattern(sub, item, f, spec)));
@@ -197,8 +210,11 @@ namespace CsVerify.Verifier
                     foreach (var ps in r.PropertySubpatterns)
                     {
                         Term item;
+                        // (a field read assumes what is true of every value of the static type it is given, here the matched
+                        // type: true of v only where the test holds, so assumed only there. Unguarded, x is Pair { L: ... }
+                        // made x a Pair, a Seg x a contradiction, and the rest of the method vacuous)
                         if (ps.Member is IPropertyReferenceOperation pr && DataTypes.IsPositional(pr.Property) && Data.IsData(pr.Property.ContainingType))
-                            item = T.Coerce(Field(pr.Property, v, matched ?? p.InputType), SortOf(pr.Property.Type));
+                            item = T.Coerce(Under(test, () => Field(pr.Property, v, matched ?? p.InputType)), SortOf(pr.Property.Type));
                         else if (ps.Member is IPropertyReferenceOperation || ps.Member is IFieldReferenceOperation)
                         {
                             // { P: ... } reads P of the input, as code would (it is not null here: the test above)

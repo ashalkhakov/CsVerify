@@ -136,10 +136,65 @@ were provable. The defences we have:
 - conformance tests for every library definition;
 - the corpus and CsLemon runs, which catch proofs that change.
 
-What would make it stronger: differential testing of the verifier itself, as Irfan et al. (ISSTA 2022) did for
-Dafny. That means compiling the specifications of verified methods into run-time checks, running the methods on
-random inputs that meet their preconditions, and treating any failed check as a soundness bug. The conformance
-harness already does this for LINQ, and the same harness would do it for samples and corpus methods.
+- **the verifier tested on random programs** (`tests/CsVerify.Tests/Fuzz`), after Irfan et al. (ISSTA 2022), who
+  tested Dafny the same way. Random methods take integers, an array and two cells, `c` and `d`, where `d` may be
+  null, `c` itself, or another cell. Their bodies have integer arithmetic, `Math`, array reads and writes, field reads
+  and writes, new cells, data records and their equality, doubles (NaN, infinities, -0.0, `Sqrt`, casts back to
+  `int`), `throw`, `try`/`catch`, `checked` arithmetic caught as `OverflowException`, ifs, `for` loops and LINQ.
+  They call a library of helpers with real contracts: a `Spec.Modifies` frame that says how its cell changes, and
+  one that does not; a writer of one array cell under `Spec.Acc`; a `[Pure]` function; and an `[Owned]` account with
+  an invariant, made with `Own.New` and changed through its view (deposits, withdrawals, transfers between two);
+  read shares of an account (`Own.Share`/`Unshare`); an ownership tree, a box owning the box inside it with an
+  invariant one level down (`Own.Give`/`Take`); and a predicate holding two nodes' permissions and their order
+  (`Own.ToAcc`, `Spec.Fold`/`Unfold`, sometimes of one node twice); a `[Pure]` recursive function and a lemma
+  proving its closed form by induction; and a class with a virtual method and a `[Pure]` virtual query, and a
+  sealed override, called through the base type; an interface whose contract is in a contract class, with two
+  implementations; a Dafny-style object with a ghost `Repr` and `Valid()`, framed by `Spec.Modifies(Repr.Value)`;
+  and `Mem` cells, allocated, written and read through their views and freed. Loops get `Spec.Invariant`s, checked at
+  every head when run. The programs that run are the erased ones (the erasure pass, then the compiler), as users
+  run them, so erasure is under the same oracle (A9).
+  The helpers are verified in every batch, since the calls rely on their contracts.
+  Each method is first run with every candidate assertion and postcondition recorded. Its *true variant* keeps those
+  that held. Where it verifies, it is run again on fresh inputs with its specifications as run-time checks and
+  overflow checked; a failed check, or an exception other than the program's own throw, is a soundness bug. Its
+  *planted variant* adds one that failed on an input the precondition admits, and must not verify. An internal error
+  (CSV1999) fails the test too. Pinned inputs (a precondition that fixes them) make the verifier all but exact, so
+  many true variants verify and the test bites; their share is a measure of completeness. CI runs three seeds;
+  `CSVERIFY_FUZZ_SEEDS=from..to`, `CSVERIFY_FUZZ_METHODS`, `CSVERIFY_FUZZ_SIZE` and `CSVERIFY_FUZZ_LOG` run a soak.
+
+  Six soaks so far, 3,440 methods, found no soundness problem. In all, 1,913 true variants verified and passed
+  their checks, and 2,601 of 2,601 planted ones were rejected. They found two other bugs:
+  - **Division blow-up (robustness).** Division, remainder and absolute value were written out with their operands
+    repeated, so nested ones grew exponentially. One method's term passed 2^31 characters and crashed the verifier,
+    and others took minutes. Long operands now go through solver macros.
+  - **By-ref arguments before a `?:` (completeness).** A call with a `?:` among its arguments has the flow graph
+    capture the earlier arguments first, by-ref ones too. The verifier rejected the captured `ref` argument
+    (CSV1901), and the linearity analyzer took capturing a view for consuming it (CSV0002), so correct code like
+    `Transfer(a, ref va, b, ref vb, x > 0 ? 1 : 2)` did not verify.
+
+**What the fuzzer covers.** Every feature the generator produces is one the oracle checks; the rest is tested only by
+the hand-written tests and samples. By area:
+
+| Area | Generated | Not yet generated |
+|---|---|---|
+| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math`, `decimal` (unknown values) | |
+| Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
+| Strings | literals, concatenation, interpolation, `Length`, `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
+| Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |
+| Arrays and memory | reads and writes with bounds, rectangular arrays, spans, `ref` locals, struct members by `ref`, list patterns, `foreach` | |
+| Control flow | `if`, `for` with and without invariants (inferred facts), termination measures, `while`, `do`, `switch` statements, `goto` loops, `foreach` | |
+| Exceptions | `throw`, `try`/`catch`, filters, rethrow, `finally`, `EnsuresOnThrow`, failed downcasts | |
+| Calls | helpers with contracts, `Spec.Modifies` frames, local functions, lambdas (also writing locals), calls between generated methods, async with `await` | |
+| Objects | fields and aliasing, new objects, mutable structs, properties with code, constructors with contracts, static fields | |
+| Data types | a closed record hierarchy and a generic one, `is`, `switch`, property and positional patterns, value equality, record and immutable-class invariants | |
+| OOP | virtual methods and `[Pure]` virtual queries, interfaces and abstract classes with contract classes, a three-level hierarchy | |
+| Ownership and permissions | views and transfers, ownership trees (`Give`/`Take`), read shares, predicates (also recursive), single-field and array-cell permissions, `Mem` cells and arrays (`Split`/`Join`, `TakeOut`/`PutBack`), dynamic frames (`Repr`/`Valid`, `Spec.Reads`, `Spec.Fresh` in the helpers), linear packages | deeper trees |
+| Proofs and ghost state | `[Pure]` recursion, lemmas by induction (a closed form, monotonicity), `[GhostFunction]`s, multisets, sequences, maps, `Spec.Old` | lemma bodies generated at random |
+| Library | LINQ, `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `StringBuilder`, `MemoryStream`, `TextWriter`, `BinaryPrimitives`, disposables | the remaining stubs (`Stream` reads, `BinaryReader`/`Writer`) |
+| Erasure | every program runs erased | |
+
+Out of scope by design: `--no-overflow` and check profiles, which assume rather than check, and threads, which are
+not supported.
 
 ## References
 

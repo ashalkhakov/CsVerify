@@ -231,9 +231,9 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>The local or parameter an operand names, if it is one.</summary>
-        private static ISymbol VariableOf(IOperation op)
+        private ISymbol VariableOf(IOperation op)
         {
-            switch (Unconverted(op))
+            switch (Uncaptured(Unconverted(op)))
             {
                 case ILocalReferenceOperation l: return l.Local;
                 case IParameterReferenceOperation p: return p.Parameter;
