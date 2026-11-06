@@ -4,7 +4,7 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 
 **What "verified" does not cover** (deliberate choices, documented rather than hidden)
 - **Integers** are bounded by default (see [Bounded integers](semantics.md#bounded-integers)). `--no-overflow` makes them mathematical, as ATS's constraint solver does, which is unsound where code can overflow.
-- **Threads.** A method is proved correct for runs where no other thread writes the state it uses while it runs (see [Async and concurrency](semantics.md#async-and-concurrency)). For fields guarded by a lock, this is proved: an unlocked use is reported. Other state, what a guarded field refers to, deadlocks beyond nested locks on one array, and lock-free code are not covered, and an async method of the program must be awaited where it is called.
+- **Threads.** A method is proved correct for runs where no other thread writes the state it uses while it runs (see [Async and concurrency](semantics.md#async-and-concurrency)). For fields guarded by a lock, this is proved: an unlocked use is reported. Other state, what a guarded field refers to, deadlocks beyond nested locks on one array, and lock-free code are not covered, and a task of an async method of the program must be awaited at once or kept in a local until it is.
 - **Exceptions and `null`.** Ordinary methods are verified for partial correctness with respect to exceptions: a path that throws need not meet the postcondition, only `Spec.EnsuresOnThrow` clauses. Handlers are verified (see Exceptions). Proofs may not throw (CSV1011). Null dereferences are not exceptions in this sense: they are proved absent (CSV1013/CSV1014), and so never reach a handler.
 - **Mutable objects.**
   - **Dynamic frames.**

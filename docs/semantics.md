@@ -73,7 +73,13 @@ Methods are verified for partial correctness: any call may throw anything, and a
   - Views are linear and permissions add up to one, so no code that runs in between can hold what this method holds, and so none can write it.
   - A confined local's object is reachable only through that local. It was new when stored there, and no use of the local passes it anywhere else, so code that runs at an await has no reference to it. Members of the base class library are trusted not to keep their receiver. Its threading types are excluded, because they hand objects to other threads.
   - Everything else is forgotten, which is what any code could have done to it.
-- **An async method of the program called without being awaited at once** (`var t = F(); …; await t;`, or an `async void` method) is rejected (CSV1901). It would run interleaved with its caller, each changing what the other relies on. Lending it permissions explicitly is the next step (step 2 below).
+- **A task held in a local and awaited later** (`var t = F(x); …; await t;`):
+  - **At the call:** `F`'s precondition is checked.
+  - **While it runs:** other code may run at any moment, so what the method doesn't hold is forgotten from each statement to the next. Locals and confined objects stay.
+  - **At `await t`:** what `F`'s postcondition says of the result is known. `await Task.WhenAll(a, b)` awaits both, and gives an array of their results if it has one. `t.Result` gives the result once `t` has been awaited.
+  - **Reported (CSV1026):** a path that never awaits it, since a failure in it would be lost, and `t.Result` before that, since it blocks.
+  - **Refused (CSV1901):** storing, returning or capturing the task, reassigning the local, a `ref` argument, or lending views or permissions, which wouldn't be back until it returns. So is calling `F` without keeping the task (`F();`), and an `async void` method.
+  - **Warned (CSV1900):** two tasks at once where one writes a field or array the other uses, unless a lock guards it: each is proved as if alone. The verifier knows which field, not which object, so this may be a false alarm on tasks working on different objects.
 - **Library tasks** are values like any other. Awaiting one gives an unknown result, non-null as the library declares
   it, and may throw. An **async stub** (a `[ContractsFor]` stub method declared `async`, like `Stream.ReadAsync`'s)
   gives the awaited call its contract: its precondition is checked at the call, and its postcondition is of the awaited
@@ -99,6 +105,23 @@ public void Reset() { _balance = 0; }  // CSV1023: it could race
 ```
 
 What a lock guards is the field itself, not what it refers to: `_items` being guarded says nothing of the array's cells, or of a reference copied out while the lock is held. Other locks aren't ordered, and only lock statements in one method are seen, so this is not deadlock freedom in general.
+
+**`SemaphoreSlim` as a lock.** A lock can't be held across an `await`; a `SemaphoreSlim` made with a count of 1 can. It guards state just as a lock does, by `[GuardedBy]` or by what is written under it, when it is taken in this form:
+
+```csharp
+await _gate.WaitAsync();       // or WaitAsync(ct), or _gate.Wait()
+try { ... }
+finally { _gate.Release(); }
+```
+
+- **What it guards stays across an `await` inside it,** since nobody else can have it. Its invariant need not hold there: it is proved at the `Release`.
+- **What it guards is forgotten on taking it,** as with a lock, and the lock rules on use apply (CSV1023), including in a `catch`, and in a `finally` before the `Release`.
+- **Any other use of it is reported (CSV1023):** another form of taking or releasing it, handing it to anyone, a wait with a timeout, a count other than 1, a field that isn't readonly. So is starting a task of a `[GuardedBy]` method without awaiting it, which would run alongside the holder.
+- **It isn't reentrant, unlike a lock.** Taking it while it is held waits forever (CSV1025), which is reported when seen directly or through calls on `this`. Other deadlocks aren't looked for.
+
+A semaphore of any other count, such as a rate limiter, guards nothing, and is a library call like any other.
+
+**Cancellation.** A token's `IsCancellationRequested` is a new answer at every read, and specifications can't speak of it, since it could be true by the time they're looked at. Being cancelled comes out as an exception from `ThrowIfCancellationRequested` or any `await`, so a `catch (OperationCanceledException)` is reached, and a `finally` must restore what a lock's or a semaphore's invariant needs. A postcondition is of a normal return: a cancelled method has made no promise, beyond those of `Spec.EnsuresOnThrow`. `CancellationTokenSource` is a library class with nothing modeled, and `CancellationToken.None` is no different from any other token.
 
 **Not covered (yet).** Threads started with `Task.Run` or `new Thread` are ordinary library calls: the fields and arrays their delegate may write are forgotten at the call, but not afterwards, while the thread runs. So state that no lock guards is still under the guarantee's assumption. `Interlocked`, `volatile`, `Monitor.Wait` and `Monitor.Pulse` are ordinary calls and reads, with no meaning about other threads, and `Monitor.Enter` outside a lock statement doesn't count as holding a lock. Progress and lock-free code are not checked. The plan for threads is permission-based, as in Viper and VerCors: starting a thread would hand it the permissions its delegate's precondition names, and joining it would give back its postcondition's.
 

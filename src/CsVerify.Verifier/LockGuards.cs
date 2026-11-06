@@ -45,18 +45,26 @@ namespace CsVerify.Verifier
                             }
                             break;
                         case LockStatementSyntax l when LockOf(l.Expression, model) is IFieldSymbol lockField && (lockField.IsReadOnly || lockField.IsConst):
-                            foreach (var written in l.Statement.DescendantNodes().OfType<ExpressionSyntax>().Where(IsWriteTarget))
-                                if (model.GetSymbolInfo(written).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && Inferable(s) &&
-                                    SymbolEqualityComparer.Default.Equals(s.ContainingType, lockField.ContainingType))
-                                {
-                                    if (!inferred.TryGetValue(s, out var locks)) inferred[s] = locks = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-                                    locks.Add(lockField);
-                                }
+                            Infer(new[] { l.Statement }, lockField, model, inferred);
+                            break;
+                        case TryStatementSyntax t when GateOfTry(t, model) is IFieldSymbol gate && gate.IsReadOnly && IsMutex(gate):
+                            Infer(HeldParts(t, model), gate, model, inferred);
                             break;
                     }
             }
             foreach (var (s, locks) in inferred)
                 if (!explicitly.Contains(s) && locks.Count == 1) _guards[s] = locks.First();
+        }
+
+        private static void Infer(IEnumerable<SyntaxNode> held, IFieldSymbol lockField, SemanticModel model, Dictionary<ISymbol, HashSet<ISymbol>> inferred)
+        {
+            foreach (var written in held.SelectMany(h => h.DescendantNodes()).OfType<ExpressionSyntax>().Where(IsWriteTarget))
+                if (model.GetSymbolInfo(written).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && Inferable(s) &&
+                    SymbolEqualityComparer.Default.Equals(s.ContainingType, lockField.ContainingType))
+                {
+                    if (!inferred.TryGetValue(s, out var locks)) inferred[s] = locks = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+                    locks.Add(lockField);
+                }
         }
 
         private void Declared(ISymbol s, HashSet<ISymbol> explicitly)
@@ -109,6 +117,129 @@ namespace CsVerify.Verifier
         /// <summary>The lock invariants of a type's own locks, with the lock each is of.</summary>
         public IEnumerable<(ISymbol lockField, IMethodSymbol invariant)> InvariantsIn(INamedTypeSymbol type) =>
             _invariants.Where(kv => SymbolEqualityComparer.Default.Equals(kv.Key.ContainingType, type)).SelectMany(kv => kv.Value.Select(m => (kv.Key, m)));
+
+        // ---- a SemaphoreSlim used as a lock: await g.WaitAsync(); try { ... } finally { g.Release(); } ----
+
+        public static bool IsSemaphore(ISymbol s) => s is IFieldSymbol f && f.Type?.ToDisplayString() == "System.Threading.SemaphoreSlim";
+
+        /// <summary>The field a call g.Wait(), g.WaitAsync() or g.Release() is on, or null.</summary>
+        private static IFieldSymbol GateOfCall(InvocationExpressionSyntax inv, string name, SemanticModel model) =>
+            inv.Expression is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == name && model.GetSymbolInfo(ma.Expression).Symbol is IFieldSymbol g && IsSemaphore(g) ? g : null;
+
+        /// <summary>Taking it, as a statement of its own: it must have succeeded to get past it. (Wait(timeout) says by what it returns.)</summary>
+        private static IFieldSymbol GateTakenBy(StatementSyntax st, SemanticModel model)
+        {
+            if (!(st is ExpressionStatementSyntax es)) return null;
+            var e = es.Expression;
+            bool awaited = e is AwaitExpressionSyntax;
+            if (e is AwaitExpressionSyntax aw) e = aw.Expression;
+            if (awaited && e is InvocationExpressionSyntax ca && ca.Expression is MemberAccessExpressionSyntax cm && cm.Name.Identifier.Text == "ConfigureAwait") e = cm.Expression;
+            if (!(e is InvocationExpressionSyntax inv) || !(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m)) return null;
+            // (a Task<bool> or a bool is a wait that may not have got it)
+            if (awaited ? m.ReturnType.ToDisplayString() != "System.Threading.Tasks.Task" : !m.ReturnsVoid) return null;
+            return GateOfCall(inv, awaited ? "WaitAsync" : "Wait", model);
+        }
+
+        /// <summary>The statement before a statement of a block.</summary>
+        private static StatementSyntax Before(StatementSyntax st)
+        {
+            if (!(st.Parent is BlockSyntax b)) return null;
+            int i = b.Statements.IndexOf(st);
+            return i > 0 ? b.Statements[i - 1] : null;
+        }
+
+        /// <summary>The one g.Release() of a finally, as a statement of its own, or null.</summary>
+        private static ExpressionStatementSyntax ReleaseIn(TryStatementSyntax t, IFieldSymbol gate, SemanticModel model)
+        {
+            if (t.Finally == null) return null;
+            var releases = t.Finally.Block.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(i => SymbolEqualityComparer.Default.Equals(GateOfCall(i, "Release", model), gate)).ToList();
+            return releases.Count == 1 && releases[0].ArgumentList.Arguments.Count == 0 && releases[0].Parent is ExpressionStatementSyntax es && es.Parent == t.Finally.Block ? es : null;
+        }
+
+        /// <summary>The semaphore a try statement holds: it comes right after taking it, and its finally gives it back. Null for any other try.</summary>
+        public static IFieldSymbol GateOfTry(TryStatementSyntax t, SemanticModel model)
+        {
+            if (!(Before(t) is StatementSyntax before) || !(GateTakenBy(before, model) is IFieldSymbol gate) || ReleaseIn(t, gate, model) == null) return null;
+            string Receiver(StatementSyntax st) => st.DescendantNodes().OfType<MemberAccessExpressionSyntax>()
+                .Where(ma => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(ma.Expression).Symbol, gate)).Select(ma => ma.Expression.ToString()).FirstOrDefault();
+            // (o._gate taken, and p._gate given back, is not this)
+            return Receiver(before) == Receiver(ReleaseIn(t, gate, model)) ? gate : null;
+        }
+
+        /// <summary>The parts of such a try that run with it held.</summary>
+        public static IEnumerable<SyntaxNode> HeldParts(TryStatementSyntax t, SemanticModel model)
+        {
+            yield return t.Block;
+            foreach (var c in t.Catches) yield return c;
+            var release = ReleaseIn(t, GateOfTry(t, model), model);
+            foreach (var st in t.Finally.Block.Statements.TakeWhile(x => x != release)) yield return st;
+        }
+
+        /// <summary>The try statement a taking statement starts; null if it isn't one.</summary>
+        public static TryStatementSyntax TryAfter(StatementSyntax taking)
+        {
+            if (!(taking.Parent is BlockSyntax b)) return null;
+            int i = b.Statements.IndexOf(taking);
+            return i >= 0 && i + 1 < b.Statements.Count ? b.Statements[i + 1] as TryStatementSyntax : null;
+        }
+
+        /// <summary>Is this call of Wait, WaitAsync or Release the form above?</summary>
+        public static bool IsInForm(InvocationExpressionSyntax inv, IFieldSymbol gate, SemanticModel model)
+        {
+            var st = inv.FirstAncestorOrSelf<StatementSyntax>();
+            if (st?.Parent is BlockSyntax fin && fin.Parent is FinallyClauseSyntax fc && fc.Parent is TryStatementSyntax t0)
+                return SymbolEqualityComparer.Default.Equals(GateOfTry(t0, model), gate) && ReleaseIn(t0, gate, model) == st;
+            return st != null && SymbolEqualityComparer.Default.Equals(GateTakenBy(st, model), gate) && TryAfter(st) is TryStatementSyntax t &&
+                   SymbolEqualityComparer.Default.Equals(GateOfTry(t, model), gate);
+        }
+
+        /// <summary>Does it let one in at a time? Made with a count of 1, every time it is made; and (see IsInForm) given back only by whoever took it.</summary>
+        public bool IsMutexGate(IFieldSymbol gate) => IsMutex(gate);
+
+        private bool IsMutex(IFieldSymbol gate)
+        {
+            var made = new List<(ExpressionSyntax value, SemanticModel model)>();
+            foreach (var r in gate.DeclaringSyntaxReferences)
+            {
+                var d = r.GetSyntax();
+                var model = _compilation.GetSemanticModel(d.SyntaxTree);
+                if (d is VariableDeclaratorSyntax v && v.Initializer != null) made.Add((v.Initializer.Value, model));
+                if (gate.ContainingType.DeclaringSyntaxReferences.Length != 1) return false;
+                foreach (var a in gate.ContainingType.DeclaringSyntaxReferences[0].GetSyntax().DescendantNodes().OfType<AssignmentExpressionSyntax>())
+                    if (SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(a.Left).Symbol, gate)) made.Add((a.Right, model));
+            }
+            return made.Count > 0 && made.All(x => x.value is BaseObjectCreationExpressionSyntax c && c.ArgumentList != null &&
+                c.ArgumentList.Arguments.Count >= 1 && c.ArgumentList.Arguments.Count <= 2 &&
+                c.ArgumentList.Arguments.All(a => x.model.GetConstantValue(a.Expression) is { HasValue: true, Value: 1 }));
+        }
+
+        /// <summary>The semaphores on "this" a method takes, by itself or through its calls on "this". (Taking one it holds waits for itself.)</summary>
+        public IEnumerable<IFieldSymbol> GatesTakenBy(IMethodSymbol method)
+        {
+            var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            var gates = new HashSet<IFieldSymbol>(SymbolEqualityComparer.Default);
+            void Walk(IMethodSymbol m)
+            {
+                if (!seen.Add(m.OriginalDefinition)) return;
+                foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
+                {
+                    var model = _compilation.GetSemanticModel(r.SyntaxTree);
+                    foreach (var inv in r.GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                    {
+                        if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)) continue;
+                        bool onThis = inv.Expression is IdentifierNameSyntax || inv.Expression is GenericNameSyntax ||
+                                      inv.Expression is MemberAccessExpressionSyntax ma && ma.Expression is ThisExpressionSyntax;
+                        if (onThis) { Walk(callee); continue; }
+                        if (inv.Expression is MemberAccessExpressionSyntax wa && (wa.Name.Identifier.Text == "Wait" || wa.Name.Identifier.Text == "WaitAsync") &&
+                            (wa.Expression is IdentifierNameSyntax || wa.Expression is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax) &&
+                            model.GetSymbolInfo(wa.Expression).Symbol is IFieldSymbol g && IsSemaphore(g))
+                            gates.Add(g);
+                    }
+                }
+            }
+            Walk(method);
+            return gates;
+        }
 
         public static bool IsInvariant(ISymbol s) => SpecSymbols.HasAttribute(s, "LockInvariantAttribute");
     }

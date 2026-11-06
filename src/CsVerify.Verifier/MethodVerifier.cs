@@ -222,6 +222,7 @@ namespace CsVerify.Verifier
                 EnterOwned(f);
                 EnterPredicates(f);
                 EnterCells(f);
+                EnterGate(f);
                 _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
                 CheckSubtyping(f, spec);
@@ -455,6 +456,8 @@ namespace CsVerify.Verifier
             foreach (var op in block.Operations)
             {
                 (_block, _current, _onPath) = (block, f, onPath);
+                // (a task this method started may run at any moment: nothing it could write stays known from one statement to the next)
+                if (f.Started.Values.Any(t => !t.Awaited)) Interleave(f);
                 ExecOperation(op, f);
             }
             (_block, _current, _onPath) = (block, f, onPath);
@@ -613,6 +616,7 @@ namespace CsVerify.Verifier
 
         private void LoopBackEdge(Loop loop, Frame f)
         {
+            CheckAwaitedInLoop(loop, f);
             LoopFactsBackEdge(loop, f);
             ArrayForEachNext(loop, f);
             var spec = new SpecEnv { Old = _entry };
@@ -631,6 +635,7 @@ namespace CsVerify.Verifier
         private void CheckPostconditions(Frame f)
         {
             ConstructorEstablishesLocks(f);
+            CheckAllAwaited(f);
             var at = f.ReturnSyntax ?? MethodLocationNode();
             ExitOwned(f, at);
             ProveImmutableInvariants(f, at);
@@ -1531,6 +1536,7 @@ namespace CsVerify.Verifier
 
         private Term EvalProperty(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
         {
+            if (TaskResult(pr, f, spec) is Term given) return given;
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
@@ -1585,7 +1591,9 @@ namespace CsVerify.Verifier
                 // a library property that may change (Console.Out, a list's Count): each read in code is a value of its own
                 if (pr.Instance != null) Deref(pr.Instance, Eval(pr.Instance, f, spec), pr.Syntax);
                 foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
-                Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
+                // (a token's state is just that: it could have been cancelled by now, or not)
+                if (!LooksAtSharedState(prop))
+                    Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
                 var member = prop.OriginalDefinition.ToDisplayString();
                 _result.LibraryCalls.Add((member, Where(pr.Syntax)));
                 var wasCause = _z3.Cause;
@@ -1615,12 +1623,23 @@ namespace CsVerify.Verifier
         /// ghost members, members of strings and readonly structs, and get-only (or init-only) auto-properties.
         /// A computed getter (List.Count) or a settable property is not.
         /// </summary>
+        /// <summary>A readonly struct that is a handle on something others change: a token, a ValueTask, an awaiter. Only whether a token can be cancelled at all stays.</summary>
+        private static bool LooksAtSharedState(IPropertySymbol prop)
+        {
+            var ns = prop.ContainingType.ContainingNamespace?.ToDisplayString();
+            return prop.ContainingType.IsValueType && (ns == "System.Threading" || ns == "System.Threading.Tasks" || ns == "System.Runtime.CompilerServices") && prop.Name != "CanBeCanceled";
+        }
+
+        /// <summary>A readonly struct can be a view of an array that others write: an ArraySegment's items are not its own.</summary>
+        private static bool LooksAtAnArray(IPropertySymbol prop) =>
+            prop.IsIndexer && prop.DeclaringSyntaxReferences.Length == 0 && prop.ContainingType.Name != "ImmutableArray";
+
         private static bool IsStableProperty(IPropertySymbol prop)
         {
             var type = prop.ContainingType;
             if (type == null) return false;
             if (type.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) return true;
-            if (type.SpecialType == SpecialType.System_String || (type.IsValueType && type.IsReadOnly)) return true;
+            if (type.SpecialType == SpecialType.System_String || (type.IsValueType && type.IsReadOnly && !LooksAtSharedState(prop) && !LooksAtAnArray(prop))) return true;
             if (prop.SetMethod != null && !prop.SetMethod.IsInitOnly) return false;
             foreach (var syntax in prop.DeclaringSyntaxReferences.Select(r => r.GetSyntax()))
             {
@@ -1684,12 +1703,23 @@ namespace CsVerify.Verifier
             finally { _instantiations.Pop(); _equalityEpochs.Pop(); }
         }
 
+        private IInvocationOperation _waitingCall;
+
         private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec, bool enumerators = true)
         {
             if (_codeMode && !ProofCode) CheckFormatArguments(inv);
             if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
+            if (GateOf(inv, "Release", f) is { } given) GateReleased(given, inv.Syntax, f);
+            if (inv != _waitingCall && GateOf(inv, "Wait", f) is { } wanted)
+            {
+                _waitingCall = inv;
+                var waited = EvalInvocationCore(inv, f, spec, enumerators);
+                _waitingCall = null;
+                GateTaken(wanted, f);
+                return waited;
+            }
             if (IsGetLength(inv)) return GetLength(inv, f, spec);
             if (SpecSymbols.IsSpecClass(m.ContainingType))
             {
@@ -1761,6 +1791,7 @@ namespace CsVerify.Verifier
             // an async stub's contract is of what the task gives when awaited: a task not awaited at once is the library's
             if (callee.IsStub && callee.Stub.IsAsync && inv != _awaitedCall) callee = _engine.LibraryContractOf(m);
             if (callee.IsStub && _codeMode) Assumed(callee);
+            if (StartTask(inv, callee, f, spec) is Term startedTask) return startedTask;
             CheckNotAwaited(inv, callee);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
             if (receiver != null) Deref(inv.Instance, receiver, inv.Syntax);
@@ -1981,6 +2012,8 @@ namespace CsVerify.Verifier
                 }
                 if (result != null && callee.IsPure)
                     _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
+                // (a task's postcondition is of the state when it ends, which could be any later one: not of this)
+                if (inv == _startedCall) Interleave(post);
                 if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null))
                     foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
                 foreach (var ens in callee.Ensures)

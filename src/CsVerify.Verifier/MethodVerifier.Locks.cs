@@ -27,12 +27,15 @@ namespace CsVerify.Verifier
             {
                 var symbol = _model.GetSymbolInfo(n).Symbol;
                 if (symbol == null || !(symbol is IFieldSymbol || symbol is IPropertySymbol || symbol is IMethodSymbol)) continue;
+                CheckGateUse(n, symbol);
                 if (locks.GuardOf(symbol) is not IFieldSymbol guard) continue;
                 if (n.Parent is NameColonSyntax || n.Parent is NameEqualsSyntax) continue;
                 var receiver = ReceiverOf(n);
                 if (IsBeingBuilt(n, receiver)) continue;
                 if (!(guard.IsReadOnly || guard.IsConst))
                     Report("CSV1023", n, $"'{guard.Name}' guards '{symbol.Name}', but it isn't readonly: threads could hold different objects", isError: true);
+                else if (LockGuards.IsSemaphore(guard) && !locks.IsMutexGate(guard))
+                    Report("CSV1023", n, $"'{guard.Name}' guards '{symbol.Name}', but it isn't made with a count of 1: it may let more than one in", isError: true);
                 else if (n.FirstAncestorOrSelf<RefExpressionSyntax>() is RefExpressionSyntax r && !(symbol is IMethodSymbol) && r.Expression.DescendantNodesAndSelf().Contains(n))
                     Report("CSV1023", n, $"a ref to '{n}' outlives lock '{guard.Name}': whoever has it can use it without the lock", isError: true);
                 else if (!Holds(n, guard, receiver))
@@ -97,7 +100,11 @@ namespace CsVerify.Verifier
                     case LockStatementSyntax l when l.Statement.Span.Contains(n.Span) && SymbolEqualityComparer.Default.Equals(LockGuards.LockOf(l.Expression, _model), guard):
                         if (wanted == null) return true;
                         var lockReceiver = l.Expression is MemberAccessExpressionSyntax ma ? ma.Expression.ToString() : "this";
-                        if (lockReceiver == wanted && StaysTheSame(wanted, l)) return true;
+                        if (lockReceiver == wanted && StaysTheSame(wanted, l.Statement)) return true;
+                        break;
+                    case TryStatementSyntax t when SymbolEqualityComparer.Default.Equals(LockGuards.GateOfTry(t, _model), guard) && LockGuards.HeldParts(t, _model).Any(h => h.Span.Contains(n.Span)):
+                        if (wanted == null) return true;
+                        if (GateReceiver(t, guard) == wanted && StaysTheSame(wanted, t)) return true;
                         break;
                     case AnonymousFunctionExpressionSyntax _:
                     case LocalFunctionStatementSyntax _:
@@ -111,14 +118,14 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>The receiver is one object for all of the lock: this, or a name that the lock statement doesn't assign.</summary>
-        private bool StaysTheSame(string receiver, LockStatementSyntax l)
+        private bool StaysTheSame(string receiver, SyntaxNode l)
         {
             if (receiver == "this") return true;
             if (!SyntaxFacts.IsValidIdentifier(receiver)) return false;
             bool Named(ExpressionSyntax e) => e.ToString() == receiver || e is TupleExpressionSyntax t && t.Arguments.Any(x => Named(x.Expression));
-            return !l.Statement.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => Named(a.Left)) &&
-                   !l.Statement.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => Named(fe.Variable)) &&
-                   !l.Statement.DescendantNodes().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && a.Expression.ToString() == receiver);
+            return !l.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => Named(a.Left)) &&
+                   !l.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => Named(fe.Variable)) &&
+                   !l.DescendantNodes().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && a.Expression.ToString() == receiver);
         }
 
         /// <summary>
@@ -135,7 +142,7 @@ namespace CsVerify.Verifier
                 if (!(p is LockStatementSyntax outer) || !(outer.Expression is ElementAccessExpressionSyntax oa) || oa.ArgumentList.Arguments.Count != 1) continue;
                 if (oa.Expression.ToString() != ia.Expression.ToString()) continue;
                 string index = oa.ArgumentList.Arguments[0].Expression.ToString();
-                if (!(_model.GetOperation(oa.ArgumentList.Arguments[0].Expression) is IOperation before) || !(before.ConstantValue.HasValue || StaysTheSame(index, outer)) ||
+                if (!(_model.GetOperation(oa.ArgumentList.Arguments[0].Expression) is IOperation before) || !(before.ConstantValue.HasValue || StaysTheSame(index, outer.Statement)) ||
                     !(_model.GetOperation(ia.ArgumentList.Arguments[0].Expression) is IOperation after))
                 {
                     Report("CSV1025", inner, $"'{outer.Expression}' and '{inner.Expression}': their order can't be told, since '{index}' may change under the lock", isError: true);
@@ -199,20 +206,111 @@ namespace CsVerify.Verifier
                     Prove(invariant, "CSV1024", inv.Syntax, $"the invariant of lock '{guard.Name}' might not hold at '{inv.Syntax}', which may enter the lock again");
             }
             // (a method that its caller holds the lock for is under it all along)
-            if (_engine.Locks.GuardOf(_method) is IFieldSymbol own && !SymbolEqualityComparer.Default.Equals(_engine.Locks.GuardOf(inv.TargetMethod), own))
+            if (_engine.Locks.GuardOf(_method) is IFieldSymbol own && !LockGuards.IsSemaphore(own) && !SymbolEqualityComparer.Default.Equals(_engine.Locks.GuardOf(inv.TargetMethod), own))
                 foreach (var invariant in LockInvariants(own, null, f))
                     Prove(invariant, "CSV1024", inv.Syntax, $"the invariant of lock '{own.Name}' might not hold at '{inv.Syntax}', which may enter the lock again");
         }
 
         private IEnumerable<Term> LockInvariants(IFieldSymbol guard, LockStatementSyntax stmt, Frame f)
         {
-            var methods = _engine.Locks.InvariantsOf(guard);
-            if (methods.Count == 0) yield break;
             Term owner = null;
             if (!guard.IsStatic)
                 owner = stmt != null && _model.GetOperation(stmt.Expression) is IFieldReferenceOperation fr && fr.Instance != null ? T.Coerce(Eval(fr.Instance, f, null), Sort.Int) : f.This;
-            foreach (var m in methods)
+            return LockInvariantsOf(guard, owner, f);
+        }
+
+        private IEnumerable<Term> LockInvariantsOf(IFieldSymbol guard, Term owner, Frame f)
+        {
+            foreach (var m in _engine.Locks.InvariantsOf(guard))
                 yield return AsBool(PureApply(_engine.ContractOf(m), m.IsStatic ? null : owner, new Term[0], f.Heap, Sort.Bool, null, f));
+        }
+
+        // ---- a SemaphoreSlim used as a lock (see LockGuards). Unlike a lock it may be held across an await, and a second try at it waits forever. ----
+
+        /// <summary>The object whose semaphore a try holds, as written.</summary>
+        private string GateReceiver(TryStatementSyntax t, IFieldSymbol gate) =>
+            t.Finally.Block.DescendantNodes().OfType<InvocationExpressionSyntax>().Select(i => i.Expression as MemberAccessExpressionSyntax)
+                .Where(ma => ma != null && ma.Name.Identifier.Text == "Release" && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(ma.Expression).Symbol, gate))
+                .Select(ma => ma.Expression is MemberAccessExpressionSyntax o ? (o.Expression is ThisExpressionSyntax ? "this" : o.Expression.ToString()) : "this").First();
+
+        /// <summary>
+        /// A semaphore that guards something can only be taken and given back in the one form, and can't be handed to anyone:
+        /// a Release elsewhere would let a second one in. And taking it while it is held waits for itself (CSV1025).
+        /// </summary>
+        private void CheckGateUse(SimpleNameSyntax n, ISymbol symbol)
+        {
+            if (symbol is IMethodSymbol callee && (n.Parent is InvocationExpressionSyntax || n.Parent is MemberAccessExpressionSyntax m0 && m0.Name == n && (m0.Expression is ThisExpressionSyntax)))
+                foreach (var gate in _engine.Locks.GatesTakenBy(callee))
+                    if (Holds(n, gate, "this"))
+                        Report("CSV1025", n, $"'{n}' takes '{gate.Name}', which is held here: it would wait for itself", isError: true);
+            if (!LockGuards.IsSemaphore(symbol) || !(symbol is IFieldSymbol g) || !_engine.Locks.GuardedBy(g).Any()) return;
+            ExpressionSyntax whole = n.Parent is MemberAccessExpressionSyntax own && own.Name == n ? own : n;
+            if (whole.Parent is MemberAccessExpressionSyntax use && use.Expression == whole)
+            {
+                string name = use.Name.Identifier.Text;
+                if (name == "Dispose" || name == "CurrentCount") return;
+                if (use.Parent is InvocationExpressionSyntax inv && (name == "Wait" || name == "WaitAsync" || name == "Release"))
+                {
+                    if (!LockGuards.IsInForm(inv, g, _model))
+                        Report("CSV1023", inv, $"'{inv}': '{g.Name}' guards state, so it must be taken as 'await {g.Name}.WaitAsync(); try {{ ... }} finally {{ {g.Name}.Release(); }}'", isError: true);
+                    else if (name != "Release" && Holds(n, g, whole is MemberAccessExpressionSyntax o && !(o.Expression is ThisExpressionSyntax) ? o.Expression.ToString() : "this"))
+                        Report("CSV1025", inv, $"'{g.Name}' is held here, and a semaphore can't be taken twice: this would wait for itself", isError: true);
+                    return;
+                }
+            }
+            if (whole.Parent is AssignmentExpressionSyntax a && a.Left == whole && _method.MethodKind == MethodKind.Constructor) return;
+            if (whole.Ancestors().OfType<InvocationExpressionSyntax>().Any(i => i.Expression is IdentifierNameSyntax { Identifier: { Text: "nameof" } })) return;
+            Report("CSV1023", n, $"'{g.Name}' guards state, and this hands it on: whoever has it could release it", isError: true);
+        }
+
+        /// <summary>g.Wait() or await g.WaitAsync() in the form, or g.Release(): the semaphore's field, and whose it is.</summary>
+        private (IFieldSymbol gate, Term owner)? GateOf(IInvocationOperation inv, string name, Frame f)
+        {
+            if (!_codeMode || inv.TargetMethod.Name != name || !(inv.Instance is IFieldReferenceOperation fr) || !LockGuards.IsSemaphore(fr.Field) ||
+                !_engine.Locks.GuardedBy(fr.Field).Any() || !(inv.Syntax is InvocationExpressionSyntax syntax) || !LockGuards.IsInForm(syntax, fr.Field, _model))
+                return null;
+            return (fr.Field, fr.Field.IsStatic ? null : T.Coerce(Eval(fr.Instance ?? fr, f, null), Sort.Int));
+        }
+
+        /// <summary>It's ours now: others have had what it guards, and left its invariants true.</summary>
+        private void GateTaken((IFieldSymbol gate, Term owner) g, Frame f)
+        {
+            foreach (var field in _engine.Locks.GuardedBy(g.gate))
+                if (FieldEffects.IsHeapField(field))
+                    f.Fields[FieldEffects.Key(field)] = _z3.Fresh(field.Name + "$locked", FieldMap(f, field).Sort);
+            foreach (var invariant in LockInvariantsOf(g.gate, g.owner, f)) _z3.Assume(invariant);
+            f.HeldGates.Add(g);
+        }
+
+        /// <summary>Giving it back: its invariants must hold for whoever is next.</summary>
+        private void GateReleased((IFieldSymbol gate, Term owner) g, SyntaxNode at, Frame f)
+        {
+            foreach (var invariant in LockInvariantsOf(g.gate, g.owner, f))
+                Prove(invariant, "CSV1024", at, $"the invariant of lock '{g.gate.Name}' might not hold when it is released");
+            f.HeldGates.RemoveAll(x => SymbolEqualityComparer.Default.Equals(x.Gate, g.gate) && x.Owner?.S == g.owner?.S);
+        }
+
+        /// <summary>What a held semaphore guards, as it is now: to be put back after other code has run. No other code can have it.</summary>
+        private List<(ISymbol field, Term owner, Term map)> GuardedByHeldGates(Frame f)
+        {
+            var kept = new List<(ISymbol, Term, Term)>();
+            foreach (var (gate, owner) in f.HeldGates)
+                foreach (var field in _engine.Locks.GuardedBy(gate))
+                    if (FieldEffects.IsHeapField(field)) kept.Add((FieldEffects.Key(field), owner, FieldMap(f, field)));
+            return kept;
+        }
+
+        private void KeepGuarded(List<(ISymbol field, Term owner, Term map)> kept, Frame f)
+        {
+            foreach (var (field, owner, map) in kept)
+                f.Fields[field] = owner == null ? map : Pointwise(field.Name, MapSort(field), $"(ite (= y {owner}) (select {map} y) (select {FieldMap(f, field)} y))");
+        }
+
+        /// <summary>A method whose caller holds its semaphore holds it all along, for its own object.</summary>
+        private void EnterGate(Frame f)
+        {
+            if (_engine.Locks.GuardOf(_method) is IFieldSymbol own && LockGuards.IsSemaphore(own) && _engine.Locks.IsMutexGate(own) && SymbolEqualityComparer.Default.Equals(_method.ContainingType, own.ContainingType))
+                f.HeldGates.Add((own, own.IsStatic ? null : f.This));
         }
     }
 }

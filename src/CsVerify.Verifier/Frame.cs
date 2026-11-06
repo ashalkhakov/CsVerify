@@ -67,6 +67,11 @@ namespace CsVerify.Verifier
         public Dictionary<ISymbol, RefTarget> Refs = new Dictionary<ISymbol, RefTarget>(SymbolEqualityComparer.Default);
         /// <summary>The foreach loops over arrays: the array, and the index of the element the iteration is at.</summary>
         public Dictionary<int, (Term arr, Term idx)> ForEach = new Dictionary<int, (Term, Term)>();
+        /// <summary>Tasks this method has started and holds in locals (see MethodVerifier.Async): by the task's term.</summary>
+        public Dictionary<string, StartedTask> Started = new Dictionary<string, StartedTask>();
+
+        /// <summary>The semaphores used as locks this method holds now, and whose (null for a static one): what they guard stays across an await.</summary>
+        public List<(Microsoft.CodeAnalysis.IFieldSymbol Gate, Term Owner)> HeldGates = new List<(Microsoft.CodeAnalysis.IFieldSymbol, Term)>();
         public Dictionary<int, Term[]> LoopMeasures = new Dictionary<int, Term[]>();
         /// <summary>The inferred loop facts assumed at each loop's head on this path, and the entry values they compare with.</summary>
         public Dictionary<int, List<string>> LoopFacts = new Dictionary<int, List<string>>();
@@ -107,6 +112,8 @@ namespace CsVerify.Verifier
             Captures = new Dictionary<CaptureId, Term>(Captures),
             ActiveLoops = new HashSet<int>(ActiveLoops),
             ForEach = new Dictionary<int, (Term, Term)>(ForEach),
+            Started = new Dictionary<string, StartedTask>(Started),
+            HeldGates = new List<(Microsoft.CodeAnalysis.IFieldSymbol, Term)>(HeldGates),
             Refs = new Dictionary<ISymbol, RefTarget>(Refs, SymbolEqualityComparer.Default),
             LoopMeasures = new Dictionary<int, Term[]>(LoopMeasures),
             LoopFacts = new Dictionary<int, List<string>>(LoopFacts),
@@ -117,6 +124,17 @@ namespace CsVerify.Verifier
             Pending = Pending,
             ReturnSyntax = ReturnSyntax,
         };
+    }
+
+    /// <summary>A task started and not yet awaited (or awaited, so what it gave stays known).</summary>
+    public readonly struct StartedTask
+    {
+        public readonly Term Result;
+        public readonly bool Awaited;
+        public readonly IMethodSymbol Method;
+        public readonly SyntaxNode At;
+        public StartedTask(Term result, bool awaited, IMethodSymbol method, SyntaxNode at) { Result = result; Awaited = awaited; Method = method; At = at; }
+        public StartedTask AsAwaited() => new StartedTask(Result, true, Method, At);
     }
 
     /// <summary>The location a ref local names: a variable, or the cell Idx of array Arr.</summary>

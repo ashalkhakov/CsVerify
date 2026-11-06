@@ -19,8 +19,13 @@ namespace CsVerify.Verifier
     /// forgotten: arrays, fields, and locals that lambdas or local functions write. What the method holds stays: the
     /// fields of [Owned] objects whose views or permissions are in hand, array cells its Spec.Acc contract gave it, and
     /// memory cells whose views it holds (whoever else runs cannot hold them too);</item>
-    /// <item>an async method of the program called without being awaited at once would run interleaved with its
-    /// caller, each changing what the other relies on: that is not supported (CSV1901). Tasks from the library are
+    /// <item><c>var t = F(...); ...; await t;</c>, with t a local used only to be awaited (or Task.WhenAll'd, or its
+    /// Result read once it has been): a call whose precondition is checked where it starts, and whose postcondition is
+    /// known of what it gives, once that is awaited. Until then it may run at any moment, so what the method doesn't
+    /// hold is forgotten from each statement to the next. If some path never awaits it, its failure would be lost
+    /// (CSV1026). What is lent to a call isn't back until it returns, so it can't lend permissions to one like this;</item>
+    /// <item>any other call of an async method of the program, not awaited at once, would run interleaved with its
+    /// caller in ways that can't be followed: that is not supported (CSV1901). Tasks from the library are
     /// values like any other; awaiting one gives an unknown result (non-null as the library declares it).</item>
     /// </list>
     /// </summary>
@@ -48,12 +53,158 @@ namespace CsVerify.Verifier
             return true;
         }
 
+        // ================================================================================== tasks awaited later
+
+        /// <summary>The local a call's task is put in, if all that happens to the local is that it is awaited.</summary>
+        private ILocalSymbol TaskLocal(IInvocationOperation inv)
+        {
+            if (!(inv.Syntax.Parent is EqualsValueClauseSyntax eq) || !(eq.Parent is VariableDeclaratorSyntax d) ||
+                !(_model.GetDeclaredSymbol(d) is ILocalSymbol local)) return null;
+            foreach (var id in _contract.Declaration.DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(id).Symbol, local)) continue;
+                if (id.Ancestors().TakeWhile(a => a != _contract.Declaration).Any(a => a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax)) return null;
+                if (!IsTaskUse(id)) return null;
+            }
+            return local;
+        }
+
+        /// <summary><c>await t</c>, <c>await t.ConfigureAwait(b)</c>, <c>await Task.WhenAll(..., t, ...)</c> or <c>t.Result</c>.</summary>
+        private bool IsTaskUse(IdentifierNameSyntax id)
+        {
+            if (id.Parent is AwaitExpressionSyntax) return true;
+            if (id.Parent is MemberAccessExpressionSyntax ma && ma.Expression == id)
+                return ma.Name.Identifier.Text == "Result" ||
+                       ma.Name.Identifier.Text == "ConfigureAwait" && ma.Parent is InvocationExpressionSyntax c && c.Parent is AwaitExpressionSyntax;
+            return id.Parent is ArgumentSyntax arg && arg.RefKindKeyword.IsKind(SyntaxKind.None) && arg.Parent?.Parent is InvocationExpressionSyntax inv &&
+                   IsWhenAll(_model.GetSymbolInfo(inv).Symbol as IMethodSymbol) && inv.Parent is AwaitExpressionSyntax;
+        }
+
+        private static bool IsWhenAll(IMethodSymbol m) =>
+            m != null && m.Name == "WhenAll" && m.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task";
+
+        /// <summary>A call of an async method of the program whose task a local holds for later (null for any other call).</summary>
+        private IInvocationOperation _startedCall;
+
+        private Term StartTask(IInvocationOperation inv, Contract callee, Frame f, SpecEnv spec)
+        {
+            var m = inv.TargetMethod;
+            if (!_codeMode || !m.IsAsync || !callee.HasSource || inv == _awaitedCall || TaskLocal(inv) == null) return null;
+            // (what is lent to it isn't back until it returns, and returning is what this doesn't follow)
+            if (inv.Arguments.Any(a => SpecSymbols.IsLinear(a.Parameter?.Type) || a.Parameter?.RefKind != RefKind.None) || MentionsCells(callee))
+                return null;
+            // (it would run on what its caller holds the lock for, while its caller does too)
+            if (_engine.Locks.GuardOf(m) is IFieldSymbol held && LockGuards.IsSemaphore(held))
+                Report("CSV1023", inv.Syntax, $"'{m.Name}' relies on holding '{held.Name}', but its task isn't awaited here: it would run alongside this code", isError: true);
+            WarnIfTheyMayRace(inv, f);
+            var outer = _awaitedCall;
+            _awaitedCall = inv;
+            _startedCall = inv;
+            Term result;
+            try { result = EvalInvocationCore(inv, f, spec); }
+            finally { _awaitedCall = outer; _startedCall = null; }
+            var task = _z3.Fresh("task", Sort.Int);
+            _z3.Assume(NotNull(task));
+            f.Started[task.S] = new StartedTask(AwaitedType(m) == null ? T.True : result, false, m, inv.Syntax);
+            // (what its contract said of the state is of the state when it completes, whenever that is: not of this one)
+            Interleave(f);
+            return task;
+        }
+
+        /// <summary>Two tasks running at once, where one writes what the other uses, each proved as if alone.</summary>
+        private void WarnIfTheyMayRace(IInvocationOperation inv, Frame f)
+        {
+            var m = inv.TargetMethod;
+            var (writes, _) = _engine.Fields.WritesOf(m);
+            var reads = _engine.Fields.ReadsOf(m);
+            foreach (var other in f.Started.Values.Where(t => !t.Awaited))
+            {
+                var (otherWrites, _) = _engine.Fields.WritesOf(other.Method);
+                var otherReads = _engine.Fields.ReadsOf(other.Method);
+                var shared = writes.Where(x => _engine.Locks.GuardOf(x) == null && (otherWrites.Contains(x) || otherReads.Contains(x, SymbolEqualityComparer.Default)))
+                    .Concat(otherWrites.Where(x => _engine.Locks.GuardOf(x) == null && reads.Contains(x, SymbolEqualityComparer.Default))).FirstOrDefault();
+                if (shared != null)
+                    Warn(inv.Syntax, $"'{m.Name}' and '{other.Method.Name}' run at once, and '{shared.Name}' is written by one and used by the other: on one object, that could race, and each is proved as if alone");
+                else if (_engine.MayWriteHeap(m) && _engine.MayTouchArrays(other.Method) || _engine.MayWriteHeap(other.Method) && _engine.MayTouchArrays(m))
+                    Warn(inv.Syntax, $"'{m.Name}' and '{other.Method.Name}' run at once, and one writes arrays the other may use: on one array, that could race, and each is proved as if alone");
+            }
+        }
+
+        /// <summary>At the end of the method: every task it started has been awaited, or a failure in it would be lost.</summary>
+        private void CheckAllAwaited(Frame f)
+        {
+            if (!_codeMode) return;
+            foreach (var t in f.Started.Values.Where(t => !t.Awaited))
+                Report("CSV1026", t.At, $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost", isError: true);
+        }
+
+        /// <summary>A task started in a loop's body and not awaited by its end: the next round's local is another one, so nothing could await it.</summary>
+        private void CheckAwaitedInLoop(Loop loop, Frame f)
+        {
+            if (!_codeMode || loop.Syntax == null) return;
+            foreach (var t in f.Started.Values.Where(t => !t.Awaited && loop.Syntax.Span.Contains(t.At.Span)))
+                Report("CSV1026", t.At, $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost", isError: true);
+        }
+
+        /// <summary><c>await t</c> or <c>await Task.WhenAll(...)</c> of tasks this method holds; null for anything else.</summary>
+        private Term AwaitStarted(IOperation operand, IAwaitOperation aw, Frame f, SpecEnv spec)
+        {
+            if (Unconverted(operand) is ILocalReferenceOperation)
+            {
+                var t = Eval(Unconverted(operand), f, spec);
+                if (!f.Started.TryGetValue(t.S, out var started)) return null;
+                f.Started[t.S] = started.AsAwaited();
+                if (!started.Awaited) { MayRaise(T.True, f, null); Interleave(f); }
+                return started.Result;
+            }
+            if (!(operand is IInvocationOperation all) || !IsWhenAll(all.TargetMethod)) return null;
+            var tasks = all.Arguments.SelectMany(a => a.Value.DescendantsAndSelf()).OfType<ILocalReferenceOperation>().ToList();
+            var results = new List<Term>();
+            foreach (var l in tasks)
+            {
+                var t = Eval(l, f, spec);
+                if (!f.Started.TryGetValue(t.S, out var started)) return null;
+                results.Add(started.Result);
+            }
+            // (only a list of them as written: an array built elsewhere isn't followed)
+            if (results.Count == 0) return null;
+            foreach (var l in tasks)
+            {
+                var t = Eval(l, f, spec);
+                f.Started[t.S] = f.Started[t.S].AsAwaited();
+            }
+            MayRaise(T.True, f, null);
+            Interleave(f);
+            if (aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void || !(aw.Type is IArrayTypeSymbol)) return T.True;
+            // Task<T>: an array of what they gave, in order, of its own
+            var arr = Unknown(aw.Type, "whenAll");
+            _z3.Assume(NotNull(arr));
+            _z3.Assume(T.Eq(Len(arr), T.Int(results.Count)));
+            NewArrayIsDistinct(arr, f);
+            var row = T.ZeroRow();
+            for (int i = 0; i < results.Count; i++) row = T.Store(row, T.Int(i), T.Coerce(results[i], Sort.Int));
+            f.Heap = T.Store(f.Heap, arr, row);
+            return arr;
+        }
+
+        /// <summary><c>t.Result</c>, of a task this method holds: what it gave, once awaited. Before that, it would block.</summary>
+        private Term TaskResult(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
+        {
+            if (pr.Property.Name != "Result" || !(pr.Instance is ILocalReferenceOperation l) || f.Started.Count == 0) return null;
+            var t = Eval(l, f, spec);
+            if (!f.Started.TryGetValue(t.S, out var started)) return null;
+            if (!started.Awaited && _codeMode)
+                Report("CSV1026", pr.Syntax, $"the task of '{started.Method.Name}' might not have finished: reading Result blocks until it does, and that can deadlock (await it first)", isError: true);
+            return T.Coerce(started.Result, SortOf(pr.Type));
+        }
+
         private Term EvalAwait(IAwaitOperation aw, Frame f, SpecEnv spec)
         {
             var operand = aw.Operation;
             // (x.ConfigureAwait(b) awaits x)
             while (operand is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null && ca.TargetMethod.DeclaringSyntaxReferences.Length == 0)
                 operand = ca.Instance;
+            if (AwaitStarted(operand, aw, f, spec) is Term given) return given;
             Term result;
             if (operand is IInvocationOperation call && (call.TargetMethod.IsAsync && _engine.ContractOf(call.TargetMethod).HasSource || IsAsyncStubbed(call.TargetMethod)))
             {
@@ -78,6 +229,8 @@ namespace CsVerify.Verifier
                 MayRaise(T.True, f, null);
             }
             Interleave(f);
+            // (await g.WaitAsync(): past here it's ours)
+            if (operand is IInvocationOperation taking && GateOf(taking, "WaitAsync", f) is { } got) GateTaken(got, f);
             return result;
         }
 
@@ -87,6 +240,7 @@ namespace CsVerify.Verifier
         /// </summary>
         private void Interleave(Frame f)
         {
+            var guarded = GuardedByHeldGates(f);
             var confined = ConfinedValues(f, null);
             var before = f.Heap;
             var fresh = _z3.Fresh("heap", Sort.Heap);
@@ -112,6 +266,7 @@ namespace CsVerify.Verifier
                     f.Root = Pointwise("root", Sort.Row, $"(ite {held} (select {rootBefore} y) (select {_z3.Fresh("root", Sort.Row)} y))");
             }
             else if (f.Root != null) f.Root = _z3.Fresh("root", Sort.Row);
+            KeepGuarded(guarded, f);
             AllocAfterCall(f);
             HavocClosureLocals(f);
         }
