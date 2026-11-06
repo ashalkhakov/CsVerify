@@ -320,5 +320,79 @@ namespace Bench
         #region case DivideByZero.Harmless ok
         public static int ShareHarmless(int total, List<int> l) => l.Count == 0 ? 0 : total / l.Count;
         #endregion
+
+        #region case StringIndex.Direct bug
+        public static char LastChar(string s) => s[s.Length];
+        #endregion
+
+        #region case StringIndex.Hidden bug
+        /// <summary>IndexOf says -1 when it isn't there.</summary>
+        public static char AfterColon(string s) => s[s.IndexOf(':') + 1];
+        #endregion
+
+        #region case StringIndex.Harmless ok
+        public static char AfterColonHarmless(string s)
+        {
+            int at = s.IndexOf(':');
+            return at >= 0 && at + 1 < s.Length ? s[at + 1] : ' ';
+        }
+        #endregion
+
+        #region case Substring.Direct bug
+        public static string Tail(string s) => s.Substring(1);
+        #endregion
+
+        #region case Substring.Hidden bug
+        /// <summary>The same -1: Substring throws ArgumentOutOfRangeException.</summary>
+        public static string Key(string s) => s.Substring(0, s.IndexOf('='));
+        #endregion
+
+        #region case Substring.Harmless ok
+        public static string KeyHarmless(string s)
+        {
+            int at = s.IndexOf('=');
+            return at < 0 ? s : s.Substring(0, at);
+        }
+        #endregion
+
+        #region case MaskedIndex.Direct bug
+        /// <summary>The mask is one bit too wide for the table.</summary>
+        public static int Lookup(int hash)
+        {
+            var table = new int[16];
+            return table[hash & 31];
+        }
+        #endregion
+
+        #region case MaskedIndex.Hidden bug
+        /// <summary>A shift keeps a negative hash negative: the top bits are not an index.</summary>
+        public static int LookupTop(int hash)
+        {
+            var table = new int[16];
+            return table[hash >> 28];
+        }
+        #endregion
+
+        #region case MaskedIndex.Harmless ok
+        /// <summary>A hash table's usual index, any hash at all: both are within the table.</summary>
+        public static int LookupHarmless(int hash)
+        {
+            var table = new int[16];
+            return table[hash & 15] + table[hash >>> 28];
+        }
+        #endregion
+
+        #region case Truncation.Direct bug
+        public static byte LowByte(int x) => (byte)x;
+        #endregion
+
+        #region case Truncation.Hidden bug
+        /// <summary>A mask that looks like the usual one, with a bit too many.</summary>
+        public static byte LowByteHidden(int x) => (byte)(x & 0x1FF);
+        #endregion
+
+        #region case Truncation.Harmless ok
+        public static byte LowByteHarmless(int x) => (byte)((x >> 8) & 0xFF);
+        #endregion
     }
 }

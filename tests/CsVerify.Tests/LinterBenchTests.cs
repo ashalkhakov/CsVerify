@@ -26,6 +26,10 @@ namespace CsVerify.Tests
             "Bounds.Direct", "Bounds.Hidden",
             "Overflow.Direct",
             "DivideByZero.Direct",
+            "StringIndex.Direct", "StringIndex.Hidden",
+            "Substring.Direct", "Substring.Hidden",
+            "MaskedIndex.Direct", "MaskedIndex.Hidden",
+            "Truncation.Direct", "Truncation.Hidden",
         };
 
         [Fact]
