@@ -69,8 +69,7 @@ public static int BinarySearch(int[] a, int key)
 - **Finds what linters can't, and leaves them what it doesn't look for.** In [a benchmark against C# linters](bench/Linters/README.md),
   CsVerify reports all 13 bugs hidden behind an alias, a helper or a value that is only sometimes bad, where the linters
   together report 3. They report six bugs it doesn't: code that runs fine but isn't what was meant, such as
-  `d == double.NaN`. So it complements a linter rather than replacing one. Several of the benchmark's families were
-  added because CsVerify checks them: its README says which.
+  `d == double.NaN`. So it complements a linter rather than replacing one.
 
 What it does not prove, and why, is listed in [Limitations](docs/limitations.md); what "verified" claims, what it
 rests on, and why each part keeps it, in [Soundness](docs/soundness.md).

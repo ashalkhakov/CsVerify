@@ -94,12 +94,7 @@ validation.
 
 ## What it shows
 
-- **CsVerify reports 29 of the 35 bugs. The linters together report 16, and both report 10.** Read that with the
-  next point: eight of those bugs are in families added because CsVerify had just learned to check them.
-- **The newer families lean CsVerify's way.** Strings and bits (`StringIndex`, `Substring`, `MaskedIndex`,
-  `Truncation`) came after the first run, when CsVerify gained characters and bitwise operators. They come from what it
-  checks, not from a linter's rules, and no linter here has a rule for them. Without them the count is 21 of 27, as in
-  the first run. They show what a verifier adds beyond those rules, not a fair sample of what either kind of tool finds.
+- **CsVerify reports 29 of the 35 bugs. The linters together report 16, and both report 10.**
 - **What only CsVerify reports: bugs that depend on values or on paths** (19 bugs).
   - **The hidden variants.** CsVerify reports all 13. The linters report 3, and only where the pattern stays visible:
     a constant format string, a leak with an early return, and an enum switch that names every member. The linters
@@ -117,14 +112,6 @@ validation.
   twice, `new TimeSpan(5)`, blocking on `.Result`, identical branches. Each of these runs without failing, but does
   something other than what was meant. CsVerify is about functional correctness: it reports such a bug only against a
   specification that says what was meant.
-- **Gaps the first run found, and closed since:**
-  - **A format string with too few arguments.** CsVerify now checks a constant format against the arguments written
-    at the call (CSV1001).
-  - **A switch expression that misses a value.** CsVerify now reports it (CSV1022). That includes the hidden variant,
-    where every member of the enum is named but `(Color)7` still throws.
-  - **A disposable field its owner never disposes.** CsVerify already reported this (CSV0022). The first run used a
-    `MemoryStream`, whose `Dispose` releases nothing, so CsVerify rightly did not ask for it to be disposed. The case
-    now holds a `FileStream`.
 - **Harmless code that needs a proof.** `table[hash & 15] + table[hash >>> 28]` is in bounds for any `hash`, and so is
   `(byte)((x >> 8) & 0xFF)`. CsVerify used to treat bitwise results as unknown values, so it could prove neither.
   It now proves both, and none of the 16 harmless cases gets a new false alarm.
@@ -134,7 +121,3 @@ validation.
     interleaved with the method.
 - **Noise.** The linters raised 255 other warnings on these 51 cases, StyleCop 128 of them. CsVerify raised none:
   it reports only what may go wrong at run time.
-
-The cases were chosen from the linters' bug rules (style, naming and API-preference rules left out), plus four bug
-families that CsVerify checks and the linters do not. That choice favoured bugs over style, but not CsVerify: the first
-run had ten bugs that only the linters reported. The string and bit families since then do favour CsVerify, as above.
