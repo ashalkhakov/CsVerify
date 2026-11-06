@@ -16,5 +16,6 @@
     <ProjectReference Include="..\..\src\CsVerify.Verifier\CsVerify.Verifier.csproj" />
     <!-- the corpus's ports run here against their C originals' behaviour (CorpusTests) -->
     <ProjectReference Include="..\..\corpus\CsVerify.Corpus.csproj" />
+    <ProjectReference Include="..\..\samples\Good\CsVerify.Samples.Good.csproj" />
   </ItemGroup>
 </Project>

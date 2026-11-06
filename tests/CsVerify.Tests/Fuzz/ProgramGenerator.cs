@@ -19,6 +19,7 @@ namespace CsVerify.Tests.Fuzz
     /// <item>floats: doubles from the integers, rounding, NaN, Sqrt, and casts back to int (which must fit);</item>
     /// <item>exceptions: throw, try/catch of the program's Escape, checked arithmetic caught as OverflowException;</item>
     /// <item>data records: Pt(X, Y), its fields and its value equality;</item>
+    /// <item>bits: bitwise operators and shifts;</item>
     /// <item>strings: an input, literals, concatenation, Substring, characters, library methods, foreach;</item>
     /// <item>ifs, for loops over xs, and assertions.</item>
     /// </list>
@@ -1446,7 +1447,9 @@ public sealed class Duo
                 // a new object across the await: kept if nothing hands it out (later statements may, or may not)
                 var n = "n" + _fresh++;
                 var w = "v" + _fresh++;
+                _p.Ints.Remove(v); // (the cell comes before it)
                 var text = $"var {n} = new Cell {{ V = {Int(1)} }}; int {v} = await AH.TwiceAsync({arg}); int {w} = {n}.V;";
+                _p.Ints.Add(v);
                 _p.Cells.Add(n);
                 _p.Ints.Add(w);
                 return new Line { Text = text };
@@ -1678,6 +1681,7 @@ public sealed class Duo
 
         private string Int(int depth, string extra = null)
         {
+            if (depth > 0 && _r.Next(16) == 0) return BitwiseInt(depth - 1, extra);
             if (depth <= 0 || _r.Next(4) == 0)
             {
                 switch (_r.Next(extra != null ? 6 : 5))
@@ -1834,6 +1838,25 @@ public sealed class Duo
             }
         }
 
+        /// <summary>
+        /// A bitwise operator or a shift. Mostly brought back into a small range: their results are often huge, and then
+        /// a later + really does overflow, so that the method can't verify and tests nothing.
+        /// </summary>
+        private string BitwiseInt(int depth, string extra)
+        {
+            string x = Int(depth, extra), e;
+            switch (_r.Next(6))
+            {
+                case 0: return $"({x} & {new[] { 1, 3, 15, 63, 255, 0xF0, 0xC0 }[_r.Next(7)]})";
+                case 1: e = $"({x} | {new[] { 1, 3, 0x80, 0xC0, -1 }[_r.Next(5)]})"; break;
+                case 2: e = $"({x} ^ {(_r.Next(2) == 0 ? _r.Next(1, 256).ToString() : Int(depth, extra))})"; break;
+                case 3: e = $"({x} {new[] { "<<", ">>", ">>>" }[_r.Next(3)]} {(_r.Next(4) == 0 ? _r.Next(0, 40) : _r.Next(0, 9))})"; break;
+                case 4: e = $"(~{x})"; break;
+                default: e = $"({x} {new[] { "&", "|", "^" }[_r.Next(3)]} {Int(depth, extra)})"; break;
+            }
+            return _r.Next(4) == 0 ? e : $"({e} & 1023)";
+        }
+
         private static string Paren(string e) => e.StartsWith("(") && e.EndsWith(")") ? e : $"({e})";
 
         private string Double(int depth)
@@ -1987,9 +2010,10 @@ public sealed class Duo
                     sb.AppendLine($"{pad}    {{");
                     foreach (var a in invariants)
                         sb.AppendLine(mode == Mode.Run ? $"{pad}        if (!({a.Cond})) throw new Failed(\"invariant {a.Id}\");" : $"{pad}        Probe.Hit({a.Id}, () => {a.Cond});");
-                    if (f.Measure >= 0 && mode == Mode.Probe) sb.AppendLine($"{pad}        Probe.Hit({f.Measure}, () => true);");
                     sb.AppendLine($"{pad}        if (!({f.Var} < xs.Length)) break;");
                     foreach (var t in f.Body) Emit(sb, t, indent + 2, mode, kept, planted, name);
+                    // (the measure is about the back edge: a loop that never gets there has no wrong measure)
+                    if (f.Measure >= 0 && mode == Mode.Probe) sb.AppendLine($"{pad}        Probe.Hit({f.Measure}, () => true);");
                     sb.AppendLine($"{pad}        {f.Var}++;");
                     sb.AppendLine($"{pad}    }}");
                     sb.AppendLine($"{pad}}}");

@@ -98,6 +98,18 @@ namespace CsVerify.Verifier
             "(define-fun cv_div ((x Int) (y Int)) Int (ite (= (>= x 0) (>= y 0)) (div (cv_abs x) (cv_abs y)) (- (div (cv_abs x) (cv_abs y)))))\n" +
             "(define-fun cv_rem ((x Int) (y Int)) Int (- x (* y (cv_div x y))))";
 
+        /// <summary>The macros of bitwise operators (MethodVerifier.Bits): a shift count's power of two.</summary>
+        public static readonly string BitTheory =
+            "(define-fun cv_pow32 ((n Int)) Int " + PowerOfTwo(31) + ")\n" +
+            "(define-fun cv_pow64 ((n Int)) Int " + PowerOfTwo(63) + ")";
+
+        private static string PowerOfTwo(int top)
+        {
+            var s = (System.Numerics.BigInteger.One << top).ToString();
+            for (int i = top - 1; i >= 0; i--) s = $"(ite (= n {i}) {System.Numerics.BigInteger.One << i} {s})";
+            return s;
+        }
+
         /// <summary>
         /// Strings' characters: <c>cv_at</c> is a string's code unit at an index, and <c>cv_diff</c> an index at which two
         /// strings of a length differ, if they do (see MethodVerifier.Equal). Plain functions and quantified facts, not Z3's
@@ -210,6 +222,7 @@ namespace CsVerify.Verifier
             _recording = 0;
             _log.Clear();
             _macros = false;
+            _bitMacros = false;
             _stringsDeclared = false;
             _declared.Clear();
             _defines.Clear();
@@ -250,10 +263,16 @@ namespace CsVerify.Verifier
                 _macros = true;
                 foreach (var line in T.IntTheory.Split('\n')) Write(line);
             }
+            if (!_bitMacros && cmd.Contains("cv_pow"))
+            {
+                _bitMacros = true;
+                foreach (var line in T.BitTheory.Split('\n')) Write(line);
+            }
             Write(cmd);
         }
 
         private bool _macros;
+        private bool _bitMacros;
         private bool _stringsDeclared;
 
         /// <summary>

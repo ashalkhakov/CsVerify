@@ -250,12 +250,37 @@ namespace CsVerify.Verifier
                 while (target is MemberAccessExpressionSyntax ma && c.Model.GetSymbolInfo(ma).Symbol is ISymbol ms && !ms.IsStatic &&
                        ms.ContainingType?.TypeKind == TypeKind.Struct)
                     target = ma.Expression;
-                if (target is ElementAccessExpressionSyntax) writes = true;
+                if (target is ElementAccessExpressionSyntax ea && !IsOwnNewArray(ea.Expression, c)) writes = true;
                 if (n is InvocationExpressionSyntax inv && c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee &&
                     !SpecSymbols.IsSpecClass(callee.ContainingType) && MayWriteHeap(callee)) writes = true;
                 if (writes) break;
             }
             return _writesHeap[key] = writes;
+        }
+
+        /// <summary>
+        /// A local that only ever holds an array this method allocated: a write through it changes nothing that existed
+        /// when the method was called. (Reassigned, it might hold any array. Captured by a lambda or a local function, a write
+        /// might run after the method returns, when the caller already has the array and believes what it knew of it.)
+        /// </summary>
+        private static bool IsOwnNewArray(ExpressionSyntax array, Contract c)
+        {
+            if (!(array is IdentifierNameSyntax id) || !(c.Model.GetSymbolInfo(id).Symbol is ILocalSymbol local) ||
+                local.IsRef || local.Type.TypeKind != TypeKind.Array) return false;
+            if (!(local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax declarator) ||
+                !(declarator.Initializer?.Value is ArrayCreationExpressionSyntax || declarator.Initializer?.Value is ImplicitArrayCreationExpressionSyntax)) return false;
+            bool Same(ExpressionSyntax e) => e is IdentifierNameSyntax n && SymbolEqualityComparer.Default.Equals(c.Model.GetSymbolInfo(n).Symbol, local);
+            foreach (var n in c.Declaration.DescendantNodes())
+                switch (n)
+                {
+                    case AssignmentExpressionSyntax a when Same(a.Left): return false;
+                    case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) && Same(arg.Expression): return false;
+                    case RefExpressionSyntax r when Same(r.Expression): return false;
+                    // (a specification's lambda never runs)
+                    case AnonymousFunctionExpressionSyntax f when SpecSymbols.EnclosingSpecCall(f, c.Model) == null && f.DescendantNodes().OfType<IdentifierNameSyntax>().Any(Same): return false;
+                    case LocalFunctionStatementSyntax f when f.DescendantNodes().OfType<IdentifierNameSyntax>().Any(Same): return false;
+                }
+            return true;
         }
 
         private readonly Dictionary<IMethodSymbol, bool> _touchesArrays = new Dictionary<IMethodSymbol, bool>(SymbolEqualityComparer.Default);

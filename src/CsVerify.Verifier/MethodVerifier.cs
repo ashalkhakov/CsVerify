@@ -1372,6 +1372,13 @@ namespace CsVerify.Verifier
                     v = kind == BinaryOperatorKind.Divide ? T.Div(l, r) : T.Rem(l, r);
                     isChecked = true; // MinValue / -1 (and % -1) throw in .NET even when unchecked
                     break;
+                case BinaryOperatorKind.LeftShift:
+                case BinaryOperatorKind.RightShift:
+                case BinaryOperatorKind.UnsignedRightShift:
+                case BinaryOperatorKind.And:
+                case BinaryOperatorKind.Or:
+                case BinaryOperatorKind.ExclusiveOr:
+                    return Bitwise(kind, l, r, type); // (it cannot overflow: shifts drop bits, even in checked code)
                 default:
                     if (_codeMode) Warn(at, $"operator {kind} is not modeled; result is unknown");
                     return Unknown(type);
@@ -1389,6 +1396,8 @@ namespace CsVerify.Verifier
                 case UnaryOperatorKind.Minus when IsFloating(u.Type): return FloatNegate(v, u.Type);
                 case UnaryOperatorKind.Minus when v.Sort == Sort.Int && IsIntegral(u.Type):
                     return Arith(BinaryOperatorKind.Subtract, T.Int(0), v, u.Type, u.Syntax, false, u.IsChecked);
+                case UnaryOperatorKind.BitwiseNegation when v.Sort == Sort.Int && IsIntegral(u.Type) && u.Type.TypeKind != TypeKind.Enum:
+                    return Complement(v, u.Type);
                 default:
                     Unsupported(u);
                     return Unknown(u.Type);
