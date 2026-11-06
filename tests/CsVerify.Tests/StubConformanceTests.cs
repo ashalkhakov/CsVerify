@@ -569,7 +569,7 @@ namespace CsVerify.Conformance
 
         private static Type Instance(string typeParameter) => typeParameter == "K" ? typeof(string) : typeof(int);
 
-        private static readonly string[] Strings = { "", "a", "ab", "abc", " a b ", "Ab0", "-12", "123", "007", "2147483648", "{0}", "x{1}y", "\t", "aaa" };
+        private static readonly string[] Strings = { "", "a", "a\u00AD", "\u00AD", "ab", "abc", " a b ", "Ab0", "-12", "123", "007", "2147483648", "{0}", "x{1}y", "\t", "aaa" };
         private static readonly char[] Chars = { 'a', 'b', 'Z', '0', '9', ' ', '-', '\t', '{' };
         private static readonly string[] Keys = { "a", "b", "c", "d" };
         // parameters where any int is safe to try (no sizes or counts, which could allocate gigabytes)

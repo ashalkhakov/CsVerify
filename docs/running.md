@@ -166,5 +166,6 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1022 | verifier | a switch expression might not cover every value it gets: it would throw `SwitchExpressionException` |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
+| CSV1998 | verifier | Z3 stopped answering, past its own timeout, and was stopped: the rest of the method is not verified |
 | CSV1999 | verifier | internal or solver error |
 | CSV2001 | erase | the erased program does not compile: run-time code depends on ghost code |

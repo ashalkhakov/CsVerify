@@ -180,7 +180,7 @@ the hand-written tests and samples. By area:
 |---|---|---|
 | Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math`, `decimal` (unknown values) | |
 | Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
-| Strings | literals, concatenation, interpolation, `Length`, `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
+| Strings | literals, concatenation, interpolation, `Length`, characters (`s[i]`), `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
 | Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |
 | Arrays and memory | reads and writes with bounds, rectangular arrays, spans, `ref` locals, struct members by `ref`, list patterns, `foreach` | |
 | Control flow | `if`, `for` with and without invariants (inferred facts), termination measures, `while`, `do`, `switch` statements, `goto` loops, `foreach` | |

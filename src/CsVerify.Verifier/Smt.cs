@@ -98,6 +98,14 @@ namespace CsVerify.Verifier
             "(define-fun cv_div ((x Int) (y Int)) Int (ite (= (>= x 0) (>= y 0)) (div (cv_abs x) (cv_abs y)) (- (div (cv_abs x) (cv_abs y)))))\n" +
             "(define-fun cv_rem ((x Int) (y Int)) Int (- x (* y (cv_div x y))))";
 
+        /// <summary>
+        /// Strings' characters: <c>cv_at</c> is a string's code unit at an index, and <c>cv_diff</c> an index at which two
+        /// strings of a length differ, if they do (see MethodVerifier.Equal). Plain functions and quantified facts, not Z3's
+        /// sequence theory: that one's answers swing between a second and a timeout on how a query was asserted, and it can
+        /// run on for hours past the timeout.
+        /// </summary>
+        public const string StringDeclarations = "(declare-fun cv_at (Int Int) Int)\n(declare-fun cv_diff (Int Int) Int)";
+
         public static Term Select(Term array, Term index, Sort sort) => App("select", sort, array, index);
         public static Term Store(Term array, Term index, Term value) => App("store", array.Sort, array, index, value);
         public static Term ZeroRow() => ConstRow(Int(0));
@@ -127,9 +135,9 @@ namespace CsVerify.Verifier
     /// </summary>
     public sealed class SmtSolver : IDisposable
     {
-        private readonly Process _z3;
-        private readonly StreamWriter _in;
-        private readonly StreamReader _out;
+        private Process _z3;
+        private StreamWriter _in;
+        private StreamReader _out;
         private readonly HashSet<string> _declared = new HashSet<string>();
         private readonly List<string> _preamble = new List<string>();
         private readonly int _timeoutMs;
@@ -137,23 +145,41 @@ namespace CsVerify.Verifier
         private int _defined;
         public int Depth { get; private set; }
         public readonly List<string> Errors = new List<string>();
+        /// <summary>Queries Z3 never answered: not a fault of the verifier's, and what they asked is simply not proved.</summary>
+        public readonly List<string> Hangs = new List<string>();
         public StringBuilder Log; // set to capture the whole SMT-LIB2 conversation
 
         public SmtSolver(string z3Path, int timeoutMs)
         {
-            var psi = new ProcessStartInfo(z3Path, "-in -smt2")
+            _z3Path = z3Path;
+            _timeoutMs = timeoutMs;
+            HangMs = Math.Max(timeoutMs * 10, 60000);
+            Launch();
+            Start();
+        }
+
+        private void Launch()
+        {
+            var psi = new ProcessStartInfo(_z3Path, "-in -smt2")
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
-            _z3 = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + z3Path);
+            _z3 = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + _z3Path);
             _in = _z3.StandardInput;
             _out = _z3.StandardOutput;
-            _timeoutMs = timeoutMs;
-            Start();
         }
+
+        private readonly string _z3Path;
+        /// <summary>Z3 stopped answering and was killed: until the next <see cref="Reset"/>, nothing is proved.</summary>
+        private bool _hung;
+        /// <summary>
+        /// How long a query may go unanswered. Z3's own timeout is checked only where its search looks at the clock, and
+        /// some theory code runs on without looking (seen in its sequence solver, for hours), so the wait must end here too.
+        /// </summary>
+        public int HangMs { get; set; }
 
         private void Start()
         {
@@ -178,11 +204,13 @@ namespace CsVerify.Verifier
         /// </summary>
         public void Reset()
         {
+            if (_hung) { _hung = false; _z3.Dispose(); Launch(); }
             Send("(reset)");
             _kept.Clear();
             _recording = 0;
             _log.Clear();
             _macros = false;
+            _stringsDeclared = false;
             _declared.Clear();
             _defines.Clear();
             Causes.Clear();
@@ -226,11 +254,25 @@ namespace CsVerify.Verifier
         }
 
         private bool _macros;
+        private bool _stringsDeclared;
+
+        /// <summary>
+        /// Strings' characters, from the first use on, in a method that looks at them: like the macros, declaring them
+        /// would change Z3's search on queries that do not.
+        /// </summary>
+        public void UseStrings()
+        {
+            if (!_stringsDeclared)
+            {
+                _stringsDeclared = true;
+                foreach (var line in T.StringDeclarations.Split('\n')) Write(line);
+            }
+        }
 
         private void Write(string cmd)
         {
             Log?.AppendLine(cmd);
-            _in.WriteLine(cmd);
+            if (!_hung) _in.WriteLine(cmd);
         }
 
         public Term Fresh(string hint, Sort sort)
@@ -367,11 +409,24 @@ namespace CsVerify.Verifier
             Push();
             Assume(t);
             Send("(check-sat)");
+            if (_hung) { Pop(); return "unknown"; }
             _in.Flush();
             string result;
+            var clock = Stopwatch.StartNew();
             while (true)
             {
-                var line = _out.ReadLine();
+                var read = _out.ReadLineAsync();
+                var left = HangMs - (int)clock.ElapsedMilliseconds;
+                if (left <= 0 || !read.Wait(left))
+                {
+                    // (the rest of the method's obligations come back unknown: they are not proved, which is sound)
+                    _hung = true;
+                    try { _z3.Kill(); } catch (InvalidOperationException) { }
+                    result = "unknown";
+                    Hangs.Add($"z3 did not answer within {HangMs} ms and was stopped; the rest of this method is not verified");
+                    break;
+                }
+                var line = read.Result;
                 if (line == null) { result = "unknown"; Errors.Add("z3 exited"); break; }
                 Log?.AppendLine("; " + line);
                 line = line.Trim();
@@ -384,7 +439,7 @@ namespace CsVerify.Verifier
 
         public void Dispose()
         {
-            try { _in.WriteLine("(exit)"); _in.Flush(); if (!_z3.WaitForExit(2000)) _z3.Kill(); } catch { }
+            try { if (!_hung) { _in.WriteLine("(exit)"); _in.Flush(); } if (!_z3.WaitForExit(2000)) _z3.Kill(); } catch { }
             _z3.Dispose();
         }
     }
