@@ -91,7 +91,7 @@ literals are different values. `a + b` is never null, and as long as both (null 
 The characters are UTF-16 code units: `s[i]` is a value in `0..65535`, one function of the string and the index. A
 literal's are known; `a + b`'s are `a`'s, then `b`'s; and strings of one length with the same characters are one string,
 so a proof can show that `s.Substring(0, n) + s.Substring(n) == s`, or that a loop checked what its result claims (see
-samples/Good/Strings.cs). Library methods say what they do with characters in their stubs (see
+samples/Good/Strings.cs, StringConversions.cs, StringEscaping.cs and Kmp.cs). Library methods say what they do with characters in their stubs (see
 [Contracts for code without sources](library-contracts.md)). `foreach` over a string gives unknown characters; index it
 in a `for` to prove things about them. Methods that use the current culture (`StartsWith(string)`, `EndsWith(string)`,
 `IndexOf(string)`) promise nothing about characters: `"a".StartsWith("a\u00AD")` is true. Use their
