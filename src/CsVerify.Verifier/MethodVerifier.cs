@@ -39,6 +39,8 @@ namespace CsVerify.Verifier
             public ITypeSymbol ArrayElement;
             /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
             public bool OverList;
+            /// <summary>A foreach over a string: its index runs over the characters.</summary>
+            public bool OverString;
             /// <summary>A foreach over an IReadOnlyList or IList: its index runs over the interface's Count and indexer.</summary>
             public bool OverInterface;
             /// <summary>A foreach over a LINQ view (Select, Where, Take, Skip of what the verifier reads): over the view, read once.</summary>

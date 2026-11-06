@@ -10,7 +10,7 @@ namespace CsVerify.Tests.Fuzz
     /// is rendered three ways: with its specifications (Spec.Requires, Spec.Ensures, Spec.Assert) for the verifier,
     /// with them as run-time checks, and with every assertion slot and candidate postcondition recorded (the probe).
     ///
-    /// Methods take (int a, int b, int[] xs, Cell c, Cell? d) and return an int; d may be null, c itself, or another
+    /// Methods take (int a, int b, int[] xs, Cell c, Cell? d, string t) and return an int; d may be null, c itself, or another
     /// cell. Their preconditions either pin every input to a constant (the verifier is then all but exact, so true
     /// assertions verify, which is what makes the test bite) or bound them. Bodies have:
     /// <list type="bullet">
@@ -19,6 +19,7 @@ namespace CsVerify.Tests.Fuzz
     /// <item>floats: doubles from the integers, rounding, NaN, Sqrt, and casts back to int (which must fit);</item>
     /// <item>exceptions: throw, try/catch of the program's Escape, checked arithmetic caught as OverflowException;</item>
     /// <item>data records: Pt(X, Y), its fields and its value equality;</item>
+    /// <item>strings: an input, literals, concatenation, Substring, characters, library methods, foreach;</item>
     /// <item>ifs, for loops over xs, and assertions.</item>
     /// </list>
     /// </summary>
@@ -519,9 +520,10 @@ public sealed class Duo
         {
             public int A, B, CV, DMode, DV;
             public int[] Xs;
-            public object[] Arguments() => new object[] { A, B, Xs.ToArray(), CV, DMode, DV };
+            public string T = "";
+            public object[] Arguments() => new object[] { A, B, Xs.ToArray(), CV, DMode, DV, T };
             public override string ToString() =>
-                $"a = {A}, b = {B}, xs = [{string.Join(", ", Xs)}], c.V = {CV}, d = {(DMode == 0 ? "null" : DMode == 1 ? "c" : $"a cell with V = {DV}")}";
+                $"a = {A}, b = {B}, xs = [{string.Join(", ", Xs)}], c.V = {CV}, d = {(DMode == 0 ? "null" : DMode == 1 ? "c" : $"a cell with V = {DV}")}, t = \"{T}\"";
         }
 
         /// <summary>
@@ -554,11 +556,11 @@ public sealed class Duo
                 if (mode != Mode.Verify)
                 {
                     // (the entry makes the cells, and checks or records what holds when the method leaves by Escape)
-                    sb.AppendLine($"    public static int {name}_(int a, int b, int[] xs, int cv, int dmode, int dv)");
+                    sb.AppendLine($"    public static int {name}_(int a, int b, int[] xs, int cv, int dmode, int dv, string t)");
                     sb.AppendLine("    {");
                     sb.AppendLine("        var c = new Cell { V = cv };");
                     sb.AppendLine("        var d = dmode == 0 ? null : dmode == 1 ? c : new Cell { V = dv };");
-                    sb.AppendLine($"        try {{ return {name}(a, b, xs, c, d){(Async ? ".GetAwaiter().GetResult()" : "")}; }}");
+                    sb.AppendLine($"        try {{ return {name}(a, b, xs, c, d, t){(Async ? ".GetAwaiter().GetResult()" : "")}; }}");
                     sb.AppendLine("        catch (Escape)");
                     sb.AppendLine("        {");
                     if (mode == Mode.Probe)
@@ -568,7 +570,7 @@ public sealed class Duo
                     sb.AppendLine("        }");
                     sb.AppendLine("    }");
                 }
-                sb.AppendLine($"    public static {(Async ? "async System.Threading.Tasks.Task<int>" : "int")} {name}(int a, int b, int[] xs, Cell c, Cell{(mode == Mode.Verify ? "?" : "")} d)");
+                sb.AppendLine($"    public static {(Async ? "async System.Threading.Tasks.Task<int>" : "int")} {name}(int a, int b, int[] xs, Cell c, Cell{(mode == Mode.Verify ? "?" : "")} d, string t)");
                 sb.AppendLine("    {");
                 if (mode == Mode.Verify)
                 {
@@ -653,6 +655,8 @@ public sealed class Duo
                 string dPre = input.DMode == 0 ? "d == null" : input.DMode == 1 ? "d == c" : $"d != null && d != c && d.V == {input.DV}";
                 m.Pre = $"a == {input.A} && b == {input.B} && xs.Length == {input.Xs.Length}" + string.Concat(input.Xs.Select((x, i) => $" && xs[{i}] == {x}")) +
                         $" && c.V == {input.CV} && {dPre}";
+                input.T = Text();
+                m.Pre += $" && t == \"{input.T}\"";
                 _bound = new[] { input.A, input.B, input.CV, input.DV }.Concat(input.Xs).Select(Math.Abs).Max();
                 _minLength = input.Xs.Length;
                 m.Inputs.Add(input);
@@ -670,13 +674,15 @@ public sealed class Duo
                 int Extreme() => _r.Next(2) == 0 ? bound : -bound;
                 // (the extremes too: where overflow and off-by-one live)
                 Input Make(Func<int> v) => new Input { A = v(), B = v(), Xs = Enumerable.Range(0, _r.Next(minLength, 6)).Select(_ => v()).ToArray(), CV = v(), DMode = _r.Next(3), DV = v() };
-                for (int k = 0; k < 30; k++) m.Inputs.Add(Make(k % 5 == 0 ? (Func<int>)Extreme : Any));
-                for (int k = 0; k < 60; k++) m.Fresh.Add(Make(k % 5 == 0 ? (Func<int>)Extreme : Any));
+                Input WithText(Input input) { input.T = Text(); return input; }
+                for (int k = 0; k < 30; k++) m.Inputs.Add(WithText(Make(k % 5 == 0 ? (Func<int>)Extreme : Any)));
+                for (int k = 0; k < 60; k++) m.Fresh.Add(WithText(Make(k % 5 == 0 ? (Func<int>)Extreme : Any)));
             }
             _p = new Pools();
             _p.Ints.Add("a");
             _p.Ints.Add("b");
             _p.Cells.Add("c");
+            _p.Strings.Add("t");
             // (a call first, sometimes: before the body changes what the callee's precondition is about)
             var first = _index > 0 && _r.Next(3) == 0 ? CallStatement() : null;
             m.Body = Block(_r.Next(1, 1 + Size));
@@ -687,6 +693,7 @@ public sealed class Duo
             _p.Ints.Add("a");
             _p.Ints.Add("b");
             _p.Cells.Add("c");
+            _p.Strings.Add("t");
             _inPost = true;
             for (int k = 0; k < 4; k++) m.Posts.Add(Spec(() => Bool(2, "r")));
             _inPost = false;
@@ -705,6 +712,9 @@ public sealed class Duo
             finally { _spec = false; }
         }
 
+        /// <summary>A string input: short, over few characters, so that they repeat and match.</summary>
+        private string Text() => new[] { "", "a", "b", "ab", "ba", "aa", "abc", "aba", "hello", "a0" }[_r.Next(10)];
+
         private int Small() => _r.Next(10) < 8 ? _r.Next(-5, 10) : _r.Next(-100, 100);
 
         private T Pick<T>(List<T> list) => list[_r.Next(list.Count)];
@@ -715,14 +725,14 @@ public sealed class Duo
         internal sealed class Line : Stmt { public string Text; }                       // a simple statement
         internal sealed class If : Stmt { public string Cond; public List<Stmt> Then, Else; }
         internal sealed class For : Stmt { public string Var; public List<Stmt> Body; public List<Assert> Invariants = new List<Assert>(); public int Measure = -1; }
-        internal sealed class Foreach : Stmt { public string Var, Over; public List<Stmt> Body; }
+        internal sealed class Foreach : Stmt { public string Var, Over, Type = "var"; public List<Stmt> Body; }
         internal sealed class Try : Stmt { public List<Stmt> Body, Handler; public string Catches; public bool Rethrow; }
         internal sealed class Assert : Stmt { public string Cond; public int Id; }
         /// <summary>Ghost code and an assertion about it, true by construction (its negation is what may be planted).</summary>
         internal sealed class GhostCheck : Stmt { public string Template, True, False; public int Id; }
 
         private readonly Stack<Pools> _scopes = new Stack<Pools>();
-        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 31)).Concat(new[] { 37, 37, 42 }).ToArray();
+        private static readonly int[] Simple = Enumerable.Range(0, 9).Concat(Enumerable.Range(13, 31)).Concat(new[] { 37, 37, 42, 21, 21 }).ToArray();
 
         private List<Stmt> Block(int n)
         {
@@ -1081,10 +1091,70 @@ public sealed class Duo
         /// <summary>Strings: values, compared by contents; their lengths; concatenation and interpolation.</summary>
         private Stmt StringStatement()
         {
-            var str = "str" + _fresh++;
-            var value = Str(2);
-            _p.Strings.Add(str);
-            return new Line { Text = $"var {str} = {value};" };
+            switch (_r.Next(6))
+            {
+                case 0 when !_inLoop:
+                {
+                    // a foreach over its characters, as numbers
+                    var el = "el" + _fresh++;
+                    var over = Pick(_p.Strings);
+                    _p.Ints.Add(el);
+                    _inLoop = true;
+                    var body = Block(_r.Next(1, 3));
+                    _inLoop = false;
+                    _p.Ints.Remove(el);
+                    return new Foreach { Var = el, Over = over, Type = "int", Body = body };
+                }
+                case 1 when !_inLoop:
+                {
+                    // a foreach counting a character, with what it knows of the count
+                    var n = "n" + _fresh++;
+                    var ch = "ch" + _fresh++;
+                    var line = new Line { Text = $"int {n} = 0; foreach (char {ch} in {Pick(_p.Strings)}) {{ Spec.Invariant(0 <= {n} && {n} <= Spec.Index({ch})); if ({ch} == {Letter()}) {n}++; }}" };
+                    _p.Ints.Add(n);
+                    return line;
+                }
+                case 2: return StringFact();
+                default:
+                {
+                    var str = "str" + _fresh++;
+                    var value = Str(2);
+                    _p.Strings.Add(str);
+                    return new Line { Text = $"var {str} = {value};" };
+                }
+            }
+        }
+
+        private string Letter() => new[] { "'a'", "'b'", "'l'", "'0'" }[_r.Next(4)];
+
+        /// <summary>A law of strings, true of any: its negation is what may be planted.</summary>
+        private Stmt StringFact()
+        {
+            var id = _slots++;
+            _staticSlots.Add(id);
+            string x = Pick(_p.Strings), y = Pick(_p.Strings), cut = "cut" + _fresh++;
+            int k = _r.Next(0, 4);
+            var fact = new[]
+            {
+                $"{x}.Substring(0, {cut}) + {x}.Substring({cut}) == {x}",
+                $"{x}.Substring({cut}).Length == {x}.Length - {cut}",
+                $"({x} + {y}) + {x} == {x} + ({y} + {x})",
+                $"({x} + {y}).Length == {x}.Length + {y}.Length",
+                $"{x} + \"\" == {x}",
+                $"{cut} == {x}.Length || ({x} + {y})[{cut}] == {x}[{cut}]",
+                $"{x}.IndexOf('a') < 0 || {x}[{x}.IndexOf('a')] == 'a'",
+                $"{x}.Contains('b') == ({x}.IndexOf('b') >= 0)",
+                $"{x}.StartsWith('a') == ({x}.Length > 0 && {x}[0] == 'a')",
+                $"{x}.StartsWith(\"ab\", StringComparison.Ordinal) == ({x}.Length >= 2 && {x}[0] == 'a' && {x}[1] == 'b')",
+                $"(\"ab\" + {x})[1] == 'b'",
+            }[_r.Next(11)];
+            return new GhostCheck
+            {
+                Id = id,
+                Template = $"{{ int {cut} = Math.Min({k}, {x}.Length); ⟨A⟩ }}",
+                True = fact,
+                False = $"!({fact})",
+            };
         }
 
         private string Str(int depth)
@@ -1092,10 +1162,12 @@ public sealed class Duo
             if (depth <= 0 || _r.Next(3) == 0)
                 return _p.Strings.Count > 0 && _r.Next(2) == 0 ? Pick(_p.Strings) : new[] { "\"\"", "\"a\"", "\"hello\"", "\"ab\"" }[_r.Next(4)];
             int d = depth - 1;
-            switch (_r.Next(3))
+            switch (_r.Next(5))
             {
                 case 0: return $"({Str(d)} + {Str(d)})";
                 case 1: return $"$\"n{{{Int(0)}}}\"";
+                case 2: { var from = Pick(_p.Strings); return $"{from}.Substring(Math.Min({_r.Next(0, 4)}, {from}.Length))"; }
+                case 3: { var from = Pick(_p.Strings); return $"{from}.Substring(0, Math.Min({_r.Next(0, 4)}, {from}.Length))"; }
                 default: return $"({Bool(0, null)} ? {Str(d)} : {Str(d)})";
             }
         }
@@ -1359,7 +1431,7 @@ public sealed class Duo
             var v = "v" + _fresh++;
             _callees.Add($"M{j}");
             _p.Ints.Add(v);
-            return new Line { Text = $"int {v} = ⟪call:{j}⟫(a, b, xs, c, d);" };
+            return new Line { Text = $"int {v} = ⟪call:{j}⟫(a, b, xs, c, d, t);" };
         }
 
         /// <summary>In an async method, an await of a call with a contract.</summary>
@@ -1648,10 +1720,16 @@ public sealed class Duo
                         return new[]
                         {
                             $"{st}.IndexOf('a')", $"({st}.StartsWith(\"a\") ? 1 : 0)", $"({st}.Contains(\"l\") ? 1 : 0)", $"{st}.Trim().Length",
-                            $"{st}.Substring(Math.Min(1, {st}.Length)).Length", $"{st}.ToUpperInvariant().Length", $"{st}.Substring(1).Length", // (the last may throw: then it must not verify)
-                        }[_r.Next(7)];
+                            $"{st}.LastIndexOf({Letter()})", $"{st}.Substring(Math.Min(1, {st}.Length)).Length", $"{st}.ToUpperInvariant().Length", $"{st}.Substring(1).Length", // (the last may throw: then it must not verify)
+                        }[_r.Next(8)];
                     }
-                    case 4 when _p.Strings.Count > 0: return $"{Pick(_p.Strings)}.Length";
+                    // (every method has a string, so a share of this case: what follows it gets its turn)
+                    case 4 when _r.Next(4) == 0:
+                    {
+                        var st = Pick(_p.Strings);
+                        int at = _r.Next(0, 4);
+                        return _r.Next(2) == 0 ? $"{st}.Length" : $"({st}.Length > {at} ? (int){st}[{at}] : 0)";
+                    }
                     case 4 when _p.Shapes.Count > 0:
                     {
                         var sh = Pick(_p.Shapes);
@@ -1830,7 +1908,16 @@ public sealed class Duo
                 case 6 when _r.Next(4) == 0: return $"xs is [>= {Small()}, ..]"; // (a list pattern)
                 case 6 when _p.Shapes.Count > 1 && _r.Next(2) == 0:
                     return _r.Next(2) == 0 ? $"{Pick(_p.Shapes)} == {Pick(_p.Shapes)}" : $"{Pick(_p.Shapes)} is Shape.Seg";
-                case 6 when _p.Strings.Count > 0 && _r.Next(2) == 0:
+                case 6 when _r.Next(4) == 0:
+                {
+                    string x = Pick(_p.Strings), y = Pick(_p.Strings), l = Letter();
+                    return new[]
+                    {
+                        $"{x}.StartsWith({l})", $"{x}.EndsWith({l})", $"{x}.Contains({l})", $"{x}.IndexOf({l}) >= 0",
+                        $"{x}.StartsWith(\"ab\", StringComparison.Ordinal)", $"{x} == \"ab\"", $"{x} + {y} == \"aba\"", $"{x} + {y} == {y} + {x}",
+                    }[_r.Next(8)];
+                }
+                case 6 when _p.Strings.Count > 1 && _r.Next(4) == 0:
                     return _r.Next(2) == 0 ? $"{Pick(_p.Strings)} {(_r.Next(2) == 0 ? "==" : "!=")} {Pick(_p.Strings)}" : $"string.IsNullOrEmpty({Pick(_p.Strings)})";
                 case 6: return $"xs.Any(x => {Lambda()})";
                 default: return $"{Int(d, extra)} {Cmp()} {Int(d, extra)}";
@@ -1841,9 +1928,9 @@ public sealed class Duo
 
         /// <summary>A call to another generated method: its true variant (verified, run), or its probe, run quietly.</summary>
         private static string Calls(string text, Mode mode) =>
-            System.Text.RegularExpressions.Regex.Replace(text, @"⟪call:(\d+)⟫\(a, b, xs, c, d\)", m => mode == Mode.Probe
-                ? $"RT.Call(() => M{m.Groups[1].Value}(a, b, xs, c, d))"
-                : mode == Mode.Run ? $"RT.Call(() => M{m.Groups[1].Value}T(a, b, xs, c, d))" : $"M{m.Groups[1].Value}T(a, b, xs, c, d)");
+            System.Text.RegularExpressions.Regex.Replace(text, @"⟪call:(\d+)⟫\(a, b, xs, c, d, t\)", m => mode == Mode.Probe
+                ? $"RT.Call(() => M{m.Groups[1].Value}(a, b, xs, c, d, t))"
+                : mode == Mode.Run ? $"RT.Call(() => M{m.Groups[1].Value}T(a, b, xs, c, d, t))" : $"M{m.Groups[1].Value}T(a, b, xs, c, d, t)");
 
         private static void Emit(StringBuilder sb, Stmt s, int indent, Mode mode, Func<int, bool> kept, int planted = -1, string name = null)
         {
@@ -1909,7 +1996,7 @@ public sealed class Duo
                     break;
                 }
                 case Foreach fe:
-                    sb.AppendLine($"{pad}foreach (var {fe.Var} in {fe.Over})");
+                    sb.AppendLine($"{pad}foreach ({fe.Type} {fe.Var} in {fe.Over})");
                     Body(fe.Body);
                     break;
                 case Try t:

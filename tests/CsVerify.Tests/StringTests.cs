@@ -91,6 +91,39 @@ namespace CsVerify.Tests
         public void Characters_AreCodeUnits() => Assert.Empty(Harness.Verify(
             "using CsVerify; public static class C { static void M(string s, int i) { Spec.Requires(0 <= i && i < s.Length); Spec.Assert(0 <= s[i] && s[i] <= 65535); } }").Errors("M"));
 
+        // ---- foreach ----------------------------------------------------------------------------------------------
+
+        [Fact]
+        public void Foreach_ReadsTheCharacters() => Assert.Empty(Errors(
+            "static bool M(string s) { Spec.Ensures<bool>(r => !r || Spec.Forall(0, s.Length, j => '0' <= s[j] && s[j] <= '9')); " +
+            "foreach (char c in s) { Spec.Invariant(Spec.Forall(0, Spec.Index(c), j => '0' <= s[j] && s[j] <= '9')); " +
+            "if (c < '0' || c > '9') return false; } return true; }"));
+
+        [Fact]
+        public void Foreach_TheElementIsTheCharacterAtTheIndex() => Assert.Empty(Errors(
+            "static void M(string s) { foreach (char c in s) { Spec.Assert(c == s[Spec.Index(c)]); } }"));
+
+        [Fact]
+        public void Foreach_TheWrongCharacter_IsRejected() => Assert.Equal(new[] { Rejected }, Errors(
+            "static void M(string s) { Spec.Requires(s.Length > 1); foreach (char c in s) { Spec.Assert(c == s[0]); } }"));
+
+        [Fact]
+        public void Foreach_OverALiteral_IsKnown() => Assert.Empty(Errors(
+            "static void M() { foreach (char c in \"aa\") { Spec.Assert(c == 'a'); } }"));
+
+        [Fact]
+        public void Foreach_ToInt_KeepsTheCode() => Assert.Empty(Errors(
+            "static void M() { foreach (int c in \"a\") { Spec.Assert(c == 97); } }"));
+
+        [Fact]
+        public void Foreach_CountsWithoutAMeasure() => Assert.Empty(Errors(
+            "static int M(string s) { Spec.Ensures<int>(r => r == s.Length); int n = 0; " +
+            "foreach (char c in s) { Spec.Invariant(n == Spec.Index(c)); n = n + 1; } return n; }"));
+
+        [Fact]
+        public void Foreach_OverNull_IsReported() => Assert.NotEmpty(Errors(
+            "static void M(string? s) { foreach (char c in s!) { } }"));
+
         // ---- a solver that stops answering ----------------------------------------------------------------------
 
         [Fact]

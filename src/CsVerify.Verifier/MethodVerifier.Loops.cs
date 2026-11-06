@@ -93,7 +93,8 @@ namespace CsVerify.Verifier
             }
             if (array || listElement != null || interfaceElement != null)
             {
-                loop.ArrayElement = listElement ?? interfaceElement ?? ((IArrayTypeSymbol)Unconverted(fo.Collection).Type).ElementType;
+                loop.ArrayElement = listElement ?? interfaceElement ?? ForEachElementOf(Unconverted(fo.Collection).Type);
+                loop.OverString = Unconverted(fo.Collection).Type?.SpecialType == SpecialType.System_String;
                 loop.OverList = listElement != null;
                 loop.OverInterface = interfaceElement != null && viewElement == null;
                 loop.OverView = viewElement != null;
@@ -152,12 +153,17 @@ namespace CsVerify.Verifier
         private bool IsArrayForEach(CommonForEachStatementSyntax fe)
         {
             if (!(_model.GetOperation(fe) is IForEachLoopOperation fo) || fo.IsAsynchronous ||
-                !(Unconverted(fo.Collection).Type is IArrayTypeSymbol at) || at.Rank != 1) return false;
+                !(ForEachElementOf(Unconverted(fo.Collection).Type) is ITypeSymbol element)) return false;
             var c = _model.GetForEachStatementInfo(fe).ElementConversion;
             var target = fo.Locals.FirstOrDefault()?.Type;
             return c.IsIdentity || c.IsImplicit && c.IsReference ||
-                   c.IsImplicit && c.IsNumeric && IsIntegral(at.ElementType) && target != null && IsIntegral(target);
+                   c.IsImplicit && c.IsNumeric && IsIntegral(element) && target != null && IsIntegral(target);
         }
+
+        /// <summary>What a foreach that runs by index reads: of a one-dimensional array or a string; null for others.</summary>
+        private ITypeSymbol ForEachElementOf(ITypeSymbol collection) =>
+            collection is IArrayTypeSymbol at ? (at.Rank == 1 ? at.ElementType : null)
+            : collection?.SpecialType == SpecialType.System_String ? _model.Compilation.GetSpecialType(SpecialType.System_Char) : null;
 
         /// <summary>
         /// A foreach over a List&lt;T&gt; (with CsVerify.Bcl's model functions in use) whose elements become the iteration
@@ -216,6 +222,7 @@ namespace CsVerify.Verifier
             {
                 // MoveNext was true: 0 <= i < a.Length
                 var (arr, i) = f.ForEach[loop.Id];
+                if (loop.OverString) return T.Coerce(InRangeOf(Char(arr, i), loop.ArrayElement), SortOf(op.Type));
                 if (loop.OverView)
                     return ViewSequenceOf(loop, arr, f) is Sequence vs ? T.Coerce(vs.Element(i), SortOf(op.Type)) : Unknown(op.Type, "element");
                 if (loop.OverInterface)
