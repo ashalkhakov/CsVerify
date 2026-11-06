@@ -18,11 +18,11 @@ namespace CsVerify.Tests
             "ThrowNull.Direct", "ThrowNull.Hidden",
             "ModifiedWhileEnumerated.Direct", "ModifiedWhileEnumerated.HiddenAlias", "ModifiedWhileEnumerated.HiddenCall",
             "Unobserved.Direct", "Unobserved.Hidden", "Unobserved.Harmless", // (a task awaited later is not supported)
-            "Disposal.LeakDirect", "Disposal.LeakHidden", "Disposal.UseAfterDispose",
+            "Disposal.LeakDirect", "Disposal.LeakHidden", "Disposal.LeakWriter", "Disposal.UseAfterDispose",
             "DisposableField.Direct",
             "FormatArguments.Direct", "FormatArguments.Hidden",
             "SwitchExpression.Direct", "SwitchExpression.Hidden",
-            "Null.Direct", "Null.Hidden",
+            "Null.Direct", "Null.Definite", "Null.DefiniteHelper", "Null.Hidden",
             "Bounds.Direct", "Bounds.Hidden",
             "Overflow.Direct",
             "DivideByZero.Direct",

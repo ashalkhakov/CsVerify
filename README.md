@@ -66,10 +66,10 @@ public static int BinarySearch(int[] a, int key)
 - **Used on real code.** [CsLemon](#cslemon), SQLite's parser generator ported to C#, verifies completely (and the
   proof found a bug in the C original); the [samples](#samples) port proofs from ATS, Dafny and *ACSL by Example*,
   and prove UTF-8, Base64 and Knuth-Morris-Pratt search correct.
-- **Finds what linters can't, and leaves them what it doesn't look for.** In [a benchmark against C# linters](bench/Linters/README.md),
-  CsVerify reports all 13 bugs hidden behind an alias, a helper or a value that is only sometimes bad, where the linters
-  together report 3. They report six bugs it doesn't: code that runs fine but isn't what was meant, such as
-  `d == double.NaN`. So it complements a linter rather than replacing one.
+- **Finds what linters can't, and leaves them what it doesn't look for.** In [a benchmark against C# linters and InferSharp](bench/Linters/README.md),
+  CsVerify reports 13 of the 14 bugs hidden behind an alias, a helper or a value that is only sometimes bad, where the
+  other tools together report 4. They report eight bugs it doesn't: races, which InferSharp finds, and code that runs
+  fine but isn't what was meant, such as `d == double.NaN`. So it complements them rather than replacing them.
 
 What it does not prove, and why, is listed in [Limitations](docs/limitations.md); what "verified" claims, what it
 rests on, and why each part keeps it, in [Soundness](docs/soundness.md).
@@ -122,7 +122,7 @@ dotnet test                  # the tests (they need Z3)
 dotnet run --project src/CsVerify.Verifier -- -v samples/Good
 bash samples/e2e.sh          # the packages end to end: verify, erase and test with Tarp a copy of samples/Shop
 bash corpus/report.sh        # the library report on the corpus: what real code's failures come from, ranked
-bash bench/linters.sh        # the linter benchmark: which bugs CsVerify and C# linters each report
+bash bench/linters.sh        # the linter benchmark: which bugs CsVerify, C# linters and InferSharp each report
 ```
 
 ```
