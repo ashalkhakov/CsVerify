@@ -65,6 +65,10 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
   - `Kmp.cs`: Knuth-Morris-Pratt. ATS's `kmp.dats` proves memory safety and termination; this proves that the table holds the longest borders and that the search returns the first occurrence.
   - `Utf8.cs` (after Dafny's standard library): a scalar value to bytes and back, written with shifts and masks and specified by arithmetic. `Decode` accepts exactly the encodings: no overlong form, surrogate or value past U+10FFFF.
   - `Base64.cs` (after the same library): a byte array to text and back, padded. `Decode` refuses exactly what isn't canonical. The tests also run it against `Convert.ToBase64String`, and `Utf8.cs` against `Encoding.UTF8`.
+- Concurrency:
+  - `Locks.cs`: a counter, an account, a stack, a lazily built table and statistics, shared between threads under locks with invariants. The tests also run them on real threads.
+  - `TicketLock.cs` (after K. R. M. Leino, *Modeling Concurrency in Dafny*): the algorithm as atomic events. No two processes eat at once in any interleaving, and under a schedule fair within w steps the display advances at least once in every 3w. Leino's scheduler is fair eventually; this bound is a stronger assumption.
+  - `DiningPhilosophers.cs`: a model where taking the lower-numbered fork first means someone can always move, with a verified run in which taking the left fork first reaches a state where no one can. Then a real table of fork locks, in the order `CSV1025` checks. The tests run it on real threads.
 - `AtsMatrixAndTakeOut.cs`, from INT2PROGINATS and `matrixSub` in Xi's ICFP'05 paper:
   - `IncrementAt`, which takes cell i out of an array view as a plain `int @ (l + i)`, updates it with the single-cell `Read`/`Write`, and puts it back.
   - `MatGet` and `FillRows`, which index an m × n matrix in row-major order. The nonlinear bound `i·n + j < m·n` comes from the lemma `RowMajorInBounds`, which is built on an inductive `MulMonotone`.

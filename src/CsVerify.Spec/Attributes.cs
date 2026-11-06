@@ -28,6 +28,29 @@ namespace CsVerify
     public sealed class NotOwnedAttribute : Attribute { }
 
     /// <summary>
+    /// What a lock protects. On a field or auto-property: it may be used only while holding the lock, a readonly field of
+    /// this class (CSV1023). On a method: its caller must hold it, and the method may use what it guards. A field written
+    /// under one lock, and no other, is taken to be guarded by it without this.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property | AttributeTargets.Method)]
+    public sealed class GuardedByAttribute : Attribute
+    {
+        public GuardedByAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>
+    /// A <c>[Pure]</c> or <c>[GhostFunction]</c> bool method that holds while a lock is free: known on entering it, and to be
+    /// restored on leaving it and before a call that may enter it again (CSV1024). It may read what the lock guards.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class LockInvariantAttribute : Attribute
+    {
+        public LockInvariantAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>
     /// A proof function (ATS <c>prfun</c>): must be <c>void</c> and <c>[Conditional("CSVERIFY_SPEC")]</c>, so calls are
     /// erased. Its body is the proof; callers gain its postconditions.
     /// </summary>

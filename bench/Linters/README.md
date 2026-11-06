@@ -61,8 +61,8 @@ validation.
 | SwitchExpression.Direct | bug | CS8509 | · | SS018 | · | · | · | · | CSV1022 |
 | SwitchExpression.Hidden | bug | CS8524 | · | · | · | · | · | · | CSV1022 |
 | SwitchExpression.Harmless | no | CS8509 | · | · | · | · | · | · | · |
-| Race.Direct | bug | · | · | · | · | · | · | THREAD_SAFETY_VIOLATION | · |
-| Race.Hidden | bug | · | · | · | · | · | · | THREAD_SAFETY_VIOLATION | · |
+| Race.Direct | bug | · | · | · | · | · | · | THREAD_SAFETY_VIOLATION | CSV1023 |
+| Race.Hidden | bug | · | · | · | · | · | · | THREAD_SAFETY_VIOLATION | CSV1023 |
 | Race.Harmless | no | · | · | · | · | · | · | · | · |
 | NaNComparison.Direct | bug | · | CA2242 | · | MA0082 | RCS1215 | · | · | · |
 | NaNComparison.Harmless | no | · | · | · | · | · | · | · | · |
@@ -95,15 +95,15 @@ validation.
 | Truncation.Direct | bug | · | · | · | · | · | · | · | CSV1010 |
 | Truncation.Hidden | bug | · | · | · | · | · | · | · | CSV1010 |
 | Truncation.Harmless | no | · | · | · | · | · | · | · | · |
-| **bugs reported** | 40 | 3 | 8 | 10 | 4 | 2 | 0 | 5 | 32 |
+| **bugs reported** | 40 | 3 | 8 | 10 | 4 | 2 | 0 | 5 | 34 |
 | **harmless code reported** | 17 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 | **other warnings** (noise) | | 0 | 35 | 9 | 36 | 60 | 171 | 0 | 0 |
 
 ## What it shows
 
-- **CsVerify reports 32 of the 40 bugs. The other tools together report 21, and 13 are reported by both.**
+- **CsVerify reports 34 of the 40 bugs. The other tools together report 21, and 15 are reported by both.**
 - **What only CsVerify reports: bugs that depend on values or on paths** (19 bugs).
-  - **The hidden variants.** CsVerify reports 13 of the 14. The linters report 3, and only where the pattern stays
+  - **The hidden variants.** CsVerify reports all 14. The linters report 3, and only where the pattern stays
     visible: a constant format string, a leak with an early return, and an enum switch that names every member. The
     linters match a syntactic pattern:
     - `throw e!` where `e` may be null;
@@ -116,11 +116,10 @@ validation.
   - **The bug families no linter has a rule for:** null dereferences hidden by `!`, an index out of range, the
     midpoint overflow `(lo + hi) / 2`, division by zero, and the string and bit bugs above.
 - **InferSharp reports what it can be sure of** (5 bugs, no false alarms, no other warnings).
-  - **It finds** a value that is always null, also through a helper, and a leaked `StreamWriter`.
+  - **It finds** a value that is always null, also through a helper, a leaked `StreamWriter`, and races: a field written
+    under a lock in one method and without it in another. CsVerify reports those too (CSV1023).
   - **It misses** a null that depends on an input (`Find(key)!.Length`, where `Find` may return null), and a leaked
     `File.OpenRead` or `FileStream`. It runs on a debug build here: on an optimized one it misses `Null.Definite` too.
-- **What only InferSharp reports: races** (2 bugs). A field written under a lock in one method and without it in another.
-  CsVerify has no race detection.
 - **What only the linters report: bugs about intent** (6 bugs): `d == double.NaN`, a discarded `Trim()`, `OrderBy`
   twice, `new TimeSpan(5)`, blocking on `.Result`, identical branches. Each of these runs without failing, but does
   something other than what was meant. CsVerify is about functional correctness: it reports such a bug only against a

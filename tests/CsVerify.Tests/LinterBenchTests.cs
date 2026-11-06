@@ -30,6 +30,7 @@ namespace CsVerify.Tests
             "Substring.Direct", "Substring.Hidden",
             "MaskedIndex.Direct", "MaskedIndex.Hidden",
             "Truncation.Direct", "Truncation.Hidden",
+            "Race.Direct", "Race.Hidden",
         };
 
         [Fact]

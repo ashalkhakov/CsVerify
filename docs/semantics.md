@@ -82,7 +82,27 @@ Methods are verified for partial correctness: any call may throw anything, and a
 
 **Lambdas and local functions** that write the method's locals (`l.ForEach(x => s += x)`) are not verified on their own. Any call may run one of them, so after every call, other than to a `[Pure]` function or a lemma, and at every `await`, the locals they write are unknown.
 
-**Not covered (yet).** Threads started with `Task.Run` or `new Thread` are ordinary library calls: the fields and arrays their delegate may write are forgotten at the call, but not afterwards, while the thread runs. `lock`, `Interlocked` and `volatile` are ordinary calls and reads, with no meaning about other threads. Deadlock freedom and progress are not checked, and neither is lock-free code. The plan (step 2) is permission-based, as in Viper and VerCors. Starting a thread would hand it the permissions its delegate's precondition names, and joining it would give back its postcondition's. A lock would get an invariant saying what it protects. Then every verified program would be race-free.
+**Locks.** A field or auto-property can be guarded by a lock, a readonly field of its class: `[GuardedBy(nameof(_lock))]`. A field written inside `lock (_lock)`, and under no other lock, is taken to be guarded by it without the attribute, so inconsistent locking is reported in code with no specifications. Volatile and readonly fields are left alone.
+- **Every use needs the lock (CSV1023).** That covers reads, writes, specifications and methods with `[GuardedBy]`, whose caller must hold it. The lock must be taken on the same object, seen in the lock statements around the use: a lambda or local function in one doesn't count, since it may run later. A constructor has its own object to itself, and so does a new object's initializer. A `ref` to a guarded field outlives the lock, so it is reported.
+- **So guarded state has no races, and the guarantee above is proved for it.** Entering a lock forgets what it guards, because others have had it. While it is held, nothing changes that this thread doesn't change.
+- **`[LockInvariant(nameof(_lock))]`** on a `[Pure]` bool method says what holds while the lock is free. It is known on entering the lock, and proved on leaving it, on every path, exceptions included (CSV1024). A constructor must establish it, so a class with one must write a constructor. A call under the lock that may enter it again must find it true, unless the callee is `[GuardedBy]` the same lock.
+- **Nested locks on one array** must be taken in increasing order of index (CSV1025), so no cycle of threads can wait on each other among them.
+
+```csharp
+readonly object _lock = new object();
+[GuardedBy(nameof(_lock))] int _balance;
+[LockInvariant(nameof(_lock)), Pure] bool Valid() => _balance >= 0;
+public SharedAccount() { }
+
+public int Balance() { Spec.Ensures<int>(r => r >= 0); lock (_lock) { return _balance; } }
+public void Reset() { _balance = 0; }  // CSV1023: it could race
+```
+
+What a lock guards is the field itself, not what it refers to: `_items` being guarded says nothing of the array's cells, or of a reference copied out while the lock is held. Other locks aren't ordered, and only lock statements in one method are seen, so this is not deadlock freedom in general.
+
+**Not covered (yet).** Threads started with `Task.Run` or `new Thread` are ordinary library calls: the fields and arrays their delegate may write are forgotten at the call, but not afterwards, while the thread runs. So state that no lock guards is still under the guarantee's assumption. `Interlocked`, `volatile`, `Monitor.Wait` and `Monitor.Pulse` are ordinary calls and reads, with no meaning about other threads, and `Monitor.Enter` outside a lock statement doesn't count as holding a lock. Progress and lock-free code are not checked. The plan for threads is permission-based, as in Viper and VerCors: starting a thread would hand it the permissions its delegate's precondition names, and joining it would give back its postcondition's.
+
+An algorithm can be proved over all interleavings by modeling it, as Leino does in Dafny: its atomic events as methods, and what holds in every state as an invariant each keeps. `samples/Good/TicketLock.cs` and `DiningPhilosophers.cs` do so, including that the ticket lock's display can't stall under a fair schedule, and that philosophers taking forks in order always have someone who can move. That proves the algorithm, not any threads running it.
 
 ## Floating point
 

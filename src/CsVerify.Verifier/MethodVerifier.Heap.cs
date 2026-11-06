@@ -95,7 +95,7 @@ namespace CsVerify.Verifier
             if (f.Root != null && SpecSymbols.IsOwnsField(field))
                 AssumeSide(T.Implies(NotNull(v), T.And(T.Eq(RootOf(f, v), RootOf(f, o)), T.Not(T.Eq(RootOf(f, v), v)))));
             HasType(v, type);
-            AssumeImmutableInvariants(o, instance.Type, f);
+            UnderGuards(() => AssumeImmutableInvariants(o, instance.Type, f));
             // a field of an allocated object refers to an allocated object
             if (f.Alloc != null && MayBeNullType(type))
                 AssumeSide(T.Implies(T.And(InSet(f.Alloc, o), NotNull(v)), InSet(f.Alloc, v)));

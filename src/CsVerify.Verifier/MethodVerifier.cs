@@ -191,6 +191,7 @@ namespace CsVerify.Verifier
                 default: return;
             }
             FindContractStatements();
+            CheckLocking();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
@@ -629,6 +630,7 @@ namespace CsVerify.Verifier
 
         private void CheckPostconditions(Frame f)
         {
+            ConstructorEstablishesLocks(f);
             var at = f.ReturnSyntax ?? MethodLocationNode();
             ExitOwned(f, at);
             ProveImmutableInvariants(f, at);
@@ -1687,6 +1689,7 @@ namespace CsVerify.Verifier
             if (_codeMode && !ProofCode) CheckFormatArguments(inv);
             if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
+            if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (IsGetLength(inv)) return GetLength(inv, f, spec);
             if (SpecSymbols.IsSpecClass(m.ContainingType))
             {
@@ -1754,6 +1757,7 @@ namespace CsVerify.Verifier
             if (builtin != null) return builtin;
 
             var callee = _engine.ContractOf(m);
+            CallUnderLock(inv, callee, f);
             // an async stub's contract is of what the task gives when awaited: a task not awaited at once is the library's
             if (callee.IsStub && callee.Stub.IsAsync && inv != _awaitedCall) callee = _engine.LibraryContractOf(m);
             if (callee.IsStub && _codeMode) Assumed(callee);

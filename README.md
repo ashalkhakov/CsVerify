@@ -57,6 +57,10 @@ public static int BinarySearch(int[] a, int key)
 - **Linear views of memory and objects, as in ATS.** Pointers with `PointsTo` views, array views that split and join,
   owned objects, predicates over linked structures, fractional permissions. Roslyn analyzers check that linear values
   are used exactly once, in the IDE as you type.
+- **Locks.** What a lock guards is used only under it, so it can't race, even in code with no specifications: a field
+  written under a lock is taken to be guarded by it. Lock invariants hold whenever a lock is free. Algorithms can
+  also be modeled and proved over every interleaving: a ticket lock's mutual exclusion and progress, and dining
+  philosophers without deadlock. See [Async and concurrency](docs/semantics.md#async-and-concurrency).
 - **Objects too.** Data types with closed hierarchies, object invariants, heap fields with inferred frames, dynamic
   frames (`Spec.Modifies`, for fields and arrays, and `Spec.Reads`), virtual members with contracts, exceptions, floating point as IEEE 754.
 - **Proofs erased, and checked to be.** `-p:CsVerifyErase=true` builds the program with every proof removed, and
@@ -67,9 +71,9 @@ public static int BinarySearch(int[] a, int key)
   proof found a bug in the C original); the [samples](#samples) port proofs from ATS, Dafny and *ACSL by Example*,
   and prove UTF-8, Base64 and Knuth-Morris-Pratt search correct.
 - **Finds what linters can't, and leaves them what it doesn't look for.** In [a benchmark against C# linters and InferSharp](bench/Linters/README.md),
-  CsVerify reports 13 of the 14 bugs hidden behind an alias, a helper or a value that is only sometimes bad, where the
-  other tools together report 4. They report eight bugs it doesn't: races, which InferSharp finds, and code that runs
-  fine but isn't what was meant, such as `d == double.NaN`. So it complements them rather than replacing them.
+  CsVerify reports all 14 bugs hidden behind an alias, a helper or a value that is only sometimes bad, where the
+  other tools together report 4. They report six bugs it doesn't: code that runs fine but isn't what was meant, such
+  as `d == double.NaN`. So it complements them rather than replacing them.
 
 What it does not prove, and why, is listed in [Limitations](docs/limitations.md); what "verified" claims, what it
 rests on, and why each part keeps it, in [Soundness](docs/soundness.md).

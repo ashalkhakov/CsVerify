@@ -142,6 +142,7 @@ namespace CsVerify.Verifier
         internal readonly IReadOnlyList<INamedTypeSymbol> SourceTypes;
         /// <summary>Does the program use dynamic frames (Spec.Modifies/Reads/Fresh, ObjSet)? Allocation is tracked only then.</summary>
         internal readonly bool UsesDynamicFrames;
+        internal readonly LockGuards Locks;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
         /// <summary>The program uses ATS's manual memory (Mem, Ptr and the views of its cells).</summary>
@@ -181,6 +182,7 @@ namespace CsVerify.Verifier
                 ? Stubs.Models : new List<IMethodSymbol>();
             Data = new DataTypes(compilation, userTrees);
             Fields = new FieldEffects(this);
+            Locks = new LockGuards(compilation, userTrees);
             UsesDynamicFrames = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"))
                 || Models.Count > 0; // (stubs frame model state with Spec.Modifies)
