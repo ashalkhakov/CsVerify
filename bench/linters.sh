@@ -10,4 +10,5 @@ verify=$(dotnet src/CsVerify.Verifier/bin/Release/net10.0/csverify.dll bench/Lin
 code=$?
 set -e
 if [ "$code" -gt 1 ]; then echo "$verify"; exit "$code"; fi
-printf '%s\n%s\n' "$lint" "$verify" | python3 -I bench/score.py bench/Linters/Cases.cs
+infer=$(bash bench/infersharp.sh)
+printf '%s\n%s\n%s\n' "$lint" "$infer" "$verify" | python3 -I bench/score.py bench/Linters/Cases.cs

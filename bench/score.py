@@ -5,11 +5,11 @@ import collections, re, sys
 # The rules that speak of each case's bug, by tool. Only these count: the others (style, naming, culture) fire all over
 # the cases and say nothing about the bug (their totals are listed as noise).
 RULES = {
-    "ThrowNull": {"SS006", "CS8597", "CA2201"},
+    "ThrowNull": {"SS006", "CS8597", "CA2201", "NULLPTR_DEREFERENCE"},
     "ModifiedWhileEnumerated": {"SS057"},
     "Unobserved": {"CS4014", "MA0134", "CA2012"},
-    "Disposal": {"CA2000", "IDE0067"},
-    "DisposableField": {"SS066", "CA2213", "CA1001"},
+    "Disposal": {"CA2000", "IDE0067", "PULSE_RESOURCE_LEAK"},
+    "DisposableField": {"SS066", "CA2213", "CA1001", "PULSE_RESOURCE_LEAK"},
     "FormatArguments": {"SS014", "CA2241", "MA0183"},
     "SwitchExpression": {"CS8509", "CS8524", "SS018"},
     "NaNComparison": {"MA0082", "CA2242", "RCS1215"},
@@ -18,7 +18,7 @@ RULES = {
     "TimeSpanTicks": {"SS068"},
     "BlockingResult": {"SS034", "SS035", "MA0042", "MA0045"},
     "IdenticalBranches": {"MA0140", "RCS1211"},
-    "Null": {"CS8602", "CS8600", "CS8603", "CS8604", "MA0191"},  # (CA1062 is about the arguments, not this)
+    "Null": {"CS8602", "CS8600", "CS8603", "CS8604", "MA0191", "NULLPTR_DEREFERENCE"},  # (CA1062 is about the arguments, not this)
     "Bounds": set(),
     "Overflow": set(),
     "DivideByZero": set(),
@@ -26,11 +26,16 @@ RULES = {
     "Substring": set(),
     "MaskedIndex": set(),
     "Truncation": set(),
+    "Race": {"THREAD_SAFETY_VIOLATION"},
 }
 TOOLS = [("compiler", "CS"), ("SDK (CA)", "CA"), ("SharpSource", "SS"), ("Meziantou", "MA"), ("Roslynator", "RCS"),
-         ("StyleCop", "SA"), ("CsVerify", "CSV")]
+         ("StyleCop", "SA"), ("InferSharp", "INFER"), ("CsVerify", "CSV")]
+# (InferSharp's issue types are words, not a prefix and a number)
+INFER = {"NULLPTR_DEREFERENCE", "PULSE_RESOURCE_LEAK", "DOTNET_RESOURCE_LEAK", "THREAD_SAFETY_VIOLATION", "TAINT_ERROR"}
 
 def tool(rule):
+    if rule in INFER:
+        return "InferSharp"
     for name, prefix in sorted(TOOLS, key=lambda t: -len(t[1])):
         if rule.startswith(prefix) and rule[len(prefix):].isdigit():
             return name
@@ -48,7 +53,7 @@ for i, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
 
 found = set()
 for line in sys.stdin:
-    m = re.search(r"Cases\.cs\((\d+),\d+\): (warning|error) ([A-Z]+\d+)", line)
+    m = re.search(r"Cases\.cs\((\d+),\d+\): (warning|error) ([A-Z_]+\d*)", line)
     if m:
         # CsVerify's warnings say what it does not model, not what is wrong
         if m.group(3).startswith("CSV") and m.group(2) != "error":

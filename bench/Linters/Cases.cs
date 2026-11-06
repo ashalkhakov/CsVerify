@@ -133,6 +133,14 @@ namespace Bench
         }
         #endregion
 
+        #region case Disposal.LeakWriter bug
+        public static void LeakWriter(string path)
+        {
+            var w = new StreamWriter(path);
+            w.Write("x");
+        }
+        #endregion
+
         #region case Disposal.UseAfterDispose bug
         public static int UseAfterDispose(string path)
         {
@@ -212,6 +220,38 @@ namespace Bench
         #endregion
     }
 
+    #region case Race.Direct bug
+    /// <summary>One write under the lock, one without.</summary>
+    public sealed class RaceDirect
+    {
+        private readonly object _lock = new object();
+        private int _balance;
+        public void Deposit(int amount) { lock (_lock) { _balance = amount; } }
+        public void Reset() { _balance = 0; }
+    }
+    #endregion
+
+    #region case Race.Hidden bug
+    public sealed class RaceHidden
+    {
+        private readonly object _lock = new object();
+        private int _balance;
+        public void Deposit(int amount) { lock (_lock) { _balance = amount; } }
+        public void Reset() { Clear(); }
+        private void Clear() { _balance = 0; }
+    }
+    #endregion
+
+    #region case Race.Harmless ok
+    public sealed class RaceHarmless
+    {
+        private readonly object _lock = new object();
+        private int _balance;
+        public void Deposit(int amount) { lock (_lock) { _balance = amount; } }
+        public void Reset() { lock (_lock) { _balance = 0; } }
+    }
+    #endregion
+
     // ---- what only linters look for (CsVerify has no rule for these) ----------------------------------------
 
     public static class LinterOnly
@@ -259,6 +299,20 @@ namespace Bench
 
         #region case Null.Direct bug
         public static int NullDirect(int key) => Find(key)!.Length;
+        #endregion
+
+        #region case Null.Definite bug
+        public static int NullDefinite()
+        {
+            string? s = null;
+            return s!.Length;
+        }
+        #endregion
+
+        private static string? Missing() => null;
+
+        #region case Null.DefiniteHelper bug
+        public static int NullDefiniteHelper() => Missing()!.Length;
         #endregion
 
         #region case Null.Hidden bug
