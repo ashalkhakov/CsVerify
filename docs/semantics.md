@@ -86,9 +86,18 @@ Methods are verified for partial correctness: any call may throw anything, and a
 A string is its value. Two strings with the same characters are the same to the verifier, so `==`, `!=`, `Equals`
 (ordinal, or with `StringComparison.Ordinal`), a `switch` on strings, and a dictionary's string keys compare contents,
 as .NET does. `Length` is a function of the value. A literal is the same value wherever it appears, and different
-literals are different values. `a + b` is never null, and as long as both (null counts as empty). The characters
-themselves are not modeled: `s[i]` is an unknown character, and so are the results of most string methods beyond their
-stubs (see [Contracts for code without sources](library-contracts.md)). Comparing strings as objects
+literals are different values. `a + b` is never null, and as long as both (null counts as empty).
+
+The characters are UTF-16 code units: `s[i]` is a value in `0..65535`, one function of the string and the index. A
+literal's are known; `a + b`'s are `a`'s, then `b`'s; and strings of one length with the same characters are one string,
+so a proof can show that `s.Substring(0, n) + s.Substring(n) == s`, or that a loop checked what its result claims (see
+samples/Good/Strings.cs, StringConversions.cs, StringEscaping.cs and Kmp.cs). Library methods say what they do with characters in their stubs (see
+[Contracts for code without sources](library-contracts.md)). `foreach` over a string reads the same characters, by index: `Spec.Index(c)` is its
+index, and it ends by itself. Methods that use the current culture (`StartsWith(string)`, `EndsWith(string)`,
+`IndexOf(string)`) promise nothing about characters: `"a".StartsWith("a\u00AD")` is true. Use their
+`StringComparison.Ordinal` overloads, or the `char` ones.
+
+Comparing strings as objects
 (`ReferenceEquals(a, b)`, `(object)a == (object)b`) is unknown, since equal strings may or may not be one object.
 Comparisons other than ordinal (culture, `OrdinalIgnoreCase`) are unknown.
 

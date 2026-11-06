@@ -39,6 +39,8 @@ namespace CsVerify.Verifier
             public ITypeSymbol ArrayElement;
             /// <summary>A foreach over a List: its index runs over the list's model (Size(), Items()), not an array.</summary>
             public bool OverList;
+            /// <summary>A foreach over a string: its index runs over the characters.</summary>
+            public bool OverString;
             /// <summary>A foreach over an IReadOnlyList or IList: its index runs over the interface's Count and indexer.</summary>
             public bool OverInterface;
             /// <summary>A foreach over a LINQ view (Select, Where, Take, Skip of what the verifier reads): over the view, read once.</summary>
@@ -1234,6 +1236,8 @@ namespace CsVerify.Verifier
                 return FloatBinary(b.OperatorKind, l, r, IsFloating(opType) ? opType : b.RightOperand.Type, b.Syntax, b.Type);
             bool numeric = IsIntegral(opType) || IsIntegral(b.RightOperand.Type) || SpecSymbols.IsGhostType(opType);
             bool boolean = l.Sort == Sort.Bool && r.Sort == Sort.Bool;
+            if ((b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals) && opType?.SpecialType == SpecialType.System_String)
+                StringsCompared(l, r);
             switch (b.OperatorKind)
             {
                 case BinaryOperatorKind.Equals: return numeric || boolean || IsModeledReferenceEquality(b) || SpecSymbols.IsLinear(opType) ? T.Eq(l, r) : Unknown(b.Type);
@@ -1252,6 +1256,7 @@ namespace CsVerify.Verifier
                     var cat = Unknown(b.Type, "concat");
                     Term LengthOf(Term x) => IsNullConstant(b.LeftOperand) && x == l || IsNullConstant(b.RightOperand) && x == r ? T.Int(0) : T.Ite(T.Eq(x, T.Int(0)), T.Int(0), Len(x));
                     AssumeSide(T.And(NotNull(cat), T.Eq(Len(cat), T.Add(LengthOf(l), LengthOf(r)))));
+                    ConcatIs(cat, IsNullConstant(b.LeftOperand) ? T.Int(0) : l, IsNullConstant(b.RightOperand) ? T.Int(0) : r);
                     return cat;
                 }
                 default: return Arith(b.OperatorKind, l, r, b.Type, b.Syntax, false, b.IsChecked);
@@ -1546,7 +1551,8 @@ namespace CsVerify.Verifier
                     var idx = Eval(pr.Arguments[0].Value, f, spec);
                     Deref(pr.Instance, arr, pr.Syntax);
                     BoundsCheck(arr, idx, pr.Syntax);
-                    if (pr.Instance.Type.SpecialType == SpecialType.System_String) return Unknown(pr.Type, "char");
+                    if (pr.Instance.Type.SpecialType == SpecialType.System_String)
+                        return InRangeOf(Char(arr, idx), pr.Type);
                     // a span views its base at an offset (MethodVerifier.Spans); under array permissions, its contents are unknown
                     if (IsSpan(pr.Instance.Type)) return _arrayMode ? Unknown(pr.Type, "spanElem") : SpanRead(arr, idx, pr.Type, f);
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(pr.Type)), pr.Type);

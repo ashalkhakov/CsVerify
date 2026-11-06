@@ -32,8 +32,74 @@ namespace CsVerify.Verifier
                 _stringLiterals[s] = v;
             }
             AssumeSide(T.Eq(Len(v), T.Int(s.Length)));
+            if (_looksAtChars) DefineStrings();
             if (type != null) HasType(v, type);
             return v;
+        }
+
+        // ---- strings' characters: see T.StringDeclarations. What strings are made of is stated only once the method
+        // looks at characters or compares a string it built, so that the rest pay nothing for it.
+        private bool _looksAtChars;
+        private readonly List<(Term cat, Term left, Term right)> _concats = new List<(Term, Term, Term)>();
+        private readonly List<(Term x, Term y)> _compared = new List<(Term, Term)>();
+
+        private static Term CharAt(Term x, Term i) => new Term($"(cv_at {x.S} {i.S})", Sort.Int);
+
+        /// <summary><c>s[i]</c> (the caller has checked the bounds).</summary>
+        private Term Char(Term s, Term i)
+        {
+            _looksAtChars = true;
+            DefineStrings();
+            return CharAt(T.Coerce(s, Sort.Int), i);
+        }
+
+        private void DefineStrings()
+        {
+            _z3.UseStrings();
+            foreach (var kv in _stringLiterals)
+                _z3.AssumeOnce("literal:" + kv.Value.S, () => T.And(kv.Key.Select((c, i) => T.Eq(CharAt(kv.Value, T.Int(i)), T.Int(c))).ToArray()));
+            foreach (var (cat, left, right) in _concats)
+                _z3.AssumeOnce("concat:" + cat.S, () => ConcatChars(cat, left, right));
+            foreach (var (x, y) in _compared)
+                _z3.AssumeOnce($"compared:{x.S}:{y.S}", () => Extensional(x, y));
+        }
+
+        /// <summary><c>cat</c>'s characters are those of <c>left</c> (null counts as empty), then those of <c>right</c>.</summary>
+        private Term ConcatChars(Term cat, Term left, Term right)
+        {
+            var i = new Term("cv_i", Sort.Int);
+            var leftLength = T.Ite(T.Eq(left, T.Int(0)), T.Int(0), Len(left));
+            var value = T.Ite(T.Lt(i, leftLength), CharAt(left, i), CharAt(right, T.Sub(i, leftLength)));
+            return new Term($"(forall (({i.S} Int)) (! {T.Implies(T.And(T.Le(T.Int(0), i), T.Lt(i, Len(cat))), T.Eq(CharAt(cat, i), value)).S} :pattern ({CharAt(cat, i).S})))", Sort.Bool);
+        }
+
+        /// <summary>Two different strings of one length differ at some index: a string is its characters.</summary>
+        private Term Extensional(Term x, Term y)
+        {
+            var at = new Term($"(cv_diff {x.S} {y.S})", Sort.Int);
+            return T.Implies(T.And(NotNull(x), NotNull(y), T.Not(T.Eq(x, y)), T.Eq(Len(x), Len(y))),
+                T.And(T.Le(T.Int(0), at), T.Lt(at, Len(x)), T.Not(T.Eq(CharAt(x, at), CharAt(y, at)))));
+        }
+
+        /// <summary><c>a + b</c>'s contents, known (like everything about characters) once the method looks at them.</summary>
+        private void ConcatIs(Term cat, Term left, Term right)
+        {
+            if (_quantFacts.Count > 0) return; // (under a quantifier the operands may name its variable: length only)
+            _concats.Add((cat, T.Coerce(left, Sort.Int), T.Coerce(right, Sort.Int)));
+            if (_looksAtChars) DefineStrings();
+        }
+
+        /// <summary>Two strings compared: when one was built, or characters are known, what they are made of decides it.</summary>
+        private void StringsCompared(Term x, Term y)
+        {
+            var pair = (T.Coerce(x, Sort.Int), T.Coerce(y, Sort.Int));
+            if (_quantFacts.Count > 0)
+            {
+                if (_looksAtChars) { DefineStrings(); AssumeSide(Extensional(pair.Item1, pair.Item2)); }
+                return;
+            }
+            _compared.Add(pair);
+            if (_concats.Count > 0 || _looksAtChars) { _looksAtChars = true; DefineStrings(); }
         }
 
         /// <summary>The type substitution of the call whose contract is being evaluated (a stub's T as instantiated).</summary>
@@ -138,6 +204,7 @@ namespace CsVerify.Verifier
                 y = Eval(inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value, f, spec);
             }
             else return null;
+            StringsCompared(x, y);
             return T.Eq(T.Coerce(x, Sort.Int), T.Coerce(y, Sort.Int));
         }
     }

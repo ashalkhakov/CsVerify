@@ -163,7 +163,14 @@ were provable. The defences we have:
   many true variants verify and the test bites; their share is a measure of completeness. CI runs three seeds;
   `CSVERIFY_FUZZ_SEEDS=from..to`, `CSVERIFY_FUZZ_METHODS`, `CSVERIFY_FUZZ_SIZE` and `CSVERIFY_FUZZ_LOG` run a soak.
 
-  Six soaks so far, 3,440 methods, found no soundness problem. In all, 1,913 true variants verified and passed
+  Strings have a test of their own (StringFuzzTests): each check is a small method over parameters pinned to
+  constants, with the answer worked out in .NET. The fact must verify and its negation must not. Validated by breaking
+  the model on purpose: concatenation's operands swapped, `foreach` reading only the first character, `Substring`
+  ignoring its start, and extensionality ignoring length were each reported. The random programs alone did not catch
+  the swapped concatenation, in part because the compiler folds two literals into one, and because a method there
+  often fails to verify for other reasons.
+
+  Six soaks before strings, 3,440 methods, found no soundness problem. In all, 1,913 true variants verified and passed
   their checks, and 2,601 of 2,601 planted ones were rejected. They found two other bugs:
   - **Division blow-up (robustness).** Division, remainder and absolute value were written out with their operands
     repeated, so nested ones grew exponentially. One method's term passed 2^31 characters and crashed the verifier,
@@ -180,7 +187,7 @@ the hand-written tests and samples. By area:
 |---|---|---|
 | Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math`, `decimal` (unknown values) | |
 | Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
-| Strings | literals, concatenation, interpolation, `Length`, `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
+| Strings | literals, concatenation, interpolation, `Length`, characters (`s[i]`, `foreach`), `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
 | Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |
 | Arrays and memory | reads and writes with bounds, rectangular arrays, spans, `ref` locals, struct members by `ref`, list patterns, `foreach` | |
 | Control flow | `if`, `for` with and without invariants (inferred facts), termination measures, `while`, `do`, `switch` statements, `goto` loops, `foreach` | |

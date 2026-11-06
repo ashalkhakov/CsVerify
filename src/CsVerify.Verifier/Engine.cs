@@ -654,6 +654,9 @@ namespace CsVerify.Verifier
                 foreach (var err in engine.Solver.Errors)
                     mr.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "solver error: " + err, at.GetLineSpan()));
                 engine.Solver.Errors.Clear();
+                foreach (var hang in engine.Solver.Hangs)
+                    mr.Diagnostics.Add(new VerificationDiagnostic("CSV1998", true, hang, at.GetLineSpan()));
+                engine.Solver.Hangs.Clear();
                 if (failed || verifier.FailedLoopFacts.Count == 0 || round == Rounds || verifier.OverBudget) return;
                 excluded.UnionWith(verifier.FailedLoopFacts);
             }

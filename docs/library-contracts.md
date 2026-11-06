@@ -145,7 +145,7 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 | `ArgumentException` | | `ThrowIfNullOrEmpty`, `ThrowIfNullOrWhiteSpace`: the argument is not null and not empty when they return |
 | `MemoryExtensions` | spans (built in) | `IndexOf`, `LastIndexOf`, `IndexOfAny` (their ranges), `SequenceEqual` (equal lengths when true), `StartsWith` (the prefix fits): what they say of elements would depend on `T`'s `Equals` |
 | `BinaryPrimitives` | | `Read{Int16,UInt16,Int32,UInt32,Int64}{Big,Little}Endian`: the span holds the bytes |
-| `string` | its `Length` (built in) | `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith`, `EndsWith`, `Contains`, `IndexOf(char)`, `LastIndexOf(char)`, `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
+| `string` | its `Length` and characters (built in) | exact on characters: `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith` and `EndsWith` (`char`, or `StringComparison.Ordinal`), `Contains`, `IndexOf(char)`, `LastIndexOf(char)`; nothing about characters: `StartsWith(string)`, `EndsWith(string)` (culture), `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
 | `int` | | `Parse(string)`, `TryParse(string, out int)` |
 | `Math` | | `Clamp` and `Sign` for `int` and `long` |
 
