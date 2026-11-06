@@ -1196,11 +1196,23 @@ namespace CsVerify.Verifier
             return T.Coerce(v, SortOf(c.Type));
         }
 
+        /// <summary>x == null of a record: its == calls no Equals when either side is null, whatever its fields are.</summary>
+        private Term RecordAgainstNull(IBinaryOperation b, Frame f, SpecEnv spec)
+        {
+            if (b.OperatorMethod == null || !b.OperatorMethod.IsImplicitlyDeclared || !Data.IsData(b.OperatorMethod.ContainingType) ||
+                !(b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals)) return null;
+            bool right = IsNullConstant(Unconverted(b.RightOperand)), left = IsNullConstant(Unconverted(b.LeftOperand));
+            if (right == left) return null;
+            var notNull = NotNull(T.Coerce(Eval(right ? b.LeftOperand : b.RightOperand, f, spec), Sort.Int));
+            return b.OperatorKind == BinaryOperatorKind.Equals ? T.Not(notNull) : notNull;
+        }
+
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
             // (x == null on an int? is not marked lifted, but compares the same way)
             if (b.IsLifted || b.OperatorMethod == null && (IsNullableValue(b.LeftOperand.Type) || IsNullableValue(b.RightOperand.Type)))
                 return LiftedBinary(b, f, spec);
+            if (RecordAgainstNull(b, f, spec) is Term againstNull) return againstNull;
             if (IsRecordEquality(b)) return RecordEquality(b, f, spec);
             if (b.OperatorMethod != null && b.OperatorMethod.IsImplicitlyDeclared && Data.IsData(b.OperatorMethod.ContainingType))
             {
@@ -1584,7 +1596,7 @@ namespace CsVerify.Verifier
                 Deref(pr.Instance, o, pr.Syntax);
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
-            if (pr.Instance != null && IsStructMember(prop)) return T.Coerce(StructMember(prop, Eval(pr.Instance, f, spec)), SortOf(pr.Type));
+            if (pr.Instance != null && IsStructMember(prop) && !LooksAtSharedState(prop)) return T.Coerce(StructMember(prop, Eval(pr.Instance, f, spec)), SortOf(pr.Type));
             if (IsComputed(prop.GetMethod) || _engine.HasStub(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
             if (!IsStableProperty(prop) && _codeMode && prop.DeclaringSyntaxReferences.Length == 0)
             {
@@ -1592,7 +1604,8 @@ namespace CsVerify.Verifier
                 if (pr.Instance != null) Deref(pr.Instance, Eval(pr.Instance, f, spec), pr.Syntax);
                 foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
                 // (a token's state is just that: it could have been cancelled by now, or not)
-                if (!LooksAtSharedState(prop))
+                // (nor what an async enumerator has just given: that is all it could be)
+                if (!LooksAtSharedState(prop) && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator"))
                     Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
                 var member = prop.OriginalDefinition.ToDisplayString();
                 _result.LibraryCalls.Add((member, Where(pr.Syntax)));
@@ -1602,7 +1615,7 @@ namespace CsVerify.Verifier
                 _z3.Cause = wasCause;
                 // as the library declares it, a type parameter as instantiated (a List<string>'s items are strings)
                 if (IsNonNullableType(prop.OriginalDefinition.Type) ||
-                    prop.OriginalDefinition.Type is ITypeParameterSymbol && IsNonNullableType(prop.Type)) AssumeSide(NotNull(lv));
+                    prop.OriginalDefinition.Type is ITypeParameterSymbol && (IsNonNullableType(prop.Type) || ConfiguredElementIsNotNull(pr))) AssumeSide(NotNull(lv));
                 return lv;
             }
             if (!IsStableProperty(prop))
@@ -1630,9 +1643,22 @@ namespace CsVerify.Verifier
             return prop.ContainingType.IsValueType && (ns == "System.Threading" || ns == "System.Threading.Tasks" || ns == "System.Runtime.CompilerServices") && prop.Name != "CanBeCanceled";
         }
 
+        /// <summary>
+        /// await foreach (var v in xs.ConfigureAwait(false)): the type that call infers for its enumerator's Current has no
+        /// nullability, so it is read from what the loop's expression is called on.
+        /// </summary>
+        private bool ConfiguredElementIsNotNull(IPropertyReferenceOperation pr)
+        {
+            if (pr.Property.Name != "Current" || !(pr.Syntax.FirstAncestorOrSelf<CommonForEachStatementSyntax>() is CommonForEachStatementSyntax fe)) return false;
+            var e = fe.Expression;
+            while (e is InvocationExpressionSyntax i && i.Expression is MemberAccessExpressionSyntax ma && (ma.Name.Identifier.Text == "ConfigureAwait" || ma.Name.Identifier.Text == "WithCancellation"))
+                e = ma.Expression;
+            return e != fe.Expression && _model.GetTypeInfo(e).Type is INamedTypeSymbol { TypeArguments: { Length: 1 } } n && IsNonNullableType(n.TypeArguments[0]);
+        }
+
         /// <summary>A readonly struct can be a view of an array that others write: an ArraySegment's items are not its own.</summary>
         private static bool LooksAtAnArray(IPropertySymbol prop) =>
-            prop.IsIndexer && prop.DeclaringSyntaxReferences.Length == 0 && prop.ContainingType.Name != "ImmutableArray";
+            prop.IsIndexer && prop.ContainingType.Name == "ArraySegment" && prop.ContainingType.ContainingNamespace?.ToDisplayString() == "System";
 
         private static bool IsStableProperty(IPropertySymbol prop)
         {
@@ -1792,6 +1818,9 @@ namespace CsVerify.Verifier
             if (callee.IsStub && callee.Stub.IsAsync && inv != _awaitedCall) callee = _engine.LibraryContractOf(m);
             if (callee.IsStub && _codeMode) Assumed(callee);
             if (StartTask(inv, callee, f, spec) is Term startedTask) return startedTask;
+            if (StartRun(inv, f, spec) is Term runningTask) return runningTask;
+            LambdaGivesTasks(inv, f);
+            ThreadEvent(inv, f, spec);
             CheckNotAwaited(inv, callee);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
             if (receiver != null) Deref(inv.Instance, receiver, inv.Syntax);
@@ -1888,7 +1917,8 @@ namespace CsVerify.Verifier
                     if (_engine.Fields.WritesFieldsAt(inv)) HavocFields(f, m, touched);
                     CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                     var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
-                    if (!m.ReturnsVoid && MayBeNullType(inv.Type)) _z3.Origins[libResult.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
+                    if (!m.ReturnsVoid && LibraryGivesAsInstantiated(m)) _z3.Assume(NotNull(libResult));
+                    else if (!m.ReturnsVoid && MayBeNullType(inv.Type)) _z3.Origins[libResult.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
                     foreach (var (value, when) in whenNotNull)
                         if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                     AllocAfterCall(f, libResult);
@@ -1998,7 +2028,7 @@ namespace CsVerify.Verifier
                 var result = packageResult ?? (m.ReturnsVoid || _awaitedCall == inv && AwaitedType(m) == null && (m.IsAsync || IsAsyncStubbed(m)) ? null : FreshOf(ResultTypeOf(inv), m.Name));
                 if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
                 bool awaitedStub = callee.IsStub && callee.Stub.IsAsync && _awaitedCall == inv;
-                if (result != null && (awaitedStub ? IsNonNullableType(AwaitedType(m)) : IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m)))
+                if (result != null && (awaitedStub ? IsNonNullableType(AwaitedType(m)) : IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m) || m.IsAsync && callee.HasSource && inv != _awaitedCall /* (the task, not what it gives) */))
                     _z3.Assume(NotNull(result));
                 else if (result != null && MayBeNullType(result.Sort == Sort.Int ? ResultTypeOf(inv) : null))
                     _z3.Origins[result.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
@@ -2392,7 +2422,7 @@ namespace CsVerify.Verifier
             : MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
         private static bool IsNonNullable(IParameterSymbol p) =>
-            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
+            (IsNonNullableType(p.OriginalDefinition.Type) || p.OriginalDefinition.Type is ITypeParameterSymbol { HasNotNullConstraint: true } && p.OriginalDefinition.NullableAnnotation != NullableAnnotation.Annotated && MayBeNullType(p.Type)) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
             // (query syntax's own: the object its previous clause made, or the group of group ... into g)
             p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn &&
             !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax) &&
@@ -2409,9 +2439,23 @@ namespace CsVerify.Verifier
         private static bool IsNullConstant(IOperation op) => op.ConstantValue.HasValue && op.ConstantValue.Value == null;
 
         /// <summary>Member access, indexing or a call on <paramref name="receiver"/>: defined only if it is not null.</summary>
+        /// <summary>
+        /// In a lambda, a local from around it with one value all along (a foreach's, or one assigned only where it is
+        /// declared) that the compiler's flow analysis has as not null. What the lambda knows of it is nothing, otherwise.
+        /// </summary>
+        private bool IsCapturedNotNull(IOperation receiver)
+        {
+            if (!(Unconverted(receiver) is ILocalReferenceOperation l) || !(l.Syntax.FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is AnonymousFunctionExpressionSyntax lambda)) return false;
+            var declared = l.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+            if (declared == null || lambda.Span.Contains(declared.Span) || _model.GetTypeInfo(l.Syntax).Nullability.FlowState != NullableFlowState.NotNull) return false;
+            var scope = declared.FirstAncestorOrSelf<MemberDeclarationSyntax>();
+            return !scope.DescendantNodes().OfType<IdentifierNameSyntax>().Any(id => LockGuards.IsWriteTarget(id) && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(id).Symbol, l.Local));
+        }
+
         private void Deref(IOperation receiver, Term r, SyntaxNode at)
         {
             if (receiver is IInstanceReferenceOperation || !MayBeNullType(receiver.Type)) return;
+            if (IsCapturedNotNull(receiver)) return;
             Require(NotNull(r), "CSV1013", at, $"'{receiver.Syntax}' might be null in '{at}'");
         }
 

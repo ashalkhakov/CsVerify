@@ -48,10 +48,45 @@ namespace CsVerify.Verifier
         private bool CheckNotAwaited(IInvocationOperation inv, Contract callee)
         {
             if (!inv.TargetMethod.IsAsync || !callee.HasSource || inv == _awaitedCall || !_codeMode) return false;
+            // (() => F(x), handed on: whoever it's handed to has the task. See LambdaGivesTasks.)
+            if (IsLambdasResult(inv.Syntax)) return false;
             NotModeled(inv.Syntax, $"'{inv.TargetMethod.Name}' is async and is not awaited at once: it would run interleaved with this method, " +
                                    "each changing what the other relies on (write 'await' at the call)");
             return true;
         }
+
+        private static bool IsLambdasResult(SyntaxNode call)
+        {
+            var e = call.Parent;
+            while (e is ParenthesizedExpressionSyntax) e = e.Parent;
+            return e is LambdaExpressionSyntax || e is ReturnStatementSyntax r && r.Ancestors().OfType<MemberDeclarationSyntax>().First().Span.Contains(r.Span) &&
+                   r.FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() != null && r.Ancestors().TakeWhile(x => !(x is AnonymousFunctionExpressionSyntax)).All(x => !(x is LocalFunctionStatementSyntax));
+        }
+
+        /// <summary>
+        /// ids.Select(id => F(id)): tasks are going from here on, however many and until whenever, as far as this method can
+        /// tell, for it isn't followed where they go. So it forgets what it doesn't hold from here to its end.
+        /// </summary>
+        private void LambdaGivesTasks(IInvocationOperation inv, Frame f)
+        {
+            if (!_codeMode || IsTaskRun(inv.TargetMethod) || inv.TargetMethod.DeclaringSyntaxReferences.Length > 0) return;
+            foreach (var a in inv.Arguments)
+                if (a.Value.Syntax is LambdaExpressionSyntax l && l.ExpressionBody != null && _model.GetTypeInfo(l.ExpressionBody).Type is ITypeSymbol r && IsTaskLike(r) &&
+                    !IsAwaitedHere(l.ExpressionBody))
+                {
+                    var effects = EffectsOf(l);
+                    var key = _z3.Fresh("tasks", Sort.Int);
+                    WarnIfTheyMayRace(inv.Syntax, effects, f);
+                    f.Started[key.S] = new StartedTask(T.True, false, inv.TargetMethod, inv.Syntax, effects, true);
+                }
+        }
+
+        private static bool IsTaskLike(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && (n.Name == "Task" || n.Name == "ValueTask") && n.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+
+        /// <summary>A direct argument of an awaited Task.WhenAll: started and finished there.</summary>
+        private bool IsInAwaitedWhenAll(SyntaxNode call) =>
+            call.Parent is ArgumentSyntax arg && arg.Parent?.Parent is InvocationExpressionSyntax all && IsWhenAll(_model.GetSymbolInfo(all).Symbol as IMethodSymbol) && IsAwaitedHere(all);
 
         // ================================================================================== tasks awaited later
 
@@ -89,14 +124,15 @@ namespace CsVerify.Verifier
         private Term StartTask(IInvocationOperation inv, Contract callee, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
-            if (!_codeMode || !m.IsAsync || !callee.HasSource || inv == _awaitedCall || TaskLocal(inv) == null) return null;
+            if (!_codeMode || !m.IsAsync || !callee.HasSource || inv == _awaitedCall || TaskLocal(inv) == null && !IsInAwaitedWhenAll(inv.Syntax)) return null;
             // (what is lent to it isn't back until it returns, and returning is what this doesn't follow)
             if (inv.Arguments.Any(a => SpecSymbols.IsLinear(a.Parameter?.Type) || a.Parameter?.RefKind != RefKind.None) || MentionsCells(callee))
                 return null;
             // (it would run on what its caller holds the lock for, while its caller does too)
             if (_engine.Locks.GuardOf(m) is IFieldSymbol held && LockGuards.IsSemaphore(held))
                 Report("CSV1023", inv.Syntax, $"'{m.Name}' relies on holding '{held.Name}', but its task isn't awaited here: it would run alongside this code", isError: true);
-            WarnIfTheyMayRace(inv, f);
+            var effects = EffectsOf(m);
+            WarnIfTheyMayRace(inv.Syntax, effects, f);
             var outer = _awaitedCall;
             _awaitedCall = inv;
             _startedCall = inv;
@@ -105,36 +141,247 @@ namespace CsVerify.Verifier
             finally { _awaitedCall = outer; _startedCall = null; }
             var task = _z3.Fresh("task", Sort.Int);
             _z3.Assume(NotNull(task));
-            f.Started[task.S] = new StartedTask(AwaitedType(m) == null ? T.True : result, false, m, inv.Syntax);
+            f.Started[task.S] = new StartedTask(AwaitedType(m) == null ? T.True : result, false, m, inv.Syntax, effects);
             // (what its contract said of the state is of the state when it completes, whenever that is: not of this one)
             Interleave(f);
             return task;
         }
 
-        /// <summary>Two tasks running at once, where one writes what the other uses, each proved as if alone.</summary>
-        private void WarnIfTheyMayRace(IInvocationOperation inv, Frame f)
+        /// <summary>What some code may use, to tell if it can race with other code.</summary>
+        private sealed class TaskEffects
         {
-            var m = inv.TargetMethod;
-            var (writes, _) = _engine.Fields.WritesOf(m);
-            var reads = _engine.Fields.ReadsOf(m);
-            foreach (var other in f.Started.Values.Where(t => !t.Awaited))
+            public string Name;
+            public readonly HashSet<ISymbol> Writes = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            public readonly HashSet<ISymbol> Reads = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            public bool WritesArrays, UsesArrays;
+
+            public void Add(TaskEffects o)
             {
-                var (otherWrites, _) = _engine.Fields.WritesOf(other.Method);
-                var otherReads = _engine.Fields.ReadsOf(other.Method);
-                var shared = writes.Where(x => _engine.Locks.GuardOf(x) == null && (otherWrites.Contains(x) || otherReads.Contains(x, SymbolEqualityComparer.Default)))
-                    .Concat(otherWrites.Where(x => _engine.Locks.GuardOf(x) == null && reads.Contains(x, SymbolEqualityComparer.Default))).FirstOrDefault();
-                if (shared != null)
-                    Warn(inv.Syntax, $"'{m.Name}' and '{other.Method.Name}' run at once, and '{shared.Name}' is written by one and used by the other: on one object, that could race, and each is proved as if alone");
-                else if (_engine.MayWriteHeap(m) && _engine.MayTouchArrays(other.Method) || _engine.MayWriteHeap(other.Method) && _engine.MayTouchArrays(m))
-                    Warn(inv.Syntax, $"'{m.Name}' and '{other.Method.Name}' run at once, and one writes arrays the other may use: on one array, that could race, and each is proved as if alone");
+                Writes.UnionWith(o.Writes);
+                Reads.UnionWith(o.Reads);
+                WritesArrays |= o.WritesArrays;
+                UsesArrays |= o.UsesArrays;
             }
         }
+
+        private TaskEffects EffectsOf(IMethodSymbol m)
+        {
+            var e = new TaskEffects { Name = m.Name };
+            AddEffects(m, e, new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default));
+            return e;
+        }
+
+        private void AddEffects(IMethodSymbol m, TaskEffects e, HashSet<IMethodSymbol> seen)
+        {
+            if (!seen.Add(m.OriginalDefinition)) return;
+            var refs = m.OriginalDefinition.DeclaringSyntaxReferences;
+            if (refs.Length == 0)
+            {
+                // the library's: what a contract says it does, and for the rest there's nothing to go on
+                if (IsTaskRun(m) || !_engine.ContractOf(m).IsStub) return;
+                e.Writes.UnionWith(_engine.Fields.WritesOf(m).Item1);
+                e.Reads.UnionWith(_engine.Fields.ReadsOf(m));
+                e.WritesArrays |= _engine.MayWriteHeap(m);
+                e.UsesArrays |= _engine.MayTouchArrays(m);
+                return;
+            }
+            foreach (var r in refs) AddEffects(r.GetSyntax(), _engine.ModelOf(r.SyntaxTree), e, seen, null);
+        }
+
+        /// <summary>What's done under a lock doesn't count, even to what isn't a field (a dictionary's contents): that is what a lock is for.</summary>
+        private void AddEffects(SyntaxNode code, SemanticModel model, TaskEffects e, HashSet<IMethodSymbol> seen, SyntaxNode except)
+        {
+            bool Enter(SyntaxNode x) => x != except && !(x is LockStatementSyntax) && !(x is TryStatementSyntax t && LockGuards.GateOfTry(t, model) != null);
+            var inside = code.DescendantNodes(Enter);
+            foreach (var n in inside)
+                switch (n)
+                {
+                    case SimpleNameSyntax name when !(name.Parent is NameColonSyntax) && !(name.Parent is NameEqualsSyntax):
+                        var symbol = model.GetSymbolInfo(name).Symbol;
+                        if (symbol is IPropertySymbol stubbed && stubbed.DeclaringSyntaxReferences.Length == 0) symbol = LockGuards.IsWriteTarget(name) ? stubbed.SetMethod : stubbed.GetMethod;
+                        if (symbol is IMethodSymbol callee) AddEffects(callee, e, seen);
+                        else if (symbol != null && FieldEffects.IsHeapField(symbol))
+                        {
+                            ExpressionSyntax whole = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : name;
+                            if (LockGuards.IsWriteTarget(whole)) e.Writes.Add(FieldEffects.Key(symbol)); else e.Reads.Add(FieldEffects.Key(symbol));
+                        }
+                        break;
+                    case ElementAccessExpressionSyntax ea when model.GetTypeInfo(ea.Expression).Type is IArrayTypeSymbol:
+                        e.UsesArrays = true;
+                        if (LockGuards.IsWriteTarget(ea)) e.WritesArrays = true;
+                        break;
+                    case ElementAccessExpressionSyntax ea when model.GetSymbolInfo(ea).Symbol is IPropertySymbol ix:
+                        // (d[k] = v: a library's indexer)
+                        if ((LockGuards.IsWriteTarget(ea) ? ix.SetMethod : ix.GetMethod) is IMethodSymbol accessor) AddEffects(accessor, e, seen);
+                        break;
+                }
+        }
+
+        /// <summary>What a piece of this method's source uses, itself and through its calls.</summary>
+        private TaskEffects EffectsOf(SyntaxNode code, SyntaxNode except = null)
+        {
+            var e = new TaskEffects { Name = "this method" };
+            AddEffects(code, _model, e, new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default), except);
+            return e;
+        }
+
+        /// <summary>What a delegate handed to a thread may use. Null if it can't be told which code it is.</summary>
+        private TaskEffects EffectsOfDelegate(IOperation d)
+        {
+            d = Unconverted(d);
+            if (d is IDelegateCreationOperation dc) d = Unconverted(dc.Target);
+            if (d is IAnonymousFunctionOperation af) { var e = EffectsOf(af.Syntax); e.Name = "the delegate"; return e; }
+            if (d is IMethodReferenceOperation mr && mr.Method.DeclaringSyntaxReferences.Length > 0) return EffectsOf(mr.Method);
+            return null;
+        }
+
+        /// <summary>A field or array one writes and the other uses, that no lock guards.</summary>
+        private void WarnIfMayRace(SyntaxNode at, TaskEffects a, TaskEffects b)
+        {
+            if (a == null || b == null) return;
+            bool Unguarded(ISymbol x) => _engine.Locks.GuardOf(x) == null;
+            var shared = a.Writes.Where(x => Unguarded(x) && (b.Writes.Contains(x) || b.Reads.Contains(x))).Concat(b.Writes.Where(x => Unguarded(x) && a.Reads.Contains(x))).FirstOrDefault();
+            if (shared != null)
+                Warn(at, $"'{a.Name}' and '{b.Name}' run at once, and '{shared.Name}' is written by one and used by the other: on one object, that could race, and each is proved as if alone");
+            else if (a.WritesArrays && b.UsesArrays || b.WritesArrays && a.UsesArrays)
+                Warn(at, $"'{a.Name}' and '{b.Name}' run at once, and one writes arrays the other may use: on one array, that could race, and each is proved as if alone");
+        }
+
+        /// <summary>Two tasks running at once, where one writes what the other uses, each proved as if alone.</summary>
+        private void WarnIfTheyMayRace(SyntaxNode at, TaskEffects mine, Frame f)
+        {
+            foreach (var other in f.Started.Values.Where(t => !t.Awaited))
+                WarnIfMayRace(at, mine, other.Effects as TaskEffects);
+        }
+
+        // ================================================================================== Task.Run and threads
+
+        /// <summary><c>await X</c> or <c>await X.ConfigureAwait(b)</c>: X doesn't run alongside what comes after.</summary>
+        private static bool IsAwaitedHere(SyntaxNode call)
+        {
+            var e = call.Parent;
+            while (e is ParenthesizedExpressionSyntax) e = e.Parent;
+            if (e is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "ConfigureAwait" && ma.Parent is InvocationExpressionSyntax c) e = c.Parent;
+            return e is AwaitExpressionSyntax;
+        }
+
+        private static bool IsTaskRun(IMethodSymbol m) =>
+            m.Name == "Run" && m.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" ||
+            m.Name == "StartNew" && m.ContainingType?.ToDisplayString().StartsWith("System.Threading.Tasks.TaskFactory") == true;
+
+        private static bool IsThread(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.Thread";
+
+        /// <summary>
+        /// Task.Run(...): the library's call, and then a task of what it runs is going, as for a task awaited later. Null for
+        /// any other call, and for one awaited at once, which runs alongside nothing (unless a WhenAll has others next to it).
+        /// </summary>
+        private Term StartRun(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            if (!_codeMode || inv == _startedCall || IsAwaitedHere(inv.Syntax) || IsLambdasResult(inv.Syntax)) return null;
+            if (!IsTaskRun(inv.TargetMethod)) return StartOther(inv, f, spec);
+            var effects = EffectsOfDelegate(RunDelegate(inv));
+            // await Task.WhenAll(Task.Run(a), Task.Run(b)): alongside each other, and then all done
+            if (inv.Syntax.Parent is ArgumentSyntax sibling && sibling.Parent?.Parent is InvocationExpressionSyntax all && IsWhenAll(_model.GetSymbolInfo(all).Symbol as IMethodSymbol) && IsAwaitedHere(all))
+            {
+                foreach (var earlier in ((ArgumentListSyntax)sibling.Parent).Arguments.TakeWhile(x => x != sibling))
+                    if (_model.GetOperation(earlier.Expression) is IInvocationOperation other && IsTaskRun(other.TargetMethod))
+                        WarnIfMayRace(inv.Syntax, effects, EffectsOfDelegate(RunDelegate(other)));
+                return null;
+            }
+            WarnIfTheyMayRace(inv.Syntax, effects, f);
+            WarnIfMayRace(inv.Syntax, effects, EffectsOf(_contract.Declaration, inv.Arguments.First(a => a.Parameter?.Ordinal == 0).Value.Syntax));
+            _startedCall = inv;
+            Term task;
+            try { task = EvalInvocationCore(inv, f, spec); }
+            finally { _startedCall = null; }
+            _z3.Assume(NotNull(task));
+            var kept = TaskLocal(inv) != null;
+            // (a task stored, returned or dropped goes on running, and nothing here can tell about what)
+            if (!kept) Detached(inv.Syntax, effects);
+            // the statement itself, with its task dropped: a failure in it would be lost
+            if (!kept && inv.Syntax.Parent is ExpressionStatementSyntax)
+                Report("CSV1026", inv.Syntax, "the task of 'Run' is never awaited: a failure in it would be lost (keep it and await it, or write '_ = ' if that is meant)", isError: true);
+            f.Started[task.S] = new StartedTask(TaskRunResult(inv), false, inv.TargetMethod, inv.Syntax, effects, !kept);
+            Interleave(f);
+            return task;
+        }
+
+        // (from the syntax: in a flow graph, a lambda isn't one any more)
+        private IOperation RunDelegate(IInvocationOperation inv) =>
+            _model.GetOperation(inv.Arguments.First(a => a.Parameter?.Ordinal == 0).Value.Syntax);
+
+        /// <summary>
+        /// A task from code that isn't an async method here: an interface's, a delegate's, or a method that returns one. It too
+        /// runs the program's code alongside what follows, for all that can be told. (A library's own, like Task.Delay's, doesn't.)
+        /// </summary>
+        private Term StartOther(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            var m = inv.TargetMethod;
+            if (!IsTaskLike(m.ReturnType) || m.IsAsync || !(m.DeclaringSyntaxReferences.Length > 0 || m.MethodKind == MethodKind.DelegateInvoke)) return null;
+            if (m.Name == "Yield" || inv.Arguments.Any(a => SpecSymbols.IsLinear(a.Parameter?.Type) || a.Parameter?.RefKind != RefKind.None)) return null;
+            var effects = m.DeclaringSyntaxReferences.Length > 0 && !m.IsAbstract ? EffectsOf(m) : null;
+            WarnIfTheyMayRace(inv.Syntax, effects, f);
+            _startedCall = inv;
+            Term task;
+            try { task = EvalInvocationCore(inv, f, spec); }
+            finally { _startedCall = null; }
+            var kept = TaskLocal(inv) != null;
+            if (!kept && inv.Syntax.Parent is ExpressionStatementSyntax)
+                Report("CSV1026", inv.Syntax, $"the task of '{m.Name}' is never awaited: a failure in it would be lost (keep it and await it, or write '_ = ' if that is meant)", isError: true);
+            f.Started[task.S] = new StartedTask(TaskRunResult(inv), false, m, inv.Syntax, effects, !kept);
+            Interleave(f);
+            return task;
+        }
+
+        /// <summary>What awaiting a Task.Run's task gives: nothing known, but not null if the code it runs doesn't return that.</summary>
+        private Term TaskRunResult(IInvocationOperation inv)
+        {
+            if (!(_model.GetTypeInfo(inv.Syntax).Type is INamedTypeSymbol { TypeArguments: { Length: 1 } } task)) return T.True;
+            var r = Unknown(task.TypeArguments[0], "task");
+            if (IsNonNullableType(task.TypeArguments[0])) _z3.Assume(NotNull(r));
+            return r;
+        }
+
+        private void Detached(SyntaxNode at, TaskEffects effects)
+        {
+            if (effects == null)
+                Warn(at, "this runs a delegate that can't be told, and keeps running after this method: what it does to state no lock guards isn't looked at");
+            else if (effects.Writes.FirstOrDefault(x => _engine.Locks.GuardOf(x) == null) is ISymbol unguarded)
+                Warn(at, $"this keeps running after this method, and writes '{unguarded.Name}', which no lock guards: it could race with whatever uses it, and every method is proved as if nothing did");
+            else if (effects.WritesArrays)
+                Warn(at, "this keeps running after this method, and writes arrays: it could race with whatever uses them, and every method is proved as if nothing did");
+        }
+
+        /// <summary>th.Start() of a local made by new Thread(d), and th.Join(): the same, with nothing to lose if it isn't joined.</summary>
+        private void ThreadEvent(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            if (!_codeMode || !IsThread(inv.Instance?.Type) || inv.Arguments.Length != 0) return;
+            if (inv.TargetMethod.Name == "Join")
+            {
+                var t = Eval(inv.Instance, f, spec);
+                if (f.Started.TryGetValue(t.S, out var started)) f.Started[t.S] = started.AsAwaited();
+                return;
+            }
+            if (inv.TargetMethod.Name != "Start") return;
+            var effects = ThreadDelegate(inv.Instance);
+            WarnIfTheyMayRace(inv.Syntax, effects, f);
+            if (effects != null) WarnIfMayRace(inv.Syntax, effects, EffectsOf(_contract.Declaration, ThreadDelegateSyntax(inv.Instance)));
+            Detached(inv.Syntax, effects);
+            f.Started[Eval(inv.Instance, f, spec).S] = new StartedTask(T.True, false, inv.TargetMethod, inv.Syntax, effects, true);
+        }
+
+        private SyntaxNode ThreadDelegateSyntax(IOperation thread) =>
+            thread is ILocalReferenceOperation l && l.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax d &&
+            d.Initializer?.Value is BaseObjectCreationExpressionSyntax c && c.ArgumentList?.Arguments.Count > 0 ? c.ArgumentList.Arguments[0].Expression : null;
+
+        private TaskEffects ThreadDelegate(IOperation thread) =>
+            ThreadDelegateSyntax(thread) is SyntaxNode d && _model.GetOperation(d) is IOperation op ? EffectsOfDelegate(op) : null;
 
         /// <summary>At the end of the method: every task it started has been awaited, or a failure in it would be lost.</summary>
         private void CheckAllAwaited(Frame f)
         {
             if (!_codeMode) return;
-            foreach (var t in f.Started.Values.Where(t => !t.Awaited))
+            foreach (var t in f.Started.Values.Where(t => !t.Awaited && !t.Detached))
                 Report("CSV1026", t.At, $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost", isError: true);
         }
 
@@ -142,7 +389,7 @@ namespace CsVerify.Verifier
         private void CheckAwaitedInLoop(Loop loop, Frame f)
         {
             if (!_codeMode || loop.Syntax == null) return;
-            foreach (var t in f.Started.Values.Where(t => !t.Awaited && loop.Syntax.Span.Contains(t.At.Span)))
+            foreach (var t in f.Started.Values.Where(t => !t.Awaited && !t.Detached && loop.Syntax.Span.Contains(t.At.Span)))
                 Report("CSV1026", t.At, $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost", isError: true);
         }
 
@@ -158,19 +405,16 @@ namespace CsVerify.Verifier
                 return started.Result;
             }
             if (!(operand is IInvocationOperation all) || !IsWhenAll(all.TargetMethod)) return null;
-            var tasks = all.Arguments.SelectMany(a => a.Value.DescendantsAndSelf()).OfType<ILocalReferenceOperation>().ToList();
+            // (from the syntax: whether a list of them is an array or a span depends on the framework)
+            var elements = ((InvocationExpressionSyntax)all.Syntax).ArgumentList.Arguments.Select(a => Unconverted(_model.GetOperation(a.Expression))).ToList();
+            // (only a list of them as written: an array built elsewhere isn't followed; each is a task held, or a call of an async method here)
+            if (elements.Count == 0 || elements.Any(e => !(e is ILocalReferenceOperation l && f.Started.ContainsKey(Eval(l, f, spec).S) ||
+                                                           e is IInvocationOperation c && c.TargetMethod.IsAsync && _engine.ContractOf(c.TargetMethod).HasSource))) return null;
             var results = new List<Term>();
-            foreach (var l in tasks)
+            foreach (var e in elements)
             {
-                var t = Eval(l, f, spec);
-                if (!f.Started.TryGetValue(t.S, out var started)) return null;
-                results.Add(started.Result);
-            }
-            // (only a list of them as written: an array built elsewhere isn't followed)
-            if (results.Count == 0) return null;
-            foreach (var l in tasks)
-            {
-                var t = Eval(l, f, spec);
+                var t = Eval(e, f, spec);
+                results.Add(f.Started[t.S].Result);
                 f.Started[t.S] = f.Started[t.S].AsAwaited();
             }
             MayRaise(T.True, f, null);
@@ -224,7 +468,9 @@ namespace CsVerify.Verifier
                 result = aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void ? T.True : Unknown(aw.Type, "awaited");
                 // a library task's result is as the library declares it; a faulted task throws here
                 if (operand is IInvocationOperation li && li.TargetMethod.OriginalDefinition.ReturnType is INamedTypeSymbol lt &&
-                    lt.TypeArguments.Length == 1 && IsNonNullableType(lt.TypeArguments[0]) && result.Sort == Sort.Int)
+                    lt.TypeArguments.Length == 1 && result.Sort == Sort.Int &&
+                    (IsNonNullableType(lt.TypeArguments[0]) || lt.TypeArguments[0] is ITypeParameterSymbol && lt.TypeArgumentNullableAnnotations[0] == NullableAnnotation.NotAnnotated &&
+                        (IsNonNullableType(aw.Type) || IsTaskRun(li.TargetMethod) && _model.GetTypeInfo(aw.Syntax).Nullability.FlowState == NullableFlowState.NotNull)))
                     _z3.Assume(NotNull(result));
                 MayRaise(T.True, f, null);
             }

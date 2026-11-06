@@ -67,6 +67,7 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
   - `Base64.cs` (after the same library): a byte array to text and back, padded. `Decode` refuses exactly what isn't canonical. The tests also run it against `Convert.ToBase64String`, and `Utf8.cs` against `Encoding.UTF8`.
 - Concurrency:
   - `Locks.cs`: a counter, an account, a stack, a lazily built table and statistics, shared between threads under locks with invariants. The tests also run them on real threads.
+  - `AsyncService.cs`: a cache with a semaphore held across its load, a rate limiter, a worker on a channel with cancellation, fetching several at once, and retries, written for this repository rather than taken from a real program. It has one contract, a loop invariant: no null dereferences, overflows or unguarded uses. A first version had two bugs the verifier found.
   - `TicketLock.cs` (after K. R. M. Leino, *Modeling Concurrency in Dafny*): the algorithm as atomic events. No two processes eat at once in any interleaving, and under a schedule fair within w steps the display advances at least once in every 3w. Leino's scheduler is fair eventually; this bound is a stronger assumption.
   - `DiningPhilosophers.cs`: a model where taking the lower-numbered fork first means someone can always move, with a verified run in which taking the left fork first reaches a state where no one can. Then a real table of fork locks, in the order `CSV1025` checks. The tests run it on real threads.
 - `AtsMatrixAndTakeOut.cs`, from INT2PROGINATS and `matrixSub` in Xi's ICFP'05 paper:

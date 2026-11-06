@@ -87,7 +87,7 @@ namespace CsVerify.Verifier
             : s is IPropertySymbol p && !p.IsIndexer && p.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is PropertyDeclarationSyntax d &&
               d.AccessorList != null && d.AccessorList.Accessors.All(x => x.Body == null && x.ExpressionBody == null);
 
-        private static bool IsWriteTarget(ExpressionSyntax e)
+        internal static bool IsWriteTarget(ExpressionSyntax e)
         {
             var whole = e.Parent is MemberAccessExpressionSyntax ma && ma.Name == e ? (ExpressionSyntax)ma : e;
             switch (whole.Parent)

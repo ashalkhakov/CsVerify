@@ -129,13 +129,24 @@ namespace CsVerify.Verifier
     /// <summary>A task started and not yet awaited (or awaited, so what it gave stays known).</summary>
     public readonly struct StartedTask
     {
+        /// <summary>What awaiting it gives.</summary>
         public readonly Term Result;
         public readonly bool Awaited;
-        public readonly IMethodSymbol Method;
-        public readonly SyntaxNode At;
-        public StartedTask(Term result, bool awaited, IMethodSymbol method, SyntaxNode at) { Result = result; Awaited = awaited; Method = method; At = at; }
-        public StartedTask AsAwaited() => new StartedTask(Result, true, Method, At);
+        public readonly Microsoft.CodeAnalysis.IMethodSymbol Method;
+        public readonly Microsoft.CodeAnalysis.SyntaxNode At;
+        /// <summary>What it uses, to tell whether two of them may race.</summary>
+        public readonly object Effects;
+        /// <summary>Nothing here will wait for it (a thread, or a task stored somewhere): it just goes on running.</summary>
+        public readonly bool Detached;
+
+        public StartedTask(Term result, bool awaited, Microsoft.CodeAnalysis.IMethodSymbol method, Microsoft.CodeAnalysis.SyntaxNode at, object effects = null, bool detached = false)
+        {
+            Result = result; Awaited = awaited; Method = method; At = at; Effects = effects; Detached = detached;
+        }
+
+        public StartedTask AsAwaited() => new StartedTask(Result, true, Method, At, Effects, Detached);
     }
+
 
     /// <summary>The location a ref local names: a variable, or the cell Idx of array Arr.</summary>
     public sealed class RefTarget

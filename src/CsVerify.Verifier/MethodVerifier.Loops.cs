@@ -45,14 +45,10 @@ namespace CsVerify.Verifier
 
         private void FindForEach(CommonForEachStatementSyntax fe, ControlFlowGraph cfg)
         {
-            if (!(_model.GetOperation(fe) is IForEachLoopOperation fo) || fo.IsAsynchronous)
-            {
-                NotModeled(fe.ForEachKeyword, "await foreach is not supported");
-                return;
-            }
+            if (!(_model.GetOperation(fe) is IForEachLoopOperation fo)) return;
             // the enumerator is captured before the loop; the loop's head asks it MoveNext
             var capture = cfg.Blocks.SelectMany(b => b.Operations).OfType<IFlowCaptureOperation>()
-                .FirstOrDefault(c => c.Syntax == fe.Expression && c.Value is IInvocationOperation gi && gi.TargetMethod.Name == "GetEnumerator");
+                .FirstOrDefault(c => c.Syntax == fe.Expression && c.Value is IInvocationOperation gi && (gi.TargetMethod.Name == "GetEnumerator" || fo.IsAsynchronous && gi.TargetMethod.Name == "GetAsyncEnumerator"));
             var head = capture == null ? null : cfg.Blocks.FirstOrDefault(b => IsMoveNext(b.BranchValue, capture.Id));
             if (head == null)
             {
@@ -62,9 +58,9 @@ namespace CsVerify.Verifier
             _enumerators.Add(capture.Id);
             var loop = new Loop { Id = _loops.Count, Syntax = fe, Head = head.Ordinal };
             ReadLoopSpecs(fe.Statement is BlockSyntax bs ? bs.Statements : new SyntaxList<StatementSyntax>(fe.Statement), loop);
-            bool array = IsArrayForEach(fe);
+            bool array = !fo.IsAsynchronous && IsArrayForEach(fe);
             // a List whose loop changes no model state (else MoveNext would throw): like an array, over its model
-            var listElement = array ? null : ListForEachElement(fe, fo);
+            var listElement = array || fo.IsAsynchronous ? null : ListForEachElement(fe, fo);
             if (listElement != null)
             {
                 var trial = new Loop();
@@ -72,9 +68,9 @@ namespace CsVerify.Verifier
                 if (trial.HavocAllFields || trial.Awaits || trial.HavocFields.Any(x => x is IMethodSymbol model && SpecSymbols.IsModel(model))) listElement = null;
             }
             // an IReadOnlyList or IList whose loop changes no state: over its Count and indexer
-            var interfaceElement = array || listElement != null ? null : InterfaceForEachElement(fe, fo);
+            var interfaceElement = array || listElement != null || fo.IsAsynchronous ? null : InterfaceForEachElement(fe, fo);
             // a LINQ view of what the verifier reads, whose loop changes no state: over the view, read once
-            var viewElement = array || listElement != null || interfaceElement != null ? null : ViewForEachElement(fo.Collection);
+            var viewElement = array || listElement != null || interfaceElement != null || fo.IsAsynchronous ? null : ViewForEachElement(fo.Collection);
             if (viewElement != null)
             {
                 var trial = new Loop();
@@ -144,6 +140,7 @@ namespace CsVerify.Verifier
         }
 
         private static bool IsMoveNext(IOperation op, CaptureId enumerator) =>
+            op is IAwaitOperation aw && aw.Operation is IInvocationOperation mna && mna.TargetMethod.Name == "MoveNextAsync" && mna.Instance is IFlowCaptureReferenceOperation ra && ra.Id.Equals(enumerator) ||
             op is IInvocationOperation mn && mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation r && r.Id.Equals(enumerator);
 
         /// <summary>

@@ -87,6 +87,8 @@ namespace CsVerify.Verifier
         {
             for (var r = from; r != null; r = r.EnclosingRegion)
             {
+                // (a lambda's graph has the regions around the lambda above it. It leaves by throwing: what's around it runs when someone calls it.)
+                if (r == _cfg.Root) break;
                 // an exception in a filter does not escape it: the filter is false
                 if (r.Kind == ControlFlowRegionKind.Filter) { Resume(f); return; }
                 var parent = r.EnclosingRegion;
