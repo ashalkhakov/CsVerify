@@ -53,7 +53,9 @@ namespace CsVerify.Tests
             Assert.Empty(Errors("M", "static void M(int[] a) { Spec.Requires(a.Length == 2 && a[0] == 1 && a[1] == 2); System.Array.Reverse(a); Spec.Assert(a[0] == 2 && a[1] == 1); }"));
             Assert.Empty(Errors("M", "static void M(int[] a, int[] b) { Spec.Requires(a.Length == 3 && b.Length == 4 && b[3] == 9); System.Array.Copy(a, b, 3); Spec.Assert(b[3] == 9); }"));
             Assert.Empty(Errors("M", "static void M() { int[]? a = new int[2]; System.Array.Resize(ref a, 5); Spec.Assert(a.Length == 5); }"));
-            Assert.Empty(Errors("M", "static void M(List<int> l, int[] a) { Spec.Requires(l.Count == 1); Spec.Modifies(ObjSet.Of(l)); System.Array.Fill(a, 0); Spec.Assert(l.Count == 1); }"));
+            Assert.Empty(Errors("M", "static void M(List<int> l, int[] a) { Spec.Requires(l.Count == 1); Spec.Modifies(ObjSet.Of(l).Add(a)); System.Array.Fill(a, 0); Spec.Assert(l.Count == 1); }"));
+            // (a frame covers arrays too: this one leaves a out)
+            Assert.Equal(new[] { "CSV1017" }, Errors("M", "static void M(List<int> l, int[] a) { Spec.Modifies(ObjSet.Of(l)); System.Array.Fill(a, 0); }"));
             // refuted: a copy longer than the arrays; the copied elements themselves are not described (Copy converts)
             Assert.Equal(new[] { "CSV1001" }, Errors("M", "static void M(int[] a, int[] b) { System.Array.Copy(a, b, 3); }"));
             Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(int[] a, int[] b) { Spec.Requires(a.Length == 1 && b.Length == 1 && a[0] == 1); System.Array.Copy(a, b, 1); Spec.Assert(b[0] == 1); }"));

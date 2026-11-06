@@ -106,6 +106,171 @@ namespace CsVerify.Tests
         public void Call_RefToTheLocal_ForgetsTheArray() => Assert.Equal(new[] { Rejected }, Errors(
             Keeps + "static int[] F(int[] x) { var t = new int[1]; G(ref t, x); t[0] = 1; return t; } static void G(ref int[] t, int[] x) { t = x; }"));
 
+        // (the callee may write without an element access on the left: each of these changes a[0])
+        [Theory]
+        [InlineData("static void F(int[] x) { Spec.Requires(x.Length > 1); ref int r = ref x[0]; r = 1; }")]
+        [InlineData("static void F(int[] x) { Spec.Requires(x.Length > 1); ref int r = ref x[0]; r++; }")]
+        [InlineData("static void G(ref int v) { v = 1; } static void F(int[] x) { Spec.Requires(x.Length > 1); ref int r = ref x[0]; G(ref r); }")]
+        [InlineData("static void F(int[] x) { Spec.Requires(x.Length > 1); ref int r = ref (x.Length > 5 ? ref x[1] : ref x[0]); r = 1; }")]
+        [InlineData("static void F(int[] x) { Spec.Requires(x.Length > 1); (x[0], x[1]) = (1, 2); }")]
+        [InlineData("static void F(int[] x) { Spec.Requires(x.Length > 1); int k; (k, (x[0], x[1])) = (0, (1, 2)); }")]
+        [InlineData("static void F(int[] x) { Spec.Requires(x.Length > 1); foreach (var (p, q) in new[] { (1, 2) }) { (x[0], x[1]) = (p, q); } }")]
+        public void Call_WritingWithoutAnElementOnTheLeft_ForgetsTheArray(string callee) => Assert.Contains(Rejected, Errors(
+            "static void M(int[] a) { Spec.Requires(a.Length > 1 && a[0] == 7); F(a); Spec.Assert(a[0] == 7); } " + callee));
+
+        [Fact]
+        public void Call_ThroughARefToAStructElement_ForgetsTheArray() => Assert.Contains(Rejected, Errors(
+            "struct S { public int V; } static void M(S[] a) { Spec.Requires(a.Length > 0); int b = a[0].V; F(a); Spec.Assert(a[0].V == b); } " +
+            "static void F(S[] x) { Spec.Requires(x.Length > 0); ref S r = ref x[0]; r.V = b0; } const int b0 = 1;"));
+
+        [Fact]
+        public void Call_ReturningARef_ForgetsTheArray()
+        {
+            var errors = Harness.Verify("using CsVerify; public static class C { static void M(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); W(a); Spec.Assert(a[0] == 7); } " +
+                "static ref int Slot(int[] x) { Spec.Requires(x.Length > 0); return ref x[0]; } static void W(int[] x) { Spec.Requires(x.Length > 0); Slot(x) = 1; } }").Errors("M");
+            Assert.Contains(Rejected, errors);
+        }
+
+        // (the callee's new arrays, however they are held: a[0] stays)
+        [Theory]
+        [InlineData("var t = new int[1]; var u = t; u[0] = 1; return u;")]
+        [InlineData("int[] t; t = new int[1]; t[0] = 1; return t;")]
+        [InlineData("var t = new int[1]; var u = new int[1]; var v = x.Length > 3 ? t : u; v[0] = 1; return v;")]
+        [InlineData("var t = new int[1]; var u = t; t = u; t[0] = 1; return t;")]
+        [InlineData("var t = new int[1]; t = new int[2]; t[0] = 1; return t;")]
+        [InlineData("var t = new int[1]; var u = (t); (u)[0] = 1; return u;")]
+        [InlineData("var t = new int[1]; ref int r = ref t[0]; r = 1; return t;")]
+        [InlineData("var t = new[] { 1, 2 }; (t[0], t[1]) = (3, 4); return t;")]
+        public void Call_WritingOnlyNewArrays_LeavesOthersAlone(string body) => Assert.Empty(Errors(
+            Keeps + "static int[] F(int[] x) { " + body + " }"));
+
+        // (an alias that isn't one: x gets in)
+        [Theory]
+        [InlineData("var t = new int[1]; var u = t; u = x; t = u; t[0] = 1; return t;")]
+        [InlineData("var t = new int[1]; var u = x.Length > 3 ? t : x; u[0] = 1; return u;")]
+        [InlineData("var t = new int[1]; var u = t; (t, u) = (x, t); u[0] = 1; t[0] = 1; return t;")]
+        [InlineData("int[] t; int[] u = new int[1]; t = u; u = x; t[0] = 1; u[0] = 1; return t;")]
+        [InlineData("var t = new int[1]; t ??= x; var u = x; u[0] = 1; return t;")]
+        [InlineData("var t = new int[1]; Func<int[]> g = () => x; var u = g(); u[0] = 1; return u;")]
+        [InlineData("var t = new int[1]; int[] u = t; ref int[] r = ref u; r = x; u[0] = 1; return u;")]
+        [InlineData("var u = Id(x); u[0] = 1; return u;")]
+        [InlineData("var u = (int[])x; u[0] = 1; return u;")]
+        [InlineData("int[][] j = { x }; var u = j[0]; u[0] = 1; return u;")]
+        [InlineData("var t = new int[1]; var u = t; u = Id(x); u[0] = 1; return u;")]
+        public void Call_AnAliasThatMayHoldTheParameter_ForgetsTheArray(string body) => Assert.Contains(Rejected, Errors(
+            Keeps + "static int[] Id(int[] y) { return y; } static int[] F(int[] x) { " + body + " }"));
+
+        // (a local function's array is not its own: the method around it holds it, and may read it after the call)
+        [Fact]
+        public void LocalFunction_WritingACapturedNewArray_IsAWrite() => Assert.Equal(new[] { Rejected }, Errors(
+            "static void M() { var t = new int[1]; void L() { t[0] = 1; } L(); Spec.Assert(t[0] == 0); }"));
+
+        [Fact]
+        public void LocalFunction_WritingACapturedReassignedArray_IsAWrite() => Assert.Equal(new[] { Rejected }, Errors(
+            "static void M(int[] x) { Spec.Requires(x.Length > 0 && x[0] == 7); var t = new int[1]; t = x; void L() { t[0] = 1; } L(); Spec.Assert(x[0] == 7); }"));
+
+        [Fact]
+        public void LocalFunction_WritingItsOwnNewArray_LeavesOthersAlone() => Assert.Empty(Errors(
+            "static void M(int[] x) { Spec.Requires(x.Length > 0 && x[0] == 7); void L() { var t = new int[1]; t[0] = 1; } L(); Spec.Assert(x[0] == 7); }"));
+
+        [Fact]
+        public void Loop_AFramedCall_KeepsWhatTheInvariantSays() => Assert.Empty(Errors(FillIt +
+            "static void M(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b && a[0] == 7); for (int i = 0; i < 2; i++) { Spec.Invariant(a[0] == 7); Fill(b); } Spec.Assert(a[0] == 7); }"));
+
+        [Fact]
+        public void Loop_AFramedCall_WrongInvariantIsRejected() => Assert.NotEmpty(Errors(FillIt +
+            "static void M(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); for (int i = 0; i < 2; i++) { Spec.Invariant(a[0] == 7); Fill(a); } }"));
+
+        [Fact]
+        public void Fresh_AResultIsAnotherArray() => Assert.Empty(Errors(
+            "static int[] N() { Spec.Ensures<int[]>(r => Spec.Fresh(r)); return new int[1]; } " +
+            "static void M(int[] a) { var r = N(); var s = N(); var t = new int[1]; Spec.Assert(r != a && r != s && t != r && t != a); }"));
+
+        [Fact]
+        public void WithoutFresh_AResultMayBeAnyArray() => Assert.Equal(new[] { Rejected }, Errors(
+            "static int[] N() { return new int[1]; } static void M(int[] a) { var r = N(); Spec.Assert(r != a); }"));
+
+        [Fact]
+        public void Fresh_AWriteToIt_ThroughAnAlias_LeavesOthersAlone() => Assert.Empty(Errors(
+            "static int[] N() { Spec.Ensures<int[]>(r => Spec.Fresh(r) && r.Length == 1); return new int[1]; } " +
+            "static void M(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); var r = N(); var s = r; s[0] = 1; Spec.Assert(a[0] == 7 && r[0] == 1); }"));
+
+        // ---- Spec.Modifies, for arrays -----------------------------------------------------------------------------
+
+        private const string FillIt = "static void Fill(int[] x) { Spec.Requires(x.Length > 0); Spec.Modifies(ObjSet.Of(x)); x[0] = 1; } ";
+
+        [Fact]
+        public void Modifies_TheCallChangesOnlyTheFrame() => Assert.Empty(Errors(FillIt +
+            "static void M(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b && a[0] == 7); Fill(b); Spec.Assert(a[0] == 7); }"));
+
+        [Fact]
+        public void Modifies_TheFrameItselfIsForgotten() => Assert.Equal(new[] { Rejected }, Errors(FillIt +
+            "static void M(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); Fill(a); Spec.Assert(a[0] == 7); }"));
+
+        [Fact]
+        public void Modifies_APossibleAliasIsForgotten() => Assert.Equal(new[] { Rejected }, Errors(FillIt +
+            "static void M(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a[0] == 7); Fill(b); Spec.Assert(a[0] == 7); }"));
+
+        [Fact]
+        public void Modifies_AHelperFillingANewArray() => Assert.Empty(Errors(FillIt +
+            "static int[] N() { Spec.Modifies(ObjSet.Empty); var t = new int[1]; Fill(t); return t; } " +
+            "static void M(int[] a) { Spec.Requires(a.Length > 0 && a[0] == 7); N(); Spec.Assert(a[0] == 7); }"));
+
+        [Fact]
+        public void Modifies_AnotherArrayKeepsItsContentsThroughFrames() => Assert.Empty(Errors(FillIt +
+            "static void Twice(int[] x, int[] y) { Spec.Requires(x.Length > 0 && y.Length > 0); Spec.Modifies(ObjSet.Of(x).Add(y)); Fill(x); Fill(y); } " +
+            "static void M(int[] a, int[] b, int[] c) { Spec.Requires(a.Length > 0 && b.Length > 0 && c.Length > 0 && a != b && a != c && a[0] == 7); Twice(b, c); Spec.Assert(a[0] == 7); }"));
+
+        // (each writes x, which its frame leaves out: all reported where the write is)
+        [Theory]
+        [InlineData("x[0] = 1;")]
+        [InlineData("x[0]++;")]
+        [InlineData("ref int r = ref x[0]; r = 1;")]
+        [InlineData("(x[0], x[0]) = (1, 2);")]
+        [InlineData("var u = x; u[0] = 1;")]
+        [InlineData("G(ref x[0]);")]
+        [InlineData("Span<int> s = x; s[0] = 1;")]
+        [InlineData("x.AsSpan().Fill(1);")]
+        [InlineData("new int[1].AsSpan().CopyTo(x.AsSpan());")]
+        [InlineData("Array.Fill(x, 1);")]
+        [InlineData("Fill(x);")]
+        [InlineData("H(x);")]
+        [InlineData("Action a = () => { x[0] = 1; }; a();")]
+        [InlineData("void L() { x[0] = 1; } L();")]
+        public void Modifies_AWriteOutsideTheFrame_IsReported(string body) => Assert.Contains("CSV1017",
+            Harness.Verify("using CsVerify; using System; public static class C { " + FillIt +
+                "static void G(ref int v) { v = 1; } static void H(int[] y) { Spec.Requires(y.Length > 0); y[0] = 1; } " +
+                "static void M(int[] x) { Spec.Requires(x.Length > 0); Spec.Modifies(ObjSet.Empty); " + body + " } }").Errors("M"));
+
+        [Theory]
+        [InlineData("x[0] = 1;")]
+        [InlineData("ref int r = ref x[0]; r = 1;")]
+        [InlineData("x.AsSpan().Fill(1);")]
+        [InlineData("Array.Fill(x, 1);")]
+        [InlineData("Fill(x);")]
+        [InlineData("var t = new int[1]; t[0] = 1;")]
+        public void Modifies_AWriteInsideTheFrame_IsFine(string body) => Assert.Empty(Errors(FillIt +
+            "static void M(int[] x) { Spec.Requires(x.Length > 0); Spec.Modifies(ObjSet.Of(x)); " + body + " }"));
+
+        [Fact]
+        public void Modifies_ANewArrayFromAFreshCall_MayBeWritten() => Assert.Empty(Errors(
+            "static int[] N() { Spec.Ensures<int[]>(r => Spec.Fresh(r) && r.Length == 1); return new int[1]; } " +
+            "static void M() { Spec.Modifies(ObjSet.Empty); var t = N(); t[0] = 1; }"));
+
+        [Fact]
+        public void Modifies_AResultNotKnownFresh_MayNotBeWritten() => Assert.Contains("CSV1017", Errors(
+            "static int[] N(int[] x) { Spec.Ensures<int[]>(r => r.Length == x.Length); return x; } " +
+            "static void M(int[] x) { Spec.Requires(x.Length > 0); Spec.Modifies(ObjSet.Empty); var t = N(x); t[0] = 1; }"));
+
+        [Fact]
+        public void Modifies_AnArrayInAField_IsNamedByTheArray() => Assert.Contains("CSV1017", Errors(
+            "class B { public int[] A = new int[1]; } static void M(B o) { Spec.Requires(o.A.Length > 0); Spec.Modifies(ObjSet.Of(o)); o.A[0] = 1; }"));
+
+        [Fact]
+        public void Modifies_ThroughAnOverride_TheBaseFrameHolds() => Assert.Contains("CSV1017",
+            Harness.Verify("using CsVerify; public class B { public virtual void F(int[] x) { Spec.Requires(x.Length > 0); Spec.Modifies(ObjSet.Empty); } } " +
+                "public class D : B { public override void F(int[] x) { x[0] = 1; } }").Errors("D.F"));
+
         [Fact]
         public void Call_ReturningADelegateThatWritesLater_ForgetsTheArray() => Assert.Contains(Rejected, Errors(
             "static void M() { Action act; var r = F(out act); Spec.Assume(r[0] == 0); act(); Spec.Assert(r[0] == 0); } " +

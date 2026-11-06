@@ -646,6 +646,7 @@ namespace CsVerify.Verifier
         /// </summary>
         private void CheckCellWrite(Term arr, Term i, Frame f, SyntaxNode at)
         {
+            CheckWrite(arr, at);
             if (!_codeMode || _foreignSpec > 0 || f.ArrPerm == null) return;
             Require(new Term($"(>= {CellPerm(f, arr, i)} 1.0)", Sort.Bool), "CSV1016", at, $"'{at}' writes a cell this method has no Spec.Acc for");
         }

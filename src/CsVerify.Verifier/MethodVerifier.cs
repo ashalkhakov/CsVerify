@@ -1498,7 +1498,7 @@ namespace CsVerify.Verifier
                     if (IsSpan(pr.Instance.Type))
                     {
                         // a cell of the span's base (MethodVerifier.Spans); under array permissions, not supported
-                        if (!_arrayMode) { SpanWrite(arr, idx, v, f); break; }
+                        if (!_arrayMode) { CheckWrite(SpanBase(arr), pr.Syntax); SpanWrite(arr, idx, v, f); break; }
                         if (_codeMode)
                             Report("CSV1016", pr.Syntax, $"'{pr.Syntax}' writes through a span, which could be any array's cells: this method's array permissions cannot cover it", isError: true);
                         f.Heap = _z3.Fresh("heap", Sort.Heap); // could be any array's cell
@@ -1934,10 +1934,12 @@ namespace CsVerify.Verifier
                 }
                 if (f.ArrPerm != null && MentionsCells(callee) && !callee.IsPure)
                     f.Heap = post.Heap = HavocCells(f, touchedCells, f.Alloc, touchedInst); // it writes only the cells it got
-                else if (HavocsHeap(m) && callee.IsStub && callee.Modifies != null && !_arrayMode)
+                else if (HavocsHeap(m) && callee.Modifies != null && !_arrayMode)
                 {
-                    // a stub's Spec.Modifies names the arrays it writes: the others keep their contents
+                    // Spec.Modifies names the arrays it writes (a method with sources is checked to: CheckWrite),
+                    // and what it allocates: the others keep their contents
                     var frame = T.Coerce(EvalForeignSpec(callee.Modifies, pre, preEnv), Sort.Row);
+                    if (!callee.IsStub && f.Alloc != null) frame = new Term($"(cv_mod {frame.S} {f.Alloc.S})", Sort.Row);
                     f.Heap = post.Heap = _z3.Define("heap", new Term($"(cv_frameh {frame} {memoryBefore} {_z3.Fresh("heap", Sort.Heap)})", Sort.Heap));
                 }
                 else if (HavocsHeap(m))
