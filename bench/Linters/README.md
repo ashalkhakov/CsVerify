@@ -112,9 +112,8 @@ validation.
   twice, `new TimeSpan(5)`, blocking on `.Result`, identical branches. Each of these runs without failing, but does
   something other than what was meant. CsVerify is about functional correctness: it reports such a bug only against a
   specification that says what was meant.
-- **Harmless code that needs a proof.** `table[hash & 15] + table[hash >>> 28]` is in bounds for any `hash`, and so is
-  `(byte)((x >> 8) & 0xFF)`. CsVerify used to treat bitwise results as unknown values, so it could prove neither.
-  It now proves both, and none of the 16 harmless cases gets a new false alarm.
+- **Harmless code that needs a proof.** `table[hash & 15] + table[hash >>> 28]` is in bounds for any `hash`, and
+  `(byte)((x >> 8) & 0xFF)` always fits. CsVerify proves both.
 - **False alarms.** One each from the compiler and CsVerify.
   - **The compiler** reports a switch whose missing value was returned for earlier.
   - **CsVerify** rejects a task that is stored and awaited later. That is not supported yet: it would run
