@@ -227,7 +227,8 @@ namespace CsVerify.Tests.Fuzz
                     else
                     {
                         var what = planted >= 0 ? $"assertion {planted}" : plantedPost >= 0 ? "the postcondition" : "the EnsuresOnThrow";
-                        var witness = probed[m.Name].Witness[planted >= 0 ? planted : plantedPost >= 0 ? 1000 + plantedPost : 2000 + plantedThrow];
+                        // (a ghost check's negation has no witness: it is false wherever it is reached, and it was reached)
+                        var witness = probed[m.Name].Witness.TryGetValue(planted >= 0 ? planted : plantedPost >= 0 ? 1000 + plantedPost : 2000 + plantedThrow, out var w) ? w : "any input that reaches it";
                         o.Problems.Add($"seed {seed}, {m.Name}: verified with {what}, which fails on {witness}\n" +
                                        Text(m, keep, planted, plantedPost >= 0 ? plantedPost : post, plantedThrow >= 0 ? plantedThrow : throwPost));
                     }
@@ -253,7 +254,7 @@ namespace CsVerify.Tests.Fuzz
             ("virtual calls", ".Next("), ("virtual queries", ".Weight()"),
             ("interface calls", ".Read(Math"), ("interface queries", ".Scale()"), ("dynamic frames", "new Duo()"), ("Mem cells", "Mem.Alloc"),
             ("lists", "new List<int>"), ("dictionaries", "new Dictionary<int, int>"), ("hash sets", "new HashSet<int>"), ("stacks", "new Stack<int>"),
-            ("strings", "var str"), ("string characters", "[0]"), ("string Substring", ".Substring("), ("foreach over strings", "foreach (char"),
+            ("bitwise", " & "), ("shifts", " >> "), ("strings", "var str"), ("string characters", "[0]"), ("string Substring", ".Substring("), ("foreach over strings", "foreach (char"),
             ("foreach over strings, as numbers", "foreach (int"), ("string laws", "int cut"), ("nullable ints", "int? nul"), ("unchecked", "unchecked("), ("foreach", "foreach ("),
             ("data types", "Shape sh"), ("patterns", " is Shape."), ("switch expressions", "switch {"), ("downcasts", "((Shape.Seg)"),
             ("record invariants", "new Range("), ("mutable structs", "new Pos"), ("ref locals", "ref int"),

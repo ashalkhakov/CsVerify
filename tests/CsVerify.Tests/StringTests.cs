@@ -65,8 +65,8 @@ namespace CsVerify.Tests
             "static void M(string? a) { Spec.Requires(a == null); string e = \"\"; Spec.Assert(a == e); }"));
 
         [Fact]
-        public void Arrays_WithTheSameContents_AreStillDifferentObjects() => Assert.Contains(Rejected, Errors(
-            "static void M(int[] a, int[] b) { Spec.Requires(a.Length == b.Length && Spec.Forall(0, a.Length, i => a[i] == b[i])); Spec.Assert(ReferenceEquals(a, b)); }"));
+        public void Arrays_WithTheSameContents_AreStillDifferentObjects() => Assert.Equal(new[] { Rejected }, Errors(
+            "static void M(int[] a, int[] b) { Spec.Requires(a.Length == b.Length && Spec.Forall(0, a.Length, i => a[i] == b[i])); Spec.Assert(a == b); }"));
 
         [Fact]
         public void IndexOf_FoundOrNot() => Assert.Empty(Errors(

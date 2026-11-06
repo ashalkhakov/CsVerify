@@ -163,6 +163,8 @@ were provable. The defences we have:
   many true variants verify and the test bites; their share is a measure of completeness. CI runs three seeds;
   `CSVERIFY_FUZZ_SEEDS=from..to`, `CSVERIFY_FUZZ_METHODS`, `CSVERIFY_FUZZ_SIZE` and `CSVERIFY_FUZZ_LOG` run a soak.
 
+  Bitwise operators have one too (BitFuzzTests), of the same form over `int`, `uint`, `long` and `ulong`, with answers from C#'s own operators.
+
   Strings have a test of their own (StringFuzzTests): each check is a small method over parameters pinned to
   constants, with the answer worked out in .NET. The fact must verify and its negation must not. Validated by breaking
   the model on purpose: concatenation's operands swapped, `foreach` reading only the first character, `Substring`
@@ -185,7 +187,7 @@ the hand-written tests and samples. By area:
 
 | Area | Generated | Not yet generated |
 |---|---|---|
-| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, `Math`, `decimal` (unknown values) | |
+| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, shifts and bitwise operators, `Math`, `decimal` (unknown values) | |
 | Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
 | Strings | literals, concatenation, interpolation, `Length`, characters (`s[i]`, `foreach`), `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
 | Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |

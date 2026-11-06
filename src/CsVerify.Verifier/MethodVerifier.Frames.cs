@@ -8,8 +8,9 @@ namespace CsVerify.Verifier
     /// Dafny-style dynamic frames for ordinary mutable classes. An object keeps a ghost set of the objects it is
     /// made of (<c>Ghost&lt;ObjSet&gt; Repr</c>) and a [Pure] <c>Valid()</c> that reads only them (Spec.Reads).
     /// <list type="bullet">
-    /// <item>A method with <c>Spec.Modifies(W)</c> writes fields only of objects in W (on entry) or allocated since
-    /// (CSV1017); a call to it changes nothing else, every other object's fields are as before.</item>
+    /// <item>A method with <c>Spec.Modifies(W)</c> writes fields and array cells only of objects in W (on entry) or
+    /// allocated since (CSV1017); a call to it changes nothing else, every other object's fields and array's cells are
+    /// as before.</item>
     /// <item>A [Pure] function with <c>Spec.Reads(R)</c> reads fields only of objects in R (CSV1017); a change
     /// touching nothing in R leaves its value as it was, so <c>Valid()</c> of one object survives updates of
     /// another whose representation is disjoint.</item>
@@ -59,7 +60,7 @@ namespace CsVerify.Verifier
 
         private bool ChecksFrames => _codeMode && _foreignSpec == 0;
 
-        /// <summary>A write of an (unowned) field: within Spec.Modifies, or of an object allocated since entry.</summary>
+        /// <summary>A write of an (unowned) field or an array's cell: within Spec.Modifies, or of an object allocated since entry.</summary>
         private void CheckWrite(Term o, SyntaxNode at)
         {
             if (_modifiesEntry == null || !ChecksFrames) return;
@@ -82,13 +83,16 @@ namespace CsVerify.Verifier
         private Term CalleeModifies(Contract callee, Frame pre, Frame f, SyntaxNode at, IMethodSymbol called = null)
         {
             var (fields, all) = _engine.Fields.WritesOf(called ?? callee.Method);
-            if (!all && !fields.Any(x => !IsOwnedField(x))) return null;
+            bool arrays = !_arrayMode && HavocsHeap(called ?? callee.Method);
+            if (!all && !arrays && !fields.Any(x => !IsOwnedField(x))) return null;
+            if (arrays && callee.Modifies == null && _modifiesEntry != null && ChecksFrames)
+                Report("CSV1017", at, $"'{callee.Method.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked", isError: true);
             // a stub without Spec.Modifies changes no model state that exists before the call (a constructor sets up its object's)
             if (callee.Modifies == null && callee.IsStub && !all)
                 return f.Alloc != null ? new Term($"(cv_mod {T.ZeroRow()} {f.Alloc})", Sort.Row) : T.ZeroRow();
             if (callee.Modifies == null)
             {
-                if (_modifiesEntry != null && ChecksFrames)
+                if (!arrays && _modifiesEntry != null && ChecksFrames)
                     Report("CSV1017", at, $"'{callee.Method.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked", isError: true);
                 return null;
             }

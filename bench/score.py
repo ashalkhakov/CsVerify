@@ -22,6 +22,10 @@ RULES = {
     "Bounds": set(),
     "Overflow": set(),
     "DivideByZero": set(),
+    "StringIndex": set(),
+    "Substring": set(),
+    "MaskedIndex": set(),
+    "Truncation": set(),
 }
 TOOLS = [("compiler", "CS"), ("SDK (CA)", "CA"), ("SharpSource", "SS"), ("Meziantou", "MA"), ("Roslynator", "RCS"),
          ("StyleCop", "SA"), ("CsVerify", "CSV")]

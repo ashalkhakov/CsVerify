@@ -76,42 +76,47 @@ validation.
 | Overflow.Harmless | no | · | · | · | · | · | · | · |
 | DivideByZero.Direct | bug | · | · | · | · | · | · | CSV1009 |
 | DivideByZero.Harmless | no | · | · | · | · | · | · | · |
-| **bugs reported** | 27 | 3 | 7 | 10 | 4 | 2 | 0 | 21 |
-| **harmless code reported** | 12 | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
-| **other warnings** (noise) | | 0 | 25 | 9 | 26 | 41 | 110 | 0 |
+| StringIndex.Direct | bug | · | · | · | · | · | · | CSV1003 |
+| StringIndex.Hidden | bug | · | · | · | · | · | · | CSV1003 |
+| StringIndex.Harmless | no | · | · | · | · | · | · | · |
+| Substring.Direct | bug | · | · | · | · | · | · | CSV1001 |
+| Substring.Hidden | bug | · | · | · | · | · | · | CSV1001 |
+| Substring.Harmless | no | · | · | · | · | · | · | · |
+| MaskedIndex.Direct | bug | · | · | · | · | · | · | CSV1003 |
+| MaskedIndex.Hidden | bug | · | · | · | · | · | · | CSV1003 |
+| MaskedIndex.Harmless | no | · | · | · | · | · | · | · |
+| Truncation.Direct | bug | · | · | · | · | · | · | CSV1010 |
+| Truncation.Hidden | bug | · | · | · | · | · | · | CSV1010 |
+| Truncation.Harmless | no | · | · | · | · | · | · | · |
+| **bugs reported** | 35 | 3 | 7 | 10 | 4 | 2 | 0 | 29 |
+| **harmless code reported** | 16 | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
+| **other warnings** (noise) | | 0 | 35 | 9 | 30 | 53 | 128 | 0 |
 
 ## What it shows
 
-- **CsVerify reports 21 of the 27 bugs. The linters together report 16, and both report 10.**
-- **What only CsVerify reports: bugs that depend on values or on paths** (11 bugs).
-  - **The hidden variants.** CsVerify reports all 9. The linters report 3, and only where the pattern stays visible:
+- **CsVerify reports 29 of the 35 bugs. The linters together report 16, and both report 10.**
+- **What only CsVerify reports: bugs that depend on values or on paths** (19 bugs).
+  - **The hidden variants.** CsVerify reports all 13. The linters report 3, and only where the pattern stays visible:
     a constant format string, a leak with an early return, and an enum switch that names every member. The linters
     match a syntactic pattern:
     - `throw e!` where `e` may be null;
     - a list changed through an alias or a helper;
     - a task kept in a variable and never awaited;
-    - a stream used after `Dispose`.
+    - a stream used after `Dispose`;
+    - `s[s.IndexOf(':') + 1]` and `s.Substring(0, s.IndexOf('='))`, where `IndexOf` may say -1;
+    - `table[hash >> 28]`, where a negative hash stays negative;
+    - `(byte)(x & 0x1FF)`, a mask one bit too wide.
   - **The bug families no linter has a rule for:** null dereferences hidden by `!`, an index out of range, the
-    midpoint overflow `(lo + hi) / 2`, and division by zero.
+    midpoint overflow `(lo + hi) / 2`, division by zero, and the string and bit bugs above.
 - **What only the linters report: bugs about intent** (6 bugs): `d == double.NaN`, a discarded `Trim()`, `OrderBy`
   twice, `new TimeSpan(5)`, blocking on `.Result`, identical branches. Each of these runs without failing, but does
   something other than what was meant. CsVerify is about functional correctness: it reports such a bug only against a
   specification that says what was meant.
-- **Gaps the first run found, and closed since:**
-  - **A format string with too few arguments.** CsVerify now checks a constant format against the arguments written
-    at the call (CSV1001).
-  - **A switch expression that misses a value.** CsVerify now reports it (CSV1022). That includes the hidden variant,
-    where every member of the enum is named but `(Color)7` still throws.
-  - **A disposable field its owner never disposes.** CsVerify already reported this (CSV0022). The first run used a
-    `MemoryStream`, whose `Dispose` releases nothing, so CsVerify rightly did not ask for it to be disposed. The case
-    now holds a `FileStream`.
+- **Harmless code that needs a proof.** `table[hash & 15] + table[hash >>> 28]` is in bounds for any `hash`, and
+  `(byte)((x >> 8) & 0xFF)` always fits. CsVerify proves both.
 - **False alarms.** One each from the compiler and CsVerify.
   - **The compiler** reports a switch whose missing value was returned for earlier.
   - **CsVerify** rejects a task that is stored and awaited later. That is not supported yet: it would run
     interleaved with the method.
-- **Noise.** The linters raised 211 other warnings on these 39 cases, StyleCop 110 of them. CsVerify raised none:
+- **Noise.** The linters raised 255 other warnings on these 51 cases, StyleCop 128 of them. CsVerify raised none:
   it reports only what may go wrong at run time.
-
-The cases were chosen from the linters' bug rules (style, naming and API-preference rules left out), plus four bug
-families that CsVerify checks and the linters do not. That choice favours bugs over style, but not CsVerify: the first
-run had ten bugs that only the linters reported.

@@ -88,7 +88,7 @@ namespace CsVerify.Verifier
                     var d = Arg(0);
                     if (!_codeMode) return null;
                     Require(T.Le(Len(s), Len(d)), "CSV1001", inv.Syntax, $"'{inv.Syntax}': the destination might be shorter than the source (it would throw ArgumentException)");
-                    CopyCells(s, d, f);
+                    CopyCells(s, d, f, inv.Syntax);
                     return T.True;
                 }
                 case "TryCopyTo" when m.Parameters.Length == 1 && IsSpan(m.Parameters[0].Type):
@@ -97,7 +97,7 @@ namespace CsVerify.Verifier
                     if (!_codeMode) return null;
                     var fits = T.Le(Len(s), Len(d));
                     var before = f.Heap;
-                    CopyCells(s, d, f);
+                    CopyCells(s, d, f, inv.Syntax);
                     f.Heap = new Term($"(ite {fits} {f.Heap} {before})", Sort.Heap);
                     return fits;
                 }
@@ -105,12 +105,12 @@ namespace CsVerify.Verifier
                 {
                     var v = T.Coerce(Eval(inv.Arguments[0].Value, f, spec), Sort.Int);
                     if (!_codeMode) return null;
-                    SetCells(s, f, _ => v.S);
+                    SetCells(s, f, inv.Syntax, _ => v.S);
                     return T.True;
                 }
                 case "Clear" when m.Parameters.Length == 0:
                     if (!_codeMode) return null;
-                    SetCells(s, f, _ => "0");
+                    SetCells(s, f, inv.Syntax, _ => "0");
                     return T.True;
                 case "ToArray" when m.Parameters.Length == 0:
                 {
@@ -131,8 +131,9 @@ namespace CsVerify.Verifier
         /// Copies s's cells to the start of d, as memmove does (the source read before anything is written, so
         /// overlapping spans copy right).
         /// </summary>
-        private void CopyCells(Term s, Term d, Frame f)
+        private void CopyCells(Term s, Term d, Frame f, SyntaxNode at)
         {
+            CheckWrite(SpanBase(d), at);
             var heap = f.Heap;
             var db = SpanBase(d);
             var src = T.Select(heap, SpanBase(s), Sort.Row);
@@ -144,8 +145,9 @@ namespace CsVerify.Verifier
             f.Heap = T.Store(heap, db, row);
         }
 
-        private void SetCells(Term s, Frame f, System.Func<string, string> value)
+        private void SetCells(Term s, Frame f, SyntaxNode at, System.Func<string, string> value)
         {
+            CheckWrite(SpanBase(s), at);
             var b = SpanBase(s);
             var old = T.Select(f.Heap, b, Sort.Row);
             var lo = SpanOffset(s);

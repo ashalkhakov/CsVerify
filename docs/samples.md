@@ -58,6 +58,13 @@ Rewritten in C#, not copied. Each program names its source in its doc comment.
   - `Swap` of two cells through two borrowed `T @ l` views.
   - `Ackermann`, with the lexicographic metric `(m, n)`.
   - `IsEven`/`IsOdd`, mutually recursive, with metrics `2n` and `2n + 1`.
+- Strings and bits:
+  - `Strings.cs`: a palindrome check, substring search, digit parsing, and cut and split round trips.
+  - `StringConversions.cs` (after Dafny's standard library): numbers to strings and back in any base up to 16.
+  - `StringEscaping.cs` (the escaping after the same library): unescaping undoes escaping, and a comparison proved to be lexicographic order.
+  - `Kmp.cs`: Knuth-Morris-Pratt. ATS's `kmp.dats` proves memory safety and termination; this proves that the table holds the longest borders and that the search returns the first occurrence.
+  - `Utf8.cs` (after Dafny's standard library): a scalar value to bytes and back, written with shifts and masks and specified by arithmetic. `Decode` accepts exactly the encodings: no overlong form, surrogate or value past U+10FFFF.
+  - `Base64.cs` (after the same library): a byte array to text and back, padded. `Decode` refuses exactly what isn't canonical. The tests also run it against `Convert.ToBase64String`, and `Utf8.cs` against `Encoding.UTF8`.
 - `AtsMatrixAndTakeOut.cs`, from INT2PROGINATS and `matrixSub` in Xi's ICFP'05 paper:
   - `IncrementAt`, which takes cell i out of an array view as a plain `int @ (l + i)`, updates it with the single-cell `Read`/`Write`, and puts it back.
   - `MatGet` and `FillRows`, which index an m × n matrix in row-major order. The nonlinear bound `i·n + j < m·n` comes from the lemma `RowMajorInBounds`, which is built on an inductive `MulMonotone`.

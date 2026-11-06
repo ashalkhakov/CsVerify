@@ -51,17 +51,25 @@ public static int BinarySearch(int[] a, int key)
 - **Rules out run-time errors.** Array and string indexes are in bounds, nothing null is dereferenced (C#'s nullable
   annotations become contracts, `null!` included), nothing divides by zero, and integer arithmetic does not overflow
   silently (it is bounded, as at run time).
+- **Strings and bits, exactly.** A string is its characters: `s[i]`, `foreach`, concatenation and `Substring` can be
+  stated and proved, up to `s.Substring(0, n) + s.Substring(n) == s`. Shifts and bitwise operators are exact, with
+  C#'s own semantics, so a packed word can be proved to come apart again.
 - **Linear views of memory and objects, as in ATS.** Pointers with `PointsTo` views, array views that split and join,
   owned objects, predicates over linked structures, fractional permissions. Roslyn analyzers check that linear values
   are used exactly once, in the IDE as you type.
 - **Objects too.** Data types with closed hierarchies, object invariants, heap fields with inferred frames, dynamic
-  frames (`Spec.Modifies`, `Spec.Reads`), virtual members with contracts, exceptions, floating point as IEEE 754.
+  frames (`Spec.Modifies`, for fields and arrays, and `Spec.Reads`), virtual members with contracts, exceptions, floating point as IEEE 754.
 - **Proofs erased, and checked to be.** `-p:CsVerifyErase=true` builds the program with every proof removed, and
   checks that what runs never depended on one.
 - **Static proof, then dynamic coverage.** With [Tarp](https://github.com/ashalkhakov/Tarp): verify, erase, and run
   the tests under Tarp's MC/DC instrumentation, on the program that runs.
 - **Used on real code.** [CsLemon](#cslemon), SQLite's parser generator ported to C#, verifies completely (and the
-  proof found a bug in the C original); the [samples](#samples) port proofs from ATS, Dafny and *ACSL by Example*.
+  proof found a bug in the C original); the [samples](#samples) port proofs from ATS, Dafny and *ACSL by Example*,
+  and prove UTF-8, Base64 and Knuth-Morris-Pratt search correct.
+- **Finds what linters can't, and leaves them what it doesn't look for.** In [a benchmark against C# linters](bench/Linters/README.md),
+  CsVerify reports all 13 bugs hidden behind an alias, a helper or a value that is only sometimes bad, where the linters
+  together report 3. They report six bugs it doesn't: code that runs fine but isn't what was meant, such as
+  `d == double.NaN`. So it complements a linter rather than replacing one.
 
 What it does not prove, and why, is listed in [Limitations](docs/limitations.md); what "verified" claims, what it
 rests on, and why each part keeps it, in [Soundness](docs/soundness.md).
@@ -139,9 +147,10 @@ in [CI](docs/ci.md#building-and-releasing-csverify).
 
 - **`samples/Good`** verifies completely, with no analyzer diagnostics: arrays and searches with full functional
   specifications, lemmas by induction, ghost indices, data types and their proofs, mutable and owned objects, dynamic
-  frames, views of memory and arrays, exceptions, floating point, null references. Many are ports: from ATS (the
-  INT2PROGINATS book, libatsc, ATS-playground, rtrace), Dafny's tutorial and test suite, *ACSL by Example*, and
-  dafny-lemon.
+  frames, views of memory and arrays, exceptions, floating point, null references, strings and bits (UTF-8, Base64,
+  Knuth-Morris-Pratt, number conversions, escaping). Many are ports: from ATS (the
+  INT2PROGINATS book, libatsc, ATS-playground, rtrace), Dafny's tutorial, test suite and standard library,
+  *ACSL by Example*, and dafny-lemon.
 - **`samples/Buggy`** has a planted bug in each method, which the verifier or the analyzers must report: off-by-one
   indexes, wrong invariants, leaks and double frees, unsound proofs.
 - **`samples/Shop`** is a small solution using CsVerify from its package, as you would: `samples/e2e.sh` verifies

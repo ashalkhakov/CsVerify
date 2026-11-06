@@ -12,6 +12,20 @@ Run-time integers are C#'s, and specifications are mathematics, as with ACSL's `
   - run-time code computes with checked arithmetic or bounds preconditions (ACSL's `AccumulateBounds`), proved to agree with them (`Count` vs `Length`, `Evaluate` vs `Eval`, `BlackHeight` vs `Bh`).
 - **Values from memory are in range:** what is read from a field, an array element, or a run-time `[Pure]` function is within its type's range.
 
+## Bits
+
+Shifts and bitwise operators are exact, on `int`, `uint`, `long` and `ulong`, and on smaller types as C# promotes them.
+A shift never overflows: it drops bits, even in `checked` code, and its count is taken modulo the width. `>>` keeps a
+negative value's sign, and `>>>` doesn't. They mean the same in specifications: unlike `+` and `*` there, which are mathematical,
+bits belong to the operands' type.
+
+With one operand constant, each is plain integer arithmetic: `x >> k` is `x` divided by `2^k`, rounding down, and a mask
+reads runs of bits. These prove quickly and mix with the rest of a proof. With neither operand constant, the result is
+known in two ways: if one operand is a shift by `k` and the other is under `2^k`, as when a word is packed, it is their
+sum; otherwise it is known bit by bit. That's exact for known values, but identities over two unknown values, such as
+`(x ^ y ^ y) == x` or De Morgan's laws, generally don't prove. A shift by a count the proof doesn't know is correct, but
+proves less. Bitwise operators on enums are unknown values, and `~` on `int?` is refused, as `-` on `int?` is. See samples/Good/Utf8.cs and Base64.cs.
+
 ## Exceptions
 
 Methods are verified for partial correctness: any call may throw anything, and a path that throws need not meet the postcondition. `try`/`catch`/`finally` handlers are verified on every path that reaches them, and `Spec.EnsuresOnThrow<E>(condition)` (Code Contracts' `Contract.EnsuresOnThrow`) says what holds if the method exits by throwing an `E`.
