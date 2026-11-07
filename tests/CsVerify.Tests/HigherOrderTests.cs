@@ -76,6 +76,8 @@ namespace CsVerify.Tests
         [InlineData("CSV1001", C + "static void M(int n) { Spec.Requires(n >= 0 && n < 100); Parallel.For(0, n + 1, i => { Spec.Requires(i < n); }); } }")]
         [InlineData("CSV1001", "[ContractsFor(typeof(Lazy<>))] public static class LazyContracts<T> { public static Lazy<T> @new(Func<T> valueFactory) { Spec.Requires(Spec.Pre(valueFactory)); throw null!; } } " +
                                C + "static void M(int k) { var l = new Lazy<int>(() => { Spec.Requires(k > 0); return k; }); } }")]
+        // a lambda that may change the list: what it is called with could be anything it put there
+        [InlineData("CSV1029", C + "static void M(List<int> l) { Spec.Requires(Spec.Forall(0, l.Count, i => l[i] > 0)); var b = l.Exists(x => { Spec.Requires(x > 0); l.Add(0); return x > 1; }); } }")]
         // a lazy query, a lambda that may change the array, nothing known of the arguments: total
         [InlineData("CSV1029", C + "static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != 0)); var b = a.Where(x => { Spec.Requires(x != 0); return 10 / x > 1; }).ToList(); } }")]
         [InlineData("CSV1029", C + "static void M(int[] a) { Spec.Requires(a.Length > 0 && Spec.Forall(0, a.Length, i => a[i] != 0)); Array.ForEach(a, x => { Spec.Requires(x != 0); a[0] = 0; }); } }")]
@@ -83,5 +85,20 @@ namespace CsVerify.Tests
         // a precondition that reads state can't be a Spec.Pre
         [InlineData("CSV1029", C + "static int Field; static void M() { Func<int, int> h = x => { Spec.Requires(x < Field); return x; }; } }")]
         public void Reported(string id, string code) => Assert.Contains(id, Ids(code));
+
+        // a library member that only reads changes what the code it runs changes: a lambda in sight that writes none keeps them
+        [Theory]
+        [InlineData(C + "static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != 0)); var b = a.Any(x => { Spec.Requires(x != 0); return 10 / x > 1; }); var c = a.Count(x => { Spec.Requires(x != 0); return 10 / x > 1; }); } }")]
+        [InlineData(C + "static void M(int[] a, Cell c) { Spec.Requires(a.Length > 0); a[0] = 5; c.V = 3; var b = Array.Exists(a, x => x > 1); Spec.Assert(a[0] == 5); Spec.Assert(c.V == 3); } }")]
+        [InlineData(C + "static void M(List<int> l, int[] a) { Spec.Requires(a.Length > 0 && l.Count > 0); a[0] = 5; var n = l.FindIndex(x => x > 2); Spec.Assert(a[0] == 5); Spec.Assert(l.Count > 0); } }")]
+        public void ReadOnlyLibrary_Keeps(string code) => Assert.Empty(All(code));
+
+        [Theory]
+        // the lambda writes an array; the delegate's code isn't in sight; the member writes what it's given
+        [InlineData(C + "static void M(int[] a, int[] other) { Spec.Requires(other.Length > 0 && a.Length > 0); a[0] = 5; var b = Array.Exists(other, x => { other[0] = 1; return x > 1; }); Spec.Assert(a[0] == 5); } }")]
+        [InlineData(C + "static void M(int[] a, Predicate<int> p) { Spec.Requires(Spec.Total(p) && a.Length > 0); a[0] = 5; var b = Array.Exists(a, p); Spec.Assert(a[0] == 5); } }")]
+        [InlineData(C + "static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 5; Array.Sort(a, (x, y) => x < y ? -1 : x > y ? 1 : 0); Spec.Assert(a[0] == 5); } }")]
+        [InlineData(C + "static void M(int[] a, Cell c) { Spec.Requires(a.Length > 0); c.V = 3; var b = Array.Exists(a, x => { c.V = 4; return x > 1; }); Spec.Assert(c.V == 3); } }")]
+        public void ReadOnlyLibrary_Forgets(string code) => Assert.Contains("CSV1004", Ids(code));
     }
 }

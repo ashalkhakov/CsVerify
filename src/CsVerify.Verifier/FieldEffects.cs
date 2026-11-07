@@ -280,6 +280,25 @@ namespace CsVerify.Verifier
             return inv.Arguments.Any(a => a.Parameter != null && May(a.Parameter.Type, a.ArgumentKind == ArgumentKind.Explicit ? a.Value : null));
         }
 
+        /// <summary>
+        /// At this call of a library member that changes nothing it is given itself, might it run program code other
+        /// than its delegate arguments that <paramref name="delegateOk"/> clears? Through its type arguments, its
+        /// receiver, or an argument (an object whose class overrides Equals or implements IComparable), as above.
+        /// </summary>
+        public bool RunsOtherCodeAt(IInvocationOperation inv, System.Func<IOperation, bool> delegateOk)
+        {
+            var m = inv.TargetMethod;
+            if (m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver)) return true;
+            if (!m.IsStatic && inv.Instance != null && HandsOver(Handed(inv.Instance))) return true;
+            foreach (var a in inv.Arguments)
+            {
+                if (a.Parameter == null) return true;
+                if (a.Parameter.Type.TypeKind == TypeKind.Delegate) { if (!delegateOk(a.Value)) return true; continue; }
+                if (a.ArgumentKind != ArgumentKind.Explicit ? HandsOver(a.Parameter.Type) : HandsOver(Handed(a.Value))) return true;
+            }
+            return false;
+        }
+
         /// <summary>The type of what is handed over: under implicit reference conversions (to object, to a base class).</summary>
         private static ITypeSymbol Handed(IOperation op)
         {

@@ -1936,13 +1936,13 @@ namespace CsVerify.Verifier
                         else if (NotNullWhen(a.Parameter) is bool when) whenNotNull.Add((nv, when));
                         if (cells.ContainsKey(a)) cellsOut.Add((a, nv)); else Write(a.Value, nv, f, spec);
                     }
-                    if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                    if (HavocsHeap(m) && !KeepsArrays(inv)) f.Heap = _z3.Fresh("heap", Sort.Heap);
                     f.Heap = KeepHeldMemory(f.Heap, libraryMemory, libraryHeld);
                     foreach (var (a, nv) in cellsOut) WriteCell(cells[a], nv, f, a.Syntax);
                     FlushTies(f);
                     CalleeModifies(callee, pre, f, inv.Syntax);
                     // (a library can run the program's code only through overrides and interfaces: none, none written)
-                    if (_engine.Fields.WritesFieldsAt(inv)) HavocFields(f, m, touched);
+                    if (_engine.Fields.WritesFieldsAt(inv) && !KeepsFields(inv)) HavocFields(f, m, touched);
                     CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                     var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
                     if (!m.ReturnsVoid && LibraryGivesAsInstantiated(m)) _z3.Assume(NotNull(libResult));

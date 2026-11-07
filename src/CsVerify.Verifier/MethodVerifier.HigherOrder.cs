@@ -173,6 +173,72 @@ namespace CsVerify.Verifier
             }
         }
 
+        // ---- library members that change nothing they are given: a call changes only what the code it runs does
+
+        private static readonly HashSet<string> ReadOnlyCollectionMembers = new HashSet<string>
+        {
+            "Exists", "TrueForAll", "Find", "FindIndex", "FindLast", "FindLastIndex", "FindAll", "ConvertAll", "ForEach",
+            "Contains", "IndexOf", "LastIndexOf",
+        };
+
+        /// <summary>
+        /// A library member that writes nothing it is given, nor any state of the program's: every LINQ member (they
+        /// read their sources, and make what they return), and the List and Array members that only look. What a call
+        /// of one changes is what the program code it runs changes, its delegates' included.
+        /// </summary>
+        private static bool ReadsOnly(IMethodSymbol m)
+        {
+            var owner = (m.ReducedFrom ?? m).ContainingType?.OriginalDefinition.ToDisplayString();
+            return owner == "System.Linq.Enumerable"
+                || owner == "System.Collections.Generic.List<T>" && !m.IsStatic && ReadOnlyCollectionMembers.Contains(m.Name)
+                || owner == "System.Array" && m.IsStatic && ReadOnlyCollectionMembers.Contains(m.Name);
+        }
+
+        /// <summary>A delegate argument whose code is in sight (a lambda, a method group) and writes no arrays.</summary>
+        private bool WritesNoArrays(IOperation value) =>
+            Unconverted(value) is IDelegateCreationOperation dc && DelegateTarget(dc.Target) is IMethodSymbol fn && !_engine.MayWriteHeap(fn);
+
+        /// <summary>A delegate argument whose code is in sight and writes no field nor model state.</summary>
+        private bool WritesNoFields(IOperation value)
+        {
+            if (!(Unconverted(value) is IDelegateCreationOperation dc) || !(DelegateTarget(dc.Target) is IMethodSymbol fn)) return false;
+            if (fn.MethodKind != MethodKind.AnonymousFunction)
+            {
+                var (fields, all) = _engine.Fields.WritesOf(fn);
+                return !all && fields.Count == 0;
+            }
+            // a lambda: its own code, looked at here (its effects are counted with its method's, not on their own)
+            var syntax = fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+            var model = syntax == null ? null : _engine.Compilation.GetSemanticModel(syntax.SyntaxTree);
+            var body = model?.GetOperation(syntax);
+            if (body == null) return false;
+            foreach (var op in body.DescendantsAndSelf())
+            {
+                if (SpecSymbols.EnclosingSpecCall(op.Syntax, model) != null) continue;
+                switch (op)
+                {
+                    case IAssignmentOperation a when !(a.Target is ILocalReferenceOperation || a.Target is IParameterReferenceOperation && ((IParameterReferenceOperation)a.Target).Parameter.RefKind == RefKind.None):
+                    case IIncrementOrDecrementOperation inc when !(inc.Target is ILocalReferenceOperation || inc.Target is IParameterReferenceOperation):
+                    case IDeconstructionAssignmentOperation _:
+                    case IObjectCreationOperation _:
+                        return false;
+                    case IArgumentOperation arg when arg.Parameter?.RefKind != RefKind.None && arg.Parameter?.RefKind != RefKind.In:
+                        return false;
+                    case IInvocationOperation inv when !(SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _engine.ContractOf(inv.TargetMethod).IsPure ||
+                                                         inv.TargetMethod.DeclaringSyntaxReferences.Length > 0 && inv.TargetMethod.MethodKind != MethodKind.AnonymousFunction &&
+                                                         inv.TargetMethod.MethodKind != MethodKind.LocalFunction && _engine.Fields.WritesOf(inv.TargetMethod) is var w && !w.all && w.fields.Count == 0):
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>Does this call of a library member keep the arrays as they are: it reads only, and runs nothing that writes one?</summary>
+        private bool KeepsArrays(IInvocationOperation inv) => ReadsOnly(inv.TargetMethod) && !_engine.Fields.RunsOtherCodeAt(inv, WritesNoArrays);
+
+        /// <summary>And the fields and model state (a list's elements)?</summary>
+        private bool KeepsFields(IInvocationOperation inv) => ReadsOnly(inv.TargetMethod) && !_engine.Fields.RunsOtherCodeAt(inv, WritesNoFields);
+
         /// <summary>Does the stub's precondition say what the delegate parameter must accept?</summary>
         private static bool StubSpeaksOf(Contract stub, string parameter) =>
             stub.Requires.Any(r => r.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i =>
@@ -217,8 +283,7 @@ namespace CsVerify.Verifier
             // (it changes neither the list nor an array: the elements it is called with are those there now)
             var fn = DelegateTarget(((IDelegateCreationOperation)Unconverted(a.Value)).Target);
             if (fn == null || _engine.MayTouchArrays(fn) && array) return null;
-            var (writes, all) = _engine.Fields.WritesOf(fn);
-            if (all || list && writes.Any(w => w.Name == "Items" || w.Name == "Size")) return null;
+            if (list && !WritesNoFields(a.Value)) return null; // (nor the list's model state)
             var seq = ListSequence(T.Coerce(Eval(source, f, spec), Sort.Int), sourceType, f);
             return (seq.Length, seq.Element, seq.Known);
         }

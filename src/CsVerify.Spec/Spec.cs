@@ -146,6 +146,17 @@ namespace CsVerify
         public static bool Total<A1, A2, A3, A4, R>(Func<A1, A2, A3, A4, R> f) => throw GhostException.Instance;
         public static bool Total<A1, A2, A3, A4>(Action<A1, A2, A3, A4> f) => throw GhostException.Instance;
 
+        // (the BCL's other delegates that collections take)
+        public static bool Pre<T>(Predicate<T> f, T a) => throw GhostException.Instance;
+        public static bool Post<T>(Predicate<T> f, T a, bool r) => throw GhostException.Instance;
+        public static bool Total<T>(Predicate<T> f) => throw GhostException.Instance;
+        public static bool Pre<T>(Comparison<T> f, T a, T b) => throw GhostException.Instance;
+        public static bool Post<T>(Comparison<T> f, T a, T b, int r) => throw GhostException.Instance;
+        public static bool Total<T>(Comparison<T> f) => throw GhostException.Instance;
+        public static bool Pre<TIn, TOut>(Converter<TIn, TOut> f, TIn a) => throw GhostException.Instance;
+        public static bool Post<TIn, TOut>(Converter<TIn, TOut> f, TIn a, TOut r) => throw GhostException.Instance;
+        public static bool Total<TIn, TOut>(Converter<TIn, TOut> f) => throw GhostException.Instance;
+
         /// <summary>Bounded existential quantifier: <paramref name="body"/> holds for some i with from &lt;= i &lt; to.</summary>
         public static bool Exists(int from, int to, Func<int, bool> body) => throw GhostException.Instance;
 
