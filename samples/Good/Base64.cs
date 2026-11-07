@@ -180,8 +180,12 @@ namespace Samples.Good
             {
                 int c = Value(text[text.Length - 2]);
                 if (c < 0 || (c & 3) != 0) return null;
-                data[data.Length - 2] = (byte)((a << 2) | (b >> 4));
-                data[data.Length - 1] = (byte)(((b & 15) << 4) | (c >> 2));
+                int hi = (a << 2) | (b >> 4), lo = ((b & 15) << 4) | (c >> 2);
+                // (the bits don't overlap, so each | is a sum; then the sum is plain arithmetic)
+                Spec.Assert(hi == a * 4 + b / 16 && lo == b % 16 * 16 + c / 4);
+                Spec.Assert(hi * 256 + lo == a * 1024 + b * 16 + c / 4);
+                data[data.Length - 2] = (byte)hi;
+                data[data.Length - 1] = (byte)lo;
                 Spec.Assert(Tail2(text[text.Length - 4], text[text.Length - 3], text[text.Length - 2], text[text.Length - 1], data[data.Length - 2], data[data.Length - 1]));
             }
             Spec.Assert(WellFormed(text));
