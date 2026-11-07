@@ -119,6 +119,16 @@ namespace CsVerify
         /// </summary>
         public static bool Acc<T>(T[] array, int from, int to) => throw GhostException.Instance;
 
+        /// <summary>
+        /// A share of permission to read an array's cells: in a contract, the method only reads them (it cannot write them,
+        /// and a call to it changes none of them), and any number of tasks may hold a share at once, while nobody can write
+        /// them. Reading in code that runs alongside other code needs one, or Spec.Acc.
+        /// </summary>
+        public static bool AccRead<T>(T[] array) => throw GhostException.Instance;
+
+        /// <summary>A share of permission to read the cells <paramref name="from"/> (inclusive) to <paramref name="to"/> (exclusive).</summary>
+        public static bool AccRead<T>(T[] array, int from, int to) => throw GhostException.Instance;
+
         /// <summary>Folds a predicate instance: its body's permissions go into it, and its facts must hold.</summary>
         [Conditional(Symbol)] public static void Fold(bool predicate) { }
 

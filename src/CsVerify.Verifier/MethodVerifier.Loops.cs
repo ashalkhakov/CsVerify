@@ -222,6 +222,7 @@ namespace CsVerify.Verifier
                 if (loop.OverString) return T.Coerce(InRangeOf(Char(arr, i), loop.ArrayElement), SortOf(op.Type));
                 if (loop.OverView)
                     return ViewSequenceOf(loop, arr, f) is Sequence vs ? T.Coerce(vs.Element(i), SortOf(op.Type)) : Unknown(op.Type, "element");
+                if (loop.ArrayElement != null && !loop.OverInterface) CheckCellRead(arr, i, f, op.Syntax);
                 if (loop.OverInterface)
                     return T.Coerce(InRangeOf(ListItemOf(arr, i, loop.ArrayElement, f), loop.ArrayElement), SortOf(op.Type));
                 if (loop.OverList)

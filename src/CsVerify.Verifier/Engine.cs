@@ -193,7 +193,7 @@ namespace CsVerify.Verifier
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;
             UsesMemory = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "PointsTo" || n.Identifier.Text == "ArrayView" || n.Identifier.Text == "ArrayHole" || n.Identifier.Text == "Mem"));
-            UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc"));
+            UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc" || n.Identifier.Text == "AccRead"));
 
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
@@ -475,6 +475,9 @@ namespace CsVerify.Verifier
             return _libraryContracts.TryGetValue(key, out var c) ? c : _libraryContracts[key] = Contract.Read(key, _compilation);
         }
 
+        private StartedDelegates _startedDelegates;
+        internal StartedDelegates StartedDelegates => _startedDelegates ??= new StartedDelegates(this, _compilation);
+
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
@@ -594,6 +597,8 @@ namespace CsVerify.Verifier
                     // its lambdas and local functions, each a unit of its own
                     foreach (var (nested, graph) in NestedFunctions(decl, model))
                     {
+                        // (nothing but a call with permissions: it is proved where it starts)
+                        if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
                         var nmr = new MethodResult { Name = mr.Name + "." + NestedName(nested) };
                         if (!options.Selects(nmr.Name)) continue;
                         result.Methods.Add(nmr);

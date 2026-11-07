@@ -139,12 +139,20 @@ namespace CsVerify.Verifier
         /// <summary>Nothing here will wait for it (a thread, or a task stored somewhere): it just goes on running.</summary>
         public readonly bool Detached;
 
-        public StartedTask(Term result, bool awaited, Microsoft.CodeAnalysis.IMethodSymbol method, Microsoft.CodeAnalysis.SyntaxNode at, object effects = null, bool detached = false)
+        /// <summary>It was given permissions when it started.</summary>
+        public readonly bool HasPermissions;
+        /// <summary>What finishing it gives back: its permissions, and its postcondition. (Null if that can't be told any more.)</summary>
+        public readonly System.Action<Frame> Finish;
+
+        public StartedTask(Term result, bool awaited, Microsoft.CodeAnalysis.IMethodSymbol method, Microsoft.CodeAnalysis.SyntaxNode at, object effects = null, bool detached = false, bool hasPermissions = false, System.Action<Frame> finish = null)
         {
-            Result = result; Awaited = awaited; Method = method; At = at; Effects = effects; Detached = detached;
+            Result = result; Awaited = awaited; Method = method; At = at; Effects = effects; Detached = detached; HasPermissions = hasPermissions; Finish = finish;
         }
 
-        public StartedTask AsAwaited() => new StartedTask(Result, true, Method, At, Effects, Detached);
+        public StartedTask AsAwaited() => new StartedTask(Result, true, Method, At, Effects, Detached, HasPermissions, Finish);
+
+        /// <summary>On some paths it has been finished, and has given back what it had: on those, it can't be given back again.</summary>
+        public StartedTask WithoutFinish() => new StartedTask(Result, Awaited, Method, At, Effects, Detached, HasPermissions);
     }
 
 

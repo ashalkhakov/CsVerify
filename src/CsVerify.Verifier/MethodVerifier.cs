@@ -1038,6 +1038,7 @@ namespace CsVerify.Verifier
                     var arr = Eval(ae.ArrayReference, f, spec);
                     var idx = CellOf(ae, arr, f, spec);
                     CheckCellFraming(arr, idx, f, ae.Syntax);
+                    CheckCellRead(arr, idx, f, ae.Syntax);
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
@@ -1737,8 +1738,8 @@ namespace CsVerify.Verifier
             if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
-            if (GateOf(inv, "Release", f) is { } given) GateReleased(given, inv.Syntax, f);
-            if (inv != _waitingCall && GateOf(inv, "Wait", f) is { } wanted)
+            if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);
+            if (inv != _waitingCall && inv != _awaitedCall && !IsAwaitedHere(inv.Syntax) && (GateOf(inv, "Wait", f) ?? GateOfWrapperCall(inv, true, f)) is { } wanted)
             {
                 _waitingCall = inv;
                 var waited = EvalInvocationCore(inv, f, spec, enumerators);
@@ -1766,6 +1767,7 @@ namespace CsVerify.Verifier
                         return ForEachIndex(inv, f);
                     case "Equal":
                         return SpecEqual(inv, f, spec);
+                    case "AccRead":
                     case "Acc":
                     {
                         var o = Eval(inv.Arguments[0].Value, f, spec);
@@ -1775,7 +1777,7 @@ namespace CsVerify.Verifier
                             var lo = inv.Arguments.Length == 3 ? Eval(inv.Arguments[1].Value, f, spec) : T.Int(0);
                             var hi = inv.Arguments.Length == 3 ? Eval(inv.Arguments[2].Value, f, spec) : Len(o);
                             return _atomsTrue > 0 || f.ArrPerm == null ? T.True
-                                : new Term($"(forall ((i Int)) (=> (and (<= {lo} i) (< i {hi})) (>= (select (select {f.ArrPerm} {o}) i) 1.0)))", Sort.Bool);
+                                : new Term($"(forall ((i Int)) (=> (and (<= {lo} i) (< i {hi})) (>= (select (select {f.ArrPerm} {o}) i) {(m.Name == "AccRead" ? ShareAmount : FullAmount)})))", Sort.Bool);
                         }
                         if (inv.Arguments.Length == 2 && inv.Arguments[1].Value.ConstantValue is { HasValue: true, Value: string fieldName } &&
                             WholeFields(Unconverted(inv.Arguments[0].Value).Type).FirstOrDefault(x => x.Name == fieldName) is ISymbol accField)
@@ -1928,6 +1930,7 @@ namespace CsVerify.Verifier
                     return libResult;
                 }
 
+                CheckCallReadsInHand(inv, callee);
                 var preEnv = new SpecEnv { Old = pre };
                 // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
                 // quantifier, the obligation is closed over its variable with the others made there)
@@ -2043,6 +2046,12 @@ namespace CsVerify.Verifier
                 if (result != null && callee.IsPure)
                     _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
                 // (a task's postcondition is of the state when it ends, which could be any later one: not of this)
+                if (inv == _startedCall && (callee.Requires.Any(HasPermissions) || callee.Ensures.Any(e => HasPermissions(e.Expr))))
+                {
+                    _finishStarted = FinishLater(callee, pre, result);
+                    if (RunsCode(m)) HavocClosureLocals(f);
+                    return result ?? T.True;
+                }
                 if (inv == _startedCall) Interleave(post);
                 if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null))
                     foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);

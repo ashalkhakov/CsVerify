@@ -29,10 +29,10 @@ namespace CsVerify.Verifier
         private int _atomsTrue;     // evaluating a permission assertion's facts: its permissions read as true
         private readonly List<Term> _lentRoots = new List<Term>();
 
-        private static bool IsAccCall(IOperation op, out IInvocationOperation inv)
+        internal static bool IsAccCall(IOperation op, out IInvocationOperation inv)
         {
             inv = Unconverted(op) as IInvocationOperation;
-            return inv != null && SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) && inv.TargetMethod.Name == "Acc";
+            return inv != null && SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) && (inv.TargetMethod.Name == "Acc" || inv.TargetMethod.Name == "AccRead");
         }
 
         private static bool IsPredicateCall(IOperation op, out IInvocationOperation inv)
@@ -131,6 +131,7 @@ namespace CsVerify.Verifier
             public Term Inst;         // or a predicate instance
             public IMethodSymbol Pred; // (of this predicate)
             public Term Arr, Lo, Hi;  // or array cells: Spec.Acc(Arr, Lo, Hi)
+            public bool Read;         // (Spec.AccRead: a share of them, to read)
             public SyntaxNode At;
         }
 
@@ -176,13 +177,18 @@ namespace CsVerify.Verifier
             if (IsAccCall(op, out var acc))
             {
                 var target = Unconverted(acc.Arguments[0].Value);
+                if (acc.TargetMethod.Name == "AccRead" && !(target.Type is IArrayTypeSymbol))
+                {
+                    Report("CSV1016", acc.Syntax, $"Spec.AccRead is a share of array cells; '{target.Syntax}' is not an array", isError: true);
+                    return T.True;
+                }
                 if (target.Type is IArrayTypeSymbol)
                 {
                     var arr = Arg(target, guard);
                     bool whole = acc.Arguments.Length == 1;
                     atom(new Atom
                     {
-                        Guard = guard, Arr = arr, At = acc.Syntax,
+                        Guard = guard, Arr = arr, At = acc.Syntax, Read = acc.TargetMethod.Name == "AccRead",
                         Lo = whole ? T.Int(0) : Arg(acc.Arguments[1].Value, guard),
                         Hi = whole ? Len(arr) : Arg(acc.Arguments[2].Value, guard),
                     });
@@ -434,7 +440,7 @@ namespace CsVerify.Verifier
             {
                 Walk(e, ef, spec, T.True, own: false, atom: a =>
                 {
-                    if (a.Arr != null) { if (f.ArrPerm != null) { ExhaleCells(f, a, at); touchedCells?.Add(a); } return; }
+                    if (a.Arr != null) { if (f.ArrPerm != null) { ExhaleCells(f, a, at); if (!a.Read) touchedCells?.Add(a); } return; }
                     if (f.Inst == null) return;
                     if (a.Field != null)
                     {
@@ -564,7 +570,7 @@ namespace CsVerify.Verifier
         private readonly HashSet<string> _instancesWithCells = new HashSet<string>();
         private readonly Dictionary<IMethodSymbol, bool> _predicateHasCells = new Dictionary<IMethodSymbol, bool>(SymbolEqualityComparer.Default);
 
-        private static bool IsCellAcc(IOperation op) =>
+        internal static bool IsCellAcc(IOperation op) =>
             IsAccCall(op, out var acc) && Unconverted(acc.Arguments[0].Value).Type is IArrayTypeSymbol;
 
         /// <summary>Does a contract give or take array cells (Spec.Acc of an array, or a predicate holding some, in a pre- or postcondition)?</summary>
@@ -618,7 +624,9 @@ namespace CsVerify.Verifier
             $"(select (select {f.ArrPerm} {T.Coerce(arr, Sort.Int)}) {T.Coerce(i, Sort.Int)})";
 
         private void ChangeCells(Frame f, Atom a, string op) =>
-            f.ArrPerm = _z3.Define("cells", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {InCells(a, "x", "i")} ({op} (select (select {f.ArrPerm} x) i) 1.0) (select (select {f.ArrPerm} x) i))))", Sort.PermHeap));
+            f.ArrPerm = _z3.Define("cells", new Term($"(lambda ((x Int)) (lambda ((i Int)) (ite {InCells(a, "x", "i")} ({op} (select (select {f.ArrPerm} x) i) {CellAmount(a)}) (select (select {f.ArrPerm} x) i))))", Sort.PermHeap));
+
+        private static string CellAmount(Atom a) => a.Read ? ShareAmount : FullAmount;
 
         private void InhaleCells(Frame f, Atom a)
         {
@@ -626,16 +634,19 @@ namespace CsVerify.Verifier
             // every cell already: nothing follows there)
             if (_arrayMode)
             {
-                _z3.Assume(new Term($"(forall ((i Int)) (=> {InCells(a, a.Arr.S, "i")} (< (select (select {f.ArrPerm} {a.Arr}) i) 1.0)))", Sort.Bool));
+                // (a share is below what it would take to fill it up)
+                var room = a.Read ? $"(- 1.0 {ShareAmount})" : "1.0";
+                var op = a.Read ? "<=" : "<";
+                _z3.Assume(new Term($"(forall ((i Int)) (=> {InCells(a, a.Arr.S, "i")} ({op} (select (select {f.ArrPerm} {a.Arr}) i) {room})))", Sort.Bool));
                 // (and at its first cell, which no term may trigger: a cell given apart from others is none of them)
-                _z3.Assume(new Term($"(=> {InCells(a, a.Arr.S, a.Lo.S)} (< (select (select {f.ArrPerm} {a.Arr}) {a.Lo}) 1.0))", Sort.Bool));
+                _z3.Assume(new Term($"(=> {InCells(a, a.Arr.S, a.Lo.S)} ({op} (select (select {f.ArrPerm} {a.Arr}) {a.Lo}) {room}))", Sort.Bool));
             }
             ChangeCells(f, a, "+");
         }
 
         private void ExhaleCells(Frame f, Atom a, SyntaxNode at)
         {
-            Require(new Term($"(forall ((i Int)) (=> {InCells(a, a.Arr.S, "i")} (>= (select (select {f.ArrPerm} {a.Arr}) i) 1.0)))", Sort.Bool),
+            Require(new Term($"(forall ((i Int)) (=> {InCells(a, a.Arr.S, "i")} (>= (select (select {f.ArrPerm} {a.Arr}) i) {CellAmount(a)})))", Sort.Bool),
                 "CSV1016", at, $"'{a.At}' is needed here, but those cells are not all in hand");
             ChangeCells(f, a, "-");
         }
@@ -740,6 +751,7 @@ namespace CsVerify.Verifier
                     {
                         // (no permission to null is ever held)
                         if (a.Obj != null) _z3.Assume(T.Implies(a.Guard, NotNull(a.Obj)));
+                        if (a.Read) Report("CSV1016", a.At, "a predicate holds whole permissions: Spec.AccRead is for contracts", isError: true);
                         if (a.Arr != null) { if (f.ArrPerm != null) ChangeCells(f, a, "+"); }
                         else if (a.Field != null) ChangeField(f, a.Obj, FieldId(a.Field), a.Guard, "+");
                         else if (a.Obj != null) f.Perm = Change(f.Perm, a.Obj, a.Guard, "+");

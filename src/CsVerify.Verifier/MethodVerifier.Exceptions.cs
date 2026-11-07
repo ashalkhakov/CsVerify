@@ -242,7 +242,9 @@ namespace CsVerify.Verifier
             // (a task is awaited if it is on every path, and still running if it may be on one)
             foreach (var x in fs.Skip(1))
                 foreach (var kv in x.Started)
-                    m.Started[kv.Key] = m.Started.TryGetValue(kv.Key, out var t) && (t.Awaited && kv.Value.Awaited) ? t : kv.Value.Awaited && t.Result != null ? t : kv.Value;
+                    m.Started[kv.Key] = !m.Started.TryGetValue(kv.Key, out var t) ? kv.Value
+                        : t.Awaited && kv.Value.Awaited ? t
+                        : t.Awaited != kv.Value.Awaited ? (t.Awaited ? kv.Value : t).WithoutFinish() : t;
             foreach (var k in fs[0].Vars.Keys.Where(k => fs.All(x => x.Vars.ContainsKey(k))).ToList()) m.Vars[k] = Pick(fs.Select(x => x.Vars[k]).ToList(), sel);
             foreach (var k in fs[0].Vars.Keys.Where(k => !fs.All(x => x.Vars.ContainsKey(k))).ToList()) m.Vars.Remove(k); // (declared in some only: the try's own)
             // (a field map a state has not made yet is the one it would make: its epoch's)

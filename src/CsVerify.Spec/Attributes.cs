@@ -51,6 +51,33 @@ namespace CsVerify
     }
 
     /// <summary>
+    /// A method that takes a lock for its caller, wrapping a <c>SemaphoreSlim</c> of count 1 (Clang's ACQUIRE, or its scoped
+    /// capability). The lock is the field the call is on (<c>_lock.LockAsync()</c>, an instance method of a lock class or an
+    /// extension of SemaphoreSlim), or the field named here, of the object the method is called on (<c>EnterAsync()</c>).
+    /// If it returns something disposable, disposing that gives the lock back, and it is used in a <c>using</c>:
+    /// <c>using (await _lock.LockAsync()) { ... }</c>. If not, it's as for the semaphore's own Wait:
+    /// <c>await EnterAsync(); try { ... } finally { Exit(); }</c>. That the method does this is taken from its shape, not
+    /// proved: it must call Wait or WaitAsync, and its result's Dispose Release. On a [ContractsFor] stub, it says so of a
+    /// library's lock, which is taken on trust.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class AcquiresAttribute : Attribute
+    {
+        public AcquiresAttribute() { }
+        public AcquiresAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>A method that gives back the lock an <see cref="AcquiresAttribute"/> method took: the field the call is on, or the one named here.</summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class ReleasesAttribute : Attribute
+    {
+        public ReleasesAttribute() { }
+        public ReleasesAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>
     /// A proof function (ATS <c>prfun</c>): must be <c>void</c> and <c>[Conditional("CSVERIFY_SPEC")]</c>, so calls are
     /// erased. Its body is the proof; callers gain its postconditions.
     /// </summary>

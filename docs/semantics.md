@@ -121,17 +121,50 @@ finally { _gate.Release(); }
 
 A semaphore of any other count, such as a rate limiter, guards nothing, and is a library call like any other.
 
+**Wrappers: `[Acquires]` and `[Releases]`.** A helper or a lock class around such a semaphore says what it does, and is then used like the semaphore:
+
+```csharp
+[Acquires] public async Task<Releaser> LockAsync(CancellationToken ct) { await _gate.WaitAsync(ct); return new Releaser(_gate); }
+
+using (await _lock.LockAsync(ct)) { ... }           // or: using var held = await _lock.LockAsync(ct);
+
+[Acquires(nameof(_gate))] private async Task EnterAsync() { await _gate.WaitAsync(); }
+[Releases(nameof(_gate))] private void Exit() { _gate.Release(); }
+
+await EnterAsync(); try { ... } finally { Exit(); }
+```
+
+The lock is the field the call is on, which may be a `SemaphoreSlim` with an extension method, or the field the attribute names. The result of a `using` can't be used for anything else, and any other form of the call is CSV1023. That a wrapper does what it says is taken from its shape, not proved: `[Acquires]` must wait on a semaphore of count 1 and its result's `Dispose` must call `Release`; `[Releases]` must call `Release`. On a `[ContractsFor]` stub the attributes say so of a library's lock, on trust. A callback form, `gate.RunLockedAsync(() => ...)`, isn't understood.
+
 **Cancellation.** A token's `IsCancellationRequested` is a new answer at every read, and specifications can't speak of it, since it could be true by the time they're looked at. Being cancelled comes out as an exception from `ThrowIfCancellationRequested` or any `await`, so a `catch (OperationCanceledException)` is reached, and a `finally` must restore what a lock's or a semaphore's invariant needs. A postcondition is of a normal return: a cancelled method has made no promise, beyond those of `Spec.EnsuresOnThrow`. `CancellationTokenSource` is a library class with nothing modeled, and `CancellationToken.None` is no different from any other token.
 
 **Task.Run and threads.** `Task.Run(d)`, `Task.Factory.StartNew(d)` and `th.Start()` of `new Thread(d)` run alongside the method, so it's as for a task awaited later: from there until `await t` or `th.Join()`, what the method doesn't hold is forgotten from each statement to the next. So is a task from an interface, a delegate or a method that isn't async, since it may run the program's code too; a library's own, like `Task.Delay(1)`'s, doesn't. A task that is stored, returned or dropped, or a thread not joined, runs on to the end of the method, and `ids.Select(id => F(id))` is treated the same, since nothing follows those tasks.
 - **The code in the delegate is proved knowing nothing of who started it.** What it shares with other code is under the guarantee's assumption, unless a lock guards it.
 - **Reported (CSV1026):** a task kept in a local and never awaited, or a call of one as a statement of its own. `_ = Task.Run(...)` says it is meant.
 - **Warned (CSV1900):** two of them, or one and the method that started it, where one writes a field or an array the other uses, and no lock is held for it; and one that keeps running after the method and writes what no lock guards. The verifier knows which field, not which object, so this may be a false alarm. It's a warning, not a proof either way: nothing here proves code free of races but `[GuardedBy]`.
-- **Permissions can't be given to one.** So work split between threads, each on its own part of an array, can't be proved to stay apart.
+- **Permissions go with it.** See below.
 
 **Concurrent collections and channels.** Nothing about what they hold is known, since others can change it: `ContainsKey`, `Count`, `IsEmpty` and the indexer give a new answer each time, even right after an `Add`. What is known is what they say of their results: a `TryGetValue`, `TryDequeue` or `TryRead` that returns true gave a value that's not null, if the type says so, and `GetOrAdd` and `ReadAsync` likewise; a null key is reported. `await foreach` is a loop whose every round is an `await`: it needs invariants for what it keeps, and its `MoveNextAsync` can throw.
 
-**Not covered (yet).** State that no lock guards is still under the guarantee's assumption. `Interlocked`, `volatile`, `Monitor.Wait` and `Monitor.Pulse` are ordinary calls and reads, with no meaning about other threads, and `Monitor.Enter` outside a lock statement doesn't count as holding a lock. Progress and lock-free code are not checked. The plan for threads is permission-based, as in Viper and VerCors: starting a thread would hand it the permissions its delegate's precondition names, and joining it would give back its postcondition's.
+**Permissions of tasks and threads.** A method whose contract names permissions (`Spec.Acc` of cells or objects, `Spec.AccRead` of cells) can run alongside its caller, and work split between tasks is proved to stay apart:
+
+```csharp
+await Task.WhenAll(Fill(a, 0, mid, 1), Fill(a, mid, a.Length, 2));
+Spec.Assert(a[0] == 1 && a[mid] == 2);
+```
+
+- **At the start** the precondition is proved and its permissions leave the caller, so a second task can't get the same cell (CSV1016), and the caller can't write or read a cell it gave away until it is back.
+- **At `await` or `Join`** the postcondition's permissions come back. What it says is of the state when the task ended, so only what comes back is known to be so now. If the task failed, nothing comes back. A task never awaited keeps what it took.
+- **`Spec.AccRead(a, from, to)`** is a share of permission to read. Any number of tasks can hold one at once, nobody can write those cells meanwhile, and a call that only takes a share changes none of them.
+- **A delegate** works the same way if it is one call with values that don't change: `Task.Run(() => F(a, 0, mid))`, or `new Thread(() => F(a, 0, mid))` in a local that only gets started and joined. The call is proved where it starts, and the delegate isn't verified apart. Any other delegate is on its own and knows nothing, so it can't be given permissions.
+- **Reads are checked too.** A method with cell permissions that runs alongside others, or is called from one that does, reads only cells it has a permission or share for (CSV1016), and it can't call code that may read any array. Calls into the library aren't looked at.
+- **Not supported (CSV1901):** views and predicate instances, and instance methods of `[Owned]` classes, since what's lent by a call goes back when it returns.
+
+**Race warnings** (CSV1900) are about what has no permissions. Two pieces of code are compared on the fields and arrays each uses, by object where that can be told: a parameter or a local that isn't reassigned. Two objects known to differ, as `c != d` or two `new` objects, don't warn. A method's own code counts from where the task starts until the statement that awaits or joins it. Code with cell permissions doesn't warn about arrays, since that is proved. These warnings prove nothing either way.
+
+**Design.** This follows concurrent separation logic with fractional permissions, in the implicit-dynamic-frames style of Chalice and Viper: starting a task is a fork, which exhales its precondition, and awaiting it is a join, which inhales its postcondition. A lock's invariant, and what it guards, is the resource it holds. An `await` is a point where other code may run, so what isn't held is forgotten, as for an unstable assertion. The theorem to reuse is that a program proved in that logic has no data races. It covers only code where every access is under a permission or a lock. Fields without either, cells of methods without array permissions, and race warnings are outside it, under the guarantee's assumption. The verifier's encoding has not itself been proved against the logic.
+
+**Not covered (yet).** State that no lock guards is still under the guarantee's assumption. `Interlocked`, `volatile`, `Monitor.Wait` and `Monitor.Pulse` are ordinary calls and reads, with no meaning about other threads, and `Monitor.Enter` outside a lock statement doesn't count as holding a lock. Progress and lock-free code are not checked. Everything a task does to a field, and to an array outside permissions, is under the guarantee's assumption, with warnings only.
 
 An algorithm can be proved over all interleavings by modeling it, as Leino does in Dafny: its atomic events as methods, and what holds in every state as an invariant each keeps. `samples/Good/TicketLock.cs` and `DiningPhilosophers.cs` do so, including that the ticket lock's display can't stall under a fair schedule, and that philosophers taking forks in order always have someone who can move. That proves the algorithm, not any threads running it.
 
