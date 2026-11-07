@@ -31,6 +31,19 @@ namespace CsVerify.Tests
         // handed to a library: a lambda without a precondition, or one said total
         [InlineData(C + "static void M(List<int> l) { l.ForEach(x => { }); var s = l.Select(x => x / 2).ToList(); } }")]
         [InlineData(C + "static void M(Action work) { Spec.Requires(Spec.Total(work)); Task.Run(work).Wait(); } }")]
+        // what a library calls it with: each element, when it changes neither the list nor an array
+        [InlineData(C + "static void M(List<int> l) { Spec.Requires(Spec.Forall(0, l.Count, i => l[i] > 0)); l.ForEach(x => { Spec.Requires(x > 0); }); } }")]
+        [InlineData(C + "static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != 0)); var b = Array.Exists(a, x => { Spec.Requires(x != 0); return 10 / x > 1; }); } }")]
+        [InlineData(C + "static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != 0)); var b = a.Any(x => { Spec.Requires(x != 0); return 10 / x > 1; }); } }")]
+        [InlineData(C + "static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != 0)); var c = a.Count(x => { Spec.Requires(x != 0); return 10 / x > 1; }); } }")]
+        [InlineData(C + "static void M(List<string> l) { Spec.Requires(Spec.Forall(0, l.Count, i => l[i] != null)); var n = l.FindIndex(s => { Spec.Requires(s != null); return s.Length == 1; }); } }")]
+        // each index, for Parallel.For
+        [InlineData(C + "static void M(int n) { Spec.Requires(n >= 0); Parallel.For(0, n, i => { Spec.Requires(0 <= i && i < n); }); } }")]
+        // no arguments: total is its precondition now
+        [InlineData(C + "static void M(int k) { Spec.Requires(k > 0); Task.Run(() => { Spec.Requires(k > 0); }).Wait(); } }")]
+        // a stub that says what it needs of the delegate
+        [InlineData("[ContractsFor(typeof(Lazy<>))] public static class LazyContracts<T> { public static Lazy<T> @new(Func<T> valueFactory) { Spec.Requires(Spec.Pre(valueFactory)); throw null!; } } " +
+                    C + "static void M(int k) { Spec.Requires(k > 0); var l = new Lazy<int>(() => { Spec.Requires(k > 0); return k; }); } }")]
         // a lambda knows what its method requires of what never changes
         [InlineData(C + "static async Task M(Action work) { Spec.Requires(Spec.Total(work)); await Task.Run(() => work()); } }")]
         // stored or returned: whoever calls it proves what it accepts
@@ -57,9 +70,16 @@ namespace CsVerify.Tests
         [InlineData("CSV1001", C + "static void M() { Func<int, int> h = x => { Spec.Requires(x < 10); return x; }; Func<int> k = () => h(1); } }")]
         [InlineData("CSV1001", C + "static void T(Func<int, int> g) { Spec.Requires(Spec.Total(g)); } static void M() { T(x => { Spec.Requires(x > 0); return x; }); } }")]
         // a library may call it with anything
-        [InlineData("CSV1029", C + "static void M(List<int> l) { l.ForEach(x => { Spec.Requires(x > 0); }); } }")]
         [InlineData("CSV1029", C + "static void M(Action work) { Task.Run(work).Wait(); } }")]
         [InlineData("CSV1029", C + "static void M(Action<int> a, List<int> l) { Spec.Requires(Spec.Pre(a, 1)); l.ForEach(a); } }")]
+        [InlineData("CSV1001", C + "static void M(List<int> l) { l.ForEach(x => { Spec.Requires(x > 0); }); } }")]
+        [InlineData("CSV1001", C + "static void M(int n) { Spec.Requires(n >= 0 && n < 100); Parallel.For(0, n + 1, i => { Spec.Requires(i < n); }); } }")]
+        [InlineData("CSV1001", "[ContractsFor(typeof(Lazy<>))] public static class LazyContracts<T> { public static Lazy<T> @new(Func<T> valueFactory) { Spec.Requires(Spec.Pre(valueFactory)); throw null!; } } " +
+                               C + "static void M(int k) { var l = new Lazy<int>(() => { Spec.Requires(k > 0); return k; }); } }")]
+        // a lazy query, a lambda that may change the array, nothing known of the arguments: total
+        [InlineData("CSV1029", C + "static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] != 0)); var b = a.Where(x => { Spec.Requires(x != 0); return 10 / x > 1; }).ToList(); } }")]
+        [InlineData("CSV1029", C + "static void M(int[] a) { Spec.Requires(a.Length > 0 && Spec.Forall(0, a.Length, i => a[i] != 0)); Array.ForEach(a, x => { Spec.Requires(x != 0); a[0] = 0; }); } }")]
+        [InlineData("CSV1029", C + "static void M(int k) { Task.Run(() => { Spec.Requires(k > 0); }).Wait(); } }")]
         // a precondition that reads state can't be a Spec.Pre
         [InlineData("CSV1029", C + "static int Field; static void M() { Func<int, int> h = x => { Spec.Requires(x < Field); return x; }; } }")]
         public void Reported(string id, string code) => Assert.Contains(id, Ids(code));

@@ -1833,7 +1833,7 @@ namespace CsVerify.Verifier
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
-            HandedToLibrary(m, inv.Arguments, f, spec);
+            HandedToLibrary(m, inv.Arguments, f, spec, inv.Instance);
             if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
             if (LinqCall(inv, f, spec) is Term linqResult) return linqResult;
             var builtin = Builtin(inv, f, spec);

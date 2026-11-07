@@ -107,24 +107,120 @@ namespace CsVerify.Verifier
             DelegateMade(dc, type, t, f);
         }
 
-        /// <summary>A delegate handed to a library, which may call it with anything: it must be total.</summary>
-        private void HandedToLibrary(IMethodSymbol m, IEnumerable<IArgumentOperation> args, Frame f, SpecEnv spec)
+        /// <summary>
+        /// A delegate handed to a library: the library's call of it must be allowed. What the library passes it is
+        /// known for some members, and then only that must be accepted; otherwise it may pass anything, so the delegate
+        /// must be total (proved, not just a lambda without a precondition: one whose precondition always holds is too).
+        /// <list type="bullet">
+        /// <item>A stub that says what it needs of the delegate (its Spec.Requires name it in Spec.Pre or Spec.Total)
+        /// has that proved where it is called, as all its preconditions are.</item>
+        /// <item>The members that call it on the elements of a list or an array, and on nothing else, before they return
+        /// (List.ForEach, Exists, Find..., Array.ForEach..., and the LINQ members that aren't lazy: Any, All, Count,
+        /// First, Sum...): Spec.Pre for each element, when the delegate is a lambda or method group that changes
+        /// neither the list nor any array (so the elements it is given are those there now).</item>
+        /// <item>Parallel.For(from, to, body): Spec.Pre(body, i) for each i in [from, to).</item>
+        /// </list>
+        /// </summary>
+        private void HandedToLibrary(IMethodSymbol m, IEnumerable<IArgumentOperation> args, Frame f, SpecEnv spec, IOperation instance = null)
         {
             if (!_codeMode || _foreignSpec > 0 || m.DeclaringSyntaxReferences.Length > 0 || m.MethodKind == MethodKind.DelegateInvoke) return;
-            foreach (var a in args)
+            var callee = _engine.ContractOf(m);
+            var argList = args.ToList();
+            foreach (var a in argList)
             {
                 if (!(a.Parameter?.Type is INamedTypeSymbol type) || !IsPlainDelegate(type)) continue;
+                if (callee.IsStub && StubSpeaksOf(callee, a.Parameter.Name)) continue;
                 var value = Unconverted(a.Value);
-                if (value is IDelegateCreationOperation made)
+                bool made = value is IDelegateCreationOperation;
+                if (made && DelegateRequires(((IDelegateCreationOperation)value).Target).Count == 0) continue; // (total: its body is proved for anything)
+                var known = made || value is ILocalReferenceOperation || value is IParameterReferenceOperation || value is IFieldReferenceOperation;
+                if (!known)
                 {
-                    if (DelegateRequires(made.Target).Count > 0)
-                        Report("CSV1029", a.Syntax, $"'{m.Name}' may call what it is given here with any arguments, but this requires something of them: drop the precondition, or check it inside", isError: true);
+                    Prove(T.False, "CSV1029", a.Syntax, $"'{m.Name}' may call '{a.Value.Syntax}' with any arguments, but it isn't known to accept them all: keep it in a local said to be Spec.Total");
                     continue;
                 }
-                var known = value is ILocalReferenceOperation || value is IParameterReferenceOperation || value is IFieldReferenceOperation;
-                Prove(known ? TotalOf(type, Eval(a.Value, f, spec)) : T.False, "CSV1029", a.Syntax,
-                    $"'{m.Name}' may call '{a.Value.Syntax}' with any arguments, but it isn't known to accept them all: say so with Spec.Requires(Spec.Total({a.Value.Syntax}))");
+                var d = Eval(a.Value, f, spec);
+                // Parallel.For(from, to, body): body(i) for each i from 'from' up to 'to', whatever body does
+                if (m.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Parallel" && m.Name == "For" && a.Parameter.Ordinal == 2 &&
+                    type.DelegateInvokeMethod.Parameters.Length == 1 && type.DelegateInvokeMethod.Parameters[0].Type.SpecialType == SpecialType.System_Int32 &&
+                    argList.FirstOrDefault(x => x.Parameter?.Ordinal == 0) is IArgumentOperation fromArg && argList.FirstOrDefault(x => x.Parameter?.Ordinal == 1) is IArgumentOperation toArg)
+                {
+                    var lo = T.Coerce(Eval(fromArg.Value, f, spec), Sort.Int);
+                    var hi = T.Coerce(Eval(toArg.Value, f, spec), Sort.Int);
+                    var k = new Term(_z3.FreshName("i"), Sort.Int);
+                    Prove(T.Quant("forall", k.S, T.Implies(T.And(T.Le(lo, k), T.Lt(k, hi)), PreOf(type, d, new[] { k }))), "CSV1001", a.Syntax,
+                        $"'{m.Name}' calls this with each index from {fromArg.Value.Syntax} up to {toArg.Value.Syntax}, but it might not accept them all");
+                    continue;
+                }
+                if (made && EachElement(m, a, argList, instance, f, spec) is (Term length, System.Func<Term, Term> element, Term listKnown))
+                {
+                    var i = new Term(_z3.FreshName("i"), Sort.Int);
+                    // (facts of the element, its range, are of the bound index: hypotheses inside, not facts outside)
+                    _quantDepth++;
+                    _quantFacts.Push(new List<Term>());
+                    Term pre;
+                    List<Term> facts;
+                    try { pre = PreOf(type, d, new[] { element(i) }); }
+                    finally { facts = _quantFacts.Pop(); _quantDepth--; }
+                    foreach (var plain in facts.Where(x => !x.S.Contains(i.S))) AssumeSide(plain);
+                    var each = T.Quant("forall", i.S, T.Implies(T.And(new[] { listKnown, T.Le(T.Int(0), i), T.Lt(i, length) }.Concat(facts.Where(x => x.S.Contains(i.S))).ToArray()), pre));
+                    Prove(each, "CSV1001", a.Syntax, $"'{m.Name}' calls this with each element, but it might not accept them all (its Spec.Requires)");
+                    continue;
+                }
+                Prove(TotalOf(type, d), "CSV1029", a.Syntax, made
+                    ? $"'{m.Name}' may call this with any arguments, but its precondition might not hold for them all"
+                    : $"'{m.Name}' may call '{a.Value.Syntax}' with any arguments, but it isn't known to accept them all: say so with Spec.Requires(Spec.Total({a.Value.Syntax}))");
             }
+        }
+
+        /// <summary>Does the stub's precondition say what the delegate parameter must accept?</summary>
+        private static bool StubSpeaksOf(Contract stub, string parameter) =>
+            stub.Requires.Any(r => r.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i =>
+                SpecSymbols.IsSpecClass(i.TargetMethod.ContainingType) && (i.TargetMethod.Name == "Pre" || i.TargetMethod.Name == "Total") &&
+                i.Arguments.Length > 0 && Unconverted(i.Arguments[0].Value) is IParameterReferenceOperation p && p.Parameter.Name == parameter));
+
+        private static readonly HashSet<string> EagerEnumerable = new HashSet<string>
+        {
+            "Any", "All", "Count", "LongCount", "First", "FirstOrDefault", "Last", "LastOrDefault", "Single", "SingleOrDefault",
+            "Sum", "Min", "Max", "Average", "ToDictionary",
+        };
+
+        private static readonly HashSet<string> ElementwiseCollection = new HashSet<string>
+        {
+            "ForEach", "Exists", "TrueForAll", "Find", "FindIndex", "FindLast", "FindLastIndex", "FindAll", "RemoveAll", "ConvertAll",
+        };
+
+        /// <summary>
+        /// If the library calls this delegate with the elements of a list or array, and nothing else, before it returns:
+        /// that sequence (its length, its element at an index, when that is what it is).
+        /// </summary>
+        private (Term, System.Func<Term, Term>, Term)? EachElement(IMethodSymbol m, IArgumentOperation a, List<IArgumentOperation> args, IOperation instance, Frame f, SpecEnv spec)
+        {
+            var type = (INamedTypeSymbol)a.Parameter.Type;
+            if (type.DelegateInvokeMethod.Parameters.Length != 1) return null;
+            var owner = m.ContainingType?.OriginalDefinition.ToDisplayString();
+            IOperation source;
+            if (owner == "System.Linq.Enumerable" && EagerEnumerable.Contains(m.Name) && a.Parameter.Ordinal == 1)
+                source = args.FirstOrDefault(x => x.Parameter?.Ordinal == 0)?.Value;
+            else if (owner == "System.Array" && ElementwiseCollection.Contains(m.Name) && m.IsStatic)
+                source = args.FirstOrDefault(x => x.Parameter?.Ordinal == 0)?.Value;
+            else if (owner == "System.Collections.Generic.List<T>" && ElementwiseCollection.Contains(m.Name) && !m.IsStatic)
+                source = instance;
+            else return null;
+            source = Unconverted(source);
+            // (read again here: only what reading twice can't change)
+            if (!(source is ILocalReferenceOperation || source is IParameterReferenceOperation || source is IFieldReferenceOperation)) return null;
+            var sourceType = source.Type;
+            bool array = sourceType is IArrayTypeSymbol, list = IsListType(sourceType);
+            if (!array && !list) return null;
+            if (!SymbolEqualityComparer.Default.Equals(ElementOf(sourceType), type.DelegateInvokeMethod.Parameters[0].Type)) return null;
+            // (it changes neither the list nor an array: the elements it is called with are those there now)
+            var fn = DelegateTarget(((IDelegateCreationOperation)Unconverted(a.Value)).Target);
+            if (fn == null || _engine.MayTouchArrays(fn) && array) return null;
+            var (writes, all) = _engine.Fields.WritesOf(fn);
+            if (all || list && writes.Any(w => w.Name == "Items" || w.Name == "Size")) return null;
+            var seq = ListSequence(T.Coerce(Eval(source, f, spec), Sort.Int), sourceType, f);
+            return (seq.Length, seq.Element, seq.Known);
         }
 
         /// <summary>A lambda knows what the method it is in requires of what never changes: Spec.Total(g) of a parameter g never assigned.</summary>
