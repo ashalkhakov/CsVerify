@@ -149,7 +149,8 @@ Verification is modular, with behavioural subtyping (Liskov), as in Dafny, Spec#
 
   - **Calls.** `g(1)` proves the precondition and assumes the postcondition, permissions included. Which code runs isn't known, so the call may change any field, and any array cell it isn't held off by a permission.
   - **Lambdas.** `Step s = x => x + 1` is proved against the contract, as an override is: it assumes the precondition, or its own if it requires no more (CSV1018), and must ensure the postcondition.
-  - **Checked nowhere (CSV1029).** A lambda's own `Spec.Requires` on a type without a contract (`Func`, `Action`) would be checked at no call, so it is reported. So is a method group made a contracted delegate (`Step s = F`), whose contract isn't compared with the type's; `x => F(x)` says the same thing, checked.
+  - **Method groups (CSV1029).** A method group made a contracted delegate (`Step s = F`) is reported, as its contract isn't compared with the type's; `x => F(x)` says the same thing, checked.
+  - **Without a contract.** A `Func`, an `Action`, or a delegate type with no contract class is spoken of with `Spec.Pre` and `Spec.Post` (see [Delegates](specifications.md#delegates)).
   - **Concurrency.** `[RunsConcurrently]` on a delegate type makes every lambda made one concurrent code, and a call of one from concurrent code needs that mark (CSV1028).
 - **Virtual `[Pure]` queries** (`Area()`, an abstract `[Pure]` property `Balance`):
   - **One function.** A query and all its overrides are one function, named after the root declaration, so `s.Area()` means the same whatever the static type of `s`.

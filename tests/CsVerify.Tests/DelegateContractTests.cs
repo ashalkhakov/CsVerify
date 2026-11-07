@@ -45,9 +45,7 @@ namespace CsVerify.Tests
         [InlineData("CSV1016", C + "static void M() { var b = new int[3]; Fill f = a => { a[0] = 1; b[0] = 1; }; } }")]
         // a delegate's code isn't known: it may change any field
         [InlineData("CSV1004", C + "static void M(Step g, Cell c) { c.V = 1; g(1); Spec.Assert(c.V == 1); } }")]
-        // checked nowhere: a precondition on a type without a contract, a method group's contract
-        [InlineData("CSV1029", C + "static void M() { Func<int, int> f = x => { Spec.Requires(x > 0); return x; }; } }")]
-        [InlineData("CSV1029", C + "static void M(Action<int> g) { g(1); } static void N() { M(x => { Spec.Requires(x > 0); }); } }")]
+        // a method group's contract isn't compared with the type's
         [InlineData("CSV1029", C + "static int F(int x) => 2; static void M() { Step s = F; } }")]
         // concurrency: a lambda made a marked delegate is concurrent code; calling an unmarked one from it needs the mark
         [InlineData("CSV1027", C + "static Cell X = new Cell(); static void M() { Job j = () => { X.V = 1; }; } }")]

@@ -230,6 +230,7 @@ namespace CsVerify.Verifier
                 CheckSubtyping(f, spec);
                 // the permissions the preconditions give (then, as conditions, they say they are in hand)
                 foreach (var req in _contract.Requires) Inhale(req, f, spec, f);
+                EnclosingFacts(f, spec);
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
                 EnterFrames(f, spec);
@@ -945,6 +946,13 @@ namespace CsVerify.Verifier
         }
 
         private Term Eval(IOperation op, Frame f, SpecEnv spec = null)
+        {
+            var t = EvalCore(op, f, spec);
+            if (op != null && t != null && op.Type?.TypeKind == TypeKind.Delegate) DelegateValue(op, t, f);
+            return t;
+        }
+
+        private Term EvalCore(IOperation op, Frame f, SpecEnv spec)
         {
             if (op == null) return _z3.Fresh("missing", Sort.Int);
             if (op.Syntax is StackAllocArrayCreationExpressionSyntax && !(op is IConversionOperation)) return StackAlloc(op, f, spec);
@@ -1764,6 +1772,19 @@ namespace CsVerify.Verifier
                         return Quantifier(inv, f, spec, m.Name == "Forall");
                     case "Fresh":
                         return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
+                    case "Total":
+                        return TotalOf((INamedTypeSymbol)m.Parameters[0].Type, Eval(inv.Arguments[0].Value, f, spec));
+                    case "Pre":
+                    case "Post":
+                    {
+                        // Spec.Pre(f, args...), Spec.Post(f, args..., r)
+                        var type = (INamedTypeSymbol)m.Parameters[0].Type;
+                        var d = Eval(inv.Arguments[0].Value, f, spec);
+                        var rest = inv.Arguments.Skip(1).Select(a => Eval(a.Value, f, spec)).ToList();
+                        int n = type.DelegateInvokeMethod.Parameters.Length;
+                        return m.Name == "Pre" ? PreOf(type, d, rest.Take(n).ToList())
+                                               : PostOf(type, d, rest.Take(n).ToList(), rest.Count > n ? rest[n] : null);
+                    }
                     case "Multiset":
                         return MultisetOf(inv, f, spec);
                     case "Index":
@@ -1812,6 +1833,7 @@ namespace CsVerify.Verifier
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
+            HandedToLibrary(m, inv.Arguments, f, spec);
             if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
             if (LinqCall(inv, f, spec) is Term linqResult) return linqResult;
             var builtin = Builtin(inv, f, spec);
@@ -1901,6 +1923,7 @@ namespace CsVerify.Verifier
                 var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
                 if (!callee.HasSource && !callee.OfDelegate)
                 {
+                    if (_codeMode) DelegateCalled(inv, receiver, argTerms);
                     var libraryMemory = f.Heap;
                     var libraryHeld = f.ArrPerm;
                     DeferTies();
@@ -1930,6 +1953,7 @@ namespace CsVerify.Verifier
                     LibraryNullFacts(inv, argTerms, libResult);
                     GuardFacts(inv, argTerms);
                     if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
+                    DelegateGave(inv, receiver, argTerms, libResult);
                     return libResult;
                 }
 

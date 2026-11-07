@@ -54,7 +54,31 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - `Spec.Index(x)` is the index of `x`, the iteration variable of a `foreach` over an array or a string. In the loop's invariants it is the number of elements gone through.
 - `Spec.Ensures<R>(r => …)` binds `r` to the return value. Lambdas cannot capture `ref`/`in` parameters, so for those use `Spec.Ensures(bool)` with `Spec.Result<R>()` and `Spec.Old(x)`.
 - `Spec.Forall(lo, hi, i => P)` / `Spec.Exists(...)` are bounded integer quantifiers.
+- `Spec.Pre(f, x)`, `Spec.Post(f, x, r)` and `Spec.Total(f)` say what a `Func` or `Action` accepts and gives, as Dafny's `f.requires` and `f.ensures` (see [Delegates](#delegates)).
 - Specification expressions should be side-effect free. Calls in them must be `[Pure]`: a source method, or a library member whose stub is (`l.Count`, `string.IsNullOrEmpty(s)`; see [Contracts for code without sources](library-contracts.md)).
+
+## Delegates
+
+A delegate type of the program can carry a contract, as an interface does (see [Object-oriented code](objects.md#object-oriented-code)). A `Func` or `Action`, or a delegate type without one, is spoken of with `Spec.Pre(f, x)` (Dafny's `f.requires`), `Spec.Post(f, x, r)` (`f.ensures`) and `Spec.Total(f)` (`Spec.Pre` for every argument):
+
+```csharp
+static int Apply(Func<int, int> g, int x)
+{
+    Spec.Requires(Spec.Pre(g, x));
+    Spec.Ensures<int>(r => Spec.Post(g, x, r));
+    return g(x);
+}
+
+var y = Apply(x => x < 100 ? x + 1 : 0, 1);
+Spec.Assert(y == 2);   // what the lambda gives is its value
+```
+
+- **A call** `g(x)` proves `Spec.Pre(g, x)` and gives a result `r` with `Spec.Post(g, x, r)`.
+- **No delegate is taken to accept anything.** What a parameter, a field or a call's result accepts is what a specification says, and nothing otherwise, as in ATS. A method that calls one says what it needs: `Spec.Requires(Spec.Pre(g, x))`, `Spec.Requires(Spec.Forall(0, n, i => Spec.Pre(g, i)))`, or `Spec.Requires(Spec.Total(g))`.
+- **A lambda** made a delegate has its own `Spec.Requires` as its `Spec.Pre`; without one it is total, since its body is proved for every argument. Its `Spec.Post` implies what it ensures and, for an expression, its value. A method group gives its method's contract the same way. Both count only as far as they depend on the parameters, constants and captured variables that are never written after they're declared; the rest is left out, and a proof that needs it must say more, or use a delegate type with a contract. A precondition that depends on more can't be a `Spec.Pre` at all, so it is reported (CSV1029).
+- **Handed to a library** (`Task.Run`, `List.ForEach`, a query), a delegate may be called with anything, so it must be total (CSV1029): a lambda without a precondition, or a delegate said to be `Spec.Total`.
+- **Inside a lambda,** what its method requires of parameters it never assigns still holds, as `Spec.Pre` and `Spec.Total` don't change: `Spec.Requires(Spec.Total(work))` lets `Task.Run(() => work())` call it.
+- **Not modeled:** what a delegate changes (a call may change anything, as a library call may), whether it throws or ends (a call that may throw is handled as any call that may), and permissions: a delegate that needs `Spec.Acc` takes a delegate type with a contract.
 
 ## Enabling `CSVERIFY_SPEC`
 

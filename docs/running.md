@@ -171,7 +171,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |
 | CSV1028 | verifier | a method of the program that runs concurrently (started and not awaited in the same method, handed to a thread, or called by concurrent code), or a delegate type called by concurrent code, but isn't marked `[RunsConcurrently]` |
-| CSV1029 | verifier | a delegate's contract that is checked nowhere: a lambda's `Spec.Requires` on a delegate type without a contract, or a method group made a delegate whose type has one |
+| CSV1029 | verifier | a delegate handed to a library that may call it with any arguments, but that isn't known to accept them all (`Spec.Total`); a lambda's precondition that reads state, so it can't be its `Spec.Pre`; or a method group made a delegate whose type has a contract |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1998 | verifier | Z3 stopped answering, past its own timeout, and was stopped: the rest of the method is not verified |
 | CSV1999 | verifier | internal or solver error |

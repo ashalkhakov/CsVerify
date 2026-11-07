@@ -337,6 +337,7 @@ namespace CsVerify.Verifier
             }
 
             var callee = ctor != null ? _engine.ContractOf(ctor) : null;
+            if (ctor != null) HandedToLibrary(ctor, oc.Arguments, f, spec);
             if (callee?.IsStub == true && _codeMode) Assumed(callee);
             Frame pre = null;
             if (callee?.HasSource == true && _codeMode)

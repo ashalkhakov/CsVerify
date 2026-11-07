@@ -28,6 +28,7 @@ namespace CsLemon.Lr
         /// </summary>
         public static object? Evaluate(Tree t, object?[] values, System.Func<int, object?[], object?> reduce)
         {
+            Spec.Requires(Spec.Total(reduce));
             int next = 0;
             return Evaluate(t, values, ref next, reduce);
         }
@@ -38,6 +39,7 @@ namespace CsLemon.Lr
         /// </summary>
         public static void EvaluateStack(Stack s, object?[] values, System.Func<int, object?[], object?> reduce)
         {
+            Spec.Requires(Spec.Total(reduce));
             var trees = new List<Tree>();
             Stack cur = s;
             while (cur is Stack.Cell)
@@ -61,6 +63,7 @@ namespace CsLemon.Lr
         /// <summary>Evaluate, with the leaves taking values[next], values[next + 1], ...; next moves past them.</summary>
         public static object? Evaluate(Tree t, object?[] values, ref int next, System.Func<int, object?[], object?> reduce)
         {
+            Spec.Requires(Spec.Total(reduce));
             Spec.Requires(0 <= next);
             Spec.Ensures(0 <= next);
             if (t is Tree.Leaf)

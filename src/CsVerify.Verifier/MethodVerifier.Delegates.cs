@@ -8,22 +8,14 @@ namespace CsVerify.Verifier
     /// Contracts of delegates. A delegate type of the program gets one as an interface does, from a [ContractClassFor]
     /// class whose Invoke says Spec.Requires and Spec.Ensures. A call of such a delegate proves the precondition and
     /// assumes the postcondition; a lambda made one is proved against it, as an override is (CSV1018 if it requires
-    /// more). What it may change is anything, since which body runs isn't known. A lambda's own precondition is checked
-    /// at calls only through its type's: on a type without a contract (Func, Action) it would be checked nowhere, so it
-    /// is reported (CSV1029). So is a method group made a contracted delegate: its contract isn't compared with the
-    /// type's, and a lambda that calls it says the same thing checked.
+    /// more). What it may change is anything, since which body runs isn't known. A method group made a contracted
+    /// delegate is reported (CSV1029): its contract isn't compared with the type's, and a lambda that calls it says the
+    /// same thing, checked. On a type without a contract (Func, Action), see Spec.Pre and Spec.Post (MethodVerifier.HigherOrder).
     /// </summary>
     internal sealed partial class MethodVerifier
     {
-        private void CheckDelegateContract()
-        {
-            if (_method.MethodKind != MethodKind.AnonymousFunction || _contract.OwnRequires.Count == 0) return;
-            var type = _engine.DelegateTypeOf(_method);
-            if (type != null && _engine.HasDelegateContract(type)) return;
-            Report("CSV1029", _contract.OwnRequires[0].Syntax,
-                $"this lambda's precondition isn't checked where it's called: its type '{type?.ToDisplayString() ?? "?"}' has no contract. " +
-                "Declare a delegate type and give it the contract with [ContractClassFor], or drop the precondition", isError: true);
-        }
+        /// <summary>A lambda made a contracted delegate is checked against the type's (CSV1018); one made a plain delegate is partial (MethodVerifier.HigherOrder).</summary>
+        private void CheckDelegateContract() { }
 
         private void CheckMethodGroup(IDelegateCreationOperation dc)
         {

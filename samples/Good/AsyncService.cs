@@ -83,6 +83,7 @@ namespace AsyncServiceSample
 
         public async Task<T> RunAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct)
         {
+            Spec.Requires(Spec.Total(work));
             await _slots.WaitAsync(ct);
             try { return await work(ct); }
             finally { _slots.Release(); }

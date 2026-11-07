@@ -135,6 +135,7 @@ namespace CsVerify.Verifier
         public readonly VerifierOptions Options;
         public readonly SmtSolver Solver;
         private readonly Compilation _compilation;
+        internal Compilation Compilation => _compilation;
         private readonly Dictionary<IMethodSymbol, Contract> _contracts = new Dictionary<IMethodSymbol, Contract>(SymbolEqualityComparer.Default);
 
         internal readonly DataTypes Data;
