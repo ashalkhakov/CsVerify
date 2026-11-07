@@ -162,11 +162,11 @@ Spec.Assert(a[0] == 1 && a[mid] == 2);
 
 **What runs concurrently says so (CSV1028).** A method of the program that runs at the same time as other code must be marked `[RunsConcurrently]`, on itself, its property, or its class, struct or interface. The verifier doesn't work it out across the program; it checks each place where it can see the mark is needed:
 
-- a method started and not awaited at once, `Task.WhenAll(A(), B())` included, or handed to `Task.Run`, a thread or `Parallel` as a method group;
+- a method started and not awaited in the same method (a task kept in a field, returned, or awaited only inside a lambda), or handed to `Task.Run`, a thread or `Parallel` as a method group;
 - a method, constructor or property with code that marked code calls, or that a method calls between starting a task and finishing it;
 - an override or implementation of a marked method, since a call of it may reach any of them.
 
-A lambda given to `Task.Run`, a thread or `Parallel`, and lambdas and local functions inside concurrent code, are concurrent where they are and need no mark; nor do auto-properties and a positional record's own members. An entry point that the program's callers run at once, such as a web handler, is marked the same way.
+A lambda given to `Task.Run`, a thread or `Parallel`, and lambdas and local functions inside concurrent code, are concurrent where they are and need no mark; so is a method started and awaited later in the same method (`var t = A(); ...; await t;`, or `await Task.WhenAll(A(), B())`), since both ends are in sight, though its callees still need the mark; nor do auto-properties and a positional record's own members. An entry point that the program's callers run at once, such as a web handler, is marked the same way.
 
 **Code that runs alongside other code must hold what it uses (CSV1027).** That is a marked method, a delegate given to `Task.Run`, a thread or `Parallel`, and a method between starting a task and finishing it. A field it uses must be one of:
 

@@ -207,7 +207,9 @@ namespace CsVerify.Verifier
                         AddAfter(inv, th.Expression.ToString(), model);
                     else if (!awaited && (threading && m.Name == "Run" || IsSourceTask(m) && !IsForwarded(inv, model)))
                     {
-                        if (IsSourceTask(m)) Need(inv, m, "it is started here and not awaited at once");
+                        // a task awaited later in the same method needs no mark: start and finish are both in sight, and its code is checked as concurrent all the same
+                        if (IsSourceTask(m) && AwaitedInSameMethod(inv, model)) AddStarted(m);
+                        else if (IsSourceTask(m)) Need(inv, m, "it is started here and not awaited in the same method");
                         AddAfter(inv, TaskName(inv, model), model);
                     }
                     break;
@@ -215,6 +217,33 @@ namespace CsVerify.Verifier
                     foreach (var a in c.ArgumentList.Arguments) AddDelegate(a.Expression, model);
                     break;
             }
+        }
+
+        private void AddStarted(IMethodSymbol m)
+        {
+            foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
+                AddCode(r.GetSyntax(), _compilation.GetSemanticModel(r.SyntaxTree));
+        }
+
+        /// <summary><c>var t = F(); ... await t;</c> in one method, or <c>await Task.WhenAll(F(), G())</c>.</summary>
+        private static bool AwaitedInSameMethod(InvocationExpressionSyntax inv, SemanticModel model)
+        {
+            if (inv.Parent is ArgumentSyntax arg && arg.Parent?.Parent is InvocationExpressionSyntax all && IsAwaitedHere(all) &&
+                model.GetSymbolInfo(all).Symbol is IMethodSymbol w && w.Name == "WhenAll" && w.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task")
+                return true;
+            var task = TaskName(inv, model);
+            if (task == null) return false;
+            SyntaxNode at = inv.FirstAncestorOrSelf<StatementSyntax>();
+            while (at != null && !(at is BaseMethodDeclarationSyntax || at is AccessorDeclarationSyntax))
+            {
+                var parent = at.Parent;
+                if (parent is AnonymousFunctionExpressionSyntax || parent is LocalFunctionStatementSyntax) return false;
+                if (parent is BlockSyntax b && at is StatementSyntax here &&
+                    b.Statements.Skip(b.Statements.IndexOf(here) + 1).Any(next => Finishes(next, task, model)))
+                    return true;
+                at = parent;
+            }
+            return false;
         }
 
         private static bool IsSourceTask(IMethodSymbol m) =>

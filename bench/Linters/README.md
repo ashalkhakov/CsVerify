@@ -47,7 +47,7 @@ validation.
 | ModifiedWhileEnumerated.Harmless | no | · | · | · | · | · | · | · | · |
 | Unobserved.Direct | bug | CS4014 | · | · | · | · | · | · | CSV1901 |
 | Unobserved.Hidden | bug | · | · | · | · | · | · | · | CSV1026 |
-| Unobserved.Harmless | no | · | · | · | · | · | · | · | CSV1028 |
+| Unobserved.Harmless | no | · | · | · | · | · | · | · | · |
 | Disposal.LeakDirect | bug | · | CA2000 | · | · | · | · | · | CSV0020 |
 | Disposal.LeakHidden | bug | · | CA2000 | · | · | · | · | · | CSV0020 |
 | Disposal.LeakWriter | bug | · | CA2000 | · | · | · | · | PULSE_RESOURCE_LEAK | CSV0020 |
@@ -126,8 +126,6 @@ validation.
   specification that says what was meant.
 - **Harmless code that needs a proof.** `table[hash & 15] + table[hash >>> 28]` is in bounds for any `hash`, and
   `(byte)((x >> 8) & 0xFF)` always fits. CsVerify proves both.
-- **False alarms.** Two. The compiler reports a switch whose missing value was returned for earlier. CsVerify asks for
-  `[RunsConcurrently]` on a task that is started and awaited later: it does run alongside its caller, but the case says
-  nothing about whether that's meant.
+- **False alarms.** One: the compiler reports a switch whose missing value was returned for earlier.
 - **Noise.** The linters raised 311 other warnings on these 57 cases, StyleCop 171 of them. InferSharp and CsVerify
   raised none.

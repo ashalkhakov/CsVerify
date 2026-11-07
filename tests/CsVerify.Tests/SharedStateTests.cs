@@ -81,8 +81,10 @@ namespace CsVerify.Tests
 
         // what runs concurrently must say so, where that can be seen: a start, a hand-off, a call from concurrent code, an override
         [Theory]
-        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { var t = A(c); await t; } }")]
-        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { await Task.WhenAll(A(c), A(c)); } }")]
+        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { var t = A(c); } }")]
+        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static Task t; static void M(Cell c) { t = A(c); } }")]
+        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { var t = A(c); Func<Task> f = async () => await t; await f(); } }")]
+        [InlineData(C + "static void H() { } static async Task A() { H(); await Task.Yield(); } static async Task M() { var t = A(); await t; } }")]
         [InlineData(C + "static void W() { } static void M() { var t = new Thread(W); t.Start(); t.Join(); } }")]
         [InlineData(C + "static void W() { } static async Task M() { await Task.WhenAll(Task.Run(() => W()), Task.Run(() => W())); } }")]
         [InlineData(C + "static void H() { } [RunsConcurrently] static async Task A() { H(); await Task.Yield(); } }")]
@@ -96,11 +98,23 @@ namespace CsVerify.Tests
         [Theory]
         [InlineData(C + "[RunsConcurrently] static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { var t = A(c); await t; } }")]
         [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { await A(c); } }")]
+        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { var t = A(c); await t; } }")]
+        [InlineData(C + "static async Task<int> A(Cell c) { await Task.Yield(); return 1; } static async Task M(Cell c, bool b) { var t = A(c); if (b) { } var x = await t; } }")]
+        [InlineData(C + "static async Task A(Cell c) { await Task.Yield(); } static async Task M(Cell c) { await Task.WhenAll(A(c), A(c)); } }")]
         [InlineData("[RunsConcurrently] public class K { void H() { } public async Task A() { H(); await Task.Yield(); } } " + C + " }")]
         [InlineData("public sealed record R(int X); " + C + "[RunsConcurrently] static int A() { var r = new R(1); return r.X; } }")]
         [InlineData(C + "[Trusted] static void H() { } [RunsConcurrently] static async Task A() { H(); await Task.Yield(); } }")]
         [InlineData(C + "[RunsConcurrently] static async Task A() { void L() { } L(); Action f = () => { }; f(); await Task.Yield(); } }")]
         public void Marked_IsFine(string code) => Assert.DoesNotContain("CSV1028", Ids(code));
+
+        // a task awaited later needs no mark, but its code is still concurrent: a race with what runs alongside is found
+        [Fact]
+        public void AwaitedLater_Unmarked_IsStillCheckedAsConcurrent()
+        {
+            var ids = Ids(C + "static async Task A(Cell c) { c.V = 1; await Task.Yield(); } static async Task M(Cell c) { var t = A(c); c.V = 2; await t; } }");
+            Assert.DoesNotContain("CSV1028", ids);
+            Assert.Equal(2, ids.Count(i => i == "CSV1027"));
+        }
 
         // an error isn't assumed away: what comes after is still looked at
         [Fact]
