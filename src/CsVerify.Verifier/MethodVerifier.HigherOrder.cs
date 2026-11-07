@@ -270,6 +270,16 @@ namespace CsVerify.Verifier
 
         private bool Entailed(Term t) => _z3.Check(T.Not(t)) == "unsat";
 
+        /// <summary>Spec.ReadsOf(f, args...): the objects whose fields and cells f's Spec.Pre and Spec.Post read here (Dafny's f.reads).</summary>
+        private Term ReadsOfSpec(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            var type = (INamedTypeSymbol)inv.TargetMethod.Parameters[0].Type;
+            _readsFrames = true;
+            var d = Eval(inv.Arguments[0].Value, f, spec);
+            var args = inv.Arguments.Skip(1).Select(a => Eval(a.Value, f, spec)).ToList();
+            return ReadsAt(type, d, StateFor(d, f), args);
+        }
+
         /// <summary>Spec.ChangesNothing(f), Spec.Changes(f, x => frame), Spec.Reads(f, x => frame) in a specification.</summary>
         private Term FrameSpec(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
@@ -550,6 +560,7 @@ namespace CsVerify.Verifier
                 {
                     case "Pre": case "Post": case "Total": named.Add(p.OriginalDefinition); break;
                     case "Reads" when op.Arguments.Length == 2: reading.Add(p.OriginalDefinition); break;
+                    case "ReadsOf": reading.Add(p.OriginalDefinition); break;
                 }
             }
             named.ExceptWith(reading);
@@ -637,13 +648,7 @@ namespace CsVerify.Verifier
                     var objects = new List<IOperation>();
                     foreach (var r in requires) StateRead(r, own, fn, objects);
                     foreach (var o in objects)
-                    {
-                        var ys = Bound(ps);
-                        var inFrame = Closed(ps, ys, f, inner =>
-                            new Term($"(distinct (select {T.Coerce(EvalForeignSpec(c.Reads, inner, new SpecEnv { Old = inner }), Sort.Row).S} {T.Coerce(EvalForeignSpec(o, inner, new SpecEnv { Old = inner }), Sort.Int).S}) 0)", Sort.Bool));
-                        var goal = ys.Length == 0 ? inFrame : new Term($"(forall ({string.Join(" ", ys.Select(v => $"({v.S} {T.SortName(v.Sort)})"))}) {inFrame.S})", Sort.Bool);
-                        Prove(goal, "CSV1029", o.Syntax, $"the precondition reads '{o.Syntax}', which isn't in its Spec.Reads", assume: false);
-                    }
+                        Prove(InFrame(ps, f, c.Reads, o), "CSV1029", o.Syntax, $"the precondition reads '{o.Syntax}', which isn't in its Spec.Reads", assume: false);
                 }
             }
             else
@@ -670,13 +675,18 @@ namespace CsVerify.Verifier
             {
                 var ownR = new HashSet<ISymbol>(own, SymbolEqualityComparer.Default);
                 if (post.ResultParameter != null) ownR.Add(post.ResultParameter);
-                if (post.Guard != null || !Steady(post.Expr, ownR, fn)) continue;
+                if (post.Guard != null) continue;
+                // of state, for one with a reads frame: if it reads only there, and the lambda changes nothing (so the
+                // state it ends in is the one it began in)
+                if (!Steady(post.Expr, ownR, fn) &&
+                    (sid.S == Canon.S || !WritesNothing(fn) || !FramedFact(post.Expr, ownR, fn, ps, f, c.Reads, post.ResultParameter))) continue;
                 var xs = Bound(ps);
                 var r = invoke.ReturnsVoid ? null : new Term(_z3.FreshName("r"), SortOf(invoke.ReturnType));
                 var fact = Closed(ps, xs, f, inner => AsBool(EvalForeignSpec(post.Expr, inner, new SpecEnv { Old = inner, Result = r, ResultParameter = post.ResultParameter })));
                 facts.Add((xs, r, fact));
             }
-            if (!invoke.ReturnsVoid && ValueOf(fn) is IOperation body && Steady(body, own, fn))
+            if (!invoke.ReturnsVoid && ValueOf(fn) is IOperation body &&
+                (Steady(body, own, fn) || sid.S != Canon.S && FramedFact(body, own, fn, ps, f, c.Reads, null)))
             {
                 var xs = Bound(ps);
                 var r = new Term(_z3.FreshName("r"), SortOf(invoke.ReturnType));
@@ -689,6 +699,32 @@ namespace CsVerify.Verifier
                 var vars = r == null ? xs.ToArray() : xs.Append(r).ToArray();
                 AssumeSide(Forall(vars, T.Implies(T.And(post, PreAt(type, d, sid, xs)), fact), post));
             }
+        }
+
+        /// <summary>For every argument, the object <paramref name="o"/> (of the parameters) is in the frame (of them too).</summary>
+        private Term InFrame(IReadOnlyList<IParameterSymbol> ps, Frame f, IOperation frame, IOperation o)
+        {
+            var ys = Bound(ps);
+            var inFrame = Closed(ps, ys, f, inner =>
+                new Term($"(distinct (select {T.Coerce(EvalForeignSpec(frame, inner, new SpecEnv { Old = inner }), Sort.Row).S} {T.Coerce(EvalForeignSpec(o, inner, new SpecEnv { Old = inner }), Sort.Int).S}) 0)", Sort.Bool));
+            return ys.Length == 0 ? inFrame : new Term($"(forall ({string.Join(" ", ys.Select(v => $"({v.S} {T.SortName(v.Sort)})"))}) {inFrame.S})", Sort.Bool);
+        }
+
+        /// <summary>
+        /// Can a fact of a lambda with a reads frame (a postcondition, its value) be of the state it is made in: it reads
+        /// fields and cells of the frame's objects only, so it stays as it is while the delegate's Spec.Post does?
+        /// </summary>
+        private bool FramedFact(IOperation expr, ISet<ISymbol> own, IMethodSymbol fn, IReadOnlyList<IParameterSymbol> ps, Frame f, IOperation frame, IParameterSymbol result)
+        {
+            var objects = new List<IOperation>();
+            if (!StateRead(expr, own, fn, objects)) return false;
+            foreach (var o in objects)
+            {
+                // (of the result: no object here to name)
+                if (result != null && o.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(p => SymbolEqualityComparer.Default.Equals(p.Parameter, result))) return false;
+                if (!Entailed(InFrame(ps, f, frame, o))) return false;
+            }
+            return true;
         }
 
         private Term[] Bound(IReadOnlyList<IParameterSymbol> ps) => ps.Select(p => new Term(_z3.FreshName(p.Name), SortOf(p.Type))).ToArray();
@@ -705,7 +741,8 @@ namespace CsVerify.Verifier
             {
                 var t = eval(inner);
                 var collected = _quantFacts.Pop();
-                return T.And(collected.Append(t).ToArray());
+                // (side facts of a condition are part of it; of a value, they are left out: what they say is true anyway)
+                return t.Sort == Sort.Bool ? T.And(collected.Append(t).ToArray()) : t;
             }
             finally { _obligations.Pop(); _quantDepth--; }
         }

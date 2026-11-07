@@ -147,5 +147,28 @@ namespace CsVerify.Tests
         // a callee that changes what it reads
         [InlineData("CSV1001", C + "static int Apply(Func<int, int> g, Cell c, int x) { Spec.Requires(Spec.Reads(g, y => ObjSet.Of(c))); Spec.Requires(Spec.Pre(g, x)); c.V = 0; return g(x); } } ")]
         public void Reads_Reported(string id, string code) => Assert.Contains(id, Ids(code));
+
+        // Dafny's f.reads(x): Spec.ReadsOf, so a method takes any delegate that reads state, and says what it mustn't read
+        private const string MR = "static int M(Func<int, int> g, int[] a) { Spec.Requires(Spec.Pre(g, 0) && a.Length > 0); Spec.Requires(Spec.ReadsOf(g, 0).IsDisjointFrom(ObjSet.Of(a))); a[0] = 1; return g(0); } ";
+        private const string ReadsB = "i => { Spec.Reads(ObjSet.Of(b)); Spec.Requires(b.Length > 0 && b[0] > 0); return 10 / b[0]; }";
+
+        [Theory]
+        [InlineData(C + MR + "static void N(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b); b[0] = 5; var r = M(" + ReadsB + ", a); } }")]
+        [InlineData(C + MR + "static void N(int[] a) { Spec.Requires(a.Length > 0); var r = M(i => i, a); } }")]
+        // what it gives, of state: its value, and what it ensures if it changes nothing
+        [InlineData(C + "static void N(Cell c, Cell other) { Spec.Requires(c != other); c.V = 7; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0 && c.V < 100); return x < 100 && x > -100 ? x + c.V : 0; }; other.V = 1; var r = h(1); Spec.Assert(r == 8); } }")]
+        [InlineData(C + "static void N(Cell c) { c.V = 7; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0); Spec.Ensures<int>(r => r == c.V); return c.V; }; var r = h(1); Spec.Assert(r == 7); } }")]
+        public void ReadsOf_Proved(string code) => Assert.Empty(All(code));
+
+        [Theory]
+        // it may read what the method writes
+        [InlineData("CSV1001", C + "static int M(Func<int, int> g, int[] a) { Spec.Requires(Spec.Pre(g, 0) && Spec.ReadsOf(g, 0).IsSubsetOf(ObjSet.Of(a)) && a.Length > 0); a[0] = 1; return g(0); } } ")]
+        [InlineData("CSV1001", C + MR + "static void N(int[] b) { Spec.Requires(b.Length > 0); b[0] = 5; var r = M(" + ReadsB + ", b); } }")]
+        // what it gives changed with what it reads
+        [InlineData("CSV1004", C + "static void N(Cell c) { c.V = 7; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0 && c.V < 100); return x < 100 && x > -100 ? x + c.V : 0; }; c.V = 8; var r = h(1); Spec.Assert(r == 8); } }")]
+        // a lambda that writes: what it ensures of state isn't kept; one that reads outside its frame gives no value
+        [InlineData("CSV1004", C + "static void N(Cell c, Cell d) { c.V = 7; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0); Spec.Ensures<int>(r => r == c.V); d.V = 0; return c.V; }; var r = h(1); Spec.Assert(r == 7); } }")]
+        [InlineData("CSV1004", C + "static void N(Cell c, Cell d) { c.V = 7; d.V = 1; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0); return d.V; }; var r = h(1); Spec.Assert(r == 1); } }")]
+        public void ReadsOf_Reported(string id, string code) => Assert.Contains(id, Ids(code));
     }
 }

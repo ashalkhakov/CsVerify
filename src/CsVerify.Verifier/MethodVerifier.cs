@@ -1778,6 +1778,8 @@ namespace CsVerify.Verifier
                         return FrameSpec(inv, f, spec);
                     case "Reads" when inv.Arguments.Length == 2:
                         return FrameSpec(inv, f, spec);
+                    case "ReadsOf":
+                        return ReadsOfSpec(inv, f, spec);
                     case "Total":
                         return TotalOf((INamedTypeSymbol)m.Parameters[0].Type, Eval(inv.Arguments[0].Value, f, spec), f);
                     case "Pre":

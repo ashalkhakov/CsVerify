@@ -184,6 +184,22 @@ namespace CsVerify
         public static bool Reads(Action f, ObjSet frame) => throw GhostException.Instance;
         public static bool Reads<T>(Predicate<T> f, Func<T, ObjSet> frame) => throw GhostException.Instance;
 
+        // ---- what a delegate reads, as an object set (Dafny's f.reads(x)); naming it says the delegate may read state
+
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<R>(Func<R> f) => throw GhostException.Instance;
+        public static ObjSet ReadsOf(Action f) => throw GhostException.Instance;
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<A1, R>(Func<A1, R> f, A1 a1) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<A1>(Action<A1> f, A1 a1) => throw GhostException.Instance;
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<A1, A2, R>(Func<A1, A2, R> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<A1, A2>(Action<A1, A2> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<A1, A2, A3, R>(Func<A1, A2, A3, R> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<A1, A2, A3>(Action<A1, A2, A3> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<T>(Predicate<T> f, T a) => throw GhostException.Instance;
+
         // (the BCL's other delegates that collections take)
         public static bool Pre<T>(Predicate<T> f, T a) => throw GhostException.Instance;
         public static bool Post<T>(Predicate<T> f, T a, bool r) => throw GhostException.Instance;
