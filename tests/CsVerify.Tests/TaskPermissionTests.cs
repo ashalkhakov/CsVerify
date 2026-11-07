@@ -82,6 +82,24 @@ namespace CsVerify.Tests
         [InlineData("static async Task M(int[] a) { " + Whole + "var l = Fill(a, 0, mid, 1); try { await l; } catch (InvalidOperationException) { a[0] = 2; throw; } }")]
         public void NotProved(string m) => Assert.NotEmpty(Errors(m));
 
+        // a started task's postcondition reads only what it gives back, to its left, and what never changes
+        [Theory]
+        [InlineData("static async Task F(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); Spec.Ensures(Spec.Acc(a) && o[0] == 3); await Task.Yield(); Spec.Assume(o[0] == 3); } static async Task M(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); var t = F(a, o); await t; }")]
+        [InlineData("static async Task F(int[] a) { Spec.Requires(a.Length > 0 && Spec.Acc(a)); Spec.Ensures(a[0] == 1 && Spec.Acc(a)); await Task.Yield(); a[0] = 1; } static async Task M(int[] a) { Spec.Requires(a.Length > 0 && Spec.Acc(a)); var t = F(a); await t; }")]
+        [InlineData("static int _n; static async Task F(int[] a) { Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a) && _n == 0); await Task.Yield(); Spec.Assume(_n == 0); } static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = F(a); await t; }")]
+        [InlineData("public class D { public int V; } static async Task F(int[] a, D d) { Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a) && d.V == 1); await Task.Yield(); Spec.Assume(d.V == 1); } static async Task M(int[] a, D d) { Spec.Requires(Spec.Acc(a)); var t = F(a, d); await t; }")]
+        [InlineData("static void G(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); Spec.Ensures(Spec.Acc(a) && o[0] == 3); Spec.Assume(o[0] == 3); } static async Task M(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); var t = Task.Run(() => G(a, o)); await t; }")]
+        public void Postcondition_ReadsWhatItDoesNotGiveBack_IsReported(string m) =>
+            Assert.Contains(Errors(m), e => e.StartsWith("CSV1016") && e.Contains("doesn't give back"));
+
+        [Theory]
+        [InlineData("static async Task M(int[] a) { " + Whole + "var l = Fill(a, 0, mid, 1); await l; }")]
+        [InlineData("public class D { public readonly int V; } static async Task F(int[] a, D d) { Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a) && d.V == 1 && a.Length >= 0); await Task.Yield(); Spec.Assume(d.V == 1); } static async Task M(int[] a, D d) { Spec.Requires(Spec.Acc(a)); var t = F(a, d); await t; }")]
+        [InlineData("static async Task F(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); Spec.Ensures(Spec.Acc(a) && Spec.Old(o[0]) == Spec.Old(o[0])); await Task.Yield(); } static async Task M(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); var t = F(a, o); await t; }")]
+        // (awaited at once, nothing runs in between: what it says is so)
+        [InlineData("static async Task F(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); Spec.Ensures(Spec.Acc(a) && o[0] == 3); await Task.Yield(); Spec.Assume(o[0] == 3); } static async Task M(int[] a, int[] o) { Spec.Requires(Spec.Acc(a) && o.Length == 1); await F(a, o); Spec.Assert(o[0] == 3); }")]
+        public void Postcondition_ReadsWhatItGivesBack_IsFine(string m) => Assert.DoesNotContain(Errors(m), e => e.Contains("doesn't give back"));
+
         // (a delegate that can't be fixed where it's made is on its own, and knows nothing)
         [Theory]
         [InlineData("static async Task M(int[] a) { Spec.Requires(a.Length > 2 && Spec.Acc(a)); int n = 1; var t = Task.Run(() => FillNow(a, 0, n, 1)); n = 2; await t; }")]

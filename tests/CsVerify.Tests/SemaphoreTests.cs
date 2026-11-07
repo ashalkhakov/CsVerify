@@ -129,14 +129,16 @@ namespace CsVerify.Tests
             "public async Task M() { await _gate.WaitAsync(); try { _n = -1; await Task.Yield(); _n = 1; } finally { _gate.Release(); } } }").Errors("M"));
 
         [Fact]
-        public void Guard_IsInferredFromWrites()
+        public void Guard_IsNotInferredFromWrites_ButAnUnlockedUseIsReported()
         {
             const string Program = Usings + "public class C { private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1); private int _n; " +
                 "public async Task Set() { await _gate.WaitAsync(); try { _n = 1; await Task.Yield(); Spec.Assert(_n == 1); } finally { _gate.Release(); } } " +
                 "public int M() { return _n; } }";
             var r = Harness.Verify(Program);
-            Assert.Empty(r.Errors("Set"));
+            // (only [GuardedBy] keeps it across the await)
+            Assert.Contains("CSV1004", r.Errors("Set"));
             Assert.Contains("CSV1023", r.Errors("M"));
+            Assert.Empty(Harness.Verify(Program.Replace("private int _n;", "[GuardedBy(nameof(_gate))] private int _n;")).Errors("Set"));
         }
 
         [Fact]

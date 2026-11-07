@@ -8,17 +8,18 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Which lock protects which state. A field or auto-property with <c>[GuardedBy]</c> says so itself. Otherwise a field
-    /// written inside <c>lock (L)</c>, and under no other lock, is taken to be guarded by L: that is what the program's
-    /// own locking says it means. (volatile fields and readonly ones are not: they don't need it.)
+    /// Which lock protects which state: what <c>[GuardedBy]</c> says, and nothing else, since a guess at what a lock means
+    /// would be one more thing to trust. A field written inside <c>lock (L)</c>, and under no other lock, is only noted, so
+    /// that a use of it without L can be reported as a likely race. (volatile fields and readonly ones are not: they don't need it.)
     /// </summary>
     internal sealed class LockGuards
     {
         private readonly Compilation _compilation;
         private readonly Dictionary<ISymbol, ISymbol> _guards = new Dictionary<ISymbol, ISymbol>(SymbolEqualityComparer.Default);
         private readonly Dictionary<ISymbol, List<IMethodSymbol>> _invariants = new Dictionary<ISymbol, List<IMethodSymbol>>(SymbolEqualityComparer.Default);
+        private readonly Dictionary<ISymbol, ISymbol> _unmarked = new Dictionary<ISymbol, ISymbol>(SymbolEqualityComparer.Default);
 
-        public bool Any => _guards.Count > 0 || _invariants.Count > 0;
+        public bool Any => _guards.Count > 0 || _invariants.Count > 0 || _unmarked.Count > 0;
 
         public LockGuards(Compilation compilation, IEnumerable<SyntaxTree> trees)
         {
@@ -63,7 +64,7 @@ namespace CsVerify.Verifier
                     }
             }
             foreach (var (s, locks) in inferred)
-                if (!explicitly.Contains(s) && locks.Count == 1) _guards[s] = locks.First();
+                if (!explicitly.Contains(s) && locks.Count == 1) _unmarked[s] = locks.First();
         }
 
         private static void Infer(IEnumerable<SyntaxNode> held, IFieldSymbol lockField, SemanticModel model, Dictionary<ISymbol, HashSet<ISymbol>> inferred)
@@ -112,6 +113,9 @@ namespace CsVerify.Verifier
 
         /// <summary>The lock field an expression of a lock statement names, or null.</summary>
         public static IFieldSymbol LockOf(ExpressionSyntax e, SemanticModel model) => model.GetSymbolInfo(e).Symbol as IFieldSymbol;
+
+        /// <summary>The one lock a field without <c>[GuardedBy]</c> is written under, or null.</summary>
+        public ISymbol UnmarkedGuard(ISymbol member) => _unmarked.TryGetValue(member.OriginalDefinition, out var l) ? l : null;
 
         public ISymbol GuardOf(ISymbol member) =>
             // (an invariant reads what the lock guards: outside it, that would be a read like any other)

@@ -24,12 +24,20 @@ namespace CsVerify.Verifier
             if (!locks.Any || SpecSymbols.HasAttribute(_method, "TrustedAttribute")) return;
             CheckInvariantIsEstablished();
             CheckWrapper();
+            var asked = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             foreach (var n in _contract.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
             {
                 var symbol = _model.GetSymbolInfo(n).Symbol;
                 if (symbol == null || !(symbol is IFieldSymbol || symbol is IPropertySymbol || symbol is IMethodSymbol)) continue;
                 CheckGateUse(n, symbol);
-                if (locks.GuardOf(symbol) is not IFieldSymbol guard) continue;
+                if (locks.GuardOf(symbol) is not IFieldSymbol guard)
+                {
+                    // (written under a lock elsewhere, and used here without it: the program seems to mean it guarded, but doesn't say so)
+                    if (locks.UnmarkedGuard(symbol) is IFieldSymbol meant && !(n.Parent is NameColonSyntax || n.Parent is NameEqualsSyntax) &&
+                        !IsBeingBuilt(n, ReceiverOf(n)) && !Holds(n, meant, ReceiverOf(n)) && asked.Add(symbol))
+                        Report("CSV1023", n, $"'{symbol.Name}' is written under lock '{meant.Name}' elsewhere, but used here without it: this could race. If the lock guards it, say [GuardedBy(nameof({meant.Name}))]", isError: true);
+                    continue;
+                }
                 if (n.Parent is NameColonSyntax || n.Parent is NameEqualsSyntax) continue;
                 var receiver = ReceiverOf(n);
                 if (IsBeingBuilt(n, receiver)) continue;

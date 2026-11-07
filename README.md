@@ -57,8 +57,9 @@ public static int BinarySearch(int[] a, int key)
 - **Linear views of memory and objects, as in ATS.** Pointers with `PointsTo` views, array views that split and join,
   owned objects, predicates over linked structures, fractional permissions. Roslyn analyzers check that linear values
   are used exactly once, in the IDE as you type.
-- **Locks.** What a lock guards is used only under it, so it can't race, even in code with no specifications: a field
-  written under a lock, or under a `SemaphoreSlim` of count 1, is taken to be guarded by it. Lock invariants hold whenever a lock is free. Algorithms can
+- **Locks.** What a lock guards, by `[GuardedBy]`, is used only under it, so it can't race. Even in code with no
+  specifications, a field written under a lock, or under a `SemaphoreSlim` of count 1, and used elsewhere without it is
+  reported. Lock invariants hold whenever a lock is free. Algorithms can
   also be modeled and proved over every interleaving: a ticket lock's mutual exclusion and progress, and dining
   philosophers without deadlock. See [Async and concurrency](docs/semantics.md#async-and-concurrency).
 - **Objects too.** Data types with closed hierarchies, object invariants, heap fields with inferred frames, dynamic

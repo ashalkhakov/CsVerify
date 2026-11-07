@@ -60,6 +60,13 @@ namespace CsVerify.Tests
         public void Inferred_Static() => Assert.Contains(Race, Errors(
             "static readonly object L = new object(); static int s; static void A() { lock (L) { s = 1; } } static void M() { s = 2; }"));
 
+        // (only [GuardedBy] is used in proofs: entering the lock forgets nothing of an unmarked field, so concurrent code must say so)
+        [Fact]
+        public void Inferred_IsNotAGuard() => Assert.Empty(Errors(Inferred + "public void M() { lock (_l) { _b = 1; } lock (_l) { Spec.Assert(_b == 1); } }"));
+
+        [Fact]
+        public void Inferred_IsNotAGuardForConcurrentCode() => Assert.Contains("CSV1027", Errors(Inferred + "[RunsConcurrently] public void M() { lock (_l) { _b = 1; } }"));
+
         // ---- [GuardedBy]
 
         [Theory]

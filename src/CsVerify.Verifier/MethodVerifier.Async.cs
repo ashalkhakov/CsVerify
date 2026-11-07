@@ -175,6 +175,7 @@ namespace CsVerify.Verifier
         private System.Action<Frame> FinishLater(Contract callee, Frame pre, Term result)
         {
             // (a delegate starts when it starts: of the state then, only what it was given is as it is now)
+            CheckFinishFramed(callee, pre, result);
             var old = pre;
             if (_startsLater)
             {
@@ -197,6 +198,57 @@ namespace CsVerify.Verifier
                     _z3.Assume(GuardedBy(ens, pre, AsBool(EvalForeignSpec(ens.Expr, ended, Env(ens)))));
             };
         }
+
+        /// <summary>The start of a task whose postcondition is being checked to read only what it gives back, or null.</summary>
+        private SyntaxNode _framingTask;
+
+        /// <summary>
+        /// A started task's postcondition is of the state when it ends, and by the await others may have changed what it
+        /// doesn't give back. So it may read only what never changes and what it gives back, to its left (self-framed, as a
+        /// predicate's body is): anything else would be lost, and is reported, not silently forgotten (CSV1016).
+        /// <c>Spec.Old</c> is of the start, which is known.
+        /// </summary>
+        private void CheckFinishFramed(Contract callee, Frame pre, Term result)
+        {
+            var at = _startedCall?.Syntax;
+            if (at == null) return;
+            var obligations = new List<Obligation>();
+            _z3.Push();
+            _obligations.Push(obligations);
+            try
+            {
+                var ended = DetachedFrom(pre);
+                ended.Perm = new Term("((as const (Array Int Real)) 0.0)", Sort.Perm);
+                ended.FPerm = new Term("((as const (Array Int (Array Int Real))) ((as const (Array Int Real)) 0.0))", Sort.PermHeap);
+                ended.ArrPerm = ended.FPerm;
+                var old = pre.Clone();
+                old.Perm = null;
+                old.ArrPerm = null;
+                _framingCheck = true;
+                _framingTask = at;
+                foreach (var ens in callee.Ensures)
+                    Walk(ens.Expr, ended, new SpecEnv { Old = old, Result = result, ResultParameter = ens.ResultParameter }, T.True, own: false,
+                        atom: a =>
+                        {
+                            if (a.Obj != null) _z3.Assume(T.Implies(a.Guard, NotNull(a.Obj)));
+                            if (a.Arr != null) ChangeCells(ended, a, "+");
+                            else if (a.Field != null) ChangeField(ended, a.Obj, FieldId(a.Field), a.Guard, "+");
+                            else if (a.Obj != null) ended.Perm = Change(ended.Perm, a.Obj, a.Guard, "+");
+                        }, fact: null);
+                // (proved here, within the state just built, each closed over the quantifiers it was in)
+                foreach (var ob in obligations) Prove(ob.Condition, ob.Id, ob.At, ob.Message, assume: false);
+            }
+            finally { _framingCheck = false; _framingTask = null; _obligations.Pop(); _z3.Pop(); }
+        }
+
+        /// <summary>What a started task's postcondition reads, that it doesn't give back: CSV1016 at the start.</summary>
+        private void NotGivenBack(Term held, SyntaxNode read) => Emit(new Obligation
+        {
+            Condition = T.Implies(T.And(_guards.ToArray()), held),
+            Id = "CSV1016",
+            At = _framingTask,
+            Message = $"the postcondition of the task started here reads '{read}', which it doesn't give back (no Spec.Acc for it to its left): by the time it is awaited, others may have changed it. Give it back, or await the call at once",
+        });
 
         private List<Atom> AtomsOf(IEnumerable<IOperation> assertions, Frame f, SpecEnv env)
         {

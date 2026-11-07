@@ -29,8 +29,8 @@ namespace AsyncServiceSample
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private readonly Dictionary<int, Order> _orders = new Dictionary<int, Order>();
         private readonly IOrderStore _store;
-        private int _hits;
-        private int _misses;
+        [GuardedBy(nameof(_gate))] private int _hits;
+        [GuardedBy(nameof(_gate))] private int _misses;
 
         public OrderCache(IOrderStore store) { _store = store; }
 
@@ -97,7 +97,7 @@ namespace AsyncServiceSample
         private readonly ConcurrentDictionary<string, int> _totals = new ConcurrentDictionary<string, int>();
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly object _startLock = new object();
-        private Task? _running;
+        [GuardedBy(nameof(_startLock))] private Task? _running;
 
         public OrderWorker(OrderCache cache) { _cache = cache; }
 

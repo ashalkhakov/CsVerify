@@ -81,6 +81,7 @@ namespace CsVerify.Verifier
             if (FieldEffects.IsStaticField(field))
             {
                 CheckFieldHeld(field, null, at, f);
+                if (_framingTask != null && !NeverChanges(field)) NotGivenBack(T.False, at);
                 var sv = T.Select(FieldMap(f, field), Statics, ValueSort(field));
                 AssumeNonNullRead(field, null, sv);
                 HasType(sv, type);

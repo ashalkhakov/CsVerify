@@ -714,6 +714,11 @@ namespace CsVerify.Verifier
         private void CheckCellFraming(Term arr, Term i, Frame f, SyntaxNode at)
         {
             if (!_framingCheck || f.ArrPerm == null) return;
+            if (_framingTask != null)
+            {
+                NotGivenBack(new Term($"(> {CellPerm(f, arr, i)} 0.0)", Sort.Bool), at);
+                return;
+            }
             Require(new Term($"(> {CellPerm(f, arr, i)} 0.0)", Sort.Bool), "CSV1016", at,
                 $"'{at}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded");
         }
