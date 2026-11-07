@@ -8,15 +8,15 @@ namespace CsVerify.Tests
     {
         private const string Program = "using CsVerify; using System; using System.Threading; using System.Threading.Tasks; " +
             "public static class C { " +
-            "static async Task Fill(int[] a, int from, int to, int v) { " +
+            "[RunsConcurrently] static async Task Fill(int[] a, int from, int to, int v) { " +
             "Spec.Requires(0 <= from && from <= to && to <= a.Length && Spec.Acc(a, from, to)); " +
             "Spec.Ensures(Spec.Acc(a, from, to) && Spec.Forall(from, to, i => a[i] == v)); " +
             "await Task.Yield(); for (int k = from; k < to; k++) { Spec.Invariant(from <= k && k <= to && Spec.Acc(a, from, to) && Spec.Forall(from, k, i => a[i] == v)); a[k] = v; } } " +
-            "static void FillNow(int[] a, int from, int to, int v) { " +
+            "[RunsConcurrently] static void FillNow(int[] a, int from, int to, int v) { " +
             "Spec.Requires(0 <= from && from <= to && to <= a.Length && Spec.Acc(a, from, to)); " +
             "Spec.Ensures(Spec.Acc(a, from, to) && Spec.Forall(from, to, i => a[i] == v)); " +
             "for (int k = from; k < to; k++) { Spec.Invariant(from <= k && k <= to && Spec.Acc(a, from, to) && Spec.Forall(from, k, i => a[i] == v)); a[k] = v; } } " +
-            "static async Task<int> First(int[] a) { Spec.Requires(a.Length > 0 && Spec.AccRead(a, 0, 1)); Spec.Ensures((int r) => Spec.AccRead(a, 0, 1) && r == a[0]); await Task.Yield(); return a[0]; } ";
+            "[RunsConcurrently] static async Task<int> First(int[] a) { Spec.Requires(a.Length > 0 && Spec.AccRead(a, 0, 1)); Spec.Ensures((int r) => Spec.AccRead(a, 0, 1) && r == a[0]); await Task.Yield(); return a[0]; } ";
 
         private static string[] Errors(string m) => Harness.Verify(Program + m + " }").Diagnostics.Where(d => d.IsError).Select(d => d.Id + " " + d.Message).ToArray();
         private static string[] Ids(string m) => Harness.Verify(Program + m + " }").Diagnostics.Where(d => d.IsError).Select(d => d.Id).ToArray();
@@ -67,8 +67,8 @@ namespace CsVerify.Tests
         [InlineData("CSV1001", "static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); await Fill(a, 0, a.Length + 1, 1); }")]
         [InlineData("CSV1001", "static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = Task.Run(() => FillNow(a, 0, a.Length + 1, 1)); await t; }")]
         // code that runs alongside reads only what it holds
-        [InlineData("CSV1016", "static async Task<int> Peek(int[] a) { Spec.Requires(a.Length > 1 && Spec.Acc(a, 0, 1)); Spec.Ensures(Spec.Acc(a, 0, 1)); await Task.Yield(); return a[1]; } static async Task M(int[] a) { Spec.Requires(a.Length > 1 && Spec.Acc(a)); var t = Peek(a); await t; }")]
-        [InlineData("CSV1027", "static int Sum(int[] a) { int s = 0; foreach (var x in a) s = unchecked(s + x); return s; } static async Task<int> Peek(int[] a) { Spec.Requires(Spec.Acc(a, 0, 0)); Spec.Ensures(Spec.Acc(a, 0, 0)); await Task.Yield(); return Sum(a); } static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = Peek(a); await t; }")]
+        [InlineData("CSV1016", "[RunsConcurrently] static async Task<int> Peek(int[] a) { Spec.Requires(a.Length > 1 && Spec.Acc(a, 0, 1)); Spec.Ensures(Spec.Acc(a, 0, 1)); await Task.Yield(); return a[1]; } static async Task M(int[] a) { Spec.Requires(a.Length > 1 && Spec.Acc(a)); var t = Peek(a); await t; }")]
+        [InlineData("CSV1027", "[RunsConcurrently] static int Sum(int[] a) { int s = 0; foreach (var x in a) s = unchecked(s + x); return s; } [RunsConcurrently] static async Task<int> Peek(int[] a) { Spec.Requires(Spec.Acc(a, 0, 0)); Spec.Ensures(Spec.Acc(a, 0, 0)); await Task.Yield(); return Sum(a); } static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = Peek(a); await t; }")]
         public void Reported(string id, string m) => Assert.Contains(id, Ids(m));
 
         [Theory]

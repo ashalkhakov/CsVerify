@@ -7,10 +7,10 @@ namespace CsVerify.Tests
     public class TaskLaterTests
     {
         private const string Helpers = "public class Cell { public int V; } public static class C { " +
-            "static async Task<int> Twice(int x) { Spec.Requires(0 <= x && x <= 1000); Spec.Ensures<int>(r => r == 2 * x); await Task.Yield(); return 2 * x; } " +
-            "static async Task Work() { await Task.Yield(); } " +
-            "static async Task Bump(Cell c) { Spec.Requires(c.V < 1000); await Task.Yield(); c.V = c.V < 1000 ? c.V + 1 : 0; } " +
-            "static async Task<int> ReadC(Cell c) { await Task.Yield(); return c.V; } ";
+            "[RunsConcurrently] static async Task<int> Twice(int x) { Spec.Requires(0 <= x && x <= 1000); Spec.Ensures<int>(r => r == 2 * x); await Task.Yield(); return 2 * x; } " +
+            "[RunsConcurrently] static async Task Work() { await Task.Yield(); } " +
+            "[RunsConcurrently] static async Task Bump(Cell c) { Spec.Requires(c.V < 1000); await Task.Yield(); c.V = c.V < 1000 ? c.V + 1 : 0; } " +
+            "[RunsConcurrently] static async Task<int> ReadC(Cell c) { await Task.Yield(); return c.V; } ";
 
         private static string[] Errors(string m) =>
             Harness.Verify("using CsVerify; using System; using System.Threading.Tasks; " + Helpers + m + " }").Errors("M");
@@ -30,7 +30,7 @@ namespace CsVerify.Tests
         [InlineData("static async Task M(bool b) { var t = Work(); if (b) await t; else await t; }")]
         [InlineData("static async Task M() { var t = Twice(1); var a = await t; var b = await t; Spec.Assert(a == b); }")]
         [InlineData("static async Task M() { var t = Work(); try { await Work(); } finally { await t; } }")]
-        [InlineData("static async Task<int> Old(Cell c) { Spec.Ensures<int>(r => r == Spec.Old(c.V)); var v = c.V; await Task.Yield(); return v; } static async Task M(Cell c) { var v = c.V; var t = Old(c); var r = await t; Spec.Assert(r == v); }")]
+        [InlineData("[RunsConcurrently] static async Task<int> Old(Cell c) { Spec.Ensures<int>(r => r == Spec.Old(c.V)); var v = c.V; await Task.Yield(); return v; } static async Task M(Cell c) { var v = c.V; var t = Old(c); var r = await t; Spec.Assert(r == v); }")]
         [InlineData("static async Task M(bool b, bool c) { var t = Work(); try { await t; if (b) throw new InvalidOperationException(); if (c) throw new InvalidOperationException(); } catch (InvalidOperationException) { } }")]
         public void Proved(string m) => Assert.Empty(Errors(m));
 

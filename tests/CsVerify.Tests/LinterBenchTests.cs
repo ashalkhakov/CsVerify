@@ -17,7 +17,7 @@ namespace CsVerify.Tests
         {
             "ThrowNull.Direct", "ThrowNull.Hidden",
             "ModifiedWhileEnumerated.Direct", "ModifiedWhileEnumerated.HiddenAlias", "ModifiedWhileEnumerated.HiddenCall",
-            "Unobserved.Direct", "Unobserved.Hidden",
+            "Unobserved.Direct", "Unobserved.Hidden", "Unobserved.Harmless",
             "Disposal.LeakDirect", "Disposal.LeakHidden", "Disposal.LeakWriter", "Disposal.UseAfterDispose",
             "DisposableField.Direct",
             "FormatArguments.Direct", "FormatArguments.Hidden",

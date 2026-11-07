@@ -20,6 +20,7 @@ namespace CsVerify.Verifier
         private readonly Compilation _compilation;
         private readonly Dictionary<SyntaxNode, InvocationExpressionSyntax> _calls = new Dictionary<SyntaxNode, InvocationExpressionSyntax>();
         private HashSet<SyntaxNode> _alongside;
+        private List<(SyntaxNode at, IMethodSymbol callee, string why)> _needed;
 
         public StartedDelegates(Engine engine, Compilation compilation)
         {
@@ -115,31 +116,86 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>
-        /// Does this code run alongside other code? A task not awaited at once, a delegate given to a thread, what a method
-        /// does between starting a task and finishing it, [RunsConcurrently], and what any of those calls. As far as the
-        /// program's source shows: a delegate of unknown origin isn't followed.
+        /// Does this code run alongside other code? A method marked [RunsConcurrently] (or in a marked class), a delegate
+        /// given to a thread, Task.Run or the like, and the lambdas and local functions within those. Nothing is followed
+        /// from one method to another: whatever such code starts or calls of the program's must say so too (see
+        /// <see cref="UnmarkedIn"/>), and so must an override of a marked method. That makes each mark a claim checked where
+        /// it's used, rather than a guess at what the whole program does.
         /// </summary>
         public bool RunsAlongside(IMethodSymbol method)
         {
-            if (_alongside == null)
+            ScanAll();
+            return IsMarked(method) || method.OriginalDefinition.DeclaringSyntaxReferences.Any(r => _alongside.Contains(r.GetSyntax()));
+        }
+
+        /// <summary>Where code in <paramref name="code"/> starts or calls a method of the program that runs concurrently but isn't marked so.</summary>
+        public IEnumerable<(SyntaxNode at, IMethodSymbol callee, string why)> UnmarkedIn(SyntaxNode code)
+        {
+            ScanAll();
+            return _needed.Where(x => code.Span.Contains(x.at.Span) && code.SyntaxTree == x.at.SyntaxTree);
+        }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<SyntaxNode, bool> _claimed = new System.Collections.Concurrent.ConcurrentDictionary<SyntaxNode, bool>();
+
+        /// <summary>Is this the first to report the site?</summary>
+        public bool Claim(SyntaxNode at) => _claimed.TryAdd(at, true);
+
+        private readonly object _scanning = new object();
+
+        private void ScanAll()
+        {
+            lock (_scanning)
             {
+                if (_needed != null) return;
                 _alongside = new HashSet<SyntaxNode>();
+                var needed = _needed = new List<(SyntaxNode, IMethodSymbol, string)>();
                 foreach (var tree in _engine.UserTrees)
                 {
                     var model = _compilation.GetSemanticModel(tree);
                     foreach (var n in tree.GetRoot().DescendantNodes())
                         if (!SpecSymbols.IsInGhostContext(n, model)) Scan(n, model);
                 }
+                _needed = needed.Where(x => !IsMarked(x.callee)).ToList();
             }
-            return method.OriginalDefinition.DeclaringSyntaxReferences.Any(r => _alongside.Contains(r.GetSyntax()));
+        }
+
+        /// <summary>[RunsConcurrently] on the method, its property, or a type it is in.</summary>
+        public static bool IsMarked(IMethodSymbol m)
+        {
+            m = m.OriginalDefinition;
+            if (SpecSymbols.HasAttribute(m, "RunsConcurrentlyAttribute")) return true;
+            if (m.AssociatedSymbol is IPropertySymbol p && SpecSymbols.HasAttribute(p, "RunsConcurrentlyAttribute")) return true;
+            for (var t = m.ContainingType; t != null; t = t.ContainingType)
+                if (SpecSymbols.HasAttribute(t, "RunsConcurrentlyAttribute")) return true;
+            return false;
+        }
+
+        /// <summary>Code of the program that this concurrent code runs: it must be marked, unless it's lexically within (a lambda, a local function), or has no code (an auto-property).</summary>
+        private void Need(SyntaxNode at, IMethodSymbol m, string why)
+        {
+            m = m.OriginalDefinition;
+            if (m.MethodKind == MethodKind.LocalFunction || m.MethodKind == MethodKind.AnonymousFunction) return;
+            if (m.DeclaringSyntaxReferences.Length == 0 || SpecSymbols.IsSpecClass(m.ContainingType)) return;
+            if (SpecSymbols.HasAttribute(m, "TrustedAttribute")) return; // (nothing in it is checked, so there's nothing to check it as)
+            if (m.DeclaringSyntaxReferences.All(r => r.GetSyntax() is AccessorDeclarationSyntax a && a.Body == null && a.ExpressionBody == null)) return;
+            // (a positional record's own members: its properties and the constructor that sets them)
+            if (m.DeclaringSyntaxReferences.All(r => r.GetSyntax() is ParameterSyntax || r.GetSyntax() is RecordDeclarationSyntax)) return;
+            _needed.Add((at, m, why));
         }
 
         private void Scan(SyntaxNode n, SemanticModel model)
         {
             switch (n)
             {
-                case MethodDeclarationSyntax d when model.GetDeclaredSymbol(d) is IMethodSymbol m && (SpecSymbols.HasAttribute(m, "RunsConcurrentlyAttribute") || SpecSymbols.HasAttribute(m.ContainingType, "RunsConcurrentlyAttribute")):
-                    AddCode(d, model);
+                case BaseMethodDeclarationSyntax d when model.GetDeclaredSymbol(d) is IMethodSymbol m:
+                    if (IsMarked(m)) AddCode(d, model);
+                    // (a call of a marked method may reach any override)
+                    var over = m.OverriddenMethod ?? m.ContainingType.AllInterfaces.SelectMany(i => i.GetMembers().OfType<IMethodSymbol>())
+                        .FirstOrDefault(i => SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(i), m));
+                    if (over != null && IsMarked(over)) Need(d is MethodDeclarationSyntax md ? (SyntaxNode)md.ReturnType : d, m, $"it overrides '{over.Name}', which runs concurrently");
+                    break;
+                case AccessorDeclarationSyntax acc when model.GetDeclaredSymbol(acc) is IMethodSymbol am && IsMarked(am):
+                    AddCode(acc, model);
                     break;
                 case InvocationExpressionSyntax inv when model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
                     bool awaited = IsAwaitedHere(inv);
@@ -151,7 +207,7 @@ namespace CsVerify.Verifier
                         AddAfter(inv, th.Expression.ToString(), model);
                     else if (!awaited && (threading && m.Name == "Run" || IsSourceTask(m) && !IsForwarded(inv, model)))
                     {
-                        if (IsSourceTask(m)) Add(m);
+                        if (IsSourceTask(m)) Need(inv, m, "it is started here and not awaited at once");
                         AddAfter(inv, TaskName(inv, model), model);
                     }
                     break;
@@ -179,7 +235,7 @@ namespace CsVerify.Verifier
         private void AddDelegate(ExpressionSyntax e, SemanticModel model)
         {
             if (e is AnonymousFunctionExpressionSyntax) AddCode(e, model);
-            else if (model.GetSymbolInfo(e).Symbol is IMethodSymbol group && group.DeclaringSyntaxReferences.Length > 0) Add(group);
+            else if ((e is IdentifierNameSyntax || e is MemberAccessExpressionSyntax) && model.GetSymbolInfo(e).Symbol is IMethodSymbol group && group.DeclaringSyntaxReferences.Length > 0) Need(e, group, "it is handed here to run by itself");
         }
 
         /// <summary>What a method calls while what it started goes on.</summary>
@@ -187,21 +243,16 @@ namespace CsVerify.Verifier
         {
             if (start.Ancestors().FirstOrDefault(a => a is BaseMethodDeclarationSyntax || a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax || a is AccessorDeclarationSyntax) is SyntaxNode body)
                 foreach (var code in CodeAlongside(start, task, body, model))
-                    AddCalls(code, model);
+                    AddCalls(code, model, "it is called while a task started here goes on");
         }
 
-        private void Add(IMethodSymbol m)
-        {
-            foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences) AddCode(r.GetSyntax(), _compilation.GetSemanticModel(r.SyntaxTree));
-            foreach (var o in _engine.Fields.Overrides(m.OriginalDefinition)) Add(o);
-        }
 
         private void AddCode(SyntaxNode code, SemanticModel model)
         {
-            if (_alongside.Add(code)) AddCalls(code, model);
+            if (_alongside.Add(code)) AddCalls(code, model, "it is called by code that runs concurrently");
         }
 
-        private void AddCalls(SyntaxNode code, SemanticModel model)
+        private void AddCalls(SyntaxNode code, SemanticModel model, string why)
         {
             foreach (var n in code.DescendantNodesAndSelf())
             {
@@ -213,14 +264,18 @@ namespace CsVerify.Verifier
                         if (n != code) AddCode(n, model);
                         break;
                     case InvocationExpressionSyntax inv when model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
-                        if (callee.MethodKind == MethodKind.LocalFunction || callee.DeclaringSyntaxReferences.Length > 0 && !SpecSymbols.IsSpecClass(callee.ContainingType)) Add(callee);
+                        if (callee.MethodKind == MethodKind.LocalFunction)
+                        {
+                            foreach (var r in callee.DeclaringSyntaxReferences) AddCode(r.GetSyntax(), model);
+                        }
+                        else Need(inv, callee, why);
                         break;
-                    case BaseObjectCreationExpressionSyntax c when model.GetSymbolInfo(c).Symbol is IMethodSymbol ctor && ctor.DeclaringSyntaxReferences.Length > 0:
-                        Add(ctor);
+                    case BaseObjectCreationExpressionSyntax c when model.GetSymbolInfo(c).Symbol is IMethodSymbol ctor:
+                        Need(c, ctor, why);
                         break;
                     case SimpleNameSyntax name when model.GetSymbolInfo(name).Symbol is IPropertySymbol p && p.DeclaringSyntaxReferences.Length > 0:
-                        if (p.GetMethod != null) Add(p.GetMethod);
-                        if (p.SetMethod != null) Add(p.SetMethod);
+                        if (p.GetMethod != null) Need(name, p.GetMethod, why);
+                        if (p.SetMethod != null) Need(name, p.SetMethod, why);
                         break;
                 }
             }

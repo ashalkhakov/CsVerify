@@ -160,18 +160,26 @@ Spec.Assert(a[0] == 1 && a[mid] == 2);
 - **Reads are checked too.** A method with cell permissions that runs alongside others, or is called from one that does, reads only cells it has a permission or share for (CSV1016), and it can't call code that may read any array. Calls into the library aren't looked at.
 - **Not supported (CSV1901):** views and predicate instances, and instance methods of `[Owned]` classes, since what's lent by a call goes back when it returns.
 
-**Code that runs alongside other code must hold what it uses (CSV1027).** That is a task not awaited at once, a delegate given to `Task.Run`, a thread or `Parallel`, a method between starting a task and finishing it, a method marked `[RunsConcurrently]`, and whatever any of those call. A field it uses must be one of:
+**What runs concurrently says so (CSV1028).** A method of the program that runs at the same time as other code must be marked `[RunsConcurrently]`, on itself, its property, or its class, struct or interface. The verifier doesn't work it out across the program; it checks each place where it can see the mark is needed:
+
+- a method started and not awaited at once, `Task.WhenAll(A(), B())` included, or handed to `Task.Run`, a thread or `Parallel` as a method group;
+- a method, constructor or property with code that marked code calls, or that a method calls between starting a task and finishing it;
+- an override or implementation of a marked method, since a call of it may reach any of them.
+
+A lambda given to `Task.Run`, a thread or `Parallel`, and lambdas and local functions inside concurrent code, are concurrent where they are and need no mark; nor do auto-properties and a positional record's own members. An entry point that the program's callers run at once, such as a web handler, is marked the same way.
+
+**Code that runs alongside other code must hold what it uses (CSV1027).** That is a marked method, a delegate given to `Task.Run`, a thread or `Parallel`, and a method between starting a task and finishing it. A field it uses must be one of:
 
 - never changed: `readonly`, or a get-only or `init` property;
 - guarded by a lock (CSV1023 says if it's held);
 - covered by a permission: `Spec.Acc`, a view or a share, so its class must be `[Owned]`;
 - on a new object only a local has, or the one a constructor or initializer is building.
 
-Array cells likewise: a permission, or a new array only a local has. So there's nothing to do for `volatile` or `Interlocked`, which are errors here unless the method is `[Trusted]`. Specifications aren't run, and aren't looked at. An entry point the program's own source doesn't show as concurrent, such as a web handler, needs `[RunsConcurrently]`, on the method or its class.
+Array cells likewise: a permission, or a new array only a local has. So there's nothing to do for `volatile` or `Interlocked`, which are errors here unless the method is `[Trusted]`. Specifications aren't run, and aren't looked at.
 
 **Race warnings** (CSV1900) remain for what that can't see: `[Trusted]` code, and a library's state through its stubs. Two pieces of code are compared by object where that can be told. They prove nothing either way.
 
-**Design.** This follows concurrent separation logic with fractional permissions, in the implicit-dynamic-frames style of Chalice and Viper: starting a task is a fork, which exhales its precondition, and awaiting it is a join, which inhales its postcondition. A lock's invariant, and what it guards, is the resource it holds. An `await` is a point where other code may run, so what isn't held is forgotten, as for an unstable assertion. The theorem to reuse is that a program proved in that logic has no data races. The rule above is what makes concurrent code fall under it. As there, the resources are what the program says, not what the verifier guesses: a lock guards only what `[GuardedBy]` names, and a started task's postcondition reads only what it gives back (self-framed), so joining it inhales an assertion that stays true. Outside it are code the source doesn't show as concurrent, what a library object holds (a `List<T>` in a readonly field), a delegate of unknown origin, `[Trusted]` code, and reads by other code of an object a task that is never awaited still holds. The verifier's encoding has not itself been proved against the logic.
+**Design.** This follows concurrent separation logic with fractional permissions, in the implicit-dynamic-frames style of Chalice and Viper: starting a task is a fork, which exhales its precondition, and awaiting it is a join, which inhales its postcondition. A lock's invariant, and what it guards, is the resource it holds. An `await` is a point where other code may run, so what isn't held is forgotten, as for an unstable assertion. The theorem to reuse is that a program proved in that logic has no data races. The rule above is what makes concurrent code fall under it. As there, the resources are what the program says, not what the verifier guesses: what runs concurrently is marked, and checked at each start and call, a lock guards only what `[GuardedBy]` names, and a started task's postcondition reads only what it gives back (self-framed), so joining it inhales an assertion that stays true. Outside it are concurrent code that nothing in the source starts and nobody marked, what a library object holds (a `List<T>` in a readonly field), a delegate of unknown origin, `[Trusted]` code, and reads by other code of an object a task that is never awaited still holds. The verifier's encoding has not itself been proved against the logic.
 
 **Not covered (yet).** `Monitor.Wait` and `Monitor.Pulse` are ordinary calls, with no meaning about other threads, and `Monitor.Enter` outside a lock statement doesn't count as holding a lock. Progress and lock-free code are not checked. 
 

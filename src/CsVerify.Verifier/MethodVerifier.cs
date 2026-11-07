@@ -192,6 +192,7 @@ namespace CsVerify.Verifier
             }
             FindContractStatements();
             CheckLocking();
+            CheckConcurrentMarks();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");

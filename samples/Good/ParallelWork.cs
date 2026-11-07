@@ -9,6 +9,7 @@ namespace ParallelWorkSample
     public static class Parts
     {
         /// <summary>Copies a part of one array to another. It only reads what it copies, so any number can share it.</summary>
+        [RunsConcurrently]
         public static void CopyPart(int[] from, int[] to, int lo, int hi)
         {
             Spec.Requires(from.Length == to.Length && 0 <= lo && lo <= hi && hi <= to.Length);
@@ -23,6 +24,7 @@ namespace ParallelWorkSample
             }
         }
 
+        [RunsConcurrently]
         public static async Task CopyPartAsync(int[] from, int[] to, int lo, int hi)
         {
             Spec.Requires(from.Length == to.Length && 0 <= lo && lo <= hi && hi <= to.Length);

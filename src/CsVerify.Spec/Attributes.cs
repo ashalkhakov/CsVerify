@@ -51,10 +51,13 @@ namespace CsVerify
     }
 
     /// <summary>
-    /// A method (or every method of a class) that the program's callers run at the same time, as a web framework does with
-    /// its handlers. Like code a task runs, it must hold a lock or a permission for every field and array cell it uses.
+    /// Code that runs at the same time as other code: a method (or property, or every member of a class or struct) that
+    /// is started as a task and not awaited at once, handed to a thread, called by other such code, or run concurrently
+    /// by the program's callers, as a web framework does with its handlers. It must hold a lock or a permission for every
+    /// field and array cell it uses. Where such code starts or calls one of the program's methods, that method must be
+    /// marked too, and so must an override of a marked method.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor | AttributeTargets.Property | AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface)]
     public sealed class RunsConcurrentlyAttribute : Attribute { }
 
     /// <summary>

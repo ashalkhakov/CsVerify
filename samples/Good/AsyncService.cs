@@ -17,6 +17,7 @@ namespace AsyncServiceSample
 {
     public sealed record Order(int Id, string Customer, int Cents);
 
+    [RunsConcurrently]
     public interface IOrderStore
     {
         Task<Order?> FindAsync(int id, CancellationToken ct);
@@ -24,6 +25,7 @@ namespace AsyncServiceSample
     }
 
     /// <summary>An in-memory cache, with a semaphore held across the load so one id is loaded once.</summary>
+    [RunsConcurrently]
     public sealed class OrderCache
     {
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
@@ -122,6 +124,7 @@ namespace AsyncServiceSample
             }
         }
 
+        [RunsConcurrently]
         private async Task LoopAsync(CancellationToken ct)
         {
             await foreach (var order in _queue.Reader.ReadAllAsync(ct))
@@ -134,6 +137,7 @@ namespace AsyncServiceSample
             }
         }
 
+        [RunsConcurrently]
         private static int Add(int total, int cents)
         {
             if (cents < 0 || total > int.MaxValue - cents) return total;

@@ -7,7 +7,7 @@ namespace CsVerify.Tests
     public class ThreadTests
     {
         private const string Program = "using CsVerify; using System; using System.Threading; using System.Threading.Tasks; public class Cell { public int V; } " +
-            "public class G { private readonly object _l = new object(); [GuardedBy(nameof(_l))] private int _n; public void Inc() { lock (_l) { if (_n < 100) _n = _n + 1; } } } public static class C { ";
+            "public class G { private readonly object _l = new object(); [GuardedBy(nameof(_l))] private int _n; [RunsConcurrently] public void Inc() { lock (_l) { if (_n < 100) _n = _n + 1; } } } public static class C { ";
 
         private static string[] Errors(string m) => Harness.Verify(Program + m + " }").Errors("M");
 
@@ -66,32 +66,32 @@ namespace CsVerify.Tests
         [Theory]
         [InlineData("CSV1004", "static async Task M(IW w, Cell c) { var t = w.G(c); c.V = 1; var x = c.V; Spec.Assert(x == 1); await t; }")]
         [InlineData("CSV1004", "static async Task M(Func<Cell, Task> w, Cell c) { var t = w(c); c.V = 1; var x = c.V; Spec.Assert(x == 1); await t; }")]
-        [InlineData("CSV1004", "static Task W(Cell c) { return Task.Run(() => { c.V = 2; }); } static async Task M(Cell c) { var t = W(c); c.V = 1; var x = c.V; Spec.Assert(x == 1); await t; }")]
+        [InlineData("CSV1004", "[RunsConcurrently] static Task W(Cell c) { return Task.Run(() => { c.V = 2; }); } static async Task M(Cell c) { var t = W(c); c.V = 1; var x = c.V; Spec.Assert(x == 1); await t; }")]
         [InlineData("CSV1026", "static async Task M(IW w, Cell c) { w.G(c); await Task.Yield(); }")]
         [InlineData("CSV1026", "static async Task M(IW w, Cell c) { var t = w.G(c); await Task.Yield(); }")]
-        [InlineData("CSV1004", "static async Task<int> A(int id) { await Task.Yield(); return id; } static void M(int[] ids, Cell c) { var ts = ids.Select(id => A(id)).ToArray(); c.V = 1; var x = c.V; Spec.Assert(x == 1); }")]
-        public void TasksFromElsewhere(string id, string m) => Assert.Contains(id, Harness.Verify(Program.Replace("public static class C {", "public interface IW { Task G(Cell c); } public static class C {").Replace("using System;", "using System; using System.Linq;") + m + " }").Errors("M"));
+        [InlineData("CSV1004", "[RunsConcurrently] static async Task<int> A(int id) { await Task.Yield(); return id; } static void M(int[] ids, Cell c) { var ts = ids.Select(id => A(id)).ToArray(); c.V = 1; var x = c.V; Spec.Assert(x == 1); }")]
+        public void TasksFromElsewhere(string id, string m) => Assert.Contains(id, Harness.Verify(Program.Replace("public static class C {", "public interface IW { [RunsConcurrently] Task G(Cell c); } public static class C {").Replace("using System;", "using System; using System.Linq;") + m + " }").Errors("M"));
 
         [Theory]
         [InlineData("static async Task M(IW w, Cell c) { await w.G(c); c.V = 1; var x = c.V; Spec.Assert(x == 1); }")]
         [InlineData("static async Task M(IW w, Cell c) { var t = w.G(c); await t; c.V = 1; var x = c.V; Spec.Assert(x == 1); }")]
         [InlineData("static Task M(IW w, Cell c) { return w.G(c); }")]
         [InlineData("static async Task M(Cell c) { c.V = 1; var t = Task.Delay(1); var x = c.V; Spec.Assert(x == 1); await t; }")]
-        [InlineData("static async Task<int> A(int id) { await Task.Yield(); return id; } static async Task M() { await Task.WhenAll(A(1), A(2)); }")]
-        [InlineData("static async Task<int> A(int id) { Spec.Ensures<int>(r => r == id); await Task.Yield(); return id; } static async Task M() { var r = await Task.WhenAll(A(1), A(2)); Spec.Assert(r[0] == 1 && r[1] == 2); }")]
-        [InlineData("static async Task<int> A(int id) { await Task.Yield(); return id; } static async Task M(int[] ids) { var ts = ids.Select(id => A(id)).ToArray(); await Task.WhenAll(ts); }")]
-        [InlineData("static async Task<int> A() { await Task.Yield(); return 1; } static async Task M() { await Task.Run(() => A()); }")]
+        [InlineData("[RunsConcurrently] static async Task<int> A(int id) { await Task.Yield(); return id; } static async Task M() { await Task.WhenAll(A(1), A(2)); }")]
+        [InlineData("[RunsConcurrently] static async Task<int> A(int id) { Spec.Ensures<int>(r => r == id); await Task.Yield(); return id; } static async Task M() { var r = await Task.WhenAll(A(1), A(2)); Spec.Assert(r[0] == 1 && r[1] == 2); }")]
+        [InlineData("[RunsConcurrently] static async Task<int> A(int id) { await Task.Yield(); return id; } static async Task M(int[] ids) { var ts = ids.Select(id => A(id)).ToArray(); await Task.WhenAll(ts); }")]
+        [InlineData("[RunsConcurrently] static async Task<int> A() { await Task.Yield(); return 1; } static async Task M() { await Task.Run(() => A()); }")]
         // (a lambda inside a using or a try, that may throw: that's its own, not theirs)
-        [InlineData("static async Task<int> A(int id) { await Task.Yield(); return id; } static async Task M(int[] ids) { using var s = new CancellationTokenSource(); var ts = ids.Select(id => A(id)).ToArray(); await Task.WhenAll(ts); }")]
+        [InlineData("[RunsConcurrently] static async Task<int> A(int id) { await Task.Yield(); return id; } static async Task M(int[] ids) { using var s = new CancellationTokenSource(); var ts = ids.Select(id => A(id)).ToArray(); await Task.WhenAll(ts); }")]
         [InlineData("static string Th(int i) { if (i < 0) throw new InvalidOperationException(); return \"a\"; } static void M(int[] ids) { using var s = new CancellationTokenSource(); var q = ids.Select(i => s.Token.ToString()).ToArray(); }")]
-        public void TasksFromElsewhere_Proved(string m) => Assert.Empty(Harness.Verify(Program.Replace("public static class C {", "public interface IW { Task G(Cell c); } public static class C {").Replace("using System;", "using System; using System.Linq;") + m + " }")
+        public void TasksFromElsewhere_Proved(string m) => Assert.Empty(Harness.Verify(Program.Replace("public static class C {", "public interface IW { [RunsConcurrently] Task G(Cell c); } public static class C {").Replace("using System;", "using System; using System.Linq;") + m + " }")
             .Diagnostics.Where(d => d.IsError).Select(d => d.Id + " " + d.Message));
 
         [Theory]
         [InlineData("static async Task M(Cell c) { var a = Task.Run(() => { c.V = 1; }); var b = Task.Run(() => { c.V = 2; }); await a; await b; }")]
         [InlineData("static async Task M(Cell c) { await Task.WhenAll(Task.Run(() => { c.V = 1; }), Task.Run(() => { c.V = 2; })); }")]
         [InlineData("static async Task<int> M(Cell c) { var a = Task.Run(() => { c.V = 1; }); await a; return 0; } static async Task<int> N(Cell c) { var a = Task.Run(() => { return c.V; }); c.V = 3; return await a; }")]
-        [InlineData("static void W(Cell c) { c.V = 1; } static async Task M(Cell c) { var a = Task.Run(() => W(c)); var b = Task.Run(() => W(c)); await a; await b; }")]
+        [InlineData("[RunsConcurrently] static void W(Cell c) { c.V = 1; } static async Task M(Cell c) { var a = Task.Run(() => W(c)); var b = Task.Run(() => W(c)); await a; await b; }")]
         [InlineData("static void M(Cell c) { var th = new Thread(() => { c.V = 2; }); th.Start(); }")]
         [InlineData("static async Task M(int[] a) { await Task.WhenAll(Task.Run(() => { if (a.Length > 0) a[0] = 1; }), Task.Run(() => { if (a.Length > 0) a[0] = 2; })); }")]
         [InlineData("static Task M(Cell c) { return Task.Run(() => { c.V = 2; }); }")]
@@ -119,7 +119,7 @@ namespace CsVerify.Tests
         [InlineData("static async Task M(Cell c, Cell d) { Spec.Requires(c != d); var a = Task.Run(() => { c.V = 1; }); var b = Task.Run(() => { d.V = 2; }); await a; await b; }")]
         [InlineData("static async Task M() { var c = new Cell(); var d = new Cell(); var a = Task.Run(() => { c.V = 1; }); var b = Task.Run(() => { d.V = 2; }); await a; await b; }")]
         [InlineData("static async Task M(Cell c, Cell d) { Spec.Requires(c != d); await Task.WhenAll(Task.Run(() => { c.V = 1; }), Task.Run(() => { d.V = 2; })); }")]
-        [InlineData("static void W(Cell x) { x.V = 1; } static async Task M(Cell c, Cell d) { Spec.Requires(c != d); var a = Task.Run(() => W(c)); var b = Task.Run(() => W(d)); await a; await b; }")]
+        [InlineData("[RunsConcurrently] static void W(Cell x) { x.V = 1; } static async Task M(Cell c, Cell d) { Spec.Requires(c != d); var a = Task.Run(() => W(c)); var b = Task.Run(() => W(d)); await a; await b; }")]
         [InlineData("static async Task M(int[] x, int[] y) { Spec.Requires(x != y && x.Length > 0 && y.Length > 0); var a = Task.Run(() => { if (x.Length > 0) x[0] = 1; }); var b = Task.Run(() => { if (y.Length > 0) y[0] = 2; }); await a; await b; }")]
         // this method writes it, but on another object, or once the task is over, or before it starts
         [InlineData("static async Task M(Cell c, Cell d) { Spec.Requires(c != d); var a = Task.Run(() => { c.V = 1; }); d.V = 2; await a; }")]

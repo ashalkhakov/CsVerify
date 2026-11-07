@@ -297,6 +297,19 @@ namespace CsVerify.Verifier
             return _engine.StartedDelegates.RunsAlongside(_method) || f.Started.Values.Any(t => !t.Awaited);
         }
 
+        /// <summary>
+        /// What runs concurrently says so: where this code starts a method of the program without awaiting it, hands one to a
+        /// thread, or calls one from code that runs concurrently, that method must be [RunsConcurrently] (CSV1028), so that it
+        /// is checked as such. Each site is reported once, by whichever method's code holds it.
+        /// </summary>
+        private void CheckConcurrentMarks()
+        {
+            if (SpecSymbols.HasAttribute(_method, "TrustedAttribute")) return;
+            foreach (var (at, callee, why) in _engine.StartedDelegates.UnmarkedIn(_contract.Declaration))
+                if (_engine.StartedDelegates.Claim(at))
+                    Report("CSV1028", at, $"'{callee.Name}' runs concurrently ({why}), but isn't marked so: say [RunsConcurrently] on it or its class, and it is checked as such", isError: true);
+        }
+
         /// <summary>Proved, or reported; either way nothing follows from it, so what comes after is still looked at.</summary>
         private void Reported(Term goal, string id, SyntaxNode at, string message) =>
             Prove(T.Implies(T.And(_guards.ToArray()), goal), id, at, message, assume: false);
