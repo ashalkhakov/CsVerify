@@ -105,7 +105,7 @@ The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined.
    - a `throw` is an error.
    `[GhostFunction]` bodies are verified too, for this.
 8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
-   - a `goto` into the middle of a loop (a cycle with two entries), `await foreach`, and hitting the path limit;
+   - a `goto` into the middle of a loop (a cycle with two entries), and hitting the path limit;
    - an async method of the program called without being awaited at once, and async lemmas or `[Pure]` functions (see [Async and concurrency](semantics.md#async-and-concurrency));
    - fields of library classes, a struct held in a class's field written in place (`o.p.X = 1`), and a struct method other than a constructor that writes `this`;
    - in specifications, library properties that may change and have no `[Pure]` stub (`MemoryStream.Position` is not a function of its object). Read in code, each is a value of its own, of its declared type (a CSV1900 warning). Properties with code in the sources are calls (see [Object-oriented code](objects.md#object-oriented-code)), and so are stubbed ones (`List<T>.Count`);

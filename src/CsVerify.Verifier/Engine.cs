@@ -142,6 +142,7 @@ namespace CsVerify.Verifier
         internal readonly IReadOnlyList<INamedTypeSymbol> SourceTypes;
         /// <summary>Does the program use dynamic frames (Spec.Modifies/Reads/Fresh, ObjSet)? Allocation is tracked only then.</summary>
         internal readonly bool UsesDynamicFrames;
+        internal readonly LockGuards Locks;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
         /// <summary>The program uses ATS's manual memory (Mem, Ptr and the views of its cells).</summary>
@@ -169,8 +170,11 @@ namespace CsVerify.Verifier
         /// </summary>
         internal readonly IReadOnlyList<IMethodSymbol> Models;
 
+        internal IReadOnlyList<SyntaxTree> UserTrees { get; }
+
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
+            UserTrees = userTrees.ToList();
             _compilation = compilation;
             Stubs = ContractStubs.For(compilation);
             // (and the list interfaces, which read a List's models: MethodVerifier.Interfaces)
@@ -181,6 +185,7 @@ namespace CsVerify.Verifier
                 ? Stubs.Models : new List<IMethodSymbol>();
             Data = new DataTypes(compilation, userTrees);
             Fields = new FieldEffects(this);
+            Locks = new LockGuards(compilation, userTrees);
             UsesDynamicFrames = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"))
                 || Models.Count > 0; // (stubs frame model state with Spec.Modifies)
@@ -191,7 +196,7 @@ namespace CsVerify.Verifier
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;
             UsesMemory = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "PointsTo" || n.Identifier.Text == "ArrayView" || n.Identifier.Text == "ArrayHole" || n.Identifier.Text == "Mem"));
-            UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc"));
+            UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc" || n.Identifier.Text == "AccRead"));
 
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
@@ -473,6 +478,9 @@ namespace CsVerify.Verifier
             return _libraryContracts.TryGetValue(key, out var c) ? c : _libraryContracts[key] = Contract.Read(key, _compilation);
         }
 
+        private StartedDelegates _startedDelegates;
+        internal StartedDelegates StartedDelegates => _startedDelegates ??= new StartedDelegates(this, _compilation);
+
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
@@ -592,6 +600,8 @@ namespace CsVerify.Verifier
                     // its lambdas and local functions, each a unit of its own
                     foreach (var (nested, graph) in NestedFunctions(decl, model))
                     {
+                        // (nothing but a call with permissions: it is proved where it starts)
+                        if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
                         var nmr = new MethodResult { Name = mr.Name + "." + NestedName(nested) };
                         if (!options.Selects(nmr.Name)) continue;
                         result.Methods.Add(nmr);

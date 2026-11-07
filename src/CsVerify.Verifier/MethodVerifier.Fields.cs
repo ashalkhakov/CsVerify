@@ -119,6 +119,11 @@ namespace CsVerify.Verifier
             if (!_framingCheck || f.Perm == null) return;
             var whole = $"(> (select {f.Perm} {T.Coerce(o, Sort.Int)}) 0.0)";
             var own = f.FPerm != null ? $"(> {FieldAmount(f, o, FieldId(field))} 0.0)" : "false";
+            if (_framingTask != null)
+            {
+                if (!NeverChanges(field)) NotGivenBack(new Term($"(or {whole} {own})", Sort.Bool), at);
+                return;
+            }
             Require(new Term($"(or {whole} {own})", Sort.Bool), "CSV1016", at,
                 $"'{at}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded");
         }

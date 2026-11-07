@@ -164,7 +164,13 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1011 | verifier | a lemma or `[Pure]`/`[GhostFunction]` might not terminate: recursion or loop without `Spec.Decreases`, or a `throw` |
 | CSV1021 | verifier | an ill-formed `[ContractsFor]` stub or `[Model]` function: a stub method that matches no member of its type, a stub without the type's type parameters, a model function of the wrong shape |
 | CSV1022 | verifier | a switch expression might not cover every value it gets: it would throw `SwitchExpressionException` |
+| CSV1023 | verifier | a use of state guarded by a lock that might not be held, so it could race: `[GuardedBy]`, or a field written under one lock elsewhere |
+| CSV1024 | verifier | a `[LockInvariant]` might not hold where its lock is released, or at a call that may enter it again |
+| CSV1025 | verifier | nested locks on elements of one array might not be in increasing order of index, so they could deadlock |
+| CSV1026 | verifier | a task an async method started in a local might not be awaited on every path, so a failure in it would be lost; or its `Result` is read before it is awaited |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
+| CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |
+| CSV1028 | verifier | a method of the program that runs concurrently (started and not awaited in the same method, handed to a thread, or called by concurrent code) but isn't marked `[RunsConcurrently]` |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1998 | verifier | Z3 stopped answering, past its own timeout, and was stopped: the rest of the method is not verified |
 | CSV1999 | verifier | internal or solver error |

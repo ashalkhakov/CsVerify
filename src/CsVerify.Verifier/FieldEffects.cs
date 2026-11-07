@@ -257,8 +257,9 @@ namespace CsVerify.Verifier
         /// </summary>
         public bool RunsUserCode(IMethodSymbol m) =>
             m.Parameters.Any(p => HandsOver(p.Type)) ||
-            (!m.IsStatic && HandsOver(m.ContainingType) && !(m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object)) ||
-            m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
+            (!m.IsStatic && HandsOver(m.ContainingType) && !(m.MethodKind == MethodKind.Constructor && (m.ContainingType.SpecialType == SpecialType.System_Object || m.ContainingType.IsGenericType && m.ContainingType.DeclaringSyntaxReferences.Length == 0))) ||
+            // (making an empty collection of records calls none of their methods; what it's given to fill it, above, may)
+            (m.MethodKind != MethodKind.Constructor || m.Parameters.Length > 0 && !m.Parameters.All(p => p.Type.SpecialType != SpecialType.None)) && m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver);
 
         /// <summary>
         /// At this call, may the library method change the program's fields or model state? As
@@ -273,7 +274,8 @@ namespace CsVerify.Verifier
             bool May(ITypeSymbol declared, IOperation value) =>
                 (HandsOver(declared) || ReachesModels(declared)) && !(value?.ConstantValue.HasValue == true && value.ConstantValue.Value == null) &&
                 (value == null || HandsOver(Handed(value)) || ReachesModels(Handed(value)));
-            if (m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(t => HandsOver(t) || ReachesModels(t))) return true;
+            if ((m.MethodKind != MethodKind.Constructor || m.Parameters.Length > 0 && !m.Parameters.All(p => p.Type.SpecialType != SpecialType.None)) &&
+                m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(t => HandsOver(t) || ReachesModels(t))) return true;
             if (!m.IsStatic && m.MethodKind != MethodKind.Constructor && May(m.ContainingType, inv.Instance)) return true;
             return inv.Arguments.Any(a => a.Parameter != null && May(a.Parameter.Type, a.ArgumentKind == ArgumentKind.Explicit ? a.Value : null));
         }

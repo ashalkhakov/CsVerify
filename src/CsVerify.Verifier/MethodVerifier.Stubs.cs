@@ -59,6 +59,11 @@ namespace CsVerify.Verifier
         private static bool NonNullAsInstantiated(IMethodSymbol asCalled) =>
             asCalled.OriginalDefinition.ReturnType is ITypeParameterSymbol && IsNonNullableType(asCalled.ReturnType);
 
+        /// <summary>A library's T, as it declares it (not T?, nor [MaybeNull]): what it is instantiated with. (GetOrAdd gives a V, a List's Find a T?.)</summary>
+        private static bool LibraryGivesAsInstantiated(IMethodSymbol asCalled) =>
+            asCalled.OriginalDefinition.DeclaringSyntaxReferences.Length == 0 && NonNullAsInstantiated(asCalled) &&
+            !HasAttribute(asCalled.OriginalDefinition.GetReturnTypeAttributes(), "MaybeNullAttribute");
+
         private bool IsStubbedProperty(IOperation op) =>
             op is IPropertyReferenceOperation pr && pr.Property.GetMethod != null && _engine.HasStub(pr.Property.GetMethod);
 

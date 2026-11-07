@@ -80,6 +80,8 @@ namespace CsVerify.Verifier
         {
             if (FieldEffects.IsStaticField(field))
             {
+                CheckFieldHeld(field, null, at, f);
+                if (_framingTask != null && !NeverChanges(field)) NotGivenBack(T.False, at);
                 var sv = T.Select(FieldMap(f, field), Statics, ValueSort(field));
                 AssumeNonNullRead(field, null, sv);
                 HasType(sv, type);
@@ -88,6 +90,7 @@ namespace CsVerify.Verifier
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
             CheckRead(field, o, at);
+            CheckFieldHeld(field, o, at, f);
             CheckFraming(o, field, f, at);
             var v = T.Select(FieldMap(f, field), o, ValueSort(field));
             AssumeNonNullRead(field, instance, v);
@@ -95,7 +98,7 @@ namespace CsVerify.Verifier
             if (f.Root != null && SpecSymbols.IsOwnsField(field))
                 AssumeSide(T.Implies(NotNull(v), T.And(T.Eq(RootOf(f, v), RootOf(f, o)), T.Not(T.Eq(RootOf(f, v), v)))));
             HasType(v, type);
-            AssumeImmutableInvariants(o, instance.Type, f);
+            UnderGuards(() => AssumeImmutableInvariants(o, instance.Type, f));
             // a field of an allocated object refers to an allocated object
             if (f.Alloc != null && MayBeNullType(type))
                 AssumeSide(T.Implies(T.And(InSet(f.Alloc, o), NotNull(v)), InSet(f.Alloc, v)));
@@ -106,6 +109,7 @@ namespace CsVerify.Verifier
         {
             bool isStatic = FieldEffects.IsStaticField(field);
             var o = isStatic ? Statics : Eval(instance, f, spec);
+            CheckFieldHeld(field, isStatic ? null : o, at, f);
             if (!isStatic)
             {
                 Deref(instance, o, at);
