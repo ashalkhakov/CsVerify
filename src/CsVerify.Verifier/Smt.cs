@@ -418,6 +418,11 @@ namespace CsVerify.Verifier
         }
         public void Pop() { Depth--; Scope = ++_scopes; Send("(pop 1)"); }
 
+        /// <summary>Where we are: a scope that, while <see cref="Alive"/> says so, still has what was declared and assumed in it.</summary>
+        public (int depth, long frame) Mark => (Depth, _frames[Depth]);
+
+        public bool Alive((int depth, long frame) mark) => mark.depth <= Depth && _frames[mark.depth] == mark.frame;
+
         /// <summary>Changes whenever an assertion scope is entered or left: a fact asserted under one Scope value is still there.</summary>
         public long Scope { get; private set; }
         private long _scopes;

@@ -164,6 +164,26 @@ namespace CsVerify
         public static bool Changes<A1, A2, A3>(Action<A1, A2, A3> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
         public static bool Changes<T>(Predicate<T> f, Func<T, ObjSet> frame) => throw GhostException.Instance;
 
+        // ---- what a delegate's Spec.Pre and Spec.Post read (a reads frame, as a function of its arguments)
+        //
+        // Without one, a delegate's Spec.Pre and Spec.Post are the same in every state (steady), and a method whose
+        // specifications speak of them takes that for granted of its parameters (its callers prove it). With one, they
+        // are of the state they are taken in, and stay as they are while the fields and cells of the objects in the
+        // frame do.
+
+        /// <summary>What <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> depend on: the fields and cells of the objects in <paramref name="frame"/> of the arguments.</summary>
+        public static bool Reads<A1, R>(Func<A1, R> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<A1>(Action<A1> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>What <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> depend on: the fields and cells of the objects in <paramref name="frame"/> of the arguments.</summary>
+        public static bool Reads<A1, A2, R>(Func<A1, A2, R> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<A1, A2>(Action<A1, A2> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>What <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> depend on: the fields and cells of the objects in <paramref name="frame"/> of the arguments.</summary>
+        public static bool Reads<A1, A2, A3, R>(Func<A1, A2, A3, R> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<A1, A2, A3>(Action<A1, A2, A3> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<R>(Func<R> f, ObjSet frame) => throw GhostException.Instance;
+        public static bool Reads(Action f, ObjSet frame) => throw GhostException.Instance;
+        public static bool Reads<T>(Predicate<T> f, Func<T, ObjSet> frame) => throw GhostException.Instance;
+
         // (the BCL's other delegates that collections take)
         public static bool Pre<T>(Predicate<T> f, T a) => throw GhostException.Instance;
         public static bool Post<T>(Predicate<T> f, T a, bool r) => throw GhostException.Instance;

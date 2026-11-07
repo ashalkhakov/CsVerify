@@ -122,5 +122,30 @@ namespace CsVerify.Tests
         [InlineData("CSV1001", C + "static void P(Action<Cell> g) { Spec.Requires(Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x))); } static void M() { var c = new Cell(); P(x => { c.V = 1; }); } }")]
         [InlineData("CSV1017", C + "static void M() { var c = new Cell(); Action<Cell> h = x => { Spec.Modifies(ObjSet.Of(x)); c.V = 1; }; } }")]
         public void Frames_Reported(string id, string code) => Assert.Contains(id, Ids(code));
+
+        // reads frames: a precondition of state, kept while what it reads is
+        private const string Lim = "Func<int, int> h = x => { Spec.Reads(ObjSet.Of(lim)); Spec.Requires(x < lim.V); return x; }; ";
+        private const string ApplyR = "static int Apply(Func<int, int> g, Cell c, Cell d, int x) { Spec.Requires(Spec.Reads(g, y => ObjSet.Of(c))); Spec.Requires(Spec.Pre(g, x) && c != d); d.V = 7; return g(x); } ";
+
+        [Theory]
+        [InlineData(C + "static void M(Cell lim) { lim.V = 10; " + Lim + "var a = h(3); } }")]
+        [InlineData(C + "static void M(Cell lim, Cell other) { Spec.Requires(lim != other); lim.V = 10; " + Lim + "var a = h(3); other.V = 0; var b = h(4); } }")]
+        [InlineData(C + "static void M(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b); b[0] = 5; Func<int, int> h = i => { Spec.Reads(ObjSet.Of(b)); Spec.Requires(0 <= i && i < b.Length && b[i] > 0); return 10 / b[i]; }; a[0] = 1; var r = h(0); } }")]
+        [InlineData(C + ApplyR + "static void M(Cell lim, Cell d) { Spec.Requires(lim != d); lim.V = 10; var r = Apply(x => { Spec.Reads(ObjSet.Of(lim)); Spec.Requires(x < lim.V); return x; }, lim, d, 3); } }")]
+        [InlineData(C + "static void M(int[] a) { Spec.Requires(a.Length > 2); a[0] = 5; Func<int, int> h = i => { Spec.Reads(ObjSet.Of(a)); Spec.Requires(0 <= i && i < a.Length && a[i] > 0); return 10 / a[i]; }; var r = h(0); } }")]
+        public void Reads_Proved(string code) => Assert.Empty(All(code));
+
+        [Theory]
+        // what it reads changed
+        [InlineData("CSV1001", C + "static void M(Cell lim) { lim.V = 10; " + Lim + "lim.V = 2; var c = h(5); } }")]
+        [InlineData("CSV1001", C + "static void M(Cell lim, Cell other) { lim.V = 10; " + Lim + "other.V = 0; var b = h(4); } }")]
+        // no frame, or reading outside it
+        [InlineData("CSV1029", C + "static void M(Cell lim) { Func<int, int> h = x => { Spec.Requires(x < lim.V); return x; }; } }")]
+        [InlineData("CSV1029", C + "static void M(Cell lim, Cell o) { Func<int, int> h = x => { Spec.Reads(ObjSet.Of(lim)); Spec.Requires(x < o.V); return x; }; } }")]
+        // a callee that takes it to be steady
+        [InlineData("CSV1001", C + "static int ApplyS(Func<int, int> g, int x) { Spec.Requires(Spec.Pre(g, x)); return g(x); } static void M(Cell lim) { lim.V = 10; var r = ApplyS(x => { Spec.Reads(ObjSet.Of(lim)); Spec.Requires(x < lim.V); return x; }, 3); } }")]
+        // a callee that changes what it reads
+        [InlineData("CSV1001", C + "static int Apply(Func<int, int> g, Cell c, int x) { Spec.Requires(Spec.Reads(g, y => ObjSet.Of(c))); Spec.Requires(Spec.Pre(g, x)); c.V = 0; return g(x); } } ")]
+        public void Reads_Reported(string id, string code) => Assert.Contains(id, Ids(code));
     }
 }

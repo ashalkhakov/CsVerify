@@ -229,8 +229,9 @@ namespace CsVerify.Verifier
                 var spec = new SpecEnv { Old = _entry };
                 CheckSubtyping(f, spec);
                 // the permissions the preconditions give (then, as conditions, they say they are in hand)
-                foreach (var req in _contract.Requires) Inhale(req, f, spec, f);
+                SteadyOnEntry(f);
                 EnclosingFacts(f, spec);
+                foreach (var req in _contract.Requires) Inhale(req, f, spec, f);
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
                 EnterFrames(f, spec);
@@ -1775,8 +1776,10 @@ namespace CsVerify.Verifier
                     case "Changes":
                     case "ChangesNothing":
                         return FrameSpec(inv, f, spec);
+                    case "Reads" when inv.Arguments.Length == 2:
+                        return FrameSpec(inv, f, spec);
                     case "Total":
-                        return TotalOf((INamedTypeSymbol)m.Parameters[0].Type, Eval(inv.Arguments[0].Value, f, spec));
+                        return TotalOf((INamedTypeSymbol)m.Parameters[0].Type, Eval(inv.Arguments[0].Value, f, spec), f);
                     case "Pre":
                     case "Post":
                     {
@@ -1785,8 +1788,8 @@ namespace CsVerify.Verifier
                         var d = Eval(inv.Arguments[0].Value, f, spec);
                         var rest = inv.Arguments.Skip(1).Select(a => Eval(a.Value, f, spec)).ToList();
                         int n = type.DelegateInvokeMethod.Parameters.Length;
-                        return m.Name == "Pre" ? PreOf(type, d, rest.Take(n).ToList())
-                                               : PostOf(type, d, rest.Take(n).ToList(), rest.Count > n ? rest[n] : null);
+                        return m.Name == "Pre" ? PreOf(type, d, rest.Take(n).ToList(), f)
+                                               : PostOf(type, d, rest.Take(n).ToList(), rest.Count > n ? rest[n] : null, f);
                     }
                     case "Multiset":
                         return MultisetOf(inv, f, spec);
@@ -1926,7 +1929,8 @@ namespace CsVerify.Verifier
                 var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
                 if (!callee.HasSource && !callee.OfDelegate)
                 {
-                    if (_codeMode) DelegateCalled(inv, receiver, argTerms);
+                    var delegateState = m.MethodKind == MethodKind.DelegateInvoke ? f.Clone() : null;
+                    if (_codeMode) DelegateCalled(inv, receiver, argTerms, f);
                     var libraryMemory = f.Heap;
                     var libraryHeld = f.ArrPerm;
                     DeferTies();
@@ -1964,11 +1968,12 @@ namespace CsVerify.Verifier
                     LibraryNullFacts(inv, argTerms, libResult);
                     GuardFacts(inv, argTerms);
                     if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
-                    DelegateGave(inv, receiver, argTerms, libResult);
+                    DelegateGave(inv, receiver, argTerms, libResult, delegateState);
                     return libResult;
                 }
 
                 var preEnv = new SpecEnv { Old = pre };
+                SteadyArguments(inv, callee, argTerms);
                 // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
                 // quantifier, the obligation is closed over its variable with the others made there)
                 foreach (var req in callee.Requires)
