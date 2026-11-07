@@ -100,5 +100,27 @@ namespace CsVerify.Tests
         [InlineData(C + "static void M(int[] a) { Spec.Requires(a.Length > 0); a[0] = 5; Array.Sort(a, (x, y) => x < y ? -1 : x > y ? 1 : 0); Spec.Assert(a[0] == 5); } }")]
         [InlineData(C + "static void M(int[] a, Cell c) { Spec.Requires(a.Length > 0); c.V = 3; var b = Array.Exists(a, x => { c.V = 4; return x > 1; }); Spec.Assert(c.V == 3); } }")]
         public void ReadOnlyLibrary_Forgets(string code) => Assert.Contains("CSV1004", Ids(code));
+
+        // what a delegate may change: Spec.ChangesNothing, Spec.Changes(f, x => frame), a lambda's own Spec.Modifies
+        [Theory]
+        [InlineData(C + "static void M(int[] a, Predicate<int> p) { Spec.Requires(Spec.Total(p) && Spec.ChangesNothing(p) && a.Length > 0); a[0] = 5; var b = Array.Exists(a, p); Spec.Assert(a[0] == 5); } }")]
+        [InlineData(C + "static void M(Cell c, Func<int, int> g) { Spec.Requires(Spec.Total(g) && Spec.ChangesNothing(g)); c.V = 3; var r = g(1); Spec.Assert(c.V == 3); } }")]
+        [InlineData(C + "static void M(Cell c, Cell d, Action<Cell> g) { Spec.Requires(Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x))); Spec.Requires(c != d); c.V = 3; d.V = 4; g(d); Spec.Assert(c.V == 3); } }")]
+        [InlineData(C + "static void M(int[] a, int[] b, Action<int[]> g) { Spec.Requires(Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x))); Spec.Requires(a != b && a.Length > 0); a[0] = 5; g(b); Spec.Assert(a[0] == 5); } }")]
+        // given lambdas: one that writes nothing, one within its own Spec.Modifies
+        [InlineData(C + "static void N(Cell c, Func<int, int> g) { Spec.Requires(Spec.Total(g) && Spec.ChangesNothing(g)); } static void P(Action<Cell> g) { Spec.Requires(Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x))); } " +
+                    "static void M() { N(new Cell(), x => x); P(x => { Spec.Modifies(ObjSet.Of(x)); x.V = 1; }); P(x => { }); } }")]
+        public void Frames_Proved(string code) => Assert.Empty(All(code));
+
+        [Theory]
+        // nothing said: anything may change
+        [InlineData("CSV1004", C + "static void M(Cell c, Func<int, int> g) { Spec.Requires(Spec.Total(g)); c.V = 3; var r = g(1); Spec.Assert(c.V == 3); } }")]
+        // the frame has it
+        [InlineData("CSV1004", C + "static void M(Cell c, Action<Cell> g) { Spec.Requires(Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x))); c.V = 3; g(c); Spec.Assert(c.V == 3); } }")]
+        // a lambda that writes isn't one that changes nothing; nor one outside its own frame
+        [InlineData("CSV1001", C + "static void N(Cell c, Func<int, int> g) { Spec.Requires(Spec.Total(g) && Spec.ChangesNothing(g)); } static void M() { var c = new Cell(); N(c, x => { c.V = 9; return x; }); } }")]
+        [InlineData("CSV1001", C + "static void P(Action<Cell> g) { Spec.Requires(Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x))); } static void M() { var c = new Cell(); P(x => { c.V = 1; }); } }")]
+        [InlineData("CSV1017", C + "static void M() { var c = new Cell(); Action<Cell> h = x => { Spec.Modifies(ObjSet.Of(x)); c.V = 1; }; } }")]
+        public void Frames_Reported(string id, string code) => Assert.Contains(id, Ids(code));
     }
 }

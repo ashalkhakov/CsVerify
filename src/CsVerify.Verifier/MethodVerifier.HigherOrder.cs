@@ -77,6 +77,70 @@ namespace CsVerify.Verifier
             return _z3.Apply("cv_total" + sorts.Length, Sort.Bool, new[] { T.Coerce(d, Sort.Int) });
         }
 
+        // ---- what a delegate may change: a frame of its arguments (Spec.Changes, Spec.ChangesNothing)
+
+        /// <summary>The objects and arrays a call of d with these arguments may change (besides what it makes).</summary>
+        private Term FrameOf(INamedTypeSymbol type, Term d, IReadOnlyList<Term> args)
+        {
+            var (a, _) = DelegateSignature(type, args, null);
+            return _z3.Apply("cv_dframe", Sort.Row, new[] { T.Coerce(d, Sort.Int) }.Concat(a).ToArray());
+        }
+
+        /// <summary>d changes nothing: its frame is empty for every argument.</summary>
+        private Term NoChange(INamedTypeSymbol type, Term d)
+        {
+            var sorts = type.DelegateInvokeMethod.Parameters.Select(p => SortOf(p.Type)).ToArray();
+            _z3.AssumeOnce("nochange:" + string.Join(",", sorts), () =>
+            {
+                var dv = new Term(_z3.FreshName("d"), Sort.Int);
+                var xs = sorts.Select(x => new Term(_z3.FreshName("x"), x)).ToArray();
+                var frame = _z3.Apply("cv_dframe", Sort.Row, new[] { dv }.Concat(xs).ToArray());
+                var none = _z3.Apply("cv_nochange", Sort.Bool, new[] { dv });
+                var all = new[] { dv }.Concat(xs).ToArray();
+                // (without arguments, an empty frame is changing nothing, and back)
+                var body = xs.Length == 0 ? T.Eq(none, T.Eq(frame, T.ZeroRow())) : T.Implies(none, T.Eq(frame, T.ZeroRow()));
+                return Forall(all, body, frame);
+            });
+            return _z3.Apply("cv_nochange", Sort.Bool, new[] { T.Coerce(d, Sort.Int) });
+        }
+
+        /// <summary>Every call of d changes only what <paramref name="within"/> gives for its arguments.</summary>
+        private Term ChangesWithin(INamedTypeSymbol type, Term d, IReadOnlyList<Term> xs, Term within)
+        {
+            var frame = FrameOf(type, d, xs);
+            return Forall(xs, new Term($"(cv_subset {frame.S} {T.Coerce(within, Sort.Row).S})", Sort.Bool), frame);
+        }
+
+        private bool Entailed(Term t) => _z3.Check(T.Not(t)) == "unsat";
+
+        /// <summary>Spec.ChangesNothing(f), Spec.Changes(f, x => frame) in a specification.</summary>
+        private Term FrameSpec(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            var first = Unconverted(inv.Arguments[0].Value);
+            var type = (inv.TargetMethod.Name == "ChangesNothing" ? first.Type : inv.TargetMethod.Parameters[0].Type) as INamedTypeSymbol;
+            if (type?.DelegateInvokeMethod == null) { Unsupported(inv); return _z3.Fresh("frame", Sort.Bool); }
+            var d = Eval(inv.Arguments[0].Value, f, spec);
+            if (inv.TargetMethod.Name == "ChangesNothing") return NoChange(type, d);
+            var given = inv.Arguments[1].Value;
+            if (!(Unconverted(given) is IDelegateCreationOperation dc && DelegateTarget(dc.Target) is IMethodSymbol fn && fn.MethodKind == MethodKind.AnonymousFunction))
+                return ChangesWithin(type, d, new Term[0], Eval(given, f, spec)); // (no arguments: the frame itself)
+            var body = ValueOf(fn);
+            if (body == null) { Unsupported(inv); return _z3.Fresh("frame", Sort.Bool); }
+            var xs = Bound(fn.Parameters);
+            var within = Closed(fn.Parameters, xs, f, inner => EvalSpec(body, inner, spec));
+            return ChangesWithin(type, d, xs, within);
+        }
+
+        /// <summary>At a call of a delegate: what it may change, or null if nothing (null too if it isn't one with a frame).</summary>
+        private (bool known, Term frame) DelegateFrameAt(IInvocationOperation inv, Term receiver, Term[] args, Frame f)
+        {
+            if (!(inv.TargetMethod.ContainingType is INamedTypeSymbol type) || inv.TargetMethod.MethodKind != MethodKind.DelegateInvoke || !IsPlainDelegate(type) || receiver == null)
+                return (false, null);
+            if (Entailed(NoChange(type, receiver))) return (true, null);
+            var frame = FrameOf(type, receiver, args);
+            return (true, f.Alloc != null ? new Term($"(cv_mod {frame.S} {f.Alloc.S})", Sort.Row) : frame);
+        }
+
         private static Term Forall(IReadOnlyList<Term> vars, Term body, Term pattern) =>
             vars.Count == 0 ? body
             : new Term($"(forall ({string.Join(" ", vars.Select(v => $"({v.S} {T.SortName(v.Sort)})"))}) (! {body.S} :pattern ({pattern.S})))", Sort.Bool);
@@ -196,12 +260,27 @@ namespace CsVerify.Verifier
 
         /// <summary>A delegate argument whose code is in sight (a lambda, a method group) and writes no arrays.</summary>
         private bool WritesNoArrays(IOperation value) =>
-            Unconverted(value) is IDelegateCreationOperation dc && DelegateTarget(dc.Target) is IMethodSymbol fn && !_engine.MayWriteHeap(fn);
+            Unconverted(value) is IDelegateCreationOperation dc && DelegateTarget(dc.Target) is IMethodSymbol fn ? !_engine.MayWriteHeap(fn) : SaidToChangeNothing(value);
 
         /// <summary>A delegate argument whose code is in sight and writes no field nor model state.</summary>
-        private bool WritesNoFields(IOperation value)
+        private bool WritesNoFields(IOperation value) =>
+            Unconverted(value) is IDelegateCreationOperation dc && DelegateTarget(dc.Target) is IMethodSymbol fn ? WritesNoFields(fn) : SaidToChangeNothing(value);
+
+        /// <summary>A delegate in a variable that its specifications say changes nothing.</summary>
+        private bool SaidToChangeNothing(IOperation value)
         {
-            if (!(Unconverted(value) is IDelegateCreationOperation dc) || !(DelegateTarget(dc.Target) is IMethodSymbol fn)) return false;
+            var u = Unconverted(value);
+            if (!(u is ILocalReferenceOperation || u is IParameterReferenceOperation || u is IFieldReferenceOperation) || !(u.Type is INamedTypeSymbol type) || !IsPlainDelegate(type)) return false;
+            return Entailed(NoChange(type, Eval(u, _handOffState, null)));
+        }
+
+        private Frame _handOffState; // (the state at the call being looked at, for SaidToChangeNothing)
+
+        /// <summary>Its code writes no array, field or model state.</summary>
+        private bool WritesNothing(IMethodSymbol fn) => !_engine.MayWriteHeap(fn) && WritesNoFields(fn);
+
+        private bool WritesNoFields(IMethodSymbol fn)
+        {
             if (fn.MethodKind != MethodKind.AnonymousFunction)
             {
                 var (fields, all) = _engine.Fields.WritesOf(fn);
@@ -234,10 +313,10 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>Does this call of a library member keep the arrays as they are: it reads only, and runs nothing that writes one?</summary>
-        private bool KeepsArrays(IInvocationOperation inv) => ReadsOnly(inv.TargetMethod) && !_engine.Fields.RunsOtherCodeAt(inv, WritesNoArrays);
+        private bool KeepsArrays(IInvocationOperation inv, Frame f) { _handOffState = f; return ReadsOnly(inv.TargetMethod) && !_engine.Fields.RunsOtherCodeAt(inv, WritesNoArrays); }
 
         /// <summary>And the fields and model state (a list's elements)?</summary>
-        private bool KeepsFields(IInvocationOperation inv) => ReadsOnly(inv.TargetMethod) && !_engine.Fields.RunsOtherCodeAt(inv, WritesNoFields);
+        private bool KeepsFields(IInvocationOperation inv, Frame f) { _handOffState = f; return ReadsOnly(inv.TargetMethod) && !_engine.Fields.RunsOtherCodeAt(inv, WritesNoFields); }
 
         /// <summary>Does the stub's precondition say what the delegate parameter must accept?</summary>
         private static bool StubSpeaksOf(Contract stub, string parameter) =>
@@ -324,6 +403,15 @@ namespace CsVerify.Verifier
                 Report("CSV1029", dc.Syntax, $"the precondition of what is made a '{type.Name}' here depends on state that may change, so it can't be its Spec.Pre: " +
                                              "make it depend only on the parameters and captured variables that never change, or use a delegate type with a contract", isError: true);
 
+            // what it may change: its own Spec.Modifies, or nothing if it writes nothing
+            if (c.Modifies != null && Steady(c.Modifies, own, fn))
+            {
+                var xs = Bound(ps);
+                var within = Closed(ps, xs, f, inner => EvalForeignSpec(c.Modifies, inner, new SpecEnv { Old = inner }));
+                AssumeSide(ChangesWithin(type, d, xs, within));
+            }
+            else if (WritesNothing(fn)) AssumeSide(NoChange(type, d));
+
             // what it gives: its postconditions, and an expression's value
             var invoke = type.DelegateInvokeMethod;
             var facts = new List<(IReadOnlyList<Term> xs, Term r, Term fact)>();
@@ -405,6 +493,10 @@ namespace CsVerify.Verifier
                     return op.ChildOperations.All(ch => Steady(ch, own, fn));
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) && (inv.TargetMethod.Name == "Pre" || inv.TargetMethod.Name == "Post" || inv.TargetMethod.Name == "Total"):
                     return inv.Arguments.All(a => Steady(a.Value, own, fn));
+                case IInvocationOperation inv when SpecSymbols.IsObjSet(inv.TargetMethod.ContainingType):
+                    return (inv.Instance == null || Steady(inv.Instance, own, fn)) && inv.Arguments.All(a => Steady(a.Value, own, fn));
+                case IPropertyReferenceOperation pr when SpecSymbols.IsObjSet(pr.Property.ContainingType) && pr.Instance == null:
+                    return true;
                 case IInvocationOperation inv when inv.Instance == null && _engine.ContractOf(inv.TargetMethod).IsPure &&
                                                    inv.TargetMethod.Parameters.All(p => p.Type.IsValueType) && inv.TargetMethod.ReturnType.IsValueType:
                     return inv.Arguments.All(a => Steady(a.Value, own, fn));

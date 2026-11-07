@@ -1772,6 +1772,9 @@ namespace CsVerify.Verifier
                         return Quantifier(inv, f, spec, m.Name == "Forall");
                     case "Fresh":
                         return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
+                    case "Changes":
+                    case "ChangesNothing":
+                        return FrameSpec(inv, f, spec);
                     case "Total":
                         return TotalOf((INamedTypeSymbol)m.Parameters[0].Type, Eval(inv.Arguments[0].Value, f, spec));
                     case "Pre":
@@ -1936,13 +1939,21 @@ namespace CsVerify.Verifier
                         else if (NotNullWhen(a.Parameter) is bool when) whenNotNull.Add((nv, when));
                         if (cells.ContainsKey(a)) cellsOut.Add((a, nv)); else Write(a.Value, nv, f, spec);
                     }
-                    if (HavocsHeap(m) && !KeepsArrays(inv)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                    // a delegate changes only its frame; a library member that only reads, only what what it runs changes
+                    var (ofDelegate, delegateFrame) = DelegateFrameAt(inv, receiver, argTerms, f);
+                    if (ofDelegate)
+                    {
+                        if (delegateFrame != null && HavocsHeap(m))
+                            f.Heap = _z3.Define("heap", new Term($"(cv_frameh {delegateFrame.S} {libraryMemory.S} {_z3.Fresh("heap", Sort.Heap).S})", Sort.Heap));
+                    }
+                    else if (HavocsHeap(m) && !KeepsArrays(inv, f)) f.Heap = _z3.Fresh("heap", Sort.Heap);
                     f.Heap = KeepHeldMemory(f.Heap, libraryMemory, libraryHeld);
                     foreach (var (a, nv) in cellsOut) WriteCell(cells[a], nv, f, a.Syntax);
                     FlushTies(f);
                     CalleeModifies(callee, pre, f, inv.Syntax);
                     // (a library can run the program's code only through overrides and interfaces: none, none written)
-                    if (_engine.Fields.WritesFieldsAt(inv) && !KeepsFields(inv)) HavocFields(f, m, touched);
+                    if (ofDelegate) { if (delegateFrame != null && _engine.Fields.WritesFieldsAt(inv)) HavocFields(f, m, touched, delegateFrame); }
+                    else if (_engine.Fields.WritesFieldsAt(inv) && !KeepsFields(inv, f)) HavocFields(f, m, touched);
                     CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                     var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
                     if (!m.ReturnsVoid && LibraryGivesAsInstantiated(m)) _z3.Assume(NotNull(libResult));

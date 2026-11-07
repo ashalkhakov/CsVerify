@@ -146,6 +146,24 @@ namespace CsVerify
         public static bool Total<A1, A2, A3, A4, R>(Func<A1, A2, A3, A4, R> f) => throw GhostException.Instance;
         public static bool Total<A1, A2, A3, A4>(Action<A1, A2, A3, A4> f) => throw GhostException.Instance;
 
+        // ---- what a delegate may change (a modifies frame, as a function of its arguments)
+
+        /// <summary>A call of f changes no array, field or model state that exists before it (it may make new objects).</summary>
+        public static bool ChangesNothing(Delegate f) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<R>(Func<R> f, ObjSet frame) => throw GhostException.Instance;
+        public static bool Changes(Action f, ObjSet frame) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<A1, R>(Func<A1, R> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<A1>(Action<A1> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<A1, A2, R>(Func<A1, A2, R> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<A1, A2>(Action<A1, A2> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<A1, A2, A3, R>(Func<A1, A2, A3, R> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<A1, A2, A3>(Action<A1, A2, A3> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<T>(Predicate<T> f, Func<T, ObjSet> frame) => throw GhostException.Instance;
+
         // (the BCL's other delegates that collections take)
         public static bool Pre<T>(Predicate<T> f, T a) => throw GhostException.Instance;
         public static bool Post<T>(Predicate<T> f, T a, bool r) => throw GhostException.Instance;

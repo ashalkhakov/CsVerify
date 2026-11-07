@@ -54,7 +54,7 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - `Spec.Index(x)` is the index of `x`, the iteration variable of a `foreach` over an array or a string. In the loop's invariants it is the number of elements gone through.
 - `Spec.Ensures<R>(r => …)` binds `r` to the return value. Lambdas cannot capture `ref`/`in` parameters, so for those use `Spec.Ensures(bool)` with `Spec.Result<R>()` and `Spec.Old(x)`.
 - `Spec.Forall(lo, hi, i => P)` / `Spec.Exists(...)` are bounded integer quantifiers.
-- `Spec.Pre(f, x)`, `Spec.Post(f, x, r)` and `Spec.Total(f)` say what a `Func` or `Action` accepts and gives, as Dafny's `f.requires` and `f.ensures` (see [Delegates](#delegates)).
+- `Spec.Pre(f, x)`, `Spec.Post(f, x, r)` and `Spec.Total(f)` say what a `Func` or `Action` accepts and gives, as Dafny's `f.requires` and `f.ensures`, and `Spec.Changes(f, x => frame)` and `Spec.ChangesNothing(f)` what it may change (see [Delegates](#delegates)).
 - Specification expressions should be side-effect free. Calls in them must be `[Pure]`: a source method, or a library member whose stub is (`l.Count`, `string.IsNullOrEmpty(s)`; see [Contracts for code without sources](library-contracts.md)).
 
 ## Delegates
@@ -82,7 +82,8 @@ Spec.Assert(y == 2);   // what the lambda gives is its value
   - **What a stub says,** for a member whose `[ContractsFor]` stub names the delegate in `Spec.Pre` or `Spec.Total`: `Spec.Requires(Spec.Pre(valueFactory))` for `new Lazy<T>(valueFactory)`. The stub is trusted, as stubs are.
   - **Anything,** otherwise (a lazy query such as `Where` or `Select`, `Task.Run`, a lambda that may change the array): it must be total, proved there (CSV1029). A lambda without a precondition is; so is one whose precondition holds for every argument, such as `Task.Run(() => { Spec.Requires(k > 0); ... })` where `k > 0` is known.
 - **Inside a lambda,** what its method requires of parameters it never assigns still holds, as `Spec.Pre` and `Spec.Total` don't change: `Spec.Requires(Spec.Total(work))` lets `Task.Run(() => work())` call it.
-- **Not modeled:** what a delegate changes (a call may change anything, as a library call may), whether it throws or ends (a call that may throw is handled as any call that may), and permissions: a delegate that needs `Spec.Acc` takes a delegate type with a contract.
+- **What a delegate changes** is its frame, a function of its arguments, as a method's `Spec.Modifies` is: a call forgets only the objects and arrays in it (and nothing it makes). Nothing is known of it unless a specification says so, so a call may change anything; `Spec.ChangesNothing(g)` says it changes nothing, and `Spec.Changes(g, x => ObjSet.Of(x))` that `g(x)` changes only `x`. A lambda made a delegate has its own `Spec.Modifies` as its frame (checked in it, CSV1017), or none at all if it writes nothing; only a frame that depends on its parameters and on captured variables that never change counts. A library member that only reads (see [Limitations](limitations.md)) handed a delegate that changes nothing keeps everything.
+- **Not modeled:** whether it throws or ends (a call that may throw is handled as any call that may), and permissions: a delegate that needs `Spec.Acc` takes a delegate type with a contract.
 
 ## Enabling `CSVERIFY_SPEC`
 
