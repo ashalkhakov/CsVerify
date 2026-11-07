@@ -213,6 +213,10 @@ namespace CsVerify.Verifier
                         AddAfter(inv, TaskName(inv, model), model);
                     }
                     break;
+                // a lambda made a delegate of a marked type: a call of it runs concurrently
+                case AnonymousFunctionExpressionSyntax fn when model.GetTypeInfo(fn).ConvertedType is INamedTypeSymbol { TypeKind: TypeKind.Delegate, DelegateInvokeMethod: IMethodSymbol made } && IsMarked(made):
+                    AddCode(fn, model);
+                    break;
                 case BaseObjectCreationExpressionSyntax c when model.GetTypeInfo(c).Type?.ToDisplayString() == "System.Threading.Thread" && c.ArgumentList != null:
                     foreach (var a in c.ArgumentList.Arguments) AddDelegate(a.Expression, model);
                     break;

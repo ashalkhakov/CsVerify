@@ -495,9 +495,31 @@ namespace CsVerify.Verifier
             // behavioural subtyping: an abstract or interface member's contract comes from its contract class, and
             // an override or implementation inherits the contracts of what it overrides or implements
             var spec = ContractClassMethod(key);
-            c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, BaseMembers(key).Select(ContractOf));
+            var bases = BaseMembers(key).Select(ContractOf);
+            // a delegate type's contract is its contract class's Invoke; a lambda made one inherits it, as an override does
+            if (key.MethodKind == MethodKind.DelegateInvoke && DelegateContractMethod(key) is IMethodSymbol invoke) { spec = invoke; c.OfDelegate = true; }
+            if (key.MethodKind == MethodKind.AnonymousFunction && DelegateTypeOf(key)?.DelegateInvokeMethod is IMethodSymbol made && ContractOf(made).OfDelegate)
+                bases = bases.Append(ContractOf(made));
+            c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, bases.ToList());
             return c;
         }
+
+        /// <summary>The Invoke of a delegate type's [ContractClassFor] class.</summary>
+        private IMethodSymbol DelegateContractMethod(IMethodSymbol invoke) =>
+            ContractClassOf(invoke.ContainingType)?.GetMembers("Invoke").OfType<IMethodSymbol>().FirstOrDefault(o => o.Parameters.Length == invoke.Parameters.Length);
+
+        /// <summary>The delegate type a lambda is made into, if it's made into one.</summary>
+        internal INamedTypeSymbol DelegateTypeOf(IMethodSymbol lambda)
+        {
+            if (lambda.MethodKind != MethodKind.AnonymousFunction || !(lambda.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax syntax)) return null;
+            var op = _compilation.GetSemanticModel(syntax.SyntaxTree).GetOperation(syntax);
+            while (op?.Parent is IConversionOperation || op?.Parent is IParenthesizedOperation) op = op.Parent;
+            return op?.Parent is IDelegateCreationOperation dc ? dc.Type as INamedTypeSymbol : (op?.Type as INamedTypeSymbol);
+        }
+
+        /// <summary>Does calling a delegate of this type prove and assume a contract?</summary>
+        internal bool HasDelegateContract(ITypeSymbol type) =>
+            type is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.DelegateInvokeMethod != null && ContractOf(d.DelegateInvokeMethod).OfDelegate;
 
         /// <summary>
         /// The stub of a library member, or else of the member it overrides (StreamWriter.Write(string) keeps

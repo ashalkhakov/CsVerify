@@ -55,9 +55,10 @@ namespace CsVerify
     /// is started as a task and not awaited at once, handed to a thread, called by other such code, or run concurrently
     /// by the program's callers, as a web framework does with its handlers. It must hold a lock or a permission for every
     /// field and array cell it uses. Where such code starts or calls one of the program's methods, that method must be
-    /// marked too, and so must an override of a marked method.
+    /// marked too, and so must an override of a marked method. On a delegate type: a call of one of its delegates runs
+    /// concurrently, so every lambda made one is checked as such.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor | AttributeTargets.Property | AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface)]
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor | AttributeTargets.Property | AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Delegate)]
     public sealed class RunsConcurrentlyAttribute : Attribute { }
 
     /// <summary>

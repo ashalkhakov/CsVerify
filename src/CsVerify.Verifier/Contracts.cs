@@ -54,6 +54,11 @@ namespace CsVerify.Verifier
         /// </summary>
         public IReadOnlyList<IOperation> PureStatements;
         public bool HasSource => Declaration != null;
+        /// <summary>
+        /// The Invoke of a delegate type with a [ContractClassFor] contract: a call of the delegate proves its precondition
+        /// and assumes its postcondition, as for an interface member, and what it may change is anything (its body isn't known).
+        /// </summary>
+        public bool OfDelegate;
         public bool IsTrusted, IsLemma, IsPure;
         /// <summary>
         /// For an external member with a [ContractsFor] stub: the stub method, whose contract this is (trusted: assumed

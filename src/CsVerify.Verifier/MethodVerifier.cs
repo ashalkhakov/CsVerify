@@ -193,6 +193,7 @@ namespace CsVerify.Verifier
             FindContractStatements();
             CheckLocking();
             CheckConcurrentMarks();
+            CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
@@ -775,7 +776,7 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsSpecClass(m.ContainingType) || IsCsVerifyNamespace(m.ContainingNamespace)) return null;
             if (m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object) return null; // base()
             if (m.IsImplicitlyDeclared && m.ContainingType.Locations.Any(l => l.IsInSource)) return null; // a class's default constructor
-            if (!callee.HasSource) return "library " + m.OriginalDefinition.ToDisplayString();
+            if (!callee.HasSource && !callee.OfDelegate) return "library " + m.OriginalDefinition.ToDisplayString();
             if (callee.IsStub || callee.IsPure || callee.IsLemma || callee.Ensures.Count > 0 || callee.ThrowEnsures.Count > 0) return null;
             return "source " + m.OriginalDefinition.ToDisplayString();
         }
@@ -1131,6 +1132,7 @@ namespace CsVerify.Verifier
                 case IDelegateCreationOperation _:
                 case IAnonymousFunctionOperation _:
                 {
+                    if (op is IDelegateCreationOperation made) CheckMethodGroup(made);
                     var d = _z3.Fresh("delegate", Sort.Int);
                     AssumeSide(NotNull(d)); // a lambda, or a method group made a delegate, is never null
                     return d;
@@ -1897,7 +1899,7 @@ namespace CsVerify.Verifier
                 bool chained = m.MethodKind == MethodKind.Constructor; // base(...) or this(...): the object is not built yet
                 var touched = chained ? new List<Term>() : HandOver(inv, receiver, argTerms, f, callee);
                 var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
-                if (!callee.HasSource)
+                if (!callee.HasSource && !callee.OfDelegate)
                 {
                     var libraryMemory = f.Heap;
                     var libraryHeld = f.ArrPerm;
@@ -2189,7 +2191,9 @@ namespace CsVerify.Verifier
                 _z3.Push();
                 foreach (var req in b.Requires) _z3.Assume(AsBool(EvalForeignSpec(req, f, spec)));
                 Prove(T.And(_contract.OwnRequires.Select(r => AsBool(EvalForeignSpec(r, f, spec))).ToArray()), "CSV1018", MethodLocationNode(),
-                    $"'{_method.Name}' requires more than {b.Method.ContainingType.Name}.{b.Method.Name}, which it overrides, promises its callers", assume: false);
+                    _method.MethodKind == MethodKind.AnonymousFunction
+                    ? $"this lambda requires more than its type {b.Method.ContainingType.Name} promises its callers"
+                    : $"'{_method.Name}' requires more than {b.Method.ContainingType.Name}.{b.Method.Name}, which it overrides, promises its callers", assume: false);
                 _z3.Pop();
             }
             foreach (var (b, frame) in _contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, _contract.Modifies)))
