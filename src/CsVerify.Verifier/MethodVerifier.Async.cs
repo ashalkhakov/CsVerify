@@ -236,19 +236,67 @@ namespace CsVerify.Verifier
             }
         }
 
-        /// <summary>Code that runs alongside other code reads only cells it has a share of, or the other could be writing them.</summary>
-        private void CheckCellRead(Term arr, Term i, Frame f, SyntaxNode at)
+        // ================================================================================== what's shared
+
+        /// <summary>Is this code running alongside other code here? Then all it uses must be held: that makes it free of races, as the logic promises.</summary>
+        private bool AmongOthers(Frame f, SyntaxNode at)
         {
-            if (!_codeMode || _foreignSpec > 0 || f.ArrPerm == null) return;
-            if (!(_arrayMode && _engine.StartedDelegates.RunsAlongside(_method)) && !f.Started.Values.Any(t => !t.Awaited && t.HasPermissions)) return;
-            Require(new Term($"(> {CellPerm(f, arr, i)} 0.0)", Sort.Bool), "CSV1016", at, $"'{at}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it");
+            if (!_codeMode || _foreignSpec > 0 || SpecSymbols.IsInGhostContext(at, _model)) return false;
+            return _engine.StartedDelegates.RunsAlongside(_method) || f.Started.Values.Any(t => !t.Awaited);
         }
 
-        private void CheckCallReadsInHand(IInvocationOperation inv, Contract callee)
+        /// <summary>Proved, or reported; either way nothing follows from it, so what comes after is still looked at.</summary>
+        private void Reported(Term goal, string id, SyntaxNode at, string message) =>
+            Prove(T.Implies(T.And(_guards.ToArray()), goal), id, at, message, assume: false);
+
+        /// <summary>The object is new here, and only a local has it.</summary>
+        private Term IsConfined(Term o, Frame f) => T.Or(ConfinedValues(f, null).Select(v => T.Eq(T.Coerce(o, Sort.Int), v)).ToArray());
+
+        private static bool NeverChanges(ISymbol field) =>
+            field is IFieldSymbol x ? x.IsReadOnly || x.IsConst
+            : field is IPropertySymbol p && (p.SetMethod == null || p.SetMethod.IsInitOnly);
+
+        /// <summary>
+        /// A field used by code that runs alongside other code: it never changes, or a lock guards it (for which CheckLocking
+        /// has its say), or it's in hand: a permission to its object, a new object only a local has, or the object a constructor
+        /// is building. Otherwise another could be writing it.
+        /// </summary>
+        private void CheckFieldHeld(ISymbol field, Term o, SyntaxNode at, Frame f)
         {
-            if (!_codeMode || !_arrayMode || !_engine.StartedDelegates.RunsAlongside(_method) || callee.IsLemma || SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType)) return;
-            if (callee.HasSource && !MentionsCells(callee) && _engine.MayTouchArrays(inv.TargetMethod))
-                Report("CSV1016", inv.Syntax, $"'{inv.TargetMethod.Name}' may read any array, and this runs alongside other code: give it a contract with Spec.AccRead for the cells it reads", isError: true);
+            if (!AmongOthers(f, at) || NeverChanges(field) || _engine.Locks.GuardOf(field) != null) return;
+            if (at.Parent is AssignmentExpressionSyntax a && a.Left == at && a.Parent is InitializerExpressionSyntax) return;
+            string fix = "guard it with a lock, or hold a Spec.Acc for it (the class must be [Owned])";
+            if (o == null)
+            {
+                Report("CSV1027", at, $"'{at}' is static, with no lock, and this runs alongside other code: {fix}", isError: true);
+                return;
+            }
+            if (_method.MethodKind == MethodKind.Constructor && f.This != null && o.S == f.This.S) return;
+            var held = new List<Term> { IsConfined(o, f) };
+            if (IsOwnedField(field) && f.Perm != null)
+            {
+                var i = T.Coerce(o, Sort.Int);
+                held.Add(new Term($"(> (select {f.Perm} {i}) 0.0)", Sort.Bool));
+                if (f.Root != null) held.Add(new Term($"(> (select {f.Perm} (select {f.Root} {i})) 0.0)", Sort.Bool));
+                if (f.FPerm != null) held.Add(new Term($"(> {FieldAmount(f, o, FieldId(field))} 0.0)", Sort.Bool));
+            }
+            Reported(T.Or(held.ToArray()), "CSV1027", at, $"'{at}' has no lock and no permission here, and this runs alongside other code that could be using it: {fix}");
+        }
+
+        /// <summary>An array cell, likewise: under permissions, as they say; without them, only of a new array only a local has.</summary>
+        private void CheckCellRead(Term arr, Term i, Frame f, SyntaxNode at)
+        {
+            if (!AmongOthers(f, at)) return;
+            if (_arrayMode && f.ArrPerm != null)
+                Require(new Term($"(> {CellPerm(f, arr, i)} 0.0)", Sort.Bool), "CSV1016", at, $"'{at}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it");
+            else
+                Reported(IsConfined(arr, f), "CSV1027", at, $"'{at}' reads an array this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it");
+        }
+
+        private void CheckCellWriteShared(Term arr, Term i, Frame f, SyntaxNode at)
+        {
+            if (AmongOthers(f, at) && !(_arrayMode && f.ArrPerm != null))
+                Reported(IsConfined(arr, f), "CSV1027", at, $"'{at}' writes an array this code has no Spec.Acc for, and it runs alongside other code that could be using it");
         }
 
         /// <summary>
@@ -410,43 +458,7 @@ namespace CsVerify.Verifier
             return e;
         }
 
-        private IEnumerable<SyntaxNode> CodeAlongside(SyntaxNode start, string task)
-        {
-            SyntaxNode at = start.FirstAncestorOrSelf<StatementSyntax>();
-            while (at != null && at != _contract.Declaration)
-            {
-                var parent = at.Parent;
-                if (parent is AnonymousFunctionExpressionSyntax || parent is LocalFunctionStatementSyntax) yield break;
-                if (parent is BlockSyntax b && at is StatementSyntax here)
-                    foreach (var next in b.Statements.Skip(b.Statements.IndexOf(here) + 1))
-                    {
-                        if (task != null && Finishes(next, task)) yield break;
-                        yield return next;
-                    }
-                if (parent is ForStatementSyntax || parent is WhileStatementSyntax || parent is DoStatementSyntax || parent is CommonForEachStatementSyntax) yield return parent;
-                if (parent is TryStatementSyntax t && at == t.Block)
-                {
-                    foreach (var c in t.Catches) yield return c;
-                    if (t.Finally != null) yield return t.Finally;
-                }
-                at = parent;
-            }
-        }
-
-        /// <summary><c>await t;</c>, <c>x = await t;</c>, <c>return await t;</c>, the same with Task.WhenAll(..., t, ...), or <c>t.Join();</c>.</summary>
-        private bool Finishes(StatementSyntax st, string task)
-        {
-            var e = st is ExpressionStatementSyntax es ? es.Expression
-                : st is ReturnStatementSyntax rs ? rs.Expression
-                : st is LocalDeclarationStatementSyntax ld && ld.Declaration.Variables.Count == 1 ? ld.Declaration.Variables[0].Initializer?.Value : null;
-            if (e is AssignmentExpressionSyntax a) e = a.Right;
-            if (e is InvocationExpressionSyntax join && join.Expression is MemberAccessExpressionSyntax j && j.Name.Identifier.Text == "Join" && j.Expression.ToString() == task) return true;
-            if (!(e is AwaitExpressionSyntax aw)) return false;
-            e = aw.Expression;
-            if (e is InvocationExpressionSyntax ca && ca.Expression is MemberAccessExpressionSyntax cm && cm.Name.Identifier.Text == "ConfigureAwait") e = cm.Expression;
-            if (e.ToString() == task) return true;
-            return e is InvocationExpressionSyntax all && IsWhenAll(_model.GetSymbolInfo(all).Symbol as IMethodSymbol) && all.ArgumentList.Arguments.Any(x => x.Expression.ToString() == task);
-        }
+        private IEnumerable<SyntaxNode> CodeAlongside(SyntaxNode start, string task) => StartedDelegates.CodeAlongside(start, task, _contract.Declaration, _model);
 
         /// <summary>Two objects that can be told apart here.</summary>
         private bool Apart(Term x, Term y) => x != null && y != null && x.S != y.S && _z3.Check(T.Eq(x, y)) == "unsat";
@@ -481,14 +493,7 @@ namespace CsVerify.Verifier
 
         // ================================================================================== Task.Run and threads
 
-        /// <summary><c>await X</c> or <c>await X.ConfigureAwait(b)</c>: X doesn't run alongside what comes after.</summary>
-        private static bool IsAwaitedHere(SyntaxNode call)
-        {
-            var e = call.Parent;
-            while (e is ParenthesizedExpressionSyntax) e = e.Parent;
-            if (e is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "ConfigureAwait" && ma.Parent is InvocationExpressionSyntax c) e = c.Parent;
-            return e is AwaitExpressionSyntax;
-        }
+        private static bool IsAwaitedHere(SyntaxNode call) => StartedDelegates.IsAwaitedHere(call);
 
         private static bool IsTaskRun(IMethodSymbol m) =>
             m.Name == "Run" && m.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" ||
@@ -721,6 +726,11 @@ namespace CsVerify.Verifier
             // (from the syntax: whether a list of them is an array or a span depends on the framework)
             var elements = ((InvocationExpressionSyntax)all.Syntax).ArgumentList.Arguments.Select(a => Unconverted(_model.GetOperation(a.Expression))).ToList();
             // (only a list of them as written: an array built elsewhere isn't followed; each is a task held, or a call of an async method here)
+            // (await Task.WhenAll(ts), with ts made by ids.Select(id => F(id)): those are over, whatever they did)
+            if (elements.Count == 1 && elements[0] is ILocalReferenceOperation many && many.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax { Initializer: { } made })
+                foreach (var kv in f.Started.ToList())
+                    if (kv.Value.Detached && !kv.Value.Awaited && made.Span.Contains(kv.Value.At.Span))
+                        f.Started[kv.Key] = kv.Value.AsAwaited();
             if (elements.Count == 0 || elements.Any(e => !(e is ILocalReferenceOperation l && f.Started.ContainsKey(Eval(l, f, spec).S) ||
                                                            e is IInvocationOperation c && (c.TargetMethod.IsAsync && _engine.ContractOf(c.TargetMethod).HasSource || DelegateCallOf(c) != null)))) return null;
             var results = new List<Term>();
@@ -905,7 +915,7 @@ namespace CsVerify.Verifier
         {
             if (_confined != null) return _confined;
             _confined = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
-            if (!_method.IsAsync || _contract.Declaration == null) return _confined;
+            if (_contract.Declaration == null) return _confined;
             var body = _contract.Declaration;
             var ok = new Dictionary<ILocalSymbol, bool>(SymbolEqualityComparer.Default);
             foreach (var d in body.DescendantNodes().OfType<VariableDeclaratorSyntax>())

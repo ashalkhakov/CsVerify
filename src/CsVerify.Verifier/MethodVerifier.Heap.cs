@@ -80,6 +80,7 @@ namespace CsVerify.Verifier
         {
             if (FieldEffects.IsStaticField(field))
             {
+                CheckFieldHeld(field, null, at, f);
                 var sv = T.Select(FieldMap(f, field), Statics, ValueSort(field));
                 AssumeNonNullRead(field, null, sv);
                 HasType(sv, type);
@@ -88,6 +89,7 @@ namespace CsVerify.Verifier
             var o = Eval(instance, f, spec);
             Deref(instance, o, at);
             CheckRead(field, o, at);
+            CheckFieldHeld(field, o, at, f);
             CheckFraming(o, field, f, at);
             var v = T.Select(FieldMap(f, field), o, ValueSort(field));
             AssumeNonNullRead(field, instance, v);
@@ -106,6 +108,7 @@ namespace CsVerify.Verifier
         {
             bool isStatic = FieldEffects.IsStaticField(field);
             var o = isStatic ? Statics : Eval(instance, f, spec);
+            CheckFieldHeld(field, isStatic ? null : o, at, f);
             if (!isStatic)
             {
                 Deref(instance, o, at);

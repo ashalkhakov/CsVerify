@@ -170,8 +170,11 @@ namespace CsVerify.Verifier
         /// </summary>
         internal readonly IReadOnlyList<IMethodSymbol> Models;
 
+        internal IReadOnlyList<SyntaxTree> UserTrees { get; }
+
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
+            UserTrees = userTrees.ToList();
             _compilation = compilation;
             Stubs = ContractStubs.For(compilation);
             // (and the list interfaces, which read a List's models: MethodVerifier.Interfaces)

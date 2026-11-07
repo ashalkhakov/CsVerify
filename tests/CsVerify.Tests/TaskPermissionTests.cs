@@ -68,7 +68,7 @@ namespace CsVerify.Tests
         [InlineData("CSV1001", "static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = Task.Run(() => FillNow(a, 0, a.Length + 1, 1)); await t; }")]
         // code that runs alongside reads only what it holds
         [InlineData("CSV1016", "static async Task<int> Peek(int[] a) { Spec.Requires(a.Length > 1 && Spec.Acc(a, 0, 1)); Spec.Ensures(Spec.Acc(a, 0, 1)); await Task.Yield(); return a[1]; } static async Task M(int[] a) { Spec.Requires(a.Length > 1 && Spec.Acc(a)); var t = Peek(a); await t; }")]
-        [InlineData("CSV1016", "static int Sum(int[] a) { int s = 0; foreach (var x in a) s = unchecked(s + x); return s; } static async Task<int> Peek(int[] a) { Spec.Requires(Spec.Acc(a, 0, 0)); Spec.Ensures(Spec.Acc(a, 0, 0)); await Task.Yield(); return Sum(a); } static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = Peek(a); await t; }")]
+        [InlineData("CSV1027", "static int Sum(int[] a) { int s = 0; foreach (var x in a) s = unchecked(s + x); return s; } static async Task<int> Peek(int[] a) { Spec.Requires(Spec.Acc(a, 0, 0)); Spec.Ensures(Spec.Acc(a, 0, 0)); await Task.Yield(); return Sum(a); } static async Task M(int[] a) { Spec.Requires(Spec.Acc(a)); var t = Peek(a); await t; }")]
         public void Reported(string id, string m) => Assert.Contains(id, Ids(m));
 
         [Theory]

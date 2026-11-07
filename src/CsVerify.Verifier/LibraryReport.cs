@@ -43,6 +43,7 @@ namespace CsVerify.Verifier
             ["CSV1024"] = "lock invariant",
             ["CSV1025"] = "lock order",
             ["CSV1026"] = "task not awaited",
+            ["CSV1027"] = "shared state without a lock or permission",
             ["CSV1019"] = "predicate fold",
             ["CSV1020"] = "aliased by-reference arguments",
             ["CSV1021"] = "ill-formed stub or model",

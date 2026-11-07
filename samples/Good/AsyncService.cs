@@ -96,11 +96,16 @@ namespace AsyncServiceSample
         private readonly OrderCache _cache;
         private readonly ConcurrentDictionary<string, int> _totals = new ConcurrentDictionary<string, int>();
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+        private readonly object _startLock = new object();
         private Task? _running;
 
         public OrderWorker(OrderCache cache) { _cache = cache; }
 
-        public void Start() { _running = Task.Run(() => LoopAsync(_stop.Token)); }
+        public void Start()
+        {
+            var running = Task.Run(() => LoopAsync(_stop.Token));
+            lock (_startLock) { _running = running; }
+        }
 
         public ValueTask EnqueueAsync(Order order, CancellationToken ct) => _queue.Writer.WriteAsync(order, ct);
 
@@ -108,9 +113,11 @@ namespace AsyncServiceSample
         {
             _queue.Writer.Complete();
             _stop.Cancel();
-            if (_running != null)
+            Task? running;
+            lock (_startLock) { running = _running; }
+            if (running != null)
             {
-                try { await _running; }
+                try { await running; }
                 catch (OperationCanceledException) { }
             }
         }

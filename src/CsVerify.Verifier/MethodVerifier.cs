@@ -1930,7 +1930,6 @@ namespace CsVerify.Verifier
                     return libResult;
                 }
 
-                CheckCallReadsInHand(inv, callee);
                 var preEnv = new SpecEnv { Old = pre };
                 // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
                 // quantifier, the obligation is closed over its variable with the others made there)

@@ -51,6 +51,13 @@ namespace CsVerify
     }
 
     /// <summary>
+    /// A method (or every method of a class) that the program's callers run at the same time, as a web framework does with
+    /// its handlers. Like code a task runs, it must hold a lock or a permission for every field and array cell it uses.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+    public sealed class RunsConcurrentlyAttribute : Attribute { }
+
+    /// <summary>
     /// A method that takes a lock for its caller, wrapping a <c>SemaphoreSlim</c> of count 1 (Clang's ACQUIRE, or its scoped
     /// capability). The lock is the field the call is on (<c>_lock.LockAsync()</c>, an instance method of a lock class or an
     /// extension of SemaphoreSlim), or the field named here, of the object the method is called on (<c>EnterAsync()</c>).

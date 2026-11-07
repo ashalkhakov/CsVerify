@@ -169,6 +169,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1025 | verifier | nested locks on elements of one array might not be in increasing order of index, so they could deadlock |
 | CSV1026 | verifier | a task an async method started in a local might not be awaited on every path, so a failure in it would be lost; or its `Result` is read before it is awaited |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
+| CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1998 | verifier | Z3 stopped answering, past its own timeout, and was stopped: the rest of the method is not verified |
 | CSV1999 | verifier | internal or solver error |

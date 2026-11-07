@@ -19,7 +19,7 @@ namespace CsVerify.Verifier
         private readonly Engine _engine;
         private readonly Compilation _compilation;
         private readonly Dictionary<SyntaxNode, InvocationExpressionSyntax> _calls = new Dictionary<SyntaxNode, InvocationExpressionSyntax>();
-        private HashSet<IMethodSymbol> _alongside;
+        private HashSet<SyntaxNode> _alongside;
 
         public StartedDelegates(Engine engine, Compilation compilation)
         {
@@ -114,45 +114,164 @@ namespace CsVerify.Verifier
             return !IsWritten(s, member, model);
         }
 
-        /// <summary>Does this method run alongside other code, with permissions, by itself or as called from what does?</summary>
+        /// <summary>
+        /// Does this code run alongside other code? A task not awaited at once, a delegate given to a thread, what a method
+        /// does between starting a task and finishing it, [RunsConcurrently], and what any of those calls. As far as the
+        /// program's source shows: a delegate of unknown origin isn't followed.
+        /// </summary>
         public bool RunsAlongside(IMethodSymbol method)
         {
             if (_alongside == null)
             {
-                _alongside = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-                foreach (var tree in _compilation.SyntaxTrees)
+                _alongside = new HashSet<SyntaxNode>();
+                foreach (var tree in _engine.UserTrees)
                 {
                     var model = _compilation.GetSemanticModel(tree);
-                    foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
-                        if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && m.DeclaringSyntaxReferences.Length > 0 && IsStartedWithCells(inv, m, model))
-                            Add(m);
+                    foreach (var n in tree.GetRoot().DescendantNodes())
+                        if (!SpecSymbols.IsInGhostContext(n, model)) Scan(n, model);
                 }
             }
-            return _alongside.Contains(method.OriginalDefinition);
+            return method.OriginalDefinition.DeclaringSyntaxReferences.Any(r => _alongside.Contains(r.GetSyntax()));
         }
 
-        private bool IsStartedWithCells(InvocationExpressionSyntax inv, IMethodSymbol m, SemanticModel model)
+        private void Scan(SyntaxNode n, SemanticModel model)
         {
-            var contract = _engine.ContractOf(m.OriginalDefinition);
-            if (!contract.Requires.Concat(contract.Ensures.Select(e => e.Expr)).Any(e => e != null && e.DescendantsAndSelf().Any(MethodVerifier.IsCellAcc))) return false;
-            if (inv.Ancestors().OfType<AnonymousFunctionExpressionSyntax>().FirstOrDefault() is AnonymousFunctionExpressionSyntax l && CallOf(l) == inv) return true;
-            if (!m.IsAsync) return false;
+            switch (n)
+            {
+                case MethodDeclarationSyntax d when model.GetDeclaredSymbol(d) is IMethodSymbol m && (SpecSymbols.HasAttribute(m, "RunsConcurrentlyAttribute") || SpecSymbols.HasAttribute(m.ContainingType, "RunsConcurrentlyAttribute")):
+                    AddCode(d, model);
+                    break;
+                case InvocationExpressionSyntax inv when model.GetSymbolInfo(inv).Symbol is IMethodSymbol m:
+                    bool awaited = IsAwaitedHere(inv);
+                    bool threading = m.DeclaringSyntaxReferences.Length == 0 && (m.ContainingNamespace?.ToDisplayString() ?? "").StartsWith("System.Threading");
+                    // Task.Run(d), Parallel.For(.., d), t.ContinueWith(d): what it's given goes on by itself
+                    if (threading && !(awaited && m.Name == "Run"))
+                        foreach (var a in inv.ArgumentList.Arguments) AddDelegate(a.Expression, model);
+                    if (m.Name == "Start" && inv.Expression is MemberAccessExpressionSyntax th && model.GetTypeInfo(th.Expression).Type?.ToDisplayString() == "System.Threading.Thread")
+                        AddAfter(inv, th.Expression.ToString(), model);
+                    else if (!awaited && (threading && m.Name == "Run" || IsSourceTask(m) && !IsForwarded(inv, model)))
+                    {
+                        if (IsSourceTask(m)) Add(m);
+                        AddAfter(inv, TaskName(inv, model), model);
+                    }
+                    break;
+                case BaseObjectCreationExpressionSyntax c when model.GetTypeInfo(c).Type?.ToDisplayString() == "System.Threading.Thread" && c.ArgumentList != null:
+                    foreach (var a in c.ArgumentList.Arguments) AddDelegate(a.Expression, model);
+                    break;
+            }
+        }
+
+        private static bool IsSourceTask(IMethodSymbol m) =>
+            m.DeclaringSyntaxReferences.Length > 0 && !SpecSymbols.IsSpecClass(m.ContainingType) && m.ReturnType is INamedTypeSymbol t && (t.Name == "Task" || t.Name == "ValueTask") && t.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+
+        /// <summary><c>return F(x);</c> from a method that isn't async: whoever called it has the task, and is who starts it.</summary>
+        private static bool IsForwarded(InvocationExpressionSyntax inv, SemanticModel model)
+        {
             SyntaxNode e = inv.Parent;
             while (e is ParenthesizedExpressionSyntax) e = e.Parent;
-            if (e is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "ConfigureAwait" && ma.Parent is InvocationExpressionSyntax c) e = c.Parent;
-            return !(e is AwaitExpressionSyntax);
+            if (!(e is ReturnStatementSyntax || e is ArrowExpressionClauseSyntax)) return false;
+            return inv.Ancestors().FirstOrDefault(a => a is AnonymousFunctionExpressionSyntax || a is BaseMethodDeclarationSyntax || a is LocalFunctionStatementSyntax) is BaseMethodDeclarationSyntax d && model.GetDeclaredSymbol(d) is IMethodSymbol { IsAsync: false };
+        }
+
+        private static string TaskName(SyntaxNode start, SemanticModel model) =>
+            start.Parent is EqualsValueClauseSyntax eq && eq.Parent is VariableDeclaratorSyntax d ? d.Identifier.Text : null;
+
+        private void AddDelegate(ExpressionSyntax e, SemanticModel model)
+        {
+            if (e is AnonymousFunctionExpressionSyntax) AddCode(e, model);
+            else if (model.GetSymbolInfo(e).Symbol is IMethodSymbol group && group.DeclaringSyntaxReferences.Length > 0) Add(group);
+        }
+
+        /// <summary>What a method calls while what it started goes on.</summary>
+        private void AddAfter(SyntaxNode start, string task, SemanticModel model)
+        {
+            if (start.Ancestors().FirstOrDefault(a => a is BaseMethodDeclarationSyntax || a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax || a is AccessorDeclarationSyntax) is SyntaxNode body)
+                foreach (var code in CodeAlongside(start, task, body, model))
+                    AddCalls(code, model);
         }
 
         private void Add(IMethodSymbol m)
         {
-            if (!_alongside.Add(m.OriginalDefinition)) return;
-            foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
+            foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences) AddCode(r.GetSyntax(), _compilation.GetSemanticModel(r.SyntaxTree));
+            foreach (var o in _engine.Fields.Overrides(m.OriginalDefinition)) Add(o);
+        }
+
+        private void AddCode(SyntaxNode code, SemanticModel model)
+        {
+            if (_alongside.Add(code)) AddCalls(code, model);
+        }
+
+        private void AddCalls(SyntaxNode code, SemanticModel model)
+        {
+            foreach (var n in code.DescendantNodesAndSelf())
             {
-                var model = _compilation.GetSemanticModel(r.SyntaxTree);
-                foreach (var inv in r.GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>())
-                    if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee && callee.DeclaringSyntaxReferences.Length > 0 && !SpecSymbols.IsSpecClass(callee.ContainingType))
-                        Add(callee);
+                if (SpecSymbols.IsInGhostContext(n, model)) continue;
+                switch (n)
+                {
+                    case AnonymousFunctionExpressionSyntax _:
+                    case LocalFunctionStatementSyntax _:
+                        if (n != code) AddCode(n, model);
+                        break;
+                    case InvocationExpressionSyntax inv when model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
+                        if (callee.MethodKind == MethodKind.LocalFunction || callee.DeclaringSyntaxReferences.Length > 0 && !SpecSymbols.IsSpecClass(callee.ContainingType)) Add(callee);
+                        break;
+                    case BaseObjectCreationExpressionSyntax c when model.GetSymbolInfo(c).Symbol is IMethodSymbol ctor && ctor.DeclaringSyntaxReferences.Length > 0:
+                        Add(ctor);
+                        break;
+                    case SimpleNameSyntax name when model.GetSymbolInfo(name).Symbol is IPropertySymbol p && p.DeclaringSyntaxReferences.Length > 0:
+                        if (p.GetMethod != null) Add(p.GetMethod);
+                        if (p.SetMethod != null) Add(p.SetMethod);
+                        break;
+                }
             }
+        }
+
+        /// <summary><c>await X</c> or <c>await X.ConfigureAwait(b)</c>: X doesn't run alongside what comes after.</summary>
+        internal static bool IsAwaitedHere(SyntaxNode call)
+        {
+            var e = call.Parent;
+            while (e is ParenthesizedExpressionSyntax) e = e.Parent;
+            if (e is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "ConfigureAwait" && ma.Parent is InvocationExpressionSyntax c) e = c.Parent;
+            return e is AwaitExpressionSyntax;
+        }
+
+        /// <summary>What a method does while a task it started goes on: from there to where it is awaited or joined, as far as can be told.</summary>
+        internal static IEnumerable<SyntaxNode> CodeAlongside(SyntaxNode start, string task, SyntaxNode body, SemanticModel model)
+        {
+            SyntaxNode at = start.FirstAncestorOrSelf<StatementSyntax>();
+            while (at != null && at != body)
+            {
+                var parent = at.Parent;
+                if (parent is AnonymousFunctionExpressionSyntax || parent is LocalFunctionStatementSyntax) yield break;
+                if (parent is BlockSyntax b && at is StatementSyntax here)
+                    foreach (var next in b.Statements.Skip(b.Statements.IndexOf(here) + 1))
+                    {
+                        if (task != null && Finishes(next, task, model)) yield break;
+                        yield return next;
+                    }
+                if (parent is ForStatementSyntax || parent is WhileStatementSyntax || parent is DoStatementSyntax || parent is CommonForEachStatementSyntax) yield return parent;
+                if (parent is TryStatementSyntax t && at == t.Block)
+                {
+                    foreach (var c in t.Catches) yield return c;
+                    if (t.Finally != null) yield return t.Finally;
+                }
+                at = parent;
+            }
+        }
+
+        /// <summary><c>await t;</c>, <c>x = await t;</c>, <c>return await t;</c>, the same with Task.WhenAll(..., t, ...), or <c>t.Join();</c>.</summary>
+        private static bool Finishes(StatementSyntax st, string task, SemanticModel model)
+        {
+            var e = st is ExpressionStatementSyntax es ? es.Expression
+                : st is ReturnStatementSyntax rs ? rs.Expression
+                : st is LocalDeclarationStatementSyntax ld && ld.Declaration.Variables.Count == 1 ? ld.Declaration.Variables[0].Initializer?.Value : null;
+            if (e is AssignmentExpressionSyntax a) e = a.Right;
+            if (e is InvocationExpressionSyntax join && join.Expression is MemberAccessExpressionSyntax j && j.Name.Identifier.Text == "Join" && j.Expression.ToString() == task) return true;
+            if (!(e is AwaitExpressionSyntax aw)) return false;
+            e = aw.Expression;
+            if (e is InvocationExpressionSyntax ca && ca.Expression is MemberAccessExpressionSyntax cm && cm.Name.Identifier.Text == "ConfigureAwait") e = cm.Expression;
+            if (e.ToString() == task) return true;
+            return e is InvocationExpressionSyntax all && model.GetSymbolInfo(all).Symbol is IMethodSymbol m && m.Name == "WhenAll" && m.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && all.ArgumentList.Arguments.Any(x => x.Expression.ToString() == task);
         }
     }
 
