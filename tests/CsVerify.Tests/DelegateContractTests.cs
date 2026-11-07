@@ -52,6 +52,17 @@ namespace CsVerify.Tests
         [InlineData("CSV1028", C + "static async Task M(Plain p) { var t = Task.Run(() => p()); await t; } }")]
         public void Reported(string id, string code) => Assert.Contains(id, Ids(code));
 
+        // lambdas outside methods are verified too: in field and property initializers, in property bodies
+        [Theory]
+        [InlineData(C + "public static readonly Step Bad = x => x; }")]
+        [InlineData(C + "public static Step Bad { get; } = x => x; }")]
+        [InlineData(C + "public static Step Bad => x => x; }")]
+        [InlineData(C + "public static Step Bad { get { return x => x; } } }")]
+        public void OutsideMethods_Reported(string code) => Assert.Contains("CSV1002", Ids(code));
+
+        [Fact]
+        public void OutsideMethods_Proved() => Assert.Empty(All(C + "public static readonly Step Good = x => x + 1; public static Step AlsoGood => x => x + 2; }"));
+
         [Fact]
         public void Unmarked_IsNotConcurrent()
         {

@@ -652,6 +652,20 @@ namespace CsVerify.Verifier
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
                     RunMethod(engine, engine.ContractOf(accessor), mr, node.GetLocation());
+                    RunNested(engine, node, model, mr.Name, result, declarations, options);
+                }
+            }
+            // the lambdas in field and property initializers (static readonly Pricing Flat = q => 100 * q): no method has them
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var init in tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>())
+                {
+                    if (!(init.Parent is VariableDeclaratorSyntax && init.Parent.Parent?.Parent is FieldDeclarationSyntax || init.Parent is PropertyDeclarationSyntax)) continue;
+                    if (!init.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Any()) continue;
+                    var member = init.Parent is VariableDeclaratorSyntax vd ? model.GetDeclaredSymbol(vd) : model.GetDeclaredSymbol(init.Parent);
+                    if (member?.ContainingType == null || SpecSymbols.IsContractsClass(member.ContainingType)) continue;
+                    RunNested(engine, init, model, member.ContainingType.Name + "." + member.Name, result, declarations, options);
                 }
             }
             // classes with no constructor body of their own: their fields' initializers, which no method verifies
@@ -697,13 +711,31 @@ namespace CsVerify.Verifier
         /// verified as a method of its own. Its parameters are as its delegate type declares them, and what it captures
         /// is some value of its type, since it may run at any time. Lambdas in specifications are ghost, not code.
         /// </summary>
-        private static IEnumerable<(IMethodSymbol symbol, ControlFlowGraph graph)> NestedFunctions(BaseMethodDeclarationSyntax decl, SemanticModel model)
+        /// <summary>The lambdas and local functions in a property's code or an initializer, each verified as a unit of its own.</summary>
+        private static void RunNested(Engine engine, SyntaxNode code, SemanticModel model, string owner, VerificationResult result,
+                                      List<(SyntaxNode decl, MethodResult result)> declarations, VerifierOptions options)
+        {
+            foreach (var (nested, graph) in NestedFunctions(code, model))
+            {
+                if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
+                var nmr = new MethodResult { Name = owner + "." + NestedName(nested) };
+                if (!options.Selects(nmr.Name)) continue;
+                result.Methods.Add(nmr);
+                declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
+                RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
+            }
+        }
+
+        private static IEnumerable<(IMethodSymbol symbol, ControlFlowGraph graph)> NestedFunctions(SyntaxNode decl, SemanticModel model)
         {
             ControlFlowGraph root;
             switch (model.GetOperation(decl))
             {
                 case IMethodBodyOperation mb: root = ControlFlowGraph.Create(mb); break;
                 case IConstructorBodyOperation cb: root = ControlFlowGraph.Create(cb); break;
+                case IFieldInitializerOperation fi: root = ControlFlowGraph.Create(fi); break;
+                case IPropertyInitializerOperation pi: root = ControlFlowGraph.Create(pi); break;
+                case IBlockOperation b when b.Parent == null: root = ControlFlowGraph.Create(b); break;
                 default: yield break;
             }
             var todo = new Stack<ControlFlowGraph>();
