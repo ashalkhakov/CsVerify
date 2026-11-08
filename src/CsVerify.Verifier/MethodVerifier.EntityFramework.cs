@@ -193,8 +193,13 @@ namespace CsVerify.Verifier
             AssumeSide(T.Le(T.Int(0), n));
             Term Row(Term i) => _z3.Apply("row#" + id, Sort.Int, new[] { i });
             Term Index(Term y) => _z3.Apply("row.index#" + id, Sort.Int, new[] { y });
-            Term IsRow(Term y) => T.And(T.Le(T.Int(0), Index(y)), T.Lt(Index(y), n), T.Eq(Row(Index(y)), y));
-            AssumeSide(OverIndices("forall", T.Int(0), n, i => T.And(NotNull(Row(i)), T.Eq(Index(Row(i)), i), IsEntity(Row(i), e)), Row));
+            // (a row is Row(i) for some i: Index is its inverse at every i, so that needs no bounds, which the solver
+            // would have to find; Row(i) past the rows stands for no object, and is counted made, so nothing new is it)
+            Term IsRow(Term y) => T.Eq(Row(Index(y)), y);
+            var iname = _z3.FreshName("i");
+            var iv = new Term(iname, Sort.Int);
+            AssumeSide(new Term($"(forall (({iname} Int)) (! {T.And(T.Eq(Index(Row(iv)), iv), NotNull(Row(iv)), f.Alloc != null && t.NoTracking ? T.Not(InSet(f.Alloc, Row(iv))) : T.True).S} :pattern ({Row(iv).S})))", Sort.Bool));
+            AssumeSide(OverIndices("forall", T.Int(0), n, i => IsEntity(Row(i), e), Row));
             // no two rows share a key, or a unique index's value
             foreach (var key in e.Identifying)
                 AssumeSide(TwoRows(n, Row, (a, b) => T.Not(T.And(key.Select(p => SameColumn(p, a, b, f)).ToArray()))));
@@ -215,21 +220,42 @@ namespace CsVerify.Verifier
             {
                 // new objects
                 if (f.Alloc != null)
-                {
-                    AssumeSide(OverIndices("forall", T.Int(0), n, i => T.Not(InSet(f.Alloc, Row(i))), Row));
                     f.Alloc = Pointwise("materialized", Sort.Row, $"(ite {IsRow(new Term("y", Sort.Int)).S} 1 (select {f.Alloc.S} y))");
-                }
+                // a navigation not included is null (written into its map, so any read of it at a row sees it)
                 foreach (var nav in e.References.Where(p => !t.Includes.Contains(p) && FieldEffects.IsHeapField(p)))
-                    AssumeSide(OverIndices("forall", T.Int(0), n, i => T.Eq(T.Select(FieldMap(f, nav), Row(i), Sort.Int), T.Int(0)), Row));
+                {
+                    var before = FieldMap(f, nav);
+                    f.Link = null;
+                    f.Fields[FieldEffects.Key(nav)] = Pointwise("materialized", MapSort(nav), $"(ite {IsRow(new Term("y", Sort.Int)).S} 0 (select {before.S} y))");
+                }
+                // what the context read of them: their concurrency token
+                if (TrackerModel("Read") != null && e.Tokens.Count > 0 && FieldEffects.IsHeapField(e.Tokens[0]))
+                {
+                    var y = new Term("y", Sort.Int);
+                    var read = ModelRow("Read", t.Context, f);
+                    var tokens = ModelRow("TokenRead", t.Context, f);
+                    var token = FieldMap(f, e.Tokens[0]);
+                    SetModelRow("Read", t.Context, Pointwise("read", Sort.Row, $"(ite {IsRow(y).S} 1 (select {read.S} y))"), f);
+                    SetModelRow("TokenRead", t.Context, Pointwise("tokenRead", Sort.Row, $"(ite {IsRow(y).S} {T.Coerce(T.Select(token, y, ValueSort(e.Tokens[0]) == Sort.Row ? Sort.Row : Sort.Int), Sort.Int).S} (select {tokens.S} y))"), f);
+                }
             }
             else if (TrackerModel("State") is IMethodSymbol state)
             {
                 // what it tracked before: if it tracked no entity of this type, the rows are new and the database's
                 var states = FieldMap(f, state);
-                var tracked = T.Select(states, t.Context, Sort.Row);
+                var tracked = Named(T.Select(states, t.Context, Sort.Row), "tracked");
                 var on = _z3.FreshName("o");
                 var o = new Term(on, Sort.Int);
                 known = new Term($"(forall (({on} Int)) (! (=> (distinct (select {tracked.S} {on}) 0) (not {IsEntity(o, e).S})) :pattern ((select {tracked.S} {on}))))", Sort.Bool);
+                // identity: a row whose key the context tracks is that instance
+                if (e.Key.Count > 0)
+                    AssumeSide(OverIndices("forall", T.Int(0), n, i =>
+                    {
+                        var yn = _z3.FreshName("y");
+                        var y = new Term(yn, Sort.Int);
+                        var same = T.And(T.Not(T.Eq(T.Select(tracked, y, Sort.Int), T.Int(0))), IsEntity(y, e), SameKey(e, y, Row(i), f));
+                        return new Term($"(forall (({yn} Int)) (! (=> {same.S} (= {Row(i).S} {yn})) :pattern ((select {tracked.S} {yn}))))", Sort.Bool);
+                    }, Row));
                 // tracked from here on
                 f.Link = null;
                 var after = Pointwise("tracked", Sort.Row, $"(ite (and {IsRow(new Term("y", Sort.Int)).S} (= (select {tracked.S} y) 0)) 1 (select {tracked.S} y))");
@@ -307,7 +333,16 @@ namespace CsVerify.Verifier
         /// </summary>
         private Term EfAwait(IInvocationOperation call, IAwaitOperation aw, Frame f, SpecEnv spec)
         {
-            if (Ef == null || !IsEfAsyncQuery(call.TargetMethod)) return null;
+            if (Ef == null) return null;
+            if (!IsEfAsyncQuery(call.TargetMethod) || call.TargetMethod.Name.StartsWith("Execute"))
+            {
+                // SaveChangesAsync, FindAsync, AddAsync, BeginTransactionAsync, CommitAsync, ExecuteUpdateAsync...
+                if (!(IsEfMethod(call.TargetMethod) || IsTransactionType(call.TargetMethod.ContainingType)) || !call.TargetMethod.Name.EndsWith("Async")) return null;
+                Interleave(f);
+                var value = EfTrackerCall(call, f, spec);
+                if (value == null) return null;
+                return aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void ? T.True : value;
+            }
             Interleave(f);
             var result = LinqCall(call, f, spec);
             foreach (var a in call.Arguments.Where(a => a.Parameter.Type.Name == "CancellationToken")) Eval(a.Value, f, spec);

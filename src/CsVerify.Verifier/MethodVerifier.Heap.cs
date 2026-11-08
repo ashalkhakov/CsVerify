@@ -137,6 +137,7 @@ namespace CsVerify.Verifier
             }
             if (IsAtomic(field)) AtomicWrite(field, isStatic ? null : o, v, at, f);
             CheckNonNullWrite(field, v, at);
+            if (!isStatic) EfFieldWrite(field, o, at, f);
             var before = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), o, T.Coerce(v, ValueSort(field)));
             f.Link = new StateLink { Before = before, Changed = T.Store(T.ZeroRow(), o, T.Int(1)) };
@@ -216,7 +217,7 @@ namespace CsVerify.Verifier
                 all = false;
             }
             if (all) HavocAllFields(f, keepOwned: touched != null);
-            foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
+            foreach (var field in fields.Where(x => (touched == null || !IsOwnedField(x)) && !IsMethodLocalModel(x)))
             {
                 f.Fields[field] = modifiable != null && !all && !IsOwnedField(field) && !FieldEffects.IsStaticField(field)
                     ? new Term($"({(MapSort(field) == Sort.Heap ? "cv_frameh" : "cv_frame")} {modifiable} {FieldMap(before, field)} {FreshMap(field)})", MapSort(field))
@@ -287,6 +288,7 @@ namespace CsVerify.Verifier
         private void HavocAllFields(Frame f, bool keepOwned = false)
         {
             var kept = keepOwned ? _engine.Fields.OwnedFields().ToDictionary(x => x, x => FieldMap(f, x), SymbolEqualityComparer.Default) : null;
+            var local = MethodLocalModels(f);
             var stepped = _engine.Atomics.Stepped.Any() ? SteppedMaps(f) : null;
             var alloc = f.Alloc;
             f.Link = null;
@@ -295,6 +297,7 @@ namespace CsVerify.Verifier
             _epochCauses[f.FieldEpoch] = (_z3.Cause, _z3.Origin);
             if (stepped != null) _epochSteps[f.FieldEpoch] = (stepped, alloc, HeldObjects(f));
             if (kept != null) foreach (var kv in kept) f.Fields[kv.Key] = kv.Value;
+            if (local != null) foreach (var kv in local) f.Fields[kv.Key] = kv.Value;
         }
 
         /// <summary>

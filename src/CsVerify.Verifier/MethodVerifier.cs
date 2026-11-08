@@ -228,6 +228,7 @@ namespace CsVerify.Verifier
                 EnterPredicates(f);
                 EnterCells(f);
                 EnterGate(f);
+                EfEntry(f);
                 _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
                 CheckSubtyping(f, spec);
@@ -1022,6 +1023,8 @@ namespace CsVerify.Verifier
                 }
                 case ISimpleAssignmentOperation rb when rb.IsRef && rb.Target is ILocalReferenceOperation rl:
                     return BindRef(rl.Local, rb.Value, f, spec, rb.Syntax);
+                case ISimpleAssignmentOperation efa when EfAssignment(efa, f, spec) is Term efAssigned:
+                    return efAssigned;
                 case ISimpleAssignmentOperation a:
                 {
                     var v = T.Coerce(Eval(a.Value, f, spec), SortOf(a.Target.Type));
@@ -1582,6 +1585,7 @@ namespace CsVerify.Verifier
         {
             if (TaskResult(pr, f, spec) is Term given) return given;
             if (DbSetProperty(pr, f, spec) is Term table) return table;
+            if (EfPropertyRead(pr, f, spec) is Term efRead) return efRead;
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
@@ -1772,6 +1776,7 @@ namespace CsVerify.Verifier
             if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
             if (DbQueryCall(inv, f, spec) is Term dbQuery) return dbQuery;
+            if (EfTrackerCall(inv, f, spec) is Term tracked) return tracked;
             if (AtomicCall(inv, f, spec) is Term atomic) return atomic;
             if (FlagCall(inv, f, spec) is Term flagged) return flagged;
             if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);

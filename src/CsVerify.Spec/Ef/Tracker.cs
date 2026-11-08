@@ -10,18 +10,19 @@ namespace CsVerify.Ef
     /// </summary>
     public static class Tracker
     {
+        // (EntityState's values)
         /// <summary>Not tracked by the context.</summary>
         public const int Detached = 0;
         public const int Unchanged = 1;
-        public const int Added = 2;
+        public const int Deleted = 2;
         public const int Modified = 3;
-        public const int Deleted = 4;
+        public const int Added = 4;
 
-        /// <summary>How the context tracks the entity: <see cref="Detached"/> to <see cref="Deleted"/>.</summary>
+        /// <summary>How the context tracks the entity: an EntityState, <see cref="Detached"/> to <see cref="Added"/>.</summary>
         [Model]
         public static int State(this DbContext context, object entity)
         {
-            Spec.Ensures<int>(r => Detached <= r && r <= Deleted);
+            Spec.Ensures<int>(r => Detached <= r && r <= Added);
             throw null!;
         }
 
@@ -45,5 +46,14 @@ namespace CsVerify.Ef
         /// it was read, and changed rows without the tracker.
         /// </summary>
         [Model] public static bool Stale(this DbContext context, object entity) => throw null!;
+
+        /// <summary>The context read the entity, without tracking it, in the method being verified.</summary>
+        [Model] public static bool Read(this DbContext context, object entity) => throw null!;
+
+        /// <summary>The entity's (first) concurrency token as the context read it (where <see cref="Read"/>).</summary>
+        [Model] public static object? TokenRead(this DbContext context, object entity) => throw null!;
+
+        /// <summary>The context saved changes outside a transaction in the method being verified.</summary>
+        [Model] public static bool SavedAlone(this DbContext context) => throw null!;
     }
 }

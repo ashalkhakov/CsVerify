@@ -16,6 +16,7 @@ public sealed class Customer
     public string Name { get; set; } = """";
     public List<Order> Orders { get; set; } = new List<Order>();
     public string Display => Name + "" <"" + Email + "">"";
+    [System.ComponentModel.DataAnnotations.Timestamp] public byte[]? Version { get; set; }
 }
 public sealed class Order
 {
@@ -147,6 +148,102 @@ public sealed class Shop : DbContext
         public void Navigation_Included_IsLoaded() => Assert.NotEmpty(Errors("M",
             "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Include(o => o.Customer).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null)); } }"));
+
+        // ---- the change tracker (CSV1033) ----
+
+        [Fact]
+        public void Tracked_LoadChangeSave_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.FirstOrDefaultAsync(o => o.Id == id); if (o == null) return; o.Total = 5; await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void Attach_ToANewContext_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static void M() { using var db = new Shop(); db.Attach(new Order { Id = 1 }); } }"));
+
+        [Fact]
+        public void Attach_SameKeyTwice_IsReported() => Assert.Equal(new[] { "CSV1033" }, Errors("M",
+            "public static class C { public static void M() { using var db = new Shop(); db.Attach(new Order { Id = 1 }); db.Attach(new Order { Id = 1 }); } }"));
+
+        [Fact]
+        public void Attach_ToAContextTrackingWhoKnowsWhat_IsReported() => Assert.Equal(new[] { "CSV1033" }, Errors("M",
+            "public static class C { public static void M(Shop db) { db.Attach(new Order { Id = 1 }); } }"));
+
+        [Fact]
+        public void Add_WithAGeneratedKey_NeverClashes() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { db.Orders.Add(new Order { Total = 3 }); await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void Update_ALoadedGraph_IsReported() => Assert.Equal(new[] { "CSV1033" }, Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().Include(x => x.Customer).FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "db.Update(o); await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void Update_ARowAlone_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "db.Update(o); o.Total = 1; await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void AfterAFailedSave_TheContextIsDoneWith() => Assert.Equal(new[] { "CSV1033" }, Errors("M",
+            "public static class C { public static async Task M(Shop db) { try { await db.SaveChangesAsync(); } catch (DbUpdateConcurrencyException) { await db.SaveChangesAsync(); } } }"));
+
+        [Fact]
+        public void ExecuteUpdate_ThenSavingAStaleCopy_IsReported() => Assert.Equal(new[] { "CSV1033" }, Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "await db.Orders.Where(x => x.Id == id).ExecuteUpdateAsync(s => s.SetProperty(x => x.Shipped, true)); o.Total = 2; await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void ExecuteUpdate_ThenReload_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "await db.Orders.Where(x => x.Id == id).ExecuteUpdateAsync(s => s.SetProperty(x => x.Shipped, true)); await db.Entry(o).ReloadAsync(); o.Total = 2; await db.SaveChangesAsync(); } }"));
+
+        // ---- concurrency tokens (CSV1034) ----
+
+        [Fact]
+        public void RowVersion_WrittenByTheProgram_IsReported() => Assert.Equal(new[] { "CSV1034" }, Errors("M",
+            "public static class C { public static void M(Customer c) { c.Version = new byte[8]; } }"));
+
+        [Fact]
+        public void Token_ChangedBeforeUpdate_IsReported() => Assert.Equal(new[] { "CSV1034" }, Errors("M",
+            "public static class C { public static async Task M(int id, System.DateTime now) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "o.Updated = now; db.Update(o); await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void Token_ChangedAfterUpdate_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(int id, System.DateTime now) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "db.Update(o); o.Updated = now; await db.SaveChangesAsync(); } }"));
+
+        // ---- transactions (CSV1035) ----
+
+        [Fact]
+        public void TwoSaves_OutsideATransaction_AreReported() => Assert.Equal(new[] { "CSV1035" }, Errors("M",
+            "public static class C { public static async Task M() { using var db = new Shop(); db.Orders.Add(new Order()); await db.SaveChangesAsync(); " +
+            "db.Orders.Add(new Order()); await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void TwoSaves_InOneTransaction_Verify() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M() { using var db = new Shop(); await using var tx = await db.Database.BeginTransactionAsync(); " +
+            "db.Orders.Add(new Order()); await db.SaveChangesAsync(); db.Orders.Add(new Order()); await db.SaveChangesAsync(); await tx.CommitAsync(); } }"));
+
+        [Fact]
+        public void BeginTransaction_WithOneOpen_IsReported() => Assert.Equal(new[] { "CSV1035" }, Errors("M",
+            "public static class C { public static async Task M(Shop db) { await using var tx = await db.Database.BeginTransactionAsync(); await db.SaveChangesAsync(); await tx.CommitAsync(); } }"));
+
+        [Fact]
+        public void BeginTransaction_JoiningOneOpen_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { " +
+            "var own = db.Database.CurrentTransaction == null ? await db.Database.BeginTransactionAsync() : null; " +
+            "await db.SaveChangesAsync(); if (own != null) { await own.CommitAsync(); await own.DisposeAsync(); } } }"));
+
+        [Fact]
+        public void Commit_WithChangesNotSaved_IsReported() => Assert.Equal(new[] { "CSV1035" }, Errors("M",
+            "public static class C { public static async Task M() { using var db = new Shop(); await using var tx = await db.Database.BeginTransactionAsync(); " +
+            "db.Orders.Add(new Order()); await tx.CommitAsync(); } }"));
 
         [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
