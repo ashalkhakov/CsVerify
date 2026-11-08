@@ -86,7 +86,7 @@ namespace CsVerify.Tests
                 "private async Task Set() { await _gate.WaitAsync(); try { _n = 1; } finally { _gate.Release(); } } " +
                 "public async Task M(C o) { await _gate.WaitAsync(); try { await o.Set(); } finally { _gate.Release(); } } }");
             Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("wait for itself"));
-            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1025" && d.Message.Contains("another object"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1025" && d.Message.Contains("deadlock"));
         }
 
         [Theory]

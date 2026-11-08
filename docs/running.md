@@ -166,7 +166,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1022 | verifier | a switch expression might not cover every value it gets: it would throw `SwitchExpressionException` |
 | CSV1023 | verifier | a use of state guarded by a lock that might not be held, so it could race: `[GuardedBy]`, or a field written under one lock elsewhere |
 | CSV1024 | verifier | a `[LockInvariant]` might not hold where its lock is released, or at a call that may enter it again |
-| CSV1025 | verifier | a lock taken, a call, or a task waited for while a lock is held might take a lock that isn't of a higher level (`[LockLevel]`), so threads could deadlock; or a semaphore taken while it is held |
+| CSV1025 | verifier | could deadlock: a lock taken, a call, or a wait while a lock is held might take a lock that isn't of a higher level (`[LockLevel]`), or wait for what only another thread can end; a lock taken out of its form; a `Monitor.Wait` holding another lock; blocking on async code that resumes on its context; one object leveled twice |
 | CSV1026 | verifier | a task an async method started in a local might not be awaited on every path, so a failure in it would be lost; or its `Result` is read before it is awaited |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
 | CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |

@@ -55,6 +55,9 @@ namespace CsVerify.Verifier
                         case TryStatementSyntax t when GateOfTry(t, model) is IFieldSymbol gate && gate.IsReadOnly && IsMutex(gate):
                             Infer(HeldParts(t, model), gate, model, inferred);
                             break;
+                        case TryStatementSyntax pt when PrimitiveForm(pt, model) is { } form && form.kind == "Monitor" && LockOf(form.lockExpr, model) is IFieldSymbol lf && (lf.IsReadOnly || lf.IsConst):
+                            Infer(form.held, lf, model, inferred);
+                            break;
                         case UsingStatementSyntax u when GateOfUsing(u, model) is IFieldSymbol gate && gate.IsReadOnly && IsMutex(gate):
                             Infer(new[] { u.Statement }, gate, model, inferred);
                             break;
@@ -387,6 +390,65 @@ namespace CsVerify.Verifier
             }
             Walk(method);
             return gates;
+        }
+
+        // ---- other lock primitives, in their form: taken, then a try whose finally gives it back ----
+
+        /// <summary>A lock primitive taken by a statement: Monitor.Enter(x) or Enter(x, ref taken), a ReaderWriterLockSlim's Enter...Lock(), a SpinLock's Enter(ref taken), a Mutex's WaitOne(). The expression of the lock, and what it is.</summary>
+        public static (ExpressionSyntax lockExpr, string kind)? PrimitiveTaken(StatementSyntax st, SemanticModel model)
+        {
+            if (!(st is ExpressionStatementSyntax es) || !(es.Expression is InvocationExpressionSyntax inv) || !(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m) || m.ContainingType == null) return null;
+            var type = m.ContainingType.ToDisplayString();
+            var receiver = inv.Expression is MemberAccessExpressionSyntax ma ? ma.Expression : null;
+            switch (type)
+            {
+                case "System.Threading.Monitor" when m.Name == "Enter" && inv.ArgumentList.Arguments.Count >= 1: return (inv.ArgumentList.Arguments[0].Expression, "Monitor");
+                case "System.Threading.ReaderWriterLockSlim" when receiver != null && (m.Name == "EnterReadLock" || m.Name == "EnterWriteLock" || m.Name == "EnterUpgradeableReadLock"): return (receiver, "ReaderWriterLockSlim");
+                case "System.Threading.SpinLock" when receiver != null && m.Name == "Enter": return (receiver, "SpinLock");
+                case "System.Threading.Mutex" when receiver != null && m.Name == "WaitOne" && inv.ArgumentList.Arguments.Count == 0: return (receiver, "Mutex");
+            }
+            return null;
+        }
+
+        /// <summary>Does this call give back the primitive taken so? Monitor.Exit(x), Exit...Lock(), SpinLock.Exit(), ReleaseMutex(), on the same expression.</summary>
+        private static bool GivesBack(InvocationExpressionSyntax inv, ExpressionSyntax lockExpr, string kind, SemanticModel model)
+        {
+            if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m)) return false;
+            var receiver = (inv.Expression as MemberAccessExpressionSyntax)?.Expression;
+            switch (kind)
+            {
+                case "Monitor": return m.ContainingType?.ToDisplayString() == "System.Threading.Monitor" && m.Name == "Exit" && inv.ArgumentList.Arguments.Count == 1 && inv.ArgumentList.Arguments[0].Expression.ToString() == lockExpr.ToString();
+                case "ReaderWriterLockSlim": return receiver?.ToString() == lockExpr.ToString() && m.Name.StartsWith("Exit") && m.Name.EndsWith("Lock");
+                case "SpinLock": return receiver?.ToString() == lockExpr.ToString() && m.Name == "Exit";
+                case "Mutex": return receiver?.ToString() == lockExpr.ToString() && m.Name == "ReleaseMutex";
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The primitive a try holds: taken right before it (or as the first statement of its block, the lockTaken
+        /// pattern), and given back in its finally. The lock's expression, what it is, the taking statement, and the
+        /// statements that run with it held. Null for any other try.
+        /// </summary>
+        public static (ExpressionSyntax lockExpr, string kind, StatementSyntax taking, IReadOnlyList<SyntaxNode> held)? PrimitiveForm(TryStatementSyntax t, SemanticModel model)
+        {
+            if (t.Finally == null) return null;
+            foreach (var (taking, inside) in new[] { (Before(t), false), (t.Block.Statements.FirstOrDefault(), true) })
+            {
+                if (taking == null || !(PrimitiveTaken(taking, model) is var (lockExpr, kind))) continue;
+                if (!t.Finally.Block.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i => GivesBack(i, lockExpr, kind, model))) continue;
+                var held = inside ? t.Block.Statements.Skip(1).Cast<SyntaxNode>().ToList() : new List<SyntaxNode> { t.Block }.Concat(t.Catches).ToList();
+                return (lockExpr, kind, taking, held);
+            }
+            return null;
+        }
+
+        /// <summary>The try statement whose form a taking statement is part of; null if it is in none.</summary>
+        public static TryStatementSyntax PrimitiveTryOf(StatementSyntax taking, SemanticModel model)
+        {
+            if (TryAfter(taking) is TryStatementSyntax after && PrimitiveForm(after, model) is { } fa && fa.taking == taking) return after;
+            if (taking.Parent is BlockSyntax b && b.Parent is TryStatementSyntax around && around.Block == b && PrimitiveForm(around, model) is { } fb && fb.taking == taking) return around;
+            return null;
         }
 
         public static bool IsInvariant(ISymbol s) => SpecSymbols.HasAttribute(s, "LockInvariantAttribute");

@@ -115,6 +115,11 @@ namespace CsVerify.Verifier
                         if (wanted == null) return true;
                         if (GateReceiver(t, guard) == wanted && StaysTheSame(wanted, t)) return true;
                         break;
+                    case TryStatementSyntax pt when LockGuards.PrimitiveForm(pt, _model) is { } form && form.kind == "Monitor" && form.held.Any(h => h.Span.Contains(n.Span)) &&
+                                                    SymbolEqualityComparer.Default.Equals(LockGuards.LockOf(form.lockExpr, _model), guard):
+                        if (wanted == null) return true;
+                        if ((form.lockExpr is MemberAccessExpressionSyntax pma ? pma.Expression.ToString() : "this") == wanted && StaysTheSame(wanted, pt)) return true;
+                        break;
                     case UsingStatementSyntax u when u.Statement.Span.Contains(n.Span) && SymbolEqualityComparer.Default.Equals(_engine.Locks.GateOfUsing(u, _model), guard):
                         if (wanted == null) return true;
                         if (UsingOwner(u.Expression ?? u.Declaration.Variables[0].Initializer.Value) == wanted && StaysTheSame(wanted, u)) return true;
@@ -153,7 +158,7 @@ namespace CsVerify.Verifier
         private void CheckLockOrder(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             if (!_codeMode || inv.TargetMethod.Name != "Enter" || inv.TargetMethod.ContainingType?.ToDisplayString() != "System.Threading.Monitor") return;
-            if (inv.Syntax.Parent is LockStatementSyntax byId) CheckOrderedBy(byId, f, spec);
+            if (inv.Syntax.Parent is LockStatementSyntax byId) ProveOrderAt(byId, f, spec);
             if (!(inv.Syntax.Parent is LockStatementSyntax inner) || !(inner.Expression is ElementAccessExpressionSyntax ia) || ia.ArgumentList.Arguments.Count != 1) return;
             for (var p = inner.Parent; p != null && p != _contract.Declaration; p = p.Parent)
             {
@@ -181,6 +186,8 @@ namespace CsVerify.Verifier
             CheckLockOrder(inv, f, spec);
             // (the flow graph gives the lock's expression as Enter's syntax, the statement as Exit's)
             var stmt = inv.Syntax as LockStatementSyntax ?? inv.Syntax.Parent as LockStatementSyntax;
+            if (stmt == null && _codeMode && inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Monitor" && (inv.TargetMethod.Name == "Enter" || inv.TargetMethod.Name == "Exit"))
+                return MonitorForm(inv, f, spec);
             if (!_codeMode || stmt == null || inv.TargetMethod.ContainingType?.ToDisplayString() != "System.Threading.Monitor") return null;
             var taken = inv.Arguments.FirstOrDefault(a => a.Parameter?.RefKind == RefKind.Ref);
             // (entering, it always ends up taken, or throws)
@@ -211,6 +218,47 @@ namespace CsVerify.Verifier
             return T.True;
         }
 
+        /// <summary>
+        /// Monitor.Enter and Exit written out, in their form (see LockGuards.PrimitiveForm): as a lock statement's. Out of
+        /// the form, a library call (and CSV1025 says where it is held can't be told).
+        /// </summary>
+        private Term MonitorForm(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            var target = inv.Arguments[0].Value.Syntax as ExpressionSyntax;
+            var st = inv.Syntax.FirstAncestorOrSelf<StatementSyntax>();
+            TryStatementSyntax form = null;
+            if (inv.TargetMethod.Name == "Enter") form = LockGuards.PrimitiveTryOf(st, _model);
+            else
+                foreach (var t in inv.Syntax.Ancestors().OfType<TryStatementSyntax>())
+                    if (t.Finally != null && t.Finally.Span.Contains(inv.Syntax.Span) && LockGuards.PrimitiveForm(t, _model) is { } pf && pf.kind == "Monitor" && pf.lockExpr.ToString() == target?.ToString()) { form = t; break; }
+            if (form == null || target == null) return null;
+            if (inv.TargetMethod.Name == "Enter")
+            {
+                ProveOrderAt(st, f, spec);
+                var taken = inv.Arguments.FirstOrDefault(a => a.Parameter?.RefKind == RefKind.Ref);
+                var o = Eval(inv.Arguments[0].Value, f, spec);
+                Deref(inv.Arguments[0].Value, o, inv.Syntax);
+                if (taken != null) Write(taken.Value, T.True, f, spec);
+            }
+            if (!(LockGuards.LockOf(target, _model) is IFieldSymbol guard)) return T.True;
+            string receiver = target is MemberAccessExpressionSyntax ma ? ma.Expression.ToString() : "this";
+            // (taken again, in its own holder: nothing changes hands; a constructor's own: it has the object to itself)
+            if (Holds(form, guard, receiver)) return T.True;
+            if (receiver == "this" && (_method.MethodKind == MethodKind.Constructor || _method.MethodKind == MethodKind.StaticConstructor)) return T.True;
+            Term owner = guard.IsStatic ? null : _model.GetOperation(target) is IFieldReferenceOperation fr && fr.Instance != null && !(fr.Instance is IInstanceReferenceOperation) ? T.Coerce(Eval(fr.Instance, f, spec), Sort.Int) : f.This;
+            if (inv.TargetMethod.Name == "Enter")
+            {
+                foreach (var field in _engine.Locks.GuardedBy(guard))
+                    if (FieldEffects.IsHeapField(field))
+                        f.Fields[FieldEffects.Key(field)] = _z3.Fresh(field.Name + "$locked", FieldMap(f, field).Sort);
+                foreach (var invariant in LockInvariantsOf(guard, owner, f)) _z3.Assume(invariant);
+            }
+            else
+                foreach (var invariant in LockInvariantsOf(guard, owner, f))
+                    Prove(invariant, "CSV1024", inv.Syntax, $"the invariant of lock '{guard.Name}' might not hold when it is released");
+            return T.True;
+        }
+
         /// <summary>A call under a lock that may run code that enters it again, which relies on its invariants.</summary>
         private void CallUnderLock(IInvocationOperation inv, Contract callee, Frame f)
         {
@@ -219,9 +267,12 @@ namespace CsVerify.Verifier
             for (var p = inv.Syntax.Parent; p != null && p != _contract.Declaration; p = p.Parent)
             {
                 if (p is AnonymousFunctionExpressionSyntax || p is LocalFunctionStatementSyntax) return;
-                if (!(p is LockStatementSyntax stmt) || !(LockGuards.LockOf(stmt.Expression, _model) is IFieldSymbol guard)) continue;
+                ExpressionSyntax lockExpr = p is LockStatementSyntax ls ? ls.Expression
+                    : p is TryStatementSyntax pt && LockGuards.PrimitiveForm(pt, _model) is { } form && form.kind == "Monitor" && form.held.Any(h => h.Span.Contains(inv.Syntax.Span)) ? form.lockExpr : null;
+                if (lockExpr == null || !(LockGuards.LockOf(lockExpr, _model) is IFieldSymbol guard)) continue;
                 if (SymbolEqualityComparer.Default.Equals(_engine.Locks.GuardOf(inv.TargetMethod), guard)) continue;
-                foreach (var invariant in LockInvariants(guard, stmt, f))
+                Term lockOwner = guard.IsStatic ? null : _model.GetOperation(lockExpr) is IFieldReferenceOperation lfr && lfr.Instance != null ? T.Coerce(Eval(lfr.Instance, f, null), Sort.Int) : f.This;
+                foreach (var invariant in LockInvariantsOf(guard, lockOwner, f))
                     Prove(invariant, "CSV1024", inv.Syntax, $"the invariant of lock '{guard.Name}' might not hold at '{inv.Syntax}', which may enter the lock again");
             }
             // (a method that its caller holds the lock for is under it all along)

@@ -1,6 +1,6 @@
 // Written for this repository, to show deadlock freedom by lock levels: transfers between accounts lock both, ordered
-// by id; a ledger taken inside them has a higher level; an async log is a semaphore above both; and a callback run
-// under a lock says it takes none.
+// by id, directly or through a call; a ledger taken inside them has a higher level; an async log is a semaphore above
+// both; and a callback run under a lock says it takes none.
 using System.Threading;
 using System.Threading.Tasks;
 using CsVerify;
@@ -71,6 +71,32 @@ namespace Samples.Good.Levels
                         notify(from.Id, to.Id, amount);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Moves what's above a limit into savings, whose id is higher: the call takes savings' lock while this one's is
+        /// held, and that it comes after is proved at the call.
+        /// </summary>
+        public static void Sweep(Account from, Account savings, int limit, Ledger ledger)
+        {
+            Spec.Requires(from.Id < savings.Id && 0 <= limit);
+            lock (from.Lock)
+            {
+                if (from.Balance <= limit) return;
+                int extra = from.Balance - limit;
+                from.Balance = limit;
+                Deposit(savings, extra, ledger);
+            }
+        }
+
+        private static void Deposit(Account to, int amount, Ledger ledger)
+        {
+            Spec.Requires(0 <= amount);
+            lock (to.Lock)
+            {
+                if (to.Balance <= int.MaxValue - amount) to.Balance += amount;
+                ledger.Record();
             }
         }
     }

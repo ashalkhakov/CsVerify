@@ -871,6 +871,7 @@ namespace CsVerify.Verifier
             // (await g.WaitAsync(): past here it's ours)
             if (operand is IInvocationOperation taking && (GateOf(taking, "WaitAsync", f) ?? GateOfWrapperCall(taking, true, f)) is { } got)
             {
+                ProveOrderAt(taking.Syntax, f, spec);
                 GateTaken(got, f);
                 if (result.Sort == Sort.Int) _z3.Assume(NotNull(result)); // (what it gives is there to give it back)
             }

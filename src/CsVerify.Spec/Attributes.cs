@@ -47,7 +47,7 @@ namespace CsVerify
     /// <see cref="OrderedBy"/>, an int field of their object that never changes (an id), taken in increasing order of it;
     /// an array's elements, by index.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Field)]
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Class)]
     public sealed class LockLevelAttribute : Attribute
     {
         public LockLevelAttribute(int level) { Level = level; }

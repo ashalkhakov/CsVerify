@@ -949,6 +949,7 @@ namespace CsVerify.Verifier
 
         private Term Eval(IOperation op, Frame f, SpecEnv spec = null)
         {
+            if (op != null && _codeMode) ProveOrderAtCall(op, f, spec);
             var t = EvalCore(op, f, spec);
             if (op != null && t != null && op.Type?.TypeKind == TypeKind.Delegate) DelegateValue(op, t, f);
             return t;
@@ -1751,9 +1752,11 @@ namespace CsVerify.Verifier
             if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
+            if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
             if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);
             if (inv != _waitingCall && inv != _awaitedCall && !IsAwaitedHere(inv.Syntax) && (GateOf(inv, "Wait", f) ?? GateOfWrapperCall(inv, true, f)) is { } wanted)
             {
+                ProveOrderAt(inv.Syntax, f, spec);
                 _waitingCall = inv;
                 var waited = EvalInvocationCore(inv, f, spec, enumerators);
                 _waitingCall = null;

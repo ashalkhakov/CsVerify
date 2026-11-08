@@ -130,5 +130,169 @@ namespace CsVerify.Tests
         [InlineData(Gates + "int M(Task<int> t) { lock (_b) { return t.Result; } }")]
         [InlineData(Gates + "async Task M(Task t) { await _g.WaitAsync(); try { await t; } finally { _g.Release(); } }")]
         public void Gates_Reported(string members) => Assert.Contains(Order, Errors(members));
-    }
+    
+        // ---- locks on objects: levels by class
+
+        private const string Classes = "[LockLevel(1)] public class A { public void M(B b) { BODY } } [LockLevel(2)] public class B { } ";
+
+        [Theory]
+        [InlineData("lock (this) { lock (b) { } }")]
+        [InlineData("var held = b; lock (this) { lock (held) { } }")]
+        public void ByClass_Proved(string body) => Assert.DoesNotContain(Order, AllErrors(Classes.Replace("BODY", body)));
+
+        [Theory]
+        [InlineData("lock (b) { lock (this) { } }")]
+        [InlineData("lock (this) { lock ((object)b) { } }")]
+        [InlineData("lock (this) { lock (typeof(A)) { } }")]
+        public void ByClass_Reported(string body) => Assert.Contains(Order, AllErrors(Classes.Replace("BODY", body)));
+
+        [Fact]
+        public void ALocalThatHoldsALockField_IsThatLock() => Assert.DoesNotContain(Order, Errors(Two + "void M() { var l = _a; lock (l) { lock (_b) { } } }"));
+
+        [Theory]
+        // one object, two levels
+        [InlineData("[LockLevel(1)] public class P { } [LockLevel(2)] public class Q : P { }")]
+        [InlineData("[LockLevel(1)] public class P { } public class C { [LockLevel(2)] readonly P _p = new P(); }")]
+        [InlineData("public class C { [LockLevel(1)] readonly object _a = new object(); [LockLevel(2)] readonly object _b; public C() { _b = _a; } }")]
+        [InlineData("public class C { [LockLevel(1)] object _a = new object(); }")]
+        public void Misdeclared_IsReported(string source) => Assert.Contains(Order, AllErrors(source + " public class Z { public void Use() { } }"));
+
+        // ---- the same field of two objects, through calls, ordered by id
+
+        private const string Accounts = Account + "public static class Bank { static void Credit(Account a) { lock (a.Lock) { a.Balance = 1; } } BODY } ";
+
+        [Theory]
+        [InlineData("public static void M(Account x, Account y) { Spec.Requires(x.Id < y.Id); lock (x.Lock) { Credit(y); } }")]
+        [InlineData("public static void M(Account x, Account y) { Spec.Requires(x.Id < y.Id); lock (x.Lock) { y.Add(); } }")]
+        [InlineData("static void Mid(Account a) { Credit(a); } public static void M(Account x, Account y) { Spec.Requires(x.Id < y.Id); lock (x.Lock) { Mid(y); } }")]
+        // the same object again: a lock is reentrant
+        [InlineData("public static void M(Account x) { lock (x.Lock) { Credit(x); } }")]
+        public void ThroughCalls_Proved(string body) => Assert.Empty(AllErrors(Accounts.Replace("BODY", body).Replace("public Account(int id)", "public void Add() { lock (Lock) { Balance = 2; } } public Account(int id)")));
+
+        [Theory]
+        [InlineData("public static void M(Account x, Account y) { Spec.Requires(x != y); lock (x.Lock) { Credit(y); } }")]
+        [InlineData("public static void M(Account x, Account y) { Spec.Requires(y.Id < x.Id); lock (x.Lock) { y.Add(); } }")]
+        [InlineData("static void Mid(Account a) { Credit(a); } public static void M(Account x, Account y) { lock (x.Lock) { Mid(y); } }")]
+        public void ThroughCalls_Reported(string body) => Assert.Contains(Order, AllErrors(Accounts.Replace("BODY", body).Replace("public Account(int id)", "public void Add() { lock (Lock) { Balance = 2; } } public Account(int id)")));
+
+        [Fact]
+        public void ByClass_OrderedById() => Assert.Empty(AllErrors(
+            "[LockLevel(1, OrderedBy = nameof(Id))] public class Node { public readonly int Id; public Node(int id) { Id = id; } } " +
+            "public static class G { public static void Both(Node a, Node b) { Spec.Requires(a.Id < b.Id); lock (a) { lock (b) { } } } }"));
+
+        [Fact]
+        public void ByClass_OrderedById_Reversed_IsReported() => Assert.Contains(Order, AllErrors(
+            "[LockLevel(1, OrderedBy = nameof(Id))] public class Node { public readonly int Id; public Node(int id) { Id = id; } } " +
+            "public static class G { public static void Both(Node a, Node b) { Spec.Requires(b.Id < a.Id); lock (a) { lock (b) { } } } }"));
+
+        // ---- what a library calls back, and calls with no call written
+
+        private const string Key = "public sealed class Key { [LockLevel(LEVEL)] static readonly object L = new object(); public override bool Equals(object o) { lock (L) { return false; } } public override int GetHashCode() => 0; } ";
+
+        [Theory]
+        [InlineData("1", false)]
+        [InlineData("3", true)]
+        public void Callbacks_EqualsADictionaryCalls(string level, bool fine)
+        {
+            var errors = AllErrors(Key.Replace("LEVEL", level) +
+                "public class C { [LockLevel(2)] readonly object _b = new object(); public bool M(System.Collections.Generic.Dictionary<Key, int> d, Key k) { lock (_b) { return d.ContainsKey(k); } } }");
+            if (fine) Assert.DoesNotContain(Order, errors); else Assert.Contains(Order, errors);
+        }
+
+        [Fact]
+        public void Callbacks_AComparerTheCollectionWasMadeWith() => Assert.Contains(Order, AllErrors(
+            "public sealed class Cmp : System.Collections.Generic.IEqualityComparer<string> { [LockLevel(1)] static readonly object L = new object(); " +
+            "public bool Equals(string a, string b) { lock (L) { return a == b; } } public int GetHashCode(string s) => 0; } " +
+            "public class C { [LockLevel(2)] readonly object _b = new object(); public bool M(System.Collections.Generic.Dictionary<string, int> d) { lock (_b) { return d.ContainsKey(\"x\"); } } }"));
+
+        [Theory]
+        [InlineData("public static V operator +(V a, V b) { lock (L) { return a; } } ", "var c = v + v;")]
+        [InlineData("public System.Collections.Generic.IEnumerator<int> GetEnumerator() { lock (L) { yield return 1; } } ", "foreach (var x in v) { }")]
+        [InlineData("public void Dispose() { lock (L) { } } ", "using (v) { }")]
+        public void ImplicitCalls_Count(string member, string use) => Assert.Contains(Order, AllErrors(
+            "public sealed class V : IDisposable { [LockLevel(1)] static readonly object L = new object(); " + member + (member.Contains("Dispose") ? "" : "public void Dispose() { } ") + "} " +
+            "public class C { [LockLevel(2)] readonly object _b = new object(); public void M(V v) { lock (_b) { " + use + " } } }"));
+
+        // ---- Monitor.Wait and Pulse, and other waits
+
+        private const string Monitor = "[LockLevel(1)] readonly object _l = new object(); [LockLevel(2)] readonly object _m = new object(); [GuardedBy(nameof(_l))] int _n; ";
+
+        [Theory]
+        [InlineData("void M() { lock (_l) { while (_n <= 0) Monitor.Wait(_l); _n = _n - 1; } }")]
+        [InlineData("void M() { lock (_l) { _n = 1; Monitor.PulseAll(_l); } }")]
+        public void Monitor_Proved(string m) => Assert.Empty(Errors(Monitor + m));
+
+        [Theory]
+        [InlineData("CSV1023", "void M() { Monitor.Wait(_l); }")]
+        [InlineData("CSV1023", "void M() { lock (_m) { Monitor.Pulse(_l); } }")]
+        [InlineData("CSV1025", "void M() { lock (_l) { lock (_m) { Monitor.Wait(_l); } } }")]
+        // what it guards may change while it waits
+        [InlineData("CSV1004", "void M() { lock (_l) { _n = 1; Monitor.Wait(_l); Spec.Assert(_n == 1); } }")]
+        // a method that waits, called while another lock is held
+        [InlineData("CSV1025", "void W() { lock (_l) { Monitor.Wait(_l); } } void M() { lock (_m) { W(); } }")]
+        public void Monitor_Reported(string id, string m) => Assert.Contains(id, Errors(Monitor + m));
+
+        [Fact]
+        public void Monitor_InvariantMustHoldAtWait() => Assert.Contains("CSV1024", AllErrors(
+            "public class C { readonly object _l = new object(); [GuardedBy(nameof(_l))] int _n; [LockInvariant(nameof(_l)), Pure] bool Valid() => _n >= 0; public C() { } " +
+            "public void M() { lock (_l) { _n = -1; Monitor.Wait(_l); _n = 0; } } }"));
+
+        [Theory]
+        [InlineData("void M(ManualResetEventSlim e) { lock (_b) { e.Wait(); } }")]
+        [InlineData("void M(CountdownEvent e) { lock (_b) { e.Wait(); } }")]
+        [InlineData("readonly SemaphoreSlim _many = new SemaphoreSlim(4); void M() { lock (_b) { _many.Wait(); } }")]
+        public void OtherWaits_UnderALock_AreReported(string m) => Assert.Contains(Order, Errors(Two + m));
+
+        [Fact]
+        public void OtherWaits_OutsideLocks_AreFine() => Assert.DoesNotContain(Order, Errors(Two + "void M(ManualResetEventSlim e) { e.Wait(); lock (_b) { } }"));
+
+        // ---- blocking on async code that comes back to its context
+
+        [Theory]
+        [InlineData("async Task F() { await Task.Delay(1); } void M() { F().Wait(); }")]
+        [InlineData("async Task<int> F() { await Task.Delay(1); return 1; } int M() { return F().Result; }")]
+        [InlineData("async Task F() { await Task.Yield(); } void M() { var t = F(); t.GetAwaiter().GetResult(); }")]
+        // (awaited only on one path: not finished on the other)
+        [InlineData("async Task<int> F() { await Task.Delay(1); return 1; } async Task<int> M(bool b) { var t = F(); if (b) await t; return t.Result; }")]
+        [InlineData("async Task G() { await Task.Delay(1); } async Task F() { await G().ConfigureAwait(false); } void M() { F().Wait(); }")]
+        public void Context_Reported(string m) => Assert.Contains(Order, Errors(m));
+
+        [Theory]
+        [InlineData("async Task F() { await Task.Delay(1).ConfigureAwait(false); } void M() { F().Wait(); }")]
+        [InlineData("async Task F() { await Task.Delay(1); } void M() { Task.Run(() => F().Wait()).Wait(); }")]
+        [InlineData("async Task F() { await Task.Delay(1); } async Task M() { await F(); }")]
+        // (already finished: its Result doesn't wait)
+        [InlineData("async Task<int> F() { await Task.Delay(1); return 1; } async Task<int> M() { var t = F(); await t; return t.Result; }")]
+        [InlineData("async Task<int> F() { await Task.Delay(1); return 1; } async Task<int> M() { var t = F(); var u = F(); await Task.WhenAll(t, u); return t.Result + u.Result; }")]
+        public void Context_Fine(string m) => Assert.DoesNotContain(Order, Errors(m));
+
+        // ---- other lock primitives, in their form
+
+        private const string Prims = Two + "[LockLevel(3)] readonly ReaderWriterLockSlim _rw = new ReaderWriterLockSlim(); [LockLevel(0)] readonly Mutex _mx = new Mutex(); [GuardedBy(nameof(_a))] int _n; ";
+
+        [Theory]
+        [InlineData("void M() { Monitor.Enter(_a); try { lock (_b) { } } finally { Monitor.Exit(_a); } }")]
+        [InlineData("void M() { bool taken = false; try { Monitor.Enter(_a, ref taken); lock (_b) { } } finally { if (taken) Monitor.Exit(_a); } }")]
+        [InlineData("void M() { lock (_b) { _rw.EnterWriteLock(); try { } finally { _rw.ExitWriteLock(); } } }")]
+        [InlineData("void M() { _mx.WaitOne(); try { lock (_a) { } } finally { _mx.ReleaseMutex(); } }")]
+        // what Monitor.Enter's form guards
+        [InlineData("void M() { Monitor.Enter(_a); try { _n = 1; } finally { Monitor.Exit(_a); } }")]
+        public void Primitives_Proved(string m) => Assert.Empty(Errors(Prims + m));
+
+        [Theory]
+        [InlineData("CSV1025", "void M() { Monitor.Enter(_b); try { lock (_a) { } } finally { Monitor.Exit(_b); } }")]
+        [InlineData("CSV1025", "void M() { _rw.EnterReadLock(); try { lock (_a) { } } finally { _rw.ExitReadLock(); } }")]
+        [InlineData("CSV1025", "void M() { lock (_a) { _mx.WaitOne(); try { } finally { _mx.ReleaseMutex(); } } }")]
+        // out of the form: where it's held can't be told
+        [InlineData("CSV1025", "void M() { Monitor.Enter(_a); lock (_b) { } Monitor.Exit(_a); }")]
+        [InlineData("CSV1025", "void M() { _rw.EnterWriteLock(); _rw.ExitWriteLock(); }")]
+        // guarded state outside the form
+        [InlineData("CSV1023", "void M() { Monitor.Enter(_a); try { } finally { Monitor.Exit(_a); } _n = 1; }")]
+        public void Primitives_Reported(string id, string m) => Assert.Contains(id, Errors(Prims + m));
+
+        [Fact]
+        public void Primitives_MonitorInvariantAtExit() => Assert.Contains("CSV1024", AllErrors(
+            "public class C { readonly object _l = new object(); [GuardedBy(nameof(_l))] int _n; [LockInvariant(nameof(_l)), Pure] bool Valid() => _n >= 0; public C() { } " +
+            "public void M() { Monitor.Enter(_l); try { _n = -1; } finally { Monitor.Exit(_l); } } }"));
+}
 }
