@@ -40,6 +40,30 @@ namespace CsVerify
     }
 
     /// <summary>
+    /// Where a lock stands in the order locks are taken: a thread may take it only while every lock it holds has a lower
+    /// level, so no cycle of threads can wait on each other (CSV1025). On a lock field: an object for <c>lock</c>, a
+    /// <c>SemaphoreSlim</c> of count 1, a lock class, or an array whose elements are locked. Locks that are never taken
+    /// one inside another need no level. Two locks of the same field on different objects are ordered by
+    /// <see cref="OrderedBy"/>, an int field of their object that never changes (an id), taken in increasing order of it;
+    /// an array's elements, by index.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class LockLevelAttribute : Attribute
+    {
+        public LockLevelAttribute(int level) { Level = level; }
+        public int Level { get; }
+        public string OrderedBy { get; set; }
+    }
+
+    /// <summary>
+    /// Code that takes no lock, and waits for nothing that might: on a method (and what overrides or implements it), an
+    /// interface member, or a delegate type, whose lambdas are checked for it. Then it may be called while a lock is held.
+    /// A call of a delegate that doesn't say so, under a lock, could take any lock (CSV1025).
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Property | AttributeTargets.Delegate | AttributeTargets.Interface | AttributeTargets.Class)]
+    public sealed class TakesNoLocksAttribute : Attribute { }
+
+    /// <summary>
     /// A <c>[Pure]</c> or <c>[GhostFunction]</c> bool method that holds while a lock is free: known on entering it, and to be
     /// restored on leaving it and before a call that may enter it again (CSV1024). It may read what the lock guards.
     /// </summary>

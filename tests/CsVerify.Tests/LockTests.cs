@@ -122,7 +122,7 @@ namespace CsVerify.Tests
 
         [Fact]
         public void Lock_ALockOnAnotherLockKeepsNothingElseOut() => Assert.Empty(Errors(
-            "readonly object _l = new object(), _o = new object(); [GuardedBy(nameof(_l))] int _b; void M(int a) { lock (_l) { _b = a; lock (_o) { } Spec.Assert(_b == a); } }"));
+            "[LockLevel(1)] readonly object _l = new object(); [LockLevel(2)] readonly object _o = new object(); [GuardedBy(nameof(_l))] int _b; void M(int a) { lock (_l) { _b = a; lock (_o) { } Spec.Assert(_b == a); } }"));
 
         // ---- lock invariants
 

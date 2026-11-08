@@ -192,6 +192,7 @@ namespace CsVerify.Verifier
             }
             FindContractStatements();
             CheckLocking();
+            CheckLockLevels();
             CheckConcurrentMarks();
             CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }

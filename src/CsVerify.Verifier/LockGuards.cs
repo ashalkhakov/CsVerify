@@ -296,6 +296,13 @@ namespace CsVerify.Verifier
             return Receiver(before) == Receiver(ReleaseIn(t, gate, model)) ? gate : null;
         }
 
+        /// <summary>The object whose semaphore a try holds, as written ("this" when it isn't).</summary>
+        public string TryOwner(TryStatementSyntax t, IFieldSymbol gate, SemanticModel model) =>
+            Before(t)?.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(i => CallsGate(i, gate, model)).Select(i => OwnerOf(i, model)).FirstOrDefault() ?? "this";
+
+        /// <summary>The object whose lock a using's taking call is about, as written.</summary>
+        public string UsingOwner(ExpressionSyntax taking, SemanticModel model) => CallOf(taking) is InvocationExpressionSyntax c ? OwnerOf(c, model) : "this";
+
         private bool CallsGate(InvocationExpressionSyntax i, IFieldSymbol gate, SemanticModel model) =>
             SymbolEqualityComparer.Default.Equals(GateOfWrapper(i, model, true) ?? GateOfWrapper(i, model, false) ?? (i.Expression is MemberAccessExpressionSyntax ma ? model.GetSymbolInfo(ma.Expression).Symbol as IFieldSymbol : null), gate);
 

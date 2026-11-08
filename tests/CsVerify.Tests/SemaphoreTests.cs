@@ -79,9 +79,15 @@ namespace CsVerify.Tests
         public void Reported(string id, string members) => Assert.Contains(id, Errors(members));
 
         [Fact]
-        public void Taking_AnotherObjectsIsNotTakingItTwice() => Assert.DoesNotContain("CSV1025", Errors(
-            "private async Task Set() { await _gate.WaitAsync(); try { _n = 1; } finally { _gate.Release(); } } " +
-            "public async Task M(C o) { await _gate.WaitAsync(); try { await o.Set(); } finally { _gate.Release(); } }"));
+        public void Taking_AnotherObjectsIsNotTakingItTwice_ButIsInNoOrder()
+        {
+            // (not a wait for itself; still, two objects' semaphores taken in no fixed order could deadlock)
+            var r = Harness.Verify(Usings + "public class C { private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1); [GuardedBy(nameof(_gate))] private int _n; " +
+                "private async Task Set() { await _gate.WaitAsync(); try { _n = 1; } finally { _gate.Release(); } } " +
+                "public async Task M(C o) { await _gate.WaitAsync(); try { await o.Set(); } finally { _gate.Release(); } } }");
+            Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("wait for itself"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1025" && d.Message.Contains("another object"));
+        }
 
         [Theory]
         [InlineData("private readonly SemaphoreSlim _gate = new SemaphoreSlim(2);")]

@@ -153,6 +153,7 @@ namespace CsVerify.Verifier
         private void CheckLockOrder(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             if (!_codeMode || inv.TargetMethod.Name != "Enter" || inv.TargetMethod.ContainingType?.ToDisplayString() != "System.Threading.Monitor") return;
+            if (inv.Syntax.Parent is LockStatementSyntax byId) CheckOrderedBy(byId, f, spec);
             if (!(inv.Syntax.Parent is LockStatementSyntax inner) || !(inner.Expression is ElementAccessExpressionSyntax ia) || ia.ArgumentList.Arguments.Count != 1) return;
             for (var p = inner.Parent; p != null && p != _contract.Declaration; p = p.Parent)
             {
