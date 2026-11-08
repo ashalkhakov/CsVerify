@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Microsoft.Coyote" Version="1.7.11" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\samples\Good\CsVerify.Samples.Good.csproj" />
+    <ProjectReference Include="..\..\samples\Buggy\CsVerify.Samples.Buggy.csproj" />
+  </ItemGroup>
+
+  <!--
+    Coyote controls the schedule only in rewritten code: after each build, this project's own assembly and the samples'
+    copies in its output are rewritten (`dotnet tool restore` first, for the CLI pinned in .config/dotnet-tools.json).
+  -->
+  <Target Name="CoyoteRewrite" AfterTargets="Build">
+    <PropertyGroup>
+      <CoyoteConfig>$(OutDir)rewrite.coyote.json</CoyoteConfig>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(CoyoteConfig)" Overwrite="true"
+      Lines="{ &quot;AssembliesPath&quot;: &quot;.&quot;, &quot;Assemblies&quot;: [ &quot;$(TargetFileName)&quot;, &quot;CsVerify.Samples.Good.dll&quot;, &quot;CsVerify.Samples.Buggy.dll&quot; ] }" />
+    <Exec Command="dotnet tool run coyote rewrite &quot;$(CoyoteConfig)&quot;" EnvironmentVariables="COYOTE_CLI_TELEMETRY_OPTOUT=1" StandardOutputImportance="low" />
+  </Target>
+</Project>
