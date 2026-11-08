@@ -483,6 +483,32 @@ namespace CsVerify.Tests
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Reach"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Bypass"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Cycle"));
+            // locks, semaphores and tasks (LockBugs.cs)
+            Assert.Equal(new[] { "CSV1023" }, r.Errors("Tally.Peek"));
+            Assert.Equal(new[] { "CSV1024" }, r.Errors("Tally.Undo"));
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("Gate.Twice"));
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("Gate.GetOrCompute"));
+            Assert.Equal(new[] { "CSV1023", "CSV1023", "CSV1023" }, r.Errors("Gate.Unreleased"));
+            Assert.Equal(new[] { "CSV1026" }, r.Errors("Jobs.Lost"));
+            Assert.Equal(new[] { "CSV1026" }, r.Errors("Jobs.Early"));
+            Assert.Equal(new[] { "CSV1027" }, r.Errors("Jobs.Finish"));
+            // deadlocks (LockLevelBugs.cs)
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("LevelBugs.Transfer"));
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("LevelBugs.LowUnderHigh"));
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("LevelBugs.Callback"));
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("LevelBugs.WaitUnder"));
+            Assert.Equal(new[] { "CSV1025" }, r.Errors("LevelBugs.WaitHolding"));
+            Assert.Equal(new[] { "CSV1025", "CSV1026" }, r.Errors("LevelBugs.Blocking"));
+            // lock-free code (AtomicBugs.cs)
+            Assert.Equal(new[] { "CSV1030" }, r.Errors("Counter.LostUpdate"));
+            Assert.Equal(new[] { "CSV1030" }, r.Errors("Counter.Wraps"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Counter.TwoReads"));
+            Assert.Equal(new[] { "CSV1030" }, r.Errors("Counter.Torn"));
+            Assert.Equal(new[] { "CSV1030" }, r.Errors("Ticket.Next"));
+            // a flag as a try-lock (TryLockBugs.cs)
+            Assert.Equal(new[] { "CSV1023", "CSV1023" }, r.Errors("Resource.AsPublished"));
+            Assert.Equal(new[] { "CSV1023" }, r.Errors("Resource.Denied"));
+            Assert.Equal(new[] { "CSV1024" }, r.Errors("Resource.BrokenInvariant"));
             // read shares (ShareBugs.cs)
             Assert.Equal(new[] { "CSV1016" }, r.Errors("WriteWhileShared"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("LendWhileShared"));

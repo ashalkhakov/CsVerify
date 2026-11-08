@@ -860,7 +860,9 @@ namespace CsVerify.Verifier
                 Eval(aw.Operation, f, spec);
                 result = aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void ? T.True : Unknown(aw.Type, "awaited");
                 // a library task's result is as the library declares it; a faulted task throws here
-                if (operand is IInvocationOperation li && li.TargetMethod.OriginalDefinition.ReturnType is INamedTypeSymbol lt &&
+                // (a delegate's, as its type says: Func<Task<string>> gives a string, as a call of a Func<string> does)
+                if (operand is IInvocationOperation li &&
+                    (li.TargetMethod.MethodKind == MethodKind.DelegateInvoke ? li.TargetMethod.ReturnType : li.TargetMethod.OriginalDefinition.ReturnType) is INamedTypeSymbol lt &&
                     lt.TypeArguments.Length == 1 && result.Sort == Sort.Int &&
                     (IsNonNullableType(lt.TypeArguments[0]) || lt.TypeArguments[0] is ITypeParameterSymbol && lt.TypeArgumentNullableAnnotations[0] == NullableAnnotation.NotAnnotated &&
                         (IsNonNullableType(aw.Type) || IsTaskRun(li.TargetMethod) && _model.GetTypeInfo(aw.Syntax).Nullability.FlowState == NullableFlowState.NotNull)))

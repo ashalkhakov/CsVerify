@@ -152,6 +152,10 @@ Sources and licences:
 - `NullBugs.cs`: an unchecked `T?`, `null!` passed and returned, an element of `new string[2]`, and a precondition that reads `a.Length` before checking `a`.
 - `ArrayViewBugs.cs`: a wrong pointer offset, halves never joined back, and a read one past the end of a view.
 - `Linearity.cs` has leak, double free, use-after-free, forging and run-time ghost reads. Its analyzer errors are downgraded to warnings in that project's `.editorconfig` so the solution still builds.
+- `LockBugs.cs` (written for this repository): a count read without its lock (CSV1023) and one whose invariant is broken on release (CSV1024); a semaphore taken while held, and a delegate awaited while holding it (CSV1025); a semaphore taken with no `try`/`finally` (CSV1023); a task awaited on one path only, and its `Result` read before it's awaited (CSV1026); concurrent code writing a field with no lock (CSV1027).
+- `LockLevelBugs.cs` (written for this repository), all CSV1025: two accounts locked in the order given; a lower lock taken through a call under a higher one; a delegate called under a lock; waiting under a lock for a task it was given; `Monitor.Wait` holding another lock; and blocking on async code that resumes on its context.
+- `AtomicBugs.cs` (written for this repository): a lost update by a plain read and write, an `Interlocked.Increment` that wraps on a count that only grows, a plain read of a non-volatile `long` (CSV1030); two reads taken to be equal (CSV1004); and a step of exactly one, which isn't transitive (CSV1030).
+- `TryLockBugs.cs`: the try-lock of the example in the documentation of `System.Threading.Interlocked`, as published, with no `finally` (CSV1023); its guarded count touched where taking the flag failed (CSV1023); and its invariant broken where it's given back (CSV1024).
 - `ProofBugs.cs` holds proofs that would be unsound if accepted:
   - a circular lemma that "proves" `n != n` (CSV1011);
   - an inconsistent definition `f(x) = f(x) + 1` (CSV1011);
