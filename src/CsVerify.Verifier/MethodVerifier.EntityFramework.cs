@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 
 namespace CsVerify.Verifier
@@ -111,7 +112,7 @@ namespace CsVerify.Verifier
         }
 
         /// <summary>The navigation an Include lambda names (x => x.Customer).</summary>
-        private static IPropertySymbol Navigation(IOperation lambda) =>
+        private IPropertySymbol Navigation(IOperation lambda) =>
             QuotedLambda(lambda) is IAnonymousFunctionOperation fn && fn.Body.Operations.Length == 1 && fn.Body.Operations[0] is IReturnOperation ret &&
             Unwrapped(ret.ReturnedValue) is IPropertyReferenceOperation pr && pr.Instance is IParameterReferenceOperation ? pr.Property : null;
 
@@ -121,14 +122,18 @@ namespace CsVerify.Verifier
             return op;
         }
 
-        /// <summary>A lambda as an argument: made into a delegate, or quoted as an expression tree.</summary>
-        private static IAnonymousFunctionOperation QuotedLambda(IOperation arg)
+        /// <summary>
+        /// A lambda as an argument: made into a delegate, or quoted as an expression tree (in a flow graph's
+        /// operations, the lambda's own operation, from the semantic model).
+        /// </summary>
+        private IAnonymousFunctionOperation QuotedLambda(IOperation arg)
         {
             switch (arg)
             {
-                case IDelegateCreationOperation d: return d.Target as IAnonymousFunctionOperation;
+                case IDelegateCreationOperation d: return QuotedLambda(d.Target);
                 case IConversionOperation c: return QuotedLambda(c.Operand);
                 case IAnonymousFunctionOperation a: return a;
+                case IFlowAnonymousFunctionOperation fa when fa.Syntax.SyntaxTree == _model.SyntaxTree: return _model.GetOperation(fa.Syntax) as IAnonymousFunctionOperation;
                 default: return null;
             }
         }
@@ -313,6 +318,130 @@ namespace CsVerify.Verifier
             }
             MayRaise(T.True, f, null);
             return result;
+        }
+
+        internal const string OrderId = "CSV1031", TranslateId = "CSV1032";
+
+        private static readonly HashSet<string> RowLimits = new HashSet<string>
+        { "First", "FirstOrDefault", "Last", "LastOrDefault", "ElementAt", "ElementAtOrDefault", "Take", "Skip", "TakeLast", "SkipLast" };
+
+        /// <summary>
+        /// What a query the database runs must be: its lambdas ones EF translates to SQL (CSV1032), and where it keeps
+        /// some rows by their place (First, Take, Skip...), an order that fixes it: by a key, or at most one row (CSV1031).
+        /// </summary>
+        private void DatabaseQueryChecks(IInvocationOperation inv, IInvocationOperation syntaxCall, IMethodSymbol definition,
+                                         List<(IParameterSymbol, object)> args, Dictionary<int, Lambda> lambdas, Frame f)
+        {
+            if (!RowLimits.Contains(definition.Name)) return;
+            var sourceOp = syntaxCall.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value ?? syntaxCall.Instance;
+            if (sourceOp == null || OrderedByKey(sourceOp)) return;
+            // at most one row: of a reading of the source (any reading: nothing is known of which this one is)
+            var src = args[0].Item2 as Term;
+            var outer = _queryResult;
+            _queryResult = null;
+            Sequence seq;
+            try { seq = SequenceOfTerm(src, Unconverted(sourceOp).Type, f); }
+            finally { _queryResult = outer; }
+            var message = $"'{inv.Syntax}' keeps rows by their place in an order the database doesn't fix: order the query by a key " +
+                          "(OrderBy, or ThenBy, ending in the key or a unique index), or show that at most one row matches";
+            if (seq == null) { Report(OrderId, inv.Syntax, message, isError: true); return; }
+            var count = seq.Length;
+            var given = lambdas.Where(l => l.Key > 0).Select(l => l.Value).FirstOrDefault();
+            var predicate = given == null ? null : new Lambda { Body = given.Body, P1 = given.P1, P2 = given.P2, Frame = f, Database = true };
+            if (predicate != null && definition.Parameters.Length == 2 && definition.Parameters[1].Type.TypeKind == TypeKind.Delegate)
+                count = Filter(seq, j => T.Coerce(ApplyLambda(predicate, seq.Element(j)), Sort.Bool), seq.ElementType, out _).Length;
+            Prove(T.Implies(T.And(_guards.Append(seq.Known).ToArray()), T.Le(count, T.Int(1))), OrderId, inv.Syntax, message, assume: false);
+        }
+
+        private readonly HashSet<SyntaxNode> _translationChecked = new HashSet<SyntaxNode>();
+
+        /// <summary>
+        /// The lambdas of a Queryable operator or an EF one, which the database runs (CSV1032): checked once each, whether
+        /// or not the verifier reads the query. A projection runs on the client when it is the query's last, so anything
+        /// may be called there: Select's and SelectMany's are left out.
+        /// </summary>
+        private void TranslationChecks(IInvocationOperation inv)
+        {
+            if (Ef == null || !_codeMode) return;
+            var m = inv.TargetMethod;
+            if (!(IsQueryable(m) || IsEfMethod(m)) || m.Name == "Select" || m.Name == "SelectMany" || m.Name.StartsWith("Include") || m.Name.StartsWith("ThenInclude")) return;
+            if (!_translationChecked.Add(inv.Syntax)) return;
+            foreach (var a in inv.Arguments)
+                if (a.Parameter.Type is INamedTypeSymbol p && p.Name == "Expression" && QuotedLambda(a.Value) is IAnonymousFunctionOperation fn) Translatable(fn);
+        }
+
+        /// <summary>Is the query (as written here) sorted by a set of columns that identifies a row?</summary>
+        private bool OrderedByKey(IOperation op)
+        {
+            var keys = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            EfModel.Entity entity = null;
+            for (op = Unconverted(op); op is IInvocationOperation c; op = Unconverted(c.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value ?? c.Instance))
+            {
+                var name = c.TargetMethod.Name;
+                if (name == "OrderBy" || name == "OrderByDescending" || name == "ThenBy" || name == "ThenByDescending")
+                {
+                    var key = c.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value;
+                    if (key != null && Navigation(key) is IPropertySymbol p) { keys.Add(p); entity ??= Ef.EntityOf(p.ContainingType); }
+                    if (name.StartsWith("OrderBy")) break;
+                    continue;
+                }
+                if (name == "Select" || name == "SelectMany" || name == "GroupBy" || name.StartsWith("Join")) return false;
+            }
+            return entity != null && entity.Identifying.Any(set => set.All(keys.Contains));
+        }
+
+        /// <summary>
+        /// A lambda of a query the database runs must be translatable: what depends on its parameters may only read
+        /// mapped properties and navigations, and call what EF translates (operators, string and Math members, dates,
+        /// LINQ over navigations and over lists the program passes in). Code of the program, or a property computed in
+        /// C#, can't be sent to the database: EF throws when the query runs. What doesn't depend on the parameters is
+        /// evaluated on the client first, so it may call anything.
+        /// </summary>
+        private void Translatable(IAnonymousFunctionOperation fn)
+        {
+            var parameters = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
+            foreach (var l in fn.DescendantsAndSelf().OfType<IAnonymousFunctionOperation>()) parameters.UnionWith(l.Symbol.Parameters);
+            bool Depends(IOperation op) => op.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(p => parameters.Contains(p.Parameter));
+            foreach (var op in fn.Body.Descendants())
+            {
+                string why = null;
+                switch (op)
+                {
+                    case IInvocationOperation call when Depends(call) && !Translates(call.TargetMethod):
+                        why = $"'{call.TargetMethod.ToDisplayString()}' has no translation to SQL";
+                        break;
+                    case IPropertyReferenceOperation pr when pr.Instance != null && Depends(pr.Instance) && Ef.EntityOf(pr.Property.ContainingType) is EfModel.Entity e && !Mapped(pr.Property, e):
+                        why = $"'{pr.Property.Name}' isn't a column of {e.Type.Name} (it is computed in C#, or [NotMapped])";
+                        break;
+                }
+                if (why != null) Report(TranslateId, op.Syntax, $"'{op.Syntax}' can't be translated to SQL: {why}; EF throws when the query runs. Compute it before the query, or after it (AsEnumerable)", isError: true);
+            }
+        }
+
+        /// <summary>A column or a navigation: an auto-property with a setter, not [NotMapped].</summary>
+        private static bool Mapped(IPropertySymbol p, EfModel.Entity e) =>
+            e.References.Contains(p) || e.Collections.Contains(p) ||
+            FieldEffects.IsHeapField(p) && p.SetMethod != null && !p.GetAttributes().Any(a => a.AttributeClass?.Name == "NotMappedAttribute");
+
+        private static readonly HashSet<string> TranslatedTypes = new HashSet<string>
+        {
+            "System.Math", "System.MathF", "System.String", "System.DateTime", "System.DateTimeOffset", "System.DateOnly", "System.TimeOnly",
+            "System.TimeSpan", "System.Guid", "System.Convert", "System.Linq.Enumerable", "System.Linq.Queryable",
+            "Microsoft.EntityFrameworkCore.EF", "Microsoft.EntityFrameworkCore.DbFunctionsExtensions",
+            "Microsoft.EntityFrameworkCore.SqlServerDbFunctionsExtensions", "Microsoft.EntityFrameworkCore.RelationalDbFunctionsExtensions",
+        };
+
+        /// <summary>Does EF translate a call of this member (whose arguments depend on the row)?</summary>
+        private static bool Translates(IMethodSymbol m)
+        {
+            var type = (m.ReducedFrom ?? m).ContainingType;
+            if (type == null) return false;
+            var name = type.OriginalDefinition.ContainingNamespace?.ToDisplayString() + "." + type.OriginalDefinition.MetadataName;
+            if (type.SpecialType != SpecialType.None && (m.Name == "Equals" || m.Name == "CompareTo" || m.Name == "ToString")) return true;
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T) return true;
+            if (m.Name == "Equals" && m.IsStatic && type.SpecialType == SpecialType.System_Object) return true;
+            if (m.Name == "Contains" && type.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic") return true; // (a list passed in: IN)
+            return TranslatedTypes.Contains(name);
         }
 
         /// <summary>The Tracker model function of that name (CsVerify.Ef), compiled in with EF Core.</summary>

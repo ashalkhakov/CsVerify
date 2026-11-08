@@ -186,6 +186,7 @@ namespace CsVerify.Verifier
         {
             // (in a lambda a definition applies, g => g.Count(): read there too)
             if (!_codeMode && _queryContexts.Count == 0) return null;
+            if (_queryContexts.Count == 0) TranslationChecks(inv);
             var outer = _queryResult;
             if (_queryContexts.Count == 0) _queryResult = inv.Type;
             try
@@ -257,7 +258,11 @@ namespace CsVerify.Verifier
             }
             // a query on a database: its lambdas are the database's to evaluate
             bool database = args.Any(a => a.Item2 is Term t && IsDatabaseQuery(t));
-            if (database) foreach (var l in lambdas.Values) l.Database = true;
+            if (database)
+            {
+                foreach (var l in lambdas.Values) l.Database = true;
+                if (_codeMode && _queryContexts.Count == 0) DatabaseQueryChecks(inv, original ?? inv, definition, args, lambdas, f);
+            }
             var instantiation = DefinitionInstantiation(definition, m);
             if (!_codeMode && !IsSequenceType(definition.ReturnType))
             {

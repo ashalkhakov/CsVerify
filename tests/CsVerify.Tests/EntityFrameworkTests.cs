@@ -15,6 +15,7 @@ public sealed class Customer
     public string Email { get; set; } = """";
     public string Name { get; set; } = """";
     public List<Order> Orders { get; set; } = new List<Order>();
+    public string Display => Name + "" <"" + Email + "">"";
 }
 public sealed class Order
 {
@@ -86,6 +87,66 @@ public sealed class Shop : DbContext
         public void Strings_AreComparedByTheDatabase() => Assert.NotEmpty(Errors("M",
             "public static class C { public static async Task M(Shop db, string email) { var c = await db.Customers.AsNoTracking().SingleOrDefaultAsync(c => c.Email == email); " +
             "if (c != null) Spec.Assert(c.Email == email); } }"));
+
+        // ---- rows by their place: an order the database fixes (CSV1031) ----
+
+        [Fact]
+        public void First_WithoutOrder_IsReported() => Assert.Equal(new[] { "CSV1031" }, Errors("M",
+            "public static class C { public static Order? M(Shop db) { return db.Orders.AsNoTracking().Where(o => o.Total > 0).FirstOrDefault(); } }"));
+
+        [Fact]
+        public void First_OrderedByAKey_IsDeterministic() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<Order?> M(Shop db) { return await db.Orders.AsNoTracking().OrderBy(o => o.Total).ThenBy(o => o.Id).FirstOrDefaultAsync(); } }"));
+
+        [Fact]
+        public void First_OrderedByAColumn_IsReported() => Assert.Equal(new[] { "CSV1031" }, Errors("M",
+            "public static class C { public static async Task<Order?> M(Shop db) { return await db.Orders.AsNoTracking().OrderBy(o => o.Total).FirstOrDefaultAsync(); } }"));
+
+        [Fact]
+        public void First_OfOneRow_NeedsNoOrder() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<Customer?> M(Shop db, string email) { return await db.Customers.AsNoTracking().FirstOrDefaultAsync(c => c.Email == email); } }"));
+
+        [Fact]
+        public void Take_WithoutOrder_IsReported() => Assert.Equal(new[] { "CSV1031" }, Errors("M",
+            "public static class C { public static async Task<List<Order>> M(Shop db) { return await db.Orders.AsNoTracking().Take(10).ToListAsync(); } }"));
+
+        [Fact]
+        public void Paging_ByKey_IsDeterministic() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<List<Order>> M(Shop db, int page) { Spec.Requires(0 <= page && page < 1000); " +
+            "return await db.Orders.AsNoTracking().OrderByDescending(o => o.Id).Skip(page * 10).Take(10).ToListAsync(); } }"));
+
+        // ---- what EF translates (CSV1032) ----
+
+        [Fact]
+        public void Translate_ProgramMethodOnARow_IsReported() => Assert.Equal(new[] { "CSV1032" }, Errors("M",
+            "public static class C { [Pure] static bool Big(Order o) => o.Total > 100; " +
+            "public static async Task<int> M(Shop db) { return await db.Orders.CountAsync(o => Big(o)); } }"));
+
+        [Fact]
+        public void Translate_ProgramMethodOfCapturedValues_IsEvaluatedFirst() => Assert.Empty(Errors("M",
+            "public static class C { [Pure] static int Limit(int x) => x * 2; " +
+            "public static async Task<int> M(Shop db, int x) { Spec.Requires(0 <= x && x < 1000); return await db.Orders.CountAsync(o => o.Total > Limit(x)); } }"));
+
+        [Fact]
+        public void Translate_StringsAndLists_Translate() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<int> M(Shop db, List<int> ids) { return await db.Customers.CountAsync(c => c.Name.StartsWith(\"A\") && ids.Contains(c.Id)); } }"));
+
+        [Fact]
+        public void Translate_ComputedProperty_IsReported() => Assert.Equal(new[] { "CSV1032" }, VerifyEf(Model +
+            "public static class Extra { } public static class C { public static async Task<int> M(Shop db) { return await db.Customers.CountAsync(c => c.Display.Length > 3); } }" +
+            "").Errors("M").Distinct().ToArray());
+
+        // ---- navigations ----
+
+        [Fact]
+        public void Navigation_NotIncluded_IsNull() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null)); } }"));
+
+        [Fact]
+        public void Navigation_Included_IsLoaded() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Include(o => o.Customer).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null)); } }"));
 
         [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
