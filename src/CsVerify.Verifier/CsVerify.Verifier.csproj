@@ -27,6 +27,8 @@
     <EmbeddedResource Include="..\CsVerify.Spec\*.cs" LogicalName="CsVerify.Spec.%(Filename)%(Extension)" />
     <!-- and the contracts it ships for the BCL ([ContractsFor] stubs, CsVerify.Bcl) -->
     <EmbeddedResource Include="..\CsVerify.Spec\Bcl\*.cs" LogicalName="CsVerify.Spec.Bcl.%(Filename)%(Extension)" />
+    <!-- and Entity Framework Core's model (CsVerify.Ef), compiled in only for programs that reference EF Core -->
+    <EmbeddedResource Include="..\CsVerify.Spec\Ef\*.cs" LogicalName="CsVerify.Ef.%(Filename)%(Extension)" />
     <None Include="build\CsVerify.Verifier.targets" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

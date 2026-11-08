@@ -145,6 +145,9 @@ namespace CsVerify.Verifier
         internal readonly bool UsesDynamicFrames;
         internal readonly LockGuards Locks;
         internal readonly LockLevels Levels;
+        /// <summary>The Entity Framework Core model, or null for a program that doesn't reference EF Core.</summary>
+        internal readonly EfModel Ef;
+
         internal readonly Atomics Atomics;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
@@ -196,6 +199,7 @@ namespace CsVerify.Verifier
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
+            Ef = EfModel.For(compilation, UserTrees, SourceTypes);
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;
@@ -209,6 +213,7 @@ namespace CsVerify.Verifier
             Solver.Preamble(MethodVerifier.FloatTheory);
             if (userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<ArrayRankSpecifierSyntax>().Any(r => r.Rank > 1)))
                 Solver.Preamble(MethodVerifier.CellTheory); // rectangular arrays' cells
+            if (Ef != null) Solver.Preamble(MethodVerifier.CollationTheory); // strings as a database compares them
         }
 
         public void Dispose() => Solver.Dispose();
@@ -599,8 +604,9 @@ namespace CsVerify.Verifier
             var parse = new CSharpParseOptions(LanguageVersion.Latest,
                 preprocessorSymbols: new[] { SpecSymbols.SpecSymbol }.Concat(options.Defines));
             var userTrees = sources.Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.path)).ToList();
-            var specTrees = SpecTrees(parse);
-            var compilation = CSharpCompilation.Create("CsVerifyTarget", userTrees.Concat(specTrees), References(options),
+            var references = References(options).ToList();
+            var specTrees = SpecTrees(parse, ReferencesEfCore(references));
+            var compilation = CSharpCompilation.Create("CsVerifyTarget", userTrees.Concat(specTrees), references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: options.Nullable));
 
             var result = new VerificationResult();
@@ -825,20 +831,25 @@ namespace CsVerify.Verifier
         private static readonly Lazy<IReadOnlyList<MetadataReference>> _framework =
             new Lazy<IReadOnlyList<MetadataReference>>(() => LoadFrameworkReferences().ToList());
 
-        /// <summary>The Spec library's sources, parsed once per set of preprocessor symbols.</summary>
-        private static IReadOnlyList<SyntaxTree> SpecTrees(CSharpParseOptions parse) =>
-            _specTrees.GetOrAdd(parse.LanguageVersion + "|" + string.Join(",", parse.PreprocessorSymbolNames.OrderBy(x => x)),
-                _ => SpecSources().Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.name)).ToList());
+        /// <summary>The Spec library's sources (and EF Core's model, with EF Core), parsed once per set of preprocessor symbols.</summary>
+        private static IReadOnlyList<SyntaxTree> SpecTrees(CSharpParseOptions parse, bool efCore) =>
+            _specTrees.GetOrAdd(parse.LanguageVersion + "|" + efCore + "|" + string.Join(",", parse.PreprocessorSymbolNames.OrderBy(x => x)),
+                _ => SpecSources(efCore).Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.name)).ToList());
 
-        internal static IEnumerable<(string name, string text)> SpecSources()
+        internal static IEnumerable<(string name, string text)> SpecSources(bool efCore = false)
         {
             var asm = typeof(Engine).Assembly;
-            foreach (var name in asm.GetManifestResourceNames().Where(n => n.StartsWith("CsVerify.Spec.") && n.EndsWith(".cs")))
+            foreach (var name in asm.GetManifestResourceNames().Where(n => (n.StartsWith("CsVerify.Spec.") || efCore && n.StartsWith("CsVerify.Ef.")) && n.EndsWith(".cs")))
             {
                 using var reader = new StreamReader(asm.GetManifestResourceStream(name));
-                yield return ("<CsVerify.Spec>/" + name.Substring("CsVerify.Spec.".Length), reader.ReadToEnd());
+                var prefix = name.StartsWith("CsVerify.Ef.") ? "CsVerify.Ef." : "CsVerify.Spec.";
+                yield return ("<" + prefix.TrimEnd('.') + ">/" + name.Substring(prefix.Length), reader.ReadToEnd());
             }
         }
+
+        /// <summary>Does the program reference Entity Framework Core (so its model is compiled in)?</summary>
+        private static bool ReferencesEfCore(IEnumerable<MetadataReference> references) =>
+            references.OfType<PortableExecutableReference>().Any(r => Path.GetFileName(r.FilePath ?? "") == "Microsoft.EntityFrameworkCore.dll");
 
         private static IEnumerable<MetadataReference> References(VerifierOptions options)
         {

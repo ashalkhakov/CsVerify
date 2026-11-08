@@ -23,7 +23,13 @@
     <ItemGroup>
       <_CsVerifySource Include="@(Compile)" Exclude="$(IntermediateOutputPath)**" />
     </ItemGroup>
-    <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifySource->'%(FullPath)')" Overwrite="true" />
+    <ItemGroup>
+      <!-- the project's references, but CsVerify's own (its sources come with the verifier) -->
+      <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
+      <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
+      <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifyArgs)" Overwrite="true" />
     <PropertyGroup>
       <!-- the project's nullable context: its non-nullable reference types are contracts (unset means disabled) -->
       <_CsVerifyNullable>$(Nullable)</_CsVerifyNullable>

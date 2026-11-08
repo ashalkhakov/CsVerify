@@ -1283,7 +1283,12 @@ namespace CsVerify.Verifier
             bool numeric = IsIntegral(opType) || IsIntegral(b.RightOperand.Type) || SpecSymbols.IsGhostType(opType);
             bool boolean = l.Sort == Sort.Bool && r.Sort == Sort.Bool;
             if ((b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals) && opType?.SpecialType == SpecialType.System_String)
+            {
+                // (in a query the database runs, by its collation; against null, exactly)
+                if (_inDatabase > 0 && !IsNullConstant(b.LeftOperand) && !IsNullConstant(b.RightOperand))
+                    return b.OperatorKind == BinaryOperatorKind.Equals ? CollationEqual(l, r) : T.Not(CollationEqual(l, r));
                 StringsCompared(l, r);
+            }
             switch (b.OperatorKind)
             {
                 case BinaryOperatorKind.Equals: return numeric || boolean || IsModeledReferenceEquality(b) || SpecSymbols.IsLinear(opType) ? T.Eq(l, r) : Unknown(b.Type);
@@ -1576,6 +1581,7 @@ namespace CsVerify.Verifier
         private Term EvalProperty(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
         {
             if (TaskResult(pr, f, spec) is Term given) return given;
+            if (DbSetProperty(pr, f, spec) is Term table) return table;
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
@@ -1765,6 +1771,7 @@ namespace CsVerify.Verifier
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
+            if (DbQueryCall(inv, f, spec) is Term dbQuery) return dbQuery;
             if (AtomicCall(inv, f, spec) is Term atomic) return atomic;
             if (FlagCall(inv, f, spec) is Term flagged) return flagged;
             if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);

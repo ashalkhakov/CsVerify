@@ -842,6 +842,7 @@ namespace CsVerify.Verifier
             while (operand is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null && ca.TargetMethod.DeclaringSyntaxReferences.Length == 0)
                 operand = ca.Instance;
             if (AwaitStarted(operand, aw, f, spec) is Term given) return given;
+            if (operand is IInvocationOperation efCall && EfAwait(efCall, aw, f, spec) is Term efResult) return efResult;
             Term result;
             if (operand is IInvocationOperation call && (call.TargetMethod.IsAsync && _engine.ContractOf(call.TargetMethod).HasSource || IsAsyncStubbed(call.TargetMethod)))
             {

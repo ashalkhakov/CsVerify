@@ -99,6 +99,8 @@ namespace CsVerify.Verifier
             public IOperation Body;
             public IParameterSymbol P1, P2;
             public Frame Frame;
+            /// <summary>A lambda of a query on a database: evaluated as the database does (see InDatabase).</summary>
+            public bool Database;
         }
 
         /// <summary>A Q.Group site: each group is (site key), its elements what the definition gives for its key.</summary>
@@ -184,8 +186,14 @@ namespace CsVerify.Verifier
         {
             // (in a lambda a definition applies, g => g.Count(): read there too)
             if (!_codeMode && _queryContexts.Count == 0) return null;
-            if (IsEnumerableMethod(inv.TargetMethod) && Copying(inv, f, spec) is Term copy) return copy;
-            return QueryCall(inv, f, spec);
+            var outer = _queryResult;
+            if (_queryContexts.Count == 0) _queryResult = inv.Type;
+            try
+            {
+                if ((IsEnumerableMethod(inv.TargetMethod) || IsEfAsyncQuery(inv.TargetMethod)) && Copying(inv, f, spec) is Term copy) return copy;
+                return QueryCall(inv, f, spec);
+            }
+            finally { _queryResult = outer; }
         }
 
         private Dictionary<ITypeSymbol, ITypeSymbol> DefinitionInstantiation(IMethodSymbol definition, IMethodSymbol called)
@@ -205,7 +213,7 @@ namespace CsVerify.Verifier
         private Term QueryCall(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
-            var definition = _engine.Stubs.QueryOf(m);
+            var definition = _engine.Stubs.QueryOf(m) ?? _engine.Stubs.QueryOf(EnumerableTwin(m));
             if (definition == null) return null;
             var original = _model.GetOperation(inv.Syntax) as IInvocationOperation;
             if (original != null && !SymbolEqualityComparer.Default.Equals(original.TargetMethod, m)) original = null;
@@ -243,10 +251,13 @@ namespace CsVerify.Verifier
                         Deref(op, x, inv.Syntax);
                         _sourceTypes[x.S] = type;
                     }
-                    else if (!_lazy.ContainsKey(x.S) && !_queries.ContainsKey(x.S) && GroupOf(x) == null) return null; // (_queries: GroupJoin's matches)
+                    else if (!_lazy.ContainsKey(x.S) && !_queries.ContainsKey(x.S) && GroupOf(x) == null && !_tables.ContainsKey(x.S)) return null; // (_queries: GroupJoin's matches)
                 }
                 args.Add((p, x));
             }
+            // a query on a database: its lambdas are the database's to evaluate
+            bool database = args.Any(a => a.Item2 is Term t && IsDatabaseQuery(t));
+            if (database) foreach (var l in lambdas.Values) l.Database = true;
             var instantiation = DefinitionInstantiation(definition, m);
             if (!_codeMode && !IsSequenceType(definition.ReturnType))
             {
@@ -265,6 +276,7 @@ namespace CsVerify.Verifier
                 var result = _z3.Fresh("query", Sort.Int);
                 AssumeSide(NotNull(result));
                 _lazy[result.S] = new LazyQuery { Definition = definition, Args = args, Instantiation = instantiation };
+                if (database) _databaseQueries.Add(result.S);
                 Assumed(m.OriginalDefinition.ToDisplayString());
                 return result;
             }
@@ -324,7 +336,7 @@ namespace CsVerify.Verifier
                 if (v is Lambda l)
                 {
                     var t = _z3.Fresh("lambda", Sort.Int);
-                    _lambdas[t.S] = new Lambda { Body = l.Body, P1 = l.P1, P2 = l.P2, Frame = f };
+                    _lambdas[t.S] = new Lambda { Body = l.Body, P1 = l.P1, P2 = l.P2, Frame = f, Database = l.Database };
                     frame.Vars[p] = t;
                 }
                 else if (v is Term x && (IsSequenceType(p.Type) || ContractStubs.TakesReceiver(definition) && p.Ordinal == 0))
@@ -375,7 +387,7 @@ namespace CsVerify.Verifier
         /// <summary>A lambda argument applied to elements (spec mode): a value of its body's type.</summary>
         private Term ApplyLambda(Lambda l, Term a, Term b = null)
         {
-            var r = ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b);
+            var r = l.Database ? InDatabase(() => ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b)) : ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b);
             var type = Unconverted(l.Body).Type;
             if (Indexable(type)) _sourceTypes[T.Coerce(r, Sort.Int).S] = type; // (SelectMany's inner sequences)
             return r;
@@ -394,6 +406,7 @@ namespace CsVerify.Verifier
                 return InContext(ctx, () => QryOf(value ?? throw new NotQuery("a query without a definition"), null, f));
             }
             if (GroupOf(t) is (GroupFamily family, Term key)) return family.ElementsOf(key);
+            if (_tables.TryGetValue(t.S, out var table)) return new QSeq { Make = () => TableSequence(table, f), ElementType = table.Entity.Type };
             if (!(_sourceTypes.TryGetValue(t.S, out var st) && Indexable(st))) st = type;
             if (st != null && Indexable(st))
                 return new QSeq { Make = () => ListSequence(t, st, f), ElementType = ElementOf(st) };
@@ -768,7 +781,7 @@ namespace CsVerify.Verifier
         private Sequence SequenceOfTerm(Term x, ITypeSymbol type, Frame f)
         {
             x = T.Coerce(x, Sort.Int);
-            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || type != null && Indexable(type))) return null;
+            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || _tables.ContainsKey(x.S) || type != null && Indexable(type))) return null;
             var ctx = NewContext(null);
             return Guarded(() =>
             {
