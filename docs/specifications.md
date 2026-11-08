@@ -54,7 +54,58 @@ ATS separates the **statics** (types and indices, reasoned about at compile time
 - `Spec.Index(x)` is the index of `x`, the iteration variable of a `foreach` over an array or a string. In the loop's invariants it is the number of elements gone through.
 - `Spec.Ensures<R>(r => …)` binds `r` to the return value. Lambdas cannot capture `ref`/`in` parameters, so for those use `Spec.Ensures(bool)` with `Spec.Result<R>()` and `Spec.Old(x)`.
 - `Spec.Forall(lo, hi, i => P)` / `Spec.Exists(...)` are bounded integer quantifiers.
+- `Spec.Pre(f, x)`, `Spec.Post(f, x, r)` and `Spec.Total(f)` say what a `Func` or `Action` accepts and gives, as Dafny's `f.requires` and `f.ensures`, `Spec.ReadsOf(f, x)` and `Spec.Reads(f, x => frame)` what those read (`f.reads`), and `Spec.Changes(f, x => frame)` and `Spec.ChangesNothing(f)` what it may change (see [Delegates](#delegates)).
 - Specification expressions should be side-effect free. Calls in them must be `[Pure]`: a source method, or a library member whose stub is (`l.Count`, `string.IsNullOrEmpty(s)`; see [Contracts for code without sources](library-contracts.md)).
+
+## Delegates
+
+A delegate type of the program can carry a contract, as an interface does (see [Object-oriented code](objects.md#object-oriented-code)). A `Func` or `Action`, or a delegate type without one, is spoken of with `Spec.Pre(f, x)` (Dafny's `f.requires`), `Spec.Post(f, x, r)` (`f.ensures`) and `Spec.Total(f)` (`Spec.Pre` for every argument):
+
+```csharp
+static int Apply(Func<int, int> g, int x)
+{
+    Spec.Requires(Spec.Pre(g, x));
+    Spec.Ensures<int>(r => Spec.Post(g, x, r));
+    return g(x);
+}
+
+var y = Apply(x => x < 100 ? x + 1 : 0, 1);
+Spec.Assert(y == 2);   // what the lambda gives is its value
+```
+
+- **A call** `g(x)` proves `Spec.Pre(g, x)` and gives a result `r` with `Spec.Post(g, x, r)`.
+- **No delegate is taken to accept anything.** What a parameter, a field or a call's result accepts is what a specification says, and nothing otherwise, as in ATS. A method that calls one says what it needs: `Spec.Requires(Spec.Pre(g, x))`, `Spec.Requires(Spec.Forall(0, n, i => Spec.Pre(g, i)))`, or `Spec.Requires(Spec.Total(g))`.
+- **A lambda** made a delegate has its own `Spec.Requires` as its `Spec.Pre`; without one it is total, since its body is proved for every argument. Its `Spec.Post` implies what it ensures and, for an expression, its value. A method group gives its method's contract the same way. Both count only as far as they depend on the parameters, constants and captured variables that are never written after they're declared; the rest is left out, and a proof that needs it must say more, or use a delegate type with a contract. A precondition that reads fields or array cells needs a reads frame (below); without one, it is reported (CSV1029).
+- **Handed to a library,** a delegate must accept what the library calls it with:
+  - **Each element** of a list or array, for `List.ForEach`, `Exists`, `TrueForAll`, `Find`, `FindIndex`, `FindAll`, `RemoveAll`, `ConvertAll`, their `Array` counterparts, and the LINQ members that run at once (`Any`, `All`, `Count`, `First`, `Last`, `Single`, `Sum`, `Min`, `Max`, `Average`, `ToDictionary`): `Spec.Pre` is proved for every element there now. That holds for a lambda or method group that changes neither the list nor an array, since otherwise the elements it is called with could be others.
+  - **Each index** in `[from, to)`, for `Parallel.For(from, to, body)`.
+  - **What a stub says,** for a member whose `[ContractsFor]` stub names the delegate in `Spec.Pre` or `Spec.Total`: `Spec.Requires(Spec.Pre(valueFactory))` for `new Lazy<T>(valueFactory)`. The stub is trusted, as stubs are.
+  - **Anything,** otherwise (a lazy query such as `Where` or `Select`, `Task.Run`, a lambda that may change the array): it must be total, proved there (CSV1029). A lambda without a precondition is; so is one whose precondition holds for every argument, such as `Task.Run(() => { Spec.Requires(k > 0); ... })` where `k > 0` is known.
+- **Inside a lambda,** what its method requires of parameters it never assigns still holds, as `Spec.Pre` and `Spec.Total` don't change: `Spec.Requires(Spec.Total(work))` lets `Task.Run(() => work())` call it.
+- **What it depends on.** A delegate's `Spec.Pre` and `Spec.Post` are the same in every state unless it says otherwise (steady), as Dafny's `->` and `-->` arrows read nothing. A method whose specifications speak of a parameter's, and not of what it reads, takes it to be steady, and its callers prove that it is. One that may read state says what with `Spec.Requires(Spec.Reads(g, x => ObjSet.Of(c)))`: then they are of the state they are taken in, and stay as they are while the fields and cells of the objects in that frame do (Dafny's `f.reads`, and its frame axiom). A lambda whose precondition reads fields or array cells says so with its own `Spec.Reads(ObjSet.Of(lim))`, and is checked to read nothing else; its precondition is then taken in the state it is made in:
+
+  ```csharp
+  Func<int, int> h = x => { Spec.Reads(ObjSet.Of(lim)); Spec.Requires(x < lim.V); return x; };
+  var a = h(3);   // lim.V is 10
+  other.V = 0;    // not in the frame: h(4) is still allowed
+  lim.V = 2;      // in it: h(5) isn't
+  ```
+
+  What it gives is of state too: its value, where that reads only the frame's objects, and what it ensures, where that does and the lambda changes nothing (`x => x + c.V` gives `h(1) == 8` while `c.V` is 7).
+- **A delegate's own frame,** as Dafny's `f.reads(x)`, is `Spec.ReadsOf(g, x)`, an `ObjSet`. A method that names it takes any delegate, whatever it reads, and says what that mustn't be:
+
+  ```csharp
+  static int M(Func<int, int> g, int[] a)
+  {
+      Spec.Requires(Spec.Pre(g, 0) && Spec.ReadsOf(g, 0).IsDisjointFrom(ObjSet.Of(a)));
+      a[0] = 1;       // not what g reads: Spec.Pre(g, 0) still holds
+      return g(0);
+  }
+  ```
+
+  `Spec.Reads(g, x => S)` is short for `Spec.ReadsOf(g, x)` being within `S`; a steady delegate's frame is empty.
+- **What a delegate changes** is its frame, a function of its arguments, as a method's `Spec.Modifies` is: a call forgets only the objects and arrays in it (and nothing it makes). Nothing is known of it unless a specification says so, so a call may change anything; `Spec.ChangesNothing(g)` says it changes nothing, and `Spec.Changes(g, x => ObjSet.Of(x))` that `g(x)` changes only `x`. A lambda made a delegate has its own `Spec.Modifies` as its frame (checked in it, CSV1017), or none at all if it writes nothing; only a frame that depends on its parameters and on captured variables that never change counts. A library member that only reads (see [Limitations](limitations.md)) handed a delegate that changes nothing keeps everything.
+- **Not modeled:** whether it throws or ends (a call that may throw is handled as any call that may), and permissions: a delegate that needs `Spec.Acc` takes a delegate type with a contract.
 
 ## Enabling `CSVERIFY_SPEC`
 

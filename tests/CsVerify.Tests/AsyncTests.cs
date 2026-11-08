@@ -58,12 +58,15 @@ namespace CsVerify.Tests
             "static async Task Log(int x) { Spec.Requires(x >= 0); await Task.Yield(); } static async Task M() { await Log(1); }"));
 
         [Fact]
-        public void AsyncCall_NotAwaitedAtOnce_IsRejected() => Assert.Equal(new[] { "CSV1901" }, Errors("M", Twice +
-            "static async Task M() { var t = Twice(3); await t; }"));
-
-        [Fact]
         public void LibraryTask_ResultAsDeclared() => Assert.Empty(Errors("M",
             "static async Task<string> M(string path) { var s = await System.IO.File.ReadAllTextAsync(path); return s; }"));
+
+        [Fact]
+        public void DelegateTask_ResultAsItsTypeSays()
+        {
+            Assert.Empty(Errors("M", "static async Task<string> M(System.Func<Task<string>> c) { Spec.Requires(Spec.Pre(c)); return await c(); }"));
+            Assert.Equal(new[] { "CSV1014" }, Errors("M", "static async Task<string> M(System.Func<Task<string?>> c) { Spec.Requires(Spec.Pre(c)); return await c(); }"));
+        }
 
         [Fact]
         public void LibraryTask_ResultUnknown() => Assert.Equal(new[] { "CSV1004" }, Errors("M",

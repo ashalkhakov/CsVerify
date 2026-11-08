@@ -28,6 +28,108 @@ namespace CsVerify
     public sealed class NotOwnedAttribute : Attribute { }
 
     /// <summary>
+    /// What a lock protects. On a field or auto-property: it may be used only while holding the lock, a readonly field of
+    /// this class (CSV1023). On a method: its caller must hold it, and the method may use what it guards. A field written
+    /// under one lock, and no other, is taken to be guarded by it without this.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property | AttributeTargets.Method)]
+    public sealed class GuardedByAttribute : Attribute
+    {
+        public GuardedByAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>
+    /// Where a lock stands in the order locks are taken: a thread may take it only while every lock it holds has a lower
+    /// level, so no cycle of threads can wait on each other (CSV1025). On a lock field: an object for <c>lock</c>, a
+    /// <c>SemaphoreSlim</c> of count 1, a lock class, or an array whose elements are locked. Locks that are never taken
+    /// one inside another need no level. Two locks of the same field on different objects are ordered by
+    /// <see cref="OrderedBy"/>, an int field of their object that never changes (an id), taken in increasing order of it;
+    /// an array's elements, by index.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Class)]
+    public sealed class LockLevelAttribute : Attribute
+    {
+        public LockLevelAttribute(int level) { Level = level; }
+        public int Level { get; }
+        public string OrderedBy { get; set; }
+    }
+
+    /// <summary>
+    /// Code that takes no lock, and waits for nothing that might: on a method (and what overrides or implements it), an
+    /// interface member, or a delegate type, whose lambdas are checked for it. Then it may be called while a lock is held.
+    /// A call of a delegate that doesn't say so, under a lock, could take any lock (CSV1025).
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Property | AttributeTargets.Delegate | AttributeTargets.Interface | AttributeTargets.Class)]
+    public sealed class TakesNoLocksAttribute : Attribute { }
+
+    /// <summary>
+    /// A field shared without a lock: every thread may read and write it at any moment, one atomic step at a time. Each
+    /// read sees a value other threads may have changed since, and each write is checked to be a <see cref="Step"/> from
+    /// whatever value it replaces (CSV1030). It must be <c>volatile</c>, or be used only through <c>Volatile</c> and
+    /// <c>Interlocked</c>, which are what its read-modify-write steps are.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class AtomicAttribute : Attribute
+    {
+        /// <summary>
+        /// A static <c>[Pure]</c> bool method of this class, <c>(T old, T now)</c>, that every change of the field keeps,
+        /// whoever makes it: proved at each write, and known of what any thread does between two reads. It must be
+        /// transitive (proved). Without one, the field may change to anything.
+        /// </summary>
+        public string Step { get; set; }
+    }
+
+    /// <summary>
+    /// A <c>[Pure]</c> or <c>[GhostFunction]</c> bool method that holds while a lock is free: known on entering it, and to be
+    /// restored on leaving it and before a call that may enter it again (CSV1024). It may read what the lock guards.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class LockInvariantAttribute : Attribute
+    {
+        public LockInvariantAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>
+    /// Code that runs at the same time as other code: a method (or property, or every member of a class or struct) that
+    /// is started as a task and not awaited at once, handed to a thread, called by other such code, or run concurrently
+    /// by the program's callers, as a web framework does with its handlers. It must hold a lock or a permission for every
+    /// field and array cell it uses. Where such code starts or calls one of the program's methods, that method must be
+    /// marked too, and so must an override of a marked method. On a delegate type: a call of one of its delegates runs
+    /// concurrently, so every lambda made one is checked as such.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor | AttributeTargets.Property | AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Delegate)]
+    public sealed class RunsConcurrentlyAttribute : Attribute { }
+
+    /// <summary>
+    /// A method that takes a lock for its caller, wrapping a <c>SemaphoreSlim</c> of count 1 (Clang's ACQUIRE, or its scoped
+    /// capability). The lock is the field the call is on (<c>_lock.LockAsync()</c>, an instance method of a lock class or an
+    /// extension of SemaphoreSlim), or the field named here, of the object the method is called on (<c>EnterAsync()</c>).
+    /// If it returns something disposable, disposing that gives the lock back, and it is used in a <c>using</c>:
+    /// <c>using (await _lock.LockAsync()) { ... }</c>. If not, it's as for the semaphore's own Wait:
+    /// <c>await EnterAsync(); try { ... } finally { Exit(); }</c>. That the method does this is taken from its shape, not
+    /// proved: it must call Wait or WaitAsync, and its result's Dispose Release. On a [ContractsFor] stub, it says so of a
+    /// library's lock, which is taken on trust.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class AcquiresAttribute : Attribute
+    {
+        public AcquiresAttribute() { }
+        public AcquiresAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>A method that gives back the lock an <see cref="AcquiresAttribute"/> method took: the field the call is on, or the one named here.</summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class ReleasesAttribute : Attribute
+    {
+        public ReleasesAttribute() { }
+        public ReleasesAttribute(string lockField) { LockField = lockField; }
+        public string LockField { get; }
+    }
+
+    /// <summary>
     /// A proof function (ATS <c>prfun</c>): must be <c>void</c> and <c>[Conditional("CSVERIFY_SPEC")]</c>, so calls are
     /// erased. Its body is the proof; callers gain its postconditions.
     /// </summary>

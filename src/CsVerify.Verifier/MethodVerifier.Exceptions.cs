@@ -87,6 +87,8 @@ namespace CsVerify.Verifier
         {
             for (var r = from; r != null; r = r.EnclosingRegion)
             {
+                // (a lambda's graph has the regions around the lambda above it. It leaves by throwing: what's around it runs when someone calls it.)
+                if (r == _cfg.Root) break;
                 // an exception in a filter does not escape it: the filter is false
                 if (r.Kind == ControlFlowRegionKind.Filter) { Resume(f); return; }
                 var parent = r.EnclosingRegion;
@@ -237,6 +239,12 @@ namespace CsVerify.Verifier
             Term P(Func<Frame, Term> part) => fs.Any(x => part(x) == null) ? null : Pick(fs.Select(part).ToList(), sel);
             var m = fs[0].Clone();
             m.Link = null; // (no earlier state is this one: the frame rule starts afresh)
+            // (a task is awaited if it is on every path, and still running if it may be on one)
+            foreach (var x in fs.Skip(1))
+                foreach (var kv in x.Started)
+                    m.Started[kv.Key] = !m.Started.TryGetValue(kv.Key, out var t) ? kv.Value
+                        : t.Awaited && kv.Value.Awaited ? t
+                        : t.Awaited != kv.Value.Awaited ? (t.Awaited ? kv.Value : t).WithoutFinish() : t;
             foreach (var k in fs[0].Vars.Keys.Where(k => fs.All(x => x.Vars.ContainsKey(k))).ToList()) m.Vars[k] = Pick(fs.Select(x => x.Vars[k]).ToList(), sel);
             foreach (var k in fs[0].Vars.Keys.Where(k => !fs.All(x => x.Vars.ContainsKey(k))).ToList()) m.Vars.Remove(k); // (declared in some only: the try's own)
             // (a field map a state has not made yet is the one it would make: its epoch's)

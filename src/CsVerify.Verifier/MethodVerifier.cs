@@ -191,6 +191,12 @@ namespace CsVerify.Verifier
                 default: return;
             }
             FindContractStatements();
+            CheckLocking();
+            CheckLockLevels();
+            CheckAtomics();
+            CheckFlagUses();
+            CheckConcurrentMarks();
+            CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
@@ -221,10 +227,13 @@ namespace CsVerify.Verifier
                 EnterOwned(f);
                 EnterPredicates(f);
                 EnterCells(f);
+                EnterGate(f);
                 _entry = EntryState(f);
                 var spec = new SpecEnv { Old = _entry };
                 CheckSubtyping(f, spec);
                 // the permissions the preconditions give (then, as conditions, they say they are in hand)
+                SteadyOnEntry(f);
+                EnclosingFacts(f, spec);
                 foreach (var req in _contract.Requires) Inhale(req, f, spec, f);
                 // each precondition must be well-defined given the ones before it
                 foreach (var req in _contract.Requires) _z3.Assume(AsBool(EvalOwnSpec(req, f, spec)));
@@ -454,6 +463,8 @@ namespace CsVerify.Verifier
             foreach (var op in block.Operations)
             {
                 (_block, _current, _onPath) = (block, f, onPath);
+                // (a task this method started may run at any moment: nothing it could write stays known from one statement to the next)
+                if (f.Started.Values.Any(t => !t.Awaited)) Interleave(f);
                 ExecOperation(op, f);
             }
             (_block, _current, _onPath) = (block, f, onPath);
@@ -580,9 +591,19 @@ namespace CsVerify.Verifier
             }
             // (other code at an await cannot reach the objects in confined locals the loop does not reassign)
             var confined = loop.Awaits ? ConfinedValues(f, loop.Havoc) : null;
-            if (loop.HavocAllFields) HavocAllFields(f);
-            else if (loop.Awaits) HavocAllFieldsKeeping(f, confined);
-            foreach (var field in loop.HavocFields) f.Fields[field] = FreshMap(field);
+            _forgottenVars = loop.Havoc; // (what they hold now may be new since: no step of theirs to keep)
+            try
+            {
+                if (loop.HavocAllFields) HavocAllFields(f);
+                else if (loop.Awaits) HavocAllFieldsKeeping(f, confined);
+            }
+            finally { _forgottenVars = null; }
+            foreach (var field in loop.HavocFields)
+            {
+                var was = FieldMap(f, field);
+                f.Fields[field] = FreshMap(field);
+                if (IsAtomic(field)) KeepSteps(field, was, f.Fields[field], f.Alloc, HeldObjects(f, loop.Havoc));
+            }
             if (loop.HavocAllFields || loop.Awaits || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
             if (f.Root != null && (loop.HavocRoot || loop.HavocAllFields || loop.HavocFields.Any(IsOwnedField))) f.Root = _z3.Fresh("root", Sort.Row);
             if (loop.HavocThis && f.This != null) f.This = _z3.Fresh("this", Sort.Int);
@@ -612,6 +633,7 @@ namespace CsVerify.Verifier
 
         private void LoopBackEdge(Loop loop, Frame f)
         {
+            CheckAwaitedInLoop(loop, f);
             LoopFactsBackEdge(loop, f);
             ArrayForEachNext(loop, f);
             var spec = new SpecEnv { Old = _entry };
@@ -629,6 +651,8 @@ namespace CsVerify.Verifier
 
         private void CheckPostconditions(Frame f)
         {
+            ConstructorEstablishesLocks(f);
+            CheckAllAwaited(f);
             var at = f.ReturnSyntax ?? MethodLocationNode();
             ExitOwned(f, at);
             ProveImmutableInvariants(f, at);
@@ -767,7 +791,7 @@ namespace CsVerify.Verifier
             if (SpecSymbols.IsSpecClass(m.ContainingType) || IsCsVerifyNamespace(m.ContainingNamespace)) return null;
             if (m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object) return null; // base()
             if (m.IsImplicitlyDeclared && m.ContainingType.Locations.Any(l => l.IsInSource)) return null; // a class's default constructor
-            if (!callee.HasSource) return "library " + m.OriginalDefinition.ToDisplayString();
+            if (!callee.HasSource && !callee.OfDelegate) return "library " + m.OriginalDefinition.ToDisplayString();
             if (callee.IsStub || callee.IsPure || callee.IsLemma || callee.Ensures.Count > 0 || callee.ThrowEnsures.Count > 0) return null;
             return "source " + m.OriginalDefinition.ToDisplayString();
         }
@@ -937,6 +961,14 @@ namespace CsVerify.Verifier
 
         private Term Eval(IOperation op, Frame f, SpecEnv spec = null)
         {
+            if (op != null && _codeMode) ProveOrderAtCall(op, f, spec);
+            var t = EvalCore(op, f, spec);
+            if (op != null && t != null && op.Type?.TypeKind == TypeKind.Delegate) DelegateValue(op, t, f);
+            return t;
+        }
+
+        private Term EvalCore(IOperation op, Frame f, SpecEnv spec)
+        {
             if (op == null) return _z3.Fresh("missing", Sort.Int);
             if (op.Syntax is StackAllocArrayCreationExpressionSyntax && !(op is IConversionOperation)) return StackAlloc(op, f, spec);
             // null as an int? (a literal typed so, or a conversion of one): no value, not the null reference
@@ -1031,6 +1063,7 @@ namespace CsVerify.Verifier
                     var arr = Eval(ae.ArrayReference, f, spec);
                     var idx = CellOf(ae, arr, f, spec);
                     CheckCellFraming(arr, idx, f, ae.Syntax);
+                    CheckCellRead(arr, idx, f, ae.Syntax);
                     return InRangeOf(T.Coerce(T.Select(T.Select(f.Heap, arr, Sort.Row), idx, Sort.Int), SortOf(op.Type)), op.Type);
                 }
                 case IPropertyReferenceOperation pr: return EvalProperty(pr, f, spec);
@@ -1122,6 +1155,7 @@ namespace CsVerify.Verifier
                 case IDelegateCreationOperation _:
                 case IAnonymousFunctionOperation _:
                 {
+                    if (op is IDelegateCreationOperation made) CheckMethodGroup(made);
                     var d = _z3.Fresh("delegate", Sort.Int);
                     AssumeSide(NotNull(d)); // a lambda, or a method group made a delegate, is never null
                     return d;
@@ -1189,11 +1223,23 @@ namespace CsVerify.Verifier
             return T.Coerce(v, SortOf(c.Type));
         }
 
+        /// <summary>x == null of a record: its == calls no Equals when either side is null, whatever its fields are.</summary>
+        private Term RecordAgainstNull(IBinaryOperation b, Frame f, SpecEnv spec)
+        {
+            if (b.OperatorMethod == null || !b.OperatorMethod.IsImplicitlyDeclared || !Data.IsData(b.OperatorMethod.ContainingType) ||
+                !(b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals)) return null;
+            bool right = IsNullConstant(Unconverted(b.RightOperand)), left = IsNullConstant(Unconverted(b.LeftOperand));
+            if (right == left) return null;
+            var notNull = NotNull(T.Coerce(Eval(right ? b.LeftOperand : b.RightOperand, f, spec), Sort.Int));
+            return b.OperatorKind == BinaryOperatorKind.Equals ? T.Not(notNull) : notNull;
+        }
+
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
             // (x == null on an int? is not marked lifted, but compares the same way)
             if (b.IsLifted || b.OperatorMethod == null && (IsNullableValue(b.LeftOperand.Type) || IsNullableValue(b.RightOperand.Type)))
                 return LiftedBinary(b, f, spec);
+            if (RecordAgainstNull(b, f, spec) is Term againstNull) return againstNull;
             if (IsRecordEquality(b)) return RecordEquality(b, f, spec);
             if (b.OperatorMethod != null && b.OperatorMethod.IsImplicitlyDeclared && Data.IsData(b.OperatorMethod.ContainingType))
             {
@@ -1529,6 +1575,7 @@ namespace CsVerify.Verifier
 
         private Term EvalProperty(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
         {
+            if (TaskResult(pr, f, spec) is Term given) return given;
             var prop = pr.Property;
             if (pr.Instance != null && IsNullableValue(prop.ContainingType) && NullableProperty(pr, f, spec) is Term nullableMember) return nullableMember;
             if (InterfaceListRead(pr, f, spec) is Term listRead) return listRead;
@@ -1576,14 +1623,17 @@ namespace CsVerify.Verifier
                 Deref(pr.Instance, o, pr.Syntax);
                 return T.Coerce(Field(prop, o, pr.Instance.Type), SortOf(pr.Type));
             }
-            if (pr.Instance != null && IsStructMember(prop)) return T.Coerce(StructMember(prop, Eval(pr.Instance, f, spec)), SortOf(pr.Type));
+            if (pr.Instance != null && IsStructMember(prop) && !LooksAtSharedState(prop)) return T.Coerce(StructMember(prop, Eval(pr.Instance, f, spec)), SortOf(pr.Type));
             if (IsComputed(prop.GetMethod) || _engine.HasStub(prop.GetMethod)) return CallAccessor(prop.GetMethod, pr.Instance, pr.Arguments.Select(a => a.Value), null, pr.Type, pr.Syntax, f, spec);
             if (!IsStableProperty(prop) && _codeMode && prop.DeclaringSyntaxReferences.Length == 0)
             {
                 // a library property that may change (Console.Out, a list's Count): each read in code is a value of its own
                 if (pr.Instance != null) Deref(pr.Instance, Eval(pr.Instance, f, spec), pr.Syntax);
                 foreach (var a in pr.Arguments) Eval(a.Value, f, spec);
-                Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
+                // (a token's state is just that: it could have been cancelled by now, or not)
+                // (nor what an async enumerator has just given: that is all it could be)
+                if (!LooksAtSharedState(prop) && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator"))
+                    Warn(pr.Syntax, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown");
                 var member = prop.OriginalDefinition.ToDisplayString();
                 _result.LibraryCalls.Add((member, Where(pr.Syntax)));
                 var wasCause = _z3.Cause;
@@ -1592,7 +1642,7 @@ namespace CsVerify.Verifier
                 _z3.Cause = wasCause;
                 // as the library declares it, a type parameter as instantiated (a List<string>'s items are strings)
                 if (IsNonNullableType(prop.OriginalDefinition.Type) ||
-                    prop.OriginalDefinition.Type is ITypeParameterSymbol && IsNonNullableType(prop.Type)) AssumeSide(NotNull(lv));
+                    prop.OriginalDefinition.Type is ITypeParameterSymbol && (IsNonNullableType(prop.Type) || ConfiguredElementIsNotNull(pr))) AssumeSide(NotNull(lv));
                 return lv;
             }
             if (!IsStableProperty(prop))
@@ -1613,12 +1663,36 @@ namespace CsVerify.Verifier
         /// ghost members, members of strings and readonly structs, and get-only (or init-only) auto-properties.
         /// A computed getter (List.Count) or a settable property is not.
         /// </summary>
+        /// <summary>A readonly struct that is a handle on something others change: a token, a ValueTask, an awaiter. Only whether a token can be cancelled at all stays.</summary>
+        private static bool LooksAtSharedState(IPropertySymbol prop)
+        {
+            var ns = prop.ContainingType.ContainingNamespace?.ToDisplayString();
+            return prop.ContainingType.IsValueType && (ns == "System.Threading" || ns == "System.Threading.Tasks" || ns == "System.Runtime.CompilerServices") && prop.Name != "CanBeCanceled";
+        }
+
+        /// <summary>
+        /// await foreach (var v in xs.ConfigureAwait(false)): the type that call infers for its enumerator's Current has no
+        /// nullability, so it is read from what the loop's expression is called on.
+        /// </summary>
+        private bool ConfiguredElementIsNotNull(IPropertyReferenceOperation pr)
+        {
+            if (pr.Property.Name != "Current" || !(pr.Syntax.FirstAncestorOrSelf<CommonForEachStatementSyntax>() is CommonForEachStatementSyntax fe)) return false;
+            var e = fe.Expression;
+            while (e is InvocationExpressionSyntax i && i.Expression is MemberAccessExpressionSyntax ma && (ma.Name.Identifier.Text == "ConfigureAwait" || ma.Name.Identifier.Text == "WithCancellation"))
+                e = ma.Expression;
+            return e != fe.Expression && _model.GetTypeInfo(e).Type is INamedTypeSymbol { TypeArguments: { Length: 1 } } n && IsNonNullableType(n.TypeArguments[0]);
+        }
+
+        /// <summary>A readonly struct can be a view of an array that others write: an ArraySegment's items are not its own.</summary>
+        private static bool LooksAtAnArray(IPropertySymbol prop) =>
+            prop.IsIndexer && prop.ContainingType.Name == "ArraySegment" && prop.ContainingType.ContainingNamespace?.ToDisplayString() == "System";
+
         private static bool IsStableProperty(IPropertySymbol prop)
         {
             var type = prop.ContainingType;
             if (type == null) return false;
             if (type.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) return true;
-            if (type.SpecialType == SpecialType.System_String || (type.IsValueType && type.IsReadOnly)) return true;
+            if (type.SpecialType == SpecialType.System_String || (type.IsValueType && type.IsReadOnly && !LooksAtSharedState(prop) && !LooksAtAnArray(prop))) return true;
             if (prop.SetMethod != null && !prop.SetMethod.IsInitOnly) return false;
             foreach (var syntax in prop.DeclaringSyntaxReferences.Select(r => r.GetSyntax()))
             {
@@ -1638,7 +1712,7 @@ namespace CsVerify.Verifier
             // (no field can hold it yet)
             foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
             {
-                var map = FieldMap(f, field);
+                var map = Named(FieldMap(f, field), field.Name + "$map");
                 _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
             }
         }
@@ -1682,11 +1756,27 @@ namespace CsVerify.Verifier
             finally { _instantiations.Pop(); _equalityEpochs.Pop(); }
         }
 
+        private IInvocationOperation _waitingCall;
+
         private Term EvalInvocationCore(IInvocationOperation inv, Frame f, SpecEnv spec, bool enumerators = true)
         {
             if (_codeMode && !ProofCode) CheckFormatArguments(inv);
             if (enumerators && EnumeratorCall(inv, f, spec) is Term enumerator) return enumerator;
             var m = inv.TargetMethod;
+            if (LockEvent(inv, f, spec) is Term locked) return locked;
+            if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
+            if (AtomicCall(inv, f, spec) is Term atomic) return atomic;
+            if (FlagCall(inv, f, spec) is Term flagged) return flagged;
+            if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);
+            if (inv != _waitingCall && inv != _awaitedCall && !IsAwaitedHere(inv.Syntax) && (GateOf(inv, "Wait", f) ?? GateOfWrapperCall(inv, true, f)) is { } wanted)
+            {
+                ProveOrderAt(inv.Syntax, f, spec);
+                _waitingCall = inv;
+                var waited = EvalInvocationCore(inv, f, spec, enumerators);
+                _waitingCall = null;
+                GateTaken(wanted, f);
+                return waited;
+            }
             if (IsGetLength(inv)) return GetLength(inv, f, spec);
             if (SpecSymbols.IsSpecClass(m.ContainingType))
             {
@@ -1695,18 +1785,41 @@ namespace CsVerify.Verifier
                     case "Result":
                         return spec?.Result != null ? T.Coerce(spec.Result, SortOf(inv.Type)) : Unknown(inv.Type, "result");
                     case "Old":
-                        return spec?.Old != null ? Eval(inv.Arguments[0].Value, OldFrame(spec.Old, f), spec) : Eval(inv.Arguments[0].Value, f, spec);
+                        _inOld++;
+                        try { return spec?.Old != null ? Eval(inv.Arguments[0].Value, OldFrame(spec.Old, f), spec) : Eval(inv.Arguments[0].Value, f, spec); }
+                        finally { _inOld--; }
                     case "Forall":
                     case "Exists":
                         return Quantifier(inv, f, spec, m.Name == "Forall");
                     case "Fresh":
                         return Fresh(Eval(inv.Arguments[0].Value, f, spec), f, spec);
+                    case "Changes":
+                    case "ChangesNothing":
+                        return FrameSpec(inv, f, spec);
+                    case "Reads" when inv.Arguments.Length == 2:
+                        return FrameSpec(inv, f, spec);
+                    case "ReadsOf":
+                        return ReadsOfSpec(inv, f, spec);
+                    case "Total":
+                        return TotalOf((INamedTypeSymbol)m.Parameters[0].Type, Eval(inv.Arguments[0].Value, f, spec), f);
+                    case "Pre":
+                    case "Post":
+                    {
+                        // Spec.Pre(f, args...), Spec.Post(f, args..., r)
+                        var type = (INamedTypeSymbol)m.Parameters[0].Type;
+                        var d = Eval(inv.Arguments[0].Value, f, spec);
+                        var rest = inv.Arguments.Skip(1).Select(a => Eval(a.Value, f, spec)).ToList();
+                        int n = type.DelegateInvokeMethod.Parameters.Length;
+                        return m.Name == "Pre" ? PreOf(type, d, rest.Take(n).ToList(), f)
+                                               : PostOf(type, d, rest.Take(n).ToList(), rest.Count > n ? rest[n] : null, f);
+                    }
                     case "Multiset":
                         return MultisetOf(inv, f, spec);
                     case "Index":
                         return ForEachIndex(inv, f);
                     case "Equal":
                         return SpecEqual(inv, f, spec);
+                    case "AccRead":
                     case "Acc":
                     {
                         var o = Eval(inv.Arguments[0].Value, f, spec);
@@ -1716,7 +1829,7 @@ namespace CsVerify.Verifier
                             var lo = inv.Arguments.Length == 3 ? Eval(inv.Arguments[1].Value, f, spec) : T.Int(0);
                             var hi = inv.Arguments.Length == 3 ? Eval(inv.Arguments[2].Value, f, spec) : Len(o);
                             return _atomsTrue > 0 || f.ArrPerm == null ? T.True
-                                : new Term($"(forall ((i Int)) (=> (and (<= {lo} i) (< i {hi})) (>= (select (select {f.ArrPerm} {o}) i) 1.0)))", Sort.Bool);
+                                : new Term($"(forall ((i Int)) (=> (and (<= {lo} i) (< i {hi})) (>= (select (select {f.ArrPerm} {o}) i) {(m.Name == "AccRead" ? ShareAmount : FullAmount)})))", Sort.Bool);
                         }
                         if (inv.Arguments.Length == 2 && inv.Arguments[1].Value.ConstantValue is { HasValue: true, Value: string fieldName } &&
                             WholeFields(Unconverted(inv.Arguments[0].Value).Type).FirstOrDefault(x => x.Name == fieldName) is ISymbol accField)
@@ -1748,15 +1861,21 @@ namespace CsVerify.Verifier
             if (IsDebugAssert(m) && _codeMode) return DebugAssert(inv, f, spec);
             if (SpanInvocation(inv, f, spec) is Term spanResult) return spanResult;
             if (StringEquals(inv, f, spec) is Term stringsEqual) return stringsEqual;
+            HandedToLibrary(m, inv.Arguments, f, spec, inv.Instance);
             if (InterfaceListCall(inv, f, spec) is Term listCall) return listCall;
             if (LinqCall(inv, f, spec) is Term linqResult) return linqResult;
             var builtin = Builtin(inv, f, spec);
             if (builtin != null) return builtin;
 
             var callee = _engine.ContractOf(m);
+            CallUnderLock(inv, callee, f);
             // an async stub's contract is of what the task gives when awaited: a task not awaited at once is the library's
             if (callee.IsStub && callee.Stub.IsAsync && inv != _awaitedCall) callee = _engine.LibraryContractOf(m);
             if (callee.IsStub && _codeMode) Assumed(callee);
+            if (StartTask(inv, callee, f, spec) is Term startedTask) return startedTask;
+            if (StartRun(inv, f, spec) is Term runningTask) return runningTask;
+            LambdaGivesTasks(inv, f);
+            ThreadEvent(inv, f, spec);
             CheckNotAwaited(inv, callee);
             Term receiver = inv.Instance != null ? Eval(inv.Instance, f, spec) : null;
             if (receiver != null) Deref(inv.Instance, receiver, inv.Syntax);
@@ -1830,8 +1949,10 @@ namespace CsVerify.Verifier
                 bool chained = m.MethodKind == MethodKind.Constructor; // base(...) or this(...): the object is not built yet
                 var touched = chained ? new List<Term>() : HandOver(inv, receiver, argTerms, f, callee);
                 var pre = CalleeFrame(callee, receiver, argTerms, f.Heap, f);
-                if (!callee.HasSource)
+                if (!callee.HasSource && !callee.OfDelegate)
                 {
+                    var delegateState = m.MethodKind == MethodKind.DelegateInvoke ? f.Clone() : null;
+                    if (_codeMode) DelegateCalled(inv, receiver, argTerms, f);
                     var libraryMemory = f.Heap;
                     var libraryHeld = f.ArrPerm;
                     DeferTies();
@@ -1844,26 +1965,37 @@ namespace CsVerify.Verifier
                         else if (NotNullWhen(a.Parameter) is bool when) whenNotNull.Add((nv, when));
                         if (cells.ContainsKey(a)) cellsOut.Add((a, nv)); else Write(a.Value, nv, f, spec);
                     }
-                    if (HavocsHeap(m)) f.Heap = _z3.Fresh("heap", Sort.Heap);
+                    // a delegate changes only its frame; a library member that only reads, only what what it runs changes
+                    var (ofDelegate, delegateFrame) = DelegateFrameAt(inv, receiver, argTerms, f);
+                    if (ofDelegate)
+                    {
+                        if (delegateFrame != null && HavocsHeap(m))
+                            f.Heap = _z3.Define("heap", new Term($"(cv_frameh {delegateFrame.S} {libraryMemory.S} {_z3.Fresh("heap", Sort.Heap).S})", Sort.Heap));
+                    }
+                    else if (HavocsHeap(m) && !KeepsArrays(inv, f)) f.Heap = _z3.Fresh("heap", Sort.Heap);
                     f.Heap = KeepHeldMemory(f.Heap, libraryMemory, libraryHeld);
                     foreach (var (a, nv) in cellsOut) WriteCell(cells[a], nv, f, a.Syntax);
                     FlushTies(f);
                     CalleeModifies(callee, pre, f, inv.Syntax);
                     // (a library can run the program's code only through overrides and interfaces: none, none written)
-                    if (_engine.Fields.WritesFieldsAt(inv)) HavocFields(f, m, touched);
+                    if (ofDelegate) { if (delegateFrame != null && _engine.Fields.WritesFieldsAt(inv)) HavocFields(f, m, touched, delegateFrame); }
+                    else if (_engine.Fields.WritesFieldsAt(inv) && !KeepsFields(inv, f)) HavocFields(f, m, touched);
                     CallMayThrow(callee, receiver, argTerms, inv.Arguments, f, pre);
                     var libResult = m.ReturnsVoid ? T.True : Unknown(inv.Type, m.Name);
-                    if (!m.ReturnsVoid && MayBeNullType(inv.Type)) _z3.Origins[libResult.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
+                    if (!m.ReturnsVoid && LibraryGivesAsInstantiated(m)) _z3.Assume(NotNull(libResult));
+                    else if (!m.ReturnsVoid && MayBeNullType(inv.Type)) _z3.Origins[libResult.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
                     foreach (var (value, when) in whenNotNull)
                         if (libResult.Sort == Sort.Bool) _z3.Assume(T.Implies(when ? libResult : T.Not(libResult), NotNull(value)));
                     AllocAfterCall(f, libResult);
                     LibraryNullFacts(inv, argTerms, libResult);
                     GuardFacts(inv, argTerms);
                     if (RunsCode(m)) HavocClosureLocals(f); // (a delegate it was handed may write them)
+                    DelegateGave(inv, receiver, argTerms, libResult, delegateState);
                     return libResult;
                 }
 
                 var preEnv = new SpecEnv { Old = pre };
+                SteadyArguments(inv, callee, argTerms);
                 // (the call happens only where the guards around it hold: `n <= a.Length && IsHeap(a, n)`; inside a
                 // quantifier, the obligation is closed over its variable with the others made there)
                 foreach (var req in callee.Requires)
@@ -1963,7 +2095,7 @@ namespace CsVerify.Verifier
                 var result = packageResult ?? (m.ReturnsVoid || _awaitedCall == inv && AwaitedType(m) == null && (m.IsAsync || IsAsyncStubbed(m)) ? null : FreshOf(ResultTypeOf(inv), m.Name));
                 if (packageResult != null) ViewsArrive(packageResult, m.ReturnType, f);
                 bool awaitedStub = callee.IsStub && callee.Stub.IsAsync && _awaitedCall == inv;
-                if (result != null && (awaitedStub ? IsNonNullableType(AwaitedType(m)) : IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m)))
+                if (result != null && (awaitedStub ? IsNonNullableType(AwaitedType(m)) : IsNonNullableReturn(callee.Method) || callee.IsStub && NonNullAsInstantiated(m) || m.IsAsync && callee.HasSource && inv != _awaitedCall /* (the task, not what it gives) */))
                     _z3.Assume(NotNull(result));
                 else if (result != null && MayBeNullType(result.Sort == Sort.Int ? ResultTypeOf(inv) : null))
                     _z3.Origins[result.S] = $"'{m.Name}' may return null (line {LineOf(inv.Syntax)})";
@@ -1977,6 +2109,14 @@ namespace CsVerify.Verifier
                 }
                 if (result != null && callee.IsPure)
                     _z3.Assume(T.Eq(result, PureApply(callee, receiver, argTerms, pre.Heap, result.Sort, null, pre)));
+                // (a task's postcondition is of the state when it ends, which could be any later one: not of this)
+                if (inv == _startedCall && (callee.Requires.Any(HasPermissions) || callee.Ensures.Any(e => HasPermissions(e.Expr))))
+                {
+                    _finishStarted = FinishLater(callee, pre, result);
+                    if (RunsCode(m)) HavocClosureLocals(f);
+                    return result ?? T.True;
+                }
+                if (inv == _startedCall) Interleave(post);
                 if (!callee.IsPure && (f.Inst != null || f.ArrPerm != null))
                     foreach (var ens in callee.Ensures) Inhale(ens.Expr, post, new SpecEnv { Old = pre, Result = result, ResultParameter = ens.ResultParameter }, f);
                 foreach (var ens in callee.Ensures)
@@ -2113,7 +2253,9 @@ namespace CsVerify.Verifier
                 _z3.Push();
                 foreach (var req in b.Requires) _z3.Assume(AsBool(EvalForeignSpec(req, f, spec)));
                 Prove(T.And(_contract.OwnRequires.Select(r => AsBool(EvalForeignSpec(r, f, spec))).ToArray()), "CSV1018", MethodLocationNode(),
-                    $"'{_method.Name}' requires more than {b.Method.ContainingType.Name}.{b.Method.Name}, which it overrides, promises its callers", assume: false);
+                    _method.MethodKind == MethodKind.AnonymousFunction
+                    ? $"this lambda requires more than its type {b.Method.ContainingType.Name} promises its callers"
+                    : $"'{_method.Name}' requires more than {b.Method.ContainingType.Name}.{b.Method.Name}, which it overrides, promises its callers", assume: false);
                 _z3.Pop();
             }
             foreach (var (b, frame) in _contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, _contract.Modifies)))
@@ -2355,7 +2497,7 @@ namespace CsVerify.Verifier
             : MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
         private static bool IsNonNullable(IParameterSymbol p) =>
-            IsNonNullableType(p.OriginalDefinition.Type) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
+            (IsNonNullableType(p.OriginalDefinition.Type) || p.OriginalDefinition.Type is ITypeParameterSymbol { HasNotNullConstraint: true } && p.OriginalDefinition.NullableAnnotation != NullableAnnotation.Annotated && MayBeNullType(p.Type)) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
             // (query syntax's own: the object its previous clause made, or the group of group ... into g)
             p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn &&
             !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax) &&
@@ -2372,9 +2514,23 @@ namespace CsVerify.Verifier
         private static bool IsNullConstant(IOperation op) => op.ConstantValue.HasValue && op.ConstantValue.Value == null;
 
         /// <summary>Member access, indexing or a call on <paramref name="receiver"/>: defined only if it is not null.</summary>
+        /// <summary>
+        /// In a lambda, a local from around it with one value all along (a foreach's, or one assigned only where it is
+        /// declared) that the compiler's flow analysis has as not null. What the lambda knows of it is nothing, otherwise.
+        /// </summary>
+        private bool IsCapturedNotNull(IOperation receiver)
+        {
+            if (!(Unconverted(receiver) is ILocalReferenceOperation l) || !(l.Syntax.FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is AnonymousFunctionExpressionSyntax lambda)) return false;
+            var declared = l.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+            if (declared == null || lambda.Span.Contains(declared.Span) || _model.GetTypeInfo(l.Syntax).Nullability.FlowState != NullableFlowState.NotNull) return false;
+            var scope = declared.FirstAncestorOrSelf<MemberDeclarationSyntax>();
+            return !scope.DescendantNodes().OfType<IdentifierNameSyntax>().Any(id => LockGuards.IsWriteTarget(id) && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(id).Symbol, l.Local));
+        }
+
         private void Deref(IOperation receiver, Term r, SyntaxNode at)
         {
             if (receiver is IInstanceReferenceOperation || !MayBeNullType(receiver.Type)) return;
+            if (IsCapturedNotNull(receiver)) return;
             Require(NotNull(r), "CSV1013", at, $"'{receiver.Syntax}' might be null in '{at}'");
         }
 

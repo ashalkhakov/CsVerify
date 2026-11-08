@@ -36,6 +36,13 @@ namespace CsVerify.Verifier
             return value;
         }
 
+        /// <summary>Side facts that hold only where the guards of what is being evaluated do.</summary>
+        private void UnderGuards(System.Action facts)
+        {
+            if (_guards.Count == 0) { facts(); return; }
+            Under(T.And(_guards.ToArray()), () => { facts(); return T.True; });
+        }
+
         private void AssumeOnce(string key, System.Func<Term> fact)
         {
             if (_quantFacts.Count == 0 && !_sideFactsDone.Add(_z3.Scope + ":" + key)) return;
@@ -64,10 +71,13 @@ namespace CsVerify.Verifier
             // from inside another case's facts, which would not end)
             if (_unfoldDepth == 0)
             {
-                AssumeInvariants(staticType, o);
+                // (of o as its static type, which a cast or a pattern may only say under its guard: `s is Seg q && q.Lo == 1`
+                // of a Dot must not say that it is a Seg)
+                UnderGuards(() => AssumeInvariants(staticType, o));
                 if (_etaDepth == 0) Closed(o, staticType);
             }
-            // the constructor's non-nullable parameter was proved non-null where the value was built
+            // (of any o the field is read of: if it is not of the case, the selector's value is arbitrary, but nothing else
+            // follows from that value being non-null)
             if (IsNonNullableType(def.Type)) AssumeSide(T.Implies(NotNull(o), NotNull(v)));
             return v;
         }
@@ -123,8 +133,11 @@ namespace CsVerify.Verifier
         private void Closed(Term v, ITypeSymbol type)
         {
             if (!(type is INamedTypeSymbol t) || !(Data.Cases(t) is IReadOnlyList<INamedTypeSymbol> cases)) return;
-            AssumeOnce("closed:" + t.ToDisplayString() + ":" + v.S, () =>
+            void OneOfThem() => AssumeOnce("closed:" + t.ToDisplayString() + ":" + v.S, () =>
                 T.Implies(NotNull(v), T.Or(cases.Select(c => T.Eq(Tag(v), T.Int(Data.TagOf(c)))).ToArray())));
+            // (of the root of a hierarchy, that holds of any value of it. Of a case, it holds only under the guards that
+            // narrowed the value to it. What each case is made of already says which case it is about, so it holds of anything)
+            if (t.BaseType != null && Data.IsData(t.BaseType)) UnderGuards(OneOfThem); else OneOfThem();
             foreach (var c in cases) Eta(c, v);
         }
 
@@ -324,6 +337,7 @@ namespace CsVerify.Verifier
             }
 
             var callee = ctor != null ? _engine.ContractOf(ctor) : null;
+            if (ctor != null) HandedToLibrary(ctor, oc.Arguments, f, spec);
             if (callee?.IsStub == true && _codeMode) Assumed(callee);
             Frame pre = null;
             if (callee?.HasSource == true && _codeMode)

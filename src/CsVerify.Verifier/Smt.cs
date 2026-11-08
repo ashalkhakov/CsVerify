@@ -157,6 +157,8 @@ namespace CsVerify.Verifier
         private int _defined;
         public int Depth { get; private set; }
         public readonly List<string> Errors = new List<string>();
+        /// <summary>What Z3 wrote to stderr, not yet moved to <see cref="Errors"/> (it is read on another thread).</summary>
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _stderr = new System.Collections.Concurrent.ConcurrentQueue<string>();
         /// <summary>Queries Z3 never answered: not a fault of the verifier's, and what they asked is simply not proved.</summary>
         public readonly List<string> Hangs = new List<string>();
         public StringBuilder Log; // set to capture the whole SMT-LIB2 conversation
@@ -182,6 +184,11 @@ namespace CsVerify.Verifier
             _z3 = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + _z3Path);
             _in = _z3.StandardInput;
             _out = _z3.StandardOutput;
+            // Z3 writes warnings to stderr (a trigger it can't use, say). Unread, they fill the pipe (on Windows after a few
+            // kilobytes), Z3 stops reading its input, and the next write here waits forever; so stderr is always drained.
+            var stderr = _stderr;
+            _z3.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) stderr.Enqueue(e.Data.Trim()); };
+            _z3.BeginErrorReadLine();
         }
 
         private readonly string _z3Path;
@@ -418,6 +425,11 @@ namespace CsVerify.Verifier
         }
         public void Pop() { Depth--; Scope = ++_scopes; Send("(pop 1)"); }
 
+        /// <summary>Where we are: a scope that, while <see cref="Alive"/> says so, still has what was declared and assumed in it.</summary>
+        public (int depth, long frame) Mark => (Depth, _frames[Depth]);
+
+        public bool Alive((int depth, long frame) mark) => mark.depth <= Depth && _frames[mark.depth] == mark.frame;
+
         /// <summary>Changes whenever an assertion scope is entered or left: a fact asserted under one Scope value is still there.</summary>
         public long Scope { get; private set; }
         private long _scopes;
@@ -453,6 +465,7 @@ namespace CsVerify.Verifier
                 if (line.Length > 0) Errors.Add(line);
             }
             Pop();
+            while (_stderr.TryDequeue(out var warning)) Errors.Add(warning);
             return result;
         }
 

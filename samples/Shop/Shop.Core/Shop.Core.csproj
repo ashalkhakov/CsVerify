@@ -4,7 +4,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
-    <CsVerifyVersion Condition="'$(CsVerifyVersion)' == ''">0.1.0</CsVerifyVersion>
+    <CsVerifyVersion Condition="'$(CsVerifyVersion)' == ''">0.2.0</CsVerifyVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" />

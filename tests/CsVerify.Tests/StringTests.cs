@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using CsVerify.Verifier;
 using Xunit;
 
@@ -151,6 +152,26 @@ namespace CsVerify.Tests
                 Assert.Contains("did not answer", Assert.Single(solver.Hangs));
             }
             finally { File.Delete(script); }
+        }
+
+        [Fact]
+        public void SolverWarnings_AreRead_AndReported()
+        {
+            // Far more warnings than a pipe holds (about 130 KB of them): unread, they would stop Z3, and this solver with it.
+            var lines = new System.Text.StringBuilder("(declare-fun cv_w (Int) Int)\n(declare-const cv_wb Bool)\n");
+            for (int i = 0; i < 2000; i++)
+                lines.Append($"(assert (forall ((x Int)) (! (> (cv_w x) {-i}) :pattern ((cv_w (ite cv_wb x {i}))))))\n");
+            var run = System.Threading.Tasks.Task.Run(() =>
+            {
+                using var solver = new SmtSolver(SmtSolver.FindZ3(null), 10000);
+                solver.Preamble(lines.ToString().TrimEnd('\n'));
+                return (solver.Check(T.True), solver.Hangs.Count, solver.Errors.ToList());
+            });
+            Assert.True(run.Wait(TimeSpan.FromSeconds(60)), "the solver stopped answering");
+            var (result, hangs, errors) = run.Result;
+            Assert.Contains(result, new[] { "sat", "unknown" }); // (unknown: quantifiers, and no model-based instantiation)
+            Assert.Equal(0, hangs);
+            Assert.Contains(errors, e => e.Contains("cannot be used in patterns"));
         }
     }
 }

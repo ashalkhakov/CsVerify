@@ -111,6 +111,7 @@ public static bool Seg(SNode? from, SNode? to, int n) =>
 - **Methods without array permissions** hold every cell and hand cells out at calls. Their writes are checked too, but only cells they gave away (to a callee, or folded into a predicate) are missing.
 - **In predicates.** A predicate's body may hold cells: ATS's viewtypes whose view includes an `array_v`. `CellStacks.Stack(s, n)` in samples/Good/CellStacks.cs holds the stack object and its array's cells. Folding gives the cells up into the instance, so nobody writes them while folded. A body may read only cells it has permission to. A call that gets the instance changes only its cells. A method that folds, unfolds or receives such a predicate starts with no cells but those it is given.
 - **Constructors** exchange permissions like any call, so `new` can hand back the cells of an array it creates.
+- **Read shares.** `Spec.AccRead(a, from, to)` is a share of permission to read those cells. A method holding one can't write them, and a call that takes one changes none of them, so tasks can share them ([Async and concurrency](semantics.md#async-and-concurrency)). Not in predicates.
 - **Limits.** Only C# arrays and `Mem` memory: a method with array permissions cannot write through a `Span` (whose base may be any array's cells), and reads through one are unknown values.
 
 **Mem memory, on the same model.** ATS's manual memory (`Mem`, `Ptr<T>`) and its views (`PointsTo<T>` is `T @ l`, `ArrayView<T>` is `array_v`, `ArrayHole<T>`) are cells of the same heap as C# arrays, a row of its own, under the same cell permissions.
@@ -134,6 +135,23 @@ Verification is modular, with behavioural subtyping (Liskov), as in Dafny, Spec#
   - **Preconditions:** it may require less, not more (CSV1018). If it weakens the precondition, the inherited postconditions are promised only where the base's precondition held.
   - **Postconditions:** it may promise more.
   - **Frames:** its `Spec.Modifies` must lie within the base's (CSV1018).
+- **Contracts of delegates.** A delegate type of the program gets one the same way, from a contract class whose `Invoke` has the delegate's parameters:
+
+  ```csharp
+  public delegate int Step(int x);
+
+  [ContractClassFor(typeof(Step))]
+  internal abstract class StepContract
+  {
+      public int Invoke(int x) { Spec.Requires(0 < x && x < 1000); Spec.Ensures<int>(r => r > x); return default; }
+  }
+  ```
+
+  - **Calls.** `g(1)` proves the precondition and assumes the postcondition, permissions included. Which code runs isn't known, so the call may change any field, and any array cell it isn't held off by a permission.
+  - **Lambdas.** `Step s = x => x + 1` is proved against the contract, as an override is: it assumes the precondition, or its own if it requires no more (CSV1018), and must ensure the postcondition.
+  - **Method groups (CSV1029).** A method group made a contracted delegate (`Step s = F`) is reported, as its contract isn't compared with the type's; `x => F(x)` says the same thing, checked.
+  - **Without a contract.** A `Func`, an `Action`, or a delegate type with no contract class is spoken of with `Spec.Pre` and `Spec.Post` (see [Delegates](specifications.md#delegates)).
+  - **Concurrency.** `[RunsConcurrently]` on a delegate type makes every lambda made one concurrent code, and a call of one from concurrent code needs that mark (CSV1028).
 - **Virtual `[Pure]` queries** (`Area()`, an abstract `[Pure]` property `Balance`):
   - **One function.** A query and all its overrides are one function, named after the root declaration, so `s.Area()` means the same whatever the static type of `s`.
   - **Overrides are queries too.** An override of a `[Pure]` member is `[Pure]` itself, and the analyzer checks its body.

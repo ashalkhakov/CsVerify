@@ -135,6 +135,7 @@ namespace CsVerify.Verifier
         public readonly VerifierOptions Options;
         public readonly SmtSolver Solver;
         private readonly Compilation _compilation;
+        internal Compilation Compilation => _compilation;
         private readonly Dictionary<IMethodSymbol, Contract> _contracts = new Dictionary<IMethodSymbol, Contract>(SymbolEqualityComparer.Default);
 
         internal readonly DataTypes Data;
@@ -142,6 +143,9 @@ namespace CsVerify.Verifier
         internal readonly IReadOnlyList<INamedTypeSymbol> SourceTypes;
         /// <summary>Does the program use dynamic frames (Spec.Modifies/Reads/Fresh, ObjSet)? Allocation is tracked only then.</summary>
         internal readonly bool UsesDynamicFrames;
+        internal readonly LockGuards Locks;
+        internal readonly LockLevels Levels;
+        internal readonly Atomics Atomics;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
         /// <summary>The program uses ATS's manual memory (Mem, Ptr and the views of its cells).</summary>
@@ -169,8 +173,11 @@ namespace CsVerify.Verifier
         /// </summary>
         internal readonly IReadOnlyList<IMethodSymbol> Models;
 
+        internal IReadOnlyList<SyntaxTree> UserTrees { get; }
+
         private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
         {
+            UserTrees = userTrees.ToList();
             _compilation = compilation;
             Stubs = ContractStubs.For(compilation);
             // (and the list interfaces, which read a List's models: MethodVerifier.Interfaces)
@@ -181,17 +188,20 @@ namespace CsVerify.Verifier
                 ? Stubs.Models : new List<IMethodSymbol>();
             Data = new DataTypes(compilation, userTrees);
             Fields = new FieldEffects(this);
+            Locks = new LockGuards(compilation, userTrees);
             UsesDynamicFrames = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"))
                 || Models.Count > 0; // (stubs frame model state with Spec.Modifies)
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
+            Levels = new LockLevels(compilation, Locks, SourceTypes);
+            Atomics = new Atomics(SourceTypes);
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;
             UsesMemory = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "PointsTo" || n.Identifier.Text == "ArrayView" || n.Identifier.Text == "ArrayHole" || n.Identifier.Text == "Mem"));
-            UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc"));
+            UsesPermissions = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.Text == "Acc" || n.Identifier.Text == "AccRead"));
 
             Options = options;
             Solver = new SmtSolver(SmtSolver.FindZ3(options.Z3Path), options.TimeoutMs) { Log = options.SmtLog };
@@ -473,6 +483,9 @@ namespace CsVerify.Verifier
             return _libraryContracts.TryGetValue(key, out var c) ? c : _libraryContracts[key] = Contract.Read(key, _compilation);
         }
 
+        private StartedDelegates _startedDelegates;
+        internal StartedDelegates StartedDelegates => _startedDelegates ??= new StartedDelegates(this, _compilation);
+
         internal Contract ContractOf(IMethodSymbol m)
         {
             var key = (m.ReducedFrom ?? m).OriginalDefinition;
@@ -487,9 +500,31 @@ namespace CsVerify.Verifier
             // behavioural subtyping: an abstract or interface member's contract comes from its contract class, and
             // an override or implementation inherits the contracts of what it overrides or implements
             var spec = ContractClassMethod(key);
-            c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, BaseMembers(key).Select(ContractOf));
+            var bases = BaseMembers(key).Select(ContractOf);
+            // a delegate type's contract is its contract class's Invoke; a lambda made one inherits it, as an override does
+            if (key.MethodKind == MethodKind.DelegateInvoke && DelegateContractMethod(key) is IMethodSymbol invoke) { spec = invoke; c.OfDelegate = true; }
+            if (key.MethodKind == MethodKind.AnonymousFunction && DelegateTypeOf(key)?.DelegateInvokeMethod is IMethodSymbol made && ContractOf(made).OfDelegate)
+                bases = bases.Append(ContractOf(made));
+            c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, bases.ToList());
             return c;
         }
+
+        /// <summary>The Invoke of a delegate type's [ContractClassFor] class.</summary>
+        private IMethodSymbol DelegateContractMethod(IMethodSymbol invoke) =>
+            ContractClassOf(invoke.ContainingType)?.GetMembers("Invoke").OfType<IMethodSymbol>().FirstOrDefault(o => o.Parameters.Length == invoke.Parameters.Length);
+
+        /// <summary>The delegate type a lambda is made into, if it's made into one.</summary>
+        internal INamedTypeSymbol DelegateTypeOf(IMethodSymbol lambda)
+        {
+            if (lambda.MethodKind != MethodKind.AnonymousFunction || !(lambda.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax syntax)) return null;
+            var op = _compilation.GetSemanticModel(syntax.SyntaxTree).GetOperation(syntax);
+            while (op?.Parent is IConversionOperation || op?.Parent is IParenthesizedOperation) op = op.Parent;
+            return op?.Parent is IDelegateCreationOperation dc ? dc.Type as INamedTypeSymbol : (op?.Type as INamedTypeSymbol);
+        }
+
+        /// <summary>Does calling a delegate of this type prove and assume a contract?</summary>
+        internal bool HasDelegateContract(ITypeSymbol type) =>
+            type is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.DelegateInvokeMethod != null && ContractOf(d.DelegateInvokeMethod).OfDelegate;
 
         /// <summary>
         /// The stub of a library member, or else of the member it overrides (StreamWriter.Write(string) keeps
@@ -592,6 +627,8 @@ namespace CsVerify.Verifier
                     // its lambdas and local functions, each a unit of its own
                     foreach (var (nested, graph) in NestedFunctions(decl, model))
                     {
+                        // (nothing but a call with permissions: it is proved where it starts)
+                        if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
                         var nmr = new MethodResult { Name = mr.Name + "." + NestedName(nested) };
                         if (!options.Selects(nmr.Name)) continue;
                         result.Methods.Add(nmr);
@@ -619,6 +656,20 @@ namespace CsVerify.Verifier
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
                     RunMethod(engine, engine.ContractOf(accessor), mr, node.GetLocation());
+                    RunNested(engine, node, model, mr.Name, result, declarations, options);
+                }
+            }
+            // the lambdas in field and property initializers (static readonly Pricing Flat = q => 100 * q): no method has them
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var init in tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>())
+                {
+                    if (!(init.Parent is VariableDeclaratorSyntax && init.Parent.Parent?.Parent is FieldDeclarationSyntax || init.Parent is PropertyDeclarationSyntax)) continue;
+                    if (!init.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Any()) continue;
+                    var member = init.Parent is VariableDeclaratorSyntax vd ? model.GetDeclaredSymbol(vd) : model.GetDeclaredSymbol(init.Parent);
+                    if (member?.ContainingType == null || SpecSymbols.IsContractsClass(member.ContainingType)) continue;
+                    RunNested(engine, init, model, member.ContainingType.Name + "." + member.Name, result, declarations, options);
                 }
             }
             // classes with no constructor body of their own: their fields' initializers, which no method verifies
@@ -664,13 +715,31 @@ namespace CsVerify.Verifier
         /// verified as a method of its own. Its parameters are as its delegate type declares them, and what it captures
         /// is some value of its type, since it may run at any time. Lambdas in specifications are ghost, not code.
         /// </summary>
-        private static IEnumerable<(IMethodSymbol symbol, ControlFlowGraph graph)> NestedFunctions(BaseMethodDeclarationSyntax decl, SemanticModel model)
+        /// <summary>The lambdas and local functions in a property's code or an initializer, each verified as a unit of its own.</summary>
+        private static void RunNested(Engine engine, SyntaxNode code, SemanticModel model, string owner, VerificationResult result,
+                                      List<(SyntaxNode decl, MethodResult result)> declarations, VerifierOptions options)
+        {
+            foreach (var (nested, graph) in NestedFunctions(code, model))
+            {
+                if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
+                var nmr = new MethodResult { Name = owner + "." + NestedName(nested) };
+                if (!options.Selects(nmr.Name)) continue;
+                result.Methods.Add(nmr);
+                declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
+                RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
+            }
+        }
+
+        private static IEnumerable<(IMethodSymbol symbol, ControlFlowGraph graph)> NestedFunctions(SyntaxNode decl, SemanticModel model)
         {
             ControlFlowGraph root;
             switch (model.GetOperation(decl))
             {
                 case IMethodBodyOperation mb: root = ControlFlowGraph.Create(mb); break;
                 case IConstructorBodyOperation cb: root = ControlFlowGraph.Create(cb); break;
+                case IFieldInitializerOperation fi: root = ControlFlowGraph.Create(fi); break;
+                case IPropertyInitializerOperation pi: root = ControlFlowGraph.Create(pi); break;
+                case IBlockOperation b when b.Parent == null: root = ControlFlowGraph.Create(b); break;
                 default: yield break;
             }
             var todo = new Stack<ControlFlowGraph>();

@@ -73,7 +73,13 @@ Methods are verified for partial correctness: any call may throw anything, and a
   - Views are linear and permissions add up to one, so no code that runs in between can hold what this method holds, and so none can write it.
   - A confined local's object is reachable only through that local. It was new when stored there, and no use of the local passes it anywhere else, so code that runs at an await has no reference to it. Members of the base class library are trusted not to keep their receiver. Its threading types are excluded, because they hand objects to other threads.
   - Everything else is forgotten, which is what any code could have done to it.
-- **An async method of the program called without being awaited at once** (`var t = F(); …; await t;`, or an `async void` method) is rejected (CSV1901). It would run interleaved with its caller, each changing what the other relies on. Lending it permissions explicitly is the next step (step 2 below).
+- **A task held in a local and awaited later** (`var t = F(x); …; await t;`):
+  - **At the call:** `F`'s precondition is checked.
+  - **While it runs:** other code may run at any moment, so what the method doesn't hold is forgotten from each statement to the next. Locals and confined objects stay.
+  - **At `await t`:** what `F`'s postcondition says of the result is known. `await Task.WhenAll(a, b)` awaits both, and gives an array of their results if it has one. `t.Result` gives the result once `t` has been awaited.
+  - **Reported (CSV1026):** a path that never awaits it, since a failure in it would be lost, and `t.Result` before that, since it blocks.
+  - **Refused (CSV1901):** storing, returning or capturing the task, reassigning the local, a `ref` argument, or lending views or permissions, which wouldn't be back until it returns. So is calling `F` without keeping the task (`F();`), and an `async void` method.
+  - **Warned (CSV1900):** two tasks at once where one writes a field or array the other uses, unless a lock guards it: each is proved as if alone. The verifier knows which field, not which object, so this may be a false alarm on tasks working on different objects.
 - **Library tasks** are values like any other. Awaiting one gives an unknown result, non-null as the library declares
   it, and may throw. An **async stub** (a `[ContractsFor]` stub method declared `async`, like `Stream.ReadAsync`'s)
   gives the awaited call its contract: its precondition is checked at the call, and its postcondition is of the awaited
@@ -82,7 +88,180 @@ Methods are verified for partial correctness: any call may throw anything, and a
 
 **Lambdas and local functions** that write the method's locals (`l.ForEach(x => s += x)`) are not verified on their own. Any call may run one of them, so after every call, other than to a `[Pure]` function or a lemma, and at every `await`, the locals they write are unknown.
 
-**Not covered (yet).** Threads started with `Task.Run` or `new Thread` are ordinary library calls: the fields and arrays their delegate may write are forgotten at the call, but not afterwards, while the thread runs. `lock`, `Interlocked` and `volatile` are ordinary calls and reads, with no meaning about other threads. Deadlock freedom and progress are not checked, and neither is lock-free code. The plan (step 2) is permission-based, as in Viper and VerCors. Starting a thread would hand it the permissions its delegate's precondition names, and joining it would give back its postcondition's. A lock would get an invariant saying what it protects. Then every verified program would be race-free.
+**Locks.** A field or auto-property can be guarded by a lock, a readonly field of its class: `[GuardedBy(nameof(_lock))]`. A lock guards only what the attribute says, and only that is used in proofs. Still, a field written inside `lock (_lock)`, and under no other lock, is reported where it's used without the lock (CSV1023), so inconsistent locking is found in code with no specifications. Volatile and readonly fields are left alone.
+- **Every use needs the lock (CSV1023).** That covers reads, writes, specifications and methods with `[GuardedBy]`, whose caller must hold it. The lock must be taken on the same object, seen in the lock statements around the use: a lambda or local function in one doesn't count, since it may run later. A constructor has its own object to itself, and so does a new object's initializer. A `ref` to a guarded field outlives the lock, so it is reported.
+- **So guarded state has no races, and the guarantee above is proved for it.** Entering a lock forgets what it guards, because others have had it. While it is held, nothing changes that this thread doesn't change.
+- **`[LockInvariant(nameof(_lock))]`** on a `[Pure]` bool method says what holds while the lock is free. It is known on entering the lock, and proved on leaving it, on every path, exceptions included (CSV1024). A constructor must establish it, so a class with one must write a constructor. A call under the lock that may enter it again must find it true, unless the callee is `[GuardedBy]` the same lock.
+- **Locks taken one inside another** must be taken in increasing order of level (CSV1025); see [Deadlocks](#deadlocks-lock-levels) below.
+
+```csharp
+readonly object _lock = new object();
+[GuardedBy(nameof(_lock))] int _balance;
+[LockInvariant(nameof(_lock)), Pure] bool Valid() => _balance >= 0;
+public SharedAccount() { }
+
+public int Balance() { Spec.Ensures<int>(r => r >= 0); lock (_lock) { return _balance; } }
+public void Reset() { _balance = 0; }  // CSV1023: it could race
+```
+
+What a lock guards is the field itself, not what it refers to: `_items` being guarded says nothing of the array's cells, or of a reference copied out while the lock is held.
+
+**`SemaphoreSlim` as a lock.** A lock can't be held across an `await`; a `SemaphoreSlim` made with a count of 1 can. It guards state just as a lock does, by `[GuardedBy]`, when it is taken in this form:
+
+```csharp
+await _gate.WaitAsync();       // or WaitAsync(ct), or _gate.Wait()
+try { ... }
+finally { _gate.Release(); }
+```
+
+- **What it guards stays across an `await` inside it,** since nobody else can have it. Its invariant need not hold there: it is proved at the `Release`.
+- **What it guards is forgotten on taking it,** as with a lock, and the lock rules on use apply (CSV1023), including in a `catch`, and in a `finally` before the `Release`.
+- **Any other use of it is reported (CSV1023):** another form of taking or releasing it, handing it to anyone, a wait with a timeout, a count other than 1, a field that isn't readonly. So is starting a task of a `[GuardedBy]` method without awaiting it, which would run alongside the holder.
+- **It isn't reentrant, unlike a lock.** Taking it while it is held waits forever (CSV1025), which is reported when seen directly or through calls on `this`.
+
+A semaphore of any other count, such as a rate limiter, guards nothing, and is a library call like any other.
+
+**A flag as a try-lock.** An `int` or `bool` field that a `[GuardedBy]` or `[LockInvariant]` names (or that is inferred to guard writes) is a lock taken with `Interlocked`, which may fail:
+
+```csharp
+int _busy;                                     // 0 is free
+[GuardedBy(nameof(_busy))] int _uses;
+
+if (Interlocked.Exchange(ref _busy, 1) == 0)   // or CompareExchange(ref _busy, 1, 0) == 0
+{
+    try { _uses++; }
+    finally { Volatile.Write(ref _busy, 0); }  // or Interlocked.Exchange(ref _busy, 0)
+}
+```
+
+- **The forms:** the if runs its body when the flag was free, and the body begins with the try; or the if leaves (`return`, `throw`, `break`, `continue`) when it wasn't free, and the try comes next. For a `bool`, `true` and `false` stand for 1 and 0.
+- **Where it was taken, it's a lock:** what it guards is forgotten, its invariants are known, and they're proved where the `finally` gives it back (CSV1024). Where taking it failed, nothing was taken. Taken again by the thread that has it, it fails.
+- **Any other use of the flag is reported (CSV1023):** reading or writing it, taking it with no `finally` to give it back (so a throw would lock everyone out for good), giving it back elsewhere. A constructor sets its own object's flag.
+- **It never waits,** so it can't be part of a deadlock, and has no lock level: it may be taken under any lock, and any lock under it.
+- A flag is a lock or an `[Atomic]` field, not both (CSV1030).
+
+**Wrappers: `[Acquires]` and `[Releases]`.** A helper or a lock class around such a semaphore says what it does, and is then used like the semaphore:
+
+```csharp
+[Acquires] public async Task<Releaser> LockAsync(CancellationToken ct) { await _gate.WaitAsync(ct); return new Releaser(_gate); }
+
+using (await _lock.LockAsync(ct)) { ... }           // or: using var held = await _lock.LockAsync(ct);
+
+[Acquires(nameof(_gate))] private async Task EnterAsync() { await _gate.WaitAsync(); }
+[Releases(nameof(_gate))] private void Exit() { _gate.Release(); }
+
+await EnterAsync(); try { ... } finally { Exit(); }
+```
+
+The lock is the field the call is on, which may be a `SemaphoreSlim` with an extension method, or the field the attribute names. The result of a `using` can't be used for anything else, and any other form of the call is CSV1023. That a wrapper does what it says is taken from its shape, not proved: `[Acquires]` must wait on a semaphore of count 1 and its result's `Dispose` must call `Release`; `[Releases]` must call `Release`. On a `[ContractsFor]` stub the attributes say so of a library's lock, on trust. A callback form, `gate.RunLockedAsync(() => ...)`, isn't understood.
+
+**Deadlocks: lock levels.** A lock can have a level, `[LockLevel(n)]`: on its field (an object for `lock`, a semaphore of count 1, a lock class, a `ReaderWriterLockSlim`, `SpinLock` or `Mutex`, an array whose elements are locked), or on a class, for locks on its objects (`lock (this)`, `lock (account)`). While a lock is held, only locks of higher levels may be taken (CSV1025), so every thread takes its locks in increasing order, and no cycle of threads can wait on each other. Locks that are never taken one inside another need no level.
+
+```csharp
+[LockLevel(1)] readonly object _accounts = new object();
+[LockLevel(2)] readonly SemaphoreSlim _log = new SemaphoreSlim(1, 1);
+
+lock (_accounts) { Audit(); }         // fine if Audit takes only _log, or nothing
+```
+
+- **A try-lock flag** (see above) never waits, so it has no level and takes no part in the order.
+- **What a lock is.** A field is its own lock; an object of a class with a level is that class's; a local that is only ever given one lock is that lock. A lock on an `object` or an interface, or `typeof(...)`, can't have a level, so taking one inside another lock is reported. One object can't be two locks of different levels: a class can't say a level its base class says, a field can't say one when its objects' class does, and a leveled lock field must be readonly and given a new object of its own (all CSV1025).
+- **Checked through calls.** What a call may take is worked out from all it runs: its body, the methods, accessors and constructors it calls, every override or implementation in the program of a virtual or interface member, calls with no call written (operators, conversions, `foreach`, `using`, events, collection initializers, property patterns), a lambda a library call runs at once (`list.ForEach(x => ...)`, not `Task.Run`), and what a library can call back: every override and interface implementation of the program's classes it's handed, through its type arguments, receiver and arguments, and of a comparer for what a collection holds. Taking the same lock of the same object again is fine for a lock, which is reentrant, and reported for a semaphore or a `SpinLock`, which would wait for itself.
+- **A delegate could take any lock.** Calling one while a lock is held is reported, unless its delegate type says `[TakesNoLocks]`; then every lambda and method made one is checked to take none. `[TakesNoLocks]` on a method, interface or class is trusted at its calls and checked in its body and in every override and implementation.
+- **Waiting is taking.** Waiting for a task or thread while holding a lock (`await t`, `t.Wait()`, `t.Result`, `GetAwaiter().GetResult()`, `Join()`, `Task.WhenAll`) is fine only if what the task may take is above what's held: it may need it to finish. A task the code started is known by the call that started it; one it was given (a parameter, a field) could wait for anything, so waiting for it under a lock is reported. So is waiting under a lock for anything only another thread can end: an event, a countdown, a barrier, a semaphore that isn't a lock.
+- **Two locks of one field or class,** on two objects, are ordered by an id of their objects: `[LockLevel(1, OrderedBy = nameof(Id))]`, a readonly int field, and they're proved to be taken in increasing order of it, where both are taken or where a call takes the second: the verifier follows which parameter (or receiver) each lock a call takes belongs to, through any depth of calls, and proves the order of the arguments at the call. An array's elements are ordered by index.
+
+```csharp
+public readonly int Id;
+[LockLevel(1, OrderedBy = nameof(Id))] public readonly object Lock = new object();
+
+if (from.Id < to.Id) { lock (from.Lock) lock (to.Lock) { ... } }
+else                 { lock (to.Lock) lock (from.Lock) { ... } }
+
+static void Credit(Account a) { lock (a.Lock) { ... } }
+lock (x.Lock) { Credit(y); }          // proved: x.Id < y.Id
+```
+
+- **Other lock primitives** are locks in their form: taken by a statement of its own, then a `try` whose `finally` gives them back, or taken first thing in the `try` (`Monitor.Enter(_l, ref taken)`). That covers `Monitor.Enter`/`Exit`, `ReaderWriterLockSlim`'s `Enter...Lock`/`Exit...Lock` (ordered like an exclusive lock), `SpinLock` and `Mutex`. `Monitor.Enter`'s form also guards state as a lock statement does, with invariants. Taken in any other way, where it's held can't be told, and it is reported (CSV1025).
+- **`Monitor.Wait` and `Pulse`** need the lock held (CSV1023, or they throw). `Wait` gives the lock back and takes it again: its invariants must hold at the `Wait` (CSV1024), and what it guards is forgotten after. It may give back only the lock it waits on: waiting while holding another lock is reported, since the thread that would pulse it may need that lock first, and so is calling, under a lock, code that waits.
+- **Blocking on async code that comes back to its context.** `F().Result`, `F().Wait()` or `GetAwaiter().GetResult()` on the program's async `F` is reported if `F`, or async code it calls, awaits anything without `ConfigureAwait(false)` (including `Task.Yield()`, `await foreach` and `await using`): on a UI thread or another single-threaded context, the continuation needs the very thread that is blocked. Blocking inside `Task.Run` has no context and is fine.
+
+What lock levels prove is that no set of threads can wait on each other for locks, tasks and the waits above. They don't prove that a thread waiting on `Monitor.Wait` or an event is ever woken: that someone pulses or signals is up to the program's logic, as in any verifier that doesn't prove liveness.
+
+**Cancellation.** A token's `IsCancellationRequested` is a new answer at every read, and specifications can't speak of it, since it could be true by the time they're looked at. Being cancelled comes out as an exception from `ThrowIfCancellationRequested` or any `await`, so a `catch (OperationCanceledException)` is reached, and a `finally` must restore what a lock's or a semaphore's invariant needs. A postcondition is of a normal return: a cancelled method has made no promise, beyond those of `Spec.EnsuresOnThrow`. `CancellationTokenSource` is a library class with nothing modeled, and `CancellationToken.None` is no different from any other token.
+
+**Task.Run and threads.** `Task.Run(d)`, `Task.Factory.StartNew(d)` and `th.Start()` of `new Thread(d)` run alongside the method, so it's as for a task awaited later: from there until `await t` or `th.Join()`, what the method doesn't hold is forgotten from each statement to the next. So is a task from an interface, a delegate or a method that isn't async, since it may run the program's code too; a library's own, like `Task.Delay(1)`'s, doesn't. A task that is stored, returned or dropped, or a thread not joined, runs on to the end of the method, and `ids.Select(id => F(id))` is treated the same, since nothing follows those tasks.
+- **The code in the delegate is proved knowing nothing of who started it,** so what it shares needs a lock (see below).
+- **Reported (CSV1026):** a task kept in a local and never awaited, or a call of one as a statement of its own. `_ = Task.Run(...)` says it is meant.
+- **Warned (CSV1900):** two of them, or one and the method that started it, where one writes a field or an array the other uses, and no lock is held for it; and one that keeps running after the method and writes what no lock guards. The verifier knows which field, not which object, so this may be a false alarm. It's a warning, not a proof either way: nothing here proves code free of races but `[GuardedBy]`.
+- **Permissions go with it.** See below.
+
+**Concurrent collections and channels.** Nothing about what they hold is known, since others can change it: `ContainsKey`, `Count`, `IsEmpty` and the indexer give a new answer each time, even right after an `Add`. What is known is what they say of their results: a `TryGetValue`, `TryDequeue` or `TryRead` that returns true gave a value that's not null, if the type says so, and `GetOrAdd` and `ReadAsync` likewise; a null key is reported. `await foreach` is a loop whose every round is an `await`: it needs invariants for what it keeps, and its `MoveNextAsync` can throw.
+
+**Permissions of tasks and threads.** A method whose contract names permissions (`Spec.Acc` of cells or objects, `Spec.AccRead` of cells) can run alongside its caller, and work split between tasks is proved to stay apart:
+
+```csharp
+await Task.WhenAll(Fill(a, 0, mid, 1), Fill(a, mid, a.Length, 2));
+Spec.Assert(a[0] == 1 && a[mid] == 2);
+```
+
+- **At the start** the precondition is proved and its permissions leave the caller, so a second task can't get the same cell (CSV1016), and the caller can't write or read a cell it gave away until it is back.
+- **At `await` or `Join`** the postcondition's permissions come back. What it says is of the state when the task ended, so it may read only what comes back, with a `Spec.Acc` to its left, and what never changes: anything else is reported where the task starts (CSV1016), rather than quietly lost. `Spec.Old` in it is of the start. A task awaited at once has no such rule. If the task failed, nothing comes back. A task never awaited keeps what it took.
+- **`Spec.AccRead(a, from, to)`** is a share of permission to read. Any number of tasks can hold one at once, nobody can write those cells meanwhile, and a call that only takes a share changes none of them.
+- **A delegate** works the same way if it is one call with values that don't change: `Task.Run(() => F(a, 0, mid))`, or `new Thread(() => F(a, 0, mid))` in a local that only gets started and joined. The call is proved where it starts, and the delegate isn't verified apart. Any other delegate is on its own and knows nothing, so it can't be given permissions.
+- **Reads are checked too.** A method with cell permissions that runs alongside others, or is called from one that does, reads only cells it has a permission or share for (CSV1016), and it can't call code that may read any array. Calls into the library aren't looked at.
+- **Not supported (CSV1901):** views and predicate instances, and instance methods of `[Owned]` classes, since what's lent by a call goes back when it returns.
+
+**What runs concurrently says so (CSV1028).** A method of the program that runs at the same time as other code must be marked `[RunsConcurrently]`, on itself, its property, or its class, struct or interface. The verifier doesn't work it out across the program; it checks each place where it can see the mark is needed:
+
+- a method started and not awaited in the same method (a task kept in a field, returned, or awaited only inside a lambda), or handed to `Task.Run`, a thread or `Parallel` as a method group;
+- a method, constructor or property with code that marked code calls, or that a method calls between starting a task and finishing it;
+- an override or implementation of a marked method, since a call of it may reach any of them;
+- a delegate type of the program whose delegates concurrent code calls; marked, every lambda made one is concurrent code.
+
+A lambda given to `Task.Run`, a thread or `Parallel`, and lambdas and local functions inside concurrent code, are concurrent where they are and need no mark; so is a method started and awaited later in the same method (`var t = A(); ...; await t;`, or `await Task.WhenAll(A(), B())`), since both ends are in sight, though its callees still need the mark; nor do auto-properties and a positional record's own members. An entry point that the program's callers run at once, such as a web handler, is marked the same way.
+
+**Code that runs alongside other code must hold what it uses (CSV1027).** That is a marked method, a delegate given to `Task.Run`, a thread or `Parallel`, and a method between starting a task and finishing it. A field it uses must be one of:
+
+- never changed: `readonly`, or a get-only or `init` property;
+- guarded by a lock (CSV1023 says if it's held);
+- covered by a permission: `Spec.Acc`, a view or a share, so its class must be `[Owned]`;
+- on a new object only a local has, or the one a constructor or initializer is building.
+
+- shared with no lock: `[Atomic]`, below.
+
+Array cells likewise: a permission, or a new array only a local has. Specifications aren't run, and aren't looked at.
+
+**Race warnings** (CSV1900) remain for what that can't see: `[Trusted]` code, and a library's state through its stubs. Two pieces of code are compared by object where that can be told. They prove nothing either way.
+
+**Design.** This follows concurrent separation logic with fractional permissions, in the implicit-dynamic-frames style of Chalice and Viper: starting a task is a fork, which exhales its precondition, and awaiting it is a join, which inhales its postcondition. A lock's invariant, and what it guards, is the resource it holds. An `await` is a point where other code may run, so what isn't held is forgotten, as for an unstable assertion. The theorem to reuse is that a program proved in that logic has no data races. The rule above is what makes concurrent code fall under it. As there, the resources are what the program says, not what the verifier guesses: what runs concurrently is marked, and checked at each start and call, a lock guards only what `[GuardedBy]` names, and a started task's postcondition reads only what it gives back (self-framed), so joining it inhales an assertion that stays true. Outside it are concurrent code that nothing in the source starts and nobody marked, what a library object holds (a `List<T>` in a readonly field), a `Func` or `Action` that concurrent code calls (a delegate type of the program says so), `[Trusted]` code, and reads by other code of an object a task that is never awaited still holds. The verifier's encoding has not itself been proved against the logic.
+
+**Lock-free code: atomic fields.** A field that threads share with no lock is `[Atomic]`, and says the step every change of it keeps, whoever makes it:
+
+```csharp
+[Atomic(Step = nameof(Grows))] volatile int _hits;
+[Pure] static bool Grows(int old, int now) => old <= now;
+
+int seen = _hits;
+if (seen < int.MaxValue) Interlocked.CompareExchange(ref _hits, seen + 1, seen);   // proved a step
+int later = _hits;
+Spec.Assert(seen <= later);                                                        // proved, whatever the others did
+```
+
+- **A read** sees what the other threads have made it since this thread last looked: the same value, or a step on. Since the step is transitive (proved, CSV1030), any number of their changes is one step. So `seen <= later` holds, and `seen == later` doesn't.
+- **A write** is proved a step from the value it replaces (CSV1030). A plain write replaces whatever the others have made it, which this thread hasn't read, so `_hits = seen + 1` is reported: another thread may have raised it past that. `Interlocked.CompareExchange` replaces only the value it compares with, and `Exchange`, `Increment`, `Decrement`, `Add`, `And` and `Or` replace the one they read; `Increment` and `Add` wrap at the type's ends, as they do at run time, so on a field that only grows they are reported unless the field has no step. `Volatile.Read`, `Volatile.Write` and `Interlocked.Read` are a read and a write.
+- **Without a step** (`[Atomic]` alone) any change is one: every write is allowed, and a read knows nothing of the last.
+- **Plain reads and writes** need the field `volatile`, or the compiler may reorder them or reuse an earlier read (CSV1030). A `long` can't be volatile; it's used through `Volatile` and `Interlocked`. A constructor sets its own object's fields freely: no other thread has it yet.
+- **What a specification says of one** is of the value this thread last read or wrote. A contract is useful when it stays true under the others' steps: `Spec.Ensures<int>(r => Spec.Old(_hits) <= r && r <= _hits)` does, for a caller reading it later.
+- **What forgets it** (a call that uses it, a loop's head, an `await`) keeps that it went by steps, at every object there before.
+- **Used anywhere,** not only in code marked to run concurrently, since another thread may be at it: an atomic field needs no lock or permission in concurrent code (CSV1027), and isn't part of the race warnings.
+- **Reported (CSV1030):** an atomic field of a type that isn't read and written in one step (an integer, `bool`, `char`, an enum or a reference: not `float`, `double`, `decimal` or a struct), one that is `readonly`, `[GuardedBy]`, a lock, in a struct or in an `[Owned]` class; a step that isn't a static `[Pure]` bool method of two values of the field's type, or that reads state; and a `[Pure]` function, predicate or invariant that reads one, since those are of one state. Passing one by `ref` to anything but `Volatile` and `Interlocked` is refused (CSV1901), as is `Interlocked` on a field that isn't atomic.
+
+Each field is on its own: nothing relates two atomic fields, or an atomic field and other state, so a flag doesn't publish data written before it (that data still needs a lock or a permission). This is what makes it sound under .NET's memory model, which keeps one order of writes for each field, read and written through `volatile` and `Interlocked`, but promises no single order of all of them: per field, a read never sees an older value than a read before it, and each write follows the one before it in that field's order. Lock-free arrays are not covered: an array cell shared with no lock or permission is still reported (CSV1027).
+
+*Design.* This is rely-guarantee reasoning (Jones 1983) with one relation per field as both the rely and the guarantee,: a thread's facts about a field are stable when the step keeps them, and its writes keep the step for the others.
+
+An algorithm can be proved over all interleavings by modeling it, as Leino does in Dafny: its atomic events as methods, and what holds in every state as an invariant each keeps. `samples/Good/TicketLock.cs` and `DiningPhilosophers.cs` do so, including that the ticket lock's display can't stall under a fair schedule, and that philosophers taking forks in order always have someone who can move. That proves the algorithm, not any threads running it.
 
 ## Floating point
 

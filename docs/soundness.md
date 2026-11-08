@@ -39,7 +39,7 @@ is assumed, never in what is reported.
   `double` arithmetic is IEEE 754 binary32/binary64 with round-to-nearest-even and no extended intermediate
   precision. ECMA-335 permits extended precision; RyuJIT on x64 and arm64 does not use it.
 - **A4. Threads.** No other thread writes the state a method uses while it runs (see
-  [Async and concurrency](semantics.md#async-and-concurrency)).
+  [Async and concurrency](semantics.md#async-and-concurrency)). For fields guarded by a lock this is checked, not assumed. `[Atomic]` fields are proved for every interleaving of the others' steps, assuming .NET keeps one order of writes for each field accessed through `volatile` and `Interlocked` (coherence), and nothing about the order of different fields.
 - **A5. Library contracts.** `[ContractsFor]` stubs, LINQ's definitions (`Bcl/Linq.cs`), nullability annotations, and
   the stated facts about library code (it writes only what it is handed, and runs user code only through what it is
   handed) describe the library. They are checked against the real library by tests (`StubConformanceTests`,
@@ -171,6 +171,12 @@ were provable. The defences we have:
   ignoring its start, and extensionality ignoring length were each reported. The random programs alone did not catch
   the swapped concatenation, in part because the compiler folds two literals into one, and because a method there
   often fails to verify for other reasons.
+
+  **One soundness bug found this way (2026-11).** Reading a field of a data value under a guard, in a specification, said
+  that the value was of the field's case even where the guard was false: `s is Seg q && q.Lo == 1` of a `Dot` made anything
+  provable. Soaks missed it until the programs' mix changed; it needs a value known to be of another case. Three of
+  CsLemon's proofs leaned on it without anyone knowing: their branches where a step stops were not really checked. Those
+  proofs were redone with their statements unchanged, one of them closing a path that had never been covered.
 
   Six soaks before strings, 3,440 methods, found no soundness problem. In all, 1,913 true variants verified and passed
   their checks, and 2,601 of 2,601 planted ones were rejected. They found two other bugs:

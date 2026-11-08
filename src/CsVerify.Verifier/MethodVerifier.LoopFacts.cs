@@ -110,7 +110,7 @@ namespace CsVerify.Verifier
                     return true;
                 case IConversionOperation c: return c.IsImplicit && c.OperatorMethod == null && Simple(c.Operand);
                 case IParenthesizedOperation p: return Simple(p.Operand);
-                case IFieldReferenceOperation fr: return !fr.Field.IsVolatile && (fr.Instance == null || Simple(fr.Instance));
+                case IFieldReferenceOperation fr: return !fr.Field.IsVolatile && !Atomics.IsAtomic(fr.Field) && (fr.Instance == null || Simple(fr.Instance));
                 case IPropertyReferenceOperation pr when pr.Instance != null && IsSequence(pr.Instance.Type) && pr.Property.Name == "Length":
                     return Simple(pr.Instance);
                 case IPropertyReferenceOperation pr when pr.Arguments.Length == 0 && pr.Instance != null &&

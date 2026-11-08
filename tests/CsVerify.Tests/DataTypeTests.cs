@@ -5,6 +5,36 @@ namespace CsVerify.Tests
     /// <summary>Closed positional record hierarchies as algebraic data types, and object invariants.</summary>
     public class DataTypeTests
     {
+        // ---- a cast or a pattern under a guard says nothing where the guard is false (found by the random programs)
+
+        private const string DeadCases = "public abstract record Shape { private Shape() { } public sealed record Dot(int X) : Shape; public sealed record Seg(int Lo, int Hi) : Shape; } " +
+            "public sealed class Frac { public readonly int N, D; [Invariant, Pure] public bool Valid() => D > 0; public Frac(int n, int d) { Spec.Requires(d > 0); N = n; D = d; } } " +
+            "public sealed record Range(int Lo, int Hi) { [Invariant, Pure] public bool Valid() => Lo <= Hi; } ";
+
+        private static string[] DeadErrors(string body) => Harness.Verify("using CsVerify; " + DeadCases + "public static class C { " + body + " }").Errors("M");
+
+        [Theory]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert((s switch { Shape.Dot q => q.X, Shape.Seg q => q.Lo, _ => -1 }) == b + 1); }")]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert((s switch { Shape.Dot q => q.X, Shape.Seg q => q.Lo, _ => -1 }) == b); Spec.Assert(false); }")]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert(s is Shape.Seg q ? q.Lo == 1 : true); Spec.Assert(false); }")]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert(!(s is Shape.Seg) || ((Shape.Seg)s).Lo == 1); Spec.Assert(false); }")]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert((s is Shape.Seg q && q.Lo == 1) || true); Spec.Assert(false); }")]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert(Spec.Forall(0, 1, i => !(s is Shape.Seg) || ((Shape.Seg)s).Lo == i || true)); Spec.Assert(false); }")]
+        [InlineData("static void M(int[] xs, int b) { Shape s = new Shape.Dot(b); for (int i = 0; i < xs.Length; i++) { Spec.Invariant(1 != (s switch { Shape.Seg q => q.Lo, _ => -1 })); } Spec.Assert(false); }")]
+        [InlineData("static void M(object o) { Spec.Requires(o is string); Spec.Assert(!(o is Frac) || ((Frac)o).D > 0); Spec.Assert(false); }")]
+        [InlineData("static void M(object o) { Spec.Requires(o is string); Spec.Assert(o is Range r ? r.Lo <= r.Hi : true); Spec.Assert(false); }")]
+        public void ADeadCaseProvesNothing(string m) => Assert.Contains("CSV1004", DeadErrors(m));
+
+        [Theory]
+        [InlineData("static void M(int b) { Shape s = new Shape.Dot(b); Spec.Assert((s switch { Shape.Dot q => q.X, Shape.Seg q => q.Lo, _ => -1 }) == b); }")]
+        [InlineData("static void M(Shape s) { if (s is Shape.Seg q) Spec.Assert(s is Shape.Seg && q.Lo == q.Lo); }")]
+        [InlineData("static void M(Range r) { Spec.Assert(r.Lo <= r.Hi); }")]
+        [InlineData("static void M(Range? r) { if (r != null) Spec.Assert(r.Lo <= r.Hi); }")]
+        [InlineData("static void M(Frac f) { Spec.Assert(f.D > 0); }")]
+        [InlineData("static void M(object o) { if (o is Frac f) Spec.Assert(f.D > 0); }")]
+        [InlineData("static void M(object o) { if (o is Range r) Spec.Assert(r.Lo <= r.Hi); }")]
+        public void ALiveCaseStillProves(string m) => Assert.Empty(DeadErrors(m));
+
         private const string ListType = @"
 public abstract record List
 {

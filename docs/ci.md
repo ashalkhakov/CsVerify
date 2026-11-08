@@ -150,7 +150,7 @@ git push origin v0.2.0
 
 or publish a release on GitHub, which makes the tag: the workflow attaches the packages to that release.
 
-Between releases, the packages are versioned `0.1.0-dev` (`Directory.Build.props`); nothing in the sources is
+Between releases, the packages are versioned `0.2.0-dev` (`Directory.Build.props`); nothing in the sources is
 changed per release.
 
 **nuget.org** uses [trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing): no API

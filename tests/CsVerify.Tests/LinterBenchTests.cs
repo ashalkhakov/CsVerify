@@ -17,7 +17,7 @@ namespace CsVerify.Tests
         {
             "ThrowNull.Direct", "ThrowNull.Hidden",
             "ModifiedWhileEnumerated.Direct", "ModifiedWhileEnumerated.HiddenAlias", "ModifiedWhileEnumerated.HiddenCall",
-            "Unobserved.Direct", "Unobserved.Hidden", "Unobserved.Harmless", // (a task awaited later is not supported)
+            "Unobserved.Direct", "Unobserved.Hidden",
             "Disposal.LeakDirect", "Disposal.LeakHidden", "Disposal.LeakWriter", "Disposal.UseAfterDispose",
             "DisposableField.Direct",
             "FormatArguments.Direct", "FormatArguments.Hidden",
@@ -30,6 +30,7 @@ namespace CsVerify.Tests
             "Substring.Direct", "Substring.Hidden",
             "MaskedIndex.Direct", "MaskedIndex.Hidden",
             "Truncation.Direct", "Truncation.Hidden",
+            "Race.Direct", "Race.Hidden",
         };
 
         [Fact]

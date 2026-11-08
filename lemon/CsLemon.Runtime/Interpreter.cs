@@ -429,23 +429,28 @@ namespace CsLemon.Lr
                 Spec.Assert(Fringe(shifted.T) == new Word.Cons(la, new Word.Nil()));
                 Spec.Assert(StackFringe(shifted) == Append(StackFringe(s), Fringe(shifted.T)));
                 Spec.Assert(Prefix(w, pos + 1) == Append(Prefix(w, pos), new Word.Cons(w[pos], new Word.Nil())));
+                return; // (what this branch has shown goes out of scope at its end)
             }
             else if (kinds[la] == Automaton.Reduce)
             {
                 int r = args[la];
+                ReduceShape(g, a, s, r); // (first: it is also what says that a rule out of range gives no stack)
                 if (r < 0 || r >= g.Lhs.Length || r >= g.Rhs.Length || g.NTerm < 0) return;
                 int[]? rhs = g.Rhs[r];
                 if (rhs == null) return;
                 Spec.Assert(Fringes(new Forest.Nil()) == new Word.Nil() && Kids(g, new Forest.Nil(), rhs, rhs.Length));
                 AppendNil(StackFringe(s));
                 PopSound(g, a, s, rhs, rhs.Length, new Forest.Nil(), Prefix(w, pos));
-                ReduceShape(g, a, s, r);
                 if (Pop(a, s, rhs, 0, rhs.Length, new Forest.Nil()) is Popped.Ok ok && Reduce(g, a, s, r) is Stack.Cell pushed)
                 {
                     var node = new Tree.Node(r, ok.Kids);
                     Spec.Assert(Valid(g, node, g.Lhs[r]));
                     Spec.Assert(Fringe(node) == Fringes(ok.Kids));
                     Spec.Assert(StackFringe(pushed) == Append(StackFringe(ok.Rest), Fringe(node)));
+                    Spec.Assert(StackOk(g, a, ok.Rest));
+                    Spec.Assert(pushed.Below == ok.Rest && pushed.T == node);
+                    Spec.Assert(StackOk(g, a, pushed));
+                    return;
                 }
             }
             else if (kinds[la] == Automaton.Accept && s is Stack.Cell c && c.Below is Stack.Empty)
@@ -487,7 +492,8 @@ namespace CsLemon.Lr
         {
             Spec.Requires(0 <= pos && pos <= w.Length);
             Spec.Ensures(!Safety.SafetyOk(g, a, ann) || !Safety.Safe(a, ann, s) ||
-                         !(Step(g, a, w, s, pos) is Run.Stopped st && st.R is Result.InternalError) &&
+                         !(Step(g, a, w, s, pos) is Run.Stopped st && st.R is Result.InternalError));
+            Spec.Ensures(!Safety.SafetyOk(g, a, ann) || !Safety.Safe(a, ann, s) ||
                          (!(Step(g, a, w, s, pos) is Run.Going go) || Safety.Safe(a, ann, go.S)));
             if (!Safety.SafetyOk(g, a, ann) || !Safety.Safe(a, ann, s)) return;
             Safety.AtStateIfSafe(g, a, ann, s);
@@ -500,6 +506,13 @@ namespace CsLemon.Lr
             if (kinds![la] == Automaton.Shift)
             {
                 Safety.PushIfSafe(g, a, ann, s, args![la], new Tree.Leaf(la));
+                Spec.Assert(la != 0 && pos < w.Length);
+                Spec.Assert(0 <= args![la] && args![la] < a.Incoming.Length);
+                Spec.Assert(Match(g, a.Incoming[args![la]], la));
+                Spec.Assert(Step(g, a, w, s, pos) == new Run.Going(new Stack.Cell(args![la], new Tree.Leaf(la), s), pos + 1));
+                Spec.Assert(!(Step(g, a, w, s, pos) is Run.Stopped st1 && st1.R is Result.InternalError));
+                Spec.Assert(!(Step(g, a, w, s, pos) is Run.Going g1) || Safety.Safe(a, ann, g1.S));
+                return;
             }
             else if (kinds[la] == Automaton.Reduce)
             {
@@ -510,6 +523,29 @@ namespace CsLemon.Lr
                 Safety.GotoIfSafe(g, a, ann, state, r, ok.Rest);
                 Spec.Assert(Top(ok.Rest) == Safety.TopState(ok.Rest));
                 Safety.PushIfSafe(g, a, ann, ok.Rest, a.Goto[Top(ok.Rest)]![g.Lhs[r] - g.NTerm], new Tree.Node(r, ok.Kids));
+                ReduceShape(g, a, s, r);
+                Spec.Assert(Reduce(g, a, s, r) != null);
+                Spec.Assert(!(Step(g, a, w, s, pos) is Run.Stopped st2 && st2.R is Result.InternalError));
+                Spec.Assert(!(Step(g, a, w, s, pos) is Run.Going g2) || Safety.Safe(a, ann, g2.S));
+                return;
+            }
+            else if (kinds[la] == Automaton.Accept)
+            {
+                // the validator says this state accepts on one cell above the bottom: only the bottom has state 0
+                Spec.Assert(state != 0 && a.Incoming[state] == g.Start && ann.States[state].Length == 2);
+                Spec.Assert(s is Stack.Cell);
+                var c = (Stack.Cell)s;
+                Spec.Assert(c.State == state && Safety.Describes(a, ann, state, s) && Safety.Safe(a, ann, c.Below));
+                Spec.Assert(Safety.StatesOf(ann.States[state], 2, s));
+                Spec.Assert(Safety.StatesOf(ann.States[state], 1, c.Below));
+                if (c.Below is Stack.Cell d)
+                {
+                    Spec.Assert(d.State != 0);
+                    Spec.Assert(Safety.In(ann.States[state][0], d.State));
+                    Spec.Assert(false);
+                }
+                Spec.Assert(c.Below is Stack.Empty);
+                Spec.Assert(Step(g, a, w, s, pos) == new Run.Stopped(new Result.Accepted(c.T, pos)));
             }
         }
 
@@ -536,7 +572,7 @@ namespace CsLemon.Lr
             Spec.Assert(Start() == new Run.Going(s, pos) && Steps(g, a, w, 0, Start()) == Start());
             for (int step = 0; step < fuel; step++)
             {
-                Spec.Invariant(0 <= step && 0 <= pos && pos <= w.Length);
+                Spec.Invariant(0 <= step && (step == 0 || step <= fuel) && 0 <= pos && pos <= w.Length);
                 Spec.Invariant(StackOk(g, a, s) && StackFringe(s) == Prefix(w, pos));
                 Spec.Invariant(!Safety.SafetyOk(g, a, ann.Value) || Safety.Safe(a, ann.Value, s));
                 Spec.Invariant(Steps(g, a, w, step, Start()) == new Run.Going(s, pos));
@@ -547,12 +583,16 @@ namespace CsLemon.Lr
                 if (next is Run.Stopped stop)
                 {
                     StepsRest(g, a, w, step + 1, fuel, Start());
+                    Spec.Assert(Steps(g, a, w, fuel, Start()) == stop);
                     return stop.R;
                 }
                 var go = (Run.Going)next;
                 s = go.S;
                 pos = go.Pos;
             }
+            // (out of fuel: after all of it, or with none, it is where it was)
+            if (fuel <= 0) Spec.Assert(Steps(g, a, w, fuel, Start()) == Start() && Steps(g, a, w, 0, Start()) == Start());
+            Spec.Assert(Steps(g, a, w, fuel, Start()) == new Run.Going(s, pos));
             return new Result.OutOfFuel();
         }
 

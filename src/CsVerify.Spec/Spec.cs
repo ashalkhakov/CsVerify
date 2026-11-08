@@ -87,6 +87,130 @@ namespace CsVerify
         /// <summary>Bounded universal quantifier: <paramref name="body"/> holds for every i with from &lt;= i &lt; to.</summary>
         public static bool Forall(int from, int to, Func<int, bool> body) => throw GhostException.Instance;
 
+        // ---- what a delegate accepts and gives (Dafny's f.requires and f.ensures)
+        //
+        // Every call of a delegate proves Spec.Pre and gives a result for which Spec.Post holds. No delegate is taken
+        // to accept anything: what a parameter or field accepts is what a specification says (Spec.Pre, Spec.Total).
+        // A lambda's Spec.Pre is its own Spec.Requires (none: total), and its Spec.Post what it ensures and, for an
+        // expression, its value; both only as far as they depend on its parameters and on captured variables that
+        // never change.
+        /// <summary>A call <c>f()</c> is allowed: its precondition holds.</summary>
+        public static bool Pre<R>(Func<R> f) => throw GhostException.Instance;
+        /// <summary><paramref name="r"/> is a result <c>f()</c> may give.</summary>
+        public static bool Post<R>(Func<R> f, R r) => throw GhostException.Instance;
+        public static bool Pre(Action f) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> may return normally.</summary>
+        public static bool Post(Action f) => throw GhostException.Instance;
+        /// <summary>A call <c>f(a1)</c> is allowed: its precondition holds.</summary>
+        public static bool Pre<A1, R>(Func<A1, R> f, A1 a1) => throw GhostException.Instance;
+        /// <summary><paramref name="r"/> is a result <c>f(a1)</c> may give.</summary>
+        public static bool Post<A1, R>(Func<A1, R> f, A1 a1, R r) => throw GhostException.Instance;
+        public static bool Pre<A1>(Action<A1> f, A1 a1) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> may return normally.</summary>
+        public static bool Post<A1>(Action<A1> f, A1 a1) => throw GhostException.Instance;
+        /// <summary>A call <c>f(a1, a2)</c> is allowed: its precondition holds.</summary>
+        public static bool Pre<A1, A2, R>(Func<A1, A2, R> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        /// <summary><paramref name="r"/> is a result <c>f(a1, a2)</c> may give.</summary>
+        public static bool Post<A1, A2, R>(Func<A1, A2, R> f, A1 a1, A2 a2, R r) => throw GhostException.Instance;
+        public static bool Pre<A1, A2>(Action<A1, A2> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> may return normally.</summary>
+        public static bool Post<A1, A2>(Action<A1, A2> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        /// <summary>A call <c>f(a1, a2, a3)</c> is allowed: its precondition holds.</summary>
+        public static bool Pre<A1, A2, A3, R>(Func<A1, A2, A3, R> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        /// <summary><paramref name="r"/> is a result <c>f(a1, a2, a3)</c> may give.</summary>
+        public static bool Post<A1, A2, A3, R>(Func<A1, A2, A3, R> f, A1 a1, A2 a2, A3 a3, R r) => throw GhostException.Instance;
+        public static bool Pre<A1, A2, A3>(Action<A1, A2, A3> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> may return normally.</summary>
+        public static bool Post<A1, A2, A3>(Action<A1, A2, A3> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        /// <summary>A call <c>f(a1, a2, a3, a4)</c> is allowed: its precondition holds.</summary>
+        public static bool Pre<A1, A2, A3, A4, R>(Func<A1, A2, A3, A4, R> f, A1 a1, A2 a2, A3 a3, A4 a4) => throw GhostException.Instance;
+        /// <summary><paramref name="r"/> is a result <c>f(a1, a2, a3, a4)</c> may give.</summary>
+        public static bool Post<A1, A2, A3, A4, R>(Func<A1, A2, A3, A4, R> f, A1 a1, A2 a2, A3 a3, A4 a4, R r) => throw GhostException.Instance;
+        public static bool Pre<A1, A2, A3, A4>(Action<A1, A2, A3, A4> f, A1 a1, A2 a2, A3 a3, A4 a4) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> may return normally.</summary>
+        public static bool Post<A1, A2, A3, A4>(Action<A1, A2, A3, A4> f, A1 a1, A2 a2, A3 a3, A4 a4) => throw GhostException.Instance;
+
+        /// <summary>f accepts every argument: Spec.Pre holds for all of them.</summary>
+        public static bool Total<R>(Func<R> f) => throw GhostException.Instance;
+        public static bool Total(Action f) => throw GhostException.Instance;
+        /// <summary>f accepts every argument: Spec.Pre holds for all of them.</summary>
+        public static bool Total<A1, R>(Func<A1, R> f) => throw GhostException.Instance;
+        public static bool Total<A1>(Action<A1> f) => throw GhostException.Instance;
+        /// <summary>f accepts every argument: Spec.Pre holds for all of them.</summary>
+        public static bool Total<A1, A2, R>(Func<A1, A2, R> f) => throw GhostException.Instance;
+        public static bool Total<A1, A2>(Action<A1, A2> f) => throw GhostException.Instance;
+        /// <summary>f accepts every argument: Spec.Pre holds for all of them.</summary>
+        public static bool Total<A1, A2, A3, R>(Func<A1, A2, A3, R> f) => throw GhostException.Instance;
+        public static bool Total<A1, A2, A3>(Action<A1, A2, A3> f) => throw GhostException.Instance;
+        /// <summary>f accepts every argument: Spec.Pre holds for all of them.</summary>
+        public static bool Total<A1, A2, A3, A4, R>(Func<A1, A2, A3, A4, R> f) => throw GhostException.Instance;
+        public static bool Total<A1, A2, A3, A4>(Action<A1, A2, A3, A4> f) => throw GhostException.Instance;
+
+        // ---- what a delegate may change (a modifies frame, as a function of its arguments)
+
+        /// <summary>A call of f changes no array, field or model state that exists before it (it may make new objects).</summary>
+        public static bool ChangesNothing(Delegate f) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<R>(Func<R> f, ObjSet frame) => throw GhostException.Instance;
+        public static bool Changes(Action f, ObjSet frame) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<A1, R>(Func<A1, R> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<A1>(Action<A1> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<A1, A2, R>(Func<A1, A2, R> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<A1, A2>(Action<A1, A2> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>A call <c>f(...)</c> changes only the objects and arrays in <paramref name="frame"/> of its arguments (and new ones).</summary>
+        public static bool Changes<A1, A2, A3, R>(Func<A1, A2, A3, R> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<A1, A2, A3>(Action<A1, A2, A3> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Changes<T>(Predicate<T> f, Func<T, ObjSet> frame) => throw GhostException.Instance;
+
+        // ---- what a delegate's Spec.Pre and Spec.Post read (a reads frame, as a function of its arguments)
+        //
+        // Without one, a delegate's Spec.Pre and Spec.Post are the same in every state (steady), and a method whose
+        // specifications speak of them takes that for granted of its parameters (its callers prove it). With one, they
+        // are of the state they are taken in, and stay as they are while the fields and cells of the objects in the
+        // frame do.
+
+        /// <summary>What <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> depend on: the fields and cells of the objects in <paramref name="frame"/> of the arguments.</summary>
+        public static bool Reads<A1, R>(Func<A1, R> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<A1>(Action<A1> f, Func<A1, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>What <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> depend on: the fields and cells of the objects in <paramref name="frame"/> of the arguments.</summary>
+        public static bool Reads<A1, A2, R>(Func<A1, A2, R> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<A1, A2>(Action<A1, A2> f, Func<A1, A2, ObjSet> frame) => throw GhostException.Instance;
+        /// <summary>What <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> depend on: the fields and cells of the objects in <paramref name="frame"/> of the arguments.</summary>
+        public static bool Reads<A1, A2, A3, R>(Func<A1, A2, A3, R> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<A1, A2, A3>(Action<A1, A2, A3> f, Func<A1, A2, A3, ObjSet> frame) => throw GhostException.Instance;
+        public static bool Reads<R>(Func<R> f, ObjSet frame) => throw GhostException.Instance;
+        public static bool Reads(Action f, ObjSet frame) => throw GhostException.Instance;
+        public static bool Reads<T>(Predicate<T> f, Func<T, ObjSet> frame) => throw GhostException.Instance;
+
+        // ---- what a delegate reads, as an object set (Dafny's f.reads(x)); naming it says the delegate may read state
+
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<R>(Func<R> f) => throw GhostException.Instance;
+        public static ObjSet ReadsOf(Action f) => throw GhostException.Instance;
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<A1, R>(Func<A1, R> f, A1 a1) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<A1>(Action<A1> f, A1 a1) => throw GhostException.Instance;
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<A1, A2, R>(Func<A1, A2, R> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<A1, A2>(Action<A1, A2> f, A1 a1, A2 a2) => throw GhostException.Instance;
+        /// <summary>The objects whose fields and cells <c>Spec.Pre(f, ...)</c> and <c>Spec.Post(f, ...)</c> read here.</summary>
+        public static ObjSet ReadsOf<A1, A2, A3, R>(Func<A1, A2, A3, R> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<A1, A2, A3>(Action<A1, A2, A3> f, A1 a1, A2 a2, A3 a3) => throw GhostException.Instance;
+        public static ObjSet ReadsOf<T>(Predicate<T> f, T a) => throw GhostException.Instance;
+
+        // (the BCL's other delegates that collections take)
+        public static bool Pre<T>(Predicate<T> f, T a) => throw GhostException.Instance;
+        public static bool Post<T>(Predicate<T> f, T a, bool r) => throw GhostException.Instance;
+        public static bool Total<T>(Predicate<T> f) => throw GhostException.Instance;
+        public static bool Pre<T>(Comparison<T> f, T a, T b) => throw GhostException.Instance;
+        public static bool Post<T>(Comparison<T> f, T a, T b, int r) => throw GhostException.Instance;
+        public static bool Total<T>(Comparison<T> f) => throw GhostException.Instance;
+        public static bool Pre<TIn, TOut>(Converter<TIn, TOut> f, TIn a) => throw GhostException.Instance;
+        public static bool Post<TIn, TOut>(Converter<TIn, TOut> f, TIn a, TOut r) => throw GhostException.Instance;
+        public static bool Total<TIn, TOut>(Converter<TIn, TOut> f) => throw GhostException.Instance;
+
         /// <summary>Bounded existential quantifier: <paramref name="body"/> holds for some i with from &lt;= i &lt; to.</summary>
         public static bool Exists(int from, int to, Func<int, bool> body) => throw GhostException.Instance;
 
@@ -118,6 +242,16 @@ namespace CsVerify
         /// only those cells (and arrays it allocates).
         /// </summary>
         public static bool Acc<T>(T[] array, int from, int to) => throw GhostException.Instance;
+
+        /// <summary>
+        /// A share of permission to read an array's cells: in a contract, the method only reads them (it cannot write them,
+        /// and a call to it changes none of them), and any number of tasks may hold a share at once, while nobody can write
+        /// them. Reading in code that runs alongside other code needs one, or Spec.Acc.
+        /// </summary>
+        public static bool AccRead<T>(T[] array) => throw GhostException.Instance;
+
+        /// <summary>A share of permission to read the cells <paramref name="from"/> (inclusive) to <paramref name="to"/> (exclusive).</summary>
+        public static bool AccRead<T>(T[] array, int from, int to) => throw GhostException.Instance;
 
         /// <summary>Folds a predicate instance: its body's permissions go into it, and its facts must hold.</summary>
         [Conditional(Symbol)] public static void Fold(bool predicate) { }

@@ -609,6 +609,8 @@ namespace CsVerify.Conformance
                 foreach (var k in Keys) if (r.Next(2) == 0) d[k] = SmallInt(r);
                 made = d;
             }
+            else if (t == typeof(System.Threading.Channels.Channel<int, int>)) made = System.Threading.Channels.Channel.CreateUnbounded<int>();
+            else if (t == typeof(System.Threading.CancellationTokenSource)) made = new System.Threading.CancellationTokenSource();
             else if (t == typeof(StringBuilder)) made = new StringBuilder(Strings[r.Next(Strings.Length)]);
             else if (t == typeof(HashSet<int>)) made = new HashSet<int>(Enumerable.Range(0, r.Next(6)).Select(_ => SmallInt(r)));
             else if (t == typeof(Stack<int>)) made = new Stack<int>(Enumerable.Range(0, r.Next(6)).Select(_ => SmallInt(r)));

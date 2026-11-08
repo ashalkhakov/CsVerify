@@ -40,8 +40,8 @@ public sealed class Other { public int X; public void Bump() { X++; } }
                 "public sealed class Key { public override bool Equals(object o) { return false; } public override int GetHashCode() => 0; } " +
                 "public static class C { static void M(System.Collections.Generic.Dictionary<Key, int> d, Key k, Counter c) { int old = c.Count; d[k] = 1; Spec.Assert(c.Count == old); } }").Errors("M"));
             // a delegate may do anything
-            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(System.Action a, Counter c) { int old = c.Count; a(); Spec.Assert(c.Count == old); }"));
-            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(System.Action a, int[] x) { Spec.Requires(x.Length > 0); int old = x[0]; a(); Spec.Assert(x[0] == old); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(System.Action a, Counter c) { Spec.Requires(Spec.Total(a)); int old = c.Count; a(); Spec.Assert(c.Count == old); }"));
+            Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(System.Action a, int[] x) { Spec.Requires(Spec.Total(a)); Spec.Requires(x.Length > 0); int old = x[0]; a(); Spec.Assert(x[0] == old); }"));
         }
 
         [Fact]
