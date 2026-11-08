@@ -188,7 +188,7 @@ namespace CsVerify.Verifier
             if (!_codeMode && _queryContexts.Count == 0) return null;
             if (_queryContexts.Count == 0) TranslationChecks(inv);
             var outer = _queryResult;
-            if (_queryContexts.Count == 0) _queryResult = inv.Type;
+            if (_queryContexts.Count == 0) { _queryResult = inv.Type; _queryRun++; }
             try
             {
                 if ((IsEnumerableMethod(inv.TargetMethod) || IsEfAsyncQuery(inv.TargetMethod)) && Copying(inv, f, spec) is Term copy) return copy;
@@ -260,8 +260,16 @@ namespace CsVerify.Verifier
             bool database = args.Any(a => a.Item2 is Term t && IsDatabaseQuery(t));
             if (database)
             {
+                // (what compares values for equality is the database's: strings by collation, rows by every column)
+                if (ComparesByEquality(definition)) return null;
                 foreach (var l in lambdas.Values) l.Database = true;
                 if (_codeMode && _queryContexts.Count == 0) DatabaseQueryChecks(inv, original ?? inv, definition, args, lambdas, f);
+                // (First(p) as Where(p).First(): the rows filtered once, where the definition would filter them twice)
+                if (FilteredFirst(definition, m, args) is (IMethodSymbol plain, List<(IParameterSymbol, object)> filtered))
+                {
+                    definition = plain;
+                    args = filtered;
+                }
             }
             var instantiation = DefinitionInstantiation(definition, m);
             if (!_codeMode && !IsSequenceType(definition.ReturnType))

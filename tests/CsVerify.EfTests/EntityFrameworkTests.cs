@@ -1,6 +1,6 @@
 using System.Linq;
 using Xunit;
-using static CsVerify.Tests.Harness;
+using static CsVerify.Tests.EfHarness;
 
 namespace CsVerify.Tests
 {
@@ -40,7 +40,7 @@ public sealed class Shop : DbContext
 }
 ";
 
-        private static string[] Errors(string method, string source) => VerifyEf(Model + source).Errors(method);
+        private static string[] Errors(string method, string source, bool overflow = true) => VerifyEf(Model + source, overflow).Errors(method);
 
         // ---- queries ----------------------------------------------------------------------------------------
 
@@ -67,6 +67,11 @@ public sealed class Shop : DbContext
         public void IgnoreQueryFilters_ShowsThem() => Assert.NotEmpty(Errors("M",
             "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().IgnoreQueryFilters().ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => !r[i].IsDeleted)); } }"));
+
+        [Fact]
+        public void First_GivesARowPassingItsPredicate() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db, int id) { var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); " +
+            "if (o != null) Spec.Assert(o.Id == id); var p = await db.Orders.AsNoTracking().OrderBy(x => x.Id).FirstOrDefaultAsync(x => !x.Shipped); if (p != null) Spec.Assert(!p.Shipped); } }"));
 
         [Fact]
         public void Single_ByKey_MatchesAtMostOne() => Assert.Empty(Errors("M",
@@ -244,6 +249,28 @@ public sealed class Shop : DbContext
         public void Commit_WithChangesNotSaved_IsReported() => Assert.Equal(new[] { "CSV1035" }, Errors("M",
             "public static class C { public static async Task M() { using var db = new Shop(); await using var tx = await db.Database.BeginTransactionAsync(); " +
             "db.Orders.Add(new Order()); await tx.CommitAsync(); } }"));
+
+        // ---- one operation at a time on a context (CSV1036) ----
+
+        [Fact]
+        public void TwoQueriesAtOnce_AreReported() => Assert.Equal(new[] { "CSV1036", "CSV1036" }, Errors("M",
+            "public static class C { public static async Task M(Shop db) { var a = db.Orders.ToListAsync(); var b = db.Customers.ToListAsync(); await Task.WhenAll(a, b); } }"));
+
+        [Fact]
+        public void QueriesOneAfterAnother_Verify() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<int> M(Shop db) { var a = await db.Orders.AsNoTracking().CountAsync(); var b = await db.Customers.CountAsync().ConfigureAwait(false); return a + b; } }", overflow: false));
+
+        [Fact]
+        public void ReturningTheTask_LeavesItToTheCaller() => Assert.Empty(Errors("M",
+            "public static class C { public static Task<int> M(Shop db) { return db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void AContextInTaskRun_IsReported() => Assert.Equal(new[] { "CSV1036" }, Errors("M",
+            "public static class C { public static async Task M(Shop db) { await Task.Run(() => db.Orders.Count()); } }"));
+
+        [Fact]
+        public void AContextMadeInTaskRun_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(IDbContextFactory<Shop> factory) { await Task.Run(() => { using var db = factory.CreateDbContext(); return db.Orders.Count(); }); } }"));
 
         [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +

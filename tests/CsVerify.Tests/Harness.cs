@@ -45,23 +45,6 @@ namespace CsVerify.Tests
                 .Select(d => d.Id).OrderBy(x => x).ToArray();
         }
 
-        private const string EfUsings = "using System.Collections.Generic; using System.Linq; using System.Threading; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore;\n";
-
-        /// <summary>EF Core's assemblies (and what they build on), as a project referencing it passes them.</summary>
-        public static List<string> EfReferences() => Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
-            .Where(p => Path.GetFileName(p).StartsWith("Microsoft.EntityFrameworkCore") || Path.GetFileName(p).StartsWith("Microsoft.Extensions."))
-            .Where(p => !Path.GetFileName(p).Contains("Sqlite") && !Path.GetFileName(p).Contains("Design")).ToList();
-
-        /// <summary>A program using Entity Framework Core.</summary>
-        public static VerificationResult VerifyEf(string source, bool overflow = true)
-        {
-            var options = new VerifierOptions { CheckOverflow = overflow };
-            options.References.AddRange(EfReferences());
-            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + EfUsings + source) }, options);
-            Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
-            return result;
-        }
-
         public static VerificationResult Verify(string source, bool overflow = true)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, new VerifierOptions { CheckOverflow = overflow });

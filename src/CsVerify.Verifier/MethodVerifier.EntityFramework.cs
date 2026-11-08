@@ -185,7 +185,19 @@ namespace CsVerify.Verifier
         /// Run without tracking, they are new objects whose navigations are null (or empty) unless included; run with
         /// tracking, they are what the context tracks for their keys, and they are tracked from here on.
         /// </summary>
+        /// <summary>Which run of a query is being read: one reading of each table per run (a definition may read its source twice).</summary>
+        private int _queryRun;
+        private readonly Dictionary<(DbTable, int, bool), Sequence> _readings = new Dictionary<(DbTable, int, bool), Sequence>();
+
         private Sequence TableSequence(DbTable t, Frame f)
+        {
+            bool entitiesOut = _queryResult != null && Mentions(_queryResult, t.Entity.Type);
+            var key = (t, _queryRun, entitiesOut);
+            if (_readings.TryGetValue(key, out var read)) return read;
+            return _readings[key] = ReadTable(t, f);
+        }
+
+        private Sequence ReadTable(DbTable t, Frame f)
         {
             int id = _materialized++;
             var e = t.Entity;
@@ -339,6 +351,7 @@ namespace CsVerify.Verifier
                 // SaveChangesAsync, FindAsync, AddAsync, BeginTransactionAsync, CommitAsync, ExecuteUpdateAsync...
                 if (!(IsEfMethod(call.TargetMethod) || IsTransactionType(call.TargetMethod.ContainingType)) || !call.TargetMethod.Name.EndsWith("Async")) return null;
                 Interleave(f);
+                _efAwaited = true;
                 var value = EfTrackerCall(call, f, spec);
                 if (value == null) return null;
                 return aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void ? T.True : value;
@@ -356,6 +369,19 @@ namespace CsVerify.Verifier
         }
 
         internal const string OrderId = "CSV1031", TranslateId = "CSV1032";
+
+        private static readonly HashSet<string> EqualityOperators = new HashSet<string>
+        {
+            "Distinct", "DistinctBy", "GroupBy", "GroupJoin", "Join", "Union", "UnionBy", "Intersect", "IntersectBy", "Except", "ExceptBy",
+            "Contains", "SequenceEqual", "ToDictionary", "ToLookup", "ToHashSet", "CountBy", "AggregateBy", "IndexOf",
+        };
+
+        /// <summary>
+        /// Does the operator compare values for equality? On a database it compares them as the database does (strings
+        /// by its collation, rows by every column), not as LINQ to Objects' definition says: such a query is a library
+        /// call, which says nothing of what it gives.
+        /// </summary>
+        private static bool ComparesByEquality(IMethodSymbol definition) => EqualityOperators.Contains(definition.Name);
 
         private static readonly HashSet<string> RowLimits = new HashSet<string>
         { "First", "FirstOrDefault", "Last", "LastOrDefault", "ElementAt", "ElementAtOrDefault", "Take", "Skip", "TakeLast", "SkipLast" };
@@ -477,6 +503,33 @@ namespace CsVerify.Verifier
             if (m.Name == "Equals" && m.IsStatic && type.SpecialType == SpecialType.System_Object) return true;
             if (m.Name == "Contains" && type.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic") return true; // (a list passed in: IN)
             return TranslatedTypes.Contains(name);
+        }
+
+        private static readonly HashSet<string> Filtering = new HashSet<string>
+        { "First", "FirstOrDefault", "Single", "SingleOrDefault", "Last", "LastOrDefault", "Any", "Count", "LongCount" };
+
+        /// <summary>
+        /// M(source, p) on a database, for M one of <see cref="Filtering"/>: M(Where(source, p)), its overload without a
+        /// predicate over one lazy Where. (The definitions with a predicate read Where(source, p) twice, and two filters
+        /// of one reading of a table aren't known to agree.)
+        /// </summary>
+        private (IMethodSymbol, List<(IParameterSymbol, object)>)? FilteredFirst(IMethodSymbol definition, IMethodSymbol called, List<(IParameterSymbol, object)> args)
+        {
+            if (!Filtering.Contains(definition.Name) || definition.Parameters.Length != 2 || !(args[1].Item2 is Lambda) || !(args[0].Item2 is Term source)) return null;
+            var defs = definition.ContainingType;
+            var where = defs.GetMembers("Where").OfType<IMethodSymbol>().FirstOrDefault(w => w.Parameters.Length == 2 &&
+                w.Parameters[1].Type is INamedTypeSymbol p && p.TypeArguments.Length == 2);
+            var plain = defs.GetMembers(definition.Name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 1);
+            if (where == null || plain == null) return null;
+            var q = _z3.Fresh("query", Sort.Int);
+            AssumeSide(NotNull(q));
+            var given = DefinitionInstantiation(definition, called);
+            var map = new Dictionary<ITypeSymbol, ITypeSymbol>(SymbolEqualityComparer.Default);
+            foreach (var (wp, dp) in where.TypeParameters.Zip(definition.TypeParameters, (a, b) => (a, b)))
+                map[wp] = given.TryGetValue(dp, out var t) ? t : dp;
+            _lazy[q.S] = new LazyQuery { Definition = where, Args = new List<(IParameterSymbol, object)> { (where.Parameters[0], source), (where.Parameters[1], args[1].Item2) }, Instantiation = map };
+            _databaseQueries.Add(q.S);
+            return (plain, new List<(IParameterSymbol, object)> { (plain.Parameters[0], q) });
         }
 
         /// <summary>The Tracker model function of that name (CsVerify.Ef), compiled in with EF Core.</summary>

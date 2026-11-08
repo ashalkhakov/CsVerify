@@ -174,8 +174,25 @@ namespace CsVerify.Verifier
             return null;
         }
 
-        /// <summary>The DbContext, DbSet, DatabaseFacade, transaction, ChangeTracker and EntityEntry calls the tracker models.</summary>
+        /// <summary>Set while an await of an EF call reads it: its value is the awaited one, not the task.</summary>
+        private bool _efAwaited;
+
+        /// <summary>
+        /// The DbContext, DbSet, DatabaseFacade, transaction, ChangeTracker and EntityEntry calls the tracker models. An
+        /// ...Async one not awaited here gives its task (CSV1036 asks that it be awaited at once, or returned).
+        /// </summary>
         private Term EfTrackerCall(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            bool awaited = _efAwaited;
+            _efAwaited = false;
+            var value = EfTrackerCallCore(inv, f, spec);
+            if (value == null || awaited || !inv.TargetMethod.Name.EndsWith("Async")) return value;
+            var task = _z3.Fresh("task", Sort.Int);
+            _z3.Assume(NotNull(task));
+            return task;
+        }
+
+        private Term EfTrackerCallCore(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             if (Ef == null || TrackerModel("State") == null || !_codeMode) return null;
             var m = inv.TargetMethod;

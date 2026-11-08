@@ -44,6 +44,16 @@
 - `StaticFields.cs`: a counter in static fields; a call forgets only the static fields its callee writes.
 - `ArrayViews.SwapEnds`: exchanges the first and last cells through two disjoint views. The postcondition is an exact sequence equation: `Elems == Old.Update(0, Old[n-1]).Update(n-1, Old[0])`.
 
+`samples/EntityFramework` (with EF Core; see [Entity Framework Core](entity-framework.md)), both written for this repository:
+- `Good/Shop.cs`, which verifies: a customer by a unique email, a page of orders ordered by a key last, unshipped
+  orders with what the query and its filter say of each, an order shipped by loading it tracked, a disconnected update
+  marked modified before its token changes, two saves in one transaction, one joined if the caller has one open, a bulk
+  update reloaded before saving, and two counts at once, each task on a context of its own.
+- `Buggy/StoreBugs.cs`, one bug in each method: the first row in no order, a lookup by a column that isn't unique, a
+  program method and a computed property in a query, `Update` of a loaded graph, one row attached twice, a save after a
+  failed one, a stale copy saved over a bulk update, a row version written, two saves without a transaction, a
+  transaction begun inside one, two queries at once, and a context used from `Task.Run`.
+
 ## Ported from ATS and Dafny
 
 - `DafnyLemon.cs`, from github.com/ashalkhakov/dafny-lemon (2024), a Dafny translation of Lemon's data structures, ported and cleaned up:

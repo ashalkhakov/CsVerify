@@ -195,6 +195,7 @@ namespace CsVerify.Verifier
             CheckLockLevels();
             CheckAtomics();
             CheckFlagUses();
+            CheckContextConcurrency();
             CheckConcurrentMarks();
             CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }

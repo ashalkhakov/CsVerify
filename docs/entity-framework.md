@@ -1,0 +1,116 @@
+# Entity Framework Core
+
+For a program that references EF Core, the verifier reads queries on a `DbContext` as what the database runs, and
+checks that the context is used as EF requires: its change tracker, transactions and concurrency tokens, and one
+operation at a time. Nothing needs to be written for this: the model comes from the program's own EF configuration.
+`samples/EntityFramework` has a program that verifies and one with a bug in each method.
+
+## The model
+
+Read from the sources, as EF reads them:
+- **Entity types:** a context's `DbSet<T>` properties, the types its configuration names, and what their navigations
+  lead to.
+- **Keys:** `[Key]`, `HasKey(x => x.P)` or `HasKey(x => new { x.A, x.B })`, or EF's convention (`Id`, or the type's
+  name and `Id`).
+- **Unique values:** `[Index(..., IsUnique = true)]`, `HasIndex(...).IsUnique()`, `HasAlternateKey(...)`.
+- **Concurrency tokens:** `[ConcurrencyCheck]`, `IsConcurrencyToken()`; row versions: `[Timestamp]`, `IsRowVersion()`.
+- **Query filters:** `HasQueryFilter(x => ...)`.
+- **Navigations:** properties of an entity type, or of a collection of one.
+
+Fluent configuration is read in `OnModelCreating` and in `IEntityTypeConfiguration<T>.Configure`.
+
+## Queries
+
+A query on `ctx.Orders` (or `ctx.Set<Order>()`) is LINQ over the table as it is when the query runs. `Queryable`'s
+operators, and EF's `...Async` forms awaited where they are called, are read from LINQ to Objects' definitions
+([Contracts for code without sources](library-contracts.md)). Each run reads the table afresh:
+- its rows are in no order the database promises, unless the query orders them;
+- no two have the same key, or the same value of a unique index;
+- each passes the entity's query filters, unless the query says `IgnoreQueryFilters()`;
+- strings are compared as the database compares them: an equivalence that equal strings satisfy, of which nothing
+  else is known. SQL Server's default collation ignores case and trailing spaces, SQLite's does not;
+- other code may have changed the table since the last run, so two runs needn't agree.
+
+So `Where`, `Count`, `Any` and `All` are exact, `SingleOrDefault(c => c.Email == email)` is proved to find at most one
+row when `Email` has a unique index, and a row a query gives passes its predicate.
+
+**Tracking.** Read with `AsNoTracking()`, the rows are new objects, and a navigation not `Include`d is null. Read with
+tracking, a row whose key the context already tracks is that instance, with its values as they are in memory, which
+may not be the database's: so what the query says of its rows is known only when the context tracked no entity of
+that type before it. `Count`, `Any` and the like, and projections of columns, return no entities and are always
+exact.
+
+**Not read from the definitions:** on a database, operators that compare values for equality (`Distinct`, `GroupBy`,
+joins, `Union`, `Intersect`, `Except`, `Contains`, `ToDictionary`) compare as the database does (strings by its
+collation, rows by every column). They are library calls, which say nothing of what they give.
+
+**Reported:**
+- **CSV1031**, keeping rows by their place in an order the database doesn't fix: `First`, `Last`, `ElementAt`, `Take`
+  and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`), or at most
+  one row that matches (`FirstOrDefault(o => o.Id == id)`, proved).
+- **CSV1032**, what EF can't translate to SQL: in a query's lambda, what depends on the row may read columns and
+  navigations and call what EF translates (operators, string, `Math` and date members, LINQ over navigations and over
+  lists passed in); a method of the program, or a property computed in C# or `[NotMapped]`, makes EF throw when the
+  query runs. What doesn't depend on the row is evaluated before the query is sent, so it may call anything, and so
+  may the final `Select`, which runs on the client.
+
+## The change tracker
+
+A context's tracked entities, their states (`EntityState`), its unsaved changes and its transaction are ghost state
+the verifier follows from call to call: `Add`, `Attach`, `Update`, `Remove`, `Entry(e).State = ...`, `Find`,
+`SaveChanges`, `Entry(e).Reload()`, `ChangeTracker.Clear()`, and a write of a tracked entity's field (which makes it
+modified). A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
+anything.
+
+**Reported:**
+- **CSV1033**, the tracker misused:
+  - `Attach`, `Update`, `Add` (of a key that is set), `Remove` or `Entry(e).State = ...` where the context may track
+    another instance with the same key: EF throws. A key EF generates (an integer key still 0) never clashes.
+  - `Update` of an entity whose navigations hold something: EF marks what they hold as modified too, and writes every
+    column of each. Update the one entity (`Entry(e).State = EntityState.Modified`), or load the graph tracked.
+  - a context used after `SaveChanges` failed on it, or after its transaction rolled back (or was disposed
+    uncommitted): what it tracks is no longer what the database holds.
+  - `SaveChanges` writing an entity that `ExecuteUpdate` or `ExecuteDelete` on its table may have changed since it was
+    read: reload it first.
+- **CSV1034**, concurrency tokens:
+  - `Attach`, `Update` or `Entry(e).State = Modified` of an entity this context read, whose token was changed since:
+    EF would check the row against the new value. Mark it first, then change it.
+  - a write of a row version, which the database sets.
+
+## Transactions
+
+- **CSV1035:**
+  - `BeginTransaction` where one may be open: EF throws. Code that joins the caller's transaction or begins its own
+    (`db.Database.CurrentTransaction == null ? await db.Database.BeginTransactionAsync() : null`) verifies.
+  - `Commit` with changes not saved: they aren't in the transaction.
+  - a second `SaveChanges` on a context outside a transaction: if it fails, what the first saved stays.
+
+## One operation at a time
+
+A context isn't thread safe, and EF throws when two of its operations overlap.
+
+- **CSV1036:**
+  - an asynchronous operation on a context (a query, `SaveChangesAsync`, `BeginTransactionAsync`...) not awaited where
+    it starts, or returned by a method that isn't async (which leaves it to the caller): `Task.WhenAll` of two queries
+    on one context is reported.
+  - a context from outside used in code that runs alongside (`Task.Run`, `Task.Factory.StartNew`, `Parallel`,
+    `ThreadPool`, a `Thread`). Each such task makes its own (`IDbContextFactory`).
+
+## What is checked within a method
+
+A failed save, a rollback, entities read and the tokens read, a bulk update's stale rows and saves outside a
+transaction are each method's own record: none at its start, and calls don't change them. So these rules hold within
+a method, not across calls: a context a caller broke, or a save a callee made, is not seen.
+
+## Limits
+
+- What the database does with a query (its SQL) is not proved: the definitions are trusted, and checked against EF on
+  SQLite and on SQL Server (`tests/CsVerify.EfTests`, `EfConformanceTests`): each rule above is run there, and where
+  the two differ (collation, overflow in a query, overlapping operations), the model claims only what both do.
+- A concurrency token is followed only for an entity's first one, and only while its value is known: an `await`
+  between reading the entity and attaching it forgets it (as it forgets any object the method shares), so the read
+  is better after the `await`.
+- `Find` with a composite key, raw SQL (`FromSql`, `ExecuteSql`), compiled queries, owned types and inheritance mapping
+  are library calls.
+- String members inside a query (`Contains`, `ToUpper`, `Length`...) translate, but their values are unknown: SQL
+  Server's and .NET's differ.

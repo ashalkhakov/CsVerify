@@ -294,8 +294,8 @@ them part by part), so `GroupBy(x => (x.A, x.B))`, `GroupBy(x => new { x.A, x.B 
 exact where the parts' equality is known. `==` between two anonymous objects compares references in C#, which is not
 modeled (an unknown value). An anonymous object is never null.
 
-These model `System.Linq.Enumerable`, which runs in memory. `Queryable` (Entity Framework and other providers, which
-translate the query instead of running it) is not modeled: its methods are library calls.
+These model `System.Linq.Enumerable`, which runs in memory. Entity Framework Core's queries are read from them too, as the
+database runs them ([Entity Framework Core](entity-framework.md)); other `Queryable` providers' are library calls.
 
 **Equality.** `Spec.Equal(a, b)` is what `EqualityComparer<T>.Default.Equals(a, b)` gives, for `T` as the call
 instantiates it. It is exact where the verifier knows `T`'s `Equals`: numbers, chars, bools, enums, strings (their

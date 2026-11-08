@@ -9,9 +9,6 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
-    <!-- programs using Entity Framework Core are verified against it, and its model is checked against it on SQLite -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\CsVerify.Spec\CsVerify.Spec.csproj" />
