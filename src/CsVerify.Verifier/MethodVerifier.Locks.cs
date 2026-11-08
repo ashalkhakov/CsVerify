@@ -41,7 +41,7 @@ namespace CsVerify.Verifier
                 if (n.Parent is NameColonSyntax || n.Parent is NameEqualsSyntax) continue;
                 var receiver = ReceiverOf(n);
                 if (IsBeingBuilt(n, receiver)) continue;
-                if (!(guard.IsReadOnly || guard.IsConst))
+                if (!(guard.IsReadOnly || guard.IsConst || _engine.Locks.IsFlag(guard)))
                     Report("CSV1023", n, $"'{guard.Name}' guards '{symbol.Name}', but it isn't readonly: threads could hold different objects", isError: true);
                 else if (_engine.Locks.IsSemaphore(guard) && !locks.IsMutexGate(guard))
                     Report("CSV1023", n, $"'{guard.Name}' guards '{symbol.Name}', but it isn't made with a count of 1: it may let more than one in", isError: true);
@@ -85,6 +85,9 @@ namespace CsVerify.Verifier
         private bool IsBeingBuilt(SyntaxNode n, string receiver)
         {
             if (n.Parent is AssignmentExpressionSyntax a && a.Left == n && a.Parent is InitializerExpressionSyntax) return true;
+            // (a static constructor has its type's statics to itself: the runtime runs it once, before anything else uses them)
+            if (_method.MethodKind == MethodKind.StaticConstructor && _model.GetSymbolInfo(n).Symbol is ISymbol s && s.IsStatic &&
+                SymbolEqualityComparer.Default.Equals(s.ContainingType, _method.ContainingType) && !CrossesFunction(n)) return true;
             return receiver == "this" && _method.MethodKind == MethodKind.Constructor && !CrossesFunction(n);
         }
 
@@ -115,7 +118,7 @@ namespace CsVerify.Verifier
                         if (wanted == null) return true;
                         if (GateReceiver(t, guard) == wanted && StaysTheSame(wanted, t)) return true;
                         break;
-                    case TryStatementSyntax pt when LockGuards.PrimitiveForm(pt, _model) is { } form && form.kind == "Monitor" && form.held.Any(h => h.Span.Contains(n.Span)) &&
+                    case TryStatementSyntax pt when LockGuards.PrimitiveForm(pt, _model) is { } form && (form.kind == "Monitor" || form.kind == "Flag") && form.held.Any(h => h.Span.Contains(n.Span)) &&
                                                     SymbolEqualityComparer.Default.Equals(LockGuards.LockOf(form.lockExpr, _model), guard):
                         if (wanted == null) return true;
                         if ((form.lockExpr is MemberAccessExpressionSyntax pma ? pma.Expression.ToString() : "this") == wanted && StaysTheSame(wanted, pt)) return true;

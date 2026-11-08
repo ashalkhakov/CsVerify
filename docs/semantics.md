@@ -121,6 +121,25 @@ finally { _gate.Release(); }
 
 A semaphore of any other count, such as a rate limiter, guards nothing, and is a library call like any other.
 
+**A flag as a try-lock.** An `int` or `bool` field that a `[GuardedBy]` or `[LockInvariant]` names (or that is inferred to guard writes) is a lock taken with `Interlocked`, which may fail:
+
+```csharp
+int _busy;                                     // 0 is free
+[GuardedBy(nameof(_busy))] int _uses;
+
+if (Interlocked.Exchange(ref _busy, 1) == 0)   // or CompareExchange(ref _busy, 1, 0) == 0
+{
+    try { _uses++; }
+    finally { Volatile.Write(ref _busy, 0); }  // or Interlocked.Exchange(ref _busy, 0)
+}
+```
+
+- **The forms:** the if runs its body when the flag was free, and the body begins with the try; or the if leaves (`return`, `throw`, `break`, `continue`) when it wasn't free, and the try comes next. For a `bool`, `true` and `false` stand for 1 and 0.
+- **Where it was taken, it's a lock:** what it guards is forgotten, its invariants are known, and they're proved where the `finally` gives it back (CSV1024). Where taking it failed, nothing was taken. Taken again by the thread that has it, it fails.
+- **Any other use of the flag is reported (CSV1023):** reading or writing it, taking it with no `finally` to give it back (so a throw would lock everyone out for good), giving it back elsewhere. A constructor sets its own object's flag.
+- **It never waits,** so it can't be part of a deadlock, and has no lock level: it may be taken under any lock, and any lock under it.
+- A flag is a lock or an `[Atomic]` field, not both (CSV1030).
+
 **Wrappers: `[Acquires]` and `[Releases]`.** A helper or a lock class around such a semaphore says what it does, and is then used like the semaphore:
 
 ```csharp
@@ -145,6 +164,7 @@ The lock is the field the call is on, which may be a `SemaphoreSlim` with an ext
 lock (_accounts) { Audit(); }         // fine if Audit takes only _log, or nothing
 ```
 
+- **A try-lock flag** (see above) never waits, so it has no level and takes no part in the order.
 - **What a lock is.** A field is its own lock; an object of a class with a level is that class's; a local that is only ever given one lock is that lock. A lock on an `object` or an interface, or `typeof(...)`, can't have a level, so taking one inside another lock is reported. One object can't be two locks of different levels: a class can't say a level its base class says, a field can't say one when its objects' class does, and a leveled lock field must be readonly and given a new object of its own (all CSV1025).
 - **Checked through calls.** What a call may take is worked out from all it runs: its body, the methods, accessors and constructors it calls, every override or implementation in the program of a virtual or interface member, calls with no call written (operators, conversions, `foreach`, `using`, events, collection initializers, property patterns), a lambda a library call runs at once (`list.ForEach(x => ...)`, not `Task.Run`), and what a library can call back: every override and interface implementation of the program's classes it's handed, through its type arguments, receiver and arguments, and of a comparer for what a collection holds. Taking the same lock of the same object again is fine for a lock, which is reentrant, and reported for a semaphore or a `SpinLock`, which would wait for itself.
 - **A delegate could take any lock.** Calling one while a lock is held is reported, unless its delegate type says `[TakesNoLocks]`; then every lambda and method made one is checked to take none. `[TakesNoLocks]` on a method, interface or class is trusted at its calls and checked in its body and in every override and implementation.

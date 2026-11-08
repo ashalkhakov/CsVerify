@@ -58,6 +58,9 @@ namespace CsVerify.Verifier
                         case TryStatementSyntax pt when PrimitiveForm(pt, model) is { } form && form.kind == "Monitor" && LockOf(form.lockExpr, model) is IFieldSymbol lf && (lf.IsReadOnly || lf.IsConst):
                             Infer(form.held, lf, model, inferred);
                             break;
+                        case TryStatementSyntax ft when PrimitiveForm(ft, model) is { } flagForm && flagForm.kind == "Flag" && LockOf(flagForm.lockExpr, model) is IFieldSymbol ff:
+                            Infer(flagForm.held, ff, model, inferred);
+                            break;
                         case UsingStatementSyntax u when GateOfUsing(u, model) is IFieldSymbol gate && gate.IsReadOnly && IsMutex(gate):
                             Infer(new[] { u.Statement }, gate, model, inferred);
                             break;
@@ -73,7 +76,7 @@ namespace CsVerify.Verifier
         private static void Infer(IEnumerable<SyntaxNode> held, IFieldSymbol lockField, SemanticModel model, Dictionary<ISymbol, HashSet<ISymbol>> inferred)
         {
             foreach (var written in held.SelectMany(h => h.DescendantNodes()).OfType<ExpressionSyntax>().Where(IsWriteTarget))
-                if (model.GetSymbolInfo(written).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && Inferable(s) &&
+                if (model.GetSymbolInfo(written).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && Inferable(s) && !SymbolEqualityComparer.Default.Equals(s, lockField) &&
                     SymbolEqualityComparer.Default.Equals(s.ContainingType, lockField.ContainingType))
                 {
                     if (!inferred.TryGetValue(s, out var locks)) inferred[s] = locks = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
@@ -138,6 +141,14 @@ namespace CsVerify.Verifier
         // ---- a SemaphoreSlim used as a lock: await g.WaitAsync(); try { ... } finally { g.Release(); } ----
 
         /// <summary>A SemaphoreSlim, or a lock class of the program or of a library: what can be held across an await.</summary>
+        /// <summary>
+        /// An int or bool field used as a try-lock: what a [GuardedBy] or [LockInvariant] names, or what's inferred to guard
+        /// writes, taken by Interlocked in an if and given back in a finally. 0 (false) is free.
+        /// </summary>
+        public bool IsFlag(ISymbol s) =>
+            s is IFieldSymbol f && !f.IsReadOnly && !f.IsConst && (f.Type.SpecialType == SpecialType.System_Int32 || f.Type.SpecialType == SpecialType.System_Boolean) &&
+            (_guards.Values.Contains(f.OriginalDefinition, SymbolEqualityComparer.Default) || _invariants.ContainsKey(f.OriginalDefinition) || _unmarked.Values.Contains(f.OriginalDefinition, SymbolEqualityComparer.Default));
+
         public bool IsSemaphore(ISymbol s) => s is IFieldSymbol f && (IsPlainSemaphore(f) || HasAcquires(f.Type));
 
         private static bool IsPlainSemaphore(IFieldSymbol f) => f.Type?.ToDisplayString() == "System.Threading.SemaphoreSlim";
@@ -397,6 +408,7 @@ namespace CsVerify.Verifier
         /// <summary>A lock primitive taken by a statement: Monitor.Enter(x) or Enter(x, ref taken), a ReaderWriterLockSlim's Enter...Lock(), a SpinLock's Enter(ref taken), a Mutex's WaitOne(). The expression of the lock, and what it is.</summary>
         public static (ExpressionSyntax lockExpr, string kind)? PrimitiveTaken(StatementSyntax st, SemanticModel model)
         {
+            if (FlagIf(st, model, out _) is ExpressionSyntax flag) return (flag, "Flag");
             if (!(st is ExpressionStatementSyntax es) || !(es.Expression is InvocationExpressionSyntax inv) || !(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m) || m.ContainingType == null) return null;
             var type = m.ContainingType.ToDisplayString();
             var receiver = inv.Expression is MemberAccessExpressionSyntax ma ? ma.Expression : null;
@@ -410,8 +422,77 @@ namespace CsVerify.Verifier
             return null;
         }
 
+        /// <summary>
+        /// A flag taken as a try-lock, in an if's condition: <c>Interlocked.Exchange(ref f, 1)</c> or
+        /// <c>Interlocked.CompareExchange(ref f, 1, 0)</c> compared with 0 (for a bool, true and false). The flag's
+        /// expression, the call, and whether the condition is true when it was taken (it was 0 before).
+        /// </summary>
+        public static (ExpressionSyntax lockExpr, InvocationExpressionSyntax call, bool takenWhenTrue)? FlagTaken(ExpressionSyntax cond, SemanticModel model)
+        {
+            cond = Unparen(cond);
+            if (cond is PrefixUnaryExpressionSyntax not && not.IsKind(SyntaxKind.LogicalNotExpression))
+                return FlagTaken(not.Operand, model) is var (e, c, w) && Unparen(not.Operand) is InvocationExpressionSyntax ? (e, c, !w) : null;
+            if (cond is InvocationExpressionSyntax alone)
+                return FlagTaking(alone, model, out var be, out var isBool) is ExpressionSyntax ae && isBool ? (ae, alone, false) : null;
+            if (!(cond is BinaryExpressionSyntax b) || !(b.IsKind(SyntaxKind.EqualsExpression) || b.IsKind(SyntaxKind.NotEqualsExpression))) return null;
+            foreach (var (call, other) in new[] { (b.Left, b.Right), (b.Right, b.Left) })
+            {
+                if (!(Unparen(call) is InvocationExpressionSyntax inv) || !(FlagTaking(inv, model, out var free, out _) is ExpressionSyntax lockExpr)) continue;
+                var v = model.GetConstantValue(other);
+                if (!v.HasValue) continue;
+                bool sameAsFree = Equals(v.Value, free) || v.Value is bool bv && free is bool bf && bv == bf || IsZero(v.Value) && IsZero(free);
+                bool sameAsTaken = !sameAsFree && (v.Value is bool || IsOne(v.Value));
+                if (!sameAsFree && !sameAsTaken) continue;
+                return (lockExpr, inv, sameAsFree == b.IsKind(SyntaxKind.EqualsExpression));
+            }
+            return null;
+        }
+
+        private static ExpressionSyntax Unparen(ExpressionSyntax e)
+        {
+            while (e is ParenthesizedExpressionSyntax p) e = p.Expression;
+            return e;
+        }
+
+        private static bool IsZero(object v) => v is int i ? i == 0 : v is long l ? l == 0 : v is bool b && !b;
+        private static bool IsOne(object v) => v is int i ? i == 1 : v is long l && l == 1;
+
+        /// <summary>Interlocked.Exchange(ref f, 1/true), or CompareExchange(ref f, 1/true, 0/false): the flag, and its free value (0 or false).</summary>
+        private static ExpressionSyntax FlagTaking(InvocationExpressionSyntax inv, SemanticModel model, out object free, out bool isBool)
+        {
+            free = null; isBool = false;
+            if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m) || m.ContainingType?.ToDisplayString() != "System.Threading.Interlocked") return null;
+            var args = inv.ArgumentList.Arguments;
+            if (args.Count < 2 || !args[0].RefKindKeyword.IsKind(SyntaxKind.RefKeyword)) return null;
+            var set = model.GetConstantValue(args[1].Expression);
+            if (!set.HasValue || !(IsOne(set.Value) || set.Value is true)) return null;
+            isBool = set.Value is bool;
+            free = isBool ? (object)false : 0;
+            if (m.Name == "Exchange" && args.Count == 2) return args[0].Expression;
+            if (m.Name == "CompareExchange" && args.Count == 3 && model.GetConstantValue(args[2].Expression) is var c && c.HasValue && IsZero(c.Value)) return args[0].Expression;
+            return null;
+        }
+
+        /// <summary>Does the statement leave, so what follows runs only when the if's condition was false?</summary>
+        private static bool Leaves(StatementSyntax s) =>
+            s is ReturnStatementSyntax || s is ThrowStatementSyntax || s is BreakStatementSyntax || s is ContinueStatementSyntax ||
+            s is BlockSyntax b && b.Statements.Count > 0 && Leaves(b.Statements.Last());
+
+        /// <summary>An if taking a flag: with the try after it when the if leaves on failing, or the try first in its body when it runs on taking.</summary>
+        private static ExpressionSyntax FlagIf(StatementSyntax st, SemanticModel model, out bool takenWhenTrue)
+        {
+            takenWhenTrue = false;
+            if (!(st is IfStatementSyntax ifs) || !(FlagTaken(ifs.Condition, model) is var (lockExpr, _, when))) return null;
+            takenWhenTrue = when;
+            return when || ifs.Else == null && Leaves(ifs.Statement) ? lockExpr : null;
+        }
+
+        /// <summary>The try first in a flag-taking if's body: what runs with the flag taken.</summary>
+        private static TryStatementSyntax FirstInBody(IfStatementSyntax ifs) =>
+            ifs.Statement as TryStatementSyntax ?? (ifs.Statement as BlockSyntax)?.Statements.FirstOrDefault() as TryStatementSyntax;
+
         /// <summary>Does this call give back the primitive taken so? Monitor.Exit(x), Exit...Lock(), SpinLock.Exit(), ReleaseMutex(), on the same expression.</summary>
-        private static bool GivesBack(InvocationExpressionSyntax inv, ExpressionSyntax lockExpr, string kind, SemanticModel model)
+        internal static bool GivesBack(InvocationExpressionSyntax inv, ExpressionSyntax lockExpr, string kind, SemanticModel model)
         {
             if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m)) return false;
             var receiver = (inv.Expression as MemberAccessExpressionSyntax)?.Expression;
@@ -421,6 +502,10 @@ namespace CsVerify.Verifier
                 case "ReaderWriterLockSlim": return receiver?.ToString() == lockExpr.ToString() && m.Name.StartsWith("Exit") && m.Name.EndsWith("Lock");
                 case "SpinLock": return receiver?.ToString() == lockExpr.ToString() && m.Name == "Exit";
                 case "Mutex": return receiver?.ToString() == lockExpr.ToString() && m.Name == "ReleaseMutex";
+                case "Flag":
+                    return (m.ContainingType?.ToDisplayString() == "System.Threading.Volatile" && m.Name == "Write" || m.ContainingType?.ToDisplayString() == "System.Threading.Interlocked" && m.Name == "Exchange") &&
+                           inv.ArgumentList.Arguments.Count == 2 && inv.ArgumentList.Arguments[0].Expression.ToString() == lockExpr.ToString() &&
+                           model.GetConstantValue(inv.ArgumentList.Arguments[1].Expression) is var c && c.HasValue && IsZero(c.Value);
             }
             return false;
         }
@@ -433,6 +518,11 @@ namespace CsVerify.Verifier
         public static (ExpressionSyntax lockExpr, string kind, StatementSyntax taking, IReadOnlyList<SyntaxNode> held)? PrimitiveForm(TryStatementSyntax t, SemanticModel model)
         {
             if (t.Finally == null) return null;
+            // (a flag taken in an if whose body the try begins)
+            var around = t.Parent as IfStatementSyntax ?? t.Parent?.Parent as IfStatementSyntax;
+            if (around != null && FirstInBody(around) == t && FlagIf(around, model, out var onTrue) is ExpressionSyntax flag && onTrue &&
+                t.Finally.Block.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i => GivesBack(i, flag, "Flag", model)))
+                return (flag, "Flag", around, new List<SyntaxNode> { t.Block }.Concat(t.Catches).ToList());
             foreach (var (taking, inside) in new[] { (Before(t), false), (t.Block.Statements.FirstOrDefault(), true) })
             {
                 if (taking == null || !(PrimitiveTaken(taking, model) is var (lockExpr, kind))) continue;
@@ -446,6 +536,7 @@ namespace CsVerify.Verifier
         /// <summary>The try statement whose form a taking statement is part of; null if it is in none.</summary>
         public static TryStatementSyntax PrimitiveTryOf(StatementSyntax taking, SemanticModel model)
         {
+            if (taking is IfStatementSyntax ifs && FirstInBody(ifs) is TryStatementSyntax body && PrimitiveForm(body, model) is { } fi && fi.taking == taking) return body;
             if (TryAfter(taking) is TryStatementSyntax after && PrimitiveForm(after, model) is { } fa && fa.taking == taking) return after;
             if (taking.Parent is BlockSyntax b && b.Parent is TryStatementSyntax around && around.Block == b && PrimitiveForm(around, model) is { } fb && fb.taking == taking) return around;
             return null;

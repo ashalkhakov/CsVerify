@@ -221,6 +221,9 @@ namespace CsVerify.Verifier
                     return new Acquired { Lock = sym, Element = element, Owner = owner, Receiver = receiver, Static = isStatic, At = l, Expression = l.Expression };
                 case StatementSyntax st when LockGuards.TryAfter(st) is TryStatementSyntax t && _locks.GateOfTry(t, model) is IFieldSymbol gate && _locks.IsMutexGate(gate):
                     return Gate(gate, st, st, model);
+                // (a flag taken as a try-lock never waits: it can't be part of a deadlock)
+                case StatementSyntax fs when LockGuards.PrimitiveTaken(fs, model)?.kind == "Flag":
+                    return null;
                 case StatementSyntax ps when LockGuards.PrimitiveTaken(ps, model) is var (lockExpr, kind):
                     var (psym, pel, powner, preceiver, pstatic) = LockTarget(lockExpr, model);
                     // (a SpinLock isn't reentrant: taken again, it waits for itself)

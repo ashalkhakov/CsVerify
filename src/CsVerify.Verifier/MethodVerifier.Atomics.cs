@@ -24,7 +24,7 @@ namespace CsVerify.Verifier
 
         private void CheckAtomics()
         {
-            foreach (var (at, message) in _engine.Atomics.Misdeclared(_engine.Fields))
+            foreach (var (at, message) in _engine.Atomics.Misdeclared(_engine.Fields, _engine.Locks))
                 if (_engine.Atomics.Claim(at)) Report(AtomicId, at, message, isError: true);
             foreach (var field in _engine.Atomics.SteppedBy(_method).Where(x => Atomics.StepOf(x) != null).Take(1))
                 ProveTransitive(field);

@@ -194,6 +194,7 @@ namespace CsVerify.Verifier
             CheckLocking();
             CheckLockLevels();
             CheckAtomics();
+            CheckFlagUses();
             CheckConcurrentMarks();
             CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
@@ -1765,6 +1766,7 @@ namespace CsVerify.Verifier
             if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
             if (AtomicCall(inv, f, spec) is Term atomic) return atomic;
+            if (FlagCall(inv, f, spec) is Term flagged) return flagged;
             if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);
             if (inv != _waitingCall && inv != _awaitedCall && !IsAwaitedHere(inv.Syntax) && (GateOf(inv, "Wait", f) ?? GateOfWrapperCall(inv, true, f)) is { } wanted)
             {

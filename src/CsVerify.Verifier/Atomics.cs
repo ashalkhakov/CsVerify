@@ -78,7 +78,7 @@ namespace CsVerify.Verifier
         /// Atomic fields that can't be: of a type with no one-step reads and writes, readonly, guarded by a lock, in an
         /// [Owned] class, with a step that isn't a static [Pure] bool method of two values of its type, or that reads state.
         /// </summary>
-        public IReadOnlyList<(SyntaxNode at, string message)> Misdeclared(FieldEffects fields)
+        public IReadOnlyList<(SyntaxNode at, string message)> Misdeclared(FieldEffects fields, LockGuards locks)
         {
             if (_misdeclared != null) return _misdeclared;
             _misdeclared = new List<(SyntaxNode, string)>();
@@ -91,6 +91,7 @@ namespace CsVerify.Verifier
                 if (SpecSymbols.HasAttribute(f, "GuardedByAttribute")) Bad("is also [GuardedBy] a lock: it's one or the other");
                 if (!f.IsStatic && SpecSymbols.IsOwned(f.ContainingType)) Bad($"is in [Owned] '{f.ContainingType.Name}', whose fields are held by one owner at a time");
                 if (SpecSymbols.HasAttribute(f, "LockLevelAttribute")) Bad("is a lock: a lock field never changes");
+                if (locks.IsFlag(f)) Bad("guards state, so it's a try-lock, taken and given back in its form: it's one or the other");
                 if (f.ContainingType.IsValueType && !f.IsStatic) Bad($"is in struct '{f.ContainingType.Name}', which is copied, not shared");
                 if (StepName(f) is string name)
                 {
