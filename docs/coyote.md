@@ -40,10 +40,10 @@ Of the 20 concurrency bugs planted in `samples/Buggy`, which CsVerify reports, a
 
 | | Bugs |
 |---|---|
-| **Found** (13) | the deadlocks: two transfers locking in opposite orders, a callback under a lock waiting on code that needs it, a wait on a task under a lock the task needs, `Monitor.Wait` holding another lock, a semaphore taken twice, a delegate awaited under a semaphore; a lost update on an atomic field; two reads of it assumed equal; a count written where a try-lock was refused; `Interlocked.Increment` wrapping; invariants broken with the lock or flag free |
+| **Found** (12) | the deadlocks: two transfers locking in opposite orders, a callback under a lock waiting on code that needs it, a wait on a task under a lock the task needs, `Monitor.Wait` holding another lock, a semaphore taken twice, a delegate awaited under a semaphore; a lost update on an atomic field; two reads of it assumed equal; a count written where a try-lock was refused; `Interlocked.Increment` wrapping; invariants broken with the lock or flag free |
 | **Only on an exception** (2) | a try-lock and a semaphore given back without a `finally`: nothing between taking and giving back throws in these programs |
 | **Needs code that isn't there** (2) | a lower lock taken under a higher one, with nothing taking them the other way round; a task awaited on one path only, whose work never fails |
-| **Needs a context Coyote doesn't model** (2) | `.Result` before `await`, which blocks for good only on a single-threaded context, such as a UI thread's |
+| **Needs a context Coyote doesn't model** (2) | `.Result` read before `await`, in two places: it blocks for good only on a single-threaded context, such as a UI thread's |
 | **No effect to observe** (2) | a read and a write of a guarded field without its lock: a race, but no value these programs can see differs |
 
 The lost update and the two reads were found only with memory-access race checking on; without it, Coyote switches
