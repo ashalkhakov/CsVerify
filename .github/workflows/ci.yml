@@ -23,6 +23,21 @@ jobs:
       # (a test that hangs fails the job after 20 minutes, naming the test, instead of running on for hours)
       - run: dotnet test tests/CsVerify.Tests -c Release --no-build --blame-hang --blame-hang-timeout 20m
 
+  # what the verifier proves of the concurrent samples, checked under Coyote's scheduler over many schedules
+  # (docs/coyote.md); a broken schedule there would mean the model of threads, locks or atomic fields is unsound
+  coyote:
+    runs-on: ubuntu-latest
+    env:
+      CSVERIFY_COYOTE_ITERATIONS: 10000
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet tool restore
+      - run: dotnet build tests/CsVerify.CoyoteTests -c Release
+      - run: dotnet test tests/CsVerify.CoyoteTests -c Release --no-build --blame-hang --blame-hang-timeout 20m
+
   # the packages as users get them: verify, erase and test with Tarp a copy of samples/Shop (samples/e2e.sh)
   e2e:
     strategy:

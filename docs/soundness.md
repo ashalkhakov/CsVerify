@@ -209,8 +209,9 @@ the hand-written tests and samples. By area:
 | Library | LINQ, `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `StringBuilder`, `MemoryStream`, `TextWriter`, `BinaryPrimitives`, disposables | the remaining stubs (`Stream` reads, `BinaryReader`/`Writer`) |
 | Erasure | every program runs erased | |
 
-Out of scope by design: `--no-overflow` and check profiles, which assume rather than check, and threads, which are
-not supported.
+Out of scope by design: `--no-overflow` and check profiles, which assume rather than check. Threads, locks and atomic
+fields aren't generated; what is proved of the concurrent samples is checked as they run, under
+[Coyote](coyote.md)'s scheduler, over many schedules.
 
 ## References
 

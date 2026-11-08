@@ -188,6 +188,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [Samples](docs/samples.md).
 - [Limitations](docs/limitations.md).
 - [Soundness](docs/soundness.md): the claim, the trusted base, and the published result behind each mechanism.
+- [CsVerify and Coyote](docs/coyote.md): the concurrent samples run under Coyote's scheduler, and what each tool finds.
 
 ## Licence
 

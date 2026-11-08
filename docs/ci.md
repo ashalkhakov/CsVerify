@@ -134,6 +134,8 @@ This repository's workflows, in [`.github/workflows`](../.github/workflows):
   - `e2e`: packs both packages and runs [`samples/e2e.sh`](../samples/e2e.sh) on them, on Linux and Windows:
     verify `samples/Shop` (with the build and with `dotnet csverify`), check that a planted bug fails the build,
     erase it, and test it with Tarp;
+  - `coyote`: runs `tests/CsVerify.CoyoteTests`, what is proved of the concurrent samples checked under Coyote over
+    10,000 schedules each (see [CsVerify and Coyote](coyote.md));
   - `lemon`: verifies CsLemon and checks it against the C lemon (see [CsLemon](../lemon/README.md)).
 - **The library report** (`library-report` in `ci.yml`): `corpus/report.sh`, the [library report](running.md#the-library-report)
   on the [corpus](../corpus/README.md), in the job's summary. It does not fail on what it finds.
