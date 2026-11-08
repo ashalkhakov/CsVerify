@@ -193,6 +193,7 @@ namespace CsVerify.Verifier
             FindContractStatements();
             CheckLocking();
             CheckLockLevels();
+            CheckAtomics();
             CheckConcurrentMarks();
             CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
@@ -589,9 +590,19 @@ namespace CsVerify.Verifier
             }
             // (other code at an await cannot reach the objects in confined locals the loop does not reassign)
             var confined = loop.Awaits ? ConfinedValues(f, loop.Havoc) : null;
-            if (loop.HavocAllFields) HavocAllFields(f);
-            else if (loop.Awaits) HavocAllFieldsKeeping(f, confined);
-            foreach (var field in loop.HavocFields) f.Fields[field] = FreshMap(field);
+            _forgottenVars = loop.Havoc; // (what they hold now may be new since: no step of theirs to keep)
+            try
+            {
+                if (loop.HavocAllFields) HavocAllFields(f);
+                else if (loop.Awaits) HavocAllFieldsKeeping(f, confined);
+            }
+            finally { _forgottenVars = null; }
+            foreach (var field in loop.HavocFields)
+            {
+                var was = FieldMap(f, field);
+                f.Fields[field] = FreshMap(field);
+                if (IsAtomic(field)) KeepSteps(field, was, f.Fields[field], f.Alloc, HeldObjects(f, loop.Havoc));
+            }
             if (loop.HavocAllFields || loop.Awaits || loop.HavocFields.Count > 0) { f.Link = null; AllocAfterCall(f); }
             if (f.Root != null && (loop.HavocRoot || loop.HavocAllFields || loop.HavocFields.Any(IsOwnedField))) f.Root = _z3.Fresh("root", Sort.Row);
             if (loop.HavocThis && f.This != null) f.This = _z3.Fresh("this", Sort.Int);
@@ -1753,6 +1764,7 @@ namespace CsVerify.Verifier
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
+            if (AtomicCall(inv, f, spec) is Term atomic) return atomic;
             if ((GateOf(inv, "Release", f) ?? GateOfWrapperCall(inv, false, f) ?? GateOfDispose(inv, f)) is { } given) GateReleased(given, inv.Syntax, f);
             if (inv != _waitingCall && inv != _awaitedCall && !IsAwaitedHere(inv.Syntax) && (GateOf(inv, "Wait", f) ?? GateOfWrapperCall(inv, true, f)) is { } wanted)
             {
@@ -1771,7 +1783,9 @@ namespace CsVerify.Verifier
                     case "Result":
                         return spec?.Result != null ? T.Coerce(spec.Result, SortOf(inv.Type)) : Unknown(inv.Type, "result");
                     case "Old":
-                        return spec?.Old != null ? Eval(inv.Arguments[0].Value, OldFrame(spec.Old, f), spec) : Eval(inv.Arguments[0].Value, f, spec);
+                        _inOld++;
+                        try { return spec?.Old != null ? Eval(inv.Arguments[0].Value, OldFrame(spec.Old, f), spec) : Eval(inv.Arguments[0].Value, f, spec); }
+                        finally { _inOld--; }
                     case "Forall":
                     case "Exists":
                         return Quantifier(inv, f, spec, m.Name == "Forall");

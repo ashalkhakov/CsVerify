@@ -172,6 +172,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |
 | CSV1028 | verifier | a method of the program that runs concurrently (started and not awaited in the same method, handed to a thread, or called by concurrent code), or a delegate type called by concurrent code, but isn't marked `[RunsConcurrently]` |
 | CSV1029 | verifier | a delegate handed to a library that may call it with any arguments (not just a list's elements, `Parallel.For`'s indices, or what a stub says), but that isn't known to accept them all (`Spec.Total`); a lambda's precondition that reads state without a `Spec.Reads` frame, or outside it; or a method group made a delegate whose type has a contract |
+| CSV1030 | verifier | an `[Atomic]` field's write that might not be a step from what it replaces, a step that might not be transitive, a plain use of one that isn't `volatile`, or one that can't be atomic (its type, `readonly`, `[GuardedBy]`, a struct, an `[Owned]` class, an ill-formed step, a function or invariant reading it) |
 | CSV1900 | verifier | warning: a value the verifier treats as unknown (sound), or a misplaced spec |
 | CSV1998 | verifier | Z3 stopped answering, past its own timeout, and was stopped: the rest of the method is not verified |
 | CSV1999 | verifier | internal or solver error |

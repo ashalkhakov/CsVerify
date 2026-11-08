@@ -39,7 +39,7 @@ is assumed, never in what is reported.
   `double` arithmetic is IEEE 754 binary32/binary64 with round-to-nearest-even and no extended intermediate
   precision. ECMA-335 permits extended precision; RyuJIT on x64 and arm64 does not use it.
 - **A4. Threads.** No other thread writes the state a method uses while it runs (see
-  [Async and concurrency](semantics.md#async-and-concurrency)). For fields guarded by a lock this is checked, not assumed.
+  [Async and concurrency](semantics.md#async-and-concurrency)). For fields guarded by a lock this is checked, not assumed. `[Atomic]` fields are proved for every interleaving of the others' steps, assuming .NET keeps one order of writes for each field accessed through `volatile` and `Interlocked` (coherence), and nothing about the order of different fields.
 - **A5. Library contracts.** `[ContractsFor]` stubs, LINQ's definitions (`Bcl/Linq.cs`), nullability annotations, and
   the stated facts about library code (it writes only what it is handed, and runs user code only through what it is
   handed) describe the library. They are checked against the real library by tests (`StubConformanceTests`,

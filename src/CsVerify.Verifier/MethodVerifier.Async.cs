@@ -330,9 +330,9 @@ namespace CsVerify.Verifier
         /// </summary>
         private void CheckFieldHeld(ISymbol field, Term o, SyntaxNode at, Frame f)
         {
-            if (!AmongOthers(f, at) || NeverChanges(field) || _engine.Locks.GuardOf(field) != null) return;
+            if (!AmongOthers(f, at) || NeverChanges(field) || IsAtomic(field) || _engine.Locks.GuardOf(field) != null) return;
             if (at.Parent is AssignmentExpressionSyntax a && a.Left == at && a.Parent is InitializerExpressionSyntax) return;
-            string fix = "guard it with a lock, or hold a Spec.Acc for it (the class must be [Owned])";
+            string fix = "guard it with a lock, hold a Spec.Acc for it (the class must be [Owned]), or make it [Atomic]";
             if (o == null)
             {
                 Report("CSV1027", at, $"'{at}' is static, with no lock, and this runs alongside other code: {fix}", isError: true);
@@ -543,7 +543,7 @@ namespace CsVerify.Verifier
         private ISymbol FieldRace(TaskEffects writer, TaskEffects other)
         {
             foreach (var (field, on) in writer.Writes)
-                if (_engine.Locks.GuardOf(field) == null && other.Writes.Concat(other.Reads).Any(x => SymbolEqualityComparer.Default.Equals(x.field, field) && !Apart(on, x.on)))
+                if (_engine.Locks.GuardOf(field) == null && !IsAtomic(field) && other.Writes.Concat(other.Reads).Any(x => SymbolEqualityComparer.Default.Equals(x.field, field) && !Apart(on, x.on)))
                     return field;
             return null;
         }
@@ -701,7 +701,7 @@ namespace CsVerify.Verifier
         {
             if (effects == null)
                 Warn(at, "this runs a delegate that can't be told, and keeps running after this method: what it does to state no lock guards isn't looked at");
-            else if (effects.Writes.Select(x => x.field).FirstOrDefault(x => _engine.Locks.GuardOf(x) == null) is ISymbol unguarded)
+            else if (effects.Writes.Select(x => x.field).FirstOrDefault(x => _engine.Locks.GuardOf(x) == null && !IsAtomic(x)) is ISymbol unguarded)
                 Warn(at, $"this keeps running after this method, and writes '{unguarded.Name}', which no lock guards: it could race with whatever uses it, and every method is proved as if nothing did");
             else if (effects.WrittenArrays.Count > 0 && !effects.Covered)
                 Warn(at, "this keeps running after this method, and writes arrays: it could race with whatever uses them, and every method is proved as if nothing did");

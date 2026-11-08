@@ -24,6 +24,9 @@ namespace CsVerify.Verifier
         // an epoch whose maps are the previous ones at some objects (those in confined locals, across an await)
         private readonly Dictionary<int, (IReadOnlyList<Term> objs, Frame before)> _epochKeepObjects = new Dictionary<int, (IReadOnlyList<Term>, Frame)>();
 
+        // an epoch whose atomic fields went by steps from these maps, at the objects allocated before (Alloc)
+        private readonly Dictionary<int, (List<(ISymbol field, Term map)> maps, Term alloc, List<Term> held)> _epochSteps = new Dictionary<int, (List<(ISymbol, Term)>, Term, List<Term>)>();
+
         /// <summary>Every field may change, except at the objects <paramref name="objs"/> (when not null).</summary>
         private void HavocAllFieldsKeeping(Frame f, IReadOnlyList<Term> objs)
         {
@@ -69,6 +72,9 @@ namespace CsVerify.Verifier
                 if (_epochKeepObjects.TryGetValue(f.FieldEpoch, out var objects))
                     foreach (var o in objects.objs)
                         AssumeSide(T.Implies(NotNull(o), T.Eq(T.Select(map, o, ValueSort(field)), T.Select(FieldMap(objects.before, field), o, ValueSort(field)))));
+                if (_epochSteps.TryGetValue(f.FieldEpoch, out var stepped))
+                    foreach (var (x, before) in stepped.maps.Where(s => SymbolEqualityComparer.Default.Equals(s.field, field)))
+                        KeepSteps(field, before, map, stepped.alloc, stepped.held);
             }
             return map;
         }
@@ -82,6 +88,7 @@ namespace CsVerify.Verifier
             {
                 CheckFieldHeld(field, null, at, f);
                 if (_framingTask != null && !NeverChanges(field)) NotGivenBack(T.False, at);
+                if (IsAtomic(field)) AtomicRead(field, null, at, f);
                 var sv = T.Select(FieldMap(f, field), Statics, ValueSort(field));
                 AssumeNonNullRead(field, null, sv);
                 HasType(sv, type);
@@ -92,6 +99,7 @@ namespace CsVerify.Verifier
             CheckRead(field, o, at);
             CheckFieldHeld(field, o, at, f);
             CheckFraming(o, field, f, at);
+            if (IsAtomic(field)) AtomicRead(field, o, at, f);
             var v = T.Select(FieldMap(f, field), o, ValueSort(field));
             AssumeNonNullRead(field, instance, v);
             // what an [Owns] field refers to is in the same ownership tree, and is not its root (it is owned)
@@ -115,6 +123,7 @@ namespace CsVerify.Verifier
                 Deref(instance, o, at);
                 RequireWritePermission(field, o, f, at);
             }
+            if (IsAtomic(field)) AtomicWrite(field, isStatic ? null : o, v, at, f);
             CheckNonNullWrite(field, v, at);
             var before = f.Clone();
             f.Fields[FieldEffects.Key(field)] = T.Store(FieldMap(f, field), o, T.Coerce(v, ValueSort(field)));
@@ -196,9 +205,12 @@ namespace CsVerify.Verifier
             }
             if (all) HavocAllFields(f, keepOwned: touched != null);
             foreach (var field in fields.Where(x => touched == null || !IsOwnedField(x)))
+            {
                 f.Fields[field] = modifiable != null && !all && !IsOwnedField(field) && !FieldEffects.IsStaticField(field)
                     ? new Term($"({(MapSort(field) == Sort.Heap ? "cv_frameh" : "cv_frame")} {modifiable} {FieldMap(before, field)} {FreshMap(field)})", MapSort(field))
                     : FreshMap(field);
+                if (IsAtomic(field)) KeepSteps(field, FieldMap(before, field), f.Fields[field], before.Alloc, HeldObjects(before));
+            }
             // owned fields change at the objects whose views moved, which the link does not describe
             // (owned objects change only where views moved: with none handed over, none changed)
             // the frame rule needs to know what changed: the callee's frame for unowned fields (or none written), and
@@ -263,10 +275,13 @@ namespace CsVerify.Verifier
         private void HavocAllFields(Frame f, bool keepOwned = false)
         {
             var kept = keepOwned ? _engine.Fields.OwnedFields().ToDictionary(x => x, x => FieldMap(f, x), SymbolEqualityComparer.Default) : null;
+            var stepped = _engine.Atomics.Stepped.Any() ? SteppedMaps(f) : null;
+            var alloc = f.Alloc;
             f.Link = null;
             f.Fields.Clear();
             f.FieldEpoch = ++_fieldEpochs;
             _epochCauses[f.FieldEpoch] = (_z3.Cause, _z3.Origin);
+            if (stepped != null) _epochSteps[f.FieldEpoch] = (stepped, alloc, HeldObjects(f));
             if (kept != null) foreach (var kv in kept) f.Fields[kv.Key] = kv.Value;
         }
 

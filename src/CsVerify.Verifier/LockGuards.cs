@@ -97,7 +97,7 @@ namespace CsVerify.Verifier
         }
 
         private static bool Inferable(ISymbol s) =>
-            s is IFieldSymbol f ? !f.IsReadOnly && !f.IsVolatile && !f.IsConst
+            s is IFieldSymbol f ? !f.IsReadOnly && !f.IsVolatile && !f.IsConst && !Atomics.IsAtomic(f)
             : s is IPropertySymbol p && !p.IsIndexer && p.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is PropertyDeclarationSyntax d &&
               d.AccessorList != null && d.AccessorList.Accessors.All(x => x.Body == null && x.ExpressionBody == null);
 

@@ -145,6 +145,7 @@ namespace CsVerify.Verifier
         internal readonly bool UsesDynamicFrames;
         internal readonly LockGuards Locks;
         internal readonly LockLevels Levels;
+        internal readonly Atomics Atomics;
         /// <summary>Are there [Owned] classes? Then the ownership-tree map Root is tracked.</summary>
         internal readonly bool UsesOwnership;
         /// <summary>The program uses ATS's manual memory (Mem, Ptr and the views of its cells).</summary>
@@ -194,6 +195,7 @@ namespace CsVerify.Verifier
             SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
                 .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Levels = new LockLevels(compilation, Locks, SourceTypes);
+            Atomics = new Atomics(SourceTypes);
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;

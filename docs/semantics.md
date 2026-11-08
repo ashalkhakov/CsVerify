@@ -208,13 +208,38 @@ A lambda given to `Task.Run`, a thread or `Parallel`, and lambdas and local func
 - covered by a permission: `Spec.Acc`, a view or a share, so its class must be `[Owned]`;
 - on a new object only a local has, or the one a constructor or initializer is building.
 
-Array cells likewise: a permission, or a new array only a local has. So there's nothing to do for `volatile` or `Interlocked`, which are errors here unless the method is `[Trusted]`. Specifications aren't run, and aren't looked at.
+- shared with no lock: `[Atomic]`, below.
+
+Array cells likewise: a permission, or a new array only a local has. Specifications aren't run, and aren't looked at.
 
 **Race warnings** (CSV1900) remain for what that can't see: `[Trusted]` code, and a library's state through its stubs. Two pieces of code are compared by object where that can be told. They prove nothing either way.
 
 **Design.** This follows concurrent separation logic with fractional permissions, in the implicit-dynamic-frames style of Chalice and Viper: starting a task is a fork, which exhales its precondition, and awaiting it is a join, which inhales its postcondition. A lock's invariant, and what it guards, is the resource it holds. An `await` is a point where other code may run, so what isn't held is forgotten, as for an unstable assertion. The theorem to reuse is that a program proved in that logic has no data races. The rule above is what makes concurrent code fall under it. As there, the resources are what the program says, not what the verifier guesses: what runs concurrently is marked, and checked at each start and call, a lock guards only what `[GuardedBy]` names, and a started task's postcondition reads only what it gives back (self-framed), so joining it inhales an assertion that stays true. Outside it are concurrent code that nothing in the source starts and nobody marked, what a library object holds (a `List<T>` in a readonly field), a `Func` or `Action` that concurrent code calls (a delegate type of the program says so), `[Trusted]` code, and reads by other code of an object a task that is never awaited still holds. The verifier's encoding has not itself been proved against the logic.
 
-**Not covered (yet).** Lock-free code (`volatile`, `Interlocked`) is not checked.
+**Lock-free code: atomic fields.** A field that threads share with no lock is `[Atomic]`, and says the step every change of it keeps, whoever makes it:
+
+```csharp
+[Atomic(Step = nameof(Grows))] volatile int _hits;
+[Pure] static bool Grows(int old, int now) => old <= now;
+
+int seen = _hits;
+if (seen < int.MaxValue) Interlocked.CompareExchange(ref _hits, seen + 1, seen);   // proved a step
+int later = _hits;
+Spec.Assert(seen <= later);                                                        // proved, whatever the others did
+```
+
+- **A read** sees what the other threads have made it since this thread last looked: the same value, or a step on. Since the step is transitive (proved, CSV1030), any number of their changes is one step. So `seen <= later` holds, and `seen == later` doesn't.
+- **A write** is proved a step from the value it replaces (CSV1030). A plain write replaces whatever the others have made it, which this thread hasn't read, so `_hits = seen + 1` is reported: another thread may have raised it past that. `Interlocked.CompareExchange` replaces only the value it compares with, and `Exchange`, `Increment`, `Decrement`, `Add`, `And` and `Or` replace the one they read; `Increment` and `Add` wrap at the type's ends, as they do at run time, so on a field that only grows they are reported unless the field has no step. `Volatile.Read`, `Volatile.Write` and `Interlocked.Read` are a read and a write.
+- **Without a step** (`[Atomic]` alone) any change is one: every write is allowed, and a read knows nothing of the last.
+- **Plain reads and writes** need the field `volatile`, or the compiler may reorder them or reuse an earlier read (CSV1030). A `long` can't be volatile; it's used through `Volatile` and `Interlocked`. A constructor sets its own object's fields freely: no other thread has it yet.
+- **What a specification says of one** is of the value this thread last read or wrote. A contract is useful when it stays true under the others' steps: `Spec.Ensures<int>(r => Spec.Old(_hits) <= r && r <= _hits)` does, for a caller reading it later.
+- **What forgets it** (a call that uses it, a loop's head, an `await`) keeps that it went by steps, at every object there before.
+- **Used anywhere,** not only in code marked to run concurrently, since another thread may be at it: an atomic field needs no lock or permission in concurrent code (CSV1027), and isn't part of the race warnings.
+- **Reported (CSV1030):** an atomic field of a type that isn't read and written in one step (an integer, `bool`, `char`, an enum or a reference: not `float`, `double`, `decimal` or a struct), one that is `readonly`, `[GuardedBy]`, a lock, in a struct or in an `[Owned]` class; a step that isn't a static `[Pure]` bool method of two values of the field's type, or that reads state; and a `[Pure]` function, predicate or invariant that reads one, since those are of one state. Passing one by `ref` to anything but `Volatile` and `Interlocked` is refused (CSV1901), as is `Interlocked` on a field that isn't atomic.
+
+Each field is on its own: nothing relates two atomic fields, or an atomic field and other state, so a flag doesn't publish data written before it (that data still needs a lock or a permission). This is what makes it sound under .NET's memory model, which keeps one order of writes for each field, read and written through `volatile` and `Interlocked`, but promises no single order of all of them: per field, a read never sees an older value than a read before it, and each write follows the one before it in that field's order. Lock-free arrays are not covered: an array cell shared with no lock or permission is still reported (CSV1027).
+
+*Design.* This is rely-guarantee reasoning (Jones 1983) with one relation per field as both the rely and the guarantee,: a thread's facts about a field are stable when the step keeps them, and its writes keep the step for the others.
 
 An algorithm can be proved over all interleavings by modeling it, as Leino does in Dafny: its atomic events as methods, and what holds in every state as an invariant each keeps. `samples/Good/TicketLock.cs` and `DiningPhilosophers.cs` do so, including that the ticket lock's display can't stall under a fair schedule, and that philosophers taking forks in order always have someone who can move. That proves the algorithm, not any threads running it.
 

@@ -185,7 +185,8 @@ namespace CsVerify.Verifier
                         var (read, write) = Usage(access);
                         var key = Key(s);
                         if (read) d.Reads.Add(key);
-                        if (write)
+                        // (reading an atomic field moves what the reader knows of it on, past the others' steps)
+                        if (write || read && Atomics.IsAtomic(s))
                         {
                             bool onThis = access is SimpleNameSyntax || access is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax;
                             if (ctor && onThis) d.SelfWrites.Add(key); else d.Writes.Add(key);

@@ -64,6 +64,23 @@ namespace CsVerify
     public sealed class TakesNoLocksAttribute : Attribute { }
 
     /// <summary>
+    /// A field shared without a lock: every thread may read and write it at any moment, one atomic step at a time. Each
+    /// read sees a value other threads may have changed since, and each write is checked to be a <see cref="Step"/> from
+    /// whatever value it replaces (CSV1030). It must be <c>volatile</c>, or be used only through <c>Volatile</c> and
+    /// <c>Interlocked</c>, which are what its read-modify-write steps are.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class AtomicAttribute : Attribute
+    {
+        /// <summary>
+        /// A static <c>[Pure]</c> bool method of this class, <c>(T old, T now)</c>, that every change of the field keeps,
+        /// whoever makes it: proved at each write, and known of what any thread does between two reads. It must be
+        /// transitive (proved). Without one, the field may change to anything.
+        /// </summary>
+        public string Step { get; set; }
+    }
+
+    /// <summary>
     /// A <c>[Pure]</c> or <c>[GhostFunction]</c> bool method that holds while a lock is free: known on entering it, and to be
     /// restored on leaving it and before a call that may enter it again (CSV1024). It may read what the lock guards.
     /// </summary>
