@@ -1712,7 +1712,7 @@ namespace CsVerify.Verifier
             // (no field can hold it yet)
             foreach (var field in _engine.Fields.AllFields().Where(x => ValueSort(x) == Sort.Int && IsSequence(FieldType(x))))
             {
-                var map = FieldMap(f, field);
+                var map = Named(FieldMap(f, field), field.Name + "$map");
                 _z3.Assume(new Term($"(forall ((o Int)) (! (distinct (select {map} o) {r}) :pattern ((select {map} o))))", Sort.Bool));
             }
         }

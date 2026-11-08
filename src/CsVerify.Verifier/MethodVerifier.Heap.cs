@@ -54,6 +54,18 @@ namespace CsVerify.Verifier
 
         private Term FreshMap(ISymbol field) => _z3.Fresh(field.Name + "$map", MapSort(field));
 
+        /// <summary>
+        /// <paramref name="map"/>, or, if it is built (an ite of paths, a cv_frame), a constant equal to it: a trigger must
+        /// select from a name, since Z3 drops one with ite, or or distinct in it (cv_frame's included, as it is inlined).
+        /// </summary>
+        private Term Named(Term map, string hint)
+        {
+            if (!map.S.StartsWith("(", System.StringComparison.Ordinal)) return map;
+            var named = _z3.Fresh(hint, map.Sort);
+            _z3.Assume(T.Eq(named, map));
+            return named;
+        }
+
         private static Term DefaultValue(ISymbol field) => ValueSort(field) == Sort.Row ? T.ZeroRow() : T.Int(0);
 
         private Term FieldMap(Frame f, ISymbol field)

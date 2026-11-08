@@ -228,14 +228,7 @@ namespace CsVerify.Verifier
                 _z3.Assume(T.Or(T.Eq(At(after, Statics.S), At(before, Statics.S)), Step(field, At(before, Statics.S), At(after, Statics.S))));
                 return;
             }
-            // (a trigger may not mention cv_frame's or cv_mod's maps: Z3 inlines those definitions, and a trigger with their
-            // ite, or and distinct in it is dropped, with a warning; so the map is named first)
-            if (after.S.StartsWith("(", System.StringComparison.Ordinal))
-            {
-                var named = _z3.Fresh(field.Name + "$after", after.Sort);
-                _z3.Assume(T.Eq(named, after));
-                after = named;
-            }
+            if (allocBefore != null) after = Named(after, field.Name + "$after");
             var y = _z3.FreshName("y");
             var moved = T.Or(T.Eq(At(after, y), At(before, y)), Step(field, At(before, y), At(after, y)));
             if (allocBefore != null)
