@@ -53,6 +53,12 @@ namespace CsVerify.Ef
         /// <summary>The entity's (first) concurrency token as the context read it (where <see cref="Read"/>).</summary>
         [Model] public static object? TokenRead(this DbContext context, object entity) => throw null!;
 
+        /// <summary>
+        /// The entity was read without tracking in the method being verified, which lets none of the entities it reads
+        /// out (to a field, a call of the program, a lambda): no other code reaches it, so an await leaves it as it was.
+        /// </summary>
+        [Model] public static bool Unshared(object entity) => throw null!;
+
         /// <summary>The context saved changes outside a transaction in the method being verified.</summary>
         [Model] public static bool SavedAlone(this DbContext context) => throw null!;
     }

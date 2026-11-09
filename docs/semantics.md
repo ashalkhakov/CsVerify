@@ -49,6 +49,7 @@ Methods are verified for partial correctness: any call may throw anything, and a
   - the fields of `[Owned]` objects whose views or permissions are in hand;
   - array cells its `Spec.Acc` contract gave it;
   - memory cells whose views it holds;
+  - the columns of entities read without tracking, when the method lets none of its entities out ([Entity Framework Core](entity-framework.md#queries));
   - the fields and cells of objects in **confined locals**. A local is confined when it only ever holds objects the method made itself, and is used only in ways that cannot hand its object to other code:
     - **What it may hold.** `new` arrays, and `new` objects of program classes whose constructors (and the ones they chain to) do not use `this` as a value or call its methods, and whose bases are program classes too. Objects of the base class library may also be held, outside `System.Threading`, `System.Runtime` and `System.Reflection`.
     - **How it may be used.**

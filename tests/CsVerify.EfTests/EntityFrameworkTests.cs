@@ -223,6 +223,36 @@ public sealed class Shop : DbContext
             "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
             "db.Update(o); o.Updated = now; await db.SaveChangesAsync(); } }"));
 
+        [Fact]
+        public void Token_AwaitBetweenReadAndUpdate_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(int id, System.DateTime now) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "await using var tx = await db.Database.BeginTransactionAsync(); db.Update(o); o.Updated = now; await db.SaveChangesAsync(); await tx.CommitAsync(); } }"));
+
+        [Fact]
+        public void Token_AwaitAfterTheEntityWentOut_IsReported() => Assert.Contains("CSV1034", Errors("M",
+            "public static class C { public static Order? Last; public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; Last = o; " +
+            "await using var tx = await db.Database.BeginTransactionAsync(); db.Update(o); await db.SaveChangesAsync(); await tx.CommitAsync(); } }"));
+
+        [Fact]
+        public void Unshared_ColumnsKeptAcrossAwait() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; var t = o.Total; " +
+            "await db.Customers.CountAsync(); Spec.Assert(o.Total == t); } }"));
+
+        [Fact]
+        public void Unshared_LetOut_ColumnsForgottenAcrossAwait() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static void Keep(Order o) { } public static async Task M(int id) { using var db = new Shop(); " +
+            "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; var t = o.Total; Keep(o); " +
+            "await db.Customers.CountAsync(); Spec.Assert(o.Total == t); } }"));
+
+        [Fact]
+        public void RowVersion_SetByTheDatabaseOnSave() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
+            "var c = await db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (c == null) return; var v = c.Version; " +
+            "db.Entry(c).State = EntityState.Modified; await db.SaveChangesAsync(); Spec.Assert(c.Version == v); } }"));
+
         // ---- transactions (CSV1035) ----
 
         [Fact]

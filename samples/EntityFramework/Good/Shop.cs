@@ -98,9 +98,9 @@ namespace EfShopSample
         public static async Task<bool> Reprice(IDbContextFactory<ShopContext> factory, int id, int total, DateTime now, CancellationToken ct)
         {
             await using var db = await factory.CreateDbContextAsync(ct);
-            await using var tx = await db.Database.BeginTransactionAsync(ct);
             var order = await db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == id, ct);
             if (order == null) return false;
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
             db.Entry(order).State = EntityState.Modified;
             order.Total = total;
             order.Updated = now;

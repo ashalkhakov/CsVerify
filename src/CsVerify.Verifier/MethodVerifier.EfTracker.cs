@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
 
 namespace CsVerify.Verifier
@@ -56,14 +57,14 @@ namespace CsVerify.Verifier
         private void SetModelAt(string name, Term context, Term key, Term value, Frame f) =>
             SetModelRow(name, context, T.Store(ModelRow(name, context, f), T.Coerce(key, Sort.Int), T.Coerce(value, Sort.Int)), f);
 
-        private static readonly string[] TrackerModels = { "State", "Unsaved", "InTransaction", "Failed", "Stale", "Read", "TokenRead", "SavedAlone" };
+        private static readonly string[] TrackerModels = { "State", "Unsaved", "InTransaction", "Failed", "Stale", "Read", "TokenRead", "SavedAlone", "Unshared" };
 
         /// <summary>
         /// What the method being verified did to a context: saves outside a transaction, a failed save or rollback,
         /// entities it read or bulk updates made stale. Its own record: none at entry, and what it calls doesn't change
         /// it (so these rules are checked within a method, not across calls).
         /// </summary>
-        private static readonly string[] MethodLocal = { "Failed", "Stale", "Read", "TokenRead", "SavedAlone" };
+        private static readonly string[] MethodLocal = { "Failed", "Stale", "Read", "TokenRead", "SavedAlone", "Unshared" };
 
         private bool IsMethodLocalModel(ISymbol field) =>
             Ef != null && field is IMethodSymbol m && m.ContainingType?.Name == "Tracker" && m.ContainingNamespace?.ToDisplayString() == "CsVerify.Ef" && MethodLocal.Contains(m.Name);
@@ -84,6 +85,8 @@ namespace CsVerify.Verifier
                 f.Fields[FieldEffects.Key(TrackerModel(name))] = new Term("((as const (Array Int Int)) 0)", Sort.Row);
             foreach (var name in new[] { "Read", "Stale" })
                 f.Fields[FieldEffects.Key(TrackerModel(name))] = new Term($"((as const (Array Int (Array Int Int))) {T.ZeroRow().S})", Sort.Heap);
+            if (TrackerModel("Unshared") is IMethodSymbol unshared)
+                f.Fields[FieldEffects.Key(unshared)] = new Term("((as const (Array Int Int)) 0)", Sort.Row);
             f.Link = null;
         }
 
@@ -109,6 +112,75 @@ namespace CsVerify.Verifier
             if (kept == null) return;
             foreach (var kv in kept) f.Fields[kv.Key] = kv.Value;
             f.Link = null;
+        }
+
+        /// <summary>The entities' columns before an await, to keep at the unshared ones (<see cref="KeepUnshared"/>).</summary>
+        private List<(IPropertySymbol column, Term map)> EntityColumns(Frame f) =>
+            Ef == null || TrackerModel("Unshared") == null || !EntitiesStayHere() ? null
+                : Ef.Entities.SelectMany(e => e.Type.GetMembers().OfType<IPropertySymbol>()).Where(FieldEffects.IsHeapField)
+                    .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Select(p => (p, FieldMap(f, p))).ToList();
+
+        /// <summary>An await leaves an entity no other code reaches as it was: its columns, its concurrency token among them.</summary>
+        private void KeepUnshared(Frame f, List<(IPropertySymbol column, Term map)> before)
+        {
+            if (before == null || before.Count == 0) return;
+            var unshared = FieldMap(f, TrackerModel("Unshared"));
+            f.Link = null;
+            foreach (var (p, map) in before)
+                f.Fields[FieldEffects.Key(p)] = Pointwise(p.Name, MapSort(p), $"(ite (= (select {unshared.S} y) 1) (select {map.S} y) (select {FieldMap(f, p).S} y))");
+        }
+
+        private bool? _entitiesStayHere;
+
+        /// <summary>
+        /// Does the method keep the entities it has to itself? None is passed to the program's code, to a library call
+        /// on something not local, or to a constructor, stored anywhere but in a local, captured by a lambda that isn't
+        /// a query's, or yielded. (EF's calls and LINQ's take them without letting other code reach them.)
+        /// </summary>
+        private bool EntitiesStayHere()
+        {
+            if (_entitiesStayHere is bool known) return known;
+            bool stay = _contract.Declaration != null;
+            if (stay)
+            {
+                bool IsEntity(ITypeSymbol t) => t != null && Ef.Entities.Any(e => Mentions(t, e.Type));
+                bool Harmless(IMethodSymbol m) => IsEfMethod(m) || Ef.IsContextType(m.ContainingType) ||
+                    m.ContainingNamespace?.ToDisplayString() == "System.Linq";
+                bool LocalReceiver(ExpressionSyntax e) => e is IdentifierNameSyntax id && _model.GetSymbolInfo(id).Symbol is ILocalSymbol;
+                foreach (var n in _contract.Declaration.DescendantNodes())
+                {
+                    switch (n)
+                    {
+                        case InvocationExpressionSyntax call when _model.GetSymbolInfo(call).Symbol is IMethodSymbol m && !Harmless(m):
+                            {
+                                var receiver = call.Expression is MemberAccessExpressionSyntax ma ? ma.Expression : null;
+                                bool argOut = call.ArgumentList.Arguments.Any(a => IsEntity(_model.GetTypeInfo(a.Expression).Type));
+                                bool thisOut = receiver != null && !m.IsStatic && IsEntity(_model.GetTypeInfo(receiver).Type) && !IsLibrary(m);
+                                if (thisOut || argOut && (!IsLibrary(m) || m.IsStatic || receiver == null || !LocalReceiver(receiver))) stay = false;
+                                break;
+                            }
+                        case BaseObjectCreationExpressionSyntax made when made.ArgumentList != null &&
+                                made.ArgumentList.Arguments.Any(a => IsEntity(_model.GetTypeInfo(a.Expression).Type)):
+                            stay = false; break;
+                        case AssignmentExpressionSyntax assign when IsEntity(_model.GetTypeInfo(assign.Right).Type) &&
+                                !(_model.GetSymbolInfo(assign.Left).Symbol is ILocalSymbol):
+                            stay = false; break;
+                        case YieldStatementSyntax y when y.Expression != null && IsEntity(_model.GetTypeInfo(y.Expression).Type):
+                            stay = false; break;
+                        case AnonymousFunctionExpressionSyntax lambda when !(lambda.Parent is ArgumentSyntax arg &&
+                                arg.Parent?.Parent is InvocationExpressionSyntax q && _model.GetSymbolInfo(q).Symbol is IMethodSymbol qm && Harmless(qm)):
+                            foreach (var id in lambda.Body.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+                                if (_model.GetSymbolInfo(id).Symbol is ISymbol s && (s is ILocalSymbol || s is IParameterSymbol) &&
+                                    IsEntity(s is ILocalSymbol l ? l.Type : ((IParameterSymbol)s).Type) &&
+                                    !s.DeclaringSyntaxReferences.Any(r => lambda.Span.Contains(r.Span)))
+                                    stay = false;
+                            break;
+                    }
+                    if (!stay) break;
+                }
+            }
+            _entitiesStayHere = stay;
+            return stay;
         }
 
         // ------------------------------------------------------------------ keys
@@ -320,6 +392,13 @@ namespace CsVerify.Verifier
                 $"'{at}' saves a second time on this context outside a transaction: if it fails, what the first saved stays. Begin a transaction before the first (Database.BeginTransaction), and commit after the last");
             // it may fail: then the context is done with
             MayRaise(T.True, f, null, (thrown, x) => SetModel("Failed", c, T.True, thrown));
+            // the database sets the row versions of what it writes
+            foreach (var p in Ef.Entities.SelectMany(e => e.RowVersions).Where(FieldEffects.IsHeapField).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default))
+            {
+                var before = FieldMap(f, p);
+                f.Link = null;
+                f.Fields[FieldEffects.Key(p)] = Pointwise(p.Name, MapSort(p), $"(ite (or (= (select {states.S} y) {Added}) (= (select {states.S} y) {Modified})) (select {FreshMap(p).S} y) (select {before.S} y))");
+            }
             var saved = Pointwise("saved", Sort.Row, $"(ite (or (= (select {states.S} y) {Added}) (= (select {states.S} y) {Modified})) {Unchanged} (ite (= (select {states.S} y) {Deleted}) {EfDetached} (select {states.S} y)))");
             SetModel("SavedAlone", c, T.Or(AsBool(Model("SavedAlone", c, f)), T.Not(AsBool(Model("InTransaction", c, f)))), f);
             SetModelRow("State", c, saved, f);

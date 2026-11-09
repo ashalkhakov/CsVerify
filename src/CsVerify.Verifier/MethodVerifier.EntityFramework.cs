@@ -240,6 +240,13 @@ namespace CsVerify.Verifier
                     f.Link = null;
                     f.Fields[FieldEffects.Key(nav)] = Pointwise("materialized", MapSort(nav), $"(ite {IsRow(new Term("y", Sort.Int)).S} 0 (select {before.S} y))");
                 }
+                // no other code reaches them, if the method lets none out
+                if (TrackerModel("Unshared") is IMethodSymbol unshared && EntitiesStayHere())
+                {
+                    var was = FieldMap(f, unshared);
+                    f.Link = null;
+                    f.Fields[FieldEffects.Key(unshared)] = Pointwise("unshared", Sort.Row, $"(ite {IsRow(new Term("y", Sort.Int)).S} 1 (select {was.S} y))");
+                }
                 // what the context read of them: their concurrency token
                 if (TrackerModel("Read") != null && e.Tokens.Count > 0 && FieldEffects.IsHeapField(e.Tokens[0]))
                 {

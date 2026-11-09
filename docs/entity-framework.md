@@ -34,7 +34,10 @@ operators, and EF's `...Async` forms awaited where they are called, are read fro
 So `Where`, `Count`, `Any` and `All` are exact, `SingleOrDefault(c => c.Email == email)` is proved to find at most one
 row when `Email` has a unique index, and a row a query gives passes its predicate.
 
-**Tracking.** Read with `AsNoTracking()`, the rows are new objects, and a navigation not `Include`d is null. Read with
+**Tracking.** Read with `AsNoTracking()`, the rows are new objects, and a navigation not `Include`d is null. If the
+method lets none of its entities out (to a field, to a call of the program's or a constructor, to a library call on
+something not local, to a lambda other than a query's), no other code reaches them: an `await` leaves their columns,
+concurrency tokens among them, as they were. Read with
 tracking, a row whose key the context already tracks is that instance, with its values as they are in memory, which
 may not be the database's: so what the query says of its rows is known only when the context tracked no entity of
 that type before it. `Count`, `Any` and the like, and projections of columns, return no entities and are always
@@ -75,7 +78,7 @@ anything.
 - **CSV1034**, concurrency tokens:
   - `Attach`, `Update` or `Entry(e).State = Modified` of an entity this context read, whose token was changed since:
     EF would check the row against the new value. Mark it first, then change it.
-  - a write of a row version, which the database sets.
+  - a write of a row version, which the database sets (and does, at each `SaveChanges` that writes the entity).
 
 ## Transactions
 
@@ -107,9 +110,7 @@ a method, not across calls: a context a caller broke, or a save a callee made, i
 - What the database does with a query (its SQL) is not proved: the definitions are trusted, and checked against EF on
   SQLite and on SQL Server (`tests/CsVerify.EfTests`, `EfConformanceTests`): each rule above is run there, and where
   the two differ (collation, overflow in a query, overlapping operations), the model claims only what both do.
-- A concurrency token is followed only for an entity's first one, and only while its value is known: an `await`
-  between reading the entity and attaching it forgets it (as it forgets any object the method shares), so the read
-  is better after the `await`.
+- A concurrency token is followed only for an entity's first one.
 - `Find` with a composite key, raw SQL (`FromSql`, `ExecuteSql`), compiled queries, owned types and inheritance mapping
   are library calls.
 - String members inside a query (`Contains`, `ToUpper`, `Length`...) translate, but their values are unknown: SQL

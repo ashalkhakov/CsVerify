@@ -890,6 +890,7 @@ namespace CsVerify.Verifier
             var guarded = GuardedByHeldGates(f);
             var confined = ConfinedValues(f, null);
             var tracker = KeepTracker(f);
+            var columns = EntityColumns(f);
             var before = f.Heap;
             var fresh = _z3.Fresh("heap", Sort.Heap);
             f.Heap = _arrayMode && f.ArrPerm != null
@@ -918,6 +919,7 @@ namespace CsVerify.Verifier
             AllocAfterCall(f);
             HavocClosureLocals(f);
             RestoreTracker(f, tracker);
+            KeepUnshared(f, columns);
         }
 
         // ================================================================================== closures
