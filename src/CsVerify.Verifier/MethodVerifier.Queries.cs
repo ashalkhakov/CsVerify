@@ -261,7 +261,7 @@ namespace CsVerify.Verifier
             if (database)
             {
                 // (what compares values for equality is the database's: strings by collation, rows by every column)
-                if (ComparesByEquality(definition)) return null;
+                if (ComparesByEquality(definition, m)) return null;
                 foreach (var l in lambdas.Values) l.Database = true;
                 if (_codeMode && _queryContexts.Count == 0) DatabaseQueryChecks(inv, original ?? inv, definition, args, lambdas, f);
                 // (First(p) as Where(p).First(): the rows filtered once, where the definition would filter them twice)
@@ -416,7 +416,11 @@ namespace CsVerify.Verifier
                 // a query call: its definition run now, on its sources and its lambdas' captures as they are now
                 var ctx = NewContext(lazy.Instantiation);
                 var value = InContext(ctx, () => RunDefinition(lazy.Definition, lazy.Args, f).value);
-                return InContext(ctx, () => QryOf(value ?? throw new NotQuery("a query without a definition"), null, f));
+                var read = InContext(ctx, () => QryOf(value ?? throw new NotQuery("a query without a definition"), null, f));
+                // what a database gives from two sources is in no order of theirs: in any order
+                return _databaseQueries.Contains(t.S) && CombinesSources(lazy.Definition)
+                    ? new QSort { Source = read, Keys = new List<(Func<Term, Term>, ITypeSymbol, bool)>(), ElementType = read.ElementType }
+                    : read;
             }
             if (GroupOf(t) is (GroupFamily family, Term key)) return family.ElementsOf(key);
             if (_tables.TryGetValue(t.S, out var table)) return new QSeq { Make = () => TableSequence(table, f), ElementType = table.Entity.Type };

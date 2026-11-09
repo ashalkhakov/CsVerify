@@ -34,6 +34,21 @@ operators, and EF's `...Async` forms awaited where they are called, are read fro
 So `Where`, `Count`, `Any` and `All` are exact, `SingleOrDefault(c => c.Email == email)` is proved to find at most one
 row when `Email` has a unique index, and a row a query gives passes its predicate.
 
+**Joins.** `Join` and `LeftJoin` on a key that the database and .NET compare alike (an integer, `bool`, an enum or a
+`Guid`, or one of those nullable) are read from their definitions: each pair has equal keys, a null key matches
+nothing (in SQL, and in LINQ to Objects), and a left join adds each row that matches none, with null for the other
+side. What a join, `SelectMany` or `Concat` gives is in no order of its sources
+(SQL Server's hash join doesn't keep a row's matches together): the verifier reads it in any order. So an order joined
+to its customer on the customer's key is proved to be paired with the customer who placed it, and to be one row at
+most:
+
+```csharp
+var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)
+    .Join(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, (o, c) => new { Order = o, Customer = c })
+    .SingleOrDefaultAsync(ct);
+// row == null || row.Customer.Id == row.Order.CustomerId
+```
+
 **Tracking.** Read with `AsNoTracking()`, the rows are new objects, and a navigation not `Include`d is null. If the
 method lets none of its entities out (to a field, to a call of the program's or a constructor, to a library call on
 something not local, to a lambda other than a query's), no other code reaches them: an `await` leaves their columns,
@@ -44,8 +59,9 @@ that type before it. `Count`, `Any` and the like, and projections of columns, re
 exact.
 
 **Not read from the definitions:** on a database, operators that compare values for equality (`Distinct`, `GroupBy`,
-joins, `Union`, `Intersect`, `Except`, `Contains`, `ToDictionary`) compare as the database does (strings by its
-collation, rows by every column). They are library calls, which say nothing of what they give.
+`GroupJoin`, `Union`, `Intersect`, `Except`, `Contains`, `ToDictionary`), and joins on other keys (strings, by the
+database's collation; dates and floating point, by the column's precision), compare as the database does. They are library calls, which say nothing of what they give. So is `RightJoin`: EF Core applies the left side's
+query filters to the joined rows, which drops the right side's rows that match none.
 
 **Reported:**
 - **CSV1031**, keeping rows by their place in an order the database doesn't fix: `First`, `Last`, `ElementAt`, `Take`
@@ -109,7 +125,8 @@ a method, not across calls: a context a caller broke, or a save a callee made, i
 
 - What the database does with a query (its SQL) is not proved: the definitions are trusted, and checked against EF on
   SQLite and on SQL Server (`tests/CsVerify.EfTests`, `EfConformanceTests`): each rule above is run there, and where
-  the two differ (collation, overflow in a query, overlapping operations), the model claims only what both do.
+  the two differ (collation, overflow in a query, overlapping operations), the model claims only what both do. Joins
+are checked there against LINQ to Objects, which matches no null key, as SQL doesn't.
 - A concurrency token is followed only for an entity's first one.
 - `Find` with a composite key, raw SQL (`FromSql`, `ExecuteSql`), compiled queries, owned types and inheritance mapping
   are library calls.

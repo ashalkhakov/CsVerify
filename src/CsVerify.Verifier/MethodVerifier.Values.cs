@@ -170,6 +170,12 @@ namespace CsVerify.Verifier
             var b = T.Coerce(Eval(inv.Arguments[1].Value, f, spec), Sort.Int);
             var t = inv.TargetMethod.TypeArguments[0];
             if (KnownEquality(t)) return T.Eq(a, b);
+            if (IsNullableValue(Resolve(t)) && KnownEquality(Underlying(Resolve(t))))
+            {
+                // int?: both null, or both with equal values
+                var n = Resolve(t);
+                return T.And(T.Eq(HasValue(a), HasValue(b)), T.Implies(HasValue(a), T.Eq(ValueOf(a, n), ValueOf(b, n))));
+            }
             if (IsFloating(Resolve(t)))
             {
                 // double.Equals: IEEE == (so -0.0 equals 0.0), and NaN equals NaN

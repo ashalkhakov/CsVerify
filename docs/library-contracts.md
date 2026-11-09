@@ -258,8 +258,10 @@ These make views too, read the same way:
   the first key of another type (strings, which order by culture) on, only the keys before it are known.
 - `Zip(other, (x, y) => ...)`: the selector's values on the pairs at each index, as many as the shorter source has.
 - `Join(inner, x => key, y => key, (x, y) => ...)`: for each outer element in order, the inner elements with an equal
-  key (by `EqualityComparer<TKey>.Default`), in order. It is a filter over all the pairs, the normal form of a join
-  comprehension in Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013).
+  key (by `EqualityComparer<TKey>.Default`; a null key matches none), in order. It is a filter over all the pairs, the
+  normal form of a join comprehension in Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query"
+  (ICFP 2013).
+- `LeftJoin` and `RightJoin`: the same, with each element that matches none paired with default, in its place.
 - `SelectMany(x => x.Items)`, where the inner sequence is a List, an array or a list interface: the inner sequences one
   after another; `SelectMany(x => ..., (x, y) => ...)` the result selector's values on each pair.
 - `GroupBy(x => key)`: the groups in the order their keys first appear, each with its key (`g.Key`) and its elements,
@@ -267,7 +269,7 @@ These make views too, read the same way:
   over the groups may contain one over each group. With an element selector, a group's elements are its values;
   with a result selector, `(k, g) => ...` is applied to each key and group, and may read the group (`g.Count()`).
 - `GroupJoin(inner, x => key, y => key, (x, ys) => ...)`: for each outer element in order, the selector applied to it
-  and its matches, the inner elements with an equal key, in order.
+  and its matches, the inner elements with an equal key (not null), in order.
 - `Concat`, `Reverse`, `Append`, `Prepend`, `DefaultIfEmpty`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`,
   `Where` and `SelectMany` with an index, `Index`, and `Zip(other)` into tuples `(First, Second)`.
 - `DistinctBy`, and the set operations `Union`, `Intersect`, `Except` (and their `By` forms): each value (key) once,

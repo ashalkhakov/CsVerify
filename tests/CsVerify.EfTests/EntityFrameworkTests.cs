@@ -94,6 +94,68 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Shop db, string email) { var c = await db.Customers.AsNoTracking().SingleOrDefaultAsync(c => c.Email == email); " +
             "if (c != null) Spec.Assert(c.Email == email); } }"));
 
+        // ---- joins ----
+
+        [Fact]
+        public void Join_OnAKey_MatchesEqualKeys() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Join(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, " +
+            "(o, c) => new { o.CustomerId, CustomerKey = c.Id, o.Total }).Where(x => x.Total > 5).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].CustomerId == r[i].CustomerKey && r[i].Total > 5)); } }"));
+
+        [Fact]
+        public void Join_InQuerySyntax_MatchesEqualKeys() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await (from o in db.Orders.AsNoTracking() join c in db.Customers.AsNoTracking() on o.CustomerId equals c.Id " +
+            "where !o.Shipped select new { o.Shipped, o.CustomerId, CustomerKey = c.Id }).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].CustomerId == r[i].CustomerKey && !r[i].Shipped)); } }"));
+
+        [Fact]
+        public void Join_OnKeys_SingleMatchesAtMostOne() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<int> M(Shop db, int id) { var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)" +
+            ".Join(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, (o, c) => new { Order = o, Customer = c }).SingleOrDefaultAsync(); " +
+            "if (row != null) Spec.Assert(row.Customer.Id == row.Order.CustomerId && row.Order.Id == id); return 0; } }"));
+
+        [Fact]
+        public void Join_SaysNothingElse() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Join(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, " +
+            "(o, c) => new { o.Total, CustomerKey = c.Id }).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Total == r[i].CustomerKey)); } }"));
+
+        [Fact]
+        public void Join_CountIsNotNegative() => Assert.Empty(Errors("M",
+            "public static class C { public static int M(Shop db) { Spec.Ensures<int>(r => r >= 0); " +
+            "return db.Orders.Join(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => o.Total).Count(); } }"));
+
+        [Fact]
+        public void LeftJoin_MatchesEqualKeys_OrNone() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().LeftJoin(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, " +
+            "(o, c) => new { o.CustomerId, Found = c != null, CustomerKey = c == null ? 0 : c.Id }).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => !r[i].Found || r[i].CustomerId == r[i].CustomerKey)); } }"));
+
+        [Fact]
+        public void RightJoin_IsNotRead() => Assert.NotEmpty(Errors("M", // (EF Core filters the left side after the join)
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().RightJoin(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, " +
+            "(o, c) => new { OrderCustomer = o == null ? -1 : o.CustomerId, c.Id }).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].OrderCustomer == -1 || r[i].OrderCustomer == r[i].Id)); } }"));
+
+        [Fact]
+        public void LeftJoin_IsInNoOrder() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().LeftJoin(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, " +
+            "(o, c) => c != null).ToListAsync(); Spec.Assert(r.Count == 0 || r[0] || !r.Contains(true)); } }"));
+
+        [Fact]
+        public void Join_OnANullableKey_MatchesEqualValues() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Join(db.Customers.AsNoTracking(), o => (int?)o.CustomerId, c => (int?)c.Id, " +
+            "(o, c) => new { o.CustomerId, CustomerKey = c.Id }).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].CustomerId == r[i].CustomerKey)); } }"));
+
+        [Fact]
+        public void Join_OnANullKey_MatchesNothing() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Join(db.Customers.AsNoTracking(), o => o.Total > 5 ? (int?)o.CustomerId : null, c => (int?)c.Id, " +
+            "(o, c) => o.Total).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i] > 5)); } }"));
+
+        [Fact]
+        public void Join_OnStrings_ComparesByCollation() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().Join(db.Customers.AsNoTracking(), a => a.Name, b => b.Email, " +
+            "(a, b) => new { a.Name, b.Email }).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Name == r[i].Email)); } }"));
+
         // ---- rows by their place: an order the database fixes (CSV1031) ----
 
         [Fact]

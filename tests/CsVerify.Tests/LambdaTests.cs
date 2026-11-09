@@ -236,6 +236,38 @@ public static class P
         Spec.Ensures<int>(r => r == 21);
         return a.OrderBy(x => x % 10).ThenByDescending(x => x).First();
     }
+    public static int NullKeys(int?[] ids, int?[] owners)
+    {
+        Spec.Requires(ids.Length == 1 && ids[0] == null && owners.Length == 1 && owners[0] == null);
+        Spec.Ensures<int>(r => r == 0);
+        return ids.Join(owners, i => i, o => o, (i, o) => 1).Count();
+    }
+    public static void Left(int[] ids, int[] owners)
+    {
+        foreach (var p in ids.LeftJoin(owners, i => i, o => o, (i, o) => o == 0 || o == i)) Spec.Assert(p);
+    }
+    public static void LeftNullable(int[] ids, int?[] owners)
+    {
+        foreach (var p in ids.LeftJoin(owners, i => (int?)i, o => o, (i, o) => o == null || o == i)) Spec.Assert(p);
+    }
+    public static int LeftCount(int[] ids, int[] owners)
+    {
+        Spec.Requires(ids.Length == 2 && ids[0] == 1 && ids[1] == 2 && owners.Length == 2 && owners[0] == 2 && owners[1] == 2);
+        Spec.Ensures<int>(r => r == 3);
+        return ids.LeftJoin(owners, i => i, o => o, (i, o) => i).Count();
+    }
+    public static bool LeftFirst(string[] ids, string[] owners)
+    {
+        Spec.Requires(ids.Length == 2 && ids[0] == ""a"" && ids[1] == ""b"" && owners.Length == 1 && owners[0] == ""b"");
+        Spec.Ensures<bool>(r => r);
+        return ids.LeftJoin(owners, i => i, o => o, (i, o) => o == null).First();
+    }
+    public static int Right(int[] ids, int[] owners)
+    {
+        Spec.Requires(ids.Length == 1 && ids[0] == 1 && owners.Length == 2 && owners[0] == 1 && owners[1] == 3);
+        Spec.Ensures<int>(r => r == 2);
+        return ids.RightJoin(owners, i => i, o => o, (i, o) => o).Count();
+    }
     public static int WrongZip(int[] a, int[] b) { Spec.Requires(a.Length == 3 && b.Length == 5); Spec.Ensures<int>(r => r == 5); return a.Zip(b, (x, y) => y).Count(); }
     public static int WrongJoin(int[] ids, int[] owners) { Spec.Requires(ids.Length == 2 && owners.Length == 2); Spec.Ensures<int>(r => r == 2); return ids.Join(owners, i => i, o => o, (i, o) => i).Count(); }
     public static int WrongThen(int[] a)
@@ -245,7 +277,7 @@ public static class P
         return a.OrderBy(x => x % 10).ThenByDescending(x => x).First();
     }
 }", overflow: false);
-            foreach (var m in new[] { "Zip", "ZipShorter", "Join", "JoinFirst", "Matches", "ThenBy", "ThenDown" })
+            foreach (var m in new[] { "Zip", "ZipShorter", "Join", "JoinFirst", "Matches", "ThenBy", "ThenDown", "NullKeys", "Left", "LeftNullable", "LeftCount", "LeftFirst", "Right" })
                 Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
             foreach (var m in new[] { "WrongZip", "WrongJoin", "WrongThen" })
                 Assert.Equal(new[] { "CSV1002" }, r.Errors("P." + m));

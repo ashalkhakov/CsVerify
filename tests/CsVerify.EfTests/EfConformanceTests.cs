@@ -246,6 +246,53 @@ namespace CsVerify.Tests
         }
         // ---- where SQLite and SQL Server differ ----
 
+        // ---- joins: on a key the database and .NET compare alike, the pairs LINQ to Objects gives, in some order ----
+
+        private static List<string> Sorted<T>(IEnumerable<T> rows) => rows.Select(r => r?.ToString() ?? "null").OrderBy(s => s, StringComparer.Ordinal).ToList();
+
+        [Fact]
+        public void Join_GivesThePairsWithEqualKeys()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            var customers = db.Customers.AsNoTracking().ToList();
+            Assert.Equal(Sorted(orders.Join(customers, o => o.CustomerId, c => c.Id, (o, c) => (o.Id, c.Id))),
+                         Sorted(db.Orders.Join(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => new { O = o.Id, C = c.Id }).ToList().Select(x => (x.O, x.C))));
+        }
+
+        [Fact]
+        public void LeftJoin_AddsTheRowsThatMatchNone()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            var customers = db.Customers.AsNoTracking().ToList();
+            var left = db.Customers.LeftJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, o) => new { C = c.Id, O = o == null ? -1 : o.Id }).ToList();
+            Assert.Equal(Sorted(customers.LeftJoin(orders, c => c.Id, o => o.CustomerId, (c, o) => (c.Id, o == null ? -1 : o.Id))), Sorted(left.Select(x => (x.C, x.O))));
+            Assert.Contains(left, x => x.O == -1); // (Ann's second account has no orders)
+        }
+
+        [Fact]
+        public void RightJoin_FiltersTheLeftSideAfterTheJoin()
+        {
+            // EF Core applies the left side's query filter to the joined rows (WHERE NOT o.IsDeleted), which drops the
+            // right side's rows that match none: the model doesn't read a RightJoin on a database
+            using var db = New();
+            var right = db.Orders.RightJoin(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => new { O = o == null ? -1 : o.Id, C = c.Id }).ToList();
+            Assert.DoesNotContain(right, x => x.O == -1);
+            var unfiltered = db.Orders.IgnoreQueryFilters().RightJoin(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => new { O = o == null ? -1 : o.Id, C = c.Id }).ToList();
+            Assert.Contains(unfiltered, x => x.O == -1);
+        }
+
+        [Fact]
+        public void Join_OnANullKey_MatchesNothing()
+        {
+            // as in LINQ to Objects, whose definition says so; the model reads only joins on keys that can't be null
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(0, orders.Join(orders, a => (int?)null, b => (int?)null, (a, b) => a.Id).Count());
+            Assert.Equal(0, db.Orders.Join(db.Orders, a => a.Total > 1000 ? a.Id : (int?)null, b => b.Total > 1000 ? b.Id : (int?)null, (a, b) => a.Id).Count());
+        }
+
         [Fact]
         public void Collation_EqualStringsMatch_AndCaseMayNot()
         {

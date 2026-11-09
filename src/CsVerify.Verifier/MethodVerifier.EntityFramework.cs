@@ -379,16 +379,43 @@ namespace CsVerify.Verifier
 
         private static readonly HashSet<string> EqualityOperators = new HashSet<string>
         {
-            "Distinct", "DistinctBy", "GroupBy", "GroupJoin", "Join", "Union", "UnionBy", "Intersect", "IntersectBy", "Except", "ExceptBy",
+            "Distinct", "DistinctBy", "GroupBy", "GroupJoin", "Join", "LeftJoin", "RightJoin", "Union", "UnionBy", "Intersect", "IntersectBy", "Except", "ExceptBy",
             "Contains", "SequenceEqual", "ToDictionary", "ToLookup", "ToHashSet", "CountBy", "AggregateBy", "IndexOf",
         };
 
         /// <summary>
-        /// Does the operator compare values for equality? On a database it compares them as the database does (strings
-        /// by its collation, rows by every column), not as LINQ to Objects' definition says: such a query is a library
-        /// call, which says nothing of what it gives.
+        /// Does the operator compare values for equality as the database does? It compares strings by its collation and
+        /// rows by every column, not as LINQ to Objects' definition says: such a query is a library call, which says
+        /// nothing of what it gives. A join on a key that both compare alike (<see cref="ComparedAlike"/>) is read from
+        /// its definition.
         /// </summary>
-        private static bool ComparesByEquality(IMethodSymbol definition) => EqualityOperators.Contains(definition.Name);
+        private bool ComparesByEquality(IMethodSymbol definition, IMethodSymbol called)
+        {
+            if (!EqualityOperators.Contains(definition.Name)) return false;
+            // (not RightJoin: EF Core applies the left side's query filters after the join, which drops right rows)
+            if (definition.Name is not ("Join" or "LeftJoin")) return true;
+            var key = definition.TypeParameters.FirstOrDefault(t => t.Name == "K");
+            return key == null || !DefinitionInstantiation(definition, called).TryGetValue(key, out var k) || !ComparedAlike(k);
+        }
+
+        private static readonly HashSet<string> SourceCombinations = new HashSet<string> { "Join", "LeftJoin", "RightJoin", "SelectMany", "Concat" };
+
+        /// <summary>
+        /// Does the operator combine rows of two sources (a join, SelectMany, Concat)? The database gives the result in
+        /// no order of theirs (SQL Server's hash join doesn't keep an outer row's matches together): it is read in any.
+        /// </summary>
+        private static bool CombinesSources(IMethodSymbol definition) => SourceCombinations.Contains(definition.Name);
+
+        /// <summary>
+        /// Keys the database and .NET compare alike: integers, bool, enums and Guid, and those nullable (in a join, null
+        /// matches nothing in either). Not strings (by collation), floating point and dates (by the column's precision).
+        /// </summary>
+        private static bool ComparedAlike(ITypeSymbol t) =>
+            t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? ComparedAlike(n.TypeArguments[0]) :
+            t.TypeKind == TypeKind.Enum ||
+            t.SpecialType is SpecialType.System_Boolean or SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or
+                SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 ||
+            t.ToDisplayString() == "System.Guid";
 
         private static readonly HashSet<string> RowLimits = new HashSet<string>
         { "First", "FirstOrDefault", "Last", "LastOrDefault", "ElementAt", "ElementAtOrDefault", "Take", "Skip", "TakeLast", "SkipLast" };

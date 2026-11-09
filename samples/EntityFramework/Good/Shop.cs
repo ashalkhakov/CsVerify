@@ -1,5 +1,5 @@
 // Written for this repository, to show Entity Framework Core used as it should be: queries in an order the database
-// fixes, read without tracking when only read, a row changed by loading it tracked, a disconnected update checked
+// fixes, read without tracking when only read, joins on keys, a row changed by loading it tracked, a disconnected update checked
 // against the concurrency token it was read with, two saves in one transaction (joined if one is open), a bulk update
 // reloaded before saving, and every operation on a context awaited where it starts.
 using System;
@@ -76,6 +76,25 @@ namespace EfShopSample
         {
             Spec.Ensures<List<Order>>(r => Spec.Forall(0, r.Count, i => r[i].Total > above && !r[i].Shipped && !r[i].IsDeleted));
             return await db.Orders.AsNoTracking().Where(o => o.Total > above && !o.Shipped).ToListAsync(ct);
+        }
+
+        /// <summary>A shipping notice, for the customer who placed the order.</summary>
+        public static string Notice(Order order, Customer to)
+        {
+            Spec.Requires(to.Id == order.CustomerId);
+            return to.Email + " has an order on its way";
+        }
+
+        /// <summary>
+        /// An order's notice: the order joined to its customer on the customer's key, so the row pairs it with the
+        /// customer who placed it, and is one at most (each side matched by its key).
+        /// </summary>
+        public static async Task<string?> NoticeFor(ShopContext db, int id, CancellationToken ct)
+        {
+            var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)
+                .Join(db.Customers.AsNoTracking(), o => o.CustomerId, c => c.Id, (o, c) => new { Order = o, Customer = c })
+                .SingleOrDefaultAsync(ct);
+            return row == null ? null : Notice(row.Order, row.Customer);
         }
 
         /// <summary>Ships an order: loaded tracked, changed, saved; the change tracker writes what changed.</summary>

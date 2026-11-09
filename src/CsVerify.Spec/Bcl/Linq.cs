@@ -79,15 +79,37 @@ namespace CsVerify.Bcl
         public static IEnumerable<R> Zip<A, B, R>(IEnumerable<A> first, IEnumerable<B> second, Func<A, B, R> resultSelector) =>
             Q.For(Q.Range(0, Math.Min(Q.Count(first), Q.Count(second))), i => Q.Yield(resultSelector(Q.At(first, i), Q.At(second, i))));
 
-        // for each outer element in order, the inner ones with an equal key, in order
+        // for each outer element in order, the inner ones with an equal key, in order (a null key matches none)
         public static IEnumerable<R> Join<A, B, K, R>(IEnumerable<A> outer, IEnumerable<B> inner, Func<A, K> outerKeySelector,
                                                       Func<B, K> innerKeySelector, Func<A, B, R> resultSelector) =>
-            Q.For(outer, x => Q.For(inner, y => Q.If(Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(y))), Q.Yield(resultSelector(x, y)))));
+            Q.For(outer, x => Q.For(inner, y => Q.If(outerKeySelector(x) != null && Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(y))), Q.Yield(resultSelector(x, y)))));
 
-        // for each outer element in order, it and the inner ones with an equal key, in order (query syntax: join ... into)
+        // for each outer element in order, it and the inner ones with an equal key, in order (a null key matches none;
+        // query syntax: join ... into)
         public static IEnumerable<R> GroupJoin<A, B, K, R>(IEnumerable<A> outer, IEnumerable<B> inner, Func<A, K> outerKeySelector,
                                                            Func<B, K> innerKeySelector, Func<A, IEnumerable<B>, R> resultSelector) =>
-            Q.For(outer, x => Q.Yield(resultSelector(x, Q.For(inner, y => Q.If(Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(y))), Q.Yield(y))))));
+            Q.For(outer, x => Q.Yield(resultSelector(x, Q.For(inner, y => Q.If(outerKeySelector(x) != null && Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(y))), Q.Yield(y))))));
+
+        // for each outer element in order, the inner ones with an equal key, in order, or default if there are none
+        // (a null key matches none). (Over the inner indices and one more, which gives the default: the same source
+        // for every outer element.)
+        public static IEnumerable<R> LeftJoin<A, B, K, R>(IEnumerable<A> outer, IEnumerable<B> inner, Func<A, K> outerKeySelector,
+                                                          Func<B, K> innerKeySelector, Func<A, B?, R> resultSelector) =>
+            Q.For(outer, x => Q.For(Q.Range(0, Q.Count(inner) + 1), k => Q.If(
+                k < Q.Count(inner)
+                    ? outerKeySelector(x) != null && Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(Q.At(inner, k))))
+                    : !Spec.Exists(0, Q.Count(inner), j => outerKeySelector(x) != null && Spec.Equal(Ghost.Of(outerKeySelector(x)), Ghost.Of(innerKeySelector(Q.At(inner, j))))),
+                Q.Yield(resultSelector(x, k < Q.Count(inner) ? Q.At(inner, k) : default)))));
+
+        // for each inner element in order, the outer ones with an equal key, in order, or default if there are none
+        // (a null key matches none)
+        public static IEnumerable<R> RightJoin<A, B, K, R>(IEnumerable<A> outer, IEnumerable<B> inner, Func<A, K> outerKeySelector,
+                                                           Func<B, K> innerKeySelector, Func<A?, B, R> resultSelector) =>
+            Q.For(inner, y => Q.For(Q.Range(0, Q.Count(outer) + 1), k => Q.If(
+                k < Q.Count(outer)
+                    ? innerKeySelector(y) != null && Spec.Equal(Ghost.Of(outerKeySelector(Q.At(outer, k))), Ghost.Of(innerKeySelector(y)))
+                    : !Spec.Exists(0, Q.Count(outer), j => innerKeySelector(y) != null && Spec.Equal(Ghost.Of(outerKeySelector(Q.At(outer, j))), Ghost.Of(innerKeySelector(y)))),
+                Q.Yield(resultSelector(k < Q.Count(outer) ? Q.At(outer, k) : default, y)))));
 
         public static IEnumerable<T> Concat<T>(IEnumerable<T> first, IEnumerable<T> second) =>
             Q.For(Q.Range(0, Q.Count(first) + Q.Count(second)), i => Q.Yield(i < Q.Count(first) ? Q.At(first, i) : Q.At(second, i - Q.Count(first))));
