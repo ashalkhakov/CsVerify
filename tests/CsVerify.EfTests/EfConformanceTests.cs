@@ -572,8 +572,9 @@ namespace CsVerify.Tests
         public async Task TwoOperationsAtOnce_Throw()
         {
             using var db = New();
-            var first = db.Orders.ToListAsync();
-            if (!TrulyAsync) { await first; return; } // (SQLite's has finished before the next starts)
+            if (!TrulyAsync) { await db.Orders.ToListAsync(); return; } // (SQLite's has finished before the next starts)
+            // (one that is still running when the next starts: it waits on the server)
+            var first = db.Database.ExecuteSqlRawAsync("WAITFOR DELAY '00:00:02'");
             await Assert.ThrowsAsync<InvalidOperationException>(() => db.Customers.ToListAsync());
             await first;
         }
