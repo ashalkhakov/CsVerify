@@ -74,9 +74,13 @@ CSV1006) and the measure's value; on each edge back to a head, the measure gone 
 result not null and each postcondition well-defined and holding (CSV1002). A callee's requires and measure are its
 contract lowered over its parameters, given the arguments.
 
-**Heap** gives arrays Dafny's encoding: a write is an update of its element type's map (`KMapUpdate`); an allocation
-is a reference not allocated before, of the length, then allocated, with its elements the default or the
-initializer's. What a procedure writes is what it modifies.
+**Heap** gives memory Dafny's encoding: an array write is an update of its element type's map, a field write one of
+the field's map (`KMapUpdate`); an array allocation is a reference not allocated before, of the length, then
+allocated, with its elements the default or the initializer's; `new C(...)` allocates an object the same way, sets its
+fields to their defaults and calls the constructor on it. What a procedure writes is what it modifies; a field it
+writes only at the object its constructor builds, or at objects it allocates, keeps its value at every other object.
+It also gives each loop that writes arrays only through variables it doesn't change a frame: the other arrays are as
+they were when the loop was entered.
 
 **Printer** writes the [prelude](#the-prelude), each function's axioms (in a function, the maps are its parameters and
 the layer is `ly`), and each procedure: the header (ranges, allocation, the contract, what it modifies), the locals
@@ -218,13 +222,41 @@ asserts `a != null` (CSV1013) and `0 <= i && i < len(a)` (CSV1003). `new T[n]` i
 array parameter is asserted not null at each call's argument (CSV1014), and assumed in the callee; a non-nullable
 result is asserted where it's returned.
 
-**Calls and frames.** A call of another translated method is a Boogie `call`. A procedure `modifies` the maps it
-writes (an element map, or `$Alloc` when it allocates), and those of everything it calls; after a call, what the
-callee modifies is unknown, as CsVerify's engine forgets the arrays a callee may write. Allocation only grows:
-`free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r])`.
+**Objects.** A class of the program whose objects are plain mutable state (not generic, not a record, derived from
+`object`, with no virtual members or interfaces, and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
+no locks or atomics) is a `Ref`, as an array is. Each of its fields and auto-properties is a map `$F.C.f: [Ref]T`, as
+in CsVerify's engine; a static field is the map's value at `null`, the one object no reference aliases. An integer
+field's map has a `where` clause keeping every value in range.
+- `o.f` reads `$F.C.f[o]`, and `o.f = v` writes it, each asserting `o != null` first (CSV1013; `this` needs none).
+- A field of non-nullable type is never null once its object is built: each write asserts it (CSV1014), each read
+  assumes it (but `this`'s, in its constructor), and a constructor asserts at each return that it set it (CSV1014),
+  unless it is `required`. A specification that reads one assumes it where it is evaluated, as CsVerify's engine does.
+- A local of non-nullable reference type has each write asserted not null (CSV1014).
+- An instance method is a procedure with `this` (not null, allocated) first; `o.M(...)` asserts `o != null`.
+  Virtual calls aren't translated.
+- A constructor is a procedure on `this`, whose fields are their defaults at entry; it runs the field initializers,
+  then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. An
+  implicit constructor's initialized fields are unknown values at the call, as in CsVerify's engine. A constructor that
+  chains to `this(...)`, or lets `this` escape, isn't translated yet.
+- A method that runs alongside other code (`[RunsConcurrently]`, or started as a task or thread), or reads a field a
+  lock guards, stays with CsVerify's engine, which checks races.
 
-**Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): at entry
-for the preconditions (each under those before it), at each return for the postconditions, at the loop head for an
+**Calls and frames.** A call of another translated method is a Boogie `call`. A procedure `modifies` the maps it
+writes (an element map, a field map, or `$Alloc` when it allocates), and those of everything it calls; after a call,
+what the callee modifies is unknown, as CsVerify's engine forgets the arrays and fields a callee may write. Allocation
+only grows: `free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r])`. A field written only at objects allocated
+since the call began (a constructor's own object, or a new one's defaults) is unchanged at every other:
+`free ensures (forall o: Ref :: old($Alloc[o]) ==> $F.C.f[o] == old($F.C.f[o]))`, as CsVerify's engine doesn't count
+a constructor's writes to its own object as the caller's.
+
+**Loops and arrays.** Boogie forgets at a loop head every map the loop modifies. CsVerify's engine forgets only the
+arrays the loop writes through a variable it doesn't change (and all of them where it writes through anything else, or
+calls what writes arrays). So the translation snapshots the maps on the way into the loop (`s$`*h*`$E.T`) and assumes at
+its head that every array allocated then, other than those, is as it was.
+
+**Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
+preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
+assumes at entry), each under those before it; at each return for the postconditions, at the loop head for an
 invariant, where an assertion is. Well-defined means an array read is in bounds and of an array that isn't null, a
 divisor isn't zero, and a function's precondition holds where it's called; each under what `&&`, `||` and `?:` make
 hold there, and over a quantifier's range. The check is `assert {:subsumption 0}`: not assumed after it, so what an
@@ -234,12 +266,15 @@ ill-defined specification says stays unknown, as in CsVerify's engine.
 `Spec.Exists` is the `exists` of `lo <= q$k && q$k < hi && P`.
 
 **Functions.** A `[Pure]` or `[GhostFunction]` method whose body is one expression is also a Boogie function, as
-Dafny's functions are: on a layer, the heap's maps (as Dafny's take `$Heap`) and its parameters. Its definition is an
+Dafny's functions are: on a layer, the memory it reads (as Dafny's take `$Heap`), `this` for an instance one, and its
+parameters. The memory is the field maps it (or a function it calls) names, and the element maps; but a function that
+reads arrays only through its own array parameters takes those arrays' elements instead (`$E.Int32[a]`), so writing
+another array leaves its value as it was, as in CsVerify's engine. Its definition is an
 axiom: where its precondition holds, its value on layer `$LS(ly)` is its body, whose calls are on layer `ly`. Another
 axiom makes every layer's value the same. A specification calls it on `$LS($LZ)`, so each use unfolds the definition
 once, as CsVerify's engine does. Its postcondition is an axiom of every value where its precondition holds, and a
 run-time `[Pure]` function's value is in its type's range. The method stays a procedure, which verifies the body and
-says its result is the function's value. A `[GhostFunction]`, and a lemma, is ghost code: its arithmetic is
+says its result is the function's value on `$LS($LZ)` (so a call in code knows its body too). A `[GhostFunction]`, and a lemma, is ghost code: its arithmetic is
 mathematical.
 
 **Termination.** Ordinary methods are verified for partial correctness, as in CsVerify's engine, so only what
@@ -257,13 +292,15 @@ checked on the same edge whether or not the measure went down.
 
 ## The subset
 
-So far: static methods of the C# integer types, `char`, `bool` and one-dimensional arrays of them (parameters, locals,
-results), with arithmetic, conversions, comparisons, `if`, loops with invariants and measures, array reads, writes,
-lengths and allocation, calls of each other (recursive too), `Spec.Assert` and `Spec.Assume`; `[Pure]` and
-`[GhostFunction]` methods, lemmas, `Spec.Decreases`; and in specifications `Spec.Forall`, `Spec.Exists`, `Spec.Old`,
-`Spec.Result` and calls of functions.
+So far: static methods, and instance methods and constructors of [plain classes](#the-translation-construct-by-construct),
+over the C# integer types, `char`, `bool`, one-dimensional arrays of them and objects of those classes (parameters,
+locals, results, fields), with arithmetic, conversions, comparisons, `if`, loops with invariants and measures, array
+reads, writes, lengths and allocation, fields, object creation, calls of each other (recursive too), `Spec.Assert` and
+`Spec.Assume`; `[Pure]` and `[GhostFunction]` methods, lemmas, `Spec.Decreases`; and in specifications `Spec.Forall`,
+`Spec.Exists`, `Spec.Old`, `Spec.Result` and calls of functions.
 
-Not yet (such a method is verified by CsVerify's engine): instance methods, objects and fields, strings, collections,
+Not yet (such a method is verified by CsVerify's engine): `[Owned]` classes and classes with invariants, virtual
+members, interfaces, inheritance, records (data types), generics, strings, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, permissions and views, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
@@ -279,7 +316,7 @@ two quickly.
 
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
-   them;
+   them (done for plain classes; next: inheritance and virtual calls, data records, object initializers, `this(...)`);
 2. strings and the collections' models (`List`, `Dictionary`, `HashSet`), and the ghost types;
 3. `foreach`, lambdas and delegates;
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;

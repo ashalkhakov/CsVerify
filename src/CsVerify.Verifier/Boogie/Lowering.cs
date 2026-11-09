@@ -36,6 +36,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Method = m.OriginalDefinition, Contract = contract, Result = result, Name = Name(m), Params = m.Parameters.ToList(),
                 Ghost = SpecSymbols.IsGhostFunction(m) || contract.IsLemma,
+                HasThis = !m.IsStatic, IsCtor = m.MethodKind == MethodKind.Constructor,
             };
         }
 
@@ -54,8 +55,12 @@ namespace CsVerify.Verifier.Boogie
 
         private KProcedure Run()
         {
-            if (!(_model.GetOperation(_decl) is IMethodBodyOperation bodyOp)) throw new NotTranslated("no body");
-            var cfg = ControlFlowGraph.Create(bodyOp);
+            var cfg = _model.GetOperation(_decl) switch
+            {
+                IMethodBodyOperation body => ControlFlowGraph.Create(body),
+                IConstructorBodyOperation body => ControlFlowGraph.Create(body),
+                _ => throw new NotTranslated("no body"),
+            };
             if (cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions).Any(r => r.Kind != ControlFlowRegionKind.LocalLifetime))
                 throw new NotTranslated("try, catch or finally");
             foreach (var r in _contract.Requires) _p.Requires.Add(new KSpec { Expr = Spec(r, null), At = r.Syntax });
@@ -63,7 +68,10 @@ namespace CsVerify.Verifier.Boogie
             if (_contract.Decreases != null) _p.Decreases = _contract.Decreases.Select(d => Spec(d, null)).ToList();
             if (_isFunction(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
             var heads = LoopHeads(cfg);
+            foreach (var h in heads)
+                _p.LoopBodies[h] = cfg.Blocks.Where(x => new[] { x.FallThroughSuccessor, x.ConditionalSuccessor }.Any(s => s?.Destination?.Ordinal == h) && x.Ordinal >= h).Max(x => x.Ordinal);
             ReadLoopSpecs(cfg, heads);
+            if (_p.IsCtor) Initializers();
             foreach (var b in cfg.Blocks)
             {
                 _block = new KBlock { Label = $"b{b.Ordinal}", Ordinal = b.Ordinal };
@@ -73,6 +81,31 @@ namespace CsVerify.Verifier.Boogie
                 Branch(b);
             }
             return _p;
+        }
+
+        /// <summary>
+        /// A constructor's start: the field initializers of its class, in order (its fields are their defaults before,
+        /// as the caller makes them). One that chains to another (this(...), or base(...) of a class not object) isn't
+        /// translated yet.
+        /// </summary>
+        private void Initializers()
+        {
+            if (_decl is ConstructorDeclarationSyntax { Initializer: { } chained } && chained.ThisOrBaseKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ThisKeyword))
+                throw new NotTranslated("a constructor that calls this(...)");
+            _block = new KBlock { Label = "init", Ordinal = -1, Jump = new KGoto("b0") };
+            _p.Blocks.Add(_block);
+            foreach (var member in _m.ContainingType.GetMembers().Where(x => !x.IsStatic && (x is IFieldSymbol || x is IPropertySymbol)))
+                foreach (var syntax in member.DeclaringSyntaxReferences.Select(r => r.GetSyntax()))
+                {
+                    var init = (SyntaxNode)(syntax as VariableDeclaratorSyntax)?.Initializer ?? (syntax as PropertyDeclarationSyntax)?.Initializer;
+                    if (init == null) continue;
+                    if (!IsField(member)) throw new NotTranslated("an initializer of " + member.Name);
+                    if (init.SyntaxTree != _decl.SyntaxTree) throw new NotTranslated("an initializer in another file");
+                    if (!(_model.GetOperation(init) is ISymbolInitializerOperation op)) throw new NotTranslated("the initializer of " + member.Name);
+                    var value = Expr(op.Value);
+                    _p.Fields.Add(member.OriginalDefinition);
+                    Emit(new KFieldStore { Field = member.OriginalDefinition, Instance = new KVar("this"), Value = value, OnThis = true, At = init, InstanceAt = init });
+                }
         }
 
         private static IEnumerable<ControlFlowRegion> AllRegions(ControlFlowRegion r) => r.NestedRegions.Concat(r.NestedRegions.SelectMany(AllRegions));
@@ -151,6 +184,9 @@ namespace CsVerify.Verifier.Boogie
             if (op is IFlowCaptureOperation spec && InSpec(spec.Value.Syntax)) return;
             switch (op)
             {
+                case IInvocationOperation baseCall when baseCall.TargetMethod.MethodKind == MethodKind.Constructor &&
+                                                        baseCall.TargetMethod.ContainingType.SpecialType == SpecialType.System_Object:
+                    return; // (object's constructor does nothing)
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
@@ -188,9 +224,20 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (target)
             {
-                case ILocalReferenceOperation l when InSubset(l.Local.Type):
-                    Emit(new KAssign { Var = Declare(Local(l.Local), l.Local.Type), Value = value });
+                case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None:
+                {
+                    // (a local of non-nullable type: each write is checked, so it stays not null)
+                    bool nonNull = IsRef(l.Local.Type) && NotNullable(l.Local.Type);
+                    Emit(new KAssign { Var = Declare(Local(l.Local), l.Local.Type), Value = value,
+                                       NotNullAt = nonNull ? l.Syntax.Parent ?? l.Syntax : null, NotNullName = l.Local.Name });
                     return;
+                }
+                case IFieldReferenceOperation _: case IPropertyReferenceOperation _:
+                {
+                    var (field, instance, onThis, instanceAt) = FieldOf(target);
+                    Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = value, At = target.Syntax, InstanceAt = instanceAt });
+                    return;
+                }
                 case IArrayElementReferenceOperation e when IsArray(e.ArrayReference.Type) && e.Indices.Length == 1:
                 {
                     var v = Operands(e.ArrayReference, e.Indices[0]);
@@ -269,6 +316,24 @@ namespace CsVerify.Verifier.Boogie
             return Declare("c$" + id.GetHashCode(), type);
         }
 
+        /// <summary>A field access's field, its object (null for a static field), whether that is this, and where it is.</summary>
+        private (ISymbol field, KExpr instance, bool onThis, SyntaxNode at) FieldOf(IOperation access, IParameterSymbol specResult = null, bool spec = false)
+        {
+            var (symbol, instance) = access switch
+            {
+                IFieldReferenceOperation f => ((ISymbol)f.Field, f.Instance),
+                IPropertyReferenceOperation p when p.Arguments.Length == 0 => (p.Property, p.Instance),
+                _ => throw new NotTranslated(access.Kind.ToString()),
+            };
+            if (!IsField(symbol)) throw new NotTranslated("the member " + symbol.Name);
+            symbol = symbol.OriginalDefinition;
+            if (symbol.IsStatic && IsRef(FieldType(symbol)) && NotNullable(FieldType(symbol))) throw new NotTranslated("a non-nullable static field");
+            _p.Fields.Add(symbol);
+            if (symbol.IsStatic) return (symbol, null, false, null);
+            if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) return (symbol, new KVar("this"), true, instance.Syntax);
+            return (symbol, spec ? Spec(instance, specResult) : Expr(instance), false, instance.Syntax);
+        }
+
         // ------------------------------------------------------------------ expressions (run time)
 
         private KMode Mode(SyntaxNode at, bool isChecked) =>
@@ -316,13 +381,38 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
-                case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsArray(e.Type): return Constant(cv.Value, e.Type);
-                case ILocalReferenceOperation l when InSubset(l.Local.Type): return new KVar(Declare(Local(l.Local), l.Local.Type));
-                case IParameterReferenceOperation p when InSubset(p.Parameter.Type): return new KVar(Local(p.Parameter));
+                case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsRef(e.Type): return Constant(cv.Value, e.Type);
+                case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
+                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind == RefKind.None: return new KVar(Local(p.Parameter));
                 case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
+                case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when !_p.IsCtor:
+                    return new KVar("this");
+                case IInstanceReferenceOperation _:
+                    throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
+                case IFieldReferenceOperation _:
+                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)):
+                {
+                    var (field, instance, onThis, instanceAt) = FieldOf(e);
+                    return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
+                }
+                case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
+                {
+                    var ctor = oc.Constructor.OriginalDefinition;
+                    bool isImplicit = ctor.IsImplicitlyDeclared;
+                    if (!isImplicit && !_isProcedure(ctor)) throw new NotTranslated("a call of " + oc.Type.Name + "'s constructor");
+                    if (!isImplicit) _p.Calls.Add(ctor);
+                    var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var args = Operands(ordered.Select(a => a.Value).ToArray());
+                    var t = Declare("t$" + _temps++, oc.Type);
+                    foreach (var f in InstanceFields(oc.Type)) _p.Fields.Add(f);
+                    Emit(new KNewObj { Var = t, Type = oc.Type, Ctor = isImplicit ? null : ctor, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = oc.Syntax });
+                    return new KVar(t);
+                }
                 case IParenthesizedOperation par: return Expr(par.Operand);
                 case IConversionOperation conv when conv.Conversion.IsIdentity || conv.IsImplicit && IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
                     return Expr(conv.Operand);
+                case IConversionOperation conv when Upcast(conv):
+                    return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
                 case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
                     return new KConv { Value = Expr(conv.Operand), From = conv.Operand.Type, To = conv.Type, Mode = Mode(conv.Syntax, conv.IsChecked), At = conv.Syntax };
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Expr(u.Operand));
@@ -330,7 +420,7 @@ namespace CsVerify.Verifier.Boogie
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
                     return Arith("-", new KLit("0"), Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
                 case IBinaryOperation b when b.OperatorMethod == null && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
-                                             b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (IsArray(b.LeftOperand.Type) || IsArray(b.RightOperand.Type))):
+                                             b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):
                     return Binary(b);
                 case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
                 {
@@ -351,15 +441,24 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation call:
                     return Call(call);
                 default:
-                    if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsArray(e.Type)) return new KLit("null");
+                    if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsRef(e.Type)) return new KLit("null");
                     throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
             }
         }
 
+        /// <summary>
+        /// A reference made an object (to compare it with ==, or null): the same reference. Comparing two objects as
+        /// objects is reference equality.
+        /// </summary>
+        private static bool Upcast(IConversionOperation conv) =>
+            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
+
+        private static bool RefOperand(IOperation op) => IsRef(op.Type) || op is IConversionOperation c && Upcast(c) && IsRef(c.Operand.Type);
+
         private static KExpr Constant(object v, ITypeSymbol type)
         {
             if (v is bool x) return new KLit(x ? "true" : "false");
-            if (v == null && IsArray(type)) return new KLit("null");
+            if (v == null && IsRef(type)) return new KLit("null");
             System.Numerics.BigInteger n;
             switch (v)
             {
@@ -403,9 +502,14 @@ namespace CsVerify.Verifier.Boogie
             if (!_isProcedure(callee)) throw new NotTranslated("a call of " + call.TargetMethod.Name);
             _p.Calls.Add(callee);
             var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-            var args = Operands(ordered.Select(a => a.Value).ToArray());
+            if (!callee.IsStatic && (call.Instance == null || callee.IsVirtual || callee.IsAbstract || callee.IsOverride)) throw new NotTranslated("a virtual call of " + callee.Name);
+            bool onThis = call.Instance is IInstanceReferenceOperation;
+            var operands = (call.Instance == null || onThis ? Enumerable.Empty<IOperation>() : new[] { call.Instance }).Concat(ordered.Select(a => a.Value)).ToArray();
+            var values = Operands(operands);
+            var receiver = call.Instance == null ? null : onThis ? Expr(call.Instance) : values[0];
+            var args = call.Instance == null || onThis ? values : values.Skip(1).ToArray();
             var result = callee.ReturnsVoid ? null : Declare("t$" + _temps++, callee.ReturnType);
-            Emit(new KCall { Callee = callee, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), Result = result, At = call.Syntax });
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), Result = result, At = call.Syntax });
             return result == null ? null : new KVar(result);
         }
 
@@ -419,15 +523,24 @@ namespace CsVerify.Verifier.Boogie
                 case IDelegateCreationOperation d: return Spec(d.Target, result);
                 case IAnonymousFunctionOperation fn when fn.Body.Operations.Length == 1 && fn.Body.Operations[0] is IReturnOperation ret:
                     return Spec(ret.ReturnedValue, fn.Symbol.Parameters.FirstOrDefault() ?? result);
-                case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsArray(e.Type): return Constant(cv.Value, e.Type);
+                case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsRef(e.Type): return Constant(cv.Value, e.Type);
                 case IParameterReferenceOperation p when result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result): return new KVar("result");
                 case IParameterReferenceOperation p when p.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction }:
                     return new KVar("q$" + p.Parameter.Name); // (a quantifier's variable)
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type): return new KVar(Local(p.Parameter));
                 case ILocalReferenceOperation l when InSubset(l.Local.Type): return new KVar(Declare(Local(l.Local), l.Local.Type));
+                case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }: return new KVar("this");
+                case IFieldReferenceOperation _:
+                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)):
+                {
+                    var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
+                    return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
+                }
                 case IParenthesizedOperation par: return Spec(par.Operand, result);
                 case IConversionOperation conv when conv.Conversion.IsIdentity || IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric && conv.IsImplicit:
                     return Spec(conv.Operand, result);
+                case IConversionOperation conv when Upcast(conv):
+                    return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Spec(conv.Operand, result);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Spec(u.Operand, result));
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus: return new KOp("-", new KLit("0"), Spec(u.Operand, result));
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Spec(u.Operand, result);
@@ -484,8 +597,15 @@ namespace CsVerify.Verifier.Boogie
                         }
                         default: throw new NotTranslated("Spec." + inv.TargetMethod.Name + " in a specification");
                     }
-                case IInvocationOperation fn when _isFunction(fn.TargetMethod):
-                    return new KFnCall { Callee = fn.TargetMethod.OriginalDefinition, Args = fn.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = fn.Syntax };
+                case IInvocationOperation fn when _isFunction(fn.TargetMethod) && (fn.TargetMethod.IsStatic || fn.Instance != null && !fn.TargetMethod.IsVirtual && !fn.TargetMethod.IsAbstract && !fn.TargetMethod.IsOverride):
+                {
+                    bool onThis = fn.Instance is IInstanceReferenceOperation;
+                    return new KFnCall
+                    {
+                        Callee = fn.TargetMethod.OriginalDefinition, Receiver = fn.Instance == null ? null : Spec(fn.Instance, result), ReceiverIsThis = onThis, ReceiverAt = fn.Instance?.Syntax,
+                        Args = fn.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = fn.Syntax,
+                    };
+                }
                 default:
                     throw new NotTranslated("in a specification: " + e.Kind + " '" + e.Syntax + "'");
             }

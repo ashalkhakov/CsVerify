@@ -63,11 +63,16 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Range, Body;
     }
 
-    /// <summary>A function's value: the function, its layer (null: the caller's), its arguments; the heap is the printer's.</summary>
+    /// <summary>
+    /// A function's value: the function, its layer (null: the caller's), the field maps it reads, its arguments (the
+    /// receiver first, for an instance one); the element maps are the printer's.
+    /// </summary>
     internal sealed class KFnApp : KExpr
     {
+        public IMethodSymbol Callee;
         public string Function;
         public string Layer;
+        public List<string> Fields = new List<string>();
         public KExpr[] Args;
     }
 
@@ -109,12 +114,25 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At, ArrayAt;
     }
 
-    /// <summary>A function's call in a specification: well-defined where its precondition holds at the arguments.</summary>
+    /// <summary>A function's call in a specification: well-defined where its receiver isn't null and its precondition holds at the arguments.</summary>
     internal sealed class KFnCall : KExpr
     {
         public IMethodSymbol Callee;
+        /// <summary>An instance one's receiver (null for a static one).</summary>
+        public KExpr Receiver;
+        public bool ReceiverIsThis;
         public KExpr[] Args;
-        public SyntaxNode At;
+        public SyntaxNode At, ReceiverAt;
+    }
+
+    /// <summary>A field's value: of an object (checked not null, unless it is this), or a static field's (of the one object, null).</summary>
+    internal sealed class KField : KExpr
+    {
+        public ISymbol Field;
+        /// <summary>The object; null for a static field.</summary>
+        public KExpr Instance;
+        public bool OnThis;
+        public SyntaxNode At, InstanceAt;
     }
 
     // ------------------------------------------------------------------ statements
@@ -125,6 +143,30 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Var;
         public KExpr Value;
+        /// <summary>A local of non-nullable type: where its write is checked not null (CSV1014), and its name.</summary>
+        public SyntaxNode NotNullAt;
+        public string NotNullName;
+    }
+
+    /// <summary>A write of a field (checked, until Checks; a map's, after Heap).</summary>
+    internal sealed class KFieldStore : KStmt
+    {
+        public ISymbol Field;
+        public KExpr Instance, Value;
+        public bool OnThis;
+        public SyntaxNode At, InstanceAt;
+    }
+
+    /// <summary>new C(args): an object allocated into Var, its fields their defaults, then its constructor (null: an implicit one).</summary>
+    internal sealed class KNewObj : KStmt
+    {
+        public string Var;
+        public ITypeSymbol Type;
+        public IMethodSymbol Ctor;
+        public KExpr[] Args;
+        public SyntaxNode[] ArgsAt;
+        public SyntaxNode At;
+        public Check Check;
     }
 
     /// <summary>A write of an array's element (checked for null and bounds, until Checks; a map's, after).</summary>
@@ -149,6 +191,10 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KCall : KStmt
     {
         public IMethodSymbol Callee;
+        /// <summary>An instance method's receiver (null for a static one).</summary>
+        public KExpr Receiver;
+        public bool ReceiverIsThis;
+        public SyntaxNode ReceiverAt;
         public KExpr[] Args;
         /// <summary>The variable its result goes to; null for none.</summary>
         public string Result;
@@ -224,6 +270,26 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Name;
         public ITypeSymbol Type;
+        /// <summary>A Boogie type of its own (a snapshot of a map), in place of Type's.</summary>
+        public string Raw;
+    }
+
+    /// <summary>
+    /// After Heap, at a loop head: the arrays the loop doesn't write (through a variable it doesn't change) are as
+    /// they were when it was entered; the program says which maps (none where the loop calls what writes arrays).
+    /// </summary>
+    internal sealed class KLoopFrame : KStmt
+    {
+        public int Head;
+        public List<KExpr> Writers = new List<KExpr>();
+        public HashSet<IMethodSymbol> Callees = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        public List<string> Maps = new List<string>();
+    }
+
+    /// <summary>On the way into a loop: the maps its frame keeps, as they are now.</summary>
+    internal sealed class KSnapshot : KStmt
+    {
+        public KLoopFrame Frame;
     }
 
     internal sealed class KSpec
@@ -242,6 +308,11 @@ namespace CsVerify.Verifier.Boogie
         public string Name;
         public bool Ghost;
         public List<IParameterSymbol> Params;
+        /// <summary>An instance method or constructor: its receiver is the parameter this.</summary>
+        public bool HasThis;
+        public bool IsCtor;
+        /// <summary>The fields it reads or writes (their maps are declared).</summary>
+        public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public List<KLocal> Locals = new List<KLocal>();
         public List<KSpec> Requires = new List<KSpec>(), Ensures = new List<KSpec>();
         /// <summary>Spec.Decreases of the method: its parameters' measure.</summary>
@@ -249,14 +320,21 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Each loop head's invariants and measure (by the head's ordinal).</summary>
         public Dictionary<int, List<KSpec>> Invariants = new Dictionary<int, List<KSpec>>();
         public Dictionary<int, List<KSpec>> Measures = new Dictionary<int, List<KSpec>>();
+        /// <summary>Each loop head's last block (by ordinal): the loop is the blocks from the head to it.</summary>
+        public Dictionary<int, int> LoopBodies = new Dictionary<int, int>();
         /// <summary>A [Pure] or [GhostFunction] method of one expression: a function too, of this body.</summary>
         public KExpr FunctionBody;
         public List<KBlock> Blocks = new List<KBlock>();
         /// <summary>After Checks: the asserts at entry (the preconditions well-defined).</summary>
         public List<KStmt> Entry = new List<KStmt>();
         public HashSet<IMethodSymbol> Calls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>After Heap: the globals it (and what it calls) modifies.</summary>
+        /// <summary>After Heap: the globals it writes (what it calls is the program's to add).</summary>
         public HashSet<string> Modifies = new HashSet<string>();
+        /// <summary>
+        /// Of those, the ones it may write at an object allocated before it was called: not only this one's fields in
+        /// a constructor, nor a new object's (a field the rest is framed: unchanged at every object allocated before).
+        /// </summary>
+        public HashSet<string> AnyWrites = new HashSet<string>();
         public int Obligations;
     }
 }

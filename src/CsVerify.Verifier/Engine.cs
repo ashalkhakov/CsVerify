@@ -603,6 +603,15 @@ namespace CsVerify.Verifier
                         yield return im.OriginalDefinition;
         }
 
+        /// <summary>
+        /// For the Boogie engine, which doesn't check races yet: the method doesn't run alongside other code, and reads
+        /// no field a lock guards.
+        /// </summary>
+        private static bool Sequential(Engine engine, IMethodSymbol method, SyntaxNode decl, SemanticModel model) =>
+            !engine.StartedDelegates.RunsAlongside(method) &&
+            !decl.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>()
+                .Any(n => model.GetSymbolInfo(n).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && engine.Locks.GuardOf(s) != null);
+
         /// <summary>A member whose body is not known at the call: virtual, abstract, an interface member (not sealed).</summary>
         internal static bool IsOverridable(IMethodSymbol m) =>
             (m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
@@ -642,10 +651,13 @@ namespace CsVerify.Verifier
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
-                    if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract)) forBoogie.Add((method, contract, decl, mr));
-                    else if (options.Boogie && Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
-                        Console.Error.WriteLine($"not translated to Boogie: {mr.Name}: {Boogie.BoogieTranslator.WhyNot(method, contract)}");
-                    else RunMethod(engine, contract, mr, decl.GetLocation());
+                    if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract) && Sequential(engine, method, decl, model)) forBoogie.Add((method, contract, decl, mr));
+                    else
+                    {
+                        if (options.Boogie && Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
+                            Console.Error.WriteLine($"not translated to Boogie: {mr.Name}: {Boogie.BoogieTranslator.WhyNot(method, contract)}");
+                        RunMethod(engine, contract, mr, decl.GetLocation());
+                    }
                     // its lambdas and local functions, each a unit of its own
                     foreach (var (nested, graph) in NestedFunctions(decl, model))
                     {

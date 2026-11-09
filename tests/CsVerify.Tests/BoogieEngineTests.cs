@@ -65,6 +65,70 @@ public static class A
     public static bool Has(int[] a, int v) { Spec.Ensures<bool>(r => !r || Spec.Exists(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length); if (a[i] == v) return true; } return false; }
 }";
 
+        // (objects: fields as maps, constructors, instance methods, non-nullable fields and locals)
+        private const string Objects = @"
+public class Counter
+{
+    public int Count;
+    public int[] Data = new int[4];
+    public Counter(int start) { Spec.Requires(start >= 0); Spec.Ensures(Count == start); Count = start; }
+    public void Inc() { Spec.Requires(Count < 100); Spec.Ensures(Count == Spec.Old(Count) + 1); Count++; }
+    public int Get() { Spec.Ensures<int>(r => r == Count); return Count; }
+    public void Overflow() { Count++; }
+    public int First() { return Data[0]; }
+}
+public class Node
+{
+    public int Val;
+    public Node? Next;
+    public Node(int v) { Spec.Ensures(Val == v && Next == null); Val = v; }
+}
+public class Box
+{
+    public int[] Items;
+    public int Size { get; set; }
+    public Box(int n) { Spec.Requires(n >= 0); Spec.Ensures(Items.Length == n); Items = new int[n]; Size = n; }
+}
+public class Unset
+{
+    public int[] Items;
+    public Unset(bool b) { if (b) Items = new int[1]; }
+}
+public class Plain { public int X; public int[] Ys = new int[2]; }
+public static class O
+{
+    static int total;
+    public static int UseCounter() { var c = new Counter(5); c.Inc(); Spec.Assert(c.Count == 6); return c.Get(); }
+    public static void Alias(Counter a, Counter b) { Spec.Requires(a.Count < 10 && b.Count < 10); a.Inc(); Spec.Assert(b.Count < 11); }
+    public static void AliasBad(Counter a, Counter b) { Spec.Requires(a.Count < 10 && b.Count < 10); int before = b.Count; a.Inc(); Spec.Assert(b.Count == before); }
+    public static void Fresh(Counter a) { Spec.Requires(a.Count < 10); var c = new Counter(0); Spec.Assert(a.Count < 10 && c.Count == 0); }
+    public static void Forgets(Counter a, Counter b) { Spec.Requires(b.Count < 10); var c = new Counter(0); c.Inc(); Spec.Assert(b.Count < 10); }
+    public static int NextVal(Node n) { return n.Next.Val; }
+    public static int NextValSafe(Node n) { if (n.Next == null) return 0; return n.Next.Val; }
+    public static Node Cons(int v, Node? next) { var n = new Node(v); n.Next = next; Spec.Assert(n.Val == v); return n; }
+    public static int Length(Box b) { return b.Items.Length; }
+    public static int SizeOf(Box b) { Spec.Ensures<int>(r => r == b.Size); return b.Size; }
+    public static void SetNull(Box b) { b.Items = null!; }
+    public static int NullReceiver(Counter? c) { return c.Get(); }
+    public static void Add(int x) { Spec.Requires(0 <= x && x <= 1000 && 0 <= total && total <= 1000); total += x; Spec.Assert(total >= x); }
+    public static void LocalNull(int[]? a) { int[] b = a; }
+    public static int Defaults() { var p = new Plain(); Spec.Assert(p.X == 0); return p.Ys.Length; }
+    public static int FieldsSpec(Box b) { Spec.Requires(b.Items.Length > 0); return b.Items[0]; }
+}";
+
+        [Fact]
+        public void Objects_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Objects) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 20, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "Counter.Overflow", "Counter.First", "Unset..ctor", "O.AliasBad", "O.Alias", "O.Forgets", "O.NextVal", "O.SetNull", "O.NullReceiver", "O.LocalNull" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Counter..ctor", "Counter.Inc", "Counter.Get", "Node..ctor", "Box..ctor", "O.UseCounter", "O.Fresh",
+                                         "O.NextValSafe", "O.Cons", "O.Length", "O.SizeOf", "O.Add", "O.Defaults", "O.FieldsSpec" })
+                Assert.True(b[good].Verified, good);
+        }
+
         private static (VerificationResult csverify, VerificationResult boogie) Both(System.Func<VerifierOptions, VerificationResult> run)
         {
             var c = run(new VerifierOptions());

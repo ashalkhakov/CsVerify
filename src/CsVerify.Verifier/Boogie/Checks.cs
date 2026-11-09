@@ -16,6 +16,8 @@ namespace CsVerify.Verifier.Boogie
         Contract ContractOf(IMethodSymbol m);
         /// <summary>A callee's requires and measure, lowered over its parameters.</summary>
         KProcedure Signature(IMethodSymbol m);
+        /// <summary>The field maps a function reads (it, or the functions it calls).</summary>
+        List<string> FunctionFields(IMethodSymbol m);
     }
 
     /// <summary>
@@ -31,10 +33,10 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class Checks
     {
         private readonly KProcedure _p;
-        private readonly IProgramFacts _facts;
+        private readonly IProgramFacts _program;
         private List<KStmt> _out;
 
-        private Checks(KProcedure p, IProgramFacts facts) { _p = p; _facts = facts; }
+        private Checks(KProcedure p, IProgramFacts program) { _p = p; _program = program; }
 
         public static void Run(KProcedure p, IProgramFacts facts) => new Checks(p, facts).Run();
 
@@ -48,6 +50,31 @@ namespace CsVerify.Verifier.Boogie
 
         private void Assume(KExpr cond) => Emit(new KAssume { Cond = cond });
 
+        /// <summary>
+        /// What reading a specification lets one assume (a non-nullable field of a built object isn't null), as
+        /// CsVerify's engine assumes it where it reads one; quantified ones are left out.
+        /// </summary>
+        private readonly List<KExpr> _facts = new List<KExpr>();
+        private readonly HashSet<string> _bound = new HashSet<string>();
+
+        private void Facts()
+        {
+            foreach (var f in _facts) Assume(f);
+            _facts.Clear();
+        }
+
+        /// <summary>A field whose value, once its object is built, is never null.</summary>
+        private static bool NonNullField(ISymbol field) => !field.IsStatic && IsRef(FieldType(field)) && NotNullable(FieldType(field));
+
+        private static bool Mentions(KExpr e, HashSet<string> vars) => e switch
+        {
+            KVar v => vars.Contains(v.Name),
+            KOp op => op.Args.Any(a => Mentions(a, vars)),
+            KQuant q => Mentions(q.Range, vars) || Mentions(q.Body, vars),
+            KFnApp f => f.Args.Any(a => Mentions(a, vars)),
+            _ => false,
+        };
+
         private static KExpr And(IEnumerable<KExpr> xs)
         {
             var list = xs.ToList();
@@ -58,8 +85,8 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = _p.Method;
             // the contract as mathematics (each with what makes it well-defined)
-            var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf)).ToList();
-            var ensures = _p.Ensures.Select(e => (spec: e, math: Spec(e.Expr, out var wf), wf)).ToList();
+            var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
+            var ensures = _p.Ensures.Select(e => (spec: e, math: Spec(e.Expr, out var wf), wf, facts: Take())).ToList();
             foreach (var r in requires)
             {
                 r.spec.Expr = r.math;
@@ -68,14 +95,16 @@ namespace CsVerify.Verifier.Boogie
             foreach (var e in ensures) e.spec.Expr = e.math;
             var decreases = _p.Decreases?.Select(d => Spec(d, out _)).ToList();
             if (_p.FunctionBody != null) _p.FunctionBody = Spec(_p.FunctionBody, out _);
-            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: Spec(i.Expr, out var wf), wf)).ToList());
+            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: Spec(i.Expr, out var wf), wf, facts: Take())).ToList());
             var measures = _p.Measures.ToDictionary(kv => kv.Key, kv => kv.Value.Select(x => Spec(x.Expr, out _)).ToList());
+            _facts.Clear();
 
             // at entry: the requires well-defined, in order (each under those before it)
             _out = _p.Entry;
             var before = new List<KExpr>();
             foreach (var r in requires)
             {
+                foreach (var f in r.facts) Assume(f);
                 WellDefined(r.wf, r.spec.At, before);
                 before.Add(r.math);
             }
@@ -88,6 +117,7 @@ namespace CsVerify.Verifier.Boogie
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
                     foreach (var inv in invs)
                     {
+                        foreach (var f in inv.facts) Assume(f);
                         WellDefined(inv.wf, inv.spec.At, null);
                         Assert(inv.math, At("CSV1005", inv.spec.At, $"loop invariant '{inv.spec.At}'"));
                     }
@@ -127,14 +157,21 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A return: the result checked not null, the postconditions well-defined and holding, here.</summary>
-        private void Return(KReturn ret, List<(KSpec spec, KExpr math, List<KExpr> wf)> ensures)
+        private void Return(KReturn ret, List<(KSpec spec, KExpr math, List<KExpr> wf, List<KExpr> facts)> ensures)
         {
             var m = _p.Method;
-            if (!m.ReturnsVoid && IsArray(m.ReturnType) && NotNullable(m.ReturnType))
+            // a constructor has set the fields that may not be null (but the required ones, which its callers set)
+            if (_p.IsCtor)
+                foreach (var field in InstanceFields(m.ContainingType).Where(NonNullField))
+                    if (!IsRequired(field) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))
+                        Assert(new KOp("!=", new KOp("sel", new KVar(FieldMap(field)), new KVar("this")), new KLit("null")),
+                            At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
+            if (!m.ReturnsVoid && IsRef(m.ReturnType) && NotNullable(m.ReturnType))
                 Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable"));
             var before = new List<KExpr>();
             foreach (var e in ensures)
             {
+                foreach (var f in e.facts) Assume(f);
                 WellDefined(e.wf, e.spec.At, before);
                 Assert(e.math, At("CSV1002", ret.At, $"postcondition '{e.spec.At}' might not hold on this return path"));
                 before.Add(e.math);
@@ -148,8 +185,31 @@ namespace CsVerify.Verifier.Boogie
             switch (s)
             {
                 case KAssign a:
-                    Emit(new KAssign { Var = a.Var, Value = Code(a.Value) });
+                {
+                    var value = Code(a.Value);
+                    if (a.NotNullAt != null)
+                        Assert(new KOp("!=", value, new KLit("null")), At("CSV1014", a.NotNullAt, $"'{a.NotNullAt}' might store null, but '{a.NotNullName}' is not nullable"));
+                    Emit(new KAssign { Var = a.Var, Value = value });
                     return;
+                }
+                case KFieldStore fs:
+                {
+                    var value = Code(fs.Value);
+                    var o = fs.Instance == null ? new KLit("null") : Code(fs.Instance);
+                    if (fs.Instance != null && !fs.OnThis)
+                        Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fs.At, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
+                    if (NonNullField(fs.Field))
+                        Assert(new KOp("!=", value, new KLit("null")), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
+                    Emit(new KFieldStore { Field = fs.Field, Instance = o, Value = value, OnThis = fs.OnThis, At = fs.At, InstanceAt = fs.InstanceAt });
+                    return;
+                }
+                case KNewObj n:
+                {
+                    var args = Arguments(n.Ctor, n.Args, n.ArgsAt);
+                    Emit(new KNewObj { Var = n.Var, Type = n.Type, Ctor = n.Ctor, Args = args, ArgsAt = n.ArgsAt, At = n.At,
+                                       Check = n.Ctor == null ? null : At("CSV1001", n.At, $"'{n.At}'") });
+                    return;
+                }
                 case KStore st:
                 {
                     var value = Code(st.Value);
@@ -171,6 +231,7 @@ namespace CsVerify.Verifier.Boogie
                 case KSpecStmt ss:
                 {
                     var term = Spec(ss.Spec, out var wf);
+                    Facts();
                     WellDefined(wf, ss.ArgumentAt, null);
                     if (ss.Assume) Assume(term);
                     else Assert(term, At("CSV1004", ss.At, $"assertion '{ss.ArgumentAt}'"));
@@ -185,16 +246,29 @@ namespace CsVerify.Verifier.Boogie
         private void Call(KCall c, List<KExpr> decreases)
         {
             var callee = c.Callee;
-            var args = new KExpr[c.Args.Length];
+            KExpr receiver = null;
+            if (c.Receiver != null)
+            {
+                receiver = Code(c.Receiver);
+                if (!c.ReceiverIsThis) Assert(new KOp("!=", receiver, new KLit("null")), At("CSV1013", c.At, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+            }
+            var args = Arguments(callee, c.Args, c.ArgsAt);
+            Termination(c, receiver, args, decreases);
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt, Check = At("CSV1001", c.At, $"'{c.At}'") });
+        }
+
+        /// <summary>A call's arguments, each checked, then not null where its parameter may not be (CSV1014).</summary>
+        private KExpr[] Arguments(IMethodSymbol callee, KExpr[] given, SyntaxNode[] at)
+        {
+            var args = new KExpr[given.Length];
             for (int k = 0; k < args.Length; k++)
             {
-                args[k] = Code(c.Args[k]);
-                var param = callee.Parameters[k];
-                if (IsArray(param.Type) && NotNullable(param.Type))
-                    Assert(new KOp("!=", args[k], new KLit("null")), At("CSV1014", c.ArgsAt[k], $"'{c.ArgsAt[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
+                args[k] = Code(given[k]);
+                var param = callee?.Parameters[k];
+                if (param != null && IsRef(param.Type) && NotNullable(param.Type))
+                    Assert(new KOp("!=", args[k], new KLit("null")), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
             }
-            Termination(c, args, decreases);
-            Emit(new KCall { Callee = callee, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt, Check = At("CSV1001", c.At, $"'{c.At}'") });
+            return args;
         }
 
         /// <summary>
@@ -202,14 +276,14 @@ namespace CsVerify.Verifier.Boogie
         /// lexicographically (CSV1008). A [Pure] function or lemma that recurses without one doesn't terminate
         /// (CSV1011); an ordinary method needn't (partial correctness).
         /// </summary>
-        private void Termination(KCall c, KExpr[] args, List<KExpr> mine)
+        private void Termination(KCall c, KExpr receiver, KExpr[] args, List<KExpr> mine)
         {
-            if (!_facts.Recursive(_p.Method, c.Callee)) return;
-            var theirs = _facts.ContractOf(c.Callee);
+            if (!_program.Recursive(_p.Method, c.Callee)) return;
+            var theirs = _program.ContractOf(c.Callee);
             if (mine != null && theirs?.Decreases != null)
             {
-                var sig = _facts.Signature(c.Callee);
-                var given = Given(c.Callee, args);
+                var sig = _program.Signature(c.Callee);
+                var given = Given(c.Callee, receiver, args);
                 var next = sig.Decreases.Select(d => Subst(Spec(d, out _), given)).ToList();
                 Assert(Lexicographic(next, mine), At("CSV1008", c.At,
                     $"cannot prove termination: measure '{string.Join(", ", theirs.Decreases.Select(d => d.Syntax))}' of '{c.Callee.Name}' might not decrease or might be negative"));
@@ -218,8 +292,16 @@ namespace CsVerify.Verifier.Boogie
                 Assert(new KLit("false"), At("CSV1011", c.At, $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"));
         }
 
-        private static Dictionary<string, KExpr> Given(IMethodSymbol callee, KExpr[] args) =>
-            callee.Parameters.Select((p, k) => (p, k)).ToDictionary(x => Local(x.p), x => args[x.k]);
+        private static Dictionary<string, KExpr> Given(IMethodSymbol callee, KExpr receiver, KExpr[] args)
+        {
+            var given = callee.Parameters.Select((p, k) => (p, k)).ToDictionary(x => Local(x.p), x => args[x.k]);
+            if (receiver != null) given["this"] = receiver;
+            return given;
+        }
+
+        private static bool IsRequired(ISymbol field) =>
+            (field is IFieldSymbol f ? f.IsRequired : field is IPropertySymbol p && p.IsRequired) ||
+            field.GetAttributes().Any(a => a.AttributeClass?.Name == "JsonRequiredAttribute");
 
         /// <summary>
         /// next below before, lexicographically, each part bounded below by 0 where it goes down (Dafny's rule: the
@@ -261,6 +343,16 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case KArith ar: return Arith(ar, Code(ar.Left), Code(ar.Right));
                 case KConv cv: return Convert(cv, Code(cv.Value));
+                case KField fd:
+                {
+                    if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
+                    var o = Code(fd.Instance);
+                    if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fd.At, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
+                    var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
+                    // (a non-nullable field of a built object: not this one's, while its constructor builds it)
+                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis)) Assume(new KOp("!=", v, new KLit("null")));
+                    return v;
+                }
                 default: throw new NotTranslated("in code: " + e.GetType().Name);
             }
         }
@@ -304,7 +396,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case KMode.Unchecked: return Wrap(value, type);
                 case KMode.Math: return value;
-                case KMode.Default when _facts.CheckOverflow:
+                case KMode.Default when _program.CheckOverflow:
                     Assert(InRange(value, type), At("CSV1010", at, message));
                     return value;
                 default:
@@ -316,6 +408,14 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ specifications
 
         /// <summary>A specification as mathematics, and what makes it well-defined (each a condition, in order).</summary>
+        /// <summary>The facts the last specifications read gave, taken.</summary>
+        private List<KExpr> Take()
+        {
+            var taken = _facts.ToList();
+            _facts.Clear();
+            return taken;
+        }
+
         private KExpr Spec(KExpr e, out List<KExpr> wf)
         {
             wf = new List<KExpr>();
@@ -380,6 +480,16 @@ namespace CsVerify.Verifier.Boogie
                     Need(new KOp("!=", a, new KLit("null")));
                     return new KOp("len", a);
                 }
+                case KField fd:
+                {
+                    if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
+                    var o = Spec(fd.Instance, wf, guard);
+                    if (!fd.OnThis) Need(new KOp("!=", o, new KLit("null")));
+                    var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
+                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !Mentions(o, _bound))
+                        _facts.Add(new KOp("==>", new KOp("!=", o, new KLit("null")), new KOp("!=", v, new KLit("null"))));
+                    return v;
+                }
                 case KQuant q:
                 {
                     // (Range is lo <= q && q < hi, from Lowering)
@@ -388,17 +498,30 @@ namespace CsVerify.Verifier.Boogie
                     var range = new KOp("&&", new KOp("<=", lo, new KVar(q.Var)), new KOp("<", new KVar(q.Var), hi));
                     // (its body well-defined over the range: each condition quantified the same way)
                     var inner = new List<KExpr>();
-                    var body = Spec(q.Body, inner, new List<KExpr> { range });
+                    bool added = _bound.Add(q.Var);
+                    KExpr body;
+                    try { body = Spec(q.Body, inner, new List<KExpr> { range }); }
+                    finally { if (added) _bound.Remove(q.Var); }
                     foreach (var c in inner) Need(new KQuant { Forall = true, Var = q.Var, Range = null, Body = c });
                     return new KQuant { Forall = q.Forall, Var = q.Var, Range = range, Body = body };
                 }
                 case KFnCall fn:
                 {
+                    KExpr receiver = null;
+                    if (fn.Receiver != null)
+                    {
+                        receiver = Spec(fn.Receiver, wf, guard);
+                        if (!fn.ReceiverIsThis) Need(new KOp("!=", receiver, new KLit("null")));
+                    }
                     var args = fn.Args.Select(a => Spec(a, wf, guard)).ToArray();
                     // (well-defined where its precondition holds, at the arguments)
-                    var given = Given(fn.Callee, args);
-                    foreach (var r in _facts.Signature(fn.Callee).Requires) Need(Subst(Spec(r.Expr, out _), given));
-                    return new KFnApp { Function = FunctionName(fn.Callee), Args = args };
+                    var given = Given(fn.Callee, receiver, args);
+                    var saved = _facts.ToList();
+                    foreach (var r in _program.Signature(fn.Callee).Requires) Need(Subst(Spec(r.Expr, out _), given));
+                    _facts.Clear();
+                    _facts.AddRange(saved);
+                    return new KFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Fields = _program.FunctionFields(fn.Callee),
+                                        Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
                 }
                 default: throw new NotTranslated("in a specification: " + e.GetType().Name);
             }
@@ -410,7 +533,7 @@ namespace CsVerify.Verifier.Boogie
             KVar v when given.TryGetValue(v.Name, out var x) => x,
             KOp op => new KOp(op.Op, op.Args.Select(a => Subst(a, given)).ToArray()),
             KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given) },
-            KFnApp f => new KFnApp { Function = f.Function, Layer = f.Layer, Args = f.Args.Select(a => Subst(a, given)).ToArray() },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray() },
             _ => e,
         };
     }

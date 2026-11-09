@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using System.Text;
+using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -30,11 +31,46 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t);
 
-        public static bool NotNullable(ITypeSymbol t) => t.NullableAnnotation != NullableAnnotation.Annotated;
+        /// <summary>A reference: an array or an object.</summary>
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t);
 
-        public static string TypeOf(ITypeSymbol t) => IsArray(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+        /// <summary>
+        /// A class of the program whose objects are plain mutable state: not generic, not static, not a record (a data
+        /// type), derived from object, with no virtual members, interfaces or overrides (which run code a call can't
+        /// see), and none of CsVerify's attributes on it or its fields ([Owned], [Invariant], locks, atomics, models).
+        /// </summary>
+        public static bool IsClass(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && n.Arity == 0 &&
+            (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
+            n.BaseType?.SpecialType == SpecialType.System_Object && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            n.AllInterfaces.Length == 0 && !SpecSymbols.IsContractsClass(n) && !CsVerifyAttributes(n) &&
+            n.GetMembers().All(m => !m.IsVirtual && !m.IsAbstract && !m.IsOverride && !((m is IFieldSymbol || m is IPropertySymbol) && CsVerifyAttributes(m))) &&
+            !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute"));
+
+        private static bool CsVerifyAttributes(ISymbol s) =>
+            s.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace);
+
+        /// <summary>A field the kernel has: a heap field (an instance field or auto-property, or a mutable static field) of a class in the subset, of a type in it.</summary>
+        public static bool IsField(ISymbol s) =>
+            s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) &&
+            (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && !CsVerifyAttributes(s) : IsClass(s.ContainingType));
+
+        public static ITypeSymbol FieldType(ISymbol s) => s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
+
+        /// <summary>A field's map: object (null for a static field's one object) to value.</summary>
+        public static string FieldMap(ISymbol s) => "$F." + Ident(s.ContainingType.ToDisplayString() + "." + s.Name);
+
+        /// <summary>The fields of a class an object of it has (the static ones aren't its).</summary>
+        public static IEnumerable<ISymbol> InstanceFields(ITypeSymbol t) => t.GetMembers().Where(m => !m.IsStatic && IsField(m)).Select(m => m.OriginalDefinition);
+
+        public static KExpr Default(ITypeSymbol t) => new KLit(IsRef(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+
+        /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
+        public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
+
+        public static string TypeOf(ITypeSymbol t) => IsRef(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 
