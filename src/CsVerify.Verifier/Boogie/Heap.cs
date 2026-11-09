@@ -62,7 +62,7 @@ namespace CsVerify.Verifier.Boogie
                                 stmts.Add(new KCall { Callee = n.Ctor, Receiver = t, ReceiverIsThis = false, Args = n.Args, At = n.At, Check = n.Check });
                             else
                                 // an implicit constructor runs the initializers: what they make isn't known here (a non-nullable field's is set)
-                                foreach (var field in InstanceFields(n.Type).Where(f => HasInitializer(f) || IsRef(FieldType(f)) && NotNullable(FieldType(f))))
+                                foreach (var field in InstanceFields(n.Type).Where(f => HasInitializer(f) || IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
                                 {
                                     var u = "u$" + FieldMap(field);
                                     if (!p.Locals.Any(l => l.Name == u)) p.Locals.Add(new KLocal { Name = u, Type = FieldType(field) });

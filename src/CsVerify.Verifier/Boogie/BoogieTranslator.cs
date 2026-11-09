@@ -146,6 +146,15 @@ namespace CsVerify.Verifier.Boogie
 
         public bool UsesFieldPermissions { get; set; }
 
+        /// <summary>The string literals: one constant per contents.</summary>
+        private readonly Dictionary<string, string> _literals = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        private string Literal(string s)
+        {
+            if (!_literals.TryGetValue(s, out var name)) _literals[s] = name = "s#" + _literals.Count;
+            return name;
+        }
+
         private readonly Dictionary<IMethodSymbol, (IMethodSymbol pred, int[] arg)?> _over = new Dictionary<IMethodSymbol, (IMethodSymbol, int[])?>(SymbolEqualityComparer.Default);
 
         public (IMethodSymbol pred, int[] arg)? OverPredicate(IMethodSymbol f)
@@ -207,7 +216,7 @@ namespace CsVerify.Verifier.Boogie
         KProcedure IProgramFacts.Signature(IMethodSymbol m)
         {
             m = m.OriginalDefinition;
-            if (!_signatures.TryGetValue(m, out var sig)) _signatures[m] = sig = Lowering.Signature(m, ContractOf(m), IsFunction);
+            if (!_signatures.TryGetValue(m, out var sig)) _signatures[m] = sig = Lowering.Signature(m, ContractOf(m), IsFunction, Literal, ContractOf);
             return sig;
         }
 
@@ -219,7 +228,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The method as a procedure; throws <see cref="NotTranslated"/> for one outside the subset (then nothing is kept).</summary>
         public void Procedure(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result)
         {
-            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction);
+            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
             Checks.Run(p, this);
             Heap.Run(p);
             _pending.Add(p);
@@ -243,8 +252,25 @@ namespace CsVerify.Verifier.Boogie
                     if (preds.Add(q)) work.Push(q);
             }
             if (_pending.Any(p => p.UsesPerm)) _printer.Instances(preds);
+            // the library stubs used (a string's [Pure] members): functions their contracts describe
+            // (and the stubs those stubs' contracts call)
+            var stubs = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Stubs).Concat(_signatures.Values.SelectMany(s => s.Stubs)), SymbolEqualityComparer.Default);
+            var stubMath = new Dictionary<IMethodSymbol, (List<KExpr> requires, List<KExpr> ensures)>(SymbolEqualityComparer.Default);
+            for (var work = new Stack<IMethodSymbol>(stubs); work.Count > 0;)
+            {
+                var s = work.Pop();
+                var sig = ((IProgramFacts)this).Signature(s);
+                stubMath[s] = (sig.Requires.Select(r => Checks.MathOf(r.Expr, this, s)).ToList(), sig.Ensures.Select(e => Checks.MathOf(e.Expr, this, s)).ToList());
+                foreach (var t in sig.Stubs.Concat(_signatures.Values.SelectMany(x => x.Stubs)))
+                    if (stubs.Add(t)) work.Push(t);
+            }
+            foreach (var s in stubs.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
+                _printer.Stub(s, ContractOf(s), stubMath[s].requires, stubMath[s].ensures);
+            // (the literals last: the stubs' contracts may have some)
+            _printer.Literals(_literals);
             _printer.Fields(fields);
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
+            _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             OwnArrays();
             foreach (var p in _pending.Where(p => p.FunctionBody != null && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);

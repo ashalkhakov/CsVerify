@@ -330,6 +330,21 @@ Not yet: a function over more than one instance, or over one not of its paramete
 `p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
 assigns.
 
+**Strings.** As [the semantics](semantics.md#strings) says, a string is its value: a `Ref` (so that null is one), with
+a length `slen(s)` and UTF-16 code units `sat(s, i)` in `0..65535`, functions of the value. A literal is a unique
+constant of its own, not null, of its length and characters. `a + b` is `scat(a, b)`: not null, its characters `a`'s
+then `b`'s (null counts as empty); a concatenation too long for a string throws, which ends the path. `==`, `!=` and
+ordinal `Equals` compare values; where two strings are compared, two different ones of one length differ at some
+index (`sdiff`), so a string is its characters. `s.Length` and `s[i]` are checked not null (CSV1013) and in bounds
+(CSV1003). A `[Pure]` member of string with a stub contract (`Substring`, `IndexOf`, `Contains`, `StartsWith` with
+`StringComparison.Ordinal`, ...) is a Boogie function of its arguments, its postconditions axioms where its
+preconditions hold, its non-nullable result not null; a call checks its receiver (CSV1013) and its precondition
+(CSV1001). Comparing strings as objects, and other library members, aren't translated yet.
+
+**Quantifiers in code.** A `Spec.Forall` or `Spec.Exists` in code (a `[Pure]` or ghost function's body) is
+mathematics, read as the source has it; its body's checks (null, bounds, division, a function's precondition) are
+asserted for every value in its range, under the conditions before them.
+
 **Calls and frames.** A call of another translated method is a Boogie `call`. A procedure `modifies` the maps it
 writes (an element map, a field map, or `$Alloc` when it allocates), and those of everything it calls; after a call,
 what the callee modifies is unknown, as CsVerify's engine forgets the arrays and fields a callee may write. Allocation
@@ -361,7 +376,11 @@ reads arrays only through its own array parameters takes those arrays' elements 
 another array leaves its value as it was, as in CsVerify's engine. Its definition is an
 axiom: where its precondition holds, its value on layer `$LS(ly)` is its body, whose calls are on layer `ly`. Another
 axiom makes every layer's value the same. A specification calls it on `$LS($LZ)`, so each use unfolds the definition
-once, as CsVerify's engine does. Its postcondition is an axiom of every value where its precondition holds, and a
+once, as CsVerify's engine does; only a call back into its recursion group is on the layer below (Dafny's rule), any
+other has a specification's fuel. Under a quantifier, of its variable, an application's definition is unfolded once
+for every value in the quantifier's range (an assumption where the specification is read, and at a call for the
+callee's preconditions), as CsVerify's engine unfolds it; that equation applies again to the applications in its
+body, so recursion over a range unfolds as far as it needs to. Its postcondition is an axiom of every value where its precondition holds, and a
 run-time `[Pure]` function's value is in its type's range. The method stays a procedure, which verifies the body and
 says its result is the function's value on `$LS($LZ)` (so a call in code knows its body too). A `[GhostFunction]`, and a lemma, is ghost code: its arithmetic is
 mathematical.
@@ -391,10 +410,12 @@ reads, writes, lengths and allocation, fields, object creation, calls of each ot
 Also `ref` and `out` parameters, `[Owned]` classes with their views and invariants, `Spec.Acc` of objects, and
 predicates with `Spec.Fold` and `Spec.Unfold`, functions over them, array-cell and single-field permissions.
 
+Also strings and the string members with stub contracts, and quantifiers in code.
+
 Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, virtual
-members, interfaces, inheritance, records (data types), generics, strings, collections,
+members, interfaces, inheritance, records (data types), generics, string members without stubs, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
-`Spec.EnsuresOnThrow`, permissions and views, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
+`Spec.EnsuresOnThrow`, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
 
 ## How it's checked
@@ -409,7 +430,8 @@ two quickly.
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
    them (done for plain classes; next: inheritance and virtual calls, data records, object initializers, `this(...)`);
-2. strings and the collections' models (`List`, `Dictionary`, `HashSet`), and the ghost types;
+2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
+   models (`List`, `Dictionary`, `HashSet`), and the ghost types;
 3. `foreach`, lambdas and delegates;
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
 5. frames (`Spec.Modifies`, `Spec.Reads`), and the library's stub contracts;

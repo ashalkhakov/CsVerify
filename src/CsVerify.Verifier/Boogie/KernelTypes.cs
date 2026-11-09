@@ -31,7 +31,13 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t);
+
+        /// <summary>A string: a value (its length, its characters), a Ref only so that null is one; never allocated.</summary>
+        public static bool IsString(ITypeSymbol t) => t?.SpecialType == SpecialType.System_String;
+
+        /// <summary>What may be null: a reference or a string.</summary>
+        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t);
 
         /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
         public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
@@ -82,12 +88,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The fields of a class an object of it has (the static ones aren't its).</summary>
         public static IEnumerable<ISymbol> InstanceFields(ITypeSymbol t) => t.GetMembers().Where(m => !m.IsStatic && IsField(m)).Select(m => m.OriginalDefinition);
 
-        public static KExpr Default(ITypeSymbol t) => new KLit(IsRef(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+        public static KExpr Default(ITypeSymbol t) => new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
-        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) || IsString(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

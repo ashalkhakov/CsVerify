@@ -50,6 +50,16 @@ namespace CsVerify.Verifier.Boogie
             Line("function len(a: Ref): int;");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
             foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{(t == SpecialType.System_Boolean ? "bool" : "int")};");
+            Line("// strings: values, of a length and UTF-16 code units (null counts as empty where it is concatenated)");
+            Line("function slen(s: Ref): int;");
+            Line("axiom (forall s: Ref :: { slen(s) } 0 <= slen(s) && slen(s) <= 2147483647);");
+            Line("function sat(s: Ref, i: int): int;");
+            Line("axiom (forall s: Ref, i: int :: { sat(s, i) } 0 <= sat(s, i) && sat(s, i) <= 65535);");
+            Line("function sl(s: Ref): int { if s == null then 0 else slen(s) }");
+            Line("function scat(a: Ref, b: Ref): Ref;");
+            Line("axiom (forall a: Ref, b: Ref :: { scat(a, b) } sl(a) + sl(b) <= 2147483647 ==> scat(a, b) != null && slen(scat(a, b)) == sl(a) + sl(b));");
+            Line("axiom (forall a: Ref, b: Ref, i: int :: { sat(scat(a, b), i) } sl(a) + sl(b) <= 2147483647 && 0 <= i && i < sl(a) + sl(b) ==> sat(scat(a, b), i) == (if i < sl(a) then sat(a, i) else sat(b, i - sl(a))));");
+            Line("function sdiff(a: Ref, b: Ref): int;");
             Line("// what is read from memory is in its type's range");
             Line("function $InRange(" + string.Join(", ", Widths.Keys.Select(t => $"{Param(t)}: [Ref][int]int")) + "): bool { " +
                  string.Join(" && ", Widths.Keys.Select(t => { var (lo, hi) = Range(t); return $"(forall r: Ref, j: int :: {lo} <= {Param(t)}[r][j] && {Param(t)}[r][j] <= {hi})"; })) + " }");
@@ -67,11 +77,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The maps of [Owned] classes' fields: a call changes them only at the objects whose views it gets.</summary>
         public HashSet<string> OwnedMaps = new HashSet<string>();
 
+        /// <summary>Is a call of b from a recursive (each reaches the other)?</summary>
+        public Func<IMethodSymbol, IMethodSymbol, bool> Recursive = (a, b) => true;
+
         private sealed class Context
         {
             /// <summary>The ref parameters, named by their values on entry (p$x$in) where this says so: in requires, and in old().</summary>
             public HashSet<string> Ins = new HashSet<string>();
             public bool AtEntry;
+            /// <summary>In a function's axioms: is a callee in its recursion group?</summary>
+            public Func<IMethodSymbol, bool> Group;
             /// <summary>In such a function: each array parameter's elements.</summary>
             public Dictionary<string, string> Elems;
             public bool InFunction;
@@ -93,13 +108,18 @@ namespace CsVerify.Verifier.Boogie
                 case KVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
                 case KVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
                 case KOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
-                    return $"old({E(old.Args[0], new Context { Ins = cx.Ins, AtEntry = true, Elems = cx.Elems, InFunction = cx.InFunction, Layer = cx.Layer, Result = cx.Result })})";
+                    return $"old({E(old.Args[0], new Context { Ins = cx.Ins, AtEntry = true, Elems = cx.Elems, InFunction = cx.InFunction, Layer = cx.Layer, Result = cx.Result, Group = cx.Group })})";
+                case KFnApp f when f.Plain:
+                    return $"{f.Function}({string.Join(", ", f.Args.Select(a => E(a, cx)))})";
                 case KFnApp f when f.Snap != null:
                     return $"{f.Function}({string.Join(", ", new[] { f.Snap }.Concat(f.Args).Select(a => E(a, cx)))})";
                 case KFnApp f:
                 {
                     var own = OwnArrays(f.Callee);
-                    var parts = new List<string> { f.Layer ?? cx.Layer };
+                    // (in a function's axioms, only a call back into its recursion group is on the layer below: Dafny's rule;
+                    // any other has the fuel a specification's call has)
+                    var layer = f.Layer ?? (cx.Group != null && !cx.Group(f.Callee) ? "$LS($LZ)" : cx.Layer);
+                    var parts = new List<string> { layer };
                     if (own == null) parts.Add(Maps(cx));
                     else parts.AddRange(own.Select(o => Elements(o.map, f.Args[o.arg], cx)));
                     parts.AddRange(f.Fields.Select(x => Map(x, cx)));
@@ -124,6 +144,12 @@ namespace CsVerify.Verifier.Boogie
                             return $"{elems}[{a[2]}]";
                         case "sel": return a.Length == 2 ? $"{a[0]}[{a[1]}]" : $"{a[0]}[{a[1]}][{a[2]}]";
                         case "store": return $"{a[0]}[{a[1]} := {a[2]}]";
+                        case "slen": return $"slen({a[0]})";
+                        case "sl": return $"sl({a[0]})";
+                        case "sat": return $"sat({a[0]}, {a[1]})";
+                        case "scat": return $"scat({a[0]}, {a[1]})";
+                        case "sdiff": return $"sdiff({a[0]}, {a[1]})";
+                        case "streq": return $"({a[0]} == {a[1]})";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
                         default:
@@ -133,6 +159,36 @@ namespace CsVerify.Verifier.Boogie
                 }
                 default: throw new NotTranslated("not printable: " + e.GetType().Name);
             }
+        }
+
+        // ------------------------------------------------------------------ strings' literals, and library stubs
+
+        /// <summary>Each literal: a value of its own (unique), not null, of its length and characters.</summary>
+        public void Literals(IReadOnlyDictionary<string, string> literals)
+        {
+            foreach (var (text, name) in literals.OrderBy(kv => kv.Value, System.StringComparer.Ordinal))
+            {
+                Line($"const unique {name}: Ref;");
+                var facts = new[] { $"{name} != null", $"slen({name}) == {text.Length}" }.Concat(text.Select((c, i) => $"sat({name}, {i}) == {(int)c}"));
+                Line($"axiom {string.Join(" && ", facts)};");
+            }
+        }
+
+        /// <summary>A library member's stub, as a function: its postconditions, where its preconditions hold, of all its arguments.</summary>
+        public void Stub(IMethodSymbol m, Contract contract, List<KExpr> requires, List<KExpr> ensures)
+        {
+            var name = Checks.StubName(m);
+            var ps = contract.Stub.Parameters.Select(x => (name: Local(x), type: TypeOf(x.Type))).ToList();
+            var bound = string.Join(", ", ps.Select(x => $"{x.name}: {x.type}"));
+            var app = $"{name}({string.Join(", ", ps.Select(x => x.name))})";
+            Line($"function {name}({bound}): {TypeOf(m.ReturnType)};");
+            var cx = new Context { Result = app };
+            var pre = requires.Count == 0 ? "true" : string.Join(" && ", requires.Select(r => E(r, cx)));
+            string Axiom(string body) => ps.Count == 0 ? $"axiom {body};" : $"axiom (forall {bound} :: {{ {app} }} {body});";
+            foreach (var e in ensures) Line(Axiom($"{pre} ==> {E(e, cx)}"));
+            // (trusted for its annotations: a non-nullable result isn't null; an integer one is in its type's range)
+            if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line(Axiom($"{app} != null"));
+            if (IsIntegral(m.ReturnType)) Line(Axiom(E(InRange(new KLit(app), m.ReturnType), InProcedure)));
         }
 
         // ------------------------------------------------------------------ predicates
@@ -203,6 +259,8 @@ namespace CsVerify.Verifier.Boogie
             _ => false,
         };
 
+        private static IEnumerable<KExpr> Conjuncts(KExpr e) => e is KOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
+
         /// <summary>Does it speak of snapshots (a function over a predicate)?</summary>
         private static bool Snapshots(KExpr e) => e switch
         {
@@ -230,8 +288,9 @@ namespace CsVerify.Verifier.Boogie
             // axiom is about every state)
             var cx = new Context { Result = app };
             var pre = p.Requires.Where(r => !ReadsMemory(r.Expr)).Select(r => E(r.Expr, cx)).DefaultIfEmpty("true");
-            foreach (var e in p.Ensures.Where(e => !ReadsMemory(e.Expr)))
-                Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e.Expr, cx)});");
+            // (conjunct by conjunct: those of them that read no memory)
+            foreach (var e in p.Ensures.SelectMany(e => Conjuncts(e.Expr)).Where(e => !ReadsMemory(e)))
+                Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
         }
 
         public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols)
@@ -249,7 +308,8 @@ namespace CsVerify.Verifier.Boogie
             string At(string layer) => $"{name}({layer}{Sep(memoryArgs)}{args})";
             Line($"function {name}(ly: LayerType{Sep(memory)}{ps}): {TypeOf(m.ReturnType)};");
             Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {At("$LS(ly)")} == {At("ly")});");
-            var cx = new Context { InFunction = true, Layer = "ly", Result = At("ly"), Elems = own?.ToDictionary(o => o.param, o => "e" + o.param) };
+            var cx = new Context { InFunction = true, Layer = "ly", Result = At("ly"), Elems = own?.ToDictionary(o => o.param, o => "e" + o.param),
+                                   Group = callee => callee != null && Recursive(m, callee) };
             var guard = p.Requires.Count == 0 ? "true" : string.Join(" && ", p.Requires.Select(r => E(r.Expr, cx)));
             Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {guard} ==> {At("$LS(ly)")} == {E(p.FunctionBody, cx)});");
             foreach (var e in p.Ensures) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {guard} ==> {E(e.Expr, cx)});");
@@ -289,11 +349,8 @@ namespace CsVerify.Verifier.Boogie
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
                 if (IsIntegral(x.Type)) Line($"  free ensures {E(InRange(new KVar(Local(x)), x.Type), cx)};");
-                if (IsRef(x.Type))
-                {
-                    Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
-                    if (NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
-                }
+                if (IsRef(x.Type)) Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
+                if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
             }
             // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
             foreach (var r in p.Requires) Line($"  requires {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", r.Check);
@@ -302,11 +359,8 @@ namespace CsVerify.Verifier.Boogie
             if (!m.ReturnsVoid && IsIntegral(m.ReturnType) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), m.ReturnType), cx)};");
             if (functionFields != null)
                 Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
-            if (!m.ReturnsVoid && IsRef(m.ReturnType))
-            {
-                Line("  free ensures result == null || $Alloc[result];");
-                if (NotNullable(m.ReturnType)) Line("  free ensures result != null;");
-            }
+            if (!m.ReturnsVoid && IsRef(m.ReturnType)) Line("  free ensures result == null || $Alloc[result];");
+            if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line("  free ensures result != null;");
             Line("{");
             if (p.UsesPerm)
             {
@@ -378,7 +432,7 @@ namespace CsVerify.Verifier.Boogie
                 if (IsIntegral(x.Type)) Line($"  free requires {E(InRange(new KVar(Local(x)), x.Type), cx)};");
                 if (IsRef(x.Type) || IsView(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
                 // (not null: checked at each call's argument)
-                if (IsRef(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
+                if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
             }
         }
 

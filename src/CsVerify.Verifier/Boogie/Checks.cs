@@ -82,7 +82,7 @@ namespace CsVerify.Verifier.Boogie
             new KOp("==>", new KOp("&&", new KOp("sel", new KVar("$Alloc"), o), new KOp("!=", v, new KLit("null"))), new KOp("sel", new KVar("$Alloc"), v));
 
         /// <summary>A field whose value, once its object is built, is never null.</summary>
-        private static bool NonNullField(ISymbol field) => !field.IsStatic && IsRef(FieldType(field)) && NotNullable(FieldType(field));
+        private static bool NonNullField(ISymbol field) => !field.IsStatic && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
 
         private static bool Mentions(KExpr e, HashSet<string> vars) => e switch
         {
@@ -252,7 +252,7 @@ namespace CsVerify.Verifier.Boogie
                 ProveInvariant(ViewOf(param.Type), new KVar(Local(param)), ret.At, $"when the view '{param.Name}' is given back");
             if (_p.ThisIsView && !_p.IsCtor) ProveInvariant(m.ContainingType, new KVar("this"), ret.At, $"when '{m.Name}' returns");
             // a non-nullable ref or out parameter is given back not null
-            foreach (var param in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out && IsRef(x.Type) && NotNullable(x.Type)))
+            foreach (var param in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out && IsNullable(x.Type) && NotNullable(x.Type)))
                 Assert(new KOp("!=", new KVar(Local(param)), new KLit("null")), At("CSV1014", ret.At, $"'{param.Name}' might be null on return, but its type '{param.Type}' is not nullable"));
             // a constructor has set the fields that may not be null (but the required ones, which its callers set)
             if (_p.IsCtor)
@@ -260,7 +260,7 @@ namespace CsVerify.Verifier.Boogie
                     if (!IsRequired(field) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))
                         Assert(new KOp("!=", new KOp("sel", new KVar(FieldMap(field)), new KVar("this")), new KLit("null")),
                             At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
-            if (!m.ReturnsVoid && IsRef(m.ReturnType) && NotNullable(m.ReturnType))
+            if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType))
                 Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable"));
             // the permissions the postconditions give back are in hand
             if (_p.UsesPerm)
@@ -410,6 +410,14 @@ namespace CsVerify.Verifier.Boogie
             var sig = _program.Signature(callee);
             var given = Given(callee, receiver, args);
             bool pure = _program.ContractOf(callee).IsPure;
+            // (what reading its preconditions here gives: the unfoldings of functions under their quantifiers)
+            foreach (var r in sig.Requires)
+            {
+                _facts.Clear();
+                Subst(Spec(r.Expr, out _), given);
+                foreach (var f in _facts.ToList()) Assume(Subst(f, given));
+                _facts.Clear();
+            }
             var gave = new List<(KExpr, KExpr)>();
             if (_p.UsesPerm && !pure) foreach (var r in sig.Requires) Exhale(r.Expr, given, c.At, gave);
             bool cellCall = _p.UsesCells && !pure && NamesCells(sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
@@ -726,6 +734,81 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign { Var = "cowner", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"), Ite(new KOp("==", CFoot(), p), cto, celsewhere))) });
         }
 
+        // ------------------------------------------------------------------ functions under quantifiers
+
+        private int _unfolding;
+
+        /// <summary>
+        /// A function's application under a quantifier, of its variable: its definition, unfolded once, for every value
+        /// in its range, as CsVerify's engine says it. That quantified equation applies again to the applications in
+        /// its body, so recursion over the range unfolds as far as it needs to (a concrete array's sum).
+        /// </summary>
+        private void Unfoldings(string var, KExpr range, KExpr body)
+        {
+            if (_unfolding > 0) return;
+            _unfolding++;
+            try
+            {
+                foreach (var app in Apps(body).Where(a => a.Snap == null && !a.Plain && a.Layer == null && a.Args.Any(x => Mentions(x, new HashSet<string> { var })) &&
+                                                         !a.Args.Any(x => Mentions(x, _bound))).ToList())
+                {
+                    var sig = _program.Signature(app.Callee);
+                    if (sig.FunctionBody == null || !app.Callee.IsStatic) continue;
+                    var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
+                    KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, given); }
+                    var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((KExpr)new KLit("true"), Conj);
+                    var saved = _facts.ToList();
+                    var definition = new KOp("==", app, M(sig.FunctionBody));
+                    _facts.Clear();
+                    _facts.AddRange(saved);
+                    _facts.Add(new KQuant { Forall = true, Var = var, Range = null, Body = Implies(Conj(range, pre), definition) });
+                }
+            }
+            finally { _unfolding--; }
+        }
+
+        private static IEnumerable<KFnApp> Apps(KExpr e) => e switch
+        {
+            KFnApp f => new[] { f }.Concat(f.Args.SelectMany(Apps)),
+            KOp op => op.Args.SelectMany(Apps),
+            // (not into a nested quantifier: its applications are of its own variable, unfolded there)
+            _ => Enumerable.Empty<KFnApp>(),
+        };
+
+        // ------------------------------------------------------------------ strings
+
+        /// <summary>
+        /// Two strings compared: of one length, and different, they differ at some index (a string is its characters),
+        /// as CsVerify's engine says where it compares two.
+        /// </summary>
+        private static KExpr Extensional(KExpr x, KExpr y)
+        {
+            var at = new KOp("sdiff", x, y);
+            return new KOp("==>", new KOp("&&", new KOp("&&", new KOp("&&", new KOp("!=", x, new KLit("null")), new KOp("!=", y, new KLit("null"))), new KOp("!=", x, y)),
+                                             new KOp("==", new KOp("slen", x), new KOp("slen", y))),
+                new KOp("&&", new KOp("&&", new KOp("<=", new KLit("0"), at), new KOp("<", at, new KOp("slen", x))), new KOp("!=", new KOp("sat", x, at), new KOp("sat", y, at))));
+        }
+
+        /// <summary>A stub's parameters given values: its receiver (@this, first), then the member's arguments.</summary>
+        private Dictionary<string, KExpr> StubGiven(IMethodSymbol callee, KExpr receiver, KExpr[] args)
+        {
+            var stub = _program.ContractOf(callee).Stub;
+            var values = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray();
+            return stub.Parameters.Select((x, k) => (x, k)).Where(x => x.k < values.Length).ToDictionary(x => Local(x.x), x => values[x.k]);
+        }
+
+        private static KExpr StubApp(IMethodSymbol callee, KExpr receiver, KExpr[] args) =>
+            new KFnApp { Callee = callee, Function = StubName(callee), Plain = true, Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
+
+        public static string StubName(IMethodSymbol m) => "lib$" + Name(m);
+
+        /// <summary>A specification as mathematics, outside any procedure (a stub's contract, for its axioms).</summary>
+        public static KExpr MathOf(KExpr e, IProgramFacts program, IMethodSymbol m)
+        {
+            var c = new Checks(new KProcedure { Method = m }, program);
+            return c.Spec(e, out _);
+        }
+
         // ------------------------------------------------------------------ functions over predicates (snapshots, as Carbon's)
 
         private static readonly HashSet<string> Snaps = new HashSet<string> { "psnap" };
@@ -1004,8 +1087,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = CWalk(el.Array, guard);
                     var i = CWalk(el.Index, guard);
-                    var v = Guarded(guard, () => Code(new KElem { Array = a, Index = i, ArrayType = el.ArrayType, At = el.At, ArrayAt = el.ArrayAt }));
-                    if (_p.UsesCells)
+                    var v = Guarded(guard, () => Code(new KElem { String = el.String, Array = a, Index = i, ArrayType = el.ArrayType, At = el.At, ArrayAt = el.ArrayAt }));
+                    if (_p.UsesCells && !el.String)
                         Assert(Implies(guard, new KOp(">", Cell(a, i), new KLit("0.0"))), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     return v;
                 }
@@ -1013,7 +1096,9 @@ namespace CsVerify.Verifier.Boogie
                     return new KOp(op.Op, op.Args.Select(a => CWalk(a, guard)).ToArray());
                 case KLit _: case KVar _: return e;
                 case KField fd: return Guarded(guard, () => Code(new KField { Field = fd.Field, Instance = fd.Instance == null ? null : CWalk(fd.Instance, guard), OnThis = fd.OnThis, At = fd.At, InstanceAt = fd.InstanceAt }));
-                case KLen len: return Guarded(guard, () => Code(new KLen { Array = CWalk(len.Array, guard), At = len.At, ArrayAt = len.ArrayAt }));
+                case KQuant q: return Guarded(guard, () => Code(q));
+                case KFnCall fn: return Guarded(guard, () => Code(fn));
+                case KLen len: return Guarded(guard, () => Code(new KLen { String = len.String, Array = CWalk(len.Array, guard), At = len.At, ArrayAt = len.ArrayAt }));
                 case KArith ar: return Guarded(guard, () => Code(new KArith { Op = ar.Op, Left = CWalk(ar.Left, guard), Right = CWalk(ar.Right, guard), Type = ar.Type, Mode = ar.Mode, At = ar.At }));
                 default: throw new NotTranslated("in a predicate's body: " + e.GetType().Name);
             }
@@ -1122,7 +1207,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 args[k] = Code(given[k]);
                 var param = callee?.Parameters[k];
-                if (param != null && param.RefKind != RefKind.Out && IsRef(param.Type) && NotNullable(param.Type))
+                if (param != null && param.RefKind != RefKind.Out && IsNullable(param.Type) && NotNullable(param.Type))
                     Assert(new KOp("!=", args[k], new KLit("null")), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
             }
             return args;
@@ -1184,7 +1269,28 @@ namespace CsVerify.Verifier.Boogie
             {
                 case null: return null;
                 case KLit _: case KVar _: return e;
+                case KOp { Op: "scat" } cat:
+                {
+                    var (l, r) = (Code(cat.Args[0]), Code(cat.Args[1]));
+                    // (a concatenation too long for a string throws: the path ends)
+                    Assume(new KOp("<=", new KOp("+", new KOp("sl", l), new KOp("sl", r)), new KLit("2147483647")));
+                    return new KOp("scat", l, r);
+                }
+                case KOp { Op: "streq" } eq:
+                {
+                    var (l, r) = (Code(eq.Args[0]), Code(eq.Args[1]));
+                    Assume(Extensional(l, r));
+                    return new KOp("==", l, r);
+                }
                 case KOp op: return new KOp(op.Op, op.Args.Select(Code).ToArray());
+                case KElem { String: true } sc:
+                {
+                    var s = Code(sc.Array);
+                    var i = Code(sc.Index);
+                    Assert(new KOp("!=", s, new KLit("null")), At("CSV1013", sc.At, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
+                    Assert(new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, new KOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
+                    return new KOp("sat", s, i);
+                }
                 case KElem el:
                 {
                     var a = Code(el.Array);
@@ -1196,7 +1302,64 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = Code(len.Array);
                     Assert(new KOp("!=", a, new KLit("null")), At("CSV1013", len.At, $"'{len.ArrayAt}' might be null in '{len.At}'"));
-                    return new KOp("len", a);
+                    return new KOp(len.String ? "slen" : "len", a);
+                }
+                case KQuant q when q.Range is KOp { Op: "&&" } range:
+                {
+                    // its bounds evaluated, then its body's checks, each for every value in its range (and under the guards in it)
+                    var lo = Code(((KOp)range.Args[0]).Args[0]);
+                    var hi = Code(((KOp)range.Args[1]).Args[1]);
+                    var v = new KVar(q.Var);
+                    var mathRange = new KOp("&&", new KOp("<=", lo, v), new KOp("<", v, hi));
+                    var outer = _out;
+                    _out = new List<KStmt>();
+                    KExpr body;
+                    try { body = CWalk(q.Body, mathRange); }
+                    finally
+                    {
+                        var inner = _out;
+                        _out = outer;
+                        foreach (var s in inner)
+                            Emit(s switch
+                            {
+                                KAssert a => new KAssert { Cond = new KQuant { Forall = true, Var = q.Var, Range = null, Body = a.Cond }, Check = a.Check, NotAssumedAfter = a.NotAssumedAfter },
+                                KAssume a => new KAssume { Cond = new KQuant { Forall = true, Var = q.Var, Range = null, Body = a.Cond } },
+                                _ => throw new NotTranslated("a quantifier whose body changes state"),
+                            });
+                    }
+                    return new KQuant { Forall = q.Forall, Var = q.Var, Range = mathRange, Body = body };
+                }
+                case KFnCall fc when !fc.Stub:
+                {
+                    // a function's application in code (in a quantifier, a function's body): its precondition checked there
+                    // (CSV1001), its value the function's
+                    var mark = _out.Count;
+                    var receiver = fc.Receiver == null ? null : Code(fc.Receiver);
+                    var args = fc.Args.Select(Code).ToArray();
+                    var app = Spec(new KFnCall { Callee = fc.Callee, Receiver = receiver, ReceiverIsThis = fc.ReceiverIsThis, ReceiverAt = fc.ReceiverAt, Args = args, At = fc.At }, out var wf);
+                    _facts.Clear();
+                    foreach (var w in wf) Assert(w, At("CSV1001", fc.At, $"precondition of '{fc.Callee.Name}' might not hold in '{fc.At}'"));
+                    return app;
+                }
+                case KFnCall { Stub: true } st:
+                {
+                    // a library member's call: its receiver not null, its precondition holding (CSV1001); its value the function's
+                    KExpr receiver = null;
+                    if (st.Receiver != null)
+                    {
+                        receiver = Code(st.Receiver);
+                        Assert(new KOp("!=", receiver, new KLit("null")), At("CSV1013", st.At, $"'{st.ReceiverAt}' might be null in '{st.At}'"));
+                    }
+                    var args = st.Args.Select(Code).ToArray();
+                    var given = StubGiven(st.Callee, receiver, args);
+                    foreach (var r in _program.Signature(st.Callee).Requires)
+                    {
+                        var pre = Subst(Spec(r.Expr, out _), given);
+                        _facts.Clear();
+                        Assert(pre, At("CSV1001", st.At, $"'{st.At}' might throw: its precondition '{r.At}' might not hold"));
+                    }
+                    _p.Stubs.Add(st.Callee);
+                    return StubApp(st.Callee, receiver, args);
                 }
                 case KArith ar: return Arith(ar, Code(ar.Left), Code(ar.Right));
                 case KConv cv: return Convert(cv, Code(cv.Value));
@@ -1316,6 +1479,12 @@ namespace CsVerify.Verifier.Boogie
                     var l = Spec(or.Args[0], wf, guard);
                     return new KOp("||", l, Under(new KOp("!", l), or.Args[1]));
                 }
+                case KOp { Op: "streq" } eq:
+                {
+                    var (l, r) = (Spec(eq.Args[0], wf, guard), Spec(eq.Args[1], wf, guard));
+                    if (!Mentions(l, _bound) && !Mentions(r, _bound)) _facts.Add(Extensional(l, r));
+                    return new KOp("==", l, r);
+                }
                 case KOp op:
                 {
                     var args = op.Args.Select(a => Spec(a, wf, guard)).ToArray();
@@ -1333,14 +1502,31 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = Spec(el.Array, wf, guard);
                     var i = Spec(el.Index, wf, guard);
-                    Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp("len", a))));
-                    return new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
+                    Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp(el.String ? "slen" : "len", a))));
+                    return el.String ? new KOp("sat", a, i) : new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
                 }
                 case KLen len:
                 {
                     var a = Spec(len.Array, wf, guard);
                     Need(new KOp("!=", a, new KLit("null")));
-                    return new KOp("len", a);
+                    return new KOp(len.String ? "slen" : "len", a);
+                }
+                case KFnCall { Stub: true } st:
+                {
+                    KExpr receiver = null;
+                    if (st.Receiver != null)
+                    {
+                        receiver = Spec(st.Receiver, wf, guard);
+                        Need(new KOp("!=", receiver, new KLit("null")));
+                    }
+                    var args = st.Args.Select(a => Spec(a, wf, guard)).ToArray();
+                    var given = StubGiven(st.Callee, receiver, args);
+                    var saved = _facts.ToList();
+                    foreach (var r in _program.Signature(st.Callee).Requires) Need(Subst(Spec(r.Expr, out _), given));
+                    _facts.Clear();
+                    _facts.AddRange(saved);
+                    _p.Stubs.Add(st.Callee);
+                    return StubApp(st.Callee, receiver, args);
                 }
                 case KAcc acc:
                 {
@@ -1392,6 +1578,7 @@ namespace CsVerify.Verifier.Boogie
                     try { body = Spec(q.Body, inner, new List<KExpr> { range }); }
                     finally { if (added) _bound.Remove(q.Var); }
                     foreach (var c in inner) Need(new KQuant { Forall = true, Var = q.Var, Range = null, Body = c });
+                    if (!Mentions(range, _bound)) Unfoldings(q.Var, range, body);
                     return new KQuant { Forall = q.Forall, Var = q.Var, Range = range, Body = body };
                 }
                 case KFnCall fn:

@@ -76,6 +76,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr[] Args;
         /// <summary>A function over a predicate: the snapshot of the instance its value is of (in place of the memory).</summary>
         public KExpr Snap;
+        /// <summary>Of its arguments alone (a library stub's): no layer, no memory.</summary>
+        public bool Plain;
     }
 
     // (C#'s meaning, until Checks)
@@ -102,15 +104,18 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>An array's element (a read): checked for null and bounds in code, well-defined if so in a specification.</summary>
     internal sealed class KElem : KExpr
     {
+        /// <summary>A string's character (s[i]), not an array's element.</summary>
+        public bool String;
         public KExpr Array, Index;
         public ITypeSymbol ArrayType;
         public bool InSpec;
         public SyntaxNode At, ArrayAt;
     }
 
-    /// <summary>An array's length.</summary>
+    /// <summary>An array's length (or a string's, where String says so).</summary>
     internal sealed class KLen : KExpr
     {
+        public bool String;
         public KExpr Array;
         public bool InSpec;
         public SyntaxNode At, ArrayAt;
@@ -125,6 +130,8 @@ namespace CsVerify.Verifier.Boogie
         public bool ReceiverIsThis;
         public KExpr[] Args;
         public SyntaxNode At, ReceiverAt;
+        /// <summary>A [Pure] library member with a stub contract (a string's): a function its contract says all of, in code too.</summary>
+        public bool Stub;
     }
 
     /// <summary>A field's value: of an object (checked not null, unless it is this), or a static field's (of the one object, null).</summary>
@@ -409,6 +416,8 @@ namespace CsVerify.Verifier.Boogie
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The predicates it names.</summary>
         public HashSet<IMethodSymbol> Preds = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The library stubs it uses (functions of the program's).</summary>
+        public HashSet<IMethodSymbol> Stubs = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         /// <summary>The fields it reads or writes (their maps are declared).</summary>
         public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public List<KLocal> Locals = new List<KLocal>();
