@@ -38,17 +38,26 @@ namespace CsVerify.Tests
             [ConcurrencyCheck] public int Updated { get; set; }
         }
 
+        public sealed class Line
+        {
+            public int OrderId { get; set; }
+            public int No { get; set; }
+            public int Qty { get; set; }
+        }
+
         public sealed class Shop : DbContext
         {
             private readonly Action<DbContextOptionsBuilder> _configure;
             public Shop(Action<DbContextOptionsBuilder> configure) { _configure = configure; }
             public DbSet<Customer> Customers => Set<Customer>();
             public DbSet<Order> Orders => Set<Order>();
+            public DbSet<Line> Lines => Set<Line>();
             protected override void OnConfiguring(DbContextOptionsBuilder o) => _configure(o);
             protected override void OnModelCreating(ModelBuilder b)
             {
                 b.Entity<Customer>().HasIndex(c => c.Email).IsUnique();
                 b.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
+                b.Entity<Line>().HasKey(l => new { l.OrderId, l.No });
             }
         }
 
@@ -77,6 +86,7 @@ namespace CsVerify.Tests
             db.Customers.AddRange(ann, bob, new Customer { Email = "ann2@example.com", Name = "Ann" });
             db.Orders.AddRange(new Order { Customer = ann, Total = 10, Rating = 3 }, new Order { Customer = ann, Total = 50, Rating = 5 },
                                new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
+            db.Lines.AddRange(new Line { OrderId = 1, No = 2, Qty = 5 }, new Line { OrderId = 2, No = 1, Qty = 7 });
             db.SaveChanges();
         }
 
@@ -211,6 +221,15 @@ namespace CsVerify.Tests
             db.Orders.Remove(read[2]);
             Assert.Equal(new[] { read[0], read[1], added }.OrderBy(o => o.Total), db.Orders.Local.OrderBy(o => o.Total));
             Assert.Equal(EntityState.Modified, db.Entry(read[1]).State);
+        }
+
+        [Fact]
+        public void Find_ByACompositeKey_TakesItInTheKeysOrder()
+        {
+            using var db = New();
+            Assert.Equal(5, db.Lines.Find(1, 2)!.Qty);
+            Assert.Equal(7, db.Lines.Find(2, 1)!.Qty);
+            Assert.Null(db.Lines.Find(1, 1));
         }
 
         [Fact]

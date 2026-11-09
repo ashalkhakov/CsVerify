@@ -358,6 +358,14 @@ public sealed class Shop : DbContext
             "o.Updated = now; db.Update(o); await db.SaveChangesAsync(); } }"));
 
         [Fact]
+        public void Token_EachOfTwo_IsFollowed() => Assert.Equal(new[] { "CSV1034" }, Errors("M",
+            "public sealed class Doc { public int Id { get; set; } [System.ComponentModel.DataAnnotations.ConcurrencyCheck] public int A { get; set; } " +
+            "[System.ComponentModel.DataAnnotations.ConcurrencyCheck] public int B { get; set; } }\n" +
+            "public sealed class Docs : DbContext { public DbSet<Doc> All => Set<Doc>(); }\n" +
+            "public static class C { public static async Task M(int id) { using var db = new Docs(); var d = await db.All.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (d == null) return; " +
+            "d.B = 5; db.Update(d); await db.SaveChangesAsync(); } }"));
+
+        [Fact]
         public void Token_ChangedAfterUpdate_Verifies() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M(int id, System.DateTime now) { using var db = new Shop(); " +
             "var o = await db.Orders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
@@ -392,6 +400,25 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
             "var c = await db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (c == null) return; var v = c.Version; " +
             "db.Entry(c).State = EntityState.Modified; await db.SaveChangesAsync(); Spec.Assert(c.Version == v); } }"));
+
+        // ---- Find ----
+
+        private const string Lines =
+            "public sealed class Line { public int OrderId { get; set; } public int No { get; set; } public int Qty { get; set; } }\n" +
+            "public sealed class LineShop : DbContext { public DbSet<Line> Lines => Set<Line>(); " +
+            "protected override void OnModelCreating(ModelBuilder b) { b.Entity<Line>().HasKey(l => new { l.OrderId, l.No }); } }\n";
+
+        [Fact]
+        public void Find_ByAKey_GivesItsRow() => Assert.Empty(Errors("M",
+            "public static class C { public static void M(Shop db, int id) { var o = db.Orders.Find(id); if (o != null) Spec.Assert(o.Id == id); } }"));
+
+        [Fact]
+        public void Find_ByACompositeKey_InTheKeysOrder() => Assert.Empty(Errors("M", Lines +
+            "public static class C { public static void M(LineShop db, int order, int no) { var l = db.Lines.Find(order, no); if (l != null) Spec.Assert(l.OrderId == order && l.No == no); } }"));
+
+        [Fact]
+        public void Find_ByACompositeKey_NotInAnotherOrder() => Assert.NotEmpty(Errors("M", Lines +
+            "public static class C { public static void M(LineShop db, int order, int no) { var l = db.Lines.Find(no, order); if (l != null) Spec.Assert(l.OrderId == order); } }"));
 
         // ---- the local view ----
 

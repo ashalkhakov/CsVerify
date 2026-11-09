@@ -153,8 +153,6 @@ a method, not across calls: a context a caller broke, or a save a callee made, i
   SQLite and on SQL Server (`tests/CsVerify.EfTests`, `EfConformanceTests`): each rule above is run there, and where
   the two differ (collation, overflow in a query, overlapping operations), the model claims only what both do. Joins
 are checked there against LINQ to Objects, which matches no null key, as SQL doesn't.
-- A concurrency token is followed only for an entity's first one.
-- `Find` with a composite key, raw SQL (`FromSql`, `ExecuteSql`), compiled queries, owned types and inheritance mapping
-  are library calls.
+- Raw SQL (`FromSql`, `ExecuteSql`), compiled queries, owned types and inheritance mapping are library calls.
 - String members inside a query (`Contains`, `ToUpper`, `Length`...) translate, but their values are unknown: SQL
   Server's and .NET's differ.

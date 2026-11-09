@@ -361,10 +361,7 @@ namespace CsVerify.Verifier
                     $"'{at}' also marks what the {e.Type.Name}'s navigations hold as modified, and SaveChanges then writes every column of each: " +
                     "update only this entity (Entry(e).State = EntityState.Modified), or load the graph tracked and change what changes");
             // the concurrency token is the one the context read: EF checks the row against it
-            if ((how == "Update" || how == "Attach") && e.Tokens.Count > 0 && KeyColumn(e.Tokens[0], o, f) is Term token)
-                ProveEf(T.Implies(AsBool(Model("Read", c, f, o)), T.Eq(T.Coerce(token, Sort.Int), T.Coerce(Model("TokenRead", c, f, o), Sort.Int))), TokenId, at,
-                    $"'{at}' takes {e.Tokens[0].Name}, the concurrency token, as the value the row had when read, but it was changed since: " +
-                    "EF would check the row against the new value. Attach first, then change it");
+            if (how == "Update" || how == "Attach") TokensAsRead(c, o, e, f, at, "Attach first, then change it");
             Term next;
             switch (how)
             {
@@ -417,18 +414,27 @@ namespace CsVerify.Verifier
             return n;
         }
 
-        /// <summary>Find(key): the tracked entity with that key, or the row read and tracked, or null.</summary>
+        /// <summary>
+        /// Find(key), or Find(a, b) for a composite key, in the key's order: the tracked entity with that key, or the
+        /// row read and tracked, or null.
+        /// </summary>
         private Term Find(IInvocationOperation inv, Term c, EfModel.Entity e, Frame f, SpecEnv spec)
         {
-            if (e == null || e.Key.Count != 1) return null;
+            if (e == null || e.Key.Count == 0) return null;
             var keyArg = inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value;
-            if (keyArg is IArrayCreationOperation arr && arr.Initializer?.ElementValues.Length == 1) keyArg = Unwrapped(arr.Initializer.ElementValues[0]);
-            if (keyArg == null) return null;
+            var parts = keyArg is IArrayCreationOperation arr && arr.Initializer != null
+                ? arr.Initializer.ElementValues.Select(Unwrapped).ToList()
+                : keyArg != null && e.Key.Count == 1 ? new List<IOperation> { keyArg } : null;
+            if (parts == null || parts.Count != e.Key.Count) return null;
+            // (each value of its column's type: EF throws for another, which is not read)
+            for (int j = 0; j < parts.Count; j++)
+                if (!SymbolEqualityComparer.Default.Equals(parts[j].Type, e.Key[j].Type)) return null;
             UsableContext(c, inv.Syntax, f);
-            var k = Eval(keyArg, f, spec);
+            var ks = parts.Select(p => Eval(p, f, spec)).ToList();
             var r = _z3.Fresh("found", Sort.Int);
-            var key = KeyColumn(e.Key[0], r, f);
-            _z3.Assume(T.Or(T.Eq(r, T.Int(0)), T.And(IsEntity(r, e), T.Eq(key, T.Coerce(k, key.Sort)))));
+            var keys = e.Key.Select(p => KeyColumn(p, r, f)).ToList();
+            if (keys.Any(k => k == null)) return null;
+            _z3.Assume(T.Or(T.Eq(r, T.Int(0)), T.And(new[] { IsEntity(r, e) }.Concat(keys.Select((k, j) => T.Eq(k, T.Coerce(ks[j], k.Sort)))).ToArray())));
             SetModelAt("State", c, r, T.Ite(T.Eq(T.Coerce(Model("State", c, f, r), Sort.Int), T.Int(EfDetached)), T.Int(Unchanged), Model("State", c, f, r)), f);
             MayRaise(T.True, f, null);
             return r;
@@ -599,10 +605,7 @@ namespace CsVerify.Verifier
             var now = T.Coerce(Model("State", c, f, o), Sort.Int);
             ProveEf(T.Or(T.Not(T.Eq(now, T.Int(EfDetached))), NoOtherWithKey(c, o, e, f)), TrackerId, at,
                 $"'{at}' may meet another {e.Type.Name} with the same key that the context already tracks, and EF throws: use the tracked one, or a context that tracks none");
-            if (state == Modified && e.Tokens.Count > 0 && KeyColumn(e.Tokens[0], o, f) is Term token)
-                ProveEf(T.Implies(AsBool(Model("Read", c, f, o)), T.Eq(T.Coerce(token, Sort.Int), T.Coerce(Model("TokenRead", c, f, o), Sort.Int))), TokenId, at,
-                    $"'{at}' takes {e.Tokens[0].Name}, the concurrency token, as the value the row had when read, but it was changed since: " +
-                    "EF would check the row against the new value. Mark it modified first, then change it");
+            if (state == Modified) TokensAsRead(c, o, e, f, at, "Mark it modified first, then change it");
             SetModelAt("State", c, o, T.Int(state), f);
             if (state == Modified) SetModel("Unsaved", c, T.True, f);
         }

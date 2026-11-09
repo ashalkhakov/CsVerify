@@ -313,15 +313,22 @@ namespace CsVerify.Verifier
                     f.Link = null;
                     f.Fields[FieldEffects.Key(unshared)] = Pointwise("unshared", Sort.Row, $"(ite {IsRow(new Term("y", Sort.Int)).S} 1 (select {was.S} y))");
                 }
-                // what the context read of them: their concurrency token
-                if (TrackerModel("Read") != null && e.Tokens.Count > 0 && FieldEffects.IsHeapField(e.Tokens[0]))
+                // what the context read of them: their concurrency tokens, each at its key (TokenKey)
+                var heapTokens = e.Tokens.Where(FieldEffects.IsHeapField).ToList();
+                if (TrackerModel("Read") != null && heapTokens.Count > 0)
                 {
                     var y = new Term("y", Sort.Int);
                     var read = ModelRow("Read", t.Context, f);
                     var tokens = ModelRow("TokenRead", t.Context, f);
-                    var token = FieldMap(f, e.Tokens[0]);
                     SetModelRow("Read", t.Context, Pointwise("read", Sort.Row, $"(ite {IsRow(y).S} 1 (select {read.S} y))"), f);
-                    SetModelRow("TokenRead", t.Context, Pointwise("tokenRead", Sort.Row, $"(ite {IsRow(y).S} {T.Coerce(T.Select(token, y, ValueSort(e.Tokens[0]) == Sort.Row ? Sort.Row : Sort.Int), Sort.Int).S} (select {tokens.S} y))"), f);
+                    var of = _z3.Apply("token.of", Sort.Int, new[] { y });
+                    var no = _z3.Apply("token.no", Sort.Int, new[] { y });
+                    TokenKey(T.Int(0), 0); // (its axiom)
+                    var isKey = T.And(T.Eq(_z3.Apply("token.key", Sort.Int, new[] { of, no }), y), IsRow(of), T.Le(T.Int(0), no), T.Lt(no, T.Int(heapTokens.Count)));
+                    Term value = T.Int(0);
+                    for (int j = heapTokens.Count - 1; j >= 0; j--)
+                        value = T.Ite(T.Eq(no, T.Int(j)), TokenValue(heapTokens[j], of, f), value);
+                    SetModelRow("TokenRead", t.Context, Pointwise("tokenRead", Sort.Row, $"(ite {isKey.S} {value.S} (select {tokens.S} y))"), f);
                 }
             }
             else if (TrackerModel("State") is IMethodSymbol state)
@@ -477,6 +484,34 @@ namespace CsVerify.Verifier
                 case Microsoft.CodeAnalysis.CSharp.Syntax.CollectionExpressionSyntax ce when ce.Elements.Count == 0: return true;
                 default: return null;
             }
+        }
+
+        /// <summary>Where TokenRead keeps an entity's j-th concurrency token: a key of its own for each (entity, j).</summary>
+        private Term TokenKey(Term o, int j)
+        {
+            {
+                // (assumed where it is used: a scope it was assumed in may have been left)
+                var ov = new Term("o", Sort.Int);
+                var jv = new Term("j", Sort.Int);
+                var key = _z3.Apply("token.key", Sort.Int, new[] { ov, jv });
+                var inverse = T.And(T.Eq(_z3.Apply("token.of", Sort.Int, new[] { key }), ov), T.Eq(_z3.Apply("token.no", Sort.Int, new[] { key }), jv));
+                _z3.Assume(new Term($"(forall ((o Int) (j Int)) (! {inverse.S} :pattern ({key.S})))", Sort.Bool));
+            }
+            return _z3.Apply("token.key", Sort.Int, new[] { T.Coerce(o, Sort.Int), T.Int(j) });
+        }
+
+        /// <summary>A concurrency token's value at an object, as TokenRead keeps it.</summary>
+        private Term TokenValue(IPropertySymbol token, Term o, Frame f) =>
+            T.Coerce(T.Select(FieldMap(f, token), T.Coerce(o, Sort.Int), ValueSort(token) == Sort.Row ? Sort.Row : Sort.Int), Sort.Int);
+
+        /// <summary>Every concurrency token of o is the value the context read (where it read o).</summary>
+        private void TokensAsRead(Term c, Term o, EfModel.Entity e, Frame f, SyntaxNode at, string then)
+        {
+            var tokens = e.Tokens.Where(FieldEffects.IsHeapField).ToList();
+            for (int j = 0; j < tokens.Count; j++)
+                ProveEf(T.Implies(AsBool(Model("Read", c, f, o)), T.Eq(TokenValue(tokens[j], o, f), T.Coerce(Model("TokenRead", c, f, TokenKey(o, j)), Sort.Int))), TokenId, at,
+                    $"'{at}' takes {tokens[j].Name}, a concurrency token, as the value the row had when read, but it was changed since: " +
+                    $"EF would check the row against the new value. {then}");
         }
 
         /// <summary>The type of the query call being read (its result, or its task's), for <see cref="TableSequence"/>.</summary>
