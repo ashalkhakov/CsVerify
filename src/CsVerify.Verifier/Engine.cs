@@ -38,6 +38,14 @@ namespace CsVerify.Verifier
         public List<string> Only = new List<string>();
         internal bool Selects(string method) => Only.Count == 0 || Only.Any(o => method.Contains(o, StringComparison.Ordinal));
         public string Z3Path;
+        /// <summary>
+        /// "boogie": the methods in the subset BoogieTranslator covers are translated to Boogie and verified by it
+        /// (docs/boogie.md); the rest as always.
+        /// </summary>
+        public string Engine;
+        internal bool Boogie => string.Equals(Engine, "boogie", StringComparison.OrdinalIgnoreCase) || BoogieOnly;
+        /// <summary>"boogie-only": the methods Boogie verifies, and nothing else (to compare the engines on them).</summary>
+        internal bool BoogieOnly => string.Equals(Engine, "boogie-only", StringComparison.OrdinalIgnoreCase);
         public List<string> Defines = new List<string>();
         public List<string> References = new List<string>();
         public System.Text.StringBuilder SmtLog;
@@ -89,6 +97,8 @@ namespace CsVerify.Verifier
         /// <summary>Constructs the verifier does not model, treated as unknown values (only within a check profile).</summary>
         public int Unmodeled;
         public bool Verified => Diagnostics.All(d => !d.IsError);
+        /// <summary>The engine that verified it: "csverify", or "boogie".</summary>
+        public string Engine = "csverify";
 
         /// <summary>Starts the method's results over (for a run again: see Engine.RunMethod).</summary>
         internal void Clear()
@@ -616,6 +626,7 @@ namespace CsVerify.Verifier
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
             using var engine = new Engine(compilation, options, userTrees);
+            var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
@@ -629,7 +640,8 @@ namespace CsVerify.Verifier
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
-                    RunMethod(engine, contract, mr, decl.GetLocation());
+                    if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract)) forBoogie.Add((method, contract, decl, mr));
+                    else RunMethod(engine, contract, mr, decl.GetLocation());
                     // its lambdas and local functions, each a unit of its own
                     foreach (var (nested, graph) in NestedFunctions(decl, model))
                     {
@@ -643,6 +655,7 @@ namespace CsVerify.Verifier
                     }
                 }
             }
+            if (forBoogie.Count > 0) RunBoogie(engine, compilation, forBoogie);
             // accessors with code: properties are methods too
             foreach (var tree in userTrees)
             {
@@ -702,6 +715,7 @@ namespace CsVerify.Verifier
                 if (location == null || !userTrees.Contains(location.SourceTree) && !(location.SourceTree?.FilePath.StartsWith("<CsVerify.Spec>") == true)) continue;
                 result.AnalyzerErrors.Add(new VerificationDiagnostic("CSV1021", true, message, location.GetLineSpan()));
             }
+            if (options.BoogieOnly) result.Methods.RemoveAll(m => m.Engine != "boogie");
             result.Assumptions.UnionWith(result.Methods.SelectMany(mr => mr.Assumptions));
             AddAnalyzerErrors(compilation, userTrees, declarations, result, options);
             return result;
@@ -772,8 +786,62 @@ namespace CsVerify.Verifier
         private static string NestedName(IMethodSymbol m) =>
             m.MethodKind == MethodKind.LocalFunction ? m.Name : "<lambda:" + (m.Locations[0].GetLineSpan().StartLinePosition.Line + 1) + ">";
 
+        /// <summary>
+        /// The methods held back for Boogie: those whose bodies translate (and whose callees do), as one program, verified
+        /// by it; the rest as always. If Boogie fails, they are all verified as always, and that is said.
+        /// </summary>
+        private static void RunBoogie(Engine engine, CSharpCompilation compilation, List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> held)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var included = held.ToList();
+            Boogie.BoogieTranslator translator;
+            // (a method that doesn't translate leaves out those that call it: until none is left out)
+            while (true)
+            {
+                translator = new Boogie.BoogieTranslator(engine.Options.CheckOverflow);
+                translator.Prelude();
+                translator.Declare(included.Select(x => x.method));
+                var refused = new List<(IMethodSymbol, Contract, SyntaxNode, MethodResult)>();
+                foreach (var x in included)
+                {
+                    try { translator.Procedure(x.method, x.contract, x.decl, compilation.GetSemanticModel(x.decl.SyntaxTree), x.result); }
+                    catch (Boogie.NotTranslated why)
+                    {
+                        refused.Add(x);
+                        if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine($"not translated to Boogie: {x.result.Name}: {why.Message}");
+                    }
+                }
+                if (refused.Count == 0) break;
+                included = included.Except(refused).ToList();
+            }
+            foreach (var x in held.Except(included)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+            if (included.Count == 0) return;
+            List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
+            try { failures = Boogie.BoogieRunner.Verify(translator, SmtSolver.FindZ3(engine.Options.Z3Path), engine.Options.TimeoutMs); }
+            catch (Exception e)
+            {
+                foreach (var x in included)
+                {
+                    RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+                    x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + e.Message.Split('\n')[0], x.decl.GetLocation().GetLineSpan()));
+                }
+                return;
+            }
+            foreach (var x in included)
+            {
+                var mine = failures.Where(f => f.method == x.result).Select(f => f.diagnostic).ToList();
+                x.result.Clear();
+                x.result.Engine = "boogie";
+                x.result.Diagnostics.AddRange(mine);
+                x.result.Obligations = translator.Obligations.TryGetValue(x.result, out var n) ? n : 0;
+                x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count);
+                x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
+            }
+        }
+
         private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested = null)
         {
+            if (engine.Options.BoogieOnly) return; // (verified by neither: left out of the result)
             var clock = System.Diagnostics.Stopwatch.StartNew();
             long deadline = engine.Options.MethodBudgetMs > 0
                 ? System.Diagnostics.Stopwatch.GetTimestamp() + engine.Options.MethodBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000 : 0;

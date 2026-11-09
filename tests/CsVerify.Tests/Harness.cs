@@ -13,7 +13,7 @@ namespace CsVerify.Tests
 {
     internal static class Harness
     {
-        private const string Usings = "using System; using System.Diagnostics; using CsVerify;\n";
+        internal const string Usings = "using System; using System.Diagnostics; using CsVerify;\n";
 
         // (one set for the whole run: each test reading them again held a copy of the framework's metadata)
         private static readonly Lazy<List<MetadataReference>> _references = new Lazy<List<MetadataReference>>(() =>

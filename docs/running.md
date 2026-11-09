@@ -37,6 +37,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--timeout <ms>` | per-query Z3 timeout (default 10000) |
 | `--method-budget <ms>` | the most time one method's verification may take, all rounds included; past it, its remaining obligations are not proved (CSV1901), so the method is reported not verified (default: no limit) |
 | `--z3 <path>` | Z3 executable |
+| `--engine boogie` | verify the methods [the Boogie translation](boogie.md) covers with Boogie, the rest as always (`boogie-only`: those alone) |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
 | `--smt-log <file>` | dump the whole SMT-LIB2 conversation |
 | `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
