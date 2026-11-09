@@ -43,6 +43,7 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 **How it builds.** Like Tarp's instrumentation:
 - the rewrite happens before the compile steps (before `BeforeCompile`), into `obj/csverify-erased/<configuration>/<framework>/`: out of the default `Compile` items, and outside the intermediate directory, so that a coverage tool hooked in after it ([Tarp](ci.md#with-tarp)) instruments the erased program, the one that runs;
 - deletions keep their line breaks, and each file starts with a `#line` naming the original, so errors, stack traces and the debugger stay on your sources;
+- the CsVerify analyzers check the program with its proofs, in a normal build, and don't run on the erased one;
 - switching between erased and normal builds recompiles.
 
 **Tested:** the erased samples carry no ghost types or ghost references, and running them returns exactly the values their verified postconditions state.

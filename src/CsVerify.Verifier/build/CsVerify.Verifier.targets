@@ -92,6 +92,9 @@
       <ReferencePathWithRefAssemblies Remove="@(_CsVerifyAssembly)" />
       <_CsVerifyAssemblyPath Include="@(ReferencePath)" Condition="'%(Filename)' == 'CsVerify.Spec' Or '%(Filename)' == 'CsVerify'" />
       <ReferencePath Remove="@(_CsVerifyAssemblyPath)" />
+      <!-- the CsVerify analyzers check the program with its proofs (the normal build); the erased one has none -->
+      <_CsVerifyAnalyzer Include="@(Analyzer)" Condition="'%(Filename)' == 'CsVerify.Analyzers'" />
+      <Analyzer Remove="@(_CsVerifyAnalyzer)" />
     </ItemGroup>
   </Target>
 </Project>

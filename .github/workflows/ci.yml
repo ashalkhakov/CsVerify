@@ -22,6 +22,9 @@ jobs:
       - run: dotnet build CsVerify.sln -c Release
       # (a test that hangs fails the job after 20 minutes, naming the test, instead of running on for hours)
       - run: dotnet test tests/CsVerify.Tests -c Release --no-build --blame-hang --blame-hang-timeout 20m
+      # the samples' erased and checked builds compile, through the build targets
+      - run: dotnet build samples/Good -c Release -p:CsVerifyErase=true
+      - run: dotnet build samples/Good -c Release -p:CsVerifyChecked=true
 
   # Entity Framework Core: the verifier's model of it and its samples, and the model checked against EF on SQLite and
   # on SQL Server (Testcontainers starts it in Docker)
