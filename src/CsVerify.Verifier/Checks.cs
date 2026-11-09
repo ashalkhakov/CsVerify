@@ -32,6 +32,7 @@ namespace CsVerify.Verifier
                     return Linear;
                 case "CSV1001": case "CSV1002": case "CSV1004": case "CSV1005": case "CSV1006": case "CSV1007": case "CSV1008":
                 case "CSV1011": case "CSV1012": case "CSV1015": case "CSV1022": case "CSV1017": case "CSV1018": case "CSV1019": case "CSV1023": case "CSV1024": case "CSV1025": case "CSV1026": case "CSV1027":
+                case "CSV1031": case "CSV1032": case "CSV1033": case "CSV1034": case "CSV1035": case "CSV1036":
                     return Contracts;
                 // the ghost analyzer (specifications erased soundly), aliased by-reference arguments (the model of
                 // memory), ill-formed stubs, unsupported constructs, unknown values, internal errors: always

@@ -299,8 +299,12 @@ namespace CsVerify.Verifier
         }
 
         /// <summary><c>new R(...)</c>: a data value, or an object whose constructor's contract is checked and assumed.</summary>
-        private Term NewObject(IObjectCreationOperation oc, Frame f, SpecEnv spec) =>
-            WithInstantiation(oc.Constructor, () => NewObjectCore(oc, f, spec));
+        private Term NewObject(IObjectCreationOperation oc, Frame f, SpecEnv spec)
+        {
+            var o = WithInstantiation(oc.Constructor, () => NewObjectCore(oc, f, spec));
+            if (Ef != null && Ef.IsContextType(oc.Type)) NewContext(o, f);
+            return o;
+        }
 
         private Term NewObjectCore(IObjectCreationOperation oc, Frame f, SpecEnv spec)
         {

@@ -10,6 +10,11 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Entity Framework Core's model needs EF Core: the verifier compiles it with programs that reference EF Core -->
+    <Compile Remove="Ef\**" />
+    <None Include="Ef\**" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
     <!-- -p:CsVerifyEnabled=true (verify) and -p:CsVerifyErase=true (erase), with the dotnet-csverify tool -->
     <None Include="..\CsVerify.Verifier\build\CsVerify.Verifier.targets" Pack="true" PackagePath="build/CsVerify.targets" Visible="false" />

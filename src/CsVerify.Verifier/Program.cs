@@ -43,6 +43,8 @@ options:
         public static int Main(string[] args)
         {
             if (args.Length > 0 && args[0] == "erase") return Erase(ExpandResponseFiles(args.Skip(1)).ToList());
+            // @file.rsp: a path, or an option and its value, per line (what the MSBuild target passes)
+            args = ExpandResponseFiles(args).ToArray();
             var options = new VerifierOptions();
             var inputs = new List<string>();
             bool verbose = false;
@@ -80,8 +82,6 @@ options:
                 }
                 if (inputs.Count == 0) { Console.Error.WriteLine(Usage); return 2; }
 
-                // @file.rsp: one path per line (what the MSBuild target passes).
-                inputs = inputs.SelectMany(i => i.StartsWith("@") ? File.ReadAllLines(i.Substring(1)).Where(l => l.Trim().Length > 0) : new[] { i }).ToList();
                 var programs = each
                     ? inputs.Select(i => i.Split(',', StringSplitOptions.RemoveEmptyEntries)).ToList()
                     : new List<string[]> { inputs.ToArray() };

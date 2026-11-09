@@ -23,6 +23,19 @@ jobs:
       # (a test that hangs fails the job after 20 minutes, naming the test, instead of running on for hours)
       - run: dotnet test tests/CsVerify.Tests -c Release --no-build --blame-hang --blame-hang-timeout 20m
 
+  # Entity Framework Core: the verifier's model of it and its samples, and the model checked against EF on SQLite and
+  # on SQL Server (Testcontainers starts it in Docker)
+  ef:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: ./.github/actions/setup-z3
+      - run: dotnet build tests/CsVerify.EfTests -c Release
+      - run: dotnet test tests/CsVerify.EfTests -c Release --no-build --blame-hang --blame-hang-timeout 20m
+
   # what the verifier proves of the concurrent samples, checked under Coyote's scheduler over many schedules
   # (docs/coyote.md); a broken schedule there would mean the model of threads, locks or atomic fields is unsound
   coyote:

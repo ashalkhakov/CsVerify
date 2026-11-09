@@ -43,7 +43,9 @@ is assumed, never in what is reported.
 - **A5. Library contracts.** `[ContractsFor]` stubs, LINQ's definitions (`Bcl/Linq.cs`), nullability annotations, and
   the stated facts about library code (it writes only what it is handed, and runs user code only through what it is
   handed) describe the library. They are checked against the real library by tests (`StubConformanceTests`,
-  `QueryConformanceTests`), not proved. See N3.
+  `QueryConformanceTests`), not proved. So is the model of Entity Framework Core: what a query's rows are, what the
+  change tracker and transactions do, and what EF translates (checked against EF on SQLite and SQL Server by
+  `EfConformanceTests`; see [Entity Framework Core](entity-framework.md)). See N3.
 - **A6. Explicit trust.** `[Trusted]` bodies, `Spec.Assume`, the `Ieee` lemmas, `[TakesOwnership]` and
   `Spec.HandOver` are axioms by definition.
 - **A7. Options.** `--no-overflow` makes run-time integers mathematical, and a check profile (`--checks`) assumes the

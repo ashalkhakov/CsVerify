@@ -26,7 +26,7 @@ namespace CsVerify.Verifier
         {
             parameter = null;
             index = null;
-            var target = (arg as IDelegateCreationOperation)?.Target as IAnonymousFunctionOperation;
+            var target = QuotedLambda(arg);
             if (target == null || target.Symbol.Parameters.Length < 1 || target.Symbol.Parameters.Length > 2 ||
                 target.Symbol.Parameters.Length == 2 && !pair && target.Symbol.Parameters[1].Type.SpecialType != SpecialType.System_Int32 || target.Body.Operations.Length != 1 ||
                 !(target.Body.Operations[0] is IReturnOperation ret) || ret.ReturnedValue == null) return null;
@@ -317,14 +317,15 @@ namespace CsVerify.Verifier
         private Term Copying(IInvocationOperation inv, Frame f, SpecEnv spec)
         {
             var m = inv.TargetMethod;
-            if (!(m.Name == "ToArray" || m.Name == "ToList" && ListModels) || m.Parameters.Length != 1) return null;
+            var name = IsEfAsyncQuery(m) ? m.Name.Substring(0, m.Name.Length - "Async".Length) : m.Name;
+            if (!(name == "ToArray" || name == "ToList" && ListModels) || m.Parameters.Count(p => p.Type.Name != "CancellationToken") != 1) return null;
             var seq = SequenceOf(inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value, f, spec);
             if (seq == null) return null;
             Assumed(m.OriginalDefinition.ToDisplayString());
             var n = seq.Length;
             Term Elem(Term i) => seq.Element(i);
             void Fact(Term t) => AssumeSide(T.Implies(seq.Known, t));
-            if (m.Name == "ToArray")
+            if (name == "ToArray")
             {
                 var arr = Unknown(inv.Type, "toArray");
                 AssumeSide(NotNull(arr));

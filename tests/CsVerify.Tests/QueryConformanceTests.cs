@@ -249,7 +249,8 @@ namespace Wrong
             var parse = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: new[] { "CSVERIFY_SPEC" });
             var trees = Directory.GetFiles(dir, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar) &&
-                            !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar))
+                            !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar) &&
+                            !f.Contains(Path.DirectorySeparatorChar + "Ef" + Path.DirectorySeparatorChar)) // (EF Core's model: EfConformanceTests)
                 .Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), parse, "<CsVerify.Spec>/" + Path.GetRelativePath(dir, f))).ToList();
             if (more != null) trees.Add(CSharpSyntaxTree.ParseText(more, parse, "more.cs"));
             var c = CSharpCompilation.Create("CsVerifySpec", trees, Engine.FrameworkReferences(),

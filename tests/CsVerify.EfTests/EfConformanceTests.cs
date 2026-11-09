@@ -1,0 +1,347 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Testcontainers.MsSql;
+using Xunit;
+
+namespace CsVerify.Tests
+{
+    /// <summary>
+    /// What the verifier's model of Entity Framework Core says (MethodVerifier.EntityFramework, .EfTracker), checked
+    /// against EF itself: each rule the model reports or relies on, shown to be EF's behaviour, on SQLite and on SQL
+    /// Server. Where the two differ (collation, arithmetic, asynchronous commands), each test says what each does; the
+    /// model claims only what holds of both.
+    /// </summary>
+    public abstract class EfConformanceTests : IDisposable
+    {
+        public sealed class Customer
+        {
+            public int Id { get; set; }
+            public string Email { get; set; } = "";
+            public string Name { get; set; } = "";
+            public List<Order> Orders { get; set; } = new List<Order>();
+            public string Display => Name + " <" + Email + ">";
+        }
+
+        public sealed class Order
+        {
+            public int Id { get; set; }
+            public int CustomerId { get; set; }
+            public Customer? Customer { get; set; }
+            public int Total { get; set; }
+            public bool IsDeleted { get; set; }
+            [ConcurrencyCheck] public int Updated { get; set; }
+        }
+
+        public sealed class Shop : DbContext
+        {
+            private readonly Action<DbContextOptionsBuilder> _configure;
+            public Shop(Action<DbContextOptionsBuilder> configure) { _configure = configure; }
+            public DbSet<Customer> Customers => Set<Customer>();
+            public DbSet<Order> Orders => Set<Order>();
+            protected override void OnConfiguring(DbContextOptionsBuilder o) => _configure(o);
+            protected override void OnModelCreating(ModelBuilder b)
+            {
+                b.Entity<Customer>().HasIndex(c => c.Email).IsUnique();
+                b.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
+            }
+        }
+
+        /// <summary>How a context of this provider connects (to a database of this test's own).</summary>
+        protected abstract void Configure(DbContextOptionsBuilder o);
+
+        /// <summary>Does the provider's default collation ignore case and trailing spaces (SQL Server's does)?</summary>
+        protected abstract bool CaseInsensitive { get; }
+
+        /// <summary>Does it run commands asynchronously (so two can overlap)? SQLite's run synchronously.</summary>
+        protected abstract bool TrulyAsync { get; }
+
+        protected EfConformanceTests() { }
+
+        /// <summary>The database made and filled (called by each provider's constructor).</summary>
+        protected void Seed()
+        {
+            using var db = New();
+            db.Database.EnsureDeleted();
+            db.Database.EnsureCreated();
+            var ann = new Customer { Email = "ann@example.com", Name = "Ann" };
+            var bob = new Customer { Email = "bob@example.com", Name = "Bob" };
+            db.Customers.AddRange(ann, bob, new Customer { Email = "ann2@example.com", Name = "Ann" });
+            db.Orders.AddRange(new Order { Customer = ann, Total = 10 }, new Order { Customer = ann, Total = 50 },
+                               new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
+            db.SaveChanges();
+        }
+
+        public virtual void Dispose() { }
+
+        protected Shop New() => new Shop(Configure);
+
+        // ---- queries ----
+
+        [Fact]
+        public void Rows_PassTheirPredicateAndTheQueryFilter()
+        {
+            using var db = New();
+            var rows = db.Orders.AsNoTracking().Where(o => o.Total > 20).ToList();
+            Assert.All(rows, o => Assert.True(o.Total > 20 && !o.IsDeleted));
+            Assert.Contains(db.Orders.AsNoTracking().IgnoreQueryFilters().ToList(), o => o.IsDeleted);
+        }
+
+        [Fact]
+        public void Navigations_AreNullUnlessIncluded()
+        {
+            using var db = New();
+            Assert.All(db.Orders.AsNoTracking().ToList(), o => Assert.Null(o.Customer));
+            Assert.All(db.Orders.AsNoTracking().Include(o => o.Customer).ToList(), o => Assert.NotNull(o.Customer));
+        }
+
+        [Fact]
+        public void Single_OnTwoMatchingRows_Throws()
+        {
+            using var db = New();
+            Assert.Throws<InvalidOperationException>(() => db.Customers.AsNoTracking().SingleOrDefault(c => c.Name == "Ann"));
+            Assert.NotNull(db.Customers.AsNoTracking().SingleOrDefault(c => c.Email == "ann@example.com"));
+        }
+
+        [Fact]
+        public void UniqueIndex_RefusesASecondRow()
+        {
+            using var db = New();
+            db.Customers.Add(new Customer { Email = "ann@example.com", Name = "Another" });
+            Assert.Throws<DbUpdateException>(() => db.SaveChanges());
+        }
+
+        [Fact]
+        public void Translation_AProgramMethodOfARow_Throws()
+        {
+            using var db = New();
+            Assert.Throws<InvalidOperationException>(() => db.Orders.Count(o => Big(o)));
+            Assert.Throws<InvalidOperationException>(() => db.Customers.Count(c => c.Display.Length > 3));
+        }
+
+        private static bool Big(Order o) => o.Total > 40;
+
+        [Fact]
+        public void Translation_WhatTheModelAccepts_Translates()
+        {
+            using var db = New();
+            var ids = new List<int> { 1, 2 };
+            int limit = Limit(10);
+            Assert.True(db.Customers.Count(c => c.Name.StartsWith("A") && ids.Contains(c.Id)) >= 0);
+            Assert.True(db.Customers.Count(c => c.Name.ToUpper() == "ANN" || c.Email.Contains("@") || c.Name.Length > 2) >= 0);
+            Assert.True(db.Orders.Count(o => Math.Abs(o.Total - limit) > 3 && o.Total > Limit(1)) >= 0);
+        }
+
+        private static int Limit(int x) => x * 2;
+
+        // ---- the change tracker ----
+
+        [Fact]
+        public void TrackingQuery_GivesTheTrackedInstance_WithItsValues()
+        {
+            using var db = New();
+            var first = db.Orders.Single(o => o.Total == 10);
+            first.Total = 11; // (in memory only)
+            var again = db.Orders.Single(o => o.Id == first.Id);
+            Assert.Same(first, again);
+            Assert.Equal(11, again.Total);
+            // so a tracking query's rows needn't pass its predicate: a tracked one keeps its own values
+            Assert.Contains(db.Orders.Where(o => o.Total == 10).ToList(), o => o.Total == 11);
+        }
+
+        [Fact]
+        public void Attach_ASecondInstanceOfARow_Throws()
+        {
+            using var db = New();
+            db.Attach(new Order { Id = 1 });
+            Assert.Throws<InvalidOperationException>(() => db.Attach(new Order { Id = 1 }));
+        }
+
+        [Fact]
+        public void Attach_WithAKeyNotSet_Adds()
+        {
+            using var db = New();
+            Assert.Equal(EntityState.Added, db.Attach(new Order { Total = 1 }).State);
+        }
+
+        [Fact]
+        public void Update_TakesTheGraph()
+        {
+            using var db = New();
+            var order = db.Orders.AsNoTracking().Include(o => o.Customer).First(o => o.Total == 10);
+            db.Update(order);
+            Assert.Equal(EntityState.Modified, db.Entry(order.Customer!).State);
+        }
+
+        [Fact]
+        public void Token_ChangedBeforeUpdate_FailsTheSave()
+        {
+            using (var db = New())
+            {
+                var order = db.Orders.AsNoTracking().First(o => o.Total == 50);
+                order.Updated = 7;
+                db.Update(order);
+                Assert.Throws<DbUpdateConcurrencyException>(() => db.SaveChanges());
+            }
+            using (var db = New())
+            {
+                var order = db.Orders.AsNoTracking().First(o => o.Total == 50);
+                db.Update(order);
+                order.Updated = 7;
+                db.SaveChanges();
+            }
+        }
+
+        [Fact]
+        public void ExecuteUpdate_LeavesTrackedCopiesAsTheyWere()
+        {
+            using var db = New();
+            var order = db.Orders.Single(o => o.Total == 70);
+            db.Orders.Where(o => o.Id == order.Id).ExecuteUpdate(s => s.SetProperty(o => o.Total, 0));
+            Assert.Equal(70, order.Total);
+            db.Entry(order).Reload();
+            Assert.Equal(0, order.Total);
+        }
+
+        // ---- transactions ----
+
+        [Fact]
+        public void BeginTransaction_WithOneOpen_Throws()
+        {
+            using var db = New();
+            using var tx = db.Database.BeginTransaction();
+            Assert.Throws<InvalidOperationException>(() => db.Database.BeginTransaction());
+            Assert.NotNull(db.Database.CurrentTransaction);
+        }
+
+        [Fact]
+        public void Rollback_LeavesTheTrackerAsIfSaved()
+        {
+            using var db = New();
+            var tx = db.Database.BeginTransaction();
+            var added = new Customer { Email = "new@example.com", Name = "New" };
+            db.Customers.Add(added);
+            db.SaveChanges();
+            tx.Rollback();
+            Assert.Equal(EntityState.Unchanged, db.Entry(added).State); // (the tracker says saved)
+            using var other = New();
+            Assert.False(other.Customers.Any(c => c.Email == "new@example.com")); // (the database says not)
+        }
+
+        [Fact]
+        public void Commit_BeforeSaving_LeavesTheChangesOut()
+        {
+            using (var db = New())
+            {
+                using var tx = db.Database.BeginTransaction();
+                db.Customers.Add(new Customer { Email = "late@example.com", Name = "Late" });
+                tx.Commit();
+            }
+            using var other = New();
+            Assert.False(other.Customers.Any(c => c.Email == "late@example.com"));
+        }
+        // ---- where SQLite and SQL Server differ ----
+
+        [Fact]
+        public void Collation_EqualStringsMatch_AndCaseMayNot()
+        {
+            using var db = New();
+            Assert.Equal(1, db.Customers.Count(c => c.Email == "ann@example.com"));
+            // the model: only that the database's equality is an equivalence equal strings satisfy
+            Assert.Equal(CaseInsensitive ? 1 : 0, db.Customers.Count(c => c.Email == "ANN@EXAMPLE.COM"));
+            Assert.Equal(CaseInsensitive ? 1 : 0, db.Customers.Count(c => c.Email == "ann@example.com  "));
+        }
+
+        [Fact]
+        public void Collation_AUniqueIndexComparesAsTheDatabaseDoes()
+        {
+            using var db = New();
+            db.Customers.Add(new Customer { Email = "ANN@example.com", Name = "Loud" });
+            if (CaseInsensitive) Assert.Throws<DbUpdateException>(() => db.SaveChanges());
+            else db.SaveChanges();
+        }
+
+        [Fact]
+        public void Arithmetic_OverflowInAQuery()
+        {
+            using var db = New();
+            // SQL Server fails the query; SQLite goes on in floating point: the model says nothing of either
+            // (a query may throw; what it gives passes its predicate)
+            Func<int> big = () => db.Orders.Count(o => o.Total * 100000000 > 0);
+            if (CaseInsensitive) Assert.ThrowsAny<Exception>(() => big());
+            else Assert.Equal(3, big());
+        }
+
+        [Fact]
+        public async Task TwoOperationsAtOnce_Throw()
+        {
+            using var db = New();
+            var first = db.Orders.ToListAsync();
+            if (!TrulyAsync) { await first; return; } // (SQLite's has finished before the next starts)
+            await Assert.ThrowsAsync<InvalidOperationException>(() => db.Customers.ToListAsync());
+            await first;
+        }
+    }
+
+    /// <summary>On SQLite, in memory.</summary>
+    public sealed class SqliteConformanceTests : EfConformanceTests
+    {
+        private readonly SqliteConnection _connection = new SqliteConnection("DataSource=:memory:");
+        public SqliteConformanceTests() { _connection.Open(); Seed(); }
+        protected override void Configure(DbContextOptionsBuilder o) => o.UseSqlite(_connection);
+        protected override bool CaseInsensitive => false;
+        protected override bool TrulyAsync => false;
+        public override void Dispose() => _connection.Dispose();
+    }
+
+    /// <summary>
+    /// SQL Server in a container, started once for these tests (Testcontainers: Docker must be running); or the server
+    /// CSVERIFY_SQLSERVER names, a connection string without a database (LocalDB: "Server=(localdb)\MSSQLLocalDB").
+    /// </summary>
+    public sealed class SqlServerFixture : IAsyncLifetime
+    {
+        private MsSqlContainer? _container;
+        public string Server { get; private set; } = "";
+
+        public async Task InitializeAsync()
+        {
+            var given = Environment.GetEnvironmentVariable("CSVERIFY_SQLSERVER");
+            if (!string.IsNullOrEmpty(given)) { Server = given; return; }
+            _container = new MsSqlBuilder().WithImage("mcr.microsoft.com/mssql/server:2022-latest").Build();
+            await _container.StartAsync();
+            Server = _container.GetConnectionString();
+        }
+
+        public async Task DisposeAsync()
+        {
+            if (_container != null) await _container.DisposeAsync();
+        }
+    }
+
+    /// <summary>On SQL Server: a database for each test, dropped after it.</summary>
+    public sealed class SqlServerConformanceTests : EfConformanceTests, IClassFixture<SqlServerFixture>
+    {
+        private readonly string _connection;
+
+        public SqlServerConformanceTests(SqlServerFixture server)
+        {
+            var b = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(server.Server) { InitialCatalog = "csverify_" + Guid.NewGuid().ToString("N"), TrustServerCertificate = true };
+            _connection = b.ConnectionString;
+            Seed();
+        }
+
+        protected override void Configure(DbContextOptionsBuilder o) => o.UseSqlServer(_connection);
+        protected override bool CaseInsensitive => true;
+        protected override bool TrulyAsync => true;
+
+        public override void Dispose()
+        {
+            using var db = New();
+            db.Database.EnsureDeleted();
+        }
+    }
+}
