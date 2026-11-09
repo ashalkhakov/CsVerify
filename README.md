@@ -65,7 +65,8 @@ public static int BinarySearch(int[] a, int key)
 - **Objects too.** Data types with closed hierarchies, object invariants, heap fields with inferred frames, dynamic
   frames (`Spec.Modifies`, for fields and arrays, and `Spec.Reads`), virtual members with contracts, exceptions, floating point as IEEE 754.
 - **Proofs erased, and checked to be.** `-p:CsVerifyErase=true` builds the program with every proof removed, and
-  checks that what runs never depended on one.
+  checks that what runs never depended on one. `-p:CsVerifyChecked=true` keeps the specifications that can run as
+  run-time checks instead ([the checked build](docs/erasure.md#the-checked-build)).
 - **Static proof, then dynamic coverage.** With [Tarp](https://github.com/ashalkhakov/Tarp): verify, erase, and run
   the tests under Tarp's MC/DC instrumentation, on the program that runs.
 - **Used on real code.** [CsLemon](#cslemon), SQLite's parser generator ported to C#, verifies completely (and the
@@ -190,7 +191,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [Soundness](docs/soundness.md): the claim, the trusted base, and the published result behind each mechanism.
 - [Entity Framework Core](docs/entity-framework.md): queries as the database runs them; the change tracker, transactions
   and one operation at a time, checked.
-- [CsVerify and Coyote](docs/coyote.md): the concurrent samples run under Coyote's scheduler, and what each tool finds.
+- [CsVerify and Coyote](docs/coyote.md): the concurrent samples, checked builds of them, run under Coyote's scheduler; every wait checked to end; what each tool finds.
 
 ## Licence
 

@@ -4,6 +4,10 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <Nullable>enable</Nullable>
+    <!-- (AsyncService.cs, compiled in, has its own Main) -->
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <!-- (fields of the buggy samples that their bugs leave unread or unwritten) -->
+    <NoWarn>$(NoWarn);CS0169;CS0414;CS0649</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
@@ -12,20 +16,46 @@
     <PackageReference Include="Microsoft.Coyote" Version="1.7.11" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\samples\Good\CsVerify.Samples.Good.csproj" />
-    <ProjectReference Include="..\..\samples\Buggy\CsVerify.Samples.Buggy.csproj" />
+    <!-- only so the verifier is built first: it makes the checked build of the code under test, below -->
+    <ProjectReference Include="..\..\src\CsVerify.Verifier\CsVerify.Verifier.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!--
-    Coyote controls the schedule only in rewritten code: after each build, this project's own assembly and the samples'
-    copies in its output are rewritten (`dotnet tool restore` first, for the CLI pinned in .config/dotnet-tools.json).
+    The code under test, in a checked build (csverify erase with the checked option, docs/erasure.md): the concurrent samples, and
+    the waits written for these tests, with their specifications kept as run-time checks and their waits reported. It
+    is compiled into this assembly, with the runtime (CsVerify.Checked) that the checks call.
+  -->
+  <PropertyGroup>
+    <CsVerifyDll>$(MSBuildThisFileDirectory)../../src/CsVerify.Verifier/bin/$(Configuration)/net10.0/csverify.dll</CsVerifyDll>
+  </PropertyGroup>
+  <ItemGroup>
+    <CheckedSource Include="..\..\samples\Good\Locks.cs;..\..\samples\Good\AtomicFields.cs;..\..\samples\Good\InterlockedTryLock.cs;..\..\samples\Good\LockLevels.cs;..\..\samples\Good\DiningPhilosophers.cs;..\..\samples\Good\ParallelWork.cs;..\..\samples\Good\AsyncService.cs" />
+    <CheckedSource Include="..\..\samples\Buggy\AtomicBugs.cs;..\..\samples\Buggy\LockLevelBugs.cs;..\..\samples\Buggy\LockBugs.cs;..\..\samples\Buggy\TryLockBugs.cs" />
+    <CheckedSource Include="Waits\*.cs" />
+    <Compile Remove="Waits\**" />
+  </ItemGroup>
+  <Target Name="CheckedBuild" BeforeTargets="BeforeCompile">
+    <PropertyGroup>
+      <CheckedDir>$(ProjectDir)$(IntermediateOutputPath)checked/</CheckedDir>
+    </PropertyGroup>
+    <Exec Command="dotnet &quot;$(CsVerifyDll)&quot; erase --checked --out &quot;$(CheckedDir).&quot; @(CheckedSource->'&quot;%(FullPath)&quot;', ' ')" StandardOutputImportance="low" />
+  </Target>
+  <Target Name="CheckedSources" BeforeTargets="BeforeCompile" AfterTargets="CheckedBuild">
+    <ItemGroup>
+      <Compile Include="$(ProjectDir)$(IntermediateOutputPath)checked/**/*.cs" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Coyote controls the schedule only in rewritten code: after each build, this project's assembly is rewritten
+    (`dotnet tool restore` first, for the CLI pinned in .config/dotnet-tools.json).
   -->
   <Target Name="CoyoteRewrite" AfterTargets="Build">
     <PropertyGroup>
       <CoyoteConfig>$(OutDir)rewrite.coyote.json</CoyoteConfig>
     </PropertyGroup>
     <WriteLinesToFile File="$(CoyoteConfig)" Overwrite="true"
-      Lines="{ &quot;AssembliesPath&quot;: &quot;.&quot;, &quot;Assemblies&quot;: [ &quot;$(TargetFileName)&quot;, &quot;CsVerify.Samples.Good.dll&quot;, &quot;CsVerify.Samples.Buggy.dll&quot; ] }" />
+      Lines="{ &quot;AssembliesPath&quot;: &quot;.&quot;, &quot;Assemblies&quot;: [ &quot;$(TargetFileName)&quot; ] }" />
     <Exec Command="dotnet tool run coyote rewrite &quot;$(CoyoteConfig)&quot;" EnvironmentVariables="COYOTE_CLI_TELEMETRY_OPTOUT=1" StandardOutputImportance="low" />
   </Target>
 </Project>

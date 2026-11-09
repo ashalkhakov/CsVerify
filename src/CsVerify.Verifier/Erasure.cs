@@ -42,11 +42,15 @@ namespace CsVerify.Verifier
     /// depends on a proof: that is an error, reported at the original source line (every erased file keeps the
     /// original's line numbers and starts with a <c>#line</c> directive naming it).
     /// </summary>
-    public static class Erasure
+    public static partial class Erasure
     {
         public const string RuntimeFolder = "CsVerify.Runtime";
 
-        public static ErasureResult Erase(IEnumerable<(string path, string text)> sources, IReadOnlyList<string> references, IEnumerable<string> defines)
+        /// <param name="checkedBuild">
+        /// A checked build: the specifications that can run are kept as run-time checks (<see cref="CheckedSpecs"/>),
+        /// calling the runtime's <c>CsVerify.Checked</c>.
+        /// </param>
+        public static ErasureResult Erase(IEnumerable<(string path, string text)> sources, IReadOnlyList<string> references, IEnumerable<string> defines, bool checkedBuild = false)
         {
             // Bind with CSVERIFY_SPEC defined, like the verifier, so specification arguments have semantics too.
             var parse = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: new[] { SpecSymbols.SpecSymbol }.Concat(defines));
@@ -69,7 +73,7 @@ namespace CsVerify.Verifier
                 {
                     OriginalPath = tree.FilePath,
                     OutputName = $"{n++:D3}_{Path.GetFileName(tree.FilePath)}",
-                    Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: false).Run(),
+                    Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: false, checkedBuild).Run(),
                 });
             // A project referencing another erased project gets the runtime from it: a copy of its own would be a
             // second CsVerify.Ptr<T> (CS0436), not the one the referenced project's methods take.
@@ -156,19 +160,22 @@ namespace CsVerify.Verifier
         /// Erases one file by text edits on the original: deletions keep their newlines, so every remaining line stays
         /// where it was and diagnostics map back through a single <c>#line</c>.
         /// </summary>
-        private sealed class FileEraser
+        private sealed partial class FileEraser
         {
             private readonly SyntaxTree _tree;
             private readonly SemanticModel _model;
             private readonly bool _library;
             private readonly SourceText _text;
-            private readonly List<(TextSpan span, string replacement)> _edits = new List<(TextSpan, string)>();
+            private readonly bool _checked;
+            /// <summary>Edits: a span replaced (null: deleted, keeping its line breaks), and among insertions at one place, their order.</summary>
+            private readonly List<(TextSpan span, string replacement, int order)> _edits = new List<(TextSpan, string, int)>();
 
-            public FileEraser(SyntaxTree tree, SemanticModel model, bool library)
+            public FileEraser(SyntaxTree tree, SemanticModel model, bool library, bool checkedBuild = false)
             {
                 _tree = tree;
                 _model = model;
                 _library = library;
+                _checked = checkedBuild && !library;
                 _text = tree.GetText();
             }
 
@@ -177,6 +184,7 @@ namespace CsVerify.Verifier
                 var root = _tree.GetRoot();
                 foreach (var node in root.DescendantNodes())
                 {
+                    if (_checked) CheckedNode(node);
                     switch (node)
                     {
                         case BaseTypeDeclarationSyntax type: TypeDeclaration(type); break;
@@ -238,6 +246,7 @@ namespace CsVerify.Verifier
 
             private void Statement(StatementSyntax stmt)
             {
+                if (_handled.Contains(stmt)) return;
                 switch (stmt)
                 {
                     case ExpressionStatementSyntax es:
@@ -346,7 +355,7 @@ namespace CsVerify.Verifier
                 }
             }
 
-            private void Delete(TextSpan span) => _edits.Add((span, null));
+            private void Delete(TextSpan span) => _edits.Add((span, null, 0));
 
             /// <summary>In a block a statement can go; as the body of an if/while/else it becomes an empty block.</summary>
             private void DeleteStatement(StatementSyntax stmt)
@@ -354,7 +363,10 @@ namespace CsVerify.Verifier
                 if (stmt.Parent is BlockSyntax || stmt.Parent is SwitchSectionSyntax) Delete(stmt.Span);
                 else Replace(stmt.Span, "{ }");
             }
-            private void Replace(TextSpan span, string text) => _edits.Add((span, text));
+            private void Replace(TextSpan span, string text) => _edits.Add((span, text, 0));
+
+            /// <summary>Text inserted at a place; of several there, a lower order goes first.</summary>
+            private void Insert(int at, string text, int order = 0) => _edits.Add((new TextSpan(at, 0), text, order));
 
             private string Apply()
             {
@@ -362,9 +374,15 @@ namespace CsVerify.Verifier
                 var sb = new StringBuilder();
                 // the program's files map back to the originals; the runtime is generated code with nothing to map to
                 if (_library) sb.Append("// <auto-generated/> CsVerify runtime: the Spec library with every proof erased\n");
-                else sb.Append("#line 1 \"").Append(_tree.FilePath.Replace("\\", "\\\\")).Append("\"\n");
+                else
+                {
+                    // (a checked build passes volatile [Atomic] fields by ref to its checks)
+                    if (_checked) sb.Append("#pragma warning disable 420\n");
+                    sb.Append("#line 1 \"").Append(_tree.FilePath.Replace("\\", "\\\\")).Append("\"\n");
+                }
                 int pos = 0;
-                foreach (var (span, replacement) in _edits.OrderBy(e => e.span.Start).ThenByDescending(e => e.span.Length))
+                // (insertions at a place go before what replaces text starting there, in their order)
+                foreach (var (span, replacement, _) in _edits.OrderBy(e => e.span.Start).ThenBy(e => e.span.Length == 0 ? 0 : 1).ThenBy(e => e.order).ThenByDescending(e => e.span.Length))
                 {
                     if (span.Start < pos) continue; // inside a region already deleted or replaced
                     sb.Append(text, pos, span.Start - pos);
