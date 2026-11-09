@@ -104,6 +104,46 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void Include_LoadsTheRowTheForeignKeyNames()
+        {
+            using var db = New();
+            Assert.All(db.Orders.AsNoTracking().Include(o => o.Customer).ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+            Assert.All(db.Orders.Include(o => o.Customer).ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+        }
+
+        [Fact]
+        public void Include_ACollection_LoadsTheRowsWithThisKey_ThroughTheQueryFilter()
+        {
+            using var db = New();
+            var customers = db.Customers.AsNoTracking().Include(c => c.Orders).ToList();
+            Assert.All(customers, c => Assert.All(c.Orders, o => Assert.True(o.CustomerId == c.Id && !o.IsDeleted)));
+            Assert.Contains(customers, c => c.Orders.Count == 2);
+        }
+
+        [Fact]
+        public void Collections_NotIncluded_AreAsTheInitializerMadeThem()
+        {
+            using var db = New();
+            Assert.All(db.Customers.AsNoTracking().ToList(), c => Assert.Empty(c.Orders));
+        }
+
+        [Fact]
+        public void ThenInclude_LoadsTheNextLevel()
+        {
+            using var db = New();
+            Assert.All(db.Orders.Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList(),
+                o => Assert.All(o.Customer!.Orders, p => Assert.True(p.CustomerId == o.CustomerId && !p.IsDeleted)));
+        }
+
+        [Fact]
+        public void Include_ACycleWithoutTracking_Throws()
+        {
+            using var db = New();
+            Assert.Throws<InvalidOperationException>(() => db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList());
+            db.Orders.AsNoTrackingWithIdentityResolution().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList();
+        }
+
+        [Fact]
         public void Single_OnTwoMatchingRows_Throws()
         {
             using var db = New();
@@ -155,6 +195,22 @@ namespace CsVerify.Tests
             Assert.Equal(11, again.Total);
             // so a tracking query's rows needn't pass its predicate: a tracked one keeps its own values
             Assert.Contains(db.Orders.Where(o => o.Total == 10).ToList(), o => o.Total == 11);
+        }
+
+        [Fact]
+        public void Local_IsWhatTheContextTracks_ButWhatItDeletes()
+        {
+            using var db = New();
+            Assert.Empty(db.Orders.Local);
+            db.Orders.AsNoTracking().ToList();
+            Assert.Empty(db.Orders.Local); // (rows read without tracking aren't tracked)
+            var read = db.Orders.OrderBy(o => o.Id).ToList();
+            var added = new Order { CustomerId = read[0].CustomerId, Total = 1 };
+            db.Orders.Add(added);
+            read[1].Total = 7;
+            db.Orders.Remove(read[2]);
+            Assert.Equal(new[] { read[0], read[1], added }.OrderBy(o => o.Total), db.Orders.Local.OrderBy(o => o.Total));
+            Assert.Equal(EntityState.Modified, db.Entry(read[1]).State);
         }
 
         [Fact]

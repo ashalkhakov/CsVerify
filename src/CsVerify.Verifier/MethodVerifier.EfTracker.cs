@@ -114,14 +114,23 @@ namespace CsVerify.Verifier
             f.Link = null;
         }
 
-        /// <summary>The entities' columns before an await, to keep at the unshared ones (<see cref="KeepUnshared"/>).</summary>
-        private List<(IPropertySymbol column, Term map)> EntityColumns(Frame f) =>
-            Ef == null || TrackerModel("Unshared") == null || !EntitiesStayHere() ? null
-                : Ef.Entities.SelectMany(e => e.Type.GetMembers().OfType<IPropertySymbol>()).Where(FieldEffects.IsHeapField)
-                    .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Select(p => (p, FieldMap(f, p))).ToList();
+        /// <summary>
+        /// The entities' columns before an await, to keep at the unshared ones (<see cref="KeepUnshared"/>), and the
+        /// models of lists, for the lists of their collection navigations.
+        /// </summary>
+        private List<(ISymbol column, Term map)> EntityColumns(Frame f)
+        {
+            if (Ef == null || TrackerModel("Unshared") == null || !EntitiesStayHere()) return null;
+            var columns = Ef.Entities.SelectMany(e => e.Type.GetMembers().OfType<IPropertySymbol>()).Where(FieldEffects.IsHeapField)
+                .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Select(p => ((ISymbol)p, FieldMap(f, p))).ToList();
+            if (ListModels && Ef.Entities.Any(e => e.Collections.Any(c => IsListType(c.Type))))
+                foreach (var model in new[] { ListModel("Items"), ListModel("Size") })
+                    columns.Add((model, FieldMap(f, model)));
+            return columns;
+        }
 
         /// <summary>An await leaves an entity no other code reaches as it was: its columns, its concurrency token among them.</summary>
-        private void KeepUnshared(Frame f, List<(IPropertySymbol column, Term map)> before)
+        private void KeepUnshared(Frame f, List<(ISymbol column, Term map)> before)
         {
             if (before == null || before.Count == 0) return;
             var unshared = FieldMap(f, TrackerModel("Unshared"));

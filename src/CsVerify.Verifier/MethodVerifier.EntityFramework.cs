@@ -20,14 +20,23 @@ namespace CsVerify.Verifier
             public Term Context;
             public EfModel.Entity Entity;
             public bool NoTracking;
+            /// <summary>AsNoTrackingWithIdentityResolution: one object for each row, whose navigations EF fixes up from the others.</summary>
+            public bool IdentityResolution;
             public bool IgnoreFilters;
             /// <summary>The navigations Include loads (at the first level).</summary>
             public HashSet<IPropertySymbol> Includes = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>The entity types of the Include path being written (Include, then each ThenInclude).</summary>
+            public List<ITypeSymbol> IncludePath = new List<ITypeSymbol>();
+            /// <summary>An Include path that comes back to a type on it, which a query without tracking refuses.</summary>
+            public SyntaxNode Cycle;
+            /// <summary>An Include this doesn't read (by name, or filtered): what it loads isn't known.</summary>
+            public bool UnknownInclude;
 
             public DbTable With(System.Action<DbTable> change)
             {
-                var t = new DbTable { Context = Context, Entity = Entity, NoTracking = NoTracking, IgnoreFilters = IgnoreFilters,
-                                      Includes = new HashSet<IPropertySymbol>(Includes, SymbolEqualityComparer.Default) };
+                var t = new DbTable { Context = Context, Entity = Entity, NoTracking = NoTracking, IdentityResolution = IdentityResolution,
+                                      IgnoreFilters = IgnoreFilters, Includes = new HashSet<IPropertySymbol>(Includes, SymbolEqualityComparer.Default),
+                                      IncludePath = new List<ITypeSymbol>(IncludePath), Cycle = Cycle, UnknownInclude = UnknownInclude };
                 change(t);
                 return t;
             }
@@ -50,9 +59,53 @@ namespace CsVerify.Verifier
             return t;
         }
 
-        /// <summary>A context's DbSet property (ctx.Orders): its table.</summary>
+        /// <summary>DbSet.Local: the context and entity of each local view.</summary>
+        private readonly Dictionary<string, (Term context, EfModel.Entity entity)> _localViews = new Dictionary<string, (Term, EfModel.Entity)>();
+        private readonly Dictionary<string, Sequence> _localReadings = new Dictionary<string, Sequence>();
+
+        /// <summary>
+        /// A local view as it is now: each entity of its type the context tracks and doesn't delete (Unchanged,
+        /// Modified or Added) once, in some order, and every one.
+        /// </summary>
+        private Sequence LocalSequence(Term c, EfModel.Entity e, Frame f)
+        {
+            var states = Named(ModelRow("State", c, f), "states");
+            var cacheKey = c.S + "|" + states.S + "|" + e.Type.ToDisplayString();
+            if (_localReadings.TryGetValue(cacheKey, out var known)) return known;
+            int id = _materialized++;
+            var n = _z3.Fresh("local", Sort.Int);
+            AssumeSide(T.Le(T.Int(0), n));
+            Term El(Term i) => _z3.Apply("local#" + id, Sort.Int, new[] { i });
+            Term Idx(Term y) => _z3.Apply("local.index#" + id, Sort.Int, new[] { y });
+            Term Live(Term y)
+            {
+                var st = T.Coerce(T.Select(states, y, Sort.Int), Sort.Int);
+                return T.And(T.Not(T.Eq(st, T.Int(EfDetached))), T.Not(T.Eq(st, T.Int(Deleted))));
+            }
+            Term Each(Term i) => T.And(T.Eq(Idx(El(i)), i), NotNull(El(i)), IsEntity(El(i), e), Live(El(i)));
+            AssumeSide(OverIndices("forall", T.Int(0), n, Each, El));
+            AssumeSide(T.Implies(T.Lt(T.Int(0), n), Each(T.Int(0)))); // (the first, if any: an empty view is shown so)
+            var yn = _z3.FreshName("y");
+            var y = new Term(yn, Sort.Int);
+            var every = T.Implies(T.And(IsEntity(y, e), Live(y)), T.And(T.Le(T.Int(0), Idx(y)), T.Lt(Idx(y), n), T.Eq(El(Idx(y)), y)));
+            AssumeSide(new Term($"(forall (({yn} Int)) (! {every.S} :pattern ((select {states.S} {yn}))))", Sort.Bool));
+            return _localReadings[cacheKey] = new Sequence { Length = n, Element = El, ElementType = e.Type };
+        }
+
+        /// <summary>A context's DbSet property (ctx.Orders): its table. Its Local, and the local view's Count.</summary>
         private Term DbSetProperty(IPropertyReferenceOperation pr, Frame f, SpecEnv spec)
         {
+            if (pr.Instance != null && pr.Property.Name == "Local" && DbSetEntity(pr.Instance.Type) is EfModel.Entity local &&
+                T.Coerce(Eval(pr.Instance, f, spec), Sort.Int) is Term set && _tables.TryGetValue(set.S, out var table))
+            {
+                var view = _z3.Fresh("local", Sort.Int);
+                _z3.Assume(NotNull(view));
+                _localViews[view.S] = (table.Context, local);
+                return view;
+            }
+            if (pr.Instance != null && pr.Property.Name == "Count" && pr.Instance.Type?.Name == "LocalView" &&
+                T.Coerce(Eval(pr.Instance, f, spec), Sort.Int) is Term lv && _localViews.TryGetValue(lv.S, out var of))
+                return LocalSequence(of.context, of.entity, f).Length;
             if (pr.Instance == null || DbSetEntity(pr.Type) is not EfModel.Entity e || !Ef.IsContextType(pr.Instance.Type)) return null;
             var context = Eval(pr.Instance, f, spec);
             Deref(pr.Instance, context, pr.Syntax);
@@ -96,20 +149,38 @@ namespace CsVerify.Verifier
             {
                 switch (m.Name)
                 {
-                    case "AsNoTracking": case "AsNoTrackingWithIdentityResolution": t.NoTracking = true; break;
-                    case "AsTracking": t.NoTracking = false; break;
+                    case "AsNoTracking": t.NoTracking = true; t.IdentityResolution = false; break;
+                    case "AsNoTrackingWithIdentityResolution": t.NoTracking = true; t.IdentityResolution = true; break;
+                    case "AsTracking": t.NoTracking = false; t.IdentityResolution = false; break;
                     case "IgnoreQueryFilters": t.IgnoreFilters = true; break;
                     case "Include":
-                        if (inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is IOperation lambda && Navigation(lambda) is IPropertySymbol nav)
-                            t.Includes.Add(nav);
+                    case "ThenInclude":
+                    {
+                        var nav = inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is IOperation lambda ? Navigation(lambda) : null;
+                        if (nav == null) t.UnknownInclude = true;
+                        if (m.Name == "Include")
+                        {
+                            if (nav != null) t.Includes.Add(nav);
+                            t.IncludePath = new List<ITypeSymbol> { t.Entity.Type.OriginalDefinition };
+                        }
+                        var to = nav == null ? null : EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition;
+                        if (to == null) { t.IncludePath.Clear(); break; }
+                        if (t.IncludePath.Count > 0 && t.IncludePath.Contains(to, SymbolEqualityComparer.Default)) t.Cycle ??= inv.Syntax;
+                        t.IncludePath.Add(to);
                         break;
+                    }
                 }
             });
+            if (read.Cycle != null && read.NoTracking && !read.IdentityResolution && _codeMode && _queryContexts.Count == 0 && _cyclesReported.Add(read.Cycle))
+                Report(TranslateId, read.Cycle, $"'{read.Cycle}' makes an Include path that comes back to a type on it, which a query without tracking refuses " +
+                       "(EF throws when it runs): track the query, or use AsNoTrackingWithIdentityResolution", isError: true);
             var r = _z3.Fresh("table", Sort.Int);
             _z3.Assume(NotNull(r));
             _tables[r.S] = read;
             return r;
         }
+
+        private readonly HashSet<SyntaxNode> _cyclesReported = new HashSet<SyntaxNode>();
 
         /// <summary>The navigation an Include lambda names (x => x.Customer).</summary>
         private IPropertySymbol Navigation(IOperation lambda) =>
@@ -233,13 +304,8 @@ namespace CsVerify.Verifier
                 // new objects
                 if (f.Alloc != null)
                     f.Alloc = Pointwise("materialized", Sort.Row, $"(ite {IsRow(new Term("y", Sort.Int)).S} 1 (select {f.Alloc.S} y))");
-                // a navigation not included is null (written into its map, so any read of it at a row sees it)
-                foreach (var nav in e.References.Where(p => !t.Includes.Contains(p) && FieldEffects.IsHeapField(p)))
-                {
-                    var before = FieldMap(f, nav);
-                    f.Link = null;
-                    f.Fields[FieldEffects.Key(nav)] = Pointwise("materialized", MapSort(nav), $"(ite {IsRow(new Term("y", Sort.Int)).S} 0 (select {before.S} y))");
-                }
+                // (with identity resolution, EF fixes up navigations from the other rows it loads: nothing is known of them)
+                if (!t.IdentityResolution && !t.UnknownInclude) Navigations(t, n, Row, IsRow, f);
                 // no other code reaches them, if the method lets none out
                 if (TrackerModel("Unshared") is IMethodSymbol unshared && EntitiesStayHere())
                 {
@@ -281,6 +347,136 @@ namespace CsVerify.Verifier
                 f.Fields[FieldEffects.Key(state)] = T.Store(states, t.Context, after);
             }
             return new Sequence { Length = n, Element = Row, ElementType = e.Type, Known = known };
+        }
+
+        /// <summary>
+        /// The navigations of rows read without tracking: one not included is null, or a collection with an empty
+        /// list for initializer is that, empty; an included reference is the row its foreign key names (not null, for a
+        /// key that can't be null), and an included List holds only rows whose foreign key is this row's key; each
+        /// passing its type's query filters, unless the query ignores them.
+        /// </summary>
+        private void Navigations(DbTable t, Term n, System.Func<Term, Term> Row, System.Func<Term, Term> IsRow, Frame f)
+        {
+            var e = t.Entity;
+            Term Filtered(EfModel.Entity of, Term o)
+            {
+                if (t.IgnoreFilters) return T.True;
+                var all = new List<Term>();
+                foreach (var filter in of.Filters)
+                    if (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation r)
+                        all.Add(T.Coerce(InDatabase(() => ApplyValue(r.ReturnedValue, filter.Symbol.Parameters[0], o, f), o), Sort.Bool));
+                return T.And(all.ToArray());
+            }
+            Term Matches(IPropertySymbol fk, Term dependent, IPropertySymbol key, Term principal)
+            {
+                var fkv = KeyColumn(fk, dependent, f);
+                var kv = KeyColumn(key, principal, f);
+                if (fkv == null || kv == null) return null;
+                return IsNullableValue(fk.Type) ? T.And(HasValue(fkv), T.Eq(T.Coerce(ValueOf(fkv, fk.Type), kv.Sort), kv)) : T.Eq(T.Coerce(fkv, kv.Sort), kv);
+            }
+            foreach (var nav in e.References.Where(FieldEffects.IsHeapField))
+            {
+                if (!t.Includes.Contains(nav))
+                {
+                    // (written into its map, so any read of it at a row sees it)
+                    var before = FieldMap(f, nav);
+                    f.Link = null;
+                    f.Fields[FieldEffects.Key(nav)] = Pointwise("materialized", MapSort(nav), $"(ite {IsRow(new Term("y", Sort.Int)).S} 0 (select {before.S} y))");
+                    continue;
+                }
+                if (!e.ForeignKeys.TryGetValue(nav, out var fk) || !(Ef.EntityOf(nav.Type) is EfModel.Entity p) || p.Key.Count != 1) continue;
+                bool required = fk.Type.IsValueType && !IsNullableValue(fk.Type);
+                AssumeSide(OverIndices("forall", T.Int(0), n, i =>
+                {
+                    var o = Row(i);
+                    var v = T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int);
+                    var match = Matches(fk, o, p.Key[0], v) ?? T.True;
+                    var loaded = T.And(NotNull(v), IsEntity(v, p), match, Filtered(p, v));
+                    return required ? loaded : T.Or(T.Not(NotNull(v)), loaded);
+                }, Row));
+            }
+            // what EF made for these rows, a list or a row it loaded with them: new objects (where not null: a list is
+            // never, a reference where it was loaded), one for each row, which no other code reaches if the method lets
+            // none out. Made(y) is exactly these: y is the one made for the row its inverse names.
+            var newObjects = new List<System.Func<Term, Term>>();
+            void Unshared(System.Func<Term, Term> made) => newObjects.Add(made);
+            void Allocated()
+            {
+                if (newObjects.Count == 0) return;
+                var made = new List<Term>();
+                var yv = new Term("y", Sort.Int);
+                var before = f.Alloc;
+                foreach (var m in newObjects)
+                {
+                    var name = "made.row#" + _materialized++;
+                    Term Inverse(Term y) => _z3.Apply(name, Sort.Int, new[] { y });
+                    AssumeSide(OverIndices("forall", T.Int(0), n, i => T.Implies(NotNull(m(Row(i))),
+                        T.And(T.Eq(Inverse(m(Row(i))), i), before != null ? T.Not(InSet(before, m(Row(i)))) : T.True)), Row));
+                    var at = Inverse(yv);
+                    made.Add(T.And(NotNull(yv), T.Le(T.Int(0), at), T.Lt(at, n), T.Eq(m(Row(at)), yv)));
+                }
+                var isMade = T.Or(made.ToArray());
+                if (before != null) f.Alloc = Pointwise("made", Sort.Row, $"(ite {isMade.S} 1 (select {before.S} y))");
+                if (TrackerModel("Unshared") is IMethodSymbol unshared && EntitiesStayHere())
+                {
+                    var was = FieldMap(f, unshared);
+                    f.Link = null;
+                    f.Fields[FieldEffects.Key(unshared)] = Pointwise("unshared", Sort.Row, $"(ite {isMade.S} 1 (select {was.S} y))");
+                }
+            }
+            foreach (var nav in e.References.Where(r => t.Includes.Contains(r) && FieldEffects.IsHeapField(r) && e.ForeignKeys.ContainsKey(r)))
+                Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
+            if (!ListModels) { Allocated(); return; }
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type) && (t.Includes.Contains(c) || EmptyListInitializer(c) == true)))
+                Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
+            Allocated();
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type)))
+            {
+                var d = Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _));
+                if (d == null) continue;
+                if (!t.Includes.Contains(nav))
+                {
+                    if (EmptyListInitializer(nav) is bool empty)
+                        AssumeSide(OverIndices("forall", T.Int(0), n, i =>
+                        {
+                            var l = T.Coerce(T.Select(FieldMap(f, nav), Row(i), Sort.Int), Sort.Int);
+                            return empty ? T.And(NotNull(l), T.Eq(T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int), T.Int(0))) : T.Not(NotNull(l));
+                        }, Row));
+                    continue;
+                }
+                if (!e.CollectionKeys.TryGetValue(nav, out var fk) || e.Key.Count != 1) continue;
+                AssumeSide(OverIndices("forall", T.Int(0), n, i =>
+                {
+                    var o = Row(i);
+                    var l = T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int);
+                    var size = T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int);
+                    var each = OverIndices("forall", T.Int(0), size, j =>
+                    {
+                        var el = T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
+                        return T.And(NotNull(el), IsEntity(el, d), Matches(fk, el, e.Key[0], o) ?? T.True, Filtered(d, el));
+                    });
+                    return T.And(NotNull(l), each);
+                }, Row));
+            }
+        }
+
+        /// <summary>
+        /// What a collection navigation is when EF doesn't load it, made by its type's constructor: true for an empty
+        /// list (an initializer new(), new List&lt;T&gt;() or []), false for null (no initializer), null if unknown
+        /// (a constructor of the type's own, or another initializer).
+        /// </summary>
+        private static bool? EmptyListInitializer(IPropertySymbol nav)
+        {
+            if (nav.ContainingType.InstanceConstructors.Any(c => !c.IsImplicitlyDeclared)) return null;
+            if (!(nav.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax decl)) return null;
+            switch (decl.Initializer?.Value)
+            {
+                case null: return false;
+                case Microsoft.CodeAnalysis.CSharp.Syntax.ImplicitObjectCreationExpressionSyntax io when io.ArgumentList.Arguments.Count == 0 && io.Initializer == null: return true;
+                case Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax oc when (oc.ArgumentList?.Arguments.Count ?? 0) == 0 && oc.Initializer == null: return true;
+                case Microsoft.CodeAnalysis.CSharp.Syntax.CollectionExpressionSyntax ce when ce.Elements.Count == 0: return true;
+                default: return null;
+            }
         }
 
         /// <summary>The type of the query call being read (its result, or its task's), for <see cref="TableSequence"/>.</summary>
@@ -374,7 +570,8 @@ namespace CsVerify.Verifier
         /// that equal strings satisfy, and nothing else is known of (SQL Server's default collation ignores case, and
         /// its = ignores trailing spaces).
         /// </summary>
-        private static Term CollationEqual(Term a, Term b) => new Term($"(cv_collate {T.Coerce(a, Sort.Int).S} {T.Coerce(b, Sort.Int).S})", Sort.Bool);
+        private Term CollationEqual(Term a, Term b) =>
+            Ef != null && Ef.ExactStrings ? T.Eq(a, b) : new Term($"(cv_collate {T.Coerce(a, Sort.Int).S} {T.Coerce(b, Sort.Int).S})", Sort.Bool);
 
         internal const string CollationTheory =
             "(declare-fun cv_collate (Int Int) Bool)\n" +
@@ -444,10 +641,12 @@ namespace CsVerify.Verifier
 
         /// <summary>
         /// Keys the database and .NET compare alike: integers, bool, enums and Guid, and those nullable (in a join, null
-        /// matches nothing in either). Not strings (by collation), floating point and dates (by the column's precision).
+        /// matches nothing in either); strings where it compares them exactly (<see cref="EfModel.ExactStrings"/>). Not
+        /// floating point and dates (by the column's precision).
         /// </summary>
-        private static bool ComparedAlike(ITypeSymbol t) =>
+        private bool ComparedAlike(ITypeSymbol t) =>
             t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? ComparedAlike(n.TypeArguments[0]) :
+            t.SpecialType == SpecialType.System_String ? Ef.ExactStrings :
             t.TypeKind == TypeKind.Enum ||
             t.SpecialType is SpecialType.System_Boolean or SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or
                 SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 ||

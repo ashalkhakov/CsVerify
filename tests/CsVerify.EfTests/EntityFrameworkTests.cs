@@ -95,6 +95,19 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Shop db, string email) { var c = await db.Customers.AsNoTracking().SingleOrDefaultAsync(c => c.Email == email); " +
             "if (c != null) Spec.Assert(c.Email == email); } }"));
 
+        private const string OnSqlite = "public static class Configure { public static void Sqlite(DbContextOptionsBuilder o) => o.UseSqlite(\"Data Source=shop.db\"); }\n";
+
+        [Fact]
+        public void Strings_OnSqlite_AreComparedExactly() => Assert.Empty(VerifyEf(Model + OnSqlite +
+            "public static class C { public static async Task M(Shop db, string email) { var c = await db.Customers.AsNoTracking().SingleOrDefaultAsync(c => c.Email == email); " +
+            "if (c != null) Spec.Assert(c.Email == email); } }", sqlite: true).Errors("M"));
+
+        [Fact]
+        public void Strings_OnSqlite_WithACollation_AreNot() => Assert.NotEmpty(VerifyEf(Model + OnSqlite +
+            "public static class Collated { public static void Configure(ModelBuilder b) => b.UseCollation(\"NOCASE\"); }\n" +
+            "public static class C { public static async Task M(Shop db, string email) { var c = await db.Customers.AsNoTracking().SingleOrDefaultAsync(c => c.Email == email); " +
+            "if (c != null) Spec.Assert(c.Email == email); } }", sqlite: true).Errors("M"));
+
         // ---- joins ----
 
         [Fact]
@@ -151,6 +164,11 @@ public sealed class Shop : DbContext
         public void Join_OnANullKey_MatchesNothing() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Join(db.Customers.AsNoTracking(), o => o.Total > 5 ? (int?)o.CustomerId : null, c => (int?)c.Id, " +
             "(o, c) => o.Total).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i] > 5)); } }"));
+
+        [Fact]
+        public void Join_OnStrings_OnSqlite_MatchesEqualStrings() => Assert.Empty(VerifyEf(Model + OnSqlite +
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().Join(db.Customers.AsNoTracking(), a => a.Name, b => b.Email, " +
+            "(a, b) => new { a.Name, b.Email }).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Name == r[i].Email)); } }", sqlite: true).Errors("M"));
 
         [Fact]
         public void Join_OnStrings_ComparesByCollation() => Assert.NotEmpty(Errors("M",
@@ -236,6 +254,45 @@ public sealed class Shop : DbContext
         public void Navigation_Included_IsLoaded() => Assert.NotEmpty(Errors("M",
             "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Include(o => o.Customer).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null)); } }"));
+
+        [Fact]
+        public void Include_GivesTheRowTheForeignKeyNames() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Include(o => o.Customer).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer != null && r[i].Customer!.Id == r[i].CustomerId)); } }"));
+
+        [Fact]
+        public void Include_ACollection_HoldsTheRowsWithThisKey() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().Include(c => c.Orders).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => Spec.Forall(0, r[i].Orders.Count, j => r[i].Orders[j].CustomerId == r[i].Id && !r[i].Orders[j].IsDeleted))); } }"));
+
+        [Fact]
+        public void Collection_NotIncluded_IsAsItsInitializerMadeIt() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Orders.Count == 0)); } }"));
+
+        [Fact]
+        public void NavigationFacts_LeaveTheRowsAsMany() => Assert.NotEmpty(Errors("M", // (they don't contradict each other: any number of rows)
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().Include(c => c.Orders).ToListAsync(); " +
+            "var s = await db.Customers.AsNoTracking().ToListAsync(); var o = await db.Orders.AsNoTracking().Include(x => x.Customer).ToListAsync(); " +
+            "Spec.Assert(r.Count <= 1 || s.Count <= 1 || o.Count <= 1); } }"));
+
+        [Fact]
+        public void Include_ByName_SaysNothing() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Include(\"Customer\").ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null)); } }"));
+
+        [Fact]
+        public void IdentityResolution_SaysNothingOfNavigations() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTrackingWithIdentityResolution().ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null)); } }"));
+
+        [Fact]
+        public void Include_ACycleWithoutTracking_IsReported() => Assert.Equal(new[] { "CSV1032" }, Errors("M",
+            "public static class C { public static async Task<int> M(Shop db) { var r = await db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToListAsync(); return r.Count; } }"));
+
+        [Fact]
+        public void Include_ACycleTracked_IsNot() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task<int> M(Shop db) { var r = await db.Orders.Include(o => o.Customer).ThenInclude(c => c!.Orders).ToListAsync(); return r.Count; } }"));
 
         // ---- the change tracker (CSV1033) ----
 
@@ -335,6 +392,31 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(int id) { using var db = new Shop(); " +
             "var c = await db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id); if (c == null) return; var v = c.Version; " +
             "db.Entry(c).State = EntityState.Modified; await db.SaveChangesAsync(); Spec.Assert(c.Version == v); } }"));
+
+        // ---- the local view ----
+
+        [Fact]
+        public void Local_OfANewContext_IsEmpty() => Assert.Empty(Errors("M",
+            "public static class C { public static void M() { using var db = new Shop(); var n = db.Orders.Local.Count; var any = db.Orders.Local.Any(); Spec.Assert(n == 0 && !any); } }"));
+
+        [Fact]
+        public void Local_HasWhatIsAdded() => Assert.Empty(Errors("M",
+            "public static class C { public static void M() { using var db = new Shop(); db.Orders.Add(new Order { Total = 3 }); " +
+            "var any = db.Orders.Local.Any(x => x.Total == 3); var all = db.Orders.Local.All(x => x.Total == 3); Spec.Assert(any && all); } }"));
+
+        [Fact]
+        public void Local_NotWhatIsRemoved() => Assert.Empty(Errors("M",
+            "public static class C { public static void M() { using var db = new Shop(); var o = new Order { Total = 3 }; db.Orders.Add(o); db.Orders.Remove(o); " +
+            "var n = db.Orders.Local.Count; Spec.Assert(n == 0); } }"));
+
+        [Fact]
+        public void Local_OfTwoAdded_IsNotOne() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static void M() { using var db = new Shop(); db.Orders.Add(new Order { Total = 3 }); db.Orders.Add(new Order { Total = 4 }); " +
+            "var n = db.Orders.Local.Count; Spec.Assert(n <= 1); } }"));
+
+        [Fact]
+        public void Local_OfAContextPassedIn_IsUnknown() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static void M(Shop db) { var n = db.Orders.Local.Count; Spec.Assert(n == 0); } }"));
 
         // ---- transactions (CSV1035) ----
 

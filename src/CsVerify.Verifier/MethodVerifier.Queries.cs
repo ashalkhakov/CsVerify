@@ -252,7 +252,7 @@ namespace CsVerify.Verifier
                         Deref(op, x, inv.Syntax);
                         _sourceTypes[x.S] = type;
                     }
-                    else if (!_lazy.ContainsKey(x.S) && !_queries.ContainsKey(x.S) && GroupOf(x) == null && !_tables.ContainsKey(x.S)) return null; // (_queries: GroupJoin's matches)
+                    else if (!_lazy.ContainsKey(x.S) && !_queries.ContainsKey(x.S) && GroupOf(x) == null && !_tables.ContainsKey(x.S) && !_localViews.ContainsKey(x.S)) return null; // (_queries: GroupJoin's matches)
                 }
                 args.Add((p, x));
             }
@@ -424,6 +424,7 @@ namespace CsVerify.Verifier
             }
             if (GroupOf(t) is (GroupFamily family, Term key)) return family.ElementsOf(key);
             if (_tables.TryGetValue(t.S, out var table)) return new QSeq { Make = () => TableSequence(table, f), ElementType = table.Entity.Type };
+            if (_localViews.TryGetValue(t.S, out var local)) return new QSeq { Make = () => LocalSequence(local.context, local.entity, f), ElementType = local.entity.Type };
             if (!(_sourceTypes.TryGetValue(t.S, out var st) && Indexable(st))) st = type;
             if (st != null && Indexable(st))
                 return new QSeq { Make = () => ListSequence(t, st, f), ElementType = ElementOf(st) };
@@ -798,7 +799,7 @@ namespace CsVerify.Verifier
         private Sequence SequenceOfTerm(Term x, ITypeSymbol type, Frame f)
         {
             x = T.Coerce(x, Sort.Int);
-            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || _tables.ContainsKey(x.S) || type != null && Indexable(type))) return null;
+            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || _tables.ContainsKey(x.S) || _localViews.ContainsKey(x.S) || type != null && Indexable(type))) return null;
             var ctx = NewContext(null);
             return Guarded(() =>
             {

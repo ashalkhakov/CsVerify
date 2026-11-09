@@ -13,20 +13,23 @@ namespace CsVerify.Tests
                                       "using System.Threading; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore;\n";
 
         /// <summary>EF Core's assemblies, and what they build on (not a provider's).</summary>
-        public static List<string> EfReferences() => Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
-            .Where(p => Path.GetFileName(p).StartsWith("Microsoft.EntityFrameworkCore") || Path.GetFileName(p).StartsWith("Microsoft.Extensions."))
-            .Where(p => !Path.GetFileName(p).Contains("Sqlite") && !Path.GetFileName(p).Contains("SqlServer") && !Path.GetFileName(p).Contains("Design")).ToList();
+        public static List<string> EfReferences(bool sqlite = false) => Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
+            .Where(p => Path.GetFileName(p).StartsWith("Microsoft.EntityFrameworkCore") || Path.GetFileName(p).StartsWith("Microsoft.Extensions.") ||
+                        sqlite && Path.GetFileName(p).StartsWith("Microsoft.Data.Sqlite"))
+            .Where(p => sqlite || !Path.GetFileName(p).Contains("Sqlite"))
+            .Where(p => !Path.GetFileName(p).Contains("SqlServer") && !Path.GetFileName(p).Contains("Design")).ToList();
 
-        public static VerifierOptions Options(bool overflow = true)
+        /// <summary>The options: EF Core's assemblies, and SQLite's provider if asked for (a program that names it).</summary>
+        public static VerifierOptions Options(bool overflow = true, bool sqlite = false)
         {
             var options = new VerifierOptions { CheckOverflow = overflow };
-            options.References.AddRange(EfReferences());
+            options.References.AddRange(EfReferences(sqlite));
             return options;
         }
 
-        public static VerificationResult VerifyEf(string source, bool overflow = true)
+        public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
-            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow));
+            var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));
             Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
             return result;
         }

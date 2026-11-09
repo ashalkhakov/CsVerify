@@ -15,7 +15,8 @@ Read from the sources, as EF reads them:
 - **Unique values:** `[Index(..., IsUnique = true)]`, `HasIndex(...).IsUnique()`, `HasAlternateKey(...)`.
 - **Concurrency tokens:** `[ConcurrencyCheck]`, `IsConcurrencyToken()`; row versions: `[Timestamp]`, `IsRowVersion()`.
 - **Query filters:** `HasQueryFilter(x => ...)`.
-- **Navigations:** properties of an entity type, or of a collection of one.
+- **Navigations:** properties of an entity type, or of a collection of one, and their foreign keys
+  ([Tracking](#queries)).
 
 Fluent configuration is read in `OnModelCreating` and in `IEntityTypeConfiguration<T>.Configure`.
 
@@ -28,7 +29,11 @@ operators, and EF's `...Async` forms awaited where they are called, are read fro
 - no two have the same key, or the same value of a unique index;
 - each passes the entity's query filters, unless the query says `IgnoreQueryFilters()`;
 - strings are compared as the database compares them: an equivalence that equal strings satisfy, of which nothing
-  else is known. SQL Server's default collation ignores case and trailing spaces, SQLite's does not;
+  else is known. SQL Server's default collation ignores case and trailing spaces, SQLite's does not: where the only
+  providers the program names are SQLite and the in-memory one, and nothing sets a collation (`UseCollation`, a column
+  type with `COLLATE`, `EF.Functions.Collate`), strings compare as `==` does, and a join on strings is read like one
+  on integers. (This is of a database made from the model: one whose columns were given a collation elsewhere isn't
+  seen);
 - other code may have changed the table since the last run, so two runs needn't agree;
 - comparisons of what may be null mean what they do in C#, as EF makes them by default. With SQL's null semantics
   (`UseRelationalNulls()`, anywhere in the program), `==` and `!=` where either side is null are unknown: SQL's
@@ -39,7 +44,7 @@ So `Where`, `Count`, `Any` and `All` are exact, `SingleOrDefault(c => c.Email ==
 row when `Email` has a unique index, and a row a query gives passes its predicate.
 
 **Joins.** `Join` and `LeftJoin` on a key that the database and .NET compare alike (an integer, `bool`, an enum or a
-`Guid`, or one of those nullable) are read from their definitions: each pair has equal keys, a null key matches
+`Guid`, or one of those nullable; a string, where strings compare exactly) are read from their definitions: each pair has equal keys, a null key matches
 nothing (in SQL, and in LINQ to Objects), and a left join adds each row that matches none, with null for the other
 side. What a join, `SelectMany` or `Concat` gives is in no order of its sources
 (SQL Server's hash join doesn't keep a row's matches together): the verifier reads it in any order. So an order joined
@@ -53,8 +58,19 @@ var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)
 // row == null || row.Customer.Id == row.Order.CustomerId
 ```
 
-**Tracking.** Read with `AsNoTracking()`, the rows are new objects, and a navigation not `Include`d is null. If the
-method lets none of its entities out (to a field, to a call of the program's or a constructor, to a library call on
+**Tracking.** Read with `AsNoTracking()`, the rows are new objects, and so are what EF makes with them:
+- a reference navigation not `Include`d is null; a collection not included is as the entity's constructor left it,
+  empty where its initializer is an empty list (`= new List<Order>()`), null where there is none;
+- an included reference is the row its foreign key names, and not null when the key can't be null; an included
+  `List` holds only rows whose foreign key is this row's key. Each passes its type's query filters, unless the query
+  ignores them. Foreign keys are read as EF finds them: `HasOne(...).WithMany(...).HasForeignKey(...)` (or from
+  `HasMany`), `[ForeignKey]`, or EF's convention (`CustomerId` for a navigation `Customer` to a key `Id`), for a
+  principal of one key property; a navigation the configuration names otherwise (a principal key, by name,
+  `[InverseProperty]`, an owned type) has no claim;
+- an `Include` by name, or a filtered one (`Include(c => c.Orders.Where(...))`), says nothing of navigations, nor does
+  `AsNoTrackingWithIdentityResolution()`, whose navigations EF fixes up from the other rows it loads.
+
+If the method lets none of its entities out (to a field, to a call of the program's or a constructor, to a library call on
 something not local, to a lambda other than a query's), no other code reaches them: an `await` leaves their columns,
 concurrency tokens among them, as they were. Read with
 tracking, a row whose key the context already tracks is that instance, with its values as they are in memory, which
@@ -64,7 +80,7 @@ exact.
 
 **Not read from the definitions:** on a database, operators that compare values for equality (`Distinct`, `GroupBy`,
 `GroupJoin`, `Union`, `Intersect`, `Except`, `Contains`, `ToDictionary`), and joins on other keys (strings, by the
-database's collation; dates and floating point, by the column's precision), compare as the database does. They are library calls, which say nothing of what they give. So is `RightJoin`: EF Core applies the left side's
+database's collation elsewhere; dates and floating point, by the column's precision), compare as the database does. They are library calls, which say nothing of what they give. So is `RightJoin`: EF Core applies the left side's
 query filters to the joined rows, which drops the right side's rows that match none.
 
 **Reported:**
@@ -75,7 +91,8 @@ query filters to the joined rows, which drops the right side's rows that match n
   navigations and call what EF translates (operators, string, `Math` and date members, LINQ over navigations and over
   lists passed in); a method of the program, or a property computed in C# or `[NotMapped]`, makes EF throw when the
   query runs. What doesn't depend on the row is evaluated before the query is sent, so it may call anything, and so
-  may the final `Select`, which runs on the client.
+  may the final `Select`, which runs on the client. And an `Include` path that comes back to a type on it
+  (`Include(o => o.Customer).ThenInclude(c => c.Orders)`) in a query without tracking: EF refuses it.
 
 ## The change tracker
 
@@ -84,6 +101,11 @@ the verifier follows from call to call: `Add`, `Attach`, `Update`, `Remove`, `En
 `SaveChanges`, `Entry(e).Reload()`, `ChangeTracker.Clear()`, and a write of a tracked entity's field (which makes it
 modified). A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
 anything.
+
+Queries read the database, not the changes a context holds. `ctx.Orders.Local` is what it holds: each entity of the
+type it tracks and doesn't delete (unchanged, modified or added), once, as it is when the view is read, and LINQ over
+it is read from LINQ to Objects' definitions. So after `Add(o)` on a new context, `Local` holds `o` and nothing else;
+after `Remove(o)` of an added `o`, it is empty.
 
 **Reported:**
 - **CSV1033**, the tracker misused:
