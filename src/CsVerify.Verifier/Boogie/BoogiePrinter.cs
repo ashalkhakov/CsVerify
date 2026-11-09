@@ -121,12 +121,42 @@ namespace CsVerify.Verifier.Boogie
                         case "sel" when a.Length == 3 && op.Args[1] is KVar arr && cx.Elems != null && cx.Elems.TryGetValue(arr.Name, out var elems):
                             return $"{elems}[{a[2]}]";
                         case "sel": return a.Length == 2 ? $"{a[0]}[{a[1]}]" : $"{a[0]}[{a[1]}][{a[2]}]";
+                        case "store": return $"{a[0]}[{a[1]} := {a[2]}]";
+                        case "lambda": return $"(lambda {a[0]} :: {a[1]})";
+                        case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
                         default:
                             if (a.Length != 2) throw new NotTranslated("the kernel's operator " + op.Op);
                             return $"({a[0]} {op.Op} {a[1]})";
                     }
                 }
                 default: throw new NotTranslated("not printable: " + e.GetType().Name);
+            }
+        }
+
+        // ------------------------------------------------------------------ predicates
+
+        /// <summary>
+        /// Predicate instances: a type of their own, each predicate's a constructor of its arguments, injective (as its
+        /// inverses say) and of its own kind, none of them i#none (what owns an object no instance does).
+        /// </summary>
+        public void Instances(IEnumerable<IMethodSymbol> preds)
+        {
+            Line("type Inst;");
+            Line("const i#none: Inst;");
+            Line("function i#kind(q: Inst): int;");
+            Line("axiom i#kind(i#none) == 0;");
+            int kind = 0;
+            foreach (var p in preds.OrderBy(x => Checks.InstanceName(x), System.StringComparer.Ordinal))
+            {
+                kind++;
+                var name = Checks.InstanceName(p);
+                var xs = p.Parameters.Select((x, k) => (name: "x" + k, type: TypeOf(x.Type))).ToList();
+                Line($"function {name}({string.Join(", ", xs.Select(x => $"{x.name}: {x.type}"))}): Inst;");
+                for (int k = 0; k < xs.Count; k++) Line($"function {name}#{k}(q: Inst): {xs[k].type};");
+                var app = $"{name}({string.Join(", ", xs.Select(x => x.name))})";
+                var facts = new[] { $"i#kind({app}) == {kind}" }.Concat(xs.Select((x, k) => $"{name}#{k}({app}) == {x.name}"));
+                Line(xs.Count == 0 ? $"axiom {string.Join(" && ", facts)};"
+                    : $"axiom (forall {string.Join(", ", xs.Select(x => $"{x.name}: {x.type}"))} :: {{ {app} }} {string.Join(" && ", facts)});");
             }
         }
 
@@ -234,7 +264,12 @@ namespace CsVerify.Verifier.Boogie
                 if (NotNullable(m.ReturnType)) Line("  free ensures result != null;");
             }
             Line("{");
-            if (p.UsesPerm) Line("  var perm: [Ref]bool;");
+            if (p.UsesPerm)
+            {
+                Line("  var perm: [Ref]bool;");
+                Line("  var pinst: [Inst]int;");
+                Line("  var owner: [Ref]Inst;");
+            }
             // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too)
             foreach (var l in p.Locals)
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
@@ -299,6 +334,20 @@ namespace CsVerify.Verifier.Boogie
                 case KAssert a: Line($"    assert {(a.NotAssumedAfter ? "{:subsumption 0} " : "")}{E(a.Cond, cx)};", a.Check); return;
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
+                case KRaw raw: Line("    " + raw.Text); return;
+                case KCallFrame { After: false } frame:
+                    foreach (var x in new[] { "perm", "pinst", "owner", "$Alloc" }.Concat(frame.Maps)) Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
+                    return;
+                case KCallFrame frame:
+                {
+                    // (what the caller still holds, whole or folded into an instance it holds, the call couldn't change)
+                    var sn = "s" + frame.Id;
+                    var kept = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}) || {sn}$pinst[{sn}$owner[y]] >= 1)";
+                    Line("    havoc owner;");
+                    Line($"    assume (forall y: Ref :: {kept} ==> owner[y] == {sn}$owner[y]);");
+                    foreach (var map in frame.Maps) Line($"    assume (forall y: Ref :: {kept} ==> {map}[y] == {sn}{map}[y]);");
+                    return;
+                }
                 case KSnapshot snap:
                     if (snap.Frame.Maps.Count == 0) return;
                     foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps)) Line($"    s${snap.Frame.Head}{map} := {map};");

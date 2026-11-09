@@ -841,7 +841,15 @@ namespace CsVerify.Verifier
             foreach (var x in held.Except(included)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
             if (included.Count == 0) return null;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
-            try { failures = Boogie.BoogieRunner.Verify(translator, SmtSolver.FindZ3(engine.Options.Z3Path), engine.Options.TimeoutMs); }
+            try
+            {
+                // (once more if the run itself fails, as it can when the machine is loaded: talking to the solver times out)
+                try { failures = Boogie.BoogieRunner.Verify(translator, SmtSolver.FindZ3(engine.Options.Z3Path), engine.Options.TimeoutMs); }
+                catch (Exception first) when (!(first is InvalidOperationException))
+                {
+                    failures = Boogie.BoogieRunner.Verify(translator, SmtSolver.FindZ3(engine.Options.Z3Path), engine.Options.TimeoutMs * 2);
+                }
+            }
             catch (Exception e)
             {
                 foreach (var x in included)
@@ -849,7 +857,7 @@ namespace CsVerify.Verifier
                     RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + e.Message.Split('\n')[0], x.decl.GetLocation().GetLineSpan()));
                 }
-                return e.Message;
+                return e.GetType().Name + ": " + e.Message + "\n" + string.Join("\n", (e.StackTrace ?? "").Split('\n').Take(6));
             }
             foreach (var x in included)
             {

@@ -257,8 +257,38 @@ A call changes an `[Owned]` object's fields only where it holds the view: `this`
 makes. So a procedure that writes such a field ensures it unchanged at every other object allocated before:
 `free ensures (forall o: Ref :: old($Alloc[o]) && o != this && o != p$v ==> $F.C.f[o] == old($F.C.f[o]))`. Its
 preconditions are checked well-defined with the views' invariants assumed, as at entry. `v.Obj.Value` in a
-specification is the view's object. Not yet: ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read
-shares, `in` views, `Spec.Acc`, predicates, single-field and array-cell permissions, packages.
+specification is the view's object. `Own.ToAcc` and `Own.FromAcc` change nothing here: a view and `Spec.Acc` are one
+permission.
+
+**Predicates.** Viper's, over the same permissions (as [objects.md](objects.md#mutable-objects) describes them, and as
+Viper's Boogie backend, Carbon, encodes them). Instances are a type of their own, `Inst`, each `[Predicate]` an
+injective constructor of its arguments (`i$Seg(from, to, n)`). Beside `perm`, a procedure keeps `pinst: [Inst]int`, how
+many of each instance it holds, and `owner: [Ref]Inst`, which instance each folded object is in (`i#none`: none).
+- A permission assertion (a precondition, a postcondition, an invariant, a predicate's body) is read left to right:
+  `&&` and the branches of `?:` are followed, `Spec.Acc(o)` and instances are permissions under the condition they are
+  in, and the rest are facts. In the assertion as Boogie sees it, the permissions read as `true`.
+- Received (inhaled: a precondition at entry, a callee's postcondition after the call, an invariant at the loop head):
+  `Spec.Acc(o)` is an object not null, not already in hand and folded nowhere, now in hand, its invariant holding; an
+  instance's count goes up.
+- Given up (exhaled: a callee's precondition at the call, a postcondition at a return, an invariant on the way into the
+  loop's head): each must be in hand (CSV1016), an object's invariant holding (CSV1015).
+- `Spec.Fold(P(args))` exhales the body (its facts must hold: CSV1019), and its objects, and what the instances in it
+  own, are owned by the instance now. `Spec.Unfold` needs the instance (CSV1016) and inhales the body: its objects
+  come back (they were owned by it), its facts hold, and the rest of its footprint goes to one of the instances in it.
+- A call can change only what it was given. The caller snapshots, before the call, what it still holds (in hand, or
+  folded into an instance it holds) and assumes it unchanged after: the `[Owned]` field maps the callee writes, and
+  `owner`.
+- A loop that exchanges permissions (folds, unfolds, or calls what gives or takes them) has its invariant's go round
+  it: given up on the way in and on each back edge, received at the head with what was held outside it, and at each
+  back edge nothing held outside it may have been used up (CSV1016).
+- A predicate's body is checked where it is declared, as ghost code: read left to right, each field read needs a
+  `Spec.Acc` to its left (CSV1016), and each read is checked not null under the conditions before it.
+- As a condition elsewhere (`Spec.Assert(Seg(...))`), a permission means "in hand".
+
+Not yet: single-field (`Spec.Acc(o, nameof(C.F))`) and array-cell permissions (`Spec.Acc(a, i, j)`, `Spec.AccRead`),
+functions over predicates (a `[Pure]` or `[GhostFunction]` whose precondition holds a permission, which reads its
+footprint), ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read shares, `in` views, packages, and
+`Spec.Modifies` lending trees.
 
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
 `p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
@@ -322,9 +352,11 @@ reads, writes, lengths and allocation, fields, object creation, calls of each ot
 `Spec.Assume`; `[Pure]` and `[GhostFunction]` methods, lemmas, `Spec.Decreases`; and in specifications `Spec.Forall`,
 `Spec.Exists`, `Spec.Old`, `Spec.Result` and calls of functions.
 
-Also `ref` and `out` parameters, and `[Owned]` classes with their views and invariants.
+Also `ref` and `out` parameters, `[Owned]` classes with their views and invariants, `Spec.Acc` of objects, and
+predicates with `Spec.Fold` and `Spec.Unfold`.
 
-Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, predicates and `Spec.Acc`, virtual
+Not yet (such a method is verified by CsVerify's engine): single-field and array-cell permissions, functions over
+predicates, ownership trees, shares, virtual
 members, interfaces, inheritance, records (data types), generics, strings, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, permissions and views, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
@@ -346,9 +378,9 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 3. `foreach`, lambdas and delegates;
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
 5. frames (`Spec.Modifies`, `Spec.Reads`), and the library's stub contracts;
-6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants; next:
-   predicates and `Spec.Acc`, which most of the remaining samples use, then trees, shares, single-field and array-cell
-   permissions, packages);
+6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
+   objects, predicates; next: single-field and array-cell permissions, which most of the remaining samples use, then
+   functions over predicates, trees, shares, packages);
 7. locks, async and threads;
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.

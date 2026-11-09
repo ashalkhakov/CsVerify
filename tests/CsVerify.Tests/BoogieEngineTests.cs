@@ -183,6 +183,36 @@ public static class W
                 Assert.True(b[good].Verified, good);
         }
 
+        // (predicates, Viper style: Spec.Acc, instances, fold and unfold, permissions given and got by calls)
+        private const string Predicates = @"
+[Owned] public sealed class Cell { public int V; public Cell? Next; }
+public static class P
+{
+    [Predicate] public static bool One(Cell c) => c != null && Spec.Acc(c) && c.V >= 0;
+    [Predicate] public static bool Peeks(Cell c) => c != null && c.V > 0;
+    public static void Set(Cell c, int v) { Spec.Requires(v >= 0 && One(c)); Spec.Ensures(One(c)); Spec.Unfold(One(c)); c.V = v; Spec.Fold(One(c)); }
+    public static void SetBad(Cell c) { Spec.Requires(One(c)); Spec.Ensures(One(c)); Spec.Unfold(One(c)); c.V = -1; Spec.Fold(One(c)); }
+    public static void Keep(Cell a, Cell b) { Spec.Requires(One(a) && Spec.Acc(b)); Spec.Ensures(One(a) && Spec.Acc(b)); int before = b.V; Set(a, 1); Spec.Assert(b.V == before); }
+    public static void Twice(Cell a) { Spec.Requires(One(a)); Set(a, 1); Spec.Unfold(One(a)); Spec.Unfold(One(a)); }
+    public static int Read(Cell a) { Spec.Requires(One(a)); Spec.Ensures((int r) => r >= 0); Spec.Unfold(One(a)); return a.V; }
+    public static void NoAcc(Cell a) { Spec.Requires(a != null); Spec.Fold(One(a)); }
+    public static void Folded(Cell a) { Spec.Requires(One(a)); a.V = 2; }
+    public static void Given(Cell a) { Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a) && a.V == 3); a.V = 3; }
+    public static void Lost(Cell a) { Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a)); Given(a); Given(a); }
+}";
+
+        [Fact]
+        public void Predicates_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Predicates) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 11, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "P.Peeks", "P.SetBad", "P.Twice", "P.NoAcc", "P.Folded" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "P.One", "P.Set", "P.Keep", "P.Read", "P.Given", "P.Lost" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void Objects_BothEnginesReportTheSame()
         {

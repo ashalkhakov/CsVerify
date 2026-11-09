@@ -135,7 +135,47 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At, InstanceAt;
     }
 
+    /// <summary>Spec.Acc(Obj): (write) permission to an [Owned] object. A fact where permissions are given or got; else "in hand".</summary>
+    internal sealed class KAcc : KExpr
+    {
+        public KExpr Obj;
+        public ITypeSymbol Type;
+        public SyntaxNode At;
+    }
+
+    /// <summary>An instance of a [Predicate]: P(Args), its permissions folded into it.</summary>
+    internal sealed class KInst : KExpr
+    {
+        public IMethodSymbol Pred;
+        public KExpr[] Args;
+        public SyntaxNode At;
+    }
+
     // ------------------------------------------------------------------ statements
+
+    /// <summary>Spec.Fold(Inst) or Spec.Unfold(Inst).</summary>
+    internal sealed class KFold : KStmt
+    {
+        public KInst Inst;
+        public bool Unfold;
+        public SyntaxNode At, InstAt;
+    }
+
+    /// <summary>After Checks: around a call that exchanges permissions, the caller keeps what it still holds (the program says which maps).</summary>
+    internal sealed class KCallFrame : KStmt
+    {
+        public int Id;
+        public bool After;
+        public KExpr Receiver;
+        public IMethodSymbol Callee;
+        public List<string> Maps = new List<string>();
+    }
+
+    /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
+    internal sealed class KRaw : KStmt
+    {
+        public string Text;
+    }
 
     internal abstract class KStmt { }
 
@@ -327,6 +367,12 @@ namespace CsVerify.Verifier.Boogie
         public bool ThisIsView;
         /// <summary>It holds, gives or checks views: its permissions (perm, object to whether its view is in hand) are kept.</summary>
         public bool UsesPerm;
+        /// <summary>A [Predicate]: its body (FunctionBody, its arithmetic as code's) is checked self-framing, once.</summary>
+        public bool IsPredicate;
+        /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
+        public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
+        /// <summary>The predicates it names.</summary>
+        public HashSet<IMethodSymbol> Preds = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         /// <summary>The fields it reads or writes (their maps are declared).</summary>
         public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public List<KLocal> Locals = new List<KLocal>();

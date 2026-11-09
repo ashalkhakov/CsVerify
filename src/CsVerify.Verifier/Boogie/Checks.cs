@@ -85,7 +85,12 @@ namespace CsVerify.Verifier.Boogie
 
         private void Run()
         {
+            if (_p.IsPredicate) { RunPredicate(); return; }
             var m = _p.Method;
+            // (what the contract gives and takes: its permissions, read from the specifications as written)
+            _rawRequires = _p.Requires.Select(r => r.Expr).ToList();
+            _rawEnsures = _p.Ensures.Select(e => e.Expr).ToList();
+            _rawInvariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (i.Expr, i.At)).ToList());
             // the contract as mathematics (each with what makes it well-defined)
             var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
             var ensures = _p.Ensures.Select(e => (spec: e, math: Spec(e.Expr, out var wf), wf, facts: Take())).ToList();
@@ -113,11 +118,16 @@ namespace CsVerify.Verifier.Boogie
                 before.Add(r.math);
             }
 
+            _bodies = _p.Blocks.Select(b => new KBlock { Label = b.Label, Ordinal = b.Ordinal, Stmts = b.Stmts.ToList(), Jump = b.Jump }).ToList();
             foreach (var b in _p.Blocks)
             {
                 var stmts = b.Stmts;
                 b.Stmts = _out = new List<KStmt>();
-                if (b == _p.Blocks[0] && _p.UsesPerm) EnterOwned();
+                if (b == _p.Blocks[0] && _p.UsesPerm)
+                {
+                    EnterOwned();
+                    foreach (var r in _rawRequires) Inhale(r, null, null);
+                }
                 bool head = b.Label == $"b{b.Ordinal}";
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
                     foreach (var inv in invs)
@@ -128,6 +138,14 @@ namespace CsVerify.Verifier.Boogie
                     }
                 if (head && measures.TryGetValue(b.Ordinal, out var measure))
                     for (int k = 0; k < measure.Count; k++) Emit(new KAssign { Var = $"m${b.Ordinal}${k}", Value = measure[k] });
+                // a loop that exchanges permissions: what it holds at its head is what was held outside it, and its invariant's
+                if (head && Exchanges(b.Ordinal))
+                {
+                    Emit(new KAssign { Var = "perm", Value = new KVar($"l${b.Ordinal}$perm") });
+                    Emit(new KAssign { Var = "pinst", Value = new KVar($"l${b.Ordinal}$pinst") });
+                    Emit(new KHavoc { Var = "owner" });
+                    foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(b.Ordinal) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null);
+                }
                 foreach (var s in stmts) Statement(s, decreases);
                 switch (b.Jump)
                 {
@@ -135,6 +153,20 @@ namespace CsVerify.Verifier.Boogie
                         Return(ret, ensures);
                         break;
                     case KGoto g:
+                        foreach (var target in g.Targets)
+                            if (target.StartsWith("b") && int.TryParse(target.Substring(1), out var into) && Exchanges(into))
+                            {
+                                // the invariant's permissions go round the loop: given up on each way into its head
+                                foreach (var (inv, at) in _rawInvariants.GetValueOrDefault(into) ?? new List<(KExpr, SyntaxNode)>()) Exhale(inv, null, at, null);
+                                if (into > b.Ordinal)
+                                {
+                                    Emit(new KAssign { Var = $"l${into}$perm", Value = new KVar("perm") });
+                                    Emit(new KAssign { Var = $"l${into}$pinst", Value = new KVar("pinst") });
+                                }
+                                else
+                                    Assert(new KLit($"(forall y: Ref :: l${into}$perm[y] ==> perm[y]) && (forall q: Inst :: pinst[q] >= l${into}$pinst[q])"),
+                                        At("CSV1016", _p.LoopSyntax.GetValueOrDefault(into) ?? _p.Method.DeclaringSyntaxReferences[0].GetSyntax(), "the loop body might use up permissions held outside it (only its invariant's go round the loop)"));
+                            }
                         foreach (var target in g.Targets)
                             if (target.StartsWith("b") && int.TryParse(target.Substring(1), out var to) && to <= b.Ordinal && measures.TryGetValue(to, out var now))
                             {
@@ -180,6 +212,8 @@ namespace CsVerify.Verifier.Boogie
                             At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
             if (!m.ReturnsVoid && IsRef(m.ReturnType) && NotNullable(m.ReturnType))
                 Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable"));
+            // the permissions the postconditions give back are in hand
+            if (_p.UsesPerm) foreach (var e in _rawEnsures) Exhale(e, null, ret.At, null);
             var before = new List<KExpr>();
             foreach (var e in ensures)
             {
@@ -226,6 +260,16 @@ namespace CsVerify.Verifier.Boogie
                     Receive(o);
                     return;
                 }
+                case KOwn { Kind: "fromacc" } from:
+                {
+                    var o = Code(from.Obj);
+                    Assert(Held(o), At("CSV1016", from.At, $"'{from.At}' has no permission in hand to make a view of"));
+                    Emit(new KAssign { Var = from.View, Value = o });
+                    return;
+                }
+                case KFold fold:
+                    Fold(fold);
+                    return;
                 case KOwn { Kind: "drop" } drop:
                     Emit(new KMapUpdate { Map = "perm", Ref = Code(drop.Obj), Value = new KLit("false") });
                     return;
@@ -256,7 +300,12 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 case KSpecStmt ss:
                 {
-                    var term = Spec(ss.Spec, out var wf);
+                    // (a permission as a condition: in hand)
+                    _held = true;
+                    KExpr term;
+                    List<KExpr> wf;
+                    try { term = Spec(ss.Spec, out wf); }
+                    finally { _held = false; }
                     Facts();
                     WellDefined(wf, ss.ArgumentAt, null);
                     if (ss.Assume) Assume(term);
@@ -294,6 +343,13 @@ namespace CsVerify.Verifier.Boogie
                 Assert(Held(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
                 Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("false") });
             }
+            // the permissions its preconditions ask for are given to it; what the caller keeps, the call can't change
+            var sig = _program.Signature(callee);
+            var given = Given(callee, receiver, args);
+            bool pure = _program.ContractOf(callee).IsPure;
+            if (_p.UsesPerm && !pure) foreach (var r in sig.Requires) Exhale(r.Expr, given, c.At, null);
+            var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee } : null;
+            if (frame != null) Emit(frame);
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
             // and the views it gives back are in hand again, their invariants holding
@@ -305,6 +361,309 @@ namespace CsVerify.Verifier.Boogie
                 Receive(v);
             }
             if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
+            if (frame != null)
+            {
+                Emit(new KCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps });
+                // and those its postconditions give back are in hand (its result and ref and out arguments, as they came back)
+                var back = new Dictionary<string, KExpr>(given);
+                if (c.Result != null) back["result"] = new KVar(c.Result);
+                foreach (var (ordinal, var) in c.RefOuts) back[Local(callee.Parameters[ordinal])] = new KVar(var);
+                if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null);
+            }
+        }
+
+        // ------------------------------------------------------------------ permissions (Viper's, over perm, pinst and owner)
+
+        private List<KExpr> _rawRequires = new List<KExpr>(), _rawEnsures = new List<KExpr>();
+        private Dictionary<int, List<(KExpr expr, SyntaxNode at)>> _rawInvariants = new Dictionary<int, List<(KExpr, SyntaxNode)>>();
+        /// <summary>Reading a permission as a condition (Spec.Assert, Spec.Assume): in hand. Elsewhere it is given or got, and reads as true.</summary>
+        private bool _held;
+        private int _frames;
+
+        private static KExpr Instance(IMethodSymbol pred, KExpr[] args) =>
+            new KOp("inst", new[] { (KExpr)new KLit(InstanceName(pred)) }.Concat(args).ToArray());
+
+        public static string InstanceName(IMethodSymbol pred) => "i$" + Name(pred);
+
+        private static readonly KExpr None = new KLit("i#none");
+
+        private static KExpr Ite(KExpr c, KExpr a, KExpr b) => new KOp("ite", c, a, b);
+        private static KExpr Implies(KExpr g, KExpr c) => g is KLit { Text: "true" } ? c : new KOp("==>", g, c);
+        private static KExpr Conj(KExpr a, KExpr b) => a is KLit { Text: "true" } ? b : b is KLit { Text: "true" } ? a : new KOp("&&", a, b);
+
+        private static bool HasAtoms(KExpr e) => e switch
+        {
+            KAcc _ => true, KInst _ => true,
+            KOp op => op.Args.Any(HasAtoms),
+            _ => false,
+        };
+
+        /// <summary>
+        /// Walks a permission assertion left to right, as CsVerify's engine does: &amp;&amp; and the branches of ?: are
+        /// followed, each permission goes to <paramref name="atom"/> under the condition it holds in, every other part
+        /// is a fact. Its parameters given values by <paramref name="given"/>. Returns its facts, as a condition.
+        /// </summary>
+        private KExpr Walk(KExpr e, Dictionary<string, KExpr> given, KExpr guard, Action<KExpr, KExpr> atom, Action<KExpr, KExpr> fact)
+        {
+            KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return given == null ? v : Subst(v, given); }
+            switch (e)
+            {
+                case KOp { Op: "&&" } and:
+                {
+                    var l = Walk(and.Args[0], given, guard, atom, fact);
+                    var r = Walk(and.Args[1], given, Conj(guard, l), atom, fact);
+                    return Conj(l, r);
+                }
+                case KOp { Op: "ite" } ite when HasAtoms(ite.Args[1]) || HasAtoms(ite.Args[2]):
+                {
+                    var c = M(ite.Args[0]);
+                    var t = Walk(ite.Args[1], given, Conj(guard, c), atom, fact);
+                    var f = Walk(ite.Args[2], given, Conj(guard, new KOp("!", c)), atom, fact);
+                    return Ite(c, t, f);
+                }
+                case KAcc acc:
+                    atom(guard, new KAcc { Obj = M(acc.Obj), Type = acc.Type, At = acc.At });
+                    return new KLit("true");
+                case KInst inst:
+                    atom(guard, new KInst { Pred = inst.Pred, Args = inst.Args.Select(M).ToArray(), At = inst.At });
+                    return new KLit("true");
+                case KLit { Text: "true" }: return e;
+            }
+            if (HasAtoms(e)) throw new NotTranslated("a permission that isn't a conjunct, or in a branch of ?:");
+            var v = M(e);
+            fact?.Invoke(guard, v);
+            return v;
+        }
+
+        private void SetPerm(KExpr o, KExpr value) => Emit(new KAssign { Var = "perm", Value = new KOp("store", new KVar("perm"), o, value) });
+
+        private void AddInst(KExpr q, KExpr guard, int by) =>
+            Emit(new KAssign { Var = "pinst", Value = new KOp("store", new KVar("pinst"), q,
+                new KOp(by > 0 ? "+" : "-", new KOp("sel", new KVar("pinst"), q), Ite(guard, new KLit("1"), new KLit("0")))) });
+
+        /// <summary>Receives an assertion's permissions (a precondition at entry, a postcondition after a call, an invariant at a loop head).</summary>
+        private void Inhale(KExpr e, Dictionary<string, KExpr> given, KExpr _)
+        {
+            if (!HasAtoms(e)) return;
+            Walk(e, given, new KLit("true"), (g, a) =>
+            {
+                if (a is KAcc acc)
+                {
+                    // two whole permissions to one object can't both be in hand, and one in hand is folded nowhere
+                    Assume(Implies(g, new KOp("&&", new KOp("&&", new KOp("!=", acc.Obj, new KLit("null")), new KOp("!", Held(acc.Obj))),
+                                                  new KOp("==", new KOp("sel", new KVar("owner"), acc.Obj), None))));
+                    SetPerm(acc.Obj, new KOp("||", Held(acc.Obj), g));
+                    if (Invariant(acc.Type, acc.Obj) is KExpr inv) Assume(Implies(g, inv));
+                }
+                else
+                {
+                    var inst = (KInst)a;
+                    AddInst(Instance(inst.Pred, inst.Args), g, +1);
+                }
+            }, null);
+        }
+
+        /// <summary>Gives an assertion's permissions up (a callee's precondition at a call, a postcondition at a return, an invariant on the way into a loop's head): each must be in hand.</summary>
+        private void Exhale(KExpr e, Dictionary<string, KExpr> given, SyntaxNode at, KExpr _)
+        {
+            if (!HasAtoms(e)) return;
+            Walk(e, given, new KLit("true"), (g, a) =>
+            {
+                if (a is KAcc acc)
+                {
+                    Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"'{acc.At}' is needed here, but that permission is not in hand"));
+                    if (Invariant(acc.Type, acc.Obj) is KExpr inv)
+                        Assert(Implies(g, inv), At("CSV1015", at, $"invariant of {acc.Type.Name} might not hold when '{acc.At}' is given up"));
+                    SetPerm(acc.Obj, new KOp("&&", Held(acc.Obj), new KOp("!", g)));
+                }
+                else
+                {
+                    var inst = (KInst)a;
+                    var q = Instance(inst.Pred, inst.Args);
+                    Assert(Implies(g, new KOp(">=", new KOp("sel", new KVar("pinst"), q), new KLit("1"))), At("CSV1016", at, $"'{inst.At}' is needed here, but it is not held"));
+                    AddInst(q, g, -1);
+                }
+            }, null);
+        }
+
+        /// <summary>
+        /// Spec.Fold(P(args)): the body's permissions go into the instance (each in hand), its facts hold (CSV1019), its
+        /// objects' invariants too; their owner is the instance now, and so is that of what the instances in it own.
+        /// Spec.Unfold: the instance (held) gives them back, and its facts hold; the footprint splits among the instances in it.
+        /// </summary>
+        private void Fold(KFold fold)
+        {
+            var sig = _program.Signature(fold.Inst.Pred);
+            if (sig.FunctionBody == null) throw new NotTranslated("a predicate without a body");
+            var args = fold.Inst.Args.Select(a => { var v = Spec(a, out _); _facts.Clear(); return v; }).ToArray();
+            var given = fold.Inst.Pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
+            var p = Instance(fold.Inst.Pred, args);
+            var at = fold.At;
+            if (!fold.Unfold)
+            {
+                Walk(sig.FunctionBody, given, new KLit("true"), (g, a) =>
+                {
+                    if (a is KAcc acc)
+                    {
+                        Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"folding needs '{acc.At}', but that permission is not in hand here"));
+                        if (Invariant(acc.Type, acc.Obj) is KExpr inv)
+                            Assert(Implies(g, inv), At("CSV1015", at, $"invariant of {acc.Type.Name} might not hold when it is folded into '{fold.InstAt}'"));
+                        SetPerm(acc.Obj, new KOp("&&", Held(acc.Obj), new KOp("!", g)));
+                        Emit(new KAssign { Var = "owner", Value = new KOp("store", new KVar("owner"), acc.Obj, Ite(g, p, new KOp("sel", new KVar("owner"), acc.Obj))) });
+                    }
+                    else
+                    {
+                        var inst = (KInst)a;
+                        var q = Instance(inst.Pred, inst.Args);
+                        Assert(Implies(g, new KOp(">=", new KOp("sel", new KVar("pinst"), q), new KLit("1"))), At("CSV1016", at, $"folding needs '{inst.At}', which is not held here"));
+                        AddInst(q, g, -1);
+                        var y = new KVar("y$");
+                        Emit(new KAssign { Var = "owner", Value = new KOp("lambda", new KLit("y$: Ref"),
+                            Ite(Conj(g, new KOp("==", new KOp("sel", new KVar("owner"), y), q)), p, new KOp("sel", new KVar("owner"), y))) });
+                    }
+                }, (g, fact) => Assert(Implies(g, fact), At("CSV1019", at, $"'{fold.InstAt}' might not hold when folding it: its body's facts")));
+                AddInst(p, new KLit("true"), +1);
+                return;
+            }
+            Assert(new KOp(">=", new KOp("sel", new KVar("pinst"), p), new KLit("1")), At("CSV1016", at, $"'{fold.InstAt}' is not held here"));
+            AddInst(p, new KLit("true"), -1);
+            foreach (var (name, raw) in new[] { ("footprint$", "[Ref]Inst"), ("choice$", "[Ref]int") })
+                if (!_p.Locals.Any(l => l.Name == name)) _p.Locals.Add(new KLocal { Name = name, Raw = raw });
+            Emit(new KAssign { Var = "footprint$", Value = new KVar("owner") });
+            var own = new List<(KExpr g, KExpr o)>();
+            var nested = new List<(KExpr g, KExpr q)>();
+            Walk(sig.FunctionBody, given, new KLit("true"), (g, a) =>
+            {
+                if (a is KAcc acc)
+                {
+                    Assume(Implies(g, new KOp("&&", new KOp("&&", new KOp("!=", acc.Obj, new KLit("null")), new KOp("==", new KOp("sel", new KVar("footprint$"), acc.Obj), p)), new KOp("!", Held(acc.Obj)))));
+                    SetPerm(acc.Obj, new KOp("||", Held(acc.Obj), g));
+                    if (Invariant(acc.Type, acc.Obj) is KExpr inv) Assume(Implies(g, inv));
+                    own.Add((g, acc.Obj));
+                }
+                else
+                {
+                    var inst = (KInst)a;
+                    var q = Instance(inst.Pred, inst.Args);
+                    AddInst(q, g, +1);
+                    nested.Add((g, q));
+                }
+            }, (g, fact) => Assume(Implies(g, fact)));
+            // the footprint splits: the body's own objects are free now, the rest belongs to one of its instances
+            var yv = new KVar("y$");
+            KExpr Footprint(KExpr y) => new KOp("sel", new KVar("footprint$"), y);
+            if (nested.Count > 1) Emit(new KHavoc { Var = "choice$" });
+            KExpr to = None;
+            for (int k = nested.Count - 1; k >= 0; k--)
+            {
+                var pick = nested.Count > 1 ? Conj(nested[k].g, new KOp("==", new KOp("sel", new KVar("choice$"), yv), new KLit(k.ToString()))) : nested[k].g;
+                to = Ite(pick, nested[k].q, to);
+            }
+            foreach (var (g, o) in own) to = Ite(Conj(g, new KOp("==", yv, o)), None, to);
+            KExpr elsewhere = Footprint(yv);
+            if (nested.Count > 0)
+                elsewhere = Ite(nested.Select(n => (KExpr)new KOp("==", Footprint(yv), n.q)).Aggregate((a, b) => new KOp("||", a, b)), None, Footprint(yv));
+            Emit(new KAssign { Var = "owner", Value = new KOp("lambda", new KLit("y$: Ref"), Ite(new KOp("==", Footprint(yv), p), to, elsewhere)) });
+        }
+
+        /// <summary>Does the loop at this head exchange permissions (fold, unfold, or call what gives or takes them)?</summary>
+        private bool Exchanges(int head)
+        {
+            if (!_p.UsesPerm || !_p.LoopBodies.TryGetValue(head, out var last)) return false;
+            if (!_exchanges.TryGetValue(head, out var known))
+                _exchanges[head] = known = _bodies.Where(b => b.Ordinal >= head && b.Ordinal <= last).SelectMany(b => b.Stmts).Any(s =>
+                    s is KFold || s is KOwn { Kind: "fromacc" } ||
+                    s is KCall c && !_program.ContractOf(c.Callee).IsPure &&
+                    _program.Signature(c.Callee) is KProcedure sig && sig.Requires.Concat(sig.Ensures).Any(x => HasAtoms(x.Expr)));
+            if (known && !_p.Locals.Any(l => l.Name == $"l${head}$perm"))
+            {
+                _p.Locals.Add(new KLocal { Name = $"l${head}$perm", Raw = "[Ref]bool" });
+                _p.Locals.Add(new KLocal { Name = $"l${head}$pinst", Raw = "[Inst]int" });
+            }
+            return known;
+        }
+
+        private readonly Dictionary<int, bool> _exchanges = new Dictionary<int, bool>();
+        /// <summary>The blocks as Lowering made them (Exchanges reads the loops' statements before they are checked).</summary>
+        private List<KBlock> _bodies;
+
+        /// <summary>
+        /// A predicate's own check: its body read left to right, as code (its arithmetic and reads checked, each under
+        /// the conditions before it), each read of a field needing a Spec.Acc to its left (CSV1016).
+        /// </summary>
+        private void RunPredicate()
+        {
+            _out = _p.Blocks[0].Stmts;
+            Emit(new KAssign { Var = "perm", Value = new KLit("(lambda o: Ref :: false)") });
+            CWalk(_p.FunctionBody, new KLit("true"));
+            _p.FunctionBody = null;
+            _p.Obligations = _p.Blocks[0].Stmts.Count(s => s is KAssert a && a.Check != null);
+        }
+
+        private KExpr CWalk(KExpr e, KExpr guard)
+        {
+            switch (e)
+            {
+                case KOp { Op: "&&" } and:
+                {
+                    var l = CWalk(and.Args[0], guard);
+                    var r = CWalk(and.Args[1], Conj(guard, l));
+                    return Conj(l, r);
+                }
+                case KOp { Op: "||" } or:
+                {
+                    var l = CWalk(or.Args[0], guard);
+                    var r = CWalk(or.Args[1], Conj(guard, new KOp("!", l)));
+                    return new KOp("||", l, r);
+                }
+                case KOp { Op: "ite" } ite:
+                {
+                    var c = CWalk(ite.Args[0], guard);
+                    var t = CWalk(ite.Args[1], Conj(guard, c));
+                    var f = CWalk(ite.Args[2], Conj(guard, new KOp("!", c)));
+                    return Ite(c, t, f);
+                }
+                case KAcc acc:
+                {
+                    var o = CWalk(acc.Obj, guard);
+                    // (no permission to null is ever held)
+                    Assume(Implies(guard, new KOp("!=", o, new KLit("null"))));
+                    SetPerm(o, new KOp("||", Held(o), guard));
+                    return new KLit("true");
+                }
+                case KInst inst:
+                    foreach (var a in inst.Args) CWalk(a, guard);
+                    return new KLit("true");
+                case KOp op:
+                    return new KOp(op.Op, op.Args.Select(a => CWalk(a, guard)).ToArray());
+                case KLit _: case KVar _: return e;
+                case KField fd: return Guarded(guard, () => Code(new KField { Field = fd.Field, Instance = fd.Instance == null ? null : CWalk(fd.Instance, guard), OnThis = fd.OnThis, At = fd.At, InstanceAt = fd.InstanceAt }));
+                case KLen len: return Guarded(guard, () => Code(new KLen { Array = CWalk(len.Array, guard), At = len.At, ArrayAt = len.ArrayAt }));
+                case KArith ar: return Guarded(guard, () => Code(new KArith { Op = ar.Op, Left = CWalk(ar.Left, guard), Right = CWalk(ar.Right, guard), Type = ar.Type, Mode = ar.Mode, At = ar.At }));
+                default: throw new NotTranslated("in a predicate's body: " + e.GetType().Name);
+            }
+        }
+
+        /// <summary>Code's checks, each under the guard (where the code is evaluated at all).</summary>
+        private KExpr Guarded(KExpr guard, Func<KExpr> code)
+        {
+            var outer = _out;
+            _out = new List<KStmt>();
+            KExpr v;
+            try { v = code(); }
+            finally
+            {
+                var inner = _out;
+                _out = outer;
+                foreach (var s in inner)
+                    Emit(s switch
+                    {
+                        KAssert a => new KAssert { Cond = Implies(guard, a.Cond), Check = a.Check, NotAssumedAfter = a.NotAssumedAfter },
+                        KAssume a => new KAssume { Cond = Implies(guard, a.Cond) },
+                        _ => s,
+                    });
+            }
+            return v;
         }
 
         // ------------------------------------------------------------------ ownership
@@ -349,6 +708,9 @@ namespace CsVerify.Verifier.Boogie
         private void EnterOwned()
         {
             Emit(new KAssign { Var = "perm", Value = new KLit("(lambda o: Ref :: false)") });
+            // (no instances held yet: the preconditions bring them; who owns what is unknown)
+            Emit(new KAssign { Var = "pinst", Value = new KLit("(lambda q: Inst :: 0)") });
+            Emit(new KHavoc { Var = "owner" });
             if (_p.ThisIsView) Emit(new KMapUpdate { Map = "perm", Ref = new KVar("this"), Value = new KLit("true") });
             ViewsAtEntry(grant: true);
         }
@@ -457,6 +819,9 @@ namespace CsVerify.Verifier.Boogie
                     if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
                     var o = Code(fd.Instance);
                     if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fd.At, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
+                    // (in a predicate's body: read only what a Spec.Acc to its left holds, so it can't change while folded)
+                    if (_p.IsPredicate)
+                        Assert(Held(o), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
                     // (a non-nullable field of a built object: not this one's, while its constructor builds it)
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis)) Assume(new KOp("!=", v, new KLit("null")));
@@ -588,6 +953,16 @@ namespace CsVerify.Verifier.Boogie
                     var a = Spec(len.Array, wf, guard);
                     Need(new KOp("!=", a, new KLit("null")));
                     return new KOp("len", a);
+                }
+                case KAcc acc:
+                {
+                    var o = Spec(acc.Obj, wf, guard);
+                    return _held ? Held(o) : new KLit("true");
+                }
+                case KInst inst:
+                {
+                    var q = Instance(inst.Pred, inst.Args.Select(a => Spec(a, wf, guard)).ToArray());
+                    return _held ? new KOp(">=", new KOp("sel", new KVar("pinst"), q), new KLit("1")) : new KLit("true");
                 }
                 case KField fd:
                 {

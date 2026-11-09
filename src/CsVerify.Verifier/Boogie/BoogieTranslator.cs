@@ -64,7 +64,7 @@ namespace CsVerify.Verifier.Boogie
         public static bool Candidate(IMethodSymbol m, Contract c) =>
             (m.IsStatic ? m.MethodKind == MethodKind.Ordinary
                         : IsClass(m.ContainingType) && (m.MethodKind == MethodKind.Ordinary || m.MethodKind == MethodKind.Constructor) && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-            !m.IsAsync && !m.IsGenericMethod && !SpecSymbols.IsPredicate(m) &&
+            !m.IsAsync && !m.IsGenericMethod &&
             (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
             c.Modifies == null && c.Reads == null && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
             c.Ensures.All(e => e.Guard == null) && c.Bases.Count == 0;
@@ -73,7 +73,7 @@ namespace CsVerify.Verifier.Boogie
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !m.IsStatic && !IsClass(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a class outside the subset" :
             !m.IsStatic && (m.IsVirtual || m.IsAbstract || m.IsOverride) ? "virtual" :
-            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : SpecSymbols.IsPredicate(m) ? "[Predicate]" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
+            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Modifies != null ? "Spec.Modifies" : c.Reads != null ? "Spec.Reads" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
@@ -119,7 +119,8 @@ namespace CsVerify.Verifier.Boogie
         /// A [Pure] or [GhostFunction] method with a single expression for its body: a Boogie function too, which
         /// specifications call (as Dafny's functions, with fuel: one unfolding per use, as CsVerify's engine).
         /// </summary>
-        private bool IsFunction(IMethodSymbol m) => _procedures.Contains(m.OriginalDefinition) && ContractOf?.Invoke(m) is Contract c && c.IsPure && c.PureBody != null;
+        private bool IsFunction(IMethodSymbol m) => _procedures.Contains(m.OriginalDefinition) && !SpecSymbols.IsPredicate(m.OriginalDefinition) &&
+                                                     ContractOf?.Invoke(m) is Contract c && c.IsPure && c.PureBody != null;
 
         /// <summary>The fields each procedure's declaration names.</summary>
         private readonly Dictionary<IMethodSymbol, HashSet<ISymbol>> _fieldsRead = new Dictionary<IMethodSymbol, HashSet<ISymbol>>(SymbolEqualityComparer.Default);
@@ -170,12 +171,38 @@ namespace CsVerify.Verifier.Boogie
         {
             var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Fields), SymbolEqualityComparer.Default);
             foreach (var p in _pending.Where(p => p.FunctionBody != null)) fields.UnionWith(FieldsOf(p.Method));
+            // the predicates named, and those their bodies name
+            var preds = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Preds), SymbolEqualityComparer.Default);
+            for (var work = new Stack<IMethodSymbol>(preds); work.Count > 0;)
+            {
+                var pred = work.Pop();
+                // (a predicate whose body isn't translated: its procedure was refused, and so were those that name it)
+                IEnumerable<IMethodSymbol> inner;
+                try { inner = ((IProgramFacts)this).Signature(pred).Preds; }
+                catch (NotTranslated) { inner = Enumerable.Empty<IMethodSymbol>(); }
+                foreach (var q in inner)
+                    if (preds.Add(q)) work.Push(q);
+            }
+            if (_pending.Any(p => p.UsesPerm)) _printer.Instances(preds);
             _printer.Fields(fields);
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             OwnArrays();
-            foreach (var p in _pending.Where(p => p.FunctionBody != null)) _printer.Function(p, FunctionFields(p.Method), fields);
+            foreach (var p in _pending.Where(p => p.FunctionBody != null && !p.IsPredicate)) _printer.Function(p, FunctionFields(p.Method), fields);
             var writes = Closed(p => p.Modifies);
             var any = Closed(p => p.AnyWrites);
+            // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
+            foreach (var p in _pending)
+                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KCallFrame>().Where(f => !f.After))
+                {
+                    frame.Maps.AddRange((writes.TryGetValue(frame.Callee.OriginalDefinition, out var w) ? w : new HashSet<string>())
+                        .Where(_printer.OwnedMaps.Contains).OrderBy(x => x, StringComparer.Ordinal));
+                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$perm", Raw = "[Ref]bool" });
+                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$pinst", Raw = "[Inst]int" });
+                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$owner", Raw = "[Ref]Inst" });
+                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
+                    foreach (var map in frame.Maps)
+                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
+                }
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KLoopFrame>())
@@ -189,7 +216,7 @@ namespace CsVerify.Verifier.Boogie
                 }
             foreach (var p in _pending)
             {
-                _printer.Procedure(p, writes[p.Method], any[p.Method], p.FunctionBody != null ? FunctionFields(p.Method) : null);
+                _printer.Procedure(p, writes[p.Method], any[p.Method], p.FunctionBody != null && !p.IsPredicate ? FunctionFields(p.Method) : null);
                 Obligations[p.Result] = p.Obligations;
             }
             _pending.Clear();
@@ -202,7 +229,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void OwnArrays()
         {
-            var functions = _pending.Where(p => p.FunctionBody != null).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            var functions = _pending.Where(p => p.FunctionBody != null && !p.IsPredicate).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             var own = functions.Keys.ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             List<(int arg, string param, string map)> Of(IMethodSymbol m) =>
                 m.Parameters.Where(x => IsArray(x.Type)).Select(x => (x.Ordinal + (m.IsStatic ? 0 : 1), Local(x), Elements(x.Type))).ToList();

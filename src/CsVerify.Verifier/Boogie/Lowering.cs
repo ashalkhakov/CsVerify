@@ -52,11 +52,40 @@ namespace CsVerify.Verifier.Boogie
             var l = new Lowering(m, contract, null, null, null, _ => false, isFunction);
             foreach (var r in contract.Requires) l._p.Requires.Add(new KSpec { Expr = l.Spec(r, null), At = r.Syntax });
             if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
+            // (the permissions its postconditions give back, and a predicate's body, for folding and unfolding it)
+            foreach (var e in contract.Ensures) l._p.Ensures.Add(new KSpec { Expr = l.Spec(e.Expr, e.ResultParameter), At = e.Syntax });
+            if (SpecSymbols.IsPredicate(m) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
             return l._p;
         }
 
+        /// <summary>Does a specification name permissions (Spec.Acc, or a predicate)?</summary>
+        public static bool HasAtoms(IOperation op) =>
+            op != null && op.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i =>
+                SpecSymbols.IsPredicate(i.TargetMethod.OriginalDefinition) || SpecSymbols.IsSpecClass(i.TargetMethod.ContainingType) && i.TargetMethod.Name is "Acc" or "AccRead");
+
+        /// <summary>A predicate's own check: its body, its arithmetic as code's (checked), read left to right.</summary>
+        private KProcedure Predicate()
+        {
+            if (!_m.IsStatic || _m.ReturnType.SpecialType != SpecialType.System_Boolean || _contract.PureBody == null)
+                throw new NotTranslated("a [Predicate] that isn't a static bool method of one expression");
+            // (ghost code: its arithmetic is mathematical, its reads and divisions checked)
+            _p.IsPredicate = _p.UsesPerm = _p.Ghost = true;
+            _codeArith = true;
+            try { _p.FunctionBody = Spec(_contract.PureBody, null); }
+            finally { _codeArith = false; }
+            _p.Blocks.Add(new KBlock { Label = "b0", Ordinal = 0, Jump = new KStop() });
+            return _p;
+        }
+
+        /// <summary>In a predicate's own check: arithmetic is code's.</summary>
+        private bool _codeArith;
+
         private KProcedure Run()
         {
+            if (SpecSymbols.IsPredicate(_m)) return Predicate();
+            // (Viper's functions over predicates read their footprint: not yet)
+            if (_isFunction(_m) && _contract.Requires.Any(HasAtoms)) throw new NotTranslated("a function over a predicate");
+            _p.UsesPerm |= _contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr));
             var cfg = _model.GetOperation(_decl) switch
             {
                 IMethodBodyOperation body => ControlFlowGraph.Create(body),
@@ -70,6 +99,13 @@ namespace CsVerify.Verifier.Boogie
             if (_contract.Decreases != null) _p.Decreases = _contract.Decreases.Select(d => Spec(d, null)).ToList();
             if (_isFunction(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
             var heads = LoopHeads(cfg);
+            foreach (var h in heads)
+            {
+                var hb = cfg.Blocks[h];
+                var loop = (hb.BranchValue?.Syntax ?? hb.Operations.FirstOrDefault()?.Syntax)?.AncestorsAndSelf()
+                    .FirstOrDefault(n => n is ForStatementSyntax || n is WhileStatementSyntax || n is DoStatementSyntax || n is CommonForEachStatementSyntax);
+                if (loop != null) _p.LoopSyntax[h] = loop;
+            }
             foreach (var h in heads)
                 _p.LoopBodies[h] = cfg.Blocks.Where(x => new[] { x.FallThroughSuccessor, x.ConditionalSuccessor }.Any(s => s?.Destination?.Ordinal == h) && x.Ordinal >= h).Max(x => x.Ordinal);
             ReadLoopSpecs(cfg, heads);
@@ -196,6 +232,14 @@ namespace CsVerify.Verifier.Boogie
                     switch (inv.TargetMethod.Name)
                     {
                         case "Requires": case "Ensures": case "Invariant": case "Decreases": return; // (the contract; the loop heads)
+                        case "Fold": case "Unfold":
+                        {
+                            var whole = SpecArgument(inv);
+                            if (!(Spec(whole, null) is KInst instance)) throw new NotTranslated("Spec." + inv.TargetMethod.Name + " of what isn't a predicate instance");
+                            _p.UsesPerm = true;
+                            Emit(new KFold { Inst = instance, Unfold = inv.TargetMethod.Name == "Unfold", At = inv.Syntax, InstAt = whole.Syntax });
+                            return;
+                        }
                         case "Assert": case "Assume":
                             Emit(new KSpecStmt { Spec = Spec(SpecArgument(inv), null), Assume = inv.TargetMethod.Name == "Assume", At = inv.Syntax, ArgumentAt = inv.Arguments[0].Syntax });
                             return;
@@ -470,6 +514,12 @@ namespace CsVerify.Verifier.Boogie
         private static bool Upcast(IConversionOperation conv) =>
             conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
 
+        private static IOperation Unconverted(IOperation op)
+        {
+            while (op is IConversionOperation c && c.IsImplicit) op = c.Operand;
+            return op;
+        }
+
         private static bool RefOperand(IOperation op) => IsRef(op.Type) || op is IConversionOperation c && Upcast(c) && IsRef(c.Operand.Type);
 
         private static KExpr Constant(object v, ITypeSymbol type)
@@ -564,6 +614,16 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KOwn { Kind = "new", Obj = obj, View = view, Type = own.Arguments[0].Value.Type, At = own.Syntax });
                     return obj;
                 }
+                case "ToAcc" when IsView(own.Arguments[0].Value.Type):
+                    // (the view goes, its permission stays in hand: a view and Spec.Acc are one permission here)
+                    Expr(own.Arguments[0].Value);
+                    return null;
+                case "FromAcc" when IsOwnedClass(own.Arguments[0].Value.Type):
+                {
+                    var obj = Expr(own.Arguments[0].Value);
+                    Emit(new KOwn { Kind = "fromacc", Obj = obj, View = RefVariable(own.Arguments[1]), Type = own.Arguments[0].Value.Type, At = own.Syntax });
+                    return null;
+                }
                 case "Drop" when IsView(own.Arguments[0].Value.Type):
                     Emit(new KOwn { Kind = "drop", Obj = Expr(own.Arguments[0].Value), Type = ViewOf(own.Arguments[0].Value.Type), At = own.Syntax });
                     return null;
@@ -603,6 +663,7 @@ namespace CsVerify.Verifier.Boogie
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Spec(conv.Operand, result);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Spec(u.Operand, result));
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && _codeArith: return Arith("-", new KLit("0"), Spec(u.Operand, result), u.Type, u.Syntax, u.IsChecked);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus: return new KOp("-", new KLit("0"), Spec(u.Operand, result));
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Spec(u.Operand, result);
                 case IConditionalOperation c when c.WhenFalse != null:
@@ -613,6 +674,11 @@ namespace CsVerify.Verifier.Boogie
                     var r = Spec(b.RightOperand, result);
                     return b.OperatorKind switch
                     {
+                        BinaryOperatorKind.Add when _codeArith => Arith("+", l, r, b.Type, b.Syntax, b.IsChecked),
+                        BinaryOperatorKind.Subtract when _codeArith => Arith("-", l, r, b.Type, b.Syntax, b.IsChecked),
+                        BinaryOperatorKind.Multiply when _codeArith => Arith("*", l, r, b.Type, b.Syntax, b.IsChecked),
+                        BinaryOperatorKind.Divide when _codeArith => Arith("/", l, r, b.Type, b.Syntax, b.IsChecked),
+                        BinaryOperatorKind.Remainder when _codeArith => Arith("%", l, r, b.Type, b.Syntax, b.IsChecked),
                         BinaryOperatorKind.Add => new KOp("+", l, r),
                         BinaryOperatorKind.Subtract => new KOp("-", l, r),
                         BinaryOperatorKind.Multiply => new KOp("*", l, r),
@@ -636,6 +702,17 @@ namespace CsVerify.Verifier.Boogie
                     return new KElem { Array = Spec(el.ArrayReference, result), Index = Spec(el.Indices[0], result), ArrayType = el.ArrayReference.Type, InSpec = true, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax };
                 case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(pr.Instance?.Type):
                     return new KLen { Array = Spec(pr.Instance, result), InSpec = true, At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
+                case IInvocationOperation acc when SpecSymbols.IsSpecClass(acc.TargetMethod.ContainingType) && acc.TargetMethod.Name == "Acc" &&
+                                                   acc.Arguments.Length == 1 && IsOwnedClass(Unconverted(acc.Arguments[0].Value).Type):
+                {
+                    var target = Unconverted(acc.Arguments[0].Value);
+                    _p.UsesPerm = true;
+                    return new KAcc { Obj = Spec(target, result), Type = target.Type, At = acc.Syntax };
+                }
+                case IInvocationOperation pc when SpecSymbols.IsPredicate(pc.TargetMethod.OriginalDefinition) && pc.TargetMethod.IsStatic:
+                    _p.UsesPerm = true;
+                    _p.Preds.Add(pc.TargetMethod.OriginalDefinition);
+                    return new KInst { Pred = pc.TargetMethod.OriginalDefinition, Args = pc.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = pc.Syntax };
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
