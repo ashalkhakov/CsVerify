@@ -208,6 +208,9 @@ namespace CsVerify.Verifier
             if (ListModels && Ef.Entities.Any(e => e.Collections.Any(MadeAsList)))
                 foreach (var model in new[] { ListModel("Items"), ListModel("Size") })
                     columns.Add((model, FieldMap(f, model)));
+            if (Ef.Entities.Any(e => e.Collections.Any(MadeAsSet)))
+                foreach (var model in new[] { SetModel("Members"), SetModel("Size") })
+                    columns.Add((model, FieldMap(f, model)));
             return columns;
         }
 

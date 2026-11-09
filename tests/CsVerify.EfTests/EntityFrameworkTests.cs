@@ -338,6 +338,26 @@ public sealed class Shop : DbContext
             "public sealed class Shelf { public int Id { get; set; } public IList<Item> Items { get; set; } = null!; }\n" +
             "public sealed class Room : DbContext { public DbSet<Bag> Bags => Set<Bag>(); public DbSet<Shelf> Shelves => Set<Shelf>(); public DbSet<Item> Items => Set<Item>(); }\n";
 
+        private const string Posts =
+            "public sealed class Tag { public int Id { get; set; } public int PostId { get; set; } public bool Hidden { get; set; } }\n" +
+            "public sealed class Post { public int Id { get; set; } public HashSet<Tag> Tags { get; set; } = new HashSet<Tag>(); }\n" +
+            "public sealed class Blog : DbContext { public DbSet<Post> Posts => Set<Post>(); public DbSet<Tag> Tags => Set<Tag>(); " +
+            "protected override void OnModelCreating(ModelBuilder b) { b.Entity<Tag>().HasQueryFilter(t => !t.Hidden); } }\n";
+
+        [Fact]
+        public void Include_AHashSet_HoldsTheRowsWithThisKey() => Assert.Empty(Errors("M", Posts +
+            "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().Include(p => p.Tags).ToListAsync(); " +
+            "if (r.Count == 0) return; var p = r[0]; foreach (var t in p.Tags) Spec.Assert(t.PostId == p.Id && !t.Hidden); } }"));
+
+        [Fact]
+        public void Collection_AHashSetNotIncluded_IsEmpty() => Assert.Empty(Errors("M", Posts +
+            "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Tags.Count == 0)); } }"));
+
+        [Fact]
+        public void Include_AHashSet_SaysNothingElse() => Assert.NotEmpty(Errors("M", Posts +
+            "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().Include(p => p.Tags).ToListAsync(); " +
+            "if (r.Count == 0) return; var p = r[0]; foreach (var t in p.Tags) Spec.Assert(t.Id == p.Id); } }"));
+
         [Fact]
         public void Include_AnIList_HoldsTheRowsWithThisKey() => Assert.Empty(Errors("M", Interfaces +
             "public static class C { public static async Task M(Room db) { var r = await db.Shelves.AsNoTracking().Include(b => b.Items).ToListAsync(); " +

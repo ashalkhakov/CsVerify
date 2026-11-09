@@ -189,6 +189,33 @@ namespace CsVerify.Verifier
         private static bool Indexable(ITypeSymbol t) =>
             IsListType(t) || t is IArrayTypeSymbol a && a.Rank == 1 || IsIndexedListInterface(t);
 
+        private static bool IsSetType(ITypeSymbol t) => t?.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.HashSet<T>";
+
+        /// <summary>CsVerify.Bcl's model function of a HashSet: Members or Size.</summary>
+        private IMethodSymbol SetModel(string name) =>
+            _engine.Models.FirstOrDefault(m => m.Name == name && m.Parameters.Length == 1 && IsSetType(m.Parameters[0].Type));
+
+        /// <summary>Is z a member of the set whose Members map is <paramref name="members"/>?</summary>
+        private Term SetMember(Term members, Term z, ITypeSymbol element) =>
+            T.Not(T.Eq(T.Select(members, KeyOf(z, element), Sort.Int), T.Int(0)));
+
+        /// <summary>
+        /// A HashSet as LINQ and a foreach read it: its Size elements, each a member and no member twice, in the order
+        /// its enumerator gives (one of the set's as it is now, of which nothing else is known). Null without its models.
+        /// </summary>
+        private Sequence SetSequence(Term x, ITypeSymbol type, Frame f)
+        {
+            if (!(SetModel("Members") is IMethodSymbol members) || !(SetModel("Size") is IMethodSymbol size)) return null;
+            var element = ElementOf(type);
+            x = Named(T.Coerce(x, Sort.Int), "set");
+            var m = Named(ModelAt(members, new[] { x }, f), "members"); // (a constant: it is in the pattern)
+            var n = T.Coerce(ModelAt(size, new[] { x }, f), Sort.Int);
+            Term El(Term i) => _z3.Apply("set.element", Sort.Int, new[] { x, T.Coerce(i, Sort.Int), m });
+            Term Idx(Term z) => _z3.Apply("set.index", Sort.Int, new[] { x, T.Coerce(z, Sort.Int), m });
+            AssumeSide(OverIndices("forall", T.Int(0), n, i => T.And(SetMember(m, El(i), element), T.Eq(Idx(El(i)), i)), El));
+            return new Sequence { Length = n, Element = i => InRangeOf(T.Coerce(El(i), SortOf(element)), element), ElementType = element };
+        }
+
         private static ITypeSymbol ElementOf(ITypeSymbol t) =>
             t is IArrayTypeSymbol a ? a.ElementType : ((INamedTypeSymbol)t).TypeArguments[0];
 

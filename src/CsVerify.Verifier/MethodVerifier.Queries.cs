@@ -247,7 +247,7 @@ namespace CsVerify.Verifier
                     // a source: a query, a group, or what the verifier indexes
                     var type = Unconverted(op).Type;
                     x = T.Coerce(x, Sort.Int);
-                    if (Indexable(type))
+                    if (Indexable(type) || IsSetType(type))
                     {
                         Deref(op, x, inv.Syntax);
                         _sourceTypes[x.S] = type;
@@ -425,7 +425,9 @@ namespace CsVerify.Verifier
             if (GroupOf(t) is (GroupFamily family, Term key)) return family.ElementsOf(key);
             if (_tables.TryGetValue(t.S, out var table)) return new QSeq { Make = () => TableSequence(table, f), ElementType = table.Entity.Type };
             if (_localViews.TryGetValue(t.S, out var local)) return new QSeq { Make = () => LocalSequence(local.context, local.entity, f), ElementType = local.entity.Type };
-            if (!(_sourceTypes.TryGetValue(t.S, out var st) && Indexable(st))) st = type;
+            if (!(_sourceTypes.TryGetValue(t.S, out var st) && (Indexable(st) || IsSetType(st)))) st = type;
+            if (st != null && IsSetType(st))
+                return new QSeq { Make = () => SetSequence(t, st, f) ?? throw new NotQuery("a set without its models"), ElementType = ElementOf(st) };
             if (st != null && Indexable(st))
                 return new QSeq { Make = () => ListSequence(t, st, f), ElementType = ElementOf(st) };
             throw new NotQuery("a source the verifier does not read");
@@ -799,7 +801,8 @@ namespace CsVerify.Verifier
         private Sequence SequenceOfTerm(Term x, ITypeSymbol type, Frame f)
         {
             x = T.Coerce(x, Sort.Int);
-            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || _tables.ContainsKey(x.S) || _localViews.ContainsKey(x.S) || type != null && Indexable(type))) return null;
+            if (!(_lazy.ContainsKey(x.S) || _queries.ContainsKey(x.S) || GroupOf(x) != null || _tables.ContainsKey(x.S) || _localViews.ContainsKey(x.S) ||
+                  type != null && (Indexable(type) || IsSetType(type)) || _sourceTypes.TryGetValue(x.S, out var known) && IsSetType(known))) return null;
             var ctx = NewContext(null);
             return Guarded(() =>
             {
@@ -838,6 +841,7 @@ namespace CsVerify.Verifier
         private ITypeSymbol ViewForEachElement(IOperation collection)
         {
             var op = Unconverted(collection);
+            if (IsSetType(op.Type)) return ElementOf(op.Type); // (a set: its members, in the order its enumerator gives)
             var call = ViewCall(op);
             if (call == null && Unconverted(_model.GetOperation(op.Syntax) ?? op) is IPropertyReferenceOperation { Property.ContainingType.IsAnonymousType: true } && IsSequenceType(op.Type))
                 return ((INamedTypeSymbol)op.Type).TypeArguments[0]; // (GroupJoin's matches carried in new { x, ys }: read if a query)
@@ -862,7 +866,7 @@ namespace CsVerify.Verifier
                 if (IsSequenceType(p.Type) || receiver && k == 0)
                 {
                     var s = Unconverted(op);
-                    if (!(Indexable(s.Type) || ReadableView(ViewCall(s)))) return false;
+                    if (!(Indexable(s.Type) || IsSetType(s.Type) || ReadableView(ViewCall(s)))) return false;
                 }
             }
             return true;

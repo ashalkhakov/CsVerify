@@ -25,7 +25,15 @@ namespace CsVerify.Tests
             public string Name { get; set; } = "";
             public List<Order> Orders { get; set; } = new List<Order>();
             public Address Address { get; set; } = new Address();
+            public HashSet<Note> Notes { get; set; } = new HashSet<Note>();
             public string Display => Name + " <" + Email + ">";
+        }
+
+        public sealed class Note
+        {
+            public int Id { get; set; }
+            public int CustomerId { get; set; }
+            public string Text { get; set; } = "";
         }
 
         public sealed class Address
@@ -71,6 +79,7 @@ namespace CsVerify.Tests
             public DbSet<Order> Orders => Set<Order>();
             public DbSet<Line> Lines => Set<Line>();
             public DbSet<Animal> Animals => Set<Animal>();
+            public DbSet<Note> Notes => Set<Note>();
             protected override void OnConfiguring(DbContextOptionsBuilder o) => _configure(o);
             protected override void OnModelCreating(ModelBuilder b)
             {
@@ -111,6 +120,7 @@ namespace CsVerify.Tests
                                new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
             db.SaveChanges();
             db.Lines.AddRange(new Line { OrderId = 1, No = 2, Qty = 5 }, new Line { OrderId = 2, No = 1, Qty = 7 });
+            db.Notes.AddRange(new Note { CustomerId = 1, Text = "a" }, new Note { CustomerId = 1, Text = "b" }, new Note { CustomerId = 2, Text = "c" });
             db.Animals.AddRange(new Dog { Name = "Rex", Barks = 3 }, new Cat { Name = "Tom", Lives = 9 }, new Dog { Name = "Old", Gone = true });
             db.SaveChanges();
         }
@@ -248,6 +258,16 @@ namespace CsVerify.Tests
             Assert.All(cs, c => Assert.All(c.Orders, o => Assert.Same(c, o.Customer)));
             var lines = db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Address).ToList();
             Assert.All(lines, o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+        }
+
+        [Fact]
+        public void Include_AHashSet_HoldsTheRowsWithThisKey_AndNotIncludedIsEmpty()
+        {
+            using var db = New();
+            var cs = db.Customers.AsNoTracking().Include(c => c.Notes).ToList();
+            Assert.All(cs, c => Assert.All(c.Notes, n => Assert.Equal(c.Id, n.CustomerId)));
+            Assert.Contains(cs, c => c.Notes.Count == 2);
+            Assert.All(db.Customers.AsNoTracking().ToList(), c => Assert.Empty(c.Notes));
         }
 
         [Fact]

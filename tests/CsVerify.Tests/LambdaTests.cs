@@ -198,6 +198,28 @@ public static class P
         }
 
         [Fact]
+        public void Sets_AreReadAsTheirMembers_InSomeOrder()
+        {
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Collections.Generic;
+using System.Linq;
+public static class P
+{
+    public static void ForEach() { var s = new HashSet<int>(); s.Add(3); s.Add(5); foreach (var x in s) Spec.Assert(x == 3 || x == 5); }
+    public static bool All() { Spec.Ensures<bool>(r => r); var s = new HashSet<int>(); s.Add(3); s.Add(5); return s.All(x => x > 2); }
+    public static int Count() { Spec.Ensures<int>(r => r == 2); var s = new HashSet<int>(); s.Add(3); s.Add(5); s.Add(3); return s.Count(); }
+    public static void Members(HashSet<int> s) { foreach (var x in s) Spec.Assert(s.Contains(x)); }
+    public static void WrongForEach() { var s = new HashSet<int>(); s.Add(3); s.Add(5); foreach (var x in s) Spec.Assert(x == 3); }
+    public static int WrongFirst() { Spec.Ensures<int>(r => r == 3); var s = new HashSet<int>(); s.Add(3); s.Add(5); return s.First(); }
+}", overflow: false);
+            foreach (var m in new[] { "ForEach", "All", "Count", "Members" })
+                Assert.True(r.Errors("P." + m).Length == 0, r.Explain("P." + m));
+            foreach (var m in new[] { "WrongForEach", "WrongFirst" })
+                Assert.NotEmpty(r.Errors("P." + m));
+        }
+
+        [Fact]
         public void Views_ZipJoinThenBy()
         {
             var r = Harness.Verify(@"

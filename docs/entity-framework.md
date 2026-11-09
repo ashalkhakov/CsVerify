@@ -68,8 +68,8 @@ var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)
 - a reference navigation not `Include`d is null; a collection not included is as the entity's constructor left it,
   empty where its initializer is an empty list (`= new List<Order>()`), null where there is none;
 - an included reference is the row its foreign key names, and not null when the key can't be null; an included
-  `List` (or `IList`, or another collection interface whose initializer makes a `List`) holds only rows whose foreign
-  key is this row's key. Each passes its type's query filters, unless the query ignores them. So does each level an
+  `List` (or `IList`, or another collection interface whose initializer makes a `List`) or `HashSet` holds only rows
+  whose foreign key is this row's key. Each passes its type's query filters, unless the query ignores them. So does each level an
   `Include` path loads (`Include(o => o.Lines).ThenInclude(l => l.Product)`). Foreign keys are read as EF finds them:
   `HasOne(...).WithMany(...).HasForeignKey(...)` (or from `HasMany`), `[ForeignKey]`, or EF's convention (`CustomerId`
   for a navigation `Customer` to a key `Id`; the principal's name and its key's, for a collection with no navigation
@@ -85,8 +85,10 @@ something not local, to a lambda other than a query's), no other code reaches th
 concurrency tokens among them, as they were. Read with
 tracking, a row whose key the context already tracks is that instance, with its values as they are in memory, which
 may not be the database's: so what the query says of its rows is known only when the context tracked no entity of
-that type before it. Then an included reference is the row its foreign key names (or null); of what else the context
-tracks, which EF fixes navigations up from, nothing is said. `Count`, `Any` and the like, and projections of columns, return no entities and are always
+that type before it. Then an included reference is the row its foreign key names (or null). When it tracked none of
+the types the `Include` paths load either, every level is the database's, as without tracking; after the query, whether
+the context tracks an entity of those types it didn't before isn't known. Of what else a context tracks, which EF
+fixes navigations up from, nothing is said. `Count`, `Any` and the like, and projections of columns, return no entities and are always
 exact.
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
@@ -177,7 +179,7 @@ the caller's own save after a helper's is a second one outside a transaction.
   the two differ (collation, overflow in a query, overlapping operations), the model claims only what both do. Joins,
   groups and set operators are checked there against LINQ to Objects.
 - Raw SQL (`FromSql`, `ExecuteSql`) is a library call.
-- A `HashSet` navigation, and an `ICollection` one EF makes a `HashSet`, have no claim; LINQ over an `ICollection`
-  that isn't an `IList` is a library call anyway.
+- An `ICollection` navigation EF makes a `HashSet` (one without an initializer) has no claim: what is read through
+  `ICollection` isn't followed to the set it is. Declare it `HashSet<T>` to have one.
 - String members inside a query (`Contains`, `ToUpper`, `Length`...) translate, but their values are unknown: SQL
   Server's and .NET's differ.

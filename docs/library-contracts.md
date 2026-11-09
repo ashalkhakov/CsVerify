@@ -270,6 +270,8 @@ These make views too, read the same way:
   with a result selector, `(k, g) => ...` is applied to each key and group, and may read the group (`g.Count()`).
 - `GroupJoin(inner, x => key, y => key, (x, ys) => ...)`: for each outer element in order, the selector applied to it
   and its matches, the inner elements with an equal key (not null), in order.
+- A `HashSet<T>` as a source (and in a `foreach` that changes nothing): its `Count` elements, each a member and none
+  twice, in the order its enumerator gives, of which nothing else is known.
 - `Concat`, `Reverse`, `Append`, `Prepend`, `DefaultIfEmpty`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`,
   `Where` and `SelectMany` with an index, `Index`, and `Zip(other)` into tuples `(First, Second)`.
 - `DistinctBy`, and the set operations `Union`, `Intersect`, `Except` (and their `By` forms): each value (key) once,

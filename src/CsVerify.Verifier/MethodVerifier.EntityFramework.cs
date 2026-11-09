@@ -562,6 +562,12 @@ namespace CsVerify.Verifier
                         }, pattern: j => T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int)));
                     };
                 }
+                else if (e.Collections.Contains(nav) && MadeAsSet(nav) && e.CollectionKeys.TryGetValue(nav, out var sfk) && e.Key.Count == 1 &&
+                         Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity sd)
+                {
+                    child = sd;
+                    fact = y => SetHolds(t, T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int), sd, sfk, e.Key[0], y, next, f);
+                }
                 if (fact == null) continue;
                 _madeBelow?.Add((loaded, y => T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int)));
                 var each = ForEachObject(loaded, fact);
@@ -650,6 +656,28 @@ namespace CsVerify.Verifier
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r) && FieldEffects.IsHeapField(r) && e.ForeignKeys.ContainsKey(r)))
                 Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
             if (!ListModels) { Allocated(); return; }
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && MadeAsSet(c) &&
+                (t.Includes.Contains(c) || EmptyListInitializer(c) == true && !loadedTypes.Contains(EfModel.NavigationTarget(c.Type, out _)?.OriginalDefinition))))
+                Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && MadeAsSet(c)))
+            {
+                var d = Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _));
+                if (d == null) continue;
+                if (!t.Includes.Contains(nav))
+                {
+                    if (!loadedTypes.Contains(d.Type.OriginalDefinition) && EmptyListInitializer(nav) is bool empty)
+                        AssumeSide(OverIndices("forall", T.Int(0), n, i =>
+                        {
+                            var l = T.Coerce(T.Select(FieldMap(f, nav), Row(i), Sort.Int), Sort.Int);
+                            return empty ? SetEmpty(l, f) : T.Not(NotNull(l));
+                        }, Row));
+                    continue;
+                }
+                if (!e.CollectionKeys.TryGetValue(nav, out var fk) || e.Key.Count != 1) continue;
+                var deeper = Next(nav);
+                AssumeSide(OverIndices("forall", T.Int(0), n, i =>
+                    SetHolds(t, T.Coerce(T.Select(FieldMap(f, nav), Row(i), Sort.Int), Sort.Int), d, fk, e.Key[0], Row(i), deeper, f), Row));
+            }
             foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && MadeAsList(c) &&
                 (t.Includes.Contains(c) || EmptyListInitializer(c) == true && !loadedTypes.Contains(EfModel.NavigationTarget(c.Type, out _)?.OriginalDefinition))))
                 Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
@@ -691,6 +719,28 @@ namespace CsVerify.Verifier
             while (init is Microsoft.CodeAnalysis.CSharp.Syntax.PostfixUnaryExpressionSyntax bang && bang.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression)) init = bang.Operand;
             return init is Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax l && (l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression) || l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.DefaultLiteralExpression));
         }
+
+        /// <summary>A HashSet navigation (as declared): its members are what EF loads, or what its initializer made.</summary>
+        private bool MadeAsSet(IPropertySymbol nav) => IsSetType(nav.Type) && SetModel("Members") != null && SetModel("Size") != null;
+
+        /// <summary>
+        /// The set l holds only rows of d whose foreign key is the principal's key, each through d's filters (and
+        /// <paramref name="next"/> of each, for what a path loads below it).
+        /// </summary>
+        private Term SetHolds(DbTable t, Term l, EfModel.Entity d, IPropertySymbol fk, IPropertySymbol key, Term principal, System.Func<Term, Term> next, Frame f)
+        {
+            var members = T.Select(FieldMap(f, SetModel("Members")), l, Sort.Row);
+            var zn = _z3.FreshName("z");
+            var z = new Term(zn, Sort.Int);
+            var member = SetMember(members, z, d.Type);
+            var each = T.And(NotNull(z), IsEntity(z, d), ForeignKeyMatches(fk, z, key, principal, f) ?? T.True, Filtered(t, d, z, f), next != null ? next(z) : T.True);
+            return T.And(NotNull(l), new Term($"(forall (({zn} Int)) (! (=> {member.S} {each.S}) :pattern ({T.Select(members, z, Sort.Int).S})))", Sort.Bool));
+        }
+
+        /// <summary>A set made empty: no members, size 0.</summary>
+        private Term SetEmpty(Term l, Frame f) =>
+            T.And(NotNull(l), T.Eq(T.Coerce(ModelAt(SetModel("Size"), new[] { l }, f), Sort.Int), T.Int(0)),
+                  T.Eq(T.Select(FieldMap(f, SetModel("Members")), l, Sort.Row), T.ConstRow(T.Int(0))));
 
         /// <summary>A List, not an array: what reading it through IList or ICollection goes by.</summary>
         private Term AsList(Term l) => T.And(IsListObject(l), T.Not(IsArrayObject(l)));
