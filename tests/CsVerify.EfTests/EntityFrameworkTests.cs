@@ -511,6 +511,55 @@ public sealed class Shop : DbContext
         public void Find_ByACompositeKey_NotInAnotherOrder() => Assert.NotEmpty(Errors("M", Lines +
             "public static class C { public static void M(LineShop db, int order, int no) { var l = db.Lines.Find(no, order); if (l != null) Spec.Assert(l.OrderId == order); } }"));
 
+        // ---- inheritance ----
+
+        private const string Zoo =
+            "public abstract class Animal { public int Id { get; set; } public string Name { get; set; } = \"\"; public bool Gone { get; set; } }\n" +
+            "public sealed class Dog : Animal { public int Barks { get; set; } }\n" +
+            "public sealed class Cat : Animal { public int Lives { get; set; } }\n" +
+            "public sealed class ZooDb : DbContext { public DbSet<Animal> Animals => Set<Animal>(); " +
+            "protected override void OnModelCreating(ModelBuilder b) { b.Entity<Dog>(); b.Entity<Cat>(); b.Entity<Animal>().HasQueryFilter(a => !a.Gone).HasIndex(a => a.Name).IsUnique(); } }\n";
+
+        [Fact]
+        public void Inheritance_ADerivedType_HasItsRootsKey() => Assert.Empty(Errors("M", Zoo +
+            "public static class C { public static void M(ZooDb db, int id) { var d = db.Set<Dog>().Find(id); if (d != null) Spec.Assert(d.Id == id); } }"));
+
+        [Fact]
+        public void Inheritance_ADerivedType_HasItsRootsFilter() => Assert.Empty(Errors("M", Zoo +
+            "public static class C { public static async Task M(ZooDb db) { var r = await db.Set<Dog>().AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => !r[i].Gone)); } }"));
+
+        [Fact]
+        public void Inheritance_ADerivedType_HasItsRootsUniqueIndex() => Assert.Empty(Errors("M", Zoo +
+            "public static class C { public static Dog? M(ZooDb db, string name) { return db.Set<Dog>().AsNoTracking().SingleOrDefault(d => d.Name == name); } }"));
+
+        [Fact]
+        public void Inheritance_ADerivedType_OnAnotherColumn_MayMatchMore() => Assert.Equal(new[] { "CSV1001" }, Errors("M", Zoo +
+            "public static class C { public static Dog? M(ZooDb db, int barks) { return db.Set<Dog>().AsNoTracking().SingleOrDefault(d => d.Barks == barks); } }"));
+
+        // ---- across calls ----
+
+        private const string Helpers =
+            "public static class H { public static async Task TrySave(Shop db) { try { await db.SaveChangesAsync(); } catch (DbUpdateException) { } } " +
+            "public static async Task Save(Shop db) { await db.SaveChangesAsync(); } " +
+            "public static async Task ShipAll(Shop db) { await db.Orders.ExecuteUpdateAsync(s => s.SetProperty(o => o.Shipped, true)); } }\n";
+
+        [Fact]
+        public void Calls_ACalleeThatSwallowsAFailedSave_LeavesTheContextBroken() => Assert.Equal(new[] { "CSV1033" }, Errors("M", Helpers +
+            "public static class C { public static async Task M() { using var db = new Shop(); db.Orders.Add(new Order()); await H.TrySave(db); db.Orders.Add(new Order()); } }"));
+
+        [Fact]
+        public void Calls_ACalleeThatSaves_LeavesTheContextUsable() => Assert.Empty(Errors("M", Helpers +
+            "public static class C { public static async Task M() { using var db = new Shop(); db.Orders.Add(new Order()); await H.Save(db); db.Orders.Add(new Order()); } }"));
+
+        [Fact]
+        public void Calls_ACalleesSave_AndTheCallers_AreTwoOutsideATransaction() => Assert.Equal(new[] { "CSV1035" }, Errors("M", Helpers +
+            "public static class C { public static async Task M() { using var db = new Shop(); db.Orders.Add(new Order()); await H.Save(db); db.Orders.Add(new Order()); await db.SaveChangesAsync(); } }"));
+
+        [Fact]
+        public void Calls_ACalleesBulkUpdate_MakesTrackedRowsStale() => Assert.Equal(new[] { "CSV1033" }, Errors("M", Helpers +
+            "public static class C { public static async Task M(int id) { using var db = new Shop(); var o = await db.Orders.FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
+            "await H.ShipAll(db); o.Total = 1; await db.SaveChangesAsync(); } }"));
+
         // ---- the local view ----
 
         [Fact]

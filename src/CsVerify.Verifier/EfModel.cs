@@ -101,15 +101,24 @@ namespace CsVerify.Verifier
                     if (p.Type is INamedTypeSymbol set && set.Name == "DbSet" && set.TypeArguments.Length == 1 && set.TypeArguments[0] is INamedTypeSymbol e)
                         Add(e);
             }
-            // configured types are entity types too
+            // configured types are entity types too: modelBuilder.Entity<T>(), and what is called on its builder
             foreach (var (tree, inv, builder) in Configuration(compilation, userTrees))
                 if (builder.TypeArguments[0] is INamedTypeSymbol e) Add(e);
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                    if (inv.Expression is MemberAccessExpressionSyntax { Name: GenericNameSyntax { Identifier.Text: "Entity" } } &&
+                        model.GetSymbolInfo(inv).Symbol is IMethodSymbol { ContainingType.Name: "ModelBuilder", TypeArguments.Length: 1 } entity &&
+                        entity.TypeArguments[0] is INamedTypeSymbol configured && IsSourceClass(configured, sourceTypes))
+                        Add(configured);
+            }
             // and what navigations reach
             for (bool grew = true; grew;)
             {
                 grew = false;
                 foreach (var e in _entities.Values.ToList())
-                    foreach (var p in e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+                    foreach (var p in PropertiesOf(e.Type))
                         if (NavigationTarget(p.Type, out _) is INamedTypeSymbol target && IsSourceClass(target, sourceTypes) && !_entities.ContainsKey(target) && !IsOwned(target))
                         { Add(target); grew = true; }
             }
@@ -118,10 +127,11 @@ namespace CsVerify.Verifier
             foreach (var e in _entities.Values)
             {
                 if (e.Key.Count == 0) e.Key.AddRange(ConventionKey(e.Type));
-                foreach (var p in e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+                foreach (var p in PropertiesOf(e.Type))
                     if (NavigationTarget(p.Type, out bool many) is INamedTypeSymbol target && _entities.ContainsKey(target))
                         (many ? e.Collections : e.References).Add(p);
             }
+            Inherit();
             ReadRelationships();
         }
 
@@ -154,7 +164,7 @@ namespace CsVerify.Verifier
                     var p = EntityOf(nav.Type);
                     if (p == null || p.Key.Count != 1) continue;
                     var key = p.Key[0];
-                    var props = d.Type.GetMembers().OfType<IPropertySymbol>().Where(x => !x.IsStatic).ToList();
+                    var props = PropertiesOf(d.Type).ToList();
                     IPropertySymbol fk = _fluentKeys.TryGetValue(nav, out var fluent) ? fluent : null;
                     if (fk == null && Attribute(nav, "ForeignKeyAttribute") is string named)
                     {
@@ -190,7 +200,7 @@ namespace CsVerify.Verifier
                     {
                         // (no navigation back: EF's convention, the principal's name and its key's, or Id)
                         var key = p.Key[0];
-                        var props = d.Type.GetMembers().OfType<IPropertySymbol>().Where(x => !x.IsStatic).ToList();
+                        var props = PropertiesOf(d.Type).ToList();
                         var named = new[] { p.Type.Name + key.Name, p.Type.Name + "Id" }
                             .Select(n => props.FirstOrDefault(x => string.Equals(x.Name, n, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(x => x != null);
                         var t = named?.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nt ? nt.TypeArguments[0] : named?.Type;
@@ -276,6 +286,38 @@ namespace CsVerify.Verifier
             }
         }
 
+        /// <summary>
+        /// A type's instance properties, its source base classes' too (an entity's columns and navigations, declared
+        /// where it inherits them), each once.
+        /// </summary>
+        internal static IEnumerable<IPropertySymbol> PropertiesOf(INamedTypeSymbol t)
+        {
+            var seen = new HashSet<string>();
+            for (var b = t; b != null && b.Locations.Any(l => l.IsInSource); b = b.BaseType)
+                foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+                    if (seen.Add(p.Name)) yield return p;
+        }
+
+        /// <summary>
+        /// What a type inherits of its base entity's (EF reads them from the root of the hierarchy): its key, query
+        /// filters, unique indexes and concurrency tokens, the base's first so that a chain inherits from its root.
+        /// </summary>
+        private void Inherit()
+        {
+            int Depth(ITypeSymbol x) { int d = 0; for (var b = x.BaseType; b != null; b = b.BaseType) d++; return d; }
+            foreach (var e in _entities.Values.OrderBy(x => Depth(x.Type)))
+            {
+                Entity b = null;
+                for (var up = e.Type.BaseType; up != null && b == null; up = up.BaseType) b = EntityOf(up);
+                if (b == null) continue;
+                if (b.Key.Count > 0) e.Key = new List<IPropertySymbol>(b.Key);
+                foreach (var filter in b.Filters) if (!e.Filters.Contains(filter)) e.Filters.Add(filter);
+                foreach (var u in b.Unique) e.Unique.Add(u);
+                foreach (var token in b.Tokens) if (!e.Tokens.Contains(token)) e.Tokens.Add(token);
+                foreach (var v in b.RowVersions) e.RowVersions.Add(v);
+            }
+        }
+
         public bool IsContextType(ITypeSymbol t)
         {
             for (var b = t as INamedTypeSymbol; b != null; b = b.BaseType)
@@ -322,7 +364,7 @@ namespace CsVerify.Verifier
         /// <summary>EF's convention: a property named Id, or the type's name and Id.</summary>
         private static IEnumerable<IPropertySymbol> ConventionKey(INamedTypeSymbol t)
         {
-            var props = t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && KeyTypes.Contains(p.Type.Name)).ToList();
+            var props = PropertiesOf(t).Where(p => KeyTypes.Contains(p.Type.Name)).ToList();
             var key = props.FirstOrDefault(p => string.Equals(p.Name, "Id", StringComparison.OrdinalIgnoreCase))
                    ?? props.FirstOrDefault(p => string.Equals(p.Name, t.Name + "Id", StringComparison.OrdinalIgnoreCase));
             return key == null ? Array.Empty<IPropertySymbol>() : new[] { key };
@@ -332,7 +374,7 @@ namespace CsVerify.Verifier
 
         private void ReadAttributes(Entity e)
         {
-            var props = e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic).ToList();
+            var props = PropertiesOf(e.Type).ToList();
             var keys = props.Where(p => Has(p, "KeyAttribute")).ToList();
             if (keys.Count > 0) e.Key = keys;
             foreach (var p in props)

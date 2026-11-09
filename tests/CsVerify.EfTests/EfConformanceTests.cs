@@ -45,6 +45,17 @@ namespace CsVerify.Tests
             [ConcurrencyCheck] public int Updated { get; set; }
         }
 
+        public abstract class Animal
+        {
+            public int Id { get; set; }
+            public string Name { get; set; } = "";
+            public bool Gone { get; set; }
+        }
+
+        public sealed class Dog : Animal { public int Barks { get; set; } }
+
+        public sealed class Cat : Animal { public int Lives { get; set; } }
+
         public sealed class Line
         {
             public int OrderId { get; set; }
@@ -59,6 +70,7 @@ namespace CsVerify.Tests
             public DbSet<Customer> Customers => Set<Customer>();
             public DbSet<Order> Orders => Set<Order>();
             public DbSet<Line> Lines => Set<Line>();
+            public DbSet<Animal> Animals => Set<Animal>();
             protected override void OnConfiguring(DbContextOptionsBuilder o) => _configure(o);
             protected override void OnModelCreating(ModelBuilder b)
             {
@@ -66,6 +78,9 @@ namespace CsVerify.Tests
                 b.Entity<Customer>().OwnsOne(c => c.Address);
                 b.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
                 b.Entity<Line>().HasKey(l => new { l.OrderId, l.No });
+                b.Entity<Dog>();
+                b.Entity<Cat>();
+                b.Entity<Animal>().HasQueryFilter(a => !a.Gone).HasIndex(a => a.Name).IsUnique();
             }
         }
 
@@ -96,6 +111,7 @@ namespace CsVerify.Tests
                                new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
             db.SaveChanges();
             db.Lines.AddRange(new Line { OrderId = 1, No = 2, Qty = 5 }, new Line { OrderId = 2, No = 1, Qty = 7 });
+            db.Animals.AddRange(new Dog { Name = "Rex", Barks = 3 }, new Cat { Name = "Tom", Lives = 9 }, new Dog { Name = "Old", Gone = true });
             db.SaveChanges();
         }
 
@@ -337,6 +353,19 @@ namespace CsVerify.Tests
             Assert.Equal(5, db.Lines.Find(1, 2)!.Qty);
             Assert.Equal(7, db.Lines.Find(2, 1)!.Qty);
             Assert.Null(db.Lines.Find(1, 1));
+        }
+
+        [Fact]
+        public void Inheritance_ADerivedSet_GivesItsType_ThroughTheRootsFilterAndIndex()
+        {
+            using var db = New();
+            Assert.Equal(new[] { "Rex" }, db.Set<Dog>().Select(d => d.Name).ToList());
+            Assert.Equal(2, db.Animals.Count());
+            var rex = db.Set<Dog>().AsNoTracking().Single();
+            Assert.Equal(rex.Id, db.Set<Dog>().Find(rex.Id)!.Id);
+            Assert.Null(db.Set<Cat>().Find(rex.Id));
+            db.Animals.Add(new Cat { Name = "Rex" });
+            Assert.Throws<DbUpdateException>(() => db.SaveChanges());
         }
 
         [Fact]
