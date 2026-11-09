@@ -44,10 +44,13 @@ namespace CsVerify.Verifier.Boogie
             if (at == null) return (null, null);
             var (id, message) = kind switch
             {
+                "Precondition" when about?.ReportAs == "CSV1014" => ("CSV1014", $"{at.Message}: {about.Message}"),
                 "Precondition" => ("CSV1001", $"{at.Message} might throw: its precondition{(about != null ? " (" + about.Message + ")" : "")} might not hold"),
+                "Postcondition" when about?.ReportAs == "CSV1014" => ("CSV1014", about.Message),
                 "Postcondition" => ("CSV1002", $"{about?.Message ?? "a postcondition"} might not hold on this return path"),
-                "InvariantEntry" => ("CSV1005", $"{at.Message} might not hold on entry"),
-                "InvariantMaintainance" => ("CSV1006", $"{at.Message} might not be maintained by the loop"),
+                // (an assert at a loop head is an invariant to Boogie: a well-definedness check there is still one)
+                "InvariantEntry" when at.Id == "CSV1005" => ("CSV1005", $"{at.Message} might not hold on entry"),
+                "InvariantMaintainance" when at.Id == "CSV1005" => ("CSV1006", $"{at.Message} might not be maintained by the loop"),
                 _ => (at.Id, at.Message + (at.Id == "CSV1004" ? " might not hold" : "")),
             };
             return (at.Method, new VerificationDiagnostic(id, true, message + " (boogie)", at.Span));

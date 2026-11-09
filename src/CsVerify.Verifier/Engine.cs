@@ -814,6 +814,7 @@ namespace CsVerify.Verifier
                 if (refused.Count == 0) break;
                 included = included.Except(refused).ToList();
             }
+            translator.Finish();
             foreach (var x in held.Except(included)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
             if (included.Count == 0) return;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;

@@ -37,7 +37,17 @@ public static class A
     public static void Assertion(int x) { Spec.Requires(x > 3); Spec.Assert(x > 4); }
     public static int BadInv(int n) { Spec.Requires(n >= 0 && n < 100); int i = 0; while (i < n) { Spec.Invariant(i < n); i++; } return i; }
     public static int BadPost(int x) { Spec.Ensures<int>(r => r > x); return x; }
-    public static int Elsewhere(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
+    public static int Elsewhere(string s) { Spec.Requires(s.Length > 0); return s.Length; }
+    public static void Fill(int[] a, int v) { Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length && Spec.Forall(0, i, k => a[k] == v)); a[i] = v; } }
+    public static int First(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
+    public static int FirstBad(int[] a) => a[0];
+    public static int KeepsOwn(int[] a) { Spec.Requires(a.Length > 0); var b = new int[1]; b[0] = 5; Fill(a, 3); Spec.Assert(b[0] == 5); return b[0]; }
+    public static void WfBad(int[] a) { Spec.Requires(a[0] > 0); }
+    public static int Wraps(int x) { Spec.Ensures<int>(r => x != int.MaxValue || r == int.MinValue); return unchecked(x + 1); }
+    public static int Read(int[] a, int i) { Spec.Requires(0 <= i && i < a.Length); Spec.Ensures<int>(r => r == a[i]); return a[i]; }
+    public static void CallNull() { int[]? n = null; First(n!); }
+    public static int[] Make(int n) { Spec.Requires(n >= 0); Spec.Ensures<int[]>(r => r.Length == n); return new int[n]; }
+    public static bool Has(int[] a, int v) { Spec.Ensures<bool>(r => !r || Spec.Exists(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length); if (a[i] == v) return true; } return false; }
 }";
 
         private static (VerificationResult csverify, VerificationResult boogie) Both(System.Func<VerifierOptions, VerificationResult> run)
@@ -69,9 +79,10 @@ public static class A
         public void Corpus_BothEnginesReportTheSame()
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, o));
-            Assert.Equal(15, Agree(c, b));
-            foreach (var bug in new[] { "UseAbs", "Overflows", "Div", "Assertion", "BadInv", "BadPost" }) Assert.False(b["A." + bug].Verified, bug);
-            foreach (var good in new[] { "Abs", "Sum", "Wide", "Twice", "UseAbsSafely", "Between", "Checked", "Truncates", "Remainder" }) Assert.True(b["A." + good].Verified, good);
+            Assert.Equal(25, Agree(c, b));
+            foreach (var bug in new[] { "UseAbs", "Overflows", "Div", "Assertion", "BadInv", "BadPost", "FirstBad", "KeepsOwn", "WfBad", "CallNull" }) Assert.False(b["A." + bug].Verified, bug);
+            foreach (var good in new[] { "Abs", "Sum", "Wide", "Twice", "UseAbsSafely", "Between", "Checked", "Truncates", "Remainder", "Fill", "First", "Wraps", "Read", "Make", "Has" })
+                Assert.True(b["A." + good].Verified, good);
         }
 
         [Fact]
