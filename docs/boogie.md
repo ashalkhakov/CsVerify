@@ -23,12 +23,65 @@ CSVERIFY_TRACE=1 dotnet csverify --engine boogie src/         # and why each met
    is verified by CsVerify's engine as always. Those held back are translated together; one whose body has something
    outside the subset is left out, and so is each method that calls it, until none is (a call needs its callee's
    procedure). They go to CsVerify's engine too.
-2. **One program.** The methods translated are one Boogie program: [the prelude](#the-prelude), a function for each
-   `[Pure]` or `[GhostFunction]` method, and a procedure for each method.
+2. **One program.** Each method goes through [the passes](#the-passes), and the methods translated are one Boogie
+   program: [the prelude](#the-prelude), a function for each `[Pure]` or `[GhostFunction]` method, and a procedure
+   for each method.
 3. **Boogie verifies it,** in the same process (the `Boogie.ExecutionEngine` package), with the Z3 CsVerify uses.
 4. **Back to C#.** Every check is an `assert` on a line of its own, and the translator keeps a table from line to the C#
    location and the CsVerify diagnostic it is; each failure Boogie reports is found there, so the diagnostics are the
    ones CsVerify's engine gives, at the same places (BoogieEngineTests checks that they are).
+
+## The passes
+
+The translation is four passes over a small kernel language (`Boogie/Kernel.cs`), so that each concern is in one
+place: Roslyn's lowering in the first, what C# means in the second, how memory is encoded in the third, Boogie's
+syntax in the last. The kernel is Boogie's own shape (blocks of statements, each ending in a jump), with a few nodes
+that carry C#'s meaning until the pass that gives it.
+
+| Pass | File | In | Out |
+|---|---|---|---|
+| Lowering | `Lowering.cs` | a method's control-flow graph and its contract | a kernel procedure: blocks, typed nodes, unchecked |
+| Checks | `Checks.cs` | that | mathematics, and each obligation an `assert` |
+| Heap | `Heap.cs` | that | arrays as element maps and allocation; what it modifies |
+| Printer | `BoogiePrinter.cs` | that | Boogie text, and the table from line to check |
+
+`BoogieTranslator.cs` holds them together: which methods are procedures and which are functions, the recursion groups,
+and what each procedure modifies, closed over what it calls (which needs all of them, so procedures are printed last).
+
+**Lowering** reads Roslyn's control-flow graph block for block. Each operation becomes a kernel statement: an
+assignment, an array write (`KStore`), an allocation (`KNew`), a call (`KCall`, its result in a temporary), an assume,
+or a `Spec.Assert` or `Spec.Assume` (`KSpecStmt`). What C# means is kept, not yet given: arithmetic is a `KArith` with
+its type and its context (default, checked, unchecked, or mathematical in ghost code), an explicit conversion a
+`KConv`, an array read a `KElem`, a length a `KLen`, a function's call in a specification a `KFnCall`. A branch's
+condition is evaluated once, into a temporary in its block, and each way assumes it or its negation. Where a later
+operand is a call or an allocation (a statement before the expression), each earlier one is evaluated into a
+temporary first, so its checks and its reads of memory come first, as in C#. Specifications are read whole, from the
+operation the source has, and what the graph lowers their arguments to is left out. The contract, each loop's
+invariants and measure (by its head), and a function's body are kernel expressions too. Anything outside the subset
+throws `NotTranslated`, and the method is verified by CsVerify's engine.
+
+**Checks** turns each typed node into mathematics and emits what it needs before it, in the order C# evaluates:
+- an array read or write: `a != null` (CSV1013), then `0 <= i && i < len(a)` (CSV1003); a length: `a != null`;
+- arithmetic and narrowing conversions: in range (CSV1010), assumed in range, wrapped, or nothing, by context;
+  division: the divisor not zero (CSV1009), and not `MinValue / -1`;
+- a call: each argument's checks, a non-nullable array argument not null (CSV1014), the termination of a call in its
+  recursion group (CSV1008, CSV1011), then the call (its precondition, CSV1001);
+- a specification: what makes it well-defined, under the guards of `&&`, `||`, `?:` and the quantifiers' ranges, as
+  Dafny's (CSV1012), then its assert (CSV1004) or assume.
+
+It also places the contract: the preconditions well-defined at entry; at each loop head its invariants (CSV1005,
+CSV1006) and the measure's value; on each edge back to a head, the measure gone down (CSV1007); at each return, the
+result not null and each postcondition well-defined and holding (CSV1002). A callee's requires and measure are its
+contract lowered over its parameters, given the arguments.
+
+**Heap** gives arrays Dafny's encoding: a write is an update of its element type's map (`KMapUpdate`); an allocation
+is a reference not allocated before, of the length, then allocated, with its elements the default or the
+initializer's. What a procedure writes is what it modifies.
+
+**Printer** writes the [prelude](#the-prelude), each function's axioms (in a function, the maps are its parameters and
+the layer is `ly`), and each procedure: the header (ranges, allocation, the contract, what it modifies), the locals
+(an integer one with its range as a `where` clause), and the blocks. Each assert is on a line of its own, with the
+check it is.
 
 ## An example
 
@@ -47,7 +100,7 @@ public static int Max(int[] a)
 }
 ```
 
-becomes (`--boogie-out`, abridged: the blocks the invariant's `&&` lowers to are left out):
+becomes (`--boogie-out`, abridged: the blocks the invariant's `&&` lowers to, which do nothing, are left out):
 
 ```boogie
 procedure Example.Max$int__(p$a: Ref) returns (result: int)
@@ -55,15 +108,19 @@ procedure Example.Max$int__(p$a: Ref) returns (result: int)
   free requires p$a == null || $Alloc[p$a];
   free requires p$a != null;                                  // checked at each call's argument (CSV1014)
   requires (len(p$a) > 0);                                    // checked at each call (CSV1001)
-  free ensures (forall q$k: int :: 0 <= q$k && q$k < len(p$a) ==> ($E.Int32[p$a][q$k] <= result));
-  free ensures (-2147483648 <= result && result <= 2147483647);
+  free ensures (forall q$k: int :: ((0 <= q$k) && (q$k < len(p$a))) ==> ($E.Int32[p$a][q$k] <= result));
+  free ensures (((-2147483648) <= result) && (result <= 2147483647));
 {
-  var l$m$210: int where (-2147483648 <= l$m$210 && l$m$210 <= 2147483647);
-  var l$i$237: int where (-2147483648 <= l$i$237 && l$i$237 <= 2147483647);
+  var l$i$237: int where (((-2147483648) <= l$i$237) && (l$i$237 <= 2147483647));
+  var l$m$210: int where (((-2147483648) <= l$m$210) && (l$m$210 <= 2147483647));
+  var g$3: bool;                                              // the loop's condition, evaluated once
+  var g$9: bool;
     assert {:subsumption 0} (p$a != null);                    // the precondition well-defined (CSV1012)
+  b0:
+    goto b1;
   b1:
-    assert p$a != null;                                       // CSV1013
-    assert 0 <= 0 && 0 < len(p$a);                            // CSV1003
+    assert (p$a != null);                                     // CSV1013
+    assert ((0 <= 0) && (0 < len(p$a)));                      // CSV1003
     l$m$210 := $E.Int32[p$a][0];
     goto b2;
   b2:
@@ -71,36 +128,45 @@ procedure Example.Max$int__(p$a: Ref) returns (result: int)
     goto b3;
   b3:                                                         // the loop head: its asserts are the invariant
     assert {:subsumption 0} …;                                // the invariant well-defined (CSV1012)
-    assert ((1 <= l$i$237) && (l$i$237 <= len(p$a))) &&
-           (forall q$k: int :: 0 <= q$k && q$k < l$i$237 ==> ($E.Int32[p$a][q$k] <= l$m$210));   // CSV1005, CSV1006
+    assert (((1 <= l$i$237) && (l$i$237 <= len(p$a))) &&
+           (forall q$k: int :: ((0 <= q$k) && (q$k < l$i$237)) ==> ($E.Int32[p$a][q$k] <= l$m$210)));  // CSV1005, CSV1006
+    assert (p$a != null);                                     // a.Length (CSV1013)
+    g$3 := (l$i$237 < len(p$a));
     goto b3$then, b3$else;
   b3$then:
-    assume !((l$i$237 < len(p$a)));
+    assume !(g$3);
     goto b12;
   b3$else:
-    assume !(!((l$i$237 < len(p$a))));
-    goto b9;
+    assume !(!(g$3));
+    goto b4;
+  …
   b9:
-    assert p$a != null;
-    assert 0 <= l$i$237 && l$i$237 < len(p$a);
+    assert (p$a != null);
+    assert ((0 <= l$i$237) && (l$i$237 < len(p$a)));
+    g$9 := ($E.Int32[p$a][l$i$237] > l$m$210);
     goto b9$then, b9$else;
   b9$then:
-    assume !(($E.Int32[p$a][l$i$237] > l$m$210));
+    assume !(g$9);
     goto b11;
   b9$else:
-    assume !(!(($E.Int32[p$a][l$i$237] > l$m$210)));
+    assume !(!(g$9));
     goto b10;
   b10:
+    assert (p$a != null);
+    assert ((0 <= l$i$237) && (l$i$237 < len(p$a)));
     l$m$210 := $E.Int32[p$a][l$i$237];
     goto b11;
   b11:
-    assert (-2147483648 <= (l$i$237 + 1) && (l$i$237 + 1) <= 2147483647);   // i++ (CSV1010)
+    assert (((-2147483648) <= (l$i$237 + 1)) && ((l$i$237 + 1) <= 2147483647));   // i++ (CSV1010)
     l$i$237 := (l$i$237 + 1);
     goto b3;
   b12:
     result := l$m$210;
     assert {:subsumption 0} …;                                // the postcondition well-defined (CSV1012)
-    assert (forall q$k: int :: 0 <= q$k && q$k < len(p$a) ==> ($E.Int32[p$a][q$k] <= result));   // CSV1002, here
+    assert (forall q$k: int :: ((0 <= q$k) && (q$k < len(p$a))) ==> ($E.Int32[p$a][q$k] <= result));   // CSV1002, here
+    return;
+  b13:                                                        // the exit: reached only by a return
+    assume false;
     return;
 }
 ```
@@ -125,8 +191,8 @@ each return path is reported, as CsVerify's engine reports them. `Spec.Ensures<R
 `Spec.Old(e)` is `old(e)`, `Spec.Result<R>()` is `result`.
 
 **Bodies.** The control-flow graph, block for block, as an unstructured Boogie procedure: each block `b`*n*, its
-operations, then where it goes. A conditional branch goes through two blocks of its own (`b`*n*`$then`, `$else`), each
-assuming its condition, so that the blocks the graph has stay plain: a loop's head, which a later block jumps back to,
+operations, then where it goes. A conditional branch's condition is evaluated once, into `g$`*n*, and goes through two
+blocks of its own (`b`*n*`$then`, `$else`), each assuming it or its negation, so that the blocks the graph has stay plain: a loop's head, which a later block jumps back to,
 starts with its invariants. A throw ends the path (`assume false`): a path that throws need not meet the postcondition.
 
 **Specifications in bodies.** `Spec.Assert` is an `assert` (CSV1004), `Spec.Assume` an `assume`. `Spec.Invariant` is an
