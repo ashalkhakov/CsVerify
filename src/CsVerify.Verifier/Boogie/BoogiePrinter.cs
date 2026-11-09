@@ -269,6 +269,11 @@ namespace CsVerify.Verifier.Boogie
                 Line("  var perm: [Ref]bool;");
                 Line("  var pinst: [Inst]int;");
                 Line("  var owner: [Ref]Inst;");
+                if (p.UsesCells)
+                {
+                    Line("  var cells: [Ref][int]real;");
+                    Line("  var cowner: [Ref][int]Inst;");
+                }
             }
             // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too)
             foreach (var l in p.Locals)
@@ -336,7 +341,8 @@ namespace CsVerify.Verifier.Boogie
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
                 case KCallFrame { After: false } frame:
-                    foreach (var x in new[] { "perm", "pinst", "owner", "$Alloc" }.Concat(frame.Maps)) Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
+                    foreach (var x in new[] { "perm", "pinst", "owner", "$Alloc" }.Concat(frame.Maps).Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]))
+                        Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
                     return;
                 case KCallFrame frame:
                 {
@@ -346,6 +352,23 @@ namespace CsVerify.Verifier.Boogie
                     Line("    havoc owner;");
                     Line($"    assume (forall y: Ref :: {kept} ==> owner[y] == {sn}$owner[y]);");
                     foreach (var map in frame.Maps) Line($"    assume (forall y: Ref :: {kept} ==> {map}[y] == {sn}{map}[y]);");
+                    if (frame.Cells)
+                    {
+                        // (a call that takes cells changes only those it got, and those folded into the instances it got, but
+                        // for those still in hand; and arrays it allocates)
+                        var (xv, iv) = (new KVar("x$"), new KVar("i$"));
+                        var parts = frame.Given.Select(g => g.atom switch
+                        {
+                            KCells c => E(Checks.InCells(g.guard, c, xv, iv), cx),
+                            KInst q => $"({E(g.guard, cx)} && {sn}$cowner[x$][i$] == {E(Checks.Instance(q.Pred, q.Args), cx)})",
+                            _ => null,
+                        }).Where(x => x != null).ToList();
+                        var changed = parts.Count == 0 ? "false" : $"(({string.Join(" || ", parts)}) && {sn}$cells[x$][i$] < 1.0)";
+                        var unchanged = $"{sn}$Alloc[x$] && !{changed}";
+                        foreach (var map in frame.ElementMaps) Line($"    assume (forall x$: Ref, i$: int :: {unchanged} ==> {map}[x$][i$] == {sn}{map}[x$][i$]);");
+                        Line("    havoc cowner;");
+                        Line($"    assume (forall x$: Ref, i$: int :: {unchanged} ==> cowner[x$][i$] == {sn}$cowner[x$][i$]);");
+                    }
                     return;
                 }
                 case KSnapshot snap:

@@ -717,6 +717,20 @@ namespace CsVerify.Verifier.Boogie
                     switch (inv.TargetMethod.Name)
                     {
                         case "Old": return new KOp("old", Spec(inv.Arguments[0].Value, result));
+                        // (allocated during the call)
+                        case "Fresh" when IsRef(Unconverted(inv.Arguments[0].Value).Type):
+                            return new KOp("!", new KOp("old", new KOp("sel", new KVar("$Alloc"), Spec(Unconverted(inv.Arguments[0].Value), result))));
+                        case "Acc" or "AccRead" when IsArray(Unconverted(inv.Arguments[0].Value).Type) && inv.Arguments.Length is 1 or 3:
+                        {
+                            var arr = Spec(Unconverted(inv.Arguments[0].Value), result);
+                            _p.UsesPerm = true;
+                            return new KCells
+                            {
+                                Arr = arr, Read = inv.TargetMethod.Name == "AccRead", At = inv.Syntax,
+                                Lo = inv.Arguments.Length == 1 ? new KLit("0") : Spec(inv.Arguments[1].Value, result),
+                                Hi = inv.Arguments.Length == 1 ? new KOp("len", arr) : Spec(inv.Arguments[2].Value, result),
+                            };
+                        }
                         case "Result": return new KVar("result");
                         case "Forall": case "Exists" when inv.Arguments.Length == 3:
                         {

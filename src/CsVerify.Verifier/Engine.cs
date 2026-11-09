@@ -822,6 +822,7 @@ namespace CsVerify.Verifier
                 translator = new Boogie.BoogieTranslator(engine.Options.CheckOverflow);
                 translator.Prelude();
                 translator.ContractOf = engine.ContractOf;
+                translator.UsesPermissions = engine.UsesPermissions;
                 translator.Declare(included.Select(x => (x.method, x.decl, (SemanticModel)compilation.GetSemanticModel(x.decl.SyntaxTree))));
                 var refused = new List<(IMethodSymbol, Contract, SyntaxNode, MethodResult)>();
                 foreach (var x in included)
@@ -852,6 +853,7 @@ namespace CsVerify.Verifier
             }
             catch (Exception e)
             {
+                if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine("Boogie failed: " + e);
                 foreach (var x in included)
                 {
                     RunMethod(engine, x.contract, x.result, x.decl.GetLocation());

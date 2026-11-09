@@ -141,6 +141,9 @@ namespace CsVerify.Verifier.Boogie
 
         bool IProgramFacts.IsFunction(IMethodSymbol m) => IsFunction(m);
 
+        /// <summary>Does the program use permissions at all (Spec.Acc, Spec.AccRead: CsVerify's engine checks array writes against cells then)?</summary>
+        public bool UsesPermissions { get; set; }
+
         Contract IProgramFacts.ContractOf(IMethodSymbol m) => ContractOf(m);
 
         private readonly Dictionary<IMethodSymbol, KProcedure> _signatures = new Dictionary<IMethodSymbol, KProcedure>(SymbolEqualityComparer.Default);
@@ -202,7 +205,18 @@ namespace CsVerify.Verifier.Boogie
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
                     foreach (var map in frame.Maps)
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
+                    if (frame.Cells)
+                    {
+                        frame.ElementMaps.AddRange((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));
+                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cells", Raw = "[Ref][int]real" });
+                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cowner", Raw = "[Ref][int]Inst" });
+                        foreach (var map in frame.ElementMaps)
+                            p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = map == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int" });
+                    }
                 }
+            // (a call, in array mode, that may write any array: reported only if it may)
+            foreach (var a in _pending.SelectMany(p => p.Blocks).SelectMany(b => b.Stmts).OfType<KAssert>().Where(a => a.UnlessWritesArrays != null))
+                if (!(writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out var cw) && cw.Any(x => x.StartsWith("$E.")))) a.Cond = new KLit("true");
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KLoopFrame>())

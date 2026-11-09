@@ -143,6 +143,14 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
     }
 
+    /// <summary>Spec.Acc(Arr, Lo, Hi) (Spec.Acc(Arr): all its cells), or Spec.AccRead, a share to read: permission to the cells a[Lo..Hi).</summary>
+    internal sealed class KCells : KExpr
+    {
+        public KExpr Arr, Lo, Hi;
+        public bool Read;
+        public SyntaxNode At;
+    }
+
     /// <summary>An instance of a [Predicate]: P(Args), its permissions folded into it.</summary>
     internal sealed class KInst : KExpr
     {
@@ -169,6 +177,10 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Receiver;
         public IMethodSymbol Callee;
         public List<string> Maps = new List<string>();
+        /// <summary>A call that takes cells: those it was given (and the instances, whose folded cells go with them); it changes no others.</summary>
+        public bool Cells;
+        public List<(KExpr guard, KExpr atom)> Given = new List<(KExpr, KExpr)>();
+        public List<string> ElementMaps = new List<string>();
     }
 
     /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
@@ -260,6 +272,8 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Cond;
         public Check Check;
+        /// <summary>Holds unless this callee may write arrays (decided when the program is: what it calls is known then).</summary>
+        public IMethodSymbol UnlessWritesArrays;
         /// <summary>Not assumed after it ({:subsumption 0}).</summary>
         public bool NotAssumedAfter;
     }
@@ -369,6 +383,10 @@ namespace CsVerify.Verifier.Boogie
         public bool UsesPerm;
         /// <summary>A [Predicate]: its body (FunctionBody, its arithmetic as code's) is checked self-framing, once.</summary>
         public bool IsPredicate;
+        /// <summary>It keeps cell permissions (cells, cowner): it exchanges some, or names them.</summary>
+        public bool UsesCells;
+        /// <summary>Its contract names cells: it holds none but those it is given (else every cell, but those it gives away).</summary>
+        public bool ArrayMode;
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The predicates it names.</summary>

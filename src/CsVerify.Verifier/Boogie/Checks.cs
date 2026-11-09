@@ -20,6 +20,8 @@ namespace CsVerify.Verifier.Boogie
         List<string> FunctionFields(IMethodSymbol m);
         /// <summary>Is the method a function too (so its value can be named)?</summary>
         bool IsFunction(IMethodSymbol m);
+        /// <summary>Does the program use permissions (Spec.Acc, Spec.AccRead) at all? Then array writes are checked against cells.</summary>
+        bool UsesPermissions { get; }
     }
 
     /// <summary>
@@ -65,6 +67,9 @@ namespace CsVerify.Verifier.Boogie
             _facts.Clear();
         }
 
+        private static KExpr Allocated(KExpr o, KExpr v) =>
+            new KOp("==>", new KOp("&&", new KOp("sel", new KVar("$Alloc"), o), new KOp("!=", v, new KLit("null"))), new KOp("sel", new KVar("$Alloc"), v));
+
         /// <summary>A field whose value, once its object is built, is never null.</summary>
         private static bool NonNullField(ISymbol field) => !field.IsStatic && IsRef(FieldType(field)) && NotNullable(FieldType(field));
 
@@ -91,6 +96,18 @@ namespace CsVerify.Verifier.Boogie
             _rawRequires = _p.Requires.Select(r => r.Expr).ToList();
             _rawEnsures = _p.Ensures.Select(e => e.Expr).ToList();
             _rawInvariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (i.Expr, i.At)).ToList());
+            // cells: a method whose contract names some holds none but those it gets (it is in array mode); one that
+            // exchanges some (a call, a fold) keeps them; any other holds every cell, which nothing then changes
+            if (_program.UsesPermissions)
+            {
+                var stmts = _p.Blocks.SelectMany(b => b.Stmts).ToList();
+                bool foldsCells = stmts.OfType<KFold>().Any(f => PredicateHasCells(f.Inst.Pred));
+                bool callsCells(Func<KProcedure, IEnumerable<KExpr>> specs) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
+                _p.ArrayMode = NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
+                               callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(Atoms).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
+                _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
+                if (_p.UsesCells) _p.UsesPerm = true;
+            }
             // the contract as mathematics (each with what makes it well-defined)
             var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
             var ensures = _p.Ensures.Select(e => (spec: e, math: Spec(e.Expr, out var wf), wf, facts: Take())).ToList();
@@ -144,6 +161,11 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign { Var = "perm", Value = new KVar($"l${b.Ordinal}$perm") });
                     Emit(new KAssign { Var = "pinst", Value = new KVar($"l${b.Ordinal}$pinst") });
                     Emit(new KHavoc { Var = "owner" });
+                    if (_p.UsesCells)
+                    {
+                        Emit(new KAssign { Var = "cells", Value = new KVar($"l${b.Ordinal}$cells") });
+                        Emit(new KHavoc { Var = "cowner" });
+                    }
                     foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(b.Ordinal) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null);
                 }
                 foreach (var s in stmts) Statement(s, decreases);
@@ -162,9 +184,11 @@ namespace CsVerify.Verifier.Boogie
                                 {
                                     Emit(new KAssign { Var = $"l${into}$perm", Value = new KVar("perm") });
                                     Emit(new KAssign { Var = $"l${into}$pinst", Value = new KVar("pinst") });
+                                    if (_p.UsesCells) Emit(new KAssign { Var = $"l${into}$cells", Value = new KVar("cells") });
                                 }
                                 else
-                                    Assert(new KLit($"(forall y: Ref :: l${into}$perm[y] ==> perm[y]) && (forall q: Inst :: pinst[q] >= l${into}$pinst[q])"),
+                                    Assert(new KLit($"(forall y: Ref :: l${into}$perm[y] ==> perm[y]) && (forall q: Inst :: pinst[q] >= l${into}$pinst[q])" +
+                                                    (_p.UsesCells ? $" && (forall x$: Ref, i$: int :: cells[x$][i$] >= l${into}$cells[x$][i$])" : "")),
                                         At("CSV1016", _p.LoopSyntax.GetValueOrDefault(into) ?? _p.Method.DeclaringSyntaxReferences[0].GetSyntax(), "the loop body might use up permissions held outside it (only its invariant's go round the loop)"));
                             }
                         foreach (var target in g.Targets)
@@ -276,8 +300,13 @@ namespace CsVerify.Verifier.Boogie
                 case KNewObj n:
                 {
                     var args = Arguments(n.Ctor, n.Args, n.ArgsAt);
+                    // (a constructor exchanges permissions as any call does: about the new object, as this)
+                    var sig = n.Ctor != null && _p.UsesPerm ? _program.Signature(n.Ctor) : null;
+                    var given = sig == null ? null : Given(n.Ctor, new KVar(n.Var), args);
+                    if (sig != null) foreach (var r in sig.Requires) Exhale(r.Expr, given, n.At, null);
                     Emit(new KNewObj { Var = n.Var, Type = n.Type, Ctor = n.Ctor, Args = args, ArgsAt = n.ArgsAt, At = n.At,
                                        Check = n.Ctor == null ? null : At("CSV1001", n.At, $"'{n.At}'") });
+                    if (sig != null) foreach (var e in sig.Ensures) Inhale(e.Expr, given, null);
                     return;
                 }
                 case KStore st:
@@ -286,11 +315,14 @@ namespace CsVerify.Verifier.Boogie
                     var a = Code(st.Array);
                     var i = Code(st.Index);
                     InBounds(a, i, st.At, st.ArrayAt);
+                    if (_p.UsesCells) Assert(new KOp(">=", Cell(a, i), new KLit("1.0")), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
                     Emit(new KStore { Array = a, Index = i, Value = value, ArrayType = st.ArrayType, At = st.At, ArrayAt = st.ArrayAt, Checked = true });
                     return;
                 }
                 case KNew n:
                     Emit(new KNew { Var = n.Var, ArrayType = n.ArrayType, Size = Code(n.Size), Elements = n.Elements?.Select(Code).ToArray() });
+                    // (a new array's cells are all in hand)
+                    if (_p.UsesCells) Emit(new KAssign { Var = "cells", Value = new KOp("store", new KVar("cells"), new KVar(n.Var), new KLit("(lambda i$: int :: 1.0)")) });
                     return;
                 case KCall c:
                     Call(c, decreases);
@@ -347,8 +379,13 @@ namespace CsVerify.Verifier.Boogie
             var sig = _program.Signature(callee);
             var given = Given(callee, receiver, args);
             bool pure = _program.ContractOf(callee).IsPure;
-            if (_p.UsesPerm && !pure) foreach (var r in sig.Requires) Exhale(r.Expr, given, c.At, null);
-            var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee } : null;
+            var gave = new List<(KExpr, KExpr)>();
+            if (_p.UsesPerm && !pure) foreach (var r in sig.Requires) Exhale(r.Expr, given, c.At, gave);
+            bool cellCall = _p.UsesCells && !pure && NamesCells(sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
+            // (in array mode, a call that may write any array: which cells it writes is unknown)
+            if (_p.ArrayMode && !cellCall && !pure)
+                Emit(new KAssert { Cond = new KLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
+            var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee, Cells = cellCall, Given = gave } : null;
             if (frame != null) Emit(frame);
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
@@ -363,7 +400,7 @@ namespace CsVerify.Verifier.Boogie
             if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
             if (frame != null)
             {
-                Emit(new KCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps });
+                Emit(new KCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps });
                 // and those its postconditions give back are in hand (its result and ref and out arguments, as they came back)
                 var back = new Dictionary<string, KExpr>(given);
                 if (c.Result != null) back["result"] = new KVar(c.Result);
@@ -380,7 +417,7 @@ namespace CsVerify.Verifier.Boogie
         private bool _held;
         private int _frames;
 
-        private static KExpr Instance(IMethodSymbol pred, KExpr[] args) =>
+        internal static KExpr Instance(IMethodSymbol pred, KExpr[] args) =>
             new KOp("inst", new[] { (KExpr)new KLit(InstanceName(pred)) }.Concat(args).ToArray());
 
         public static string InstanceName(IMethodSymbol pred) => "i$" + Name(pred);
@@ -393,7 +430,7 @@ namespace CsVerify.Verifier.Boogie
 
         private static bool HasAtoms(KExpr e) => e switch
         {
-            KAcc _ => true, KInst _ => true,
+            KAcc _ => true, KInst _ => true, KCells _ => true,
             KOp op => op.Args.Any(HasAtoms),
             _ => false,
         };
@@ -427,6 +464,9 @@ namespace CsVerify.Verifier.Boogie
                 case KInst inst:
                     atom(guard, new KInst { Pred = inst.Pred, Args = inst.Args.Select(M).ToArray(), At = inst.At });
                     return new KLit("true");
+                case KCells cl:
+                    atom(guard, new KCells { Arr = M(cl.Arr), Lo = M(cl.Lo), Hi = M(cl.Hi), Read = cl.Read, At = cl.At });
+                    return new KLit("true");
                 case KLit { Text: "true" }: return e;
             }
             if (HasAtoms(e)) throw new NotTranslated("a permission that isn't a conjunct, or in a branch of ?:");
@@ -447,6 +487,7 @@ namespace CsVerify.Verifier.Boogie
             if (!HasAtoms(e)) return;
             Walk(e, given, new KLit("true"), (g, a) =>
             {
+                if (a is KCells cl) { if (_p.UsesCells) InhaleCells(g, cl); return; }
                 if (a is KAcc acc)
                 {
                     // two whole permissions to one object can't both be in hand, and one in hand is folded nowhere
@@ -464,11 +505,13 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Gives an assertion's permissions up (a callee's precondition at a call, a postcondition at a return, an invariant on the way into a loop's head): each must be in hand.</summary>
-        private void Exhale(KExpr e, Dictionary<string, KExpr> given, SyntaxNode at, KExpr _)
+        private void Exhale(KExpr e, Dictionary<string, KExpr> given, SyntaxNode at, List<(KExpr, KExpr)> gave)
         {
             if (!HasAtoms(e)) return;
             Walk(e, given, new KLit("true"), (g, a) =>
             {
+                gave?.Add((g, a));
+                if (a is KCells cl) { if (_p.UsesCells) ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand"); return; }
                 if (a is KAcc acc)
                 {
                     Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"'{acc.At}' is needed here, but that permission is not in hand"));
@@ -503,6 +546,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 Walk(sig.FunctionBody, given, new KLit("true"), (g, a) =>
                 {
+                    if (a is KCells cl)
+                    {
+                        if (!_p.UsesCells) return;
+                        ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand");
+                        Emit(new KAssign { Var = "cowner", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"),
+                            Ite(InCells(g, cl, new KVar("x$"), new KVar("i$")), p, new KOp("sel", new KVar("cowner"), new KVar("x$"), new KVar("i$"))))) });
+                        return;
+                    }
                     if (a is KAcc acc)
                     {
                         Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"folding needs '{acc.At}', but that permission is not in hand here"));
@@ -532,8 +583,16 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign { Var = "footprint$", Value = new KVar("owner") });
             var own = new List<(KExpr g, KExpr o)>();
             var nested = new List<(KExpr g, KExpr q)>();
+            var ownCells = new List<(KExpr g, KCells c)>();
+            if (_p.UsesCells)
+            {
+                Emit(new KAssign { Var = "cfootprint$", Value = new KVar("cowner") });
+                foreach (var (name, raw) in new[] { ("cfootprint$", "[Ref][int]Inst"), ("cchoice$", "[Ref][int]int") })
+                    if (!_p.Locals.Any(l => l.Name == name)) _p.Locals.Add(new KLocal { Name = name, Raw = raw });
+            }
             Walk(sig.FunctionBody, given, new KLit("true"), (g, a) =>
             {
+                if (a is KCells cl) { if (_p.UsesCells) InhaleCells(g, cl); ownCells.Add((g, cl)); return; }
                 if (a is KAcc acc)
                 {
                     Assume(Implies(g, new KOp("&&", new KOp("&&", new KOp("!=", acc.Obj, new KLit("null")), new KOp("==", new KOp("sel", new KVar("footprint$"), acc.Obj), p)), new KOp("!", Held(acc.Obj)))));
@@ -564,7 +623,82 @@ namespace CsVerify.Verifier.Boogie
             if (nested.Count > 0)
                 elsewhere = Ite(nested.Select(n => (KExpr)new KOp("==", Footprint(yv), n.q)).Aggregate((a, b) => new KOp("||", a, b)), None, Footprint(yv));
             Emit(new KAssign { Var = "owner", Value = new KOp("lambda", new KLit("y$: Ref"), Ite(new KOp("==", Footprint(yv), p), to, elsewhere)) });
+            // cells likewise: the body's own are free, the rest go to its instances
+            if (!_p.UsesCells) return;
+            var (xv, iv) = (new KVar("x$"), new KVar("i$"));
+            KExpr CFoot() => new KOp("sel", new KVar("cfootprint$"), xv, iv);
+            if (nested.Count > 1) Emit(new KHavoc { Var = "cchoice$" });
+            KExpr cto = None;
+            for (int k = nested.Count - 1; k >= 0; k--)
+            {
+                var pick = nested.Count > 1 ? Conj(nested[k].g, new KOp("==", new KOp("sel", new KVar("cchoice$"), xv, iv), new KLit(k.ToString()))) : nested[k].g;
+                cto = Ite(pick, nested[k].q, cto);
+            }
+            foreach (var (g, c) in ownCells) cto = Ite(InCells(g, c, xv, iv), None, cto);
+            KExpr celsewhere = CFoot();
+            if (nested.Count > 0)
+                celsewhere = Ite(nested.Select(n => (KExpr)new KOp("==", CFoot(), n.q)).Aggregate((a, b) => new KOp("||", a, b)), None, CFoot());
+            Emit(new KAssign { Var = "cowner", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"), Ite(new KOp("==", CFoot(), p), cto, celsewhere))) });
         }
+
+        // ------------------------------------------------------------------ cells (Viper's quantified permissions over a range)
+
+        private const string Share = "0.000001";
+
+        private static KExpr Amount(KCells c) => new KLit(c.Read ? Share : "1.0");
+
+        /// <summary>Is cell (x, i) among c's, where g holds?</summary>
+        internal static KExpr InCells(KExpr g, KCells c, KExpr x, KExpr i) =>
+            Conj(g, new KOp("&&", new KOp("&&", new KOp("==", x, c.Arr), new KOp("<=", c.Lo, i)), new KOp("<", i, c.Hi)));
+
+        private static KExpr Cell(KExpr x, KExpr i) => new KOp("sel", new KVar("cells"), x, i);
+
+        private void ChangeCells(KExpr g, KCells c, string op)
+        {
+            var (x, i) = (new KVar("x$"), new KVar("i$"));
+            Emit(new KAssign { Var = "cells", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"),
+                Ite(InCells(g, c, x, i), new KOp(op, Cell(x, i), Amount(c)), Cell(x, i)))) });
+        }
+
+        private void InhaleCells(KExpr g, KCells c)
+        {
+            // two whole permissions to one cell can't both be in hand (a method that holds every cell learns nothing)
+            if (_p.ArrayMode)
+            {
+                var i = new KVar("i$");
+                var room = c.Read ? new KOp("<=", Cell(c.Arr, i), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, i), new KLit("1.0"));
+                Assume(new KQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), room) });
+                var lo = c.Read ? new KOp("<=", Cell(c.Arr, c.Lo), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, c.Lo), new KLit("1.0"));
+                Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
+            }
+            ChangeCells(g, c, "+");
+        }
+
+        private void ExhaleCells(KExpr g, KCells c, SyntaxNode at, string message)
+        {
+            var i = new KVar("i$");
+            Assert(new KQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), new KOp(">=", Cell(c.Arr, i), Amount(c))) }, At("CSV1016", at, message));
+            ChangeCells(g, c, "-");
+        }
+
+        /// <summary>Does a predicate's body (or one it names) hold cells?</summary>
+        private bool PredicateHasCells(IMethodSymbol pred, HashSet<IMethodSymbol> seen = null)
+        {
+            seen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            if (!seen.Add(pred)) return false;
+            var body = _program.Signature(pred).FunctionBody;
+            return body != null && Atoms(body).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred, seen));
+        }
+
+        private static IEnumerable<KExpr> Atoms(KExpr e) => e switch
+        {
+            KCells _ or KAcc _ or KInst _ => new[] { e },
+            KOp op => op.Args.SelectMany(Atoms),
+            _ => Enumerable.Empty<KExpr>(),
+        };
+
+        /// <summary>Do these specifications name cells (directly, or in a predicate that holds some)?</summary>
+        private bool NamesCells(IEnumerable<KExpr> specs) => specs.SelectMany(Atoms).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred));
 
         /// <summary>Does the loop at this head exchange permissions (fold, unfold, or call what gives or takes them)?</summary>
         private bool Exchanges(int head)
@@ -579,6 +713,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Locals.Add(new KLocal { Name = $"l${head}$perm", Raw = "[Ref]bool" });
                 _p.Locals.Add(new KLocal { Name = $"l${head}$pinst", Raw = "[Inst]int" });
+                if (_p.UsesCells) _p.Locals.Add(new KLocal { Name = $"l${head}$cells", Raw = "[Ref][int]real" });
             }
             return known;
         }
@@ -595,6 +730,8 @@ namespace CsVerify.Verifier.Boogie
         {
             _out = _p.Blocks[0].Stmts;
             Emit(new KAssign { Var = "perm", Value = new KLit("(lambda o: Ref :: false)") });
+            _p.UsesCells = _program.UsesPermissions;
+            if (_p.UsesCells) Emit(new KAssign { Var = "cells", Value = new KLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))") });
             CWalk(_p.FunctionBody, new KLit("true"));
             _p.FunctionBody = null;
             _p.Obligations = _p.Blocks[0].Stmts.Count(s => s is KAssert a && a.Check != null);
@@ -634,6 +771,22 @@ namespace CsVerify.Verifier.Boogie
                 case KInst inst:
                     foreach (var a in inst.Args) CWalk(a, guard);
                     return new KLit("true");
+                case KCells cl:
+                {
+                    var c = new KCells { Arr = CWalk(cl.Arr, guard), Lo = CWalk(cl.Lo, guard), Hi = CWalk(cl.Hi, guard), Read = cl.Read, At = cl.At };
+                    if (cl.Read) Assert(new KLit("false"), At("CSV1016", cl.At, "a predicate holds whole permissions: Spec.AccRead is for contracts"));
+                    if (_p.UsesCells) ChangeCells(guard, c, "+");
+                    return new KLit("true");
+                }
+                case KElem el:
+                {
+                    var a = CWalk(el.Array, guard);
+                    var i = CWalk(el.Index, guard);
+                    var v = Guarded(guard, () => Code(new KElem { Array = a, Index = i, ArrayType = el.ArrayType, At = el.At, ArrayAt = el.ArrayAt }));
+                    if (_p.UsesCells)
+                        Assert(Implies(guard, new KOp(">", Cell(a, i), new KLit("0.0"))), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
+                    return v;
+                }
                 case KOp op:
                     return new KOp(op.Op, op.Args.Select(a => CWalk(a, guard)).ToArray());
                 case KLit _: case KVar _: return e;
@@ -711,6 +864,11 @@ namespace CsVerify.Verifier.Boogie
             // (no instances held yet: the preconditions bring them; who owns what is unknown)
             Emit(new KAssign { Var = "pinst", Value = new KLit("(lambda q: Inst :: 0)") });
             Emit(new KHavoc { Var = "owner" });
+            if (_p.UsesCells)
+            {
+                Emit(new KAssign { Var = "cells", Value = new KLit($"(lambda x$: Ref :: (lambda i$: int :: {(_p.ArrayMode ? "0.0" : "1.0")}))") });
+                Emit(new KHavoc { Var = "cowner" });
+            }
             if (_p.ThisIsView) Emit(new KMapUpdate { Map = "perm", Ref = new KVar("this"), Value = new KLit("true") });
             ViewsAtEntry(grant: true);
         }
@@ -825,6 +983,8 @@ namespace CsVerify.Verifier.Boogie
                     var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
                     // (a non-nullable field of a built object: not this one's, while its constructor builds it)
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis)) Assume(new KOp("!=", v, new KLit("null")));
+                    // (a field of an allocated object refers to an allocated object, as CsVerify's engine assumes where it reads one)
+                    if (IsRef(FieldType(fd.Field))) Assume(Allocated(o, v));
                     return v;
                 }
                 default: throw new NotTranslated("in code: " + e.GetType().Name);
@@ -959,6 +1119,17 @@ namespace CsVerify.Verifier.Boogie
                     var o = Spec(acc.Obj, wf, guard);
                     return _held ? Held(o) : new KLit("true");
                 }
+                case KCells cl:
+                {
+                    var a = Spec(cl.Arr, wf, guard);
+                    var lo = Spec(cl.Lo, wf, guard);
+                    var hi = Spec(cl.Hi, wf, guard);
+                    // (in hand, as a condition: a method that keeps no cell permissions holds every cell)
+                    if (!_held || !_p.UsesCells) return new KLit("true");
+                    var i = new KVar("i$");
+                    return new KQuant { Forall = true, Var = "i$", Range = null,
+                        Body = Implies(new KOp("&&", new KOp("<=", lo, i), new KOp("<", i, hi)), new KOp(">=", Cell(a, i), Amount(cl))) };
+                }
                 case KInst inst:
                 {
                     var q = Instance(inst.Pred, inst.Args.Select(a => Spec(a, wf, guard)).ToArray());
@@ -972,6 +1143,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !Mentions(o, _bound))
                         _facts.Add(new KOp("==>", new KOp("!=", o, new KLit("null")), new KOp("!=", v, new KLit("null"))));
+                    if (IsRef(FieldType(fd.Field)) && !Mentions(o, _bound)) _facts.Add(Allocated(o, v));
                     return v;
                 }
                 case KQuant q:

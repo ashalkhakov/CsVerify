@@ -284,9 +284,26 @@ many of each instance it holds, and `owner: [Ref]Inst`, which instance each fold
 - A predicate's body is checked where it is declared, as ghost code: read left to right, each field read needs a
   `Spec.Acc` to its left (CSV1016), and each read is checked not null under the conditions before it.
 - As a condition elsewhere (`Spec.Assert(Seg(...))`), a permission means "in hand".
+- A constructor exchanges permissions as any call does, about the new object.
+- A field of an allocated object refers to an allocated object: assumed where one is read, as CsVerify's engine does.
 
-Not yet: single-field (`Spec.Acc(o, nameof(C.F))`) and array-cell permissions (`Spec.Acc(a, i, j)`, `Spec.AccRead`),
-functions over predicates (a `[Pure]` or `[GhostFunction]` whose precondition holds a permission, which reads its
+**Array cells.** `Spec.Acc(a, lo, hi)` is permission to the cells `a[lo..hi)`, `Spec.Acc(a)` to all of them, and
+`Spec.AccRead` a read share of them (Viper's quantified permissions over a range). A procedure that exchanges cells (its
+contract names some, it folds or unfolds a predicate holding some, or it calls what takes some) keeps
+`cells: [Ref][int]real` (1.0 whole, ε a share) and `cowner: [Ref][int]Inst`:
+- one whose contract names cells holds none but those it is given; any other holds every cell, but those it gives;
+- writing `a[i]` needs the whole cell (CSV1016); a new array's cells are all in hand;
+- received cells are added (and, where it holds only what it is given, weren't whole already); given ones must be in
+  hand (CSV1016); folded ones are owned by the instance, and unfolding splits them as objects are split;
+- a call that takes cells changes only those it got, and those folded into the instances it got, unless they are still
+  in hand, and arrays it allocates: every other cell keeps its value (`assume` against a snapshot taken before it);
+- in a procedure that holds only what it is given, calling what may write any array without saying which cells is
+  CSV1016;
+- a predicate's body may read only cells it has a `Spec.Acc` for (CSV1016), and holds no `Spec.AccRead`.
+
+`Spec.Fresh(r)` is `!old($Alloc[r])`.
+
+Not yet: single-field permissions (`Spec.Acc(o, nameof(C.F))`), functions over predicates (a `[Pure]` or `[GhostFunction]` whose precondition holds a permission, which reads its
 footprint), ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read shares, `in` views, packages, and
 `Spec.Modifies` lending trees.
 
@@ -353,10 +370,9 @@ reads, writes, lengths and allocation, fields, object creation, calls of each ot
 `Spec.Exists`, `Spec.Old`, `Spec.Result` and calls of functions.
 
 Also `ref` and `out` parameters, `[Owned]` classes with their views and invariants, `Spec.Acc` of objects, and
-predicates with `Spec.Fold` and `Spec.Unfold`.
+predicates with `Spec.Fold` and `Spec.Unfold`, and array-cell permissions.
 
-Not yet (such a method is verified by CsVerify's engine): single-field and array-cell permissions, functions over
-predicates, ownership trees, shares, virtual
+Not yet (such a method is verified by CsVerify's engine): single-field permissions, functions over predicates, ownership trees, shares, virtual
 members, interfaces, inheritance, records (data types), generics, strings, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, permissions and views, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
@@ -379,8 +395,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
 5. frames (`Spec.Modifies`, `Spec.Reads`), and the library's stub contracts;
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
-   objects, predicates; next: single-field and array-cell permissions, which most of the remaining samples use, then
-   functions over predicates, trees, shares, packages);
+   objects, predicates, array cells; next: functions over predicates, single-field permissions, trees, shares,
+   packages);
 7. locks, async and threads;
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
