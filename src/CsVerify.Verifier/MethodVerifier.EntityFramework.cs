@@ -188,6 +188,31 @@ namespace CsVerify.Verifier
 
         private readonly HashSet<SyntaxNode> _cyclesReported = new HashSet<SyntaxNode>();
 
+        /// <summary>
+        /// A compiled query (a static readonly field made by EF.CompileQuery, in this file) that gives a value (First,
+        /// Single, Count, Any...) called: the query its lambda writes, on the arguments, read at the call. One that
+        /// gives a sequence (read when it is enumerated, after the call), EF.CompileAsyncQuery's, and one declared in
+        /// another file are library calls.
+        /// </summary>
+        private Term CompiledQueryCall(IInvocationOperation inv, Frame f, SpecEnv spec)
+        {
+            if (Ef == null || inv.TargetMethod.MethodKind != MethodKind.DelegateInvoke || !(Unwrapped(inv.Instance) is IFieldReferenceOperation fr) ||
+                !fr.Field.IsStatic || !fr.Field.IsReadOnly) return null;
+            if (!(fr.Field.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax decl) ||
+                decl.SyntaxTree != _model.SyntaxTree || !(decl.Initializer?.Value is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax made)) return null;
+            if (!(_model.GetOperation(made) is IInvocationOperation compile) || compile.TargetMethod.Name != "CompileQuery" ||
+                compile.TargetMethod.ContainingType?.ToDisplayString() != "Microsoft.EntityFrameworkCore.EF") return null;
+            var lambda = compile.Arguments.Length == 1 ? QuotedLambda(compile.Arguments[0].Value) : null;
+            if (lambda == null || lambda.Body.Operations.Length != 1 || !(lambda.Body.Operations[0] is IReturnOperation ret) || ret.ReturnedValue == null) return null;
+            var ps = lambda.Symbol.Parameters;
+            if (ps.Length != inv.Arguments.Length || IsSequenceType(inv.Type)) return null;
+            // (the lambda's parameters, bound in this frame while its body runs: they are no other variable)
+            var args = Enumerable.Range(0, ps.Length).Select(k => Eval(inv.Arguments.First(a => a.Parameter.Ordinal == k).Value, f, spec)).ToList();
+            for (int k = 0; k < ps.Length; k++) f.Vars[ps[k]] = args[k];
+            try { return Eval(ret.ReturnedValue, f, spec); }
+            finally { foreach (var p in ps) f.Vars.Remove(p); }
+        }
+
         /// <summary>The navigation an Include lambda names (x => x.Customer).</summary>
         private IPropertySymbol Navigation(IOperation lambda) =>
             QuotedLambda(lambda) is IAnonymousFunctionOperation fn && fn.Body.Operations.Length == 1 && fn.Body.Operations[0] is IReturnOperation ret &&

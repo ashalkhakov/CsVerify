@@ -1796,6 +1796,7 @@ namespace CsVerify.Verifier
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
+            if (CompiledQueryCall(inv, f, spec) is Term compiled) return compiled;
             if (DbQueryCall(inv, f, spec) is Term dbQuery) return dbQuery;
             if (EfTrackerCall(inv, f, spec) is Term tracked) return tracked;
             if (AtomicCall(inv, f, spec) is Term atomic) return atomic;

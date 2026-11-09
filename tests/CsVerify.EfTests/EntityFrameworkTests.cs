@@ -560,6 +560,25 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(int id) { using var db = new Shop(); var o = await db.Orders.FirstOrDefaultAsync(x => x.Id == id); if (o == null) return; " +
             "await H.ShipAll(db); o.Total = 1; await db.SaveChangesAsync(); } }"));
 
+        // ---- compiled queries ----
+
+        private const string Compiled =
+            "public static class Q { public static readonly Func<Shop, int, IEnumerable<Order>> Large = EF.CompileQuery((Shop db, int above) => db.Orders.AsNoTracking().Where(o => o.Total > above)); " +
+            "public static readonly Func<Shop, int, Order?> ById = EF.CompileQuery((Shop db, int id) => db.Orders.AsNoTracking().FirstOrDefault(o => o.Id == id)); " +
+            "public static readonly Func<Shop, Order?> AnyOne = EF.CompileQuery((Shop db) => db.Orders.AsNoTracking().FirstOrDefault()); }\n";
+
+        [Fact]
+        public void CompiledQuery_OfAValue_IsTheQueryItsLambdaWrites() => Assert.Empty(Errors("M", Compiled +
+            "public static class C { public static void M(Shop db, int id) { var o = Q.ById(db, id); if (o != null) Spec.Assert(o.Id == id); } }"));
+
+        [Fact]
+        public void CompiledQuery_OfAValue_IsCheckedAsItsQuery() => Assert.Contains("CSV1031", Errors("M", Compiled +
+            "public static class C { public static Order? M(Shop db) => Q.AnyOne(db); }"));
+
+        [Fact]
+        public void CompiledQuery_OfASequence_IsALibraryCall() => Assert.NotEmpty(Errors("M", Compiled +
+            "public static class C { public static void M(Shop db) { var r = Q.Large(db, 5).ToList(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Total > 5)); } }"));
+
         // ---- the local view ----
 
         [Fact]
