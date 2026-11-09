@@ -195,6 +195,37 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Where(o => o.Rating != 3 && o.Total > 5).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Total > 5 && r[i].Rating != 3)); } }"));
 
+        // ---- what compares values: groups, Distinct, set operators ----
+
+        [Fact]
+        public void Contains_OnKeys_IsRead() => Assert.Empty(Errors("M",
+            "public static class C { public static bool M(Shop db) { Spec.Ensures<bool>(r => !r); return db.Orders.Where(o => o.Total > 5).Select(o => o.Total).Contains(3); } }"));
+
+        [Fact]
+        public void Distinct_OnKeys_IsRead() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.Where(o => o.Total > 5).Select(o => o.Total).Distinct().ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i] > 5)); } }"));
+
+        [Fact]
+        public void Distinct_OnStrings_ComparesByCollation() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.Where(c => c.Id > 5).Select(c => c.Name).Distinct().ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i] != null)); } }"));
+
+        [Fact]
+        public void GroupBy_OnKeys_GivesGroupsOfThatKey() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().GroupBy(o => o.CustomerId).Select(g => new { g.Key, N = g.Count() }).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].N > 0)); } }"));
+
+        [Fact]
+        public void GroupJoin_OnKeys_GivesTheMatches() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().GroupJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, os) => new { c.Id, N = os.Count() }).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].N >= 0)); } }"));
+
+        [Fact]
+        public void Union_IsInNoOrder() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.Select(o => o.Id).Union(db.Customers.Select(c => c.Id)).ToListAsync(); " +
+            "var o0 = await db.Orders.Select(o => o.Id).ToListAsync(); Spec.Assert(r.Count == 0 || o0.Count == 0 || r[0] == o0[0]); } }"));
+
         // ---- rows by their place: an order the database fixes (CSV1031) ----
 
         [Fact]
@@ -275,6 +306,51 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().Include(c => c.Orders).ToListAsync(); " +
             "var s = await db.Customers.AsNoTracking().ToListAsync(); var o = await db.Orders.AsNoTracking().Include(x => x.Customer).ToListAsync(); " +
             "Spec.Assert(r.Count <= 1 || s.Count <= 1 || o.Count <= 1); } }"));
+
+        private const string People =
+            "public sealed class Addr { public string City { get; set; } = \"\"; }\n" +
+            "[Microsoft.EntityFrameworkCore.Owned] public sealed class Phone { public string Number { get; set; } = \"\"; }\n" +
+            "public sealed class Person { public int Id { get; set; } public Addr Home { get; set; } = new Addr(); public Phone? Phone { get; set; } }\n" +
+            "public sealed class People : DbContext { public DbSet<Person> All => Set<Person>(); protected override void OnModelCreating(ModelBuilder b) { b.Entity<Person>().OwnsOne(p => p.Home); } }\n";
+
+        [Fact]
+        public void Owned_IsLoadedWithItsOwner_NotSaidNull() => Assert.NotEmpty(Errors("M", People +
+            "public static class C { public static async Task M(People db) { var r = await db.All.AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Home == null)); } }"));
+
+        [Fact]
+        public void Owned_ByItsAttribute_NotSaidNull() => Assert.NotEmpty(Errors("M", People +
+            "public static class C { public static async Task M(People db) { var r = await db.All.AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Phone == null)); } }"));
+
+        private const string Store =
+            "public sealed class Prod { public int Id { get; set; } public string Name { get; set; } = \"\"; }\n" +
+            "public sealed class Ln { public int Id { get; set; } public int OrdId { get; set; } public int ProdId { get; set; } public Prod? Prod { get; set; } }\n" +
+            "public sealed class Ord { public int Id { get; set; } public int? FeaturedId { get; set; } public Prod? Featured { get; set; } public List<Ln> Lns { get; set; } = new List<Ln>(); }\n" +
+            "public sealed class Store : DbContext { public DbSet<Ord> Ords => Set<Ord>(); public DbSet<Ln> Lns => Set<Ln>(); public DbSet<Prod> Prods => Set<Prod>(); }\n";
+
+        [Fact]
+        public void ThenInclude_LoadsTheNextLevel() => Assert.Empty(Errors("M", Store +
+            "public static class C { public static async Task M(Store db) { var r = await db.Ords.AsNoTracking().Include(o => o.Lns).ThenInclude(l => l.Prod).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => Spec.Forall(0, r[i].Lns.Count, j => r[i].Lns[j].OrdId == r[i].Id && r[i].Lns[j].Prod != null && r[i].Lns[j].Prod!.Id == r[i].Lns[j].ProdId))); } }"));
+
+        [Fact]
+        public void Navigation_ToATypeAPathLoads_IsNotSaidNull() => Assert.NotEmpty(Errors("M", Store +
+            "public static class C { public static async Task M(Store db) { var r = await db.Ords.AsNoTracking().Include(o => o.Lns).ThenInclude(l => l.Prod).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Featured == null)); } }"));
+
+        [Fact]
+        public void Navigation_ToATypeNoPathLoads_IsNull() => Assert.Empty(Errors("M", Store +
+            "public static class C { public static async Task M(Store db) { var r = await db.Ords.AsNoTracking().Include(o => o.Lns).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Featured == null)); } }"));
+
+        [Fact]
+        public void Include_Tracked_IsTheRowTheForeignKeyNames() => Assert.Empty(Errors("M",
+            "public static class C { public static async Task M() { using var db = new Shop(); var r = await db.Orders.Include(o => o.Customer).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null || r[i].Customer!.Id == r[i].CustomerId)); } }"));
+
+        [Fact]
+        public void Include_Tracked_InAContextPassedIn_SaysNothing() => Assert.NotEmpty(Errors("M",
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.Include(o => o.Customer).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null || r[i].Customer!.Id == r[i].CustomerId)); } }"));
 
         [Fact]
         public void Include_ByName_SaysNothing() => Assert.NotEmpty(Errors("M",

@@ -31,12 +31,15 @@ namespace CsVerify.Verifier
             public SyntaxNode Cycle;
             /// <summary>An Include this doesn't read (by name, or filtered): what it loads isn't known.</summary>
             public bool UnknownInclude;
+            /// <summary>Each Include path: its Include's navigation, then each ThenInclude's.</summary>
+            public List<List<IPropertySymbol>> IncludePaths = new List<List<IPropertySymbol>>();
 
             public DbTable With(System.Action<DbTable> change)
             {
                 var t = new DbTable { Context = Context, Entity = Entity, NoTracking = NoTracking, IdentityResolution = IdentityResolution,
                                       IgnoreFilters = IgnoreFilters, Includes = new HashSet<IPropertySymbol>(Includes, SymbolEqualityComparer.Default),
-                                      IncludePath = new List<ITypeSymbol>(IncludePath), Cycle = Cycle, UnknownInclude = UnknownInclude };
+                                      IncludePath = new List<ITypeSymbol>(IncludePath), Cycle = Cycle, UnknownInclude = UnknownInclude,
+                                      IncludePaths = IncludePaths.Select(p => new List<IPropertySymbol>(p)).ToList() };
                 change(t);
                 return t;
             }
@@ -158,6 +161,9 @@ namespace CsVerify.Verifier
                     {
                         var nav = inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is IOperation lambda ? Navigation(lambda) : null;
                         if (nav == null) t.UnknownInclude = true;
+                        else if (m.Name == "Include") t.IncludePaths.Add(new List<IPropertySymbol> { nav });
+                        else if (t.IncludePaths.Count > 0) t.IncludePaths[t.IncludePaths.Count - 1].Add(nav);
+                        else t.UnknownInclude = true;
                         if (m.Name == "Include")
                         {
                             if (nav != null) t.Includes.Add(nav);
@@ -348,6 +354,19 @@ namespace CsVerify.Verifier
                         var same = T.And(T.Not(T.Eq(T.Select(tracked, y, Sort.Int), T.Int(0))), IsEntity(y, e), SameKey(e, y, Row(i), f));
                         return new Term($"(forall (({yn} Int)) (! (=> {same.S} (= {Row(i).S} {yn})) :pattern ((select {tracked.S} {yn}))))", Sort.Bool);
                     }, Row));
+                // an included reference is the row its foreign key names, when the context tracked none of these rows
+                // before (so their keys are the database's): EF sets it to the instance it tracks for that key
+                if (!t.UnknownInclude)
+                    foreach (var nav in e.References.Where(r => t.Includes.Contains(r) && FieldEffects.IsHeapField(r)))
+                        if (e.ForeignKeys.TryGetValue(nav, out var fk) && Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1)
+                        {
+                            var guard = known;
+                            AssumeSide(T.Implies(guard, OverIndices("forall", T.Int(0), n, i =>
+                            {
+                                var v = T.Coerce(T.Select(FieldMap(f, nav), Row(i), Sort.Int), Sort.Int);
+                                return T.Or(T.Not(NotNull(v)), T.And(IsEntity(v, p), ForeignKeyMatches(fk, Row(i), p.Key[0], v, f) ?? T.True));
+                            }, Row)));
+                        }
                 // tracked from here on
                 f.Link = null;
                 var after = Pointwise("tracked", Sort.Row, $"(ite (and {IsRow(new Term("y", Sort.Int)).S} (= (select {tracked.S} y) 0)) 1 (select {tracked.S} y))");
@@ -362,29 +381,136 @@ namespace CsVerify.Verifier
         /// key that can't be null), and an included List holds only rows whose foreign key is this row's key; each
         /// passing its type's query filters, unless the query ignores them.
         /// </summary>
+        /// <summary>The entity passes its type's query filters (true where the query ignores them).</summary>
+        private Term Filtered(DbTable t, EfModel.Entity of, Term o, Frame f)
+        {
+            if (t.IgnoreFilters) return T.True;
+            var all = new List<Term>();
+            foreach (var filter in of.Filters)
+                if (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation r)
+                    all.Add(T.Coerce(InDatabase(() => ApplyValue(r.ReturnedValue, filter.Symbol.Parameters[0], o, f), o), Sort.Bool));
+            return T.And(all.ToArray());
+        }
+
+        /// <summary>The dependent's foreign key is the principal's key (null where a column isn't followed).</summary>
+        private Term ForeignKeyMatches(IPropertySymbol fk, Term dependent, IPropertySymbol key, Term principal, Frame f)
+        {
+            var fkv = KeyColumn(fk, dependent, f);
+            var kv = KeyColumn(key, principal, f);
+            if (fkv == null || kv == null) return null;
+            return IsNullableValue(fk.Type) ? T.And(HasValue(fkv), T.Eq(T.Coerce(ValueOf(fkv, fk.Type), kv.Sort), kv)) : T.Eq(T.Coerce(fkv, kv.Sort), kv);
+        }
+
+        /// <summary>
+        /// For every object y the predicate holds of, body(y) (triggered by the predicate); the side facts reading the
+        /// body gives are quantified the same way, not left naming y outside its quantifier (as OverIndices does).
+        /// </summary>
+        private Term ForEachObject(System.Func<Term, Term> holds, System.Func<Term, Term> body)
+        {
+            var name = _z3.FreshName("y");
+            var y = new Term(name, Sort.Int);
+            _quantDepth++;
+            int factLevels = _quantFacts.Count;
+            _quantFacts.Push(new List<Term>());
+            bool wasCode = _codeMode;
+            _codeMode = false;
+            _foreignSpec++;
+            try
+            {
+                var b = AsBool(body(y));
+                var collected = _quantFacts.Pop();
+                foreach (var plain in collected.Where(x => !x.S.Contains(name))) AssumeSide(plain);
+                var facts = T.And(collected.Where(x => x.S.Contains(name)).ToArray());
+                var guard = holds(y);
+                if (facts != T.True) AssumeSide(new Term($"(forall (({name} Int)) (! {T.Implies(guard, facts).S} :pattern ({guard.S})))", Sort.Bool));
+                return new Term($"(forall (({name} Int)) (! {T.Implies(guard, b).S} :pattern ({guard.S})))", Sort.Bool);
+            }
+            finally
+            {
+                while (_quantFacts.Count > factLevels) _quantFacts.Pop();
+                _foreignSpec--;
+                _codeMode = wasCode;
+                _quantDepth--;
+            }
+        }
+
+        /// <summary>The Include paths that go on from this navigation, without it.</summary>
+        private static List<List<IPropertySymbol>> PathsAfter(List<List<IPropertySymbol>> paths, IPropertySymbol nav) =>
+            paths.Where(p => p.Count > 1 && SymbolEqualityComparer.Default.Equals(p[0], nav)).Select(p => p.Skip(1).ToList()).ToList();
+
+        /// <summary>
+        /// The objects an Include path loads below the rows (the predicate <paramref name="loaded"/> holds of them),
+        /// as the rows' own: an included reference is the row its foreign key names, an included List holds only rows
+        /// with this key, each through its type's filters; and so on down each path.
+        /// </summary>
+        private void Loaded(DbTable t, EfModel.Entity e, System.Func<Term, Term> loaded, List<List<IPropertySymbol>> paths, Frame f)
+        {
+            foreach (var nav in paths.Select(p => p[0]).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Where(FieldEffects.IsHeapField))
+            {
+                var after = PathsAfter(paths, nav);
+                System.Func<Term, Term> next = null;
+                if (after.Count > 0)
+                {
+                    var name = "loaded#" + _materialized++;
+                    next = y => _z3.Apply(name, Sort.Bool, new[] { T.Coerce(y, Sort.Int) });
+                }
+                EfModel.Entity child = null;
+                System.Func<Term, Term> fact = null;
+                if (e.References.Contains(nav) && e.ForeignKeys.TryGetValue(nav, out var fk) && Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1)
+                {
+                    child = p;
+                    bool required = fk.Type.IsValueType && !IsNullableValue(fk.Type);
+                    fact = y =>
+                    {
+                        var v = T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int);
+                        var ok = T.And(NotNull(v), IsEntity(v, p), ForeignKeyMatches(fk, y, p.Key[0], v, f) ?? T.True, Filtered(t, p, v, f), next != null ? next(v) : T.True);
+                        return required ? ok : T.Or(T.Not(NotNull(v)), ok);
+                    };
+                }
+                else if (e.Collections.Contains(nav) && IsListType(nav.Type) && ListModels && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
+                         Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity d)
+                {
+                    child = d;
+                    fact = y =>
+                    {
+                        var l = T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int);
+                        var size = T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int);
+                        return T.And(NotNull(l), OverIndices("forall", T.Int(0), size, j =>
+                        {
+                            var el = T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
+                            return T.And(NotNull(el), IsEntity(el, d), ForeignKeyMatches(cfk, el, e.Key[0], y, f) ?? T.True, Filtered(t, d, el, f), next != null ? next(el) : T.True);
+                        }));
+                    };
+                }
+                if (fact == null) continue;
+                AssumeSide(ForEachObject(loaded, fact));
+                if (next != null) Loaded(t, child, next, after, f);
+            }
+        }
+
         private void Navigations(DbTable t, Term n, System.Func<Term, Term> Row, System.Func<Term, Term> IsRow, Frame f)
         {
             var e = t.Entity;
-            Term Filtered(EfModel.Entity of, Term o)
+            Term Filtered(EfModel.Entity of, Term o) => this.Filtered(t, of, o, f);
+            Term Matches(IPropertySymbol fk, Term dependent, IPropertySymbol key, Term principal) => ForeignKeyMatches(fk, dependent, key, principal, f);
+            // what the Include paths load, at any level (EF may fix up a row's navigation to one of them)
+            var loadedTypes = new HashSet<ITypeSymbol>(t.IncludePaths.SelectMany(p => p).Select(nav => EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition)
+                .Where(x => x != null), SymbolEqualityComparer.Default);
+            // the objects the paths load below the first level: marked by a predicate of each first navigation's
+            System.Func<Term, Term> Next(IPropertySymbol nav)
             {
-                if (t.IgnoreFilters) return T.True;
-                var all = new List<Term>();
-                foreach (var filter in of.Filters)
-                    if (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation r)
-                        all.Add(T.Coerce(InDatabase(() => ApplyValue(r.ReturnedValue, filter.Symbol.Parameters[0], o, f), o), Sort.Bool));
-                return T.And(all.ToArray());
-            }
-            Term Matches(IPropertySymbol fk, Term dependent, IPropertySymbol key, Term principal)
-            {
-                var fkv = KeyColumn(fk, dependent, f);
-                var kv = KeyColumn(key, principal, f);
-                if (fkv == null || kv == null) return null;
-                return IsNullableValue(fk.Type) ? T.And(HasValue(fkv), T.Eq(T.Coerce(ValueOf(fkv, fk.Type), kv.Sort), kv)) : T.Eq(T.Coerce(fkv, kv.Sort), kv);
+                var after = PathsAfter(t.IncludePaths, nav);
+                if (after.Count == 0 || !(Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity child)) return null;
+                var name = "loaded#" + _materialized++;
+                System.Func<Term, Term> next = y => _z3.Apply(name, Sort.Bool, new[] { T.Coerce(y, Sort.Int) });
+                Loaded(t, child, next, after, f);
+                return next;
             }
             foreach (var nav in e.References.Where(FieldEffects.IsHeapField))
             {
                 if (!t.Includes.Contains(nav))
                 {
+                    if (loadedTypes.Contains(nav.Type.OriginalDefinition)) continue;
                     // (written into its map, so any read of it at a row sees it)
                     var before = FieldMap(f, nav);
                     f.Link = null;
@@ -393,12 +519,13 @@ namespace CsVerify.Verifier
                 }
                 if (!e.ForeignKeys.TryGetValue(nav, out var fk) || !(Ef.EntityOf(nav.Type) is EfModel.Entity p) || p.Key.Count != 1) continue;
                 bool required = fk.Type.IsValueType && !IsNullableValue(fk.Type);
+                var deeper = Next(nav);
                 AssumeSide(OverIndices("forall", T.Int(0), n, i =>
                 {
                     var o = Row(i);
                     var v = T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int);
                     var match = Matches(fk, o, p.Key[0], v) ?? T.True;
-                    var loaded = T.And(NotNull(v), IsEntity(v, p), match, Filtered(p, v));
+                    var loaded = T.And(NotNull(v), IsEntity(v, p), match, Filtered(p, v), deeper != null ? deeper(v) : T.True);
                     return required ? loaded : T.Or(T.Not(NotNull(v)), loaded);
                 }, Row));
             }
@@ -434,7 +561,8 @@ namespace CsVerify.Verifier
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r) && FieldEffects.IsHeapField(r) && e.ForeignKeys.ContainsKey(r)))
                 Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
             if (!ListModels) { Allocated(); return; }
-            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type) && (t.Includes.Contains(c) || EmptyListInitializer(c) == true)))
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type) &&
+                (t.Includes.Contains(c) || EmptyListInitializer(c) == true && !loadedTypes.Contains(EfModel.NavigationTarget(c.Type, out _)?.OriginalDefinition))))
                 Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
             Allocated();
             foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type)))
@@ -443,7 +571,7 @@ namespace CsVerify.Verifier
                 if (d == null) continue;
                 if (!t.Includes.Contains(nav))
                 {
-                    if (EmptyListInitializer(nav) is bool empty)
+                    if (!loadedTypes.Contains(d.Type.OriginalDefinition) && EmptyListInitializer(nav) is bool empty)
                         AssumeSide(OverIndices("forall", T.Int(0), n, i =>
                         {
                             var l = T.Coerce(T.Select(FieldMap(f, nav), Row(i), Sort.Int), Sort.Int);
@@ -452,6 +580,7 @@ namespace CsVerify.Verifier
                     continue;
                 }
                 if (!e.CollectionKeys.TryGetValue(nav, out var fk) || e.Key.Count != 1) continue;
+                var deeper = Next(nav);
                 AssumeSide(OverIndices("forall", T.Int(0), n, i =>
                 {
                     var o = Row(i);
@@ -460,7 +589,7 @@ namespace CsVerify.Verifier
                     var each = OverIndices("forall", T.Int(0), size, j =>
                     {
                         var el = T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
-                        return T.And(NotNull(el), IsEntity(el, d), Matches(fk, el, e.Key[0], o) ?? T.True, Filtered(d, el));
+                        return T.And(NotNull(el), IsEntity(el, d), Matches(fk, el, e.Key[0], o) ?? T.True, Filtered(d, el), deeper != null ? deeper(el) : T.True);
                     });
                     return T.And(NotNull(l), each);
                 }, Row));
@@ -568,6 +697,45 @@ namespace CsVerify.Verifier
             finally { _inDatabase--; _databaseRows.Pop(); }
         }
 
+        /// <summary>
+        /// Spec.Equal in a lambda the database evaluates (Contains, a join's keys, a group's): strings by its collation, a
+        /// value with a string in it (a tuple, an anonymous type) by what isn't known, and with SQL's null semantics,
+        /// unknown where either side is null. Null for what compares as in .NET.
+        /// </summary>
+        private Term DatabaseEqual(ITypeSymbol t, Term a, Term b)
+        {
+            if (t == null) return null;
+            bool HasString(ITypeSymbol x) =>
+                x.SpecialType == SpecialType.System_String ||
+                x is INamedTypeSymbol { IsTupleType: true } tuple && tuple.TupleElements.Any(e => HasString(e.Type)) ||
+                x.IsAnonymousType && ((INamedTypeSymbol)x).GetMembers().OfType<IPropertySymbol>().Any(p => HasString(p.Type)) ||
+                IsNullableValue(x) && HasString(Underlying(x));
+            Term exact = null;
+            if (t.SpecialType == SpecialType.System_String) exact = CollationEqual(a, b);
+            else if (HasString(t) && !(Ef != null && Ef.ExactStrings))
+                exact = _z3.Apply("database.equal:" + t.ToDisplayString(), Sort.Bool, new[] { T.Coerce(a, Sort.Int), T.Coerce(b, Sort.Int) });
+            if (Ef != null && Ef.RelationalNulls && (IsNullableValue(t) || t.IsReferenceType))
+            {
+                Term IsNull(Term v) => IsNullableValue(t) ? T.Not(HasValue(v)) : T.Not(NotNull(T.Coerce(v, Sort.Int)));
+                var rows = _databaseRows.Count > 0 ? _databaseRows.Peek() : System.Array.Empty<Term>();
+                var unknown = _z3.Apply("relational.null.equal", Sort.Bool, rows.Select(r => T.Coerce(r, Sort.Int)).Concat(new[] { T.Coerce(a, Sort.Int), T.Coerce(b, Sort.Int) }).ToArray());
+                if (exact == null)
+                {
+                    _inDatabase--;
+                    try
+                    {
+                        exact = KnownEquality(t) ? T.Eq(a, b)
+                            : IsNullableValue(t) && KnownEquality(Underlying(t)) ? T.And(T.Eq(HasValue(a), HasValue(b)), T.Implies(HasValue(a), T.Eq(ValueOf(a, t), ValueOf(b, t))))
+                            : null;
+                    }
+                    finally { _inDatabase++; }
+                    if (exact == null) return null;
+                }
+                return T.Ite(T.Or(IsNull(a), IsNull(b)), unknown, exact);
+            }
+            return exact;
+        }
+
         private int _relationalNullsOff;
 
         /// <summary>
@@ -660,17 +828,29 @@ namespace CsVerify.Verifier
         private bool ComparesByEquality(IMethodSymbol definition, IMethodSymbol called)
         {
             if (!EqualityOperators.Contains(definition.Name)) return false;
-            // (not RightJoin: EF Core applies the left side's query filters after the join, which drops right rows)
-            if (definition.Name is not ("Join" or "LeftJoin")) return true;
-            var key = definition.TypeParameters.FirstOrDefault(t => t.Name == "K");
-            return key == null || !DefinitionInstantiation(definition, called).TryGetValue(key, out var k) || !ComparedAlike(k);
+            // (made in memory from the rows the database gave: compared as .NET does)
+            if (definition.Name is "ToDictionary" or "ToLookup" or "ToHashSet") return false;
+            // what is compared: a join's or a group's key, or the elements
+            string compared = definition.Name switch
+            {
+                "Join" or "LeftJoin" or "GroupJoin" or "GroupBy" => "K",
+                "Distinct" or "Union" or "Intersect" or "Except" or "Contains" => "T",
+                // (not RightJoin: EF Core applies the left side's query filters after the join, which drops right
+                // rows; not the By forms, nor SequenceEqual, IndexOf, CountBy, AggregateBy, which EF doesn't translate)
+                _ => null,
+            };
+            var p = compared == null ? null : definition.TypeParameters.FirstOrDefault(t => t.Name == compared);
+            return p == null || !DefinitionInstantiation(definition, called).TryGetValue(p, out var k) || !ComparedAlike(k);
         }
 
-        private static readonly HashSet<string> SourceCombinations = new HashSet<string> { "Join", "LeftJoin", "RightJoin", "SelectMany", "Concat" };
+        private static readonly HashSet<string> SourceCombinations = new HashSet<string>
+        { "Join", "LeftJoin", "RightJoin", "GroupJoin", "SelectMany", "Concat", "GroupBy", "Distinct", "Union", "Intersect", "Except" };
 
         /// <summary>
-        /// Does the operator combine rows of two sources (a join, SelectMany, Concat)? The database gives the result in
-        /// no order of theirs (SQL Server's hash join doesn't keep an outer row's matches together): it is read in any.
+        /// Does the operator combine rows of two sources (a join, SelectMany, Concat), or rows that compare equal (a
+        /// group, Distinct, a set operator)? The database gives the result in no order of theirs (SQL Server's hash
+        /// join doesn't keep an outer row's matches together, nor GROUP BY the order keys first appear in): it is read
+        /// in any.
         /// </summary>
         private static bool CombinesSources(IMethodSymbol definition) => SourceCombinations.Contains(definition.Name);
 
@@ -681,6 +861,9 @@ namespace CsVerify.Verifier
         /// </summary>
         private bool ComparedAlike(ITypeSymbol t) =>
             t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? ComparedAlike(n.TypeArguments[0]) :
+            // (several columns: each compared alike)
+            t is INamedTypeSymbol { IsTupleType: true } tuple ? tuple.TupleElements.All(e => ComparedAlike(e.Type)) :
+            t.IsAnonymousType ? ((INamedTypeSymbol)t).GetMembers().OfType<IPropertySymbol>().All(p => ComparedAlike(p.Type)) :
             t.SpecialType == SpecialType.System_String ? Ef.ExactStrings :
             t.TypeKind == TypeKind.Enum ||
             t.SpecialType is SpecialType.System_Boolean or SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or

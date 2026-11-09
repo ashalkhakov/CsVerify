@@ -24,7 +24,13 @@ namespace CsVerify.Tests
             public string Email { get; set; } = "";
             public string Name { get; set; } = "";
             public List<Order> Orders { get; set; } = new List<Order>();
+            public Address Address { get; set; } = new Address();
             public string Display => Name + " <" + Email + ">";
+        }
+
+        public sealed class Address
+        {
+            public string City { get; set; } = "";
         }
 
         public sealed class Order
@@ -35,6 +41,7 @@ namespace CsVerify.Tests
             public int Total { get; set; }
             public bool IsDeleted { get; set; }
             public int? Rating { get; set; }
+            public List<Line> Lines { get; set; } = new List<Line>();
             [ConcurrencyCheck] public int Updated { get; set; }
         }
 
@@ -56,6 +63,7 @@ namespace CsVerify.Tests
             protected override void OnModelCreating(ModelBuilder b)
             {
                 b.Entity<Customer>().HasIndex(c => c.Email).IsUnique();
+                b.Entity<Customer>().OwnsOne(c => c.Address);
                 b.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
                 b.Entity<Line>().HasKey(l => new { l.OrderId, l.No });
             }
@@ -81,11 +89,12 @@ namespace CsVerify.Tests
             using var db = New();
             db.Database.EnsureDeleted();
             db.Database.EnsureCreated();
-            var ann = new Customer { Email = "ann@example.com", Name = "Ann" };
+            var ann = new Customer { Email = "ann@example.com", Name = "Ann", Address = new Address { City = "Oslo" } };
             var bob = new Customer { Email = "bob@example.com", Name = "Bob" };
             db.Customers.AddRange(ann, bob, new Customer { Email = "ann2@example.com", Name = "Ann" });
             db.Orders.AddRange(new Order { Customer = ann, Total = 10, Rating = 3 }, new Order { Customer = ann, Total = 50, Rating = 5 },
                                new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
+            db.SaveChanges();
             db.Lines.AddRange(new Line { OrderId = 1, No = 2, Qty = 5 }, new Line { OrderId = 2, No = 1, Qty = 7 });
             db.SaveChanges();
         }
@@ -151,6 +160,104 @@ namespace CsVerify.Tests
             using var db = New();
             Assert.Throws<InvalidOperationException>(() => db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList());
             db.Orders.AsNoTrackingWithIdentityResolution().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList();
+        }
+
+        [Fact]
+        public void Owned_IsLoadedWithoutInclude()
+        {
+            using var db = New();
+            Assert.All(db.Customers.AsNoTracking().ToList(), c => Assert.NotNull(c.Address));
+            Assert.Contains(db.Customers.AsNoTracking().ToList(), c => c.Address.City == "Oslo");
+        }
+
+        [Fact]
+        public void Contains_OfStrings_ComparesByCollation()
+        {
+            using var db = New();
+            var names = new List<string> { "ANN" };
+            Assert.Equal(CaseInsensitive ? 2 : 0, db.Customers.Count(c => names.Contains(c.Name)));
+        }
+
+        // ---- operators that compare: on keys compared alike, LINQ to Objects' result, in some order ----
+
+        [Fact]
+        public void GroupBy_WithAnAggregate_IsLinqs()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(Sorted(orders.GroupBy(o => o.CustomerId).Select(g => (g.Key, g.Count(), g.Sum(o => o.Total)))),
+                         Sorted(db.Orders.GroupBy(o => o.CustomerId).Select(g => new { g.Key, N = g.Count(), T = g.Sum(o => o.Total) }).ToList().Select(x => (x.Key, x.N, x.T))));
+        }
+
+        [Fact]
+        public void GroupBy_AsTheLastOperator_IsLinqs()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(Sorted(orders.GroupBy(o => o.CustomerId).Select(g => (g.Key, string.Join(",", g.Select(o => o.Id).OrderBy(i => i))))),
+                         Sorted(db.Orders.AsNoTracking().GroupBy(o => o.CustomerId).ToList().Select(g => (g.Key, string.Join(",", g.Select(o => o.Id).OrderBy(i => i))))));
+        }
+
+        [Fact]
+        public void DistinctAndSetOperators_OnKeys_AreLinqs()
+        {
+            using var db = New();
+            var ids = db.Orders.AsNoTracking().Select(o => o.CustomerId).ToList();
+            var cs = db.Customers.AsNoTracking().Select(c => c.Id).ToList();
+            Assert.Equal(Sorted(ids.Distinct()), Sorted(db.Orders.Select(o => o.CustomerId).Distinct().ToList()));
+            Assert.Equal(Sorted(ids.Union(cs)), Sorted(db.Orders.Select(o => o.CustomerId).Union(db.Customers.Select(c => c.Id)).ToList()));
+            Assert.Equal(Sorted(cs.Intersect(ids)), Sorted(db.Customers.Select(c => c.Id).Intersect(db.Orders.Select(o => o.CustomerId)).ToList()));
+            Assert.Equal(Sorted(cs.Except(ids)), Sorted(db.Customers.Select(c => c.Id).Except(db.Orders.Select(o => o.CustomerId)).ToList()));
+            Assert.Equal(cs.Contains(2), db.Customers.Select(c => c.Id).Contains(2));
+        }
+
+        [Fact]
+        public void GroupJoin_IsLinqs_AndAsALeftJoin_Too()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            var customers = db.Customers.AsNoTracking().ToList();
+            Assert.Equal(Sorted(customers.GroupJoin(orders, c => c.Id, o => o.CustomerId, (c, os) => (c.Id, os.Count()))),
+                         Sorted(db.Customers.GroupJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, os) => new { c.Id, N = os.Count() }).ToList().Select(x => (x.Id, x.N))));
+            var left = (from c in db.Customers join o in db.Orders on c.Id equals o.CustomerId into os from o in os.DefaultIfEmpty() select new { c.Id, O = o == null ? -1 : o.Id }).ToList();
+            Assert.Contains(left, x => x.O == -1);
+        }
+
+        [Fact]
+        public void ThenInclude_WithoutTracking_LoadsEachLevel_AndFixesUpTheInverse()
+        {
+            using var db = New();
+            var cs = db.Customers.AsNoTracking().Include(c => c.Orders).ToList();
+            // (the inverse of an included collection is set: the row it hangs from)
+            Assert.All(cs, c => Assert.All(c.Orders, o => Assert.Same(c, o.Customer)));
+            var lines = db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Address).ToList();
+            Assert.All(lines, o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+        }
+
+        [Fact]
+        public void Include_ACollectionWithoutAnInverse_ByTheConventionsKey()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().Include(o => o.Lines).ToList();
+            Assert.All(orders, o => Assert.All(o.Lines, l => Assert.Equal(o.Id, l.OrderId)));
+            Assert.Contains(orders, o => o.Lines.Count == 1);
+        }
+
+        [Fact]
+        public void Tracked_Include_IsTheRowTheForeignKeyNames()
+        {
+            using var db = New();
+            Assert.All(db.Orders.Include(o => o.Customer).ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+            var cs = db.Customers.Include(c => c.Orders).ToList();
+            Assert.All(cs, c => Assert.All(c.Orders, o => Assert.Equal(c.Id, o.CustomerId)));
+        }
+
+        [Fact]
+        public void Tracked_NavigationsAreFixedUp_FromWhatTheContextTracks()
+        {
+            using var db = New();
+            db.Customers.ToList();
+            Assert.All(db.Orders.ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
         }
 
         [Fact]

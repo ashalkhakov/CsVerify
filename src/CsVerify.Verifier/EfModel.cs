@@ -82,6 +82,7 @@ namespace CsVerify.Verifier
         private EfModel(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, INamedTypeSymbol dbContext)
         {
             DbContextType = dbContext;
+            ReadOwned(compilation, userTrees);
             var called = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 .Select(i => i.Expression is MemberAccessExpressionSyntax ma ? ma.Name.Identifier.Text : (i.Expression as IdentifierNameSyntax)?.Identifier.Text)
                 .Where(n => n != null).ToList();
@@ -109,7 +110,7 @@ namespace CsVerify.Verifier
                 grew = false;
                 foreach (var e in _entities.Values.ToList())
                     foreach (var p in e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
-                        if (NavigationTarget(p.Type, out _) is INamedTypeSymbol target && IsSourceClass(target, sourceTypes) && !_entities.ContainsKey(target))
+                        if (NavigationTarget(p.Type, out _) is INamedTypeSymbol target && IsSourceClass(target, sourceTypes) && !_entities.ContainsKey(target) && !IsOwned(target))
                         { Add(target); grew = true; }
             }
             foreach (var e in _entities.Values) ReadAttributes(e);
@@ -183,6 +184,18 @@ namespace CsVerify.Verifier
                         if (back.Count == 1 && many == 1 && !_fluentInverse.Values.Contains(back[0], SymbolEqualityComparer.Default)) inverse = back[0];
                     }
                     if (inverse != null && d.ForeignKeys.TryGetValue(inverse, out var fk)) p.CollectionKeys[nav] = fk;
+                    else if (inverse == null && p.Key.Count == 1 && !d.References.Any(r => ReferenceEquals(EntityOf(r.Type), p)) &&
+                             p.Collections.Count(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), d)) == 1 &&
+                             !_fluentInverse.ContainsKey(nav) && !_fluentKeys.Keys.Any(k => ReferenceEquals(EntityOf(k.ContainingType), d)))
+                    {
+                        // (no navigation back: EF's convention, the principal's name and its key's, or Id)
+                        var key = p.Key[0];
+                        var props = d.Type.GetMembers().OfType<IPropertySymbol>().Where(x => !x.IsStatic).ToList();
+                        var named = new[] { p.Type.Name + key.Name, p.Type.Name + "Id" }
+                            .Select(n => props.FirstOrDefault(x => string.Equals(x.Name, n, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(x => x != null);
+                        var t = named?.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nt ? nt.TypeArguments[0] : named?.Type;
+                        if (named != null && SymbolEqualityComparer.Default.Equals(t, key.Type)) p.CollectionKeys[nav] = named;
+                    }
                 }
         }
 
@@ -229,6 +242,40 @@ namespace CsVerify.Verifier
             if (reference != null && collection != null) _fluentInverse[collection] = reference;
         }
 
+        /// <summary>
+        /// Owned types and complex types: their properties are columns of their owner, which EF always loads with it. They
+        /// are neither entities nor navigations here: nothing is said of them.
+        /// </summary>
+        private readonly HashSet<ITypeSymbol> _owned = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
+        public bool IsOwned(ITypeSymbol t) => t != null && _owned.Contains(t.OriginalDefinition);
+
+        private static readonly HashSet<string> OwningCalls = new HashSet<string>
+        { "OwnsOne", "OwnsMany", "Owned", "ComplexProperty", "ComplexCollection", "ComplexProperties" };
+
+        /// <summary>[Owned], [ComplexType], and OwnsOne/OwnsMany/ComplexProperty (of a navigation, or a type) or Owned&lt;T&gt;() anywhere.</summary>
+        private void ReadOwned(Compilation compilation, IReadOnlyList<SyntaxTree> trees)
+        {
+            foreach (var tree in trees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var decl in tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>())
+                    if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (Has(t, "OwnedAttribute") || Has(t, "ComplexTypeAttribute")))
+                        _owned.Add(t.OriginalDefinition);
+                foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                {
+                    var name = inv.Expression is MemberAccessExpressionSyntax ma ? ma.Name : inv.Expression as SimpleNameSyntax;
+                    if (name == null || !OwningCalls.Contains(name.Identifier.Text)) continue;
+                    if (name is GenericNameSyntax g)
+                        foreach (var a in g.TypeArgumentList.Arguments)
+                            if (model.GetTypeInfo(a).Type is ITypeSymbol owned) _owned.Add(owned.OriginalDefinition);
+                    if (inv.ArgumentList.Arguments.FirstOrDefault()?.Expression is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax m } &&
+                        model.GetSymbolInfo(m).Symbol is IPropertySymbol p)
+                        _owned.Add((NavigationTarget(p.Type, out _) ?? p.Type).OriginalDefinition);
+                }
+            }
+        }
+
         public bool IsContextType(ITypeSymbol t)
         {
             for (var b = t as INamedTypeSymbol; b != null; b = b.BaseType)
@@ -243,7 +290,7 @@ namespace CsVerify.Verifier
 
         private void Add(INamedTypeSymbol t)
         {
-            if (!_entities.ContainsKey(t.OriginalDefinition)) _entities[t.OriginalDefinition] = new Entity { Type = t };
+            if (!_owned.Contains(t.OriginalDefinition) && !_entities.ContainsKey(t.OriginalDefinition)) _entities[t.OriginalDefinition] = new Entity { Type = t };
         }
 
         private static IEnumerable<ISymbol> AllMembers(INamedTypeSymbol t)

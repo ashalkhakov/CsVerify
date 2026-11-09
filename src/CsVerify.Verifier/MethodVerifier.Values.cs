@@ -169,6 +169,7 @@ namespace CsVerify.Verifier
             var a = T.Coerce(Eval(inv.Arguments[0].Value, f, spec), Sort.Int);
             var b = T.Coerce(Eval(inv.Arguments[1].Value, f, spec), Sort.Int);
             var t = inv.TargetMethod.TypeArguments[0];
+            if (_inDatabase > 0 && DatabaseEqual(Resolve(t), a, b) is Term inDatabase) return inDatabase;
             if (KnownEquality(t)) return T.Eq(a, b);
             if (IsNullableValue(Resolve(t)) && KnownEquality(Underlying(Resolve(t))))
             {
