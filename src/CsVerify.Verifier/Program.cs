@@ -133,12 +133,16 @@ options:
             }
         }
 
-        private const string EraseUsage = @"usage: csverify erase --out <dir> [-r <reference.dll>]... [-d <symbol>]... <file.cs | directory | @paths.rsp>...
+        private const string EraseUsage = @"usage: csverify erase --out <dir> [--checked] [-r <reference.dll>]... [-d <symbol>]... <file.cs | directory | @paths.rsp>...
 
 Writes the program with all proofs erased (specifications, lemmas, ghost parameters, views) to <dir>, plus the
 erased CsVerify runtime under <dir>/CsVerify.Runtime, and checks that it compiles without CsVerify: if it does
 not, run-time code depends on ghost code (CSV2001). With -r, those references (minus the CsVerify assembly) are
-used for the check; without, the shared framework.";
+used for the check; without, the shared framework.
+
+--checked   a checked build: the specifications that can run are kept as run-time checks (preconditions,
+            postconditions, assertions, loop invariants, lock invariants, [Atomic] steps, lock levels), which
+            throw SpecificationFailedException, or do what CsVerify.Checked.Failed says (docs/erasure.md).";
 
         private static int Erase(List<string> args)
         {
@@ -146,6 +150,7 @@ used for the check; without, the shared framework.";
             var references = new List<string>();
             var defines = new List<string>();
             var inputs = new List<string>();
+            bool checkedBuild = false;
             try
             {
                 for (int i = 0; i < args.Count; i++)
@@ -153,6 +158,7 @@ used for the check; without, the shared framework.";
                     switch (args[i])
                     {
                         case "--out": outDir = args[++i]; break;
+                        case "--checked": checkedBuild = true; break;
                         case "-r": references.Add(args[++i]); break;
                         case "-d": defines.Add(args[++i]); break;
                         case "-h": case "--help": Console.WriteLine(EraseUsage); return 0;
@@ -164,7 +170,7 @@ used for the check; without, the shared framework.";
                 }
                 if (outDir == null || inputs.Count == 0) { Console.Error.WriteLine(EraseUsage); return 2; }
                 var files = inputs.SelectMany(Expand).Distinct().ToList();
-                var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines);
+                var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines, checkedBuild);
                 if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: true);
                 foreach (var f in result.Files)
                 {
@@ -174,7 +180,7 @@ used for the check; without, the shared framework.";
                 }
                 foreach (var d in result.Errors) Console.WriteLine(d);
                 Console.WriteLine(result.Success
-                    ? $"csverify erase: {result.Files.Count} files written to {outDir}; the erased program compiles"
+                    ? $"csverify erase: {result.Files.Count} files written to {outDir}; the {(checkedBuild ? "checked" : "erased")} program compiles"
                     : $"csverify erase: {result.Errors.Count} error(s)");
                 return result.Success ? 0 : 1;
             }

@@ -50,13 +50,20 @@
     It runs before BeforeCompile, so that what hooks in after it sees the erased program: Tarp's MC/DC
     instrumentation (dotnet tarp test -p:CsVerifyErase=true) measures the code that runs, not the specifications.
   -->
+  <!--
+    A checked build, when CsVerifyChecked is true: the same, but the specifications that can run are kept as run-time
+    checks (csverify erase with its checked option; docs/erasure.md), to test the program against them.
+      dotnet build -p:CsVerifyChecked=true
+  -->
   <PropertyGroup>
     <CsVerifyErase Condition="'$(CsVerifyErase)' == ''">false</CsVerifyErase>
+    <CsVerifyChecked Condition="'$(CsVerifyChecked)' == ''">false</CsVerifyChecked>
+    <CsVerifyErase Condition="'$(CsVerifyChecked)' == 'true'">true</CsVerifyErase>
   </PropertyGroup>
 
   <!-- Switching between erased and normal builds must recompile: the mode file changes only when the mode does. -->
   <Target Name="CsVerifyEraseMode" BeforeTargets="BeforeCompile">
-    <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.mode" Lines="$(CsVerifyErase)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.mode" Lines="$(CsVerifyErase) $(CsVerifyChecked)" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)csverify-erase.mode" />
     </ItemGroup>
@@ -74,7 +81,10 @@
       <_CsVerifyEraseArgs Include="@(ReferencePathWithRefAssemblies->'-r %(FullPath)')" />
     </ItemGroup>
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.rsp" Lines="@(_CsVerifyEraseArgs)" Overwrite="true" />
-    <Exec Command="$(CsVerifyCommand) erase --out &quot;$(CsVerifyErasedDir).&quot; @&quot;$(IntermediateOutputPath)csverify-erase.rsp&quot;" />
+    <PropertyGroup>
+      <_CsVerifyCheckedOption Condition="'$(CsVerifyChecked)' == 'true'">--checked</_CsVerifyCheckedOption>
+    </PropertyGroup>
+    <Exec Command="$(CsVerifyCommand) erase $(_CsVerifyCheckedOption) --out &quot;$(CsVerifyErasedDir).&quot; @&quot;$(IntermediateOutputPath)csverify-erase.rsp&quot;" />
     <ItemGroup>
       <Compile Remove="@(Compile)" />
       <Compile Include="$(CsVerifyErasedDir)**/*.cs" />
@@ -82,6 +92,9 @@
       <ReferencePathWithRefAssemblies Remove="@(_CsVerifyAssembly)" />
       <_CsVerifyAssemblyPath Include="@(ReferencePath)" Condition="'%(Filename)' == 'CsVerify.Spec' Or '%(Filename)' == 'CsVerify'" />
       <ReferencePath Remove="@(_CsVerifyAssemblyPath)" />
+      <!-- the CsVerify analyzers check the program with its proofs (the normal build); the erased one has none -->
+      <_CsVerifyAnalyzer Include="@(Analyzer)" Condition="'%(Filename)' == 'CsVerify.Analyzers'" />
+      <Analyzer Remove="@(_CsVerifyAnalyzer)" />
     </ItemGroup>
   </Target>
 </Project>

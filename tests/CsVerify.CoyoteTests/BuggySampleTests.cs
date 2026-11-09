@@ -33,17 +33,15 @@ namespace CsVerify.CoyoteTests
             Set(c, "_hits", int.MaxValue);
             await Task.Run(c.Wraps);
             Check(Get<int>(c, "_hits") >= int.MaxValue, "the count went down");
-        }, "the count went down");
+        }, "step failed: Interlocked.Increment(ref _hits)");
 
         [Fact]
         public void Atomic_TwoReads() => Finds(async () =>
         {
-            // (the method's own Spec.Assert is compiled away; this reads twice the same way)
+            // (the method's own Spec.Assert, kept by the checked build)
             var c = new Samples.Buggy.Atomic.Counter();
-            int a = 0, b = 0;
-            await All(Task.Run(() => { a = Get<int>(c, "_hits"); b = Get<int>(c, "_hits"); }), Task.Run(c.Wraps));
-            Check(a == b, "two reads differ");
-        }, "two reads differ");
+            await All(Task.Run(c.TwoReads), Task.Run(c.Wraps));
+        }, "assertion failed: a == b");
 
         // ---- TryLockBugs.cs ----
 
@@ -73,7 +71,15 @@ namespace CsVerify.CoyoteTests
             var a = new Samples.Buggy.Levels.Account(1);
             var b = new Samples.Buggy.Levels.Account(2);
             await All(Task.Run(() => Samples.Buggy.Levels.LevelBugs.Transfer(a, b)), Task.Run(() => Samples.Buggy.Levels.LevelBugs.Transfer(b, a)));
-        }, Deadlock);
+        }, "lock level failed: to.Lock"); // (before the schedules that deadlock: the transfer that locks the higher id first)
+
+        [Fact]
+        public void Levels_LowUnderHigh() => Finds(async () =>
+        {
+            // (no other code takes them the other way round, so it can't deadlock here: the lock level is what's broken)
+            var l = new Samples.Buggy.Levels.LevelBugs();
+            await Task.Run(l.LowUnderHigh);
+        }, "lock level failed: _low");
 
         [Fact]
         public void Levels_Callback() => Finds(async () =>
@@ -111,7 +117,7 @@ namespace CsVerify.CoyoteTests
             var t = new Samples.Buggy.Locks.Tally();
             await Task.Run(t.Undo);
             lock (Get<object>(t, "_lock")) Check(Get<int>(t, "_count") >= 0, "the invariant is broken with the lock free");
-        }, "the invariant is broken");
+        }, "lock invariant failed"); // (when Undo gives the lock back)
 
         [Fact]
         public void Gate_Twice() => Finds(() => new Samples.Buggy.Locks.Gate().Twice(), Deadlock);

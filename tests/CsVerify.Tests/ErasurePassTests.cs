@@ -38,8 +38,12 @@ namespace CsVerify.Tests
         {
             var erased = EraseSamples();
             Assert.True(erased.Success, string.Join("\n", erased.Errors));
-            var asm = Load(erased);
-            // each expected value is a verified postcondition of the method
+            ComputeWhatTheProofsSay(Load(erased));
+        }
+
+        /// <summary>Each expected value is a verified postcondition of the method (run erased, and checked).</summary>
+        internal static void ComputeWhatTheProofsSay(Assembly asm)
+        {
             Assert.Equal(9 + 7, Run(asm, "ArrayViews", "Demo"));
             Assert.Equal(42, Run(asm, "Memory", "Counter"));
             Assert.Equal(2, Run(asm, "Memory", "Twice"));

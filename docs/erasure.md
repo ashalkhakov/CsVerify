@@ -43,11 +43,47 @@ public static void Fill(ref ArrayView<int> view, Ptr<int> p,     public static v
 **How it builds.** Like Tarp's instrumentation:
 - the rewrite happens before the compile steps (before `BeforeCompile`), into `obj/csverify-erased/<configuration>/<framework>/`: out of the default `Compile` items, and outside the intermediate directory, so that a coverage tool hooked in after it ([Tarp](ci.md#with-tarp)) instruments the erased program, the one that runs;
 - deletions keep their line breaks, and each file starts with a `#line` naming the original, so errors, stack traces and the debugger stay on your sources;
+- the CsVerify analyzers check the program with its proofs, in a normal build, and don't run on the erased one;
 - switching between erased and normal builds recompiles.
 
 **Tested:** the erased samples carry no ghost types or ghost references, and running them returns exactly the values their verified postconditions state.
 
 **Across projects.** A project referencing an erased project calls its methods without their ghost arguments: erasure drops an argument of proof type from a call that no longer binds (a proof value can only be a proof parameter's argument), and the check decides.
+
+## The checked build
+
+A checked build erases the proofs too, but keeps the specifications that can run, as run-time checks: a way to test
+the program against them where they weren't proved (`[Trusted]` code, a method the verifier refused, code beyond what
+it models), or to hold a run to what was proved, as [the Coyote tests](coyote.md) do.
+
+```bash
+dotnet build -p:CsVerifyChecked=true                 # build the checked program
+dotnet csverify erase --checked --out checked/ src/  # or write it out to look at
+```
+
+**What is checked**, by calls of the runtime's `CsVerify.Checked`:
+- `Spec.Requires`, `Spec.Assert` and `Spec.Invariant`, where they stand;
+- `Spec.Ensures`, at each `return` and at the end of the body if it is reached, with each `Spec.Old(e)` taken where
+  the postcondition is written, on entry. A postcondition is of a normal return: an exception isn't checked;
+- a lock's `[LockInvariant]`s when it is taken and when it is given back: in a `lock` statement, on entering and in a
+  `finally`; after `Monitor.Enter`, `SemaphoreSlim.Wait` and `await WaitAsync`; before `Monitor.Exit` and `Release`;
+- each write of an `[Atomic]` field with a `Step`, and each `Interlocked` change of it (`CompareExchange` when it
+  swaps, `Exchange`, `Increment`, `Decrement`, `Add`), as that step from what it overwrote;
+- each `lock` statement on a `[LockLevel]` field: every lock the thread holds is lower (or of the same level and a
+  lower `OrderedBy` value or index). Locks taken by other means aren't followed.
+
+**What isn't:** a condition that can't run (ghost state: `Seq`, `ObjSet`, views, `[GhostFunction]`s, `Spec.Result`,
+`Spec.Old` of a lambda's variable); and one that reads what other threads may change while it is evaluated, so the
+value it sees isn't the one the proof speaks of: an `[Atomic]` or volatile field, or a `[GuardedBy]` field outside a
+`lock` statement on its lock. Lemmas, frames (`Modifies`, `Reads`) and termination measures go, as in any erased build.
+
+**A failure** throws `CsVerify.SpecificationFailedException`, with the condition and its file and line, or does what
+`CsVerify.Checked.Failed` is set to (the Coyote tests make it a Coyote assertion). `CsVerify.Checked.Waiting` and
+`Woken` are called around each `Monitor.Wait`, `SemaphoreSlim.Wait` and `WaitAsync`, for a test to follow the waits
+(the Coyote tests' liveness monitor).
+
+**Tested:** the checked samples compute the same values as the erased ones, breaking none of their checks, and keep
+their line numbers; a program that breaks each kind of check is stopped where it does.
 
 **Limitations:**
 - Erasure works per project. The runtime is compiled into each erased project, so `Ptr<T>` from two erased projects are different types.
