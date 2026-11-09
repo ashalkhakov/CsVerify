@@ -854,9 +854,13 @@ namespace CsVerify.Verifier
         private static IEnumerable<MetadataReference> References(VerifierOptions options)
         {
             // Only the shared framework: the Spec library comes in as source (see SpecSources).
-            foreach (var r in FrameworkReferences()) yield return r;
+            var framework = FrameworkReferences().ToList();
+            foreach (var r in framework) yield return r;
+            // (a reference assembly of the framework's, from a project's references, would make its types ambiguous)
+            var have = new HashSet<string>(framework.OfType<PortableExecutableReference>().Select(r => Path.GetFileName(r.FilePath ?? "")), StringComparer.OrdinalIgnoreCase);
             foreach (var r in options.References)
-                yield return MetadataReference.CreateFromFile(r);
+                if (!have.Contains(Path.GetFileName(r)))
+                    yield return MetadataReference.CreateFromFile(r);
         }
 
         public static IEnumerable<MetadataReference> FrameworkReferences() => _framework.Value;

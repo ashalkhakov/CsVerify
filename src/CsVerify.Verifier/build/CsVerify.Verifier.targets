@@ -24,8 +24,9 @@
       <_CsVerifySource Include="@(Compile)" Exclude="$(IntermediateOutputPath)**" />
     </ItemGroup>
     <ItemGroup>
-      <!-- the project's references, but CsVerify's own (its sources come with the verifier) -->
-      <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
+      <!-- the project's references, but the shared framework's (the verifier has its own) and CsVerify's (its sources
+           come with the verifier) -->
+      <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(ReferencePathWithRefAssemblies.FrameworkReferenceName)' == '' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
       <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
     </ItemGroup>
