@@ -392,6 +392,36 @@ namespace CsVerify.Verifier
                                 return T.Or(T.Not(NotNull(v)), T.And(IsEntity(v, p), ForeignKeyMatches(fk, Row(i), p.Key[0], v, f) ?? T.True));
                             }, Row)));
                         }
+                // every level the Include paths load, as without tracking, when the context tracked none of their types
+                // before either: then all of it is the database's, and what EF fixes up from is only what this loads
+                if (t.IncludePaths.Count > 0 && !t.UnknownInclude)
+                {
+                    var types = t.IncludePaths.SelectMany(p => p).Select(nav => Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)))
+                        .Where(x => x != null).Distinct().ToList();
+                    Term NoneTracked(EfModel.Entity of)
+                    {
+                        var vn = _z3.FreshName("o");
+                        var v = new Term(vn, Sort.Int);
+                        return new Term($"(forall (({vn} Int)) (! (=> (distinct (select {tracked.S} {vn}) 0) (not {IsEntity(v, of).S})) :pattern ((select {tracked.S} {vn}))))", Sort.Bool);
+                    }
+                    var all = T.And(new[] { known }.Concat(types.Select(NoneTracked)).ToArray());
+                    var name = "rows.loaded#" + _materialized++;
+                    System.Func<Term, Term> isRow = y => _z3.Apply(name, Sort.Bool, new[] { T.Coerce(y, Sort.Int) });
+                    AssumeSide(OverIndices("forall", T.Int(0), n, i => isRow(Row(i)), Row));
+                    _madeBelow = new List<(System.Func<Term, Term>, System.Func<Term, Term>)>();
+                    try { Loaded(t, e, isRow, t.IncludePaths, f, all); }
+                    finally { MarkMade(f, all); }
+                    // and what they load is tracked from here on, unchanged: of an entity of those types the context
+                    // didn't track, whether it does now isn't known (so a later query doesn't take it for untracked)
+                    var maybe = _z3.Fresh("loadedState", Sort.Row);
+                    var yv = new Term("y", Sort.Int);
+                    var ofTypes = T.Or(types.Select(x => IsEntity(yv, x)).ToArray());
+                    var now = Pointwise("tracked", Sort.Row, $"(ite (and (= (select {tracked.S} y) 0) {ofTypes.S}) (ite (= (select {maybe.S} y) 1) {Unchanged} 0) (select {tracked.S} y))");
+                    f.Link = null;
+                    f.Fields[FieldEffects.Key(state)] = T.Store(states, t.Context, now);
+                    states = FieldMap(f, state);
+                    tracked = Named(T.Select(states, t.Context, Sort.Row), "tracked");
+                }
                 // tracked from here on
                 f.Link = null;
                 var after = Pointwise("tracked", Sort.Row, $"(ite (and {IsRow(new Term("y", Sort.Int)).S} (= (select {tracked.S} y) 0)) 1 (select {tracked.S} y))");
@@ -468,7 +498,31 @@ namespace CsVerify.Verifier
         /// as the rows' own: an included reference is the row its foreign key names, an included List holds only rows
         /// with this key, each through its type's filters; and so on down each path.
         /// </summary>
-        private void Loaded(DbTable t, EfModel.Entity e, System.Func<Term, Term> loaded, List<List<IPropertySymbol>> paths, Frame f)
+        /// <summary>
+        /// What EF made below the rows, as (which objects, what of each): new objects, marked allocated so that what is
+        /// made after the query is none of them (MarkMade).
+        /// </summary>
+        private List<(System.Func<Term, Term> holds, System.Func<Term, Term> obj)> _madeBelow;
+
+        /// <summary>
+        /// The objects EF made below the rows are allocated (and, where <paramref name="guard"/> holds, weren't
+        /// before): M(z) holds of each, and allocation is M or what it was.
+        /// </summary>
+        private void MarkMade(Frame f, Term guard)
+        {
+            var made = _madeBelow;
+            _madeBelow = null;
+            if (made == null || made.Count == 0 || f.Alloc == null) return;
+            var name = "made.below#" + _materialized++;
+            Term M(Term z) => _z3.Apply(name, Sort.Bool, new[] { T.Coerce(z, Sort.Int) });
+            var before = f.Alloc;
+            foreach (var (holds, obj) in made)
+                AssumeSide(ForEachObject(holds, y => T.Implies(NotNull(obj(y)),
+                    T.And(M(obj(y)), guard == null ? T.Not(InSet(before, obj(y))) : T.Implies(guard, T.Not(InSet(before, obj(y))))))));
+            f.Alloc = Pointwise("madeBelow", Sort.Row, $"(ite {M(new Term("y", Sort.Int)).S} 1 (select {before.S} y))");
+        }
+
+        private void Loaded(DbTable t, EfModel.Entity e, System.Func<Term, Term> loaded, List<List<IPropertySymbol>> paths, Frame f, Term guard = null)
         {
             foreach (var nav in paths.Select(p => p[0]).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Where(FieldEffects.IsHeapField))
             {
@@ -500,20 +554,30 @@ namespace CsVerify.Verifier
                     {
                         var l = T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int);
                         var size = T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int);
+                        Term Element(Term j) => T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
                         return T.And(NotNull(l), AsList(l), OverIndices("forall", T.Int(0), size, j =>
                         {
-                            var el = T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
+                            var el = Element(j);
                             return T.And(NotNull(el), IsEntity(el, d), ForeignKeyMatches(cfk, el, e.Key[0], y, f) ?? T.True, Filtered(t, d, el, f), next != null ? next(el) : T.True);
-                        }));
+                        }, pattern: j => T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int)));
                     };
                 }
                 if (fact == null) continue;
-                AssumeSide(ForEachObject(loaded, fact));
-                if (next != null) Loaded(t, child, next, after, f);
+                _madeBelow?.Add((loaded, y => T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int)));
+                var each = ForEachObject(loaded, fact);
+                AssumeSide(guard == null ? each : T.Implies(guard, each));
+                if (next != null) Loaded(t, child, next, after, f, guard);
             }
         }
 
         private void Navigations(DbTable t, Term n, System.Func<Term, Term> Row, System.Func<Term, Term> IsRow, Frame f)
+        {
+            _madeBelow = new List<(System.Func<Term, Term>, System.Func<Term, Term>)>();
+            try { RowNavigations(t, n, Row, IsRow, f); }
+            finally { MarkMade(f, null); }
+        }
+
+        private void RowNavigations(DbTable t, Term n, System.Func<Term, Term> Row, System.Func<Term, Term> IsRow, Frame f)
         {
             var e = t.Entity;
             Term Filtered(EfModel.Entity of, Term o) => this.Filtered(t, of, o, f);

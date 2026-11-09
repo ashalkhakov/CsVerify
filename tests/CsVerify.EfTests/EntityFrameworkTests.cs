@@ -322,7 +322,7 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(People db) { var r = await db.All.AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Phone == null)); } }"));
 
         private const string Store =
-            "public sealed class Prod { public int Id { get; set; } public string Name { get; set; } = \"\"; }\n" +
+            "public sealed class Prod { public int Id { get; set; } public string Name { get; set; } = \"\"; public List<Ord> Ords { get; set; } = new List<Ord>(); }\n" +
             "public sealed class Ln { public int Id { get; set; } public int OrdId { get; set; } public int ProdId { get; set; } public Prod? Prod { get; set; } }\n" +
             "public sealed class Ord { public int Id { get; set; } public int? FeaturedId { get; set; } public Prod? Featured { get; set; } public List<Ln> Lns { get; set; } = new List<Ln>(); }\n" +
             "public sealed class Store : DbContext { public DbSet<Ord> Ords => Set<Ord>(); public DbSet<Ln> Lns => Set<Ln>(); public DbSet<Prod> Prods => Set<Prod>(); }\n";
@@ -348,6 +348,11 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Room db) { var r = await db.Bags.AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Items.Count == 0)); } }"));
 
         [Fact]
+        public void ThenInclude_Tracked_ACollectionBelow_HoldsTheRowsWithItsKey() => Assert.Empty(Errors("M", Store +
+            "public static class C { public static void M() { using var db = new Store(); var r = db.Ords.Include(o => o.Featured).ThenInclude(p => p!.Ords).ToList(); " +
+            "Spec.Assert(r.Count == 0 || r[0].Featured == null || r[0].Featured!.Ords.Count == 0 || r[0].Featured!.Ords[0].FeaturedId == r[0].Featured!.Id); } }"));
+
+        [Fact]
         public void Navigation_ToATypeAPathLoads_IsNotSaidNull() => Assert.NotEmpty(Errors("M", Store +
             "public static class C { public static async Task M(Store db) { var r = await db.Ords.AsNoTracking().Include(o => o.Lns).ThenInclude(l => l.Prod).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Featured == null)); } }"));
@@ -361,6 +366,21 @@ public sealed class Shop : DbContext
         public void Include_Tracked_IsTheRowTheForeignKeyNames() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M() { using var db = new Shop(); var r = await db.Orders.Include(o => o.Customer).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Customer == null || r[i].Customer!.Id == r[i].CustomerId)); } }"));
+
+        [Fact]
+        public void ThenInclude_Tracked_OnANewContext_LoadsTheNextLevel() => Assert.Empty(Errors("M", Store +
+            "public static class C { public static void M() { using var db = new Store(); var r = db.Ords.Include(o => o.Lns).ThenInclude(l => l.Prod).ToList(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => Spec.Forall(0, r[i].Lns.Count, j => r[i].Lns[j].OrdId == r[i].Id && r[i].Lns[j].Prod != null && r[i].Lns[j].Prod!.Id == r[i].Lns[j].ProdId))); } }"));
+
+        [Fact]
+        public void ThenInclude_Tracked_AfterTheContextTrackedSome_SaysNothing() => Assert.NotEmpty(Errors("M", Store +
+            "public static class C { public static async Task M() { using var db = new Store(); var p = await db.Prods.ToListAsync(); var r = await db.Ords.Include(o => o.Lns).ThenInclude(l => l.Prod).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => Spec.Forall(0, r[i].Lns.Count, j => r[i].Lns[j].OrdId == r[i].Id && r[i].Lns[j].Prod != null && r[i].Lns[j].Prod!.Id == r[i].Lns[j].ProdId))); } }"));
+
+        [Fact]
+        public void Include_Tracked_WhatItLoadsIsTrackedAfter() => Assert.NotEmpty(Errors("M", Store +
+            "public static class C { public static async Task M() { using var db = new Store(); var os = await db.Ords.Include(o => o.Lns).ToListAsync(); " +
+            "var r = await db.Lns.Where(l => l.ProdId > 5).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].ProdId > 5)); } }"));
 
         [Fact]
         public void Include_Tracked_InAContextPassedIn_SaysNothing() => Assert.NotEmpty(Errors("M",

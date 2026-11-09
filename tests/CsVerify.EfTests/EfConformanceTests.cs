@@ -269,6 +269,15 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void Tracked_OnANewContext_ThenInclude_IsEachLevelsRows_ThroughTheFilters()
+        {
+            using var db = New();
+            var orders = db.Orders.Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList();
+            Assert.All(orders, o => Assert.All(o.Customer!.Orders, p => Assert.True(p.CustomerId == o.CustomerId && !p.IsDeleted)));
+            Assert.Contains(orders, o => o.Customer!.Orders.Count == 2);
+        }
+
+        [Fact]
         public void Tracked_NavigationsAreFixedUp_FromWhatTheContextTracks()
         {
             using var db = New();
