@@ -467,7 +467,7 @@ namespace CsVerify.Verifier
                         return required ? ok : T.Or(T.Not(NotNull(v)), ok);
                     };
                 }
-                else if (e.Collections.Contains(nav) && IsListType(nav.Type) && ListModels && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
+                else if (e.Collections.Contains(nav) && MadeAsList(nav) && ListModels && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
                          Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity d)
                 {
                     child = d;
@@ -475,7 +475,7 @@ namespace CsVerify.Verifier
                     {
                         var l = T.Coerce(T.Select(FieldMap(f, nav), y, Sort.Int), Sort.Int);
                         var size = T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int);
-                        return T.And(NotNull(l), OverIndices("forall", T.Int(0), size, j =>
+                        return T.And(NotNull(l), AsList(l), OverIndices("forall", T.Int(0), size, j =>
                         {
                             var el = T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
                             return T.And(NotNull(el), IsEntity(el, d), ForeignKeyMatches(cfk, el, e.Key[0], y, f) ?? T.True, Filtered(t, d, el, f), next != null ? next(el) : T.True);
@@ -561,11 +561,11 @@ namespace CsVerify.Verifier
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r) && FieldEffects.IsHeapField(r) && e.ForeignKeys.ContainsKey(r)))
                 Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
             if (!ListModels) { Allocated(); return; }
-            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type) &&
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && MadeAsList(c) &&
                 (t.Includes.Contains(c) || EmptyListInitializer(c) == true && !loadedTypes.Contains(EfModel.NavigationTarget(c.Type, out _)?.OriginalDefinition))))
                 Unshared(o => T.Coerce(T.Select(FieldMap(f, nav), o, Sort.Int), Sort.Int));
             Allocated();
-            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && IsListType(c.Type)))
+            foreach (var nav in e.Collections.Where(c => FieldEffects.IsHeapField(c) && MadeAsList(c)))
             {
                 var d = Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _));
                 if (d == null) continue;
@@ -575,7 +575,7 @@ namespace CsVerify.Verifier
                         AssumeSide(OverIndices("forall", T.Int(0), n, i =>
                         {
                             var l = T.Coerce(T.Select(FieldMap(f, nav), Row(i), Sort.Int), Sort.Int);
-                            return empty ? T.And(NotNull(l), T.Eq(T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int), T.Int(0))) : T.Not(NotNull(l));
+                            return empty ? T.And(NotNull(l), AsList(l), T.Eq(T.Coerce(ModelAt(ListModel("Size"), new[] { l }, f), Sort.Int), T.Int(0))) : T.Not(NotNull(l));
                         }, Row));
                     continue;
                 }
@@ -591,9 +591,37 @@ namespace CsVerify.Verifier
                         var el = T.Coerce(T.Select(T.Select(FieldMap(f, ListModel("Items")), l, Sort.Row), j, Sort.Int), Sort.Int);
                         return T.And(NotNull(el), IsEntity(el, d), Matches(fk, el, e.Key[0], o) ?? T.True, Filtered(d, el), deeper != null ? deeper(el) : T.True);
                     });
-                    return T.And(NotNull(l), each);
+                    return T.And(NotNull(l), AsList(l), each);
                 }, Row));
             }
+        }
+
+        /// <summary>An initializer that leaves the property null (null, null!, default): as if there were none.</summary>
+        private static bool NullInitializer(Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax init)
+        {
+            while (init is Microsoft.CodeAnalysis.CSharp.Syntax.PostfixUnaryExpressionSyntax bang && bang.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression)) init = bang.Operand;
+            return init is Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax l && (l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression) || l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.DefaultLiteralExpression));
+        }
+
+        /// <summary>A List, not an array: what reading it through IList or ICollection goes by.</summary>
+        private Term AsList(Term l) => T.And(IsListObject(l), T.Not(IsArrayObject(l)));
+
+        /// <summary>
+        /// Is a collection navigation a List&lt;T&gt; when EF makes or loads it? Of that type, or IList&lt;T&gt; (EF makes
+        /// a List), or another collection interface whose initializer makes a List.
+        /// </summary>
+        private bool MadeAsList(IPropertySymbol nav)
+        {
+            if (IsListType(nav.Type)) return true;
+            if (!(nav.Type is INamedTypeSymbol n) || n.TypeKind != TypeKind.Interface || n.TypeArguments.Length != 1) return false;
+            var decl = nav.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax;
+            var init = NullInitializer(decl?.Initializer?.Value) ? null : decl?.Initializer?.Value;
+            if (init == null) return n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.IList<T>";
+            if (nav.ContainingType.InstanceConstructors.Any(c => !c.IsImplicitlyDeclared)) return false;
+            var made = _model.Compilation.GetSemanticModel(init.SyntaxTree).GetTypeInfo(init).Type;
+            if (init is Microsoft.CodeAnalysis.CSharp.Syntax.CollectionExpressionSyntax)
+                return n.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IList<T>" or "System.Collections.Generic.ICollection<T>";
+            return made != null && IsListType(made);
         }
 
         /// <summary>
@@ -605,7 +633,7 @@ namespace CsVerify.Verifier
         {
             if (nav.ContainingType.InstanceConstructors.Any(c => !c.IsImplicitlyDeclared)) return null;
             if (!(nav.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax decl)) return null;
-            switch (decl.Initializer?.Value)
+            switch (NullInitializer(decl.Initializer?.Value) ? null : decl.Initializer?.Value)
             {
                 case null: return false;
                 case Microsoft.CodeAnalysis.CSharp.Syntax.ImplicitObjectCreationExpressionSyntax io when io.ArgumentList.Arguments.Count == 0 && io.Initializer == null: return true;

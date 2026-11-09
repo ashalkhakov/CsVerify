@@ -332,6 +332,21 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Store db) { var r = await db.Ords.AsNoTracking().Include(o => o.Lns).ThenInclude(l => l.Prod).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => Spec.Forall(0, r[i].Lns.Count, j => r[i].Lns[j].OrdId == r[i].Id && r[i].Lns[j].Prod != null && r[i].Lns[j].Prod!.Id == r[i].Lns[j].ProdId))); } }"));
 
+        private const string Interfaces =
+            "public sealed class Item { public int Id { get; set; } public int BagId { get; set; } public int ShelfId { get; set; } }\n" +
+            "public sealed class Bag { public int Id { get; set; } public ICollection<Item> Items { get; set; } = new List<Item>(); }\n" +
+            "public sealed class Shelf { public int Id { get; set; } public IList<Item> Items { get; set; } = null!; }\n" +
+            "public sealed class Room : DbContext { public DbSet<Bag> Bags => Set<Bag>(); public DbSet<Shelf> Shelves => Set<Shelf>(); public DbSet<Item> Items => Set<Item>(); }\n";
+
+        [Fact]
+        public void Include_AnIList_HoldsTheRowsWithThisKey() => Assert.Empty(Errors("M", Interfaces +
+            "public static class C { public static async Task M(Room db) { var r = await db.Shelves.AsNoTracking().Include(b => b.Items).ToListAsync(); " +
+            "if (r.Count == 0) return; var s = r[0]; var items = s.Items; if (items.Count == 0) return; var it = items[0]; Spec.Assert(it.ShelfId == s.Id); } }"));
+
+        [Fact]
+        public void Collection_AnICollectionNotIncluded_IsEmpty() => Assert.Empty(Errors("M", Interfaces +
+            "public static class C { public static async Task M(Room db) { var r = await db.Bags.AsNoTracking().ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Items.Count == 0)); } }"));
+
         [Fact]
         public void Navigation_ToATypeAPathLoads_IsNotSaidNull() => Assert.NotEmpty(Errors("M", Store +
             "public static class C { public static async Task M(Store db) { var r = await db.Ords.AsNoTracking().Include(o => o.Lns).ThenInclude(l => l.Prod).ToListAsync(); " +

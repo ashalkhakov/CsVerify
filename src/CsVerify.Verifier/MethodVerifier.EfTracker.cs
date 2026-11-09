@@ -123,7 +123,7 @@ namespace CsVerify.Verifier
             if (Ef == null || TrackerModel("Unshared") == null || !EntitiesStayHere()) return null;
             var columns = Ef.Entities.SelectMany(e => e.Type.GetMembers().OfType<IPropertySymbol>()).Where(FieldEffects.IsHeapField)
                 .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Select(p => ((ISymbol)p, FieldMap(f, p))).ToList();
-            if (ListModels && Ef.Entities.Any(e => e.Collections.Any(c => IsListType(c.Type))))
+            if (ListModels && Ef.Entities.Any(e => e.Collections.Any(MadeAsList)))
                 foreach (var model in new[] { ListModel("Items"), ListModel("Size") })
                     columns.Add((model, FieldMap(f, model)));
             return columns;
