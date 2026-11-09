@@ -220,7 +220,7 @@ namespace CsVerify.Verifier
                 {
                     var body = (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation r) ? r.ReturnedValue : null;
                     if (body != null)
-                        AssumeSide(OverIndices("forall", T.Int(0), n, i => T.Coerce(InDatabase(() => ApplyValue(body, filter.Symbol.Parameters[0], Row(i), f)), Sort.Bool), Row));
+                        AssumeSide(OverIndices("forall", T.Int(0), n, i => T.Coerce(InDatabase(() => ApplyValue(body, filter.Symbol.Parameters[0], Row(i), f), Row(i)), Sort.Bool), Row));
                 }
             Term known = T.True;
             // (Count, Any, a projection of columns: the database's values, nothing tracked)
@@ -325,12 +325,48 @@ namespace CsVerify.Verifier
 
         private bool IsDatabaseQuery(Term t) => _tables.ContainsKey(T.Coerce(t, Sort.Int).S) || _databaseQueries.Contains(T.Coerce(t, Sort.Int).S);
 
-        /// <summary>A query's lambda as the database evaluates it: strings compared by its collation.</summary>
-        private Term InDatabase(System.Func<Term> body)
+        /// <summary>The rows a lambda the database evaluates is applied to, innermost last.</summary>
+        private readonly Stack<Term[]> _databaseRows = new Stack<Term[]>();
+
+        /// <summary>A query's lambda as the database evaluates it, on these rows: strings compared by its collation.</summary>
+        private Term InDatabase(System.Func<Term> body, params Term[] rows)
         {
             _inDatabase++;
+            _databaseRows.Push(rows.Where(r => r != null).ToArray());
             try { return body(); }
-            finally { _inDatabase--; }
+            finally { _inDatabase--; _databaseRows.Pop(); }
+        }
+
+        private int _relationalNullsOff;
+
+        /// <summary>
+        /// With SQL's null semantics (UseRelationalNulls), == and != of two operands either of which may be null: as in
+        /// C# where neither is, and where one is, unknown (SQL's unknown, which EF passes through a NOT, so a row is kept
+        /// or not by what else the query says). Unknown for each row and comparison: nothing is known of such rows.
+        /// </summary>
+        private Term RelationalNullEquality(IBinaryOperation b, Frame f, SpecEnv spec)
+        {
+            if (_inDatabase == 0 || _relationalNullsOff > 0 || Ef == null || !Ef.RelationalNulls) return null;
+            if (!(b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals)) return null;
+            if (IsNullConstant(Unconverted(b.LeftOperand)) || IsNullConstant(Unconverted(b.RightOperand))) return null;
+            Term MayBeNull(IOperation op)
+            {
+                var t = Unconverted(op).Type;
+                if (IsNullableValue(t)) return T.Not(HasValue(Eval(Unconverted(op), f, spec)));
+                if (t != null && t.IsReferenceType && Unconverted(op).Type.NullableAnnotation != NullableAnnotation.NotAnnotated)
+                    return T.Not(NotNull(T.Coerce(Eval(Unconverted(op), f, spec), Sort.Int)));
+                return null;
+            }
+            var nl = MayBeNull(b.LeftOperand);
+            var nr = MayBeNull(b.RightOperand);
+            if (nl == null && nr == null) return null;
+            Term inCSharp;
+            _relationalNullsOff++;
+            try { inCSharp = AsBool(Eval(b, f, spec)); }
+            finally { _relationalNullsOff--; }
+            var rows = _databaseRows.Count > 0 ? _databaseRows.Peek() : System.Array.Empty<Term>();
+            var unknown = _z3.Apply("relational.null#" + b.Syntax.SpanStart, Sort.Bool, rows.Select(r => T.Coerce(r, Sort.Int)).Append(T.Int(0)).ToArray());
+            return T.Ite(T.Or(nl ?? T.False, nr ?? T.False), unknown, inCSharp);
         }
 
         /// <summary>

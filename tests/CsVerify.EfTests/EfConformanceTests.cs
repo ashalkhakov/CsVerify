@@ -34,6 +34,7 @@ namespace CsVerify.Tests
             public Customer? Customer { get; set; }
             public int Total { get; set; }
             public bool IsDeleted { get; set; }
+            public int? Rating { get; set; }
             [ConcurrencyCheck] public int Updated { get; set; }
         }
 
@@ -54,6 +55,9 @@ namespace CsVerify.Tests
         /// <summary>How a context of this provider connects (to a database of this test's own).</summary>
         protected abstract void Configure(DbContextOptionsBuilder o);
 
+        /// <summary>The same, with SQL's null semantics (UseRelationalNulls).</summary>
+        protected abstract void ConfigureRelationalNulls(DbContextOptionsBuilder o);
+
         /// <summary>Does the provider's default collation ignore case and trailing spaces (SQL Server's does)?</summary>
         protected abstract bool CaseInsensitive { get; }
 
@@ -71,7 +75,7 @@ namespace CsVerify.Tests
             var ann = new Customer { Email = "ann@example.com", Name = "Ann" };
             var bob = new Customer { Email = "bob@example.com", Name = "Bob" };
             db.Customers.AddRange(ann, bob, new Customer { Email = "ann2@example.com", Name = "Ann" });
-            db.Orders.AddRange(new Order { Customer = ann, Total = 10 }, new Order { Customer = ann, Total = 50 },
+            db.Orders.AddRange(new Order { Customer = ann, Total = 10, Rating = 3 }, new Order { Customer = ann, Total = 50, Rating = 5 },
                                new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
             db.SaveChanges();
         }
@@ -293,6 +297,36 @@ namespace CsVerify.Tests
             Assert.Equal(0, db.Orders.Join(db.Orders, a => a.Total > 1000 ? a.Id : (int?)null, b => b.Total > 1000 ? b.Id : (int?)null, (a, b) => a.Id).Count());
         }
 
+        // ---- nulls: by default, comparisons of nullable columns mean what they do in C#; with UseRelationalNulls, SQL's ----
+
+        private static readonly System.Linq.Expressions.Expression<Func<Order, bool>>[] NullablePredicates =
+        {
+            o => o.Rating != 3, o => o.Rating == 3, o => !(o.Rating == 3), o => o.Rating > 3, o => !(o.Rating > 3), o => o.Rating <= 3,
+            o => !(o.Rating > 3) && o.Total > 0, o => o.Rating == null || o.Rating < 4, o => !(o.Rating < 4 || o.Total > 60),
+        };
+
+        [Fact]
+        public void Nulls_ByDefault_CompareAsInCSharp()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            foreach (var p in NullablePredicates)
+                Assert.True(orders.Count(p.Compile()) == db.Orders.Count(p), p.ToString());
+        }
+
+        [Fact]
+        public void Nulls_Relational_DropRowsWhereAComparisonIsUnknown()
+        {
+            using var db = new Shop(ConfigureRelationalNulls);
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(3, orders.Count(o => o.Rating != 3 || o.Rating == 3));
+            Assert.Equal(2, db.Orders.Count(o => o.Rating != 3 || o.Rating == 3)); // (the order without a rating in neither)
+            Assert.Equal(1, db.Orders.Count(o => !(o.Rating == 3))); // (EF takes the NOT into the comparison: Rating <> 3)
+            // (other comparisons, and against null, stay C#'s: EF compensates for them)
+            Assert.Equal(orders.Count(o => !(o.Rating > 3)), db.Orders.Count(o => !(o.Rating > 3)));
+            Assert.Equal(orders.Count(o => o.Rating == null), db.Orders.Count(o => o.Rating == null));
+        }
+
         [Fact]
         public void Collation_EqualStringsMatch_AndCaseMayNot()
         {
@@ -340,6 +374,7 @@ namespace CsVerify.Tests
         private readonly SqliteConnection _connection = new SqliteConnection("DataSource=:memory:");
         public SqliteConformanceTests() { _connection.Open(); Seed(); }
         protected override void Configure(DbContextOptionsBuilder o) => o.UseSqlite(_connection);
+        protected override void ConfigureRelationalNulls(DbContextOptionsBuilder o) => o.UseSqlite(_connection, x => x.UseRelationalNulls());
         protected override bool CaseInsensitive => false;
         protected override bool TrulyAsync => false;
         public override void Dispose() => _connection.Dispose();
@@ -382,6 +417,7 @@ namespace CsVerify.Tests
         }
 
         protected override void Configure(DbContextOptionsBuilder o) => o.UseSqlServer(_connection);
+        protected override void ConfigureRelationalNulls(DbContextOptionsBuilder o) => o.UseSqlServer(_connection, x => x.UseRelationalNulls());
         protected override bool CaseInsensitive => true;
         protected override bool TrulyAsync => true;
 

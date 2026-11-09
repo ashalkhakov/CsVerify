@@ -26,6 +26,7 @@ public sealed class Order
     public int Total { get; set; }
     public bool Shipped { get; set; }
     public bool IsDeleted { get; set; }
+    public int? Rating { get; set; }
     [System.ComponentModel.DataAnnotations.ConcurrencyCheck] public System.DateTime Updated { get; set; }
 }
 public sealed class Shop : DbContext
@@ -155,6 +156,26 @@ public sealed class Shop : DbContext
         public void Join_OnStrings_ComparesByCollation() => Assert.NotEmpty(Errors("M",
             "public static class C { public static async Task M(Shop db) { var r = await db.Customers.AsNoTracking().Join(db.Customers.AsNoTracking(), a => a.Name, b => b.Email, " +
             "(a, b) => new { a.Name, b.Email }).ToListAsync(); Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Name == r[i].Email)); } }"));
+
+        // ---- nulls ----
+
+        private const string RelationalNulls =
+            "public static class Options { public static void Relational<B, E>(Microsoft.EntityFrameworkCore.Infrastructure.RelationalDbContextOptionsBuilder<B, E> x) " +
+            "where B : Microsoft.EntityFrameworkCore.Infrastructure.RelationalDbContextOptionsBuilder<B, E> where E : Microsoft.EntityFrameworkCore.Infrastructure.RelationalOptionsExtension, new() " +
+            "=> x.UseRelationalNulls(); }\n";
+
+        private const string EitherRating = "public static class C { public static bool M(Shop db) { Spec.Ensures<bool>(r => r); return db.Orders.All(o => o.Rating != 3 || o.Rating == 3); } }";
+
+        [Fact]
+        public void Nulls_ByDefault_CompareAsInCSharp() => Assert.Empty(Errors("M", EitherRating));
+
+        [Fact]
+        public void Nulls_Relational_AComparisonWithNullIsUnknown() => Assert.NotEmpty(Errors("M", RelationalNulls + EitherRating));
+
+        [Fact]
+        public void Nulls_Relational_WhatHasNoNullIsAsBefore() => Assert.Empty(Errors("M", RelationalNulls +
+            "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Where(o => o.Rating != 3 && o.Total > 5).ToListAsync(); " +
+            "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Total > 5 && r[i].Rating != 3)); } }"));
 
         // ---- rows by their place: an order the database fixes (CSV1031) ----
 

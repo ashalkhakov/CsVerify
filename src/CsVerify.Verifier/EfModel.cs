@@ -48,6 +48,12 @@ namespace CsVerify.Verifier
 
         public INamedTypeSymbol DbContextType { get; }
 
+        /// <summary>
+        /// Does the program turn on SQL's null semantics (UseRelationalNulls) for some context? Then for every one: which
+        /// context a provider's options are for isn't followed.
+        /// </summary>
+        public readonly bool RelationalNulls;
+
         /// <summary>The model, or null for a program that does not reference EF Core.</summary>
         public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes)
         {
@@ -58,6 +64,9 @@ namespace CsVerify.Verifier
         private EfModel(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, INamedTypeSymbol dbContext)
         {
             DbContextType = dbContext;
+            RelationalNulls = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i =>
+                i.Expression is MemberAccessExpressionSyntax { Name.Identifier.Text: "UseRelationalNulls" } &&
+                !(i.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))));
             foreach (var t in sourceTypes.Where(t => IsContextType(t)))
             {
                 Contexts.Add(t);

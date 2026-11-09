@@ -1258,6 +1258,7 @@ namespace CsVerify.Verifier
 
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
+            if (RelationalNullEquality(b, f, spec) is Term relational) return relational;
             // (x == null on an int? is not marked lifted, but compares the same way)
             if (b.IsLifted || b.OperatorMethod == null && (IsNullableValue(b.LeftOperand.Type) || IsNullableValue(b.RightOperand.Type)))
                 return LiftedBinary(b, f, spec);

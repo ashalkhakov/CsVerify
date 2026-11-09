@@ -400,7 +400,7 @@ namespace CsVerify.Verifier
         /// <summary>A lambda argument applied to elements (spec mode): a value of its body's type.</summary>
         private Term ApplyLambda(Lambda l, Term a, Term b = null)
         {
-            var r = l.Database ? InDatabase(() => ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b)) : ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b);
+            var r = l.Database ? InDatabase(() => ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b), a, b) : ApplyValue(l.Body, l.P1, a, l.Frame, l.P2, b);
             var type = Unconverted(l.Body).Type;
             if (Indexable(type)) _sourceTypes[T.Coerce(r, Sort.Int).S] = type; // (SelectMany's inner sequences)
             return r;

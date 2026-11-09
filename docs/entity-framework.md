@@ -29,7 +29,11 @@ operators, and EF's `...Async` forms awaited where they are called, are read fro
 - each passes the entity's query filters, unless the query says `IgnoreQueryFilters()`;
 - strings are compared as the database compares them: an equivalence that equal strings satisfy, of which nothing
   else is known. SQL Server's default collation ignores case and trailing spaces, SQLite's does not;
-- other code may have changed the table since the last run, so two runs needn't agree.
+- other code may have changed the table since the last run, so two runs needn't agree;
+- comparisons of what may be null mean what they do in C#, as EF makes them by default. With SQL's null semantics
+  (`UseRelationalNulls()`, anywhere in the program), `==` and `!=` where either side is null are unknown: SQL's
+  unknown, which EF carries through a `!`, so nothing is known of whether such a row is kept. Other comparisons, and
+  those against `null`, stay C#'s, which EF keeps.
 
 So `Where`, `Count`, `Any` and `All` are exact, `SingleOrDefault(c => c.Email == email)` is proved to find at most one
 row when `Email` has a unique index, and a row a query gives passes its predicate.
