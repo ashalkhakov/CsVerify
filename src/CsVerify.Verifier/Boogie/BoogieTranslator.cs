@@ -144,6 +144,17 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Does the program use permissions at all (Spec.Acc, Spec.AccRead: CsVerify's engine checks array writes against cells then)?</summary>
         public bool UsesPermissions { get; set; }
 
+        public bool UsesFieldPermissions { get; set; }
+
+        private readonly Dictionary<ISymbol, int> _fieldIds = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default);
+
+        public int FieldId(ISymbol field)
+        {
+            field = field.OriginalDefinition;
+            if (!_fieldIds.TryGetValue(field, out var id)) _fieldIds[field] = id = _fieldIds.Count + 1;
+            return id;
+        }
+
         Contract IProgramFacts.ContractOf(IMethodSymbol m) => ContractOf(m);
 
         private readonly Dictionary<IMethodSymbol, KProcedure> _signatures = new Dictionary<IMethodSymbol, KProcedure>(SymbolEqualityComparer.Default);
@@ -205,6 +216,12 @@ namespace CsVerify.Verifier.Boogie
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
                     foreach (var map in frame.Maps)
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
+                    foreach (var map in frame.Maps) frame.FieldIds[map] = FieldId(fields.First(f => FieldMap(f) == map));
+                    if (frame.Fields)
+                    {
+                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$fperm", Raw = "[Ref][int]bool" });
+                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$fowner", Raw = "[Ref][int]Inst" });
+                    }
                     if (frame.Cells)
                     {
                         frame.ElementMaps.AddRange((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));

@@ -151,6 +151,15 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
     }
 
+    /// <summary>Spec.Acc(Obj, nameof(C.F)): permission to one field of an [Owned] object (Viper's acc(o.f)).</summary>
+    internal sealed class KFieldAcc : KExpr
+    {
+        public KExpr Obj;
+        public ISymbol Field;
+        public ITypeSymbol Type;
+        public SyntaxNode At;
+    }
+
     /// <summary>An instance of a [Predicate]: P(Args), its permissions folded into it.</summary>
     internal sealed class KInst : KExpr
     {
@@ -181,6 +190,9 @@ namespace CsVerify.Verifier.Boogie
         public bool Cells;
         public List<(KExpr guard, KExpr atom)> Given = new List<(KExpr, KExpr)>();
         public List<string> ElementMaps = new List<string>();
+        /// <summary>Each [Owned] map's field id (its single-field permission's).</summary>
+        public Dictionary<string, int> FieldIds = new Dictionary<string, int>();
+        public bool Fields;
     }
 
     /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
@@ -387,6 +399,8 @@ namespace CsVerify.Verifier.Boogie
         public bool UsesCells;
         /// <summary>Its contract names cells: it holds none but those it is given (else every cell, but those it gives away).</summary>
         public bool ArrayMode;
+        /// <summary>It keeps single-field permissions (fperm, fowner): the program uses some.</summary>
+        public bool UsesFields;
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The predicates it names.</summary>

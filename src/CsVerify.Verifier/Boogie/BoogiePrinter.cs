@@ -269,6 +269,11 @@ namespace CsVerify.Verifier.Boogie
                 Line("  var perm: [Ref]bool;");
                 Line("  var pinst: [Inst]int;");
                 Line("  var owner: [Ref]Inst;");
+                if (p.UsesFields)
+                {
+                    Line("  var fperm: [Ref][int]bool;");
+                    Line("  var fowner: [Ref][int]Inst;");
+                }
                 if (p.UsesCells)
                 {
                     Line("  var cells: [Ref][int]real;");
@@ -341,7 +346,8 @@ namespace CsVerify.Verifier.Boogie
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
                 case KCallFrame { After: false } frame:
-                    foreach (var x in new[] { "perm", "pinst", "owner", "$Alloc" }.Concat(frame.Maps).Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]))
+                    foreach (var x in new[] { "perm", "pinst", "owner", "$Alloc" }.Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
+                                 .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]))
                         Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
                     return;
                 case KCallFrame frame:
@@ -351,7 +357,20 @@ namespace CsVerify.Verifier.Boogie
                     var kept = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}) || {sn}$pinst[{sn}$owner[y]] >= 1)";
                     Line("    havoc owner;");
                     Line($"    assume (forall y: Ref :: {kept} ==> owner[y] == {sn}$owner[y]);");
-                    foreach (var map in frame.Maps) Line($"    assume (forall y: Ref :: {kept} ==> {map}[y] == {sn}{map}[y]);");
+                    foreach (var map in frame.Maps)
+                    {
+                        // (a field: also kept where the caller holds that field alone, or has it folded into an instance it holds)
+                        var k = frame.FieldIds.TryGetValue(map, out var id) ? id : 0;
+                        var field = frame.Fields ? $" || {sn}$fperm[y][{k}] || {sn}$pinst[{sn}$fowner[y][{k}]] >= 1" : "";
+                        var keptHere = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}){field} || {sn}$pinst[{sn}$owner[y]] >= 1)";
+                        Line($"    assume (forall y: Ref :: {keptHere} ==> {map}[y] == {sn}{map}[y]);");
+                    }
+                    if (frame.Fields)
+                    {
+                        var keptField = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}) || {sn}$fperm[y][k] || {sn}$pinst[{sn}$owner[y]] >= 1 || {sn}$pinst[{sn}$fowner[y][k]] >= 1)";
+                        Line("    havoc fowner;");
+                        Line($"    assume (forall y: Ref, k: int :: {keptField} ==> fowner[y][k] == {sn}$fowner[y][k]);");
+                    }
                     if (frame.Cells)
                     {
                         // (a call that takes cells changes only those it got, and those folded into the instances it got, but

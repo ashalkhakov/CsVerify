@@ -41,6 +41,10 @@ namespace CsVerify.Verifier.Boogie
 
         public static ITypeSymbol ViewOf(ITypeSymbol view) => ((INamedTypeSymbol)view).TypeArguments[0];
 
+        /// <summary>The fields a whole object of this type has: those a split hands out one by one.</summary>
+        public static List<ISymbol> WholeFields(ITypeSymbol type) =>
+            FieldEffects.FieldsOf(type).Where(x => FieldEffects.IsHeapField(x) && !x.IsStatic).Select(FieldEffects.Key).Distinct(SymbolEqualityComparer.Default).ToList();
+
         /// <summary>A field of an [Owned] class's objects: written only with the object's view.</summary>
         public static bool IsOwnedField(ISymbol field) => !field.IsStatic && SpecSymbols.IsOwned(field.ContainingType);
 

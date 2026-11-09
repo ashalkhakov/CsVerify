@@ -22,6 +22,10 @@ namespace CsVerify.Verifier.Boogie
         bool IsFunction(IMethodSymbol m);
         /// <summary>Does the program use permissions (Spec.Acc, Spec.AccRead) at all? Then array writes are checked against cells.</summary>
         bool UsesPermissions { get; }
+        /// <summary>Does the program use single-field permissions (Spec.Acc(o, nameof(C.F)))?</summary>
+        bool UsesFieldPermissions { get; }
+        /// <summary>A field's id, for its single-field permission.</summary>
+        int FieldId(ISymbol field);
     }
 
     /// <summary>
@@ -108,6 +112,7 @@ namespace CsVerify.Verifier.Boogie
                 _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
                 if (_p.UsesCells) _p.UsesPerm = true;
             }
+            _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
             // the contract as mathematics (each with what makes it well-defined)
             var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
             var ensures = _p.Ensures.Select(e => (spec: e, math: Spec(e.Expr, out var wf), wf, facts: Take())).ToList();
@@ -161,6 +166,11 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign { Var = "perm", Value = new KVar($"l${b.Ordinal}$perm") });
                     Emit(new KAssign { Var = "pinst", Value = new KVar($"l${b.Ordinal}$pinst") });
                     Emit(new KHavoc { Var = "owner" });
+                    if (_p.UsesFields)
+                    {
+                        Emit(new KAssign { Var = "fperm", Value = new KVar($"l${b.Ordinal}$fperm") });
+                        Emit(new KHavoc { Var = "fowner" });
+                    }
                     if (_p.UsesCells)
                     {
                         Emit(new KAssign { Var = "cells", Value = new KVar($"l${b.Ordinal}$cells") });
@@ -185,10 +195,12 @@ namespace CsVerify.Verifier.Boogie
                                     Emit(new KAssign { Var = $"l${into}$perm", Value = new KVar("perm") });
                                     Emit(new KAssign { Var = $"l${into}$pinst", Value = new KVar("pinst") });
                                     if (_p.UsesCells) Emit(new KAssign { Var = $"l${into}$cells", Value = new KVar("cells") });
+                                    if (_p.UsesFields) Emit(new KAssign { Var = $"l${into}$fperm", Value = new KVar("fperm") });
                                 }
                                 else
                                     Assert(new KLit($"(forall y: Ref :: l${into}$perm[y] ==> perm[y]) && (forall q: Inst :: pinst[q] >= l${into}$pinst[q])" +
-                                                    (_p.UsesCells ? $" && (forall x$: Ref, i$: int :: cells[x$][i$] >= l${into}$cells[x$][i$])" : "")),
+                                                    (_p.UsesCells ? $" && (forall x$: Ref, i$: int :: cells[x$][i$] >= l${into}$cells[x$][i$])" : "") +
+                                                    (_p.UsesFields ? $" && (forall y$: Ref, k$: int :: l${into}$fperm[y$][k$] ==> fperm[y$][k$])" : "")),
                                         At("CSV1016", _p.LoopSyntax.GetValueOrDefault(into) ?? _p.Method.DeclaringSyntaxReferences[0].GetSyntax(), "the loop body might use up permissions held outside it (only its invariant's go round the loop)"));
                             }
                         foreach (var target in g.Targets)
@@ -269,7 +281,7 @@ namespace CsVerify.Verifier.Boogie
                     if (fs.Instance != null && !fs.OnThis)
                         Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fs.At, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
                     if (IsOwnedField(fs.Field))
-                        Assert(Held(o), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                        Assert(CanWrite(o, fs.Field), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                     if (NonNullField(fs.Field))
                         Assert(new KOp("!=", value, new KLit("null")), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
                     Emit(new KFieldStore { Field = fs.Field, Instance = o, Value = value, OnThis = fs.OnThis, At = fs.At, InstanceAt = fs.InstanceAt });
@@ -385,7 +397,7 @@ namespace CsVerify.Verifier.Boogie
             // (in array mode, a call that may write any array: which cells it writes is unknown)
             if (_p.ArrayMode && !cellCall && !pure)
                 Emit(new KAssert { Cond = new KLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
-            var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee, Cells = cellCall, Given = gave } : null;
+            var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee, Cells = cellCall, Given = gave, Fields = _p.UsesFields } : null;
             if (frame != null) Emit(frame);
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
@@ -400,7 +412,7 @@ namespace CsVerify.Verifier.Boogie
             if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
             if (frame != null)
             {
-                Emit(new KCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps });
+                Emit(new KCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps, Fields = frame.Fields, FieldIds = frame.FieldIds });
                 // and those its postconditions give back are in hand (its result and ref and out arguments, as they came back)
                 var back = new Dictionary<string, KExpr>(given);
                 if (c.Result != null) back["result"] = new KVar(c.Result);
@@ -430,7 +442,7 @@ namespace CsVerify.Verifier.Boogie
 
         private static bool HasAtoms(KExpr e) => e switch
         {
-            KAcc _ => true, KInst _ => true, KCells _ => true,
+            KAcc _ => true, KInst _ => true, KCells _ => true, KFieldAcc _ => true,
             KOp op => op.Args.Any(HasAtoms),
             _ => false,
         };
@@ -467,6 +479,9 @@ namespace CsVerify.Verifier.Boogie
                 case KCells cl:
                     atom(guard, new KCells { Arr = M(cl.Arr), Lo = M(cl.Lo), Hi = M(cl.Hi), Read = cl.Read, At = cl.At });
                     return new KLit("true");
+                case KFieldAcc fa:
+                    atom(guard, new KFieldAcc { Obj = M(fa.Obj), Field = fa.Field, Type = fa.Type, At = fa.At });
+                    return new KLit("true");
                 case KLit { Text: "true" }: return e;
             }
             if (HasAtoms(e)) throw new NotTranslated("a permission that isn't a conjunct, or in a branch of ?:");
@@ -488,11 +503,13 @@ namespace CsVerify.Verifier.Boogie
             Walk(e, given, new KLit("true"), (g, a) =>
             {
                 if (a is KCells cl) { if (_p.UsesCells) InhaleCells(g, cl); return; }
+                if (a is KFieldAcc fa) { TakeField(fa, g); return; }
                 if (a is KAcc acc)
                 {
                     // two whole permissions to one object can't both be in hand, and one in hand is folded nowhere
                     Assume(Implies(g, new KOp("&&", new KOp("&&", new KOp("!=", acc.Obj, new KLit("null")), new KOp("!", Held(acc.Obj))),
                                                   new KOp("==", new KOp("sel", new KVar("owner"), acc.Obj), None))));
+                    NoFieldsHeld(g, acc.Obj, acc.Type);
                     SetPerm(acc.Obj, new KOp("||", Held(acc.Obj), g));
                     if (Invariant(acc.Type, acc.Obj) is KExpr inv) Assume(Implies(g, inv));
                 }
@@ -512,6 +529,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 gave?.Add((g, a));
                 if (a is KCells cl) { if (_p.UsesCells) ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand"); return; }
+                if (a is KFieldAcc fa) { GiveField(fa, g, at, $"'{fa.At}' is needed here, but that permission is not in hand"); return; }
                 if (a is KAcc acc)
                 {
                     Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"'{acc.At}' is needed here, but that permission is not in hand"));
@@ -546,6 +564,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 Walk(sig.FunctionBody, given, new KLit("true"), (g, a) =>
                 {
+                    if (a is KFieldAcc fa)
+                    {
+                        GiveField(fa, g, at, $"folding needs '{fa.At}', but that permission is not in hand here");
+                        var k = new KLit(_program.FieldId(fa.Field).ToString());
+                        Emit(new KAssign { Var = "fowner", Value = new KOp("store", new KVar("fowner"), fa.Obj,
+                            new KOp("store", new KOp("sel", new KVar("fowner"), fa.Obj), k, Ite(g, p, new KOp("sel", new KVar("fowner"), fa.Obj, k)))) });
+                        return;
+                    }
                     if (a is KCells cl)
                     {
                         if (!_p.UsesCells) return;
@@ -593,6 +619,15 @@ namespace CsVerify.Verifier.Boogie
             Walk(sig.FunctionBody, given, new KLit("true"), (g, a) =>
             {
                 if (a is KCells cl) { if (_p.UsesCells) InhaleCells(g, cl); ownCells.Add((g, cl)); return; }
+                if (a is KFieldAcc fa)
+                {
+                    Assume(Implies(g, new KOp("==", new KOp("sel", new KVar("fowner"), fa.Obj, new KLit(_program.FieldId(fa.Field).ToString())), p)));
+                    TakeField(fa, g);
+                    // (folded nowhere now: the body's own)
+                    Emit(new KAssign { Var = "fowner", Value = new KOp("store", new KVar("fowner"), fa.Obj,
+                        new KOp("store", new KOp("sel", new KVar("fowner"), fa.Obj), new KLit(_program.FieldId(fa.Field).ToString()), Ite(g, None, new KOp("sel", new KVar("fowner"), fa.Obj, new KLit(_program.FieldId(fa.Field).ToString()))))) });
+                    return;
+                }
                 if (a is KAcc acc)
                 {
                     Assume(Implies(g, new KOp("&&", new KOp("&&", new KOp("!=", acc.Obj, new KLit("null")), new KOp("==", new KOp("sel", new KVar("footprint$"), acc.Obj), p)), new KOp("!", Held(acc.Obj)))));
@@ -639,6 +674,52 @@ namespace CsVerify.Verifier.Boogie
             if (nested.Count > 0)
                 celsewhere = Ite(nested.Select(n => (KExpr)new KOp("==", CFoot(), n.q)).Aggregate((a, b) => new KOp("||", a, b)), None, CFoot());
             Emit(new KAssign { Var = "cowner", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"), Ite(new KOp("==", CFoot(), p), cto, celsewhere))) });
+        }
+
+        // ------------------------------------------------------------------ single fields (Viper's acc(o.f))
+
+        private KExpr FieldHeld(KExpr o, ISymbol field) => new KOp("sel", new KVar("fperm"), o, new KLit(_program.FieldId(field).ToString()));
+
+        /// <summary>Write permission to o.F: the whole object, or that field.</summary>
+        private KExpr CanWrite(KExpr o, ISymbol field) => _p.UsesFields ? new KOp("||", Held(o), FieldHeld(o, field)) : Held(o);
+
+        private void SetField(KExpr o, ISymbol field, KExpr value) =>
+            Emit(new KAssign { Var = "fperm", Value = new KOp("store", new KVar("fperm"), o,
+                new KOp("store", new KOp("sel", new KVar("fperm"), o), new KLit(_program.FieldId(field).ToString()), value)) });
+
+        /// <summary>A whole object received is nobody else's, field by field either.</summary>
+        private void NoFieldsHeld(KExpr g, KExpr o, ITypeSymbol type)
+        {
+            if (!_p.UsesFields) return;
+            foreach (var f in WholeFields(type)) Assume(Implies(g, new KOp("!", FieldHeld(o, f))));
+        }
+
+        /// <summary>Gives o.F up: from its own permission, or split off the whole object (whose other fields stay, one by one).</summary>
+        private void GiveField(KFieldAcc fa, KExpr g, SyntaxNode at, string message)
+        {
+            if (!_p.UsesFields) return;
+            Assert(Implies(g, CanWrite(fa.Obj, fa.Field)), At("CSV1016", at, message));
+            Emit(new KAssign { Var = "own$", Value = FieldHeld(fa.Obj, fa.Field) });
+            if (!_p.Locals.Any(l => l.Name == "own$")) _p.Locals.Add(new KLocal { Name = "own$", Raw = "bool" });
+            var split = Conj(g, new KOp("!", new KVar("own$")));
+            SetPerm(fa.Obj, new KOp("&&", Held(fa.Obj), new KOp("!", split)));
+            foreach (var other in WholeFields(fa.Type).Where(f => !SymbolEqualityComparer.Default.Equals(f, fa.Field)))
+                SetField(fa.Obj, other, new KOp("||", FieldHeld(fa.Obj, other), split));
+            SetField(fa.Obj, fa.Field, new KOp("&&", FieldHeld(fa.Obj, fa.Field), new KOp("!", Conj(g, new KVar("own$")))));
+        }
+
+        /// <summary>Receives o.F; with every field in hand, the object is whole again.</summary>
+        private void TakeField(KFieldAcc fa, KExpr g)
+        {
+            if (!_p.UsesFields) return;
+            // (nobody else can hold it: not the whole object, not the field)
+            Assume(Implies(g, new KOp("&&", new KOp("&&", new KOp("!=", fa.Obj, new KLit("null")), new KOp("!", Held(fa.Obj))), new KOp("!", FieldHeld(fa.Obj, fa.Field)))));
+            SetField(fa.Obj, fa.Field, new KOp("||", FieldHeld(fa.Obj, fa.Field), g));
+            var fields = WholeFields(fa.Type);
+            Emit(new KAssign { Var = "all$", Value = fields.Select(f => FieldHeld(fa.Obj, f)).Aggregate(g, (a, b) => Conj(a, b)) });
+            if (!_p.Locals.Any(l => l.Name == "all$")) _p.Locals.Add(new KLocal { Name = "all$", Raw = "bool" });
+            foreach (var f in fields) SetField(fa.Obj, f, new KOp("&&", FieldHeld(fa.Obj, f), new KOp("!", new KVar("all$"))));
+            SetPerm(fa.Obj, new KOp("||", Held(fa.Obj), new KVar("all$")));
         }
 
         // ------------------------------------------------------------------ cells (Viper's quantified permissions over a range)
@@ -692,7 +773,7 @@ namespace CsVerify.Verifier.Boogie
 
         private static IEnumerable<KExpr> Atoms(KExpr e) => e switch
         {
-            KCells _ or KAcc _ or KInst _ => new[] { e },
+            KCells _ or KAcc _ or KInst _ or KFieldAcc _ => new[] { e },
             KOp op => op.Args.SelectMany(Atoms),
             _ => Enumerable.Empty<KExpr>(),
         };
@@ -714,6 +795,7 @@ namespace CsVerify.Verifier.Boogie
                 _p.Locals.Add(new KLocal { Name = $"l${head}$perm", Raw = "[Ref]bool" });
                 _p.Locals.Add(new KLocal { Name = $"l${head}$pinst", Raw = "[Inst]int" });
                 if (_p.UsesCells) _p.Locals.Add(new KLocal { Name = $"l${head}$cells", Raw = "[Ref][int]real" });
+                if (_p.UsesFields) _p.Locals.Add(new KLocal { Name = $"l${head}$fperm", Raw = "[Ref][int]bool" });
             }
             return known;
         }
@@ -731,6 +813,8 @@ namespace CsVerify.Verifier.Boogie
             _out = _p.Blocks[0].Stmts;
             Emit(new KAssign { Var = "perm", Value = new KLit("(lambda o: Ref :: false)") });
             _p.UsesCells = _program.UsesPermissions;
+            _p.UsesFields = _program.UsesFieldPermissions;
+            if (_p.UsesFields) Emit(new KAssign { Var = "fperm", Value = new KLit("(lambda y$: Ref :: (lambda k$: int :: false))") });
             if (_p.UsesCells) Emit(new KAssign { Var = "cells", Value = new KLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))") });
             CWalk(_p.FunctionBody, new KLit("true"));
             _p.FunctionBody = null;
@@ -771,6 +855,13 @@ namespace CsVerify.Verifier.Boogie
                 case KInst inst:
                     foreach (var a in inst.Args) CWalk(a, guard);
                     return new KLit("true");
+                case KFieldAcc fa:
+                {
+                    var o = CWalk(fa.Obj, guard);
+                    Assume(Implies(guard, new KOp("!=", o, new KLit("null"))));
+                    if (_p.UsesFields) SetField(o, fa.Field, new KOp("||", FieldHeld(o, fa.Field), guard));
+                    return new KLit("true");
+                }
                 case KCells cl:
                 {
                     var c = new KCells { Arr = CWalk(cl.Arr, guard), Lo = CWalk(cl.Lo, guard), Hi = CWalk(cl.Hi, guard), Read = cl.Read, At = cl.At };
@@ -864,6 +955,11 @@ namespace CsVerify.Verifier.Boogie
             // (no instances held yet: the preconditions bring them; who owns what is unknown)
             Emit(new KAssign { Var = "pinst", Value = new KLit("(lambda q: Inst :: 0)") });
             Emit(new KHavoc { Var = "owner" });
+            if (_p.UsesFields)
+            {
+                Emit(new KAssign { Var = "fperm", Value = new KLit("(lambda y$: Ref :: (lambda k$: int :: false))") });
+                Emit(new KHavoc { Var = "fowner" });
+            }
             if (_p.UsesCells)
             {
                 Emit(new KAssign { Var = "cells", Value = new KLit($"(lambda x$: Ref :: (lambda i$: int :: {(_p.ArrayMode ? "0.0" : "1.0")}))") });
@@ -979,7 +1075,7 @@ namespace CsVerify.Verifier.Boogie
                     if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fd.At, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
                     // (in a predicate's body: read only what a Spec.Acc to its left holds, so it can't change while folded)
                     if (_p.IsPredicate)
-                        Assert(Held(o), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
+                        Assert(CanWrite(o, fd.Field), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
                     // (a non-nullable field of a built object: not this one's, while its constructor builds it)
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis)) Assume(new KOp("!=", v, new KLit("null")));
@@ -1118,6 +1214,11 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var o = Spec(acc.Obj, wf, guard);
                     return _held ? Held(o) : new KLit("true");
+                }
+                case KFieldAcc fa:
+                {
+                    var o = Spec(fa.Obj, wf, guard);
+                    return _held ? CanWrite(o, fa.Field) : new KLit("true");
                 }
                 case KCells cl:
                 {

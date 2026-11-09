@@ -709,6 +709,17 @@ namespace CsVerify.Verifier.Boogie
                     _p.UsesPerm = true;
                     return new KAcc { Obj = Spec(target, result), Type = target.Type, At = acc.Syntax };
                 }
+                case IInvocationOperation fa when SpecSymbols.IsSpecClass(fa.TargetMethod.ContainingType) && fa.TargetMethod.Name == "Acc" &&
+                                                  fa.Arguments.Length == 2 && IsOwnedClass(Unconverted(fa.Arguments[0].Value).Type):
+                {
+                    var target = Unconverted(fa.Arguments[0].Value);
+                    // (only of a sealed class without an [Invariant], and not an [Owns] field: CsVerify's engine reports the rest)
+                    if (!(fa.Arguments[1].Value.ConstantValue is { HasValue: true, Value: string name }) || !(target.Type is INamedTypeSymbol { IsSealed: true } t) ||
+                        DataTypes.Invariants(t).Any() || !(WholeFields(t).FirstOrDefault(x => x.Name == name) is ISymbol field))
+                        throw new NotTranslated("a Spec.Acc of a field CsVerify's engine rejects");
+                    _p.UsesPerm = true;
+                    return new KFieldAcc { Obj = Spec(target, result), Field = field, Type = target.Type, At = fa.Syntax };
+                }
                 case IInvocationOperation pc when SpecSymbols.IsPredicate(pc.TargetMethod.OriginalDefinition) && pc.TargetMethod.IsStatic:
                     _p.UsesPerm = true;
                     _p.Preds.Add(pc.TargetMethod.OriginalDefinition);
