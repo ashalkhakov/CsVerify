@@ -18,6 +18,8 @@ namespace CsVerify.Verifier.Boogie
         KProcedure Signature(IMethodSymbol m);
         /// <summary>The field maps a function reads (it, or the functions it calls).</summary>
         List<string> FunctionFields(IMethodSymbol m);
+        /// <summary>Is the method a function too (so its value can be named)?</summary>
+        bool IsFunction(IMethodSymbol m);
     }
 
     /// <summary>
@@ -101,6 +103,8 @@ namespace CsVerify.Verifier.Boogie
 
             // at entry: the requires well-defined, in order (each under those before it)
             _out = _p.Entry;
+            // (the preconditions are well-defined given what entry gives: the views received hold their invariants)
+            if (_p.UsesPerm) ViewsAtEntry(grant: false);
             var before = new List<KExpr>();
             foreach (var r in requires)
             {
@@ -113,6 +117,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var stmts = b.Stmts;
                 b.Stmts = _out = new List<KStmt>();
+                if (b == _p.Blocks[0] && _p.UsesPerm) EnterOwned();
                 bool head = b.Label == $"b{b.Ordinal}";
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
                     foreach (var inv in invs)
@@ -160,6 +165,13 @@ namespace CsVerify.Verifier.Boogie
         private void Return(KReturn ret, List<(KSpec spec, KExpr math, List<KExpr> wf, List<KExpr> facts)> ensures)
         {
             var m = _p.Method;
+            // the views given back hold their invariants again
+            foreach (var param in m.Parameters.Where(x => IsView(x.Type) && x.RefKind is RefKind.Ref or RefKind.Out))
+                ProveInvariant(ViewOf(param.Type), new KVar(Local(param)), ret.At, $"when the view '{param.Name}' is given back");
+            if (_p.ThisIsView && !_p.IsCtor) ProveInvariant(m.ContainingType, new KVar("this"), ret.At, $"when '{m.Name}' returns");
+            // a non-nullable ref or out parameter is given back not null
+            foreach (var param in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out && IsRef(x.Type) && NotNullable(x.Type)))
+                Assert(new KOp("!=", new KVar(Local(param)), new KLit("null")), At("CSV1014", ret.At, $"'{param.Name}' might be null on return, but its type '{param.Type}' is not nullable"));
             // a constructor has set the fields that may not be null (but the required ones, which its callers set)
             if (_p.IsCtor)
                 foreach (var field in InstanceFields(m.ContainingType).Where(NonNullField))
@@ -198,11 +210,25 @@ namespace CsVerify.Verifier.Boogie
                     var o = fs.Instance == null ? new KLit("null") : Code(fs.Instance);
                     if (fs.Instance != null && !fs.OnThis)
                         Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fs.At, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
+                    if (IsOwnedField(fs.Field))
+                        Assert(Held(o), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                     if (NonNullField(fs.Field))
                         Assert(new KOp("!=", value, new KLit("null")), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
                     Emit(new KFieldStore { Field = fs.Field, Instance = o, Value = value, OnThis = fs.OnThis, At = fs.At, InstanceAt = fs.InstanceAt });
                     return;
                 }
+                case KOwn { Kind: "new" } own:
+                {
+                    // a view is made of a new object: its invariant holds, and nobody else has its view
+                    var o = Code(own.Obj);
+                    ProveInvariant(own.Type, o, own.At, "when its view is made");
+                    Emit(new KAssign { Var = own.View, Value = o });
+                    Receive(o);
+                    return;
+                }
+                case KOwn { Kind: "drop" } drop:
+                    Emit(new KMapUpdate { Map = "perm", Ref = Code(drop.Obj), Value = new KLit("false") });
+                    return;
                 case KNewObj n:
                 {
                     var args = Arguments(n.Ctor, n.Args, n.ArgsAt);
@@ -254,7 +280,90 @@ namespace CsVerify.Verifier.Boogie
             }
             var args = Arguments(callee, c.Args, c.ArgsAt);
             Termination(c, receiver, args, decreases);
-            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt, Check = At("CSV1001", c.At, $"'{c.At}'") });
+            // the views it gets are handed over: whole, their invariants holding (a method of an [Owned] class gets its receiver's)
+            bool ownedReceiver = receiver != null && IsOwnedClass(callee.ContainingType) && !_program.ContractOf(callee).IsPure;
+            if (ownedReceiver)
+            {
+                Assert(Held(receiver), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                ProveInvariant(callee.ContainingType, receiver, c.At, $"when '{callee.Name}' is called on it");
+            }
+            foreach (var param in callee.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out))
+            {
+                var x = args[param.Ordinal];
+                ProveInvariant(ViewOf(param.Type), x, c.ArgsAt[param.Ordinal], $"when its view is handed to '{callee.Name}'");
+                Assert(Held(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
+                Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("false") });
+            }
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
+                             RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
+            // and the views it gives back are in hand again, their invariants holding
+            foreach (var (ordinal, var) in c.RefOuts.Where(x => IsView(callee.Parameters[x.param].Type)))
+            {
+                var v = new KVar(var);
+                Assume(new KOp("!=", v, new KLit("null")));
+                AssumeInvariant(ViewOf(callee.Parameters[ordinal].Type), v);
+                Receive(v);
+            }
+            if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
+        }
+
+        // ------------------------------------------------------------------ ownership
+
+        /// <summary>Is the object's view in hand (full permission)?</summary>
+        private static KExpr Held(KExpr o) => new KOp("sel", new KVar("perm"), o);
+
+        /// <summary>A view received: nobody else has it (views are linear), so it isn't one in hand already; now it is.</summary>
+        private void Receive(KExpr o)
+        {
+            Assume(new KOp("!", Held(o)));
+            Emit(new KMapUpdate { Map = "perm", Ref = o, Value = new KLit("true") });
+        }
+
+        /// <summary>The class's [Invariant]s of o (null if it has none).</summary>
+        private KExpr Invariant(ITypeSymbol type, KExpr o)
+        {
+            var parts = new List<KExpr>();
+            foreach (var inv in DataTypes.Invariants(type))
+            {
+                var m = inv.OriginalDefinition;
+                if (!_program.IsFunction(m)) throw new NotTranslated("the invariant " + m.Name);
+                parts.Add(new KFnApp { Callee = m, Function = FunctionName(m), Fields = _program.FunctionFields(m), Args = new[] { o } });
+            }
+            return parts.Count == 0 ? null : And(parts);
+        }
+
+        private void ProveInvariant(ITypeSymbol type, KExpr o, SyntaxNode at, string when)
+        {
+            if (Invariant(type, o) is KExpr inv) Assert(inv, At("CSV1015", at, $"invariant of {type.Name} might not hold {when}"));
+        }
+
+        private void AssumeInvariant(ITypeSymbol type, KExpr o)
+        {
+            if (Invariant(type, o) is KExpr inv) Assume(inv);
+        }
+
+        /// <summary>
+        /// At entry: the views received are in hand (this, in a method of an [Owned] class that isn't [Pure], or its
+        /// constructor; each view parameter), each not null, holding its invariant, and different from the others.
+        /// </summary>
+        private void EnterOwned()
+        {
+            Emit(new KAssign { Var = "perm", Value = new KLit("(lambda o: Ref :: false)") });
+            if (_p.ThisIsView) Emit(new KMapUpdate { Map = "perm", Ref = new KVar("this"), Value = new KLit("true") });
+            ViewsAtEntry(grant: true);
+        }
+
+        private void ViewsAtEntry(bool grant)
+        {
+            var m = _p.Method;
+            foreach (var param in m.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out))
+            {
+                var v = new KVar(Local(param));
+                Assume(new KOp("!=", v, new KLit("null")));
+                AssumeInvariant(ViewOf(param.Type), v);
+                if (grant) Receive(v);
+            }
+            if (_p.ThisIsView && !_p.IsCtor) AssumeInvariant(m.ContainingType, new KVar("this"));
         }
 
         /// <summary>A call's arguments, each checked, then not null where its parameter may not be (CSV1014).</summary>
@@ -265,7 +374,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 args[k] = Code(given[k]);
                 var param = callee?.Parameters[k];
-                if (param != null && IsRef(param.Type) && NotNullable(param.Type))
+                if (param != null && param.RefKind != RefKind.Out && IsRef(param.Type) && NotNullable(param.Type))
                     Assert(new KOp("!=", args[k], new KLit("null")), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
             }
             return args;

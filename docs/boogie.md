@@ -241,6 +241,29 @@ field's map has a `where` clause keeping every value in range.
 - A method that runs alongside other code (`[RunsConcurrently]`, or started as a task or thread), or reads a field a
   lock guards, stays with CsVerify's engine, which checks races.
 
+**Ownership.** An `[Owned]` class is in the subset too, with its `[Invariant]`s, as
+[objects.md](objects.md#mutable-objects) describes it. A view `Own<C>` is the object it owns (a `Ref`); a procedure
+keeps a local `perm: [Ref]bool`, the objects whose views it holds:
+- at entry, `this` (in a method of the class that isn't `[Pure]`, and its constructor) and each view parameter, each
+  not null, holding its invariant, and none another (views are linear);
+- `Own.New(new C(...), out v)` proves the new object's invariant (CSV1015) and adds it; `Own.Drop(v)` removes it;
+- writing an `[Owned]` object's field needs it in `perm` (CSV1016), as does calling a method of the class on it, which
+  also proves its invariant (CSV1015) and assumes it after;
+- a view handed to a call (by value or `ref`) is proved whole (CSV1016) and its invariant (CSV1015), and leaves
+  `perm`; a `ref` or `out` view that comes back is in hand again, its invariant holding, and isn't one already in hand;
+- at each return, a `ref` or `out` view given back, and `this`, hold their invariants again (CSV1015).
+
+A call changes an `[Owned]` object's fields only where it holds the view: `this`, the views it gets, and objects it
+makes. So a procedure that writes such a field ensures it unchanged at every other object allocated before:
+`free ensures (forall o: Ref :: old($Alloc[o]) && o != this && o != p$v ==> $F.C.f[o] == old($F.C.f[o]))`. Its
+preconditions are checked well-defined with the views' invariants assumed, as at entry. `v.Obj.Value` in a
+specification is the view's object. Not yet: ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read
+shares, `in` views, `Spec.Acc`, predicates, single-field and array-cell permissions, packages.
+
+**ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
+`p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
+assigns.
+
 **Calls and frames.** A call of another translated method is a Boogie `call`. A procedure `modifies` the maps it
 writes (an element map, a field map, or `$Alloc` when it allocates), and those of everything it calls; after a call,
 what the callee modifies is unknown, as CsVerify's engine forgets the arrays and fields a callee may write. Allocation
@@ -299,7 +322,9 @@ reads, writes, lengths and allocation, fields, object creation, calls of each ot
 `Spec.Assume`; `[Pure]` and `[GhostFunction]` methods, lemmas, `Spec.Decreases`; and in specifications `Spec.Forall`,
 `Spec.Exists`, `Spec.Old`, `Spec.Result` and calls of functions.
 
-Not yet (such a method is verified by CsVerify's engine): `[Owned]` classes and classes with invariants, virtual
+Also `ref` and `out` parameters, and `[Owned]` classes with their views and invariants.
+
+Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, predicates and `Spec.Acc`, virtual
 members, interfaces, inheritance, records (data types), generics, strings, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, permissions and views, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
@@ -321,7 +346,9 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 3. `foreach`, lambdas and delegates;
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
 5. frames (`Spec.Modifies`, `Spec.Reads`), and the library's stub contracts;
-6. views, permissions and ownership, encoded as maps over objects, as CsVerify's engine does now;
+6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants; next:
+   predicates and `Spec.Acc`, which most of the remaining samples use, then trees, shares, single-field and array-cell
+   permissions, packages);
 7. locks, async and threads;
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.

@@ -85,6 +85,8 @@ namespace CsVerify.Verifier
     public sealed class MethodResult
     {
         public string Name;
+        /// <summary>Where it is declared (file and line): which of several overloads it is.</summary>
+        public string Declared;
         public int Obligations, Proved;
         /// <summary>How long verifying it took, all rounds included.</summary>
         public long Milliseconds;
@@ -116,6 +118,8 @@ namespace CsVerify.Verifier
     {
         public readonly List<MethodResult> Methods = new List<MethodResult>();
         public readonly List<VerificationDiagnostic> CompilationErrors = new List<VerificationDiagnostic>();
+        /// <summary>Why Boogie verified nothing, when it failed (its methods were then verified by CsVerify's engine).</summary>
+        public string BoogieFailure;
         /// <summary>Analyzer errors outside any method body (a linear field in a non-linear type, say).</summary>
         public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts some proof assumed.</summary>
@@ -647,7 +651,8 @@ namespace CsVerify.Verifier
                     if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
                     if (SpecSymbols.IsContractsClass(method.ContainingType) || SpecSymbols.IsModel(method)) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
-                    var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name };
+                    var span = decl.GetLocation().GetLineSpan();
+                    var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name, Declared = span.Path + ":" + (span.StartLinePosition.Line + 1) };
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
@@ -671,7 +676,7 @@ namespace CsVerify.Verifier
                     }
                 }
             }
-            if (forBoogie.Count > 0) RunBoogie(engine, compilation, forBoogie);
+            if (forBoogie.Count > 0) result.BoogieFailure = RunBoogie(engine, compilation, forBoogie);
             // accessors with code: properties are methods too
             foreach (var tree in userTrees)
             {
@@ -806,7 +811,7 @@ namespace CsVerify.Verifier
         /// The methods held back for Boogie: those whose bodies translate (and whose callees do), as one program, verified
         /// by it; the rest as always. If Boogie fails, they are all verified as always, and that is said.
         /// </summary>
-        private static void RunBoogie(Engine engine, CSharpCompilation compilation, List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> held)
+        private static string RunBoogie(Engine engine, CSharpCompilation compilation, List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> held)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var included = held.ToList();
@@ -834,7 +839,7 @@ namespace CsVerify.Verifier
             translator.Finish();
             if (engine.Options.BoogieOut != null) System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
             foreach (var x in held.Except(included)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
-            if (included.Count == 0) return;
+            if (included.Count == 0) return null;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
             try { failures = Boogie.BoogieRunner.Verify(translator, SmtSolver.FindZ3(engine.Options.Z3Path), engine.Options.TimeoutMs); }
             catch (Exception e)
@@ -844,11 +849,18 @@ namespace CsVerify.Verifier
                     RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + e.Message.Split('\n')[0], x.decl.GetLocation().GetLineSpan()));
                 }
-                return;
+                return e.Message;
             }
             foreach (var x in included)
             {
                 var mine = failures.Where(f => f.method == x.result).Select(f => f.diagnostic).ToList();
+                // (Boogie couldn't decide it, in the time it had: CsVerify's engine verifies it, and says so)
+                if (mine.FirstOrDefault(d => d.Id == "CSV1900") is VerificationDiagnostic undecided)
+                {
+                    RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+                    x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + undecided.Message, x.decl.GetLocation().GetLineSpan()));
+                    continue;
+                }
                 x.result.Clear();
                 x.result.Engine = "boogie";
                 x.result.Diagnostics.AddRange(mine);
@@ -856,6 +868,7 @@ namespace CsVerify.Verifier
                 x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count);
                 x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
             }
+            return null;
         }
 
         private static void RunMethod(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested = null)

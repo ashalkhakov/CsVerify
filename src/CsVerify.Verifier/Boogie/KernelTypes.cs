@@ -31,7 +31,18 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t);
+
+        /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
+        public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
+
+        /// <summary>A view, Own&lt;C&gt; of an [Owned] class: its value is the object it owns (a Ref, never null).</summary>
+        public static bool IsView(ITypeSymbol t) => SpecSymbols.IsOwnType(t) && IsOwnedClass(((INamedTypeSymbol)t).TypeArguments[0]);
+
+        public static ITypeSymbol ViewOf(ITypeSymbol view) => ((INamedTypeSymbol)view).TypeArguments[0];
+
+        /// <summary>A field of an [Owned] class's objects: written only with the object's view.</summary>
+        public static bool IsOwnedField(ISymbol field) => !field.IsStatic && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>A reference: an array or an object.</summary>
         public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t);
@@ -45,9 +56,11 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && n.Arity == 0 &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             n.BaseType?.SpecialType == SpecialType.System_Object && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            n.AllInterfaces.Length == 0 && !SpecSymbols.IsContractsClass(n) && !CsVerifyAttributes(n) &&
+            n.AllInterfaces.Length == 0 && !SpecSymbols.IsContractsClass(n) &&
+            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "OwnedAttribute") &&
             n.GetMembers().All(m => !m.IsVirtual && !m.IsAbstract && !m.IsOverride && !((m is IFieldSymbol || m is IPropertySymbol) && CsVerifyAttributes(m))) &&
-            !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute"));
+            // (an invariant of an [Owned] class travels with its view; any other's is a data type's, assumed of every object)
+            (SpecSymbols.IsOwned(n) || !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute")));
 
         private static bool CsVerifyAttributes(ISymbol s) =>
             s.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace);
@@ -70,7 +83,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
-        public static string TypeOf(ITypeSymbol t) => IsRef(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

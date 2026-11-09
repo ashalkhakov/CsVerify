@@ -37,7 +37,9 @@ namespace CsVerify.Verifier.Boogie
                 Method = m.OriginalDefinition, Contract = contract, Result = result, Name = Name(m), Params = m.Parameters.ToList(),
                 Ghost = SpecSymbols.IsGhostFunction(m) || contract.IsLemma,
                 HasThis = !m.IsStatic, IsCtor = m.MethodKind == MethodKind.Constructor,
+                ThisIsView = !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && (m.MethodKind == MethodKind.Constructor || !contract.IsPure),
             };
+            _p.UsesPerm = _p.ThisIsView || m.Parameters.Any(x => IsView(x.Type));
         }
 
         public static KProcedure Lower(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result,
@@ -187,6 +189,9 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation baseCall when baseCall.TargetMethod.MethodKind == MethodKind.Constructor &&
                                                         baseCall.TargetMethod.ContainingType.SpecialType == SpecialType.System_Object:
                     return; // (object's constructor does nothing)
+                case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
+                    Own(own);
+                    return;
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
@@ -224,6 +229,8 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (target)
             {
+                case ILocalReferenceOperation l when IsView(l.Local.Type):
+                    throw new NotTranslated("a view moved from one variable to another");
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None:
                 {
                     // (a local of non-nullable type: each write is checked, so it stays not null)
@@ -235,6 +242,7 @@ namespace CsVerify.Verifier.Boogie
                 case IFieldReferenceOperation _: case IPropertyReferenceOperation _:
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(target);
+                    if (IsOwnedField(field)) _p.UsesPerm = true;
                     Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = value, At = target.Syntax, InstanceAt = instanceAt });
                     return;
                 }
@@ -242,6 +250,11 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Operands(e.ArrayReference, e.Indices[0]);
                     Emit(new KStore { Array = v[0], Index = v[1], Value = value, ArrayType = e.ArrayReference.Type, At = e.Syntax, ArrayAt = e.ArrayReference.Syntax });
+                    return;
+                }
+                case IParameterReferenceOperation p when p.Parameter.RefKind is RefKind.Ref or RefKind.Out && InSubset(p.Parameter.Type) && !IsView(p.Parameter.Type):
+                {
+                    Emit(new KAssign { Var = Local(p.Parameter), Value = value });
                     return;
                 }
                 case IParameterReferenceOperation: throw new NotTranslated("an assignment to a parameter");
@@ -297,8 +310,10 @@ namespace CsVerify.Verifier.Boogie
             if (to == null) return new KStop();
             if (to.Kind == BasicBlockKind.Exit)
             {
+                // (where CsVerify's engine reports a return: the return statement or its value; a return; at its block's
+                // last operation; falling off the end, at the method)
                 var at = from.BranchValue?.Syntax.Parent as ReturnStatementSyntax as SyntaxNode ?? from.BranchValue?.Syntax ??
-                         (SyntaxNode)(_decl as MethodDeclarationSyntax)?.Body?.CloseBraceToken.Parent ?? _decl;
+                         (from.FallThroughSuccessor?.Semantics == ControlFlowBranchSemantics.Return ? from.Operations.LastOrDefault()?.Syntax : null) ?? _decl;
                 return new KReturn { At = at };
             }
             return new KGoto($"b{to.Ordinal}");
@@ -383,7 +398,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsRef(e.Type): return Constant(cv.Value, e.Type);
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
-                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind == RefKind.None: return new KVar(Local(p.Parameter));
+                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind is RefKind.None or RefKind.Ref or RefKind.Out: return new KVar(Local(p.Parameter));
+                case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
+                    return Own(own);
                 case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
                 case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when !_p.IsCtor:
                     return new KVar("this");
@@ -504,13 +521,54 @@ namespace CsVerify.Verifier.Boogie
             var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             if (!callee.IsStatic && (call.Instance == null || callee.IsVirtual || callee.IsAbstract || callee.IsOverride)) throw new NotTranslated("a virtual call of " + callee.Name);
             bool onThis = call.Instance is IInstanceReferenceOperation;
-            var operands = (call.Instance == null || onThis ? Enumerable.Empty<IOperation>() : new[] { call.Instance }).Concat(ordered.Select(a => a.Value)).ToArray();
+            // (a ref or out argument is a variable, which gets what the callee gives back; an out one isn't read)
+            var refOuts = ordered.Where(a => a.Parameter.RefKind != RefKind.None).Select(a => (a.Parameter.Ordinal, RefVariable(a))).ToList();
+            var ins = ordered.Where(a => a.Parameter.RefKind != RefKind.Out).ToList();
+            var operands = (call.Instance == null || onThis ? Enumerable.Empty<IOperation>() : new[] { call.Instance }).Concat(ins.Select(a => a.Value)).ToArray();
             var values = Operands(operands);
             var receiver = call.Instance == null ? null : onThis ? Expr(call.Instance) : values[0];
-            var args = call.Instance == null || onThis ? values : values.Skip(1).ToArray();
+            var inValues = call.Instance == null || onThis ? values : values.Skip(1).ToArray();
+            var args = new KExpr[ordered.Count];
+            for (int k = 0; k < ins.Count; k++) args[ins[k].Parameter.Ordinal] = inValues[k];
+            foreach (var (ordinal, v) in refOuts) args[ordinal] ??= new KVar(v);
+            if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
+            if (ordered.Any(a => IsView(a.Parameter.Type)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
             var result = callee.ReturnsVoid ? null : Declare("t$" + _temps++, callee.ReturnType);
-            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), Result = result, At = call.Syntax });
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(),
+                             Result = result, At = call.Syntax, RefOuts = refOuts });
             return result == null ? null : new KVar(result);
+        }
+
+        /// <summary>The variable a ref or out argument is: a local (declared there, for out var), or a ref or out parameter.</summary>
+        private string RefVariable(IArgumentOperation a)
+        {
+            var v = a.Value is IDeclarationExpressionOperation d ? d.Expression : a.Value;
+            switch (v)
+            {
+                case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return Declare(Local(l.Local), l.Local.Type);
+                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind is RefKind.Ref or RefKind.Out: return Local(p.Parameter);
+                default: throw new NotTranslated("a ref or out argument that isn't a variable");
+            }
+        }
+
+        /// <summary>Own.New(new C(...), out view): a view of the new object; Own.Drop(view). The rest of Own isn't translated yet.</summary>
+        private KExpr Own(IInvocationOperation own)
+        {
+            _p.UsesPerm = true;
+            switch (own.TargetMethod.Name)
+            {
+                case "New" when own.Arguments[0].Value is IObjectCreationOperation:
+                {
+                    var obj = Expr(own.Arguments[0].Value);
+                    var view = RefVariable(own.Arguments[1]);
+                    Emit(new KOwn { Kind = "new", Obj = obj, View = view, Type = own.Arguments[0].Value.Type, At = own.Syntax });
+                    return obj;
+                }
+                case "Drop" when IsView(own.Arguments[0].Value.Type):
+                    Emit(new KOwn { Kind = "drop", Obj = Expr(own.Arguments[0].Value), Type = ViewOf(own.Arguments[0].Value.Type), At = own.Syntax });
+                    return null;
+                default: throw new NotTranslated("Own." + own.TargetMethod.Name + (own.TargetMethod.Name == "New" ? " of an existing object" : ""));
+            }
         }
 
         // ------------------------------------------------------------------ specifications (mathematical)
@@ -530,6 +588,9 @@ namespace CsVerify.Verifier.Boogie
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type): return new KVar(Local(p.Parameter));
                 case ILocalReferenceOperation l when InSubset(l.Local.Type): return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }: return new KVar("this");
+                // (a view's object: v.Obj.Value)
+                case IPropertyReferenceOperation { Property.Name: "Value", Instance: IPropertyReferenceOperation { Property.Name: "Obj" } obj } when IsView(obj.Instance?.Type):
+                    return Spec(obj.Instance, result);
                 case IFieldReferenceOperation _:
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)):
                 {

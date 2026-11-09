@@ -42,6 +42,8 @@ namespace CsVerify.Verifier.Boogie
             var about = info.Aux.Select(a => program.Lines.TryGetValue(a.Tok.line, out var c) ? c : null).FirstOrDefault(c => c != null && c.Id == BoogieTranslator.Aux);
             string kind = info.Kind.ToString();
             if (at == null) return (null, null);
+            // (a timeout, or running out of memory or resources: nothing was decided, which isn't verified)
+            if (at.Id == BoogieTranslator.Undecided) return (at.Method, new VerificationDiagnostic("CSV1900", false, info.Msg, at.Span));
             var (id, message) = kind switch
             {
                 "Precondition" when about?.ReportAs == "CSV1014" => ("CSV1014", $"{at.Message}: {about.Message}"),

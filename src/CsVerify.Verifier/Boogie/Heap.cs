@@ -41,7 +41,8 @@ namespace CsVerify.Verifier.Boogie
                         {
                             var map = FieldMap(fs.Field);
                             p.Modifies.Add(map);
-                            if (!(p.IsCtor && fs.OnThis)) p.AnyWrites.Add(map);
+                            // (an [Owned] object's field is written only with its view: framed by the views a call gets)
+                            if (!(p.IsCtor && fs.OnThis) && !IsOwnedField(fs.Field)) p.AnyWrites.Add(map);
                             stmts.Add(new KMapUpdate { Map = map, Ref = fs.Instance, Value = fs.Value });
                             break;
                         }

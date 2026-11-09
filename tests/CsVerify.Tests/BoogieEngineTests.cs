@@ -116,6 +116,73 @@ public static class O
     public static int FieldsSpec(Box b) { Spec.Requires(b.Items.Length > 0); return b.Items[0]; }
 }";
 
+        // (ownership: [Owned] classes, their invariants, views by value, by ref and out, Own.New and Own.Drop)
+        private const string Ownership = @"
+[Owned]
+public sealed class Acct
+{
+    public int Balance;
+    [Invariant, Pure] public bool Valid() => Balance >= 0;
+    public Acct(int initial) { Spec.Requires(initial >= 0); Spec.Ensures(Balance == initial); Balance = initial; }
+    public void Deposit(int amount) { Spec.Requires(amount >= 0); Spec.Ensures(Balance == Spec.Old(Balance) + amount); Balance = checked(Balance + amount); }
+    public void Withdraw(int amount) { Spec.Requires(0 <= amount && amount <= Balance); Spec.Ensures(Balance == Spec.Old(Balance) - amount); Balance -= amount; }
+    public void Overdraw() { Balance = -1; }
+    [Pure] public int Get() => Balance;
+}
+public static class W
+{
+    public static void Transfer(Acct from, ref Own<Acct> fromView, Acct to, ref Own<Acct> toView, int amount)
+    {
+        Spec.Requires(fromView.Obj.Value == from && toView.Obj.Value == to);
+        Spec.Requires(0 <= amount && amount <= from.Balance);
+        Spec.Ensures(from.Balance == Spec.Old(from.Balance) - amount && to.Balance == Spec.Old(to.Balance) + amount);
+        from.Withdraw(amount);
+        to.Deposit(amount);
+    }
+    public static int Make()
+    {
+        Spec.Ensures((int r) => r == 6);
+        var a = Own.New(new Acct(5), out var va);
+        a.Deposit(1);
+        int r = a.Balance;
+        Own.Drop(va);
+        return r;
+    }
+    public static void KeepsOther(Acct a, ref Own<Acct> va, Acct b)
+    {
+        Spec.Requires(va.Obj.Value == a);
+        int before = b.Balance;
+        a.Deposit(1);
+        Spec.Assert(b.Balance == before || b == a);
+    }
+    public static void NoView(Acct a) { a.Deposit(1); }
+    public static void Broken(Acct a, ref Own<Acct> va) { Spec.Requires(va.Obj.Value == a); a.Balance = -1; a.Deposit(0); a.Balance = 0; }
+    public static void Consume(Acct a, Own<Acct> va) { Spec.Requires(va.Obj.Value == a); a.Deposit(1); Own.Drop(va); }
+    public static void AfterConsume()
+    {
+        var a = Own.New(new Acct(0), out var va);
+        Consume(a, va);
+        a.Deposit(1);
+    }
+    public static Acct Open(out Own<Acct> v) { return Own.New(new Acct(0), out v); }
+    public static void Unlinked() { var a = Open(out var va); a.Deposit(1); Own.Drop(va); }
+    public static void BadMake() { var a = Own.New(new Acct(0), out var va); a.Balance = -5; Own.Drop(va); }
+    public static int NonNegative(Acct a, ref Own<Acct> va) { Spec.Requires(va.Obj.Value == a); Spec.Ensures((int r) => r >= 0); return a.Get(); }
+    public static void Twice(Acct a, ref Own<Acct> va, Acct b, ref Own<Acct> vb) { Spec.Requires(va.Obj.Value == a && vb.Obj.Value == b); Spec.Ensures(a != b); }
+}";
+
+        [Fact]
+        public void Ownership_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Ownership) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 18, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "Acct.Overdraw", "W.NoView", "W.Broken", "W.AfterConsume", "W.Unlinked" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Acct..ctor", "Acct.Deposit", "Acct.Withdraw", "Acct.Valid", "Acct.Get", "W.Transfer", "W.Make", "W.KeepsOther", "W.Consume", "W.Open", "W.NonNegative", "W.Twice", "W.BadMake" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void Objects_BothEnginesReportTheSame()
         {
@@ -146,7 +213,7 @@ public static class O
             foreach (var m in boogie.Methods.Where(m => m.Engine == "boogie"))
             {
                 byBoogie++;
-                var other = csverify.Methods.Single(x => x.Name == m.Name);
+                var other = csverify.Methods.Single(x => x.Name == m.Name && x.Declared == m.Declared);
                 Assert.True(Reported(other).SequenceEqual(Reported(m)),
                     $"{m.Name}: CsVerify's engine reports [{string.Join(", ", Reported(other))}], Boogie [{string.Join(", ", Reported(m))}]\n" +
                     string.Join("\n", m.Diagnostics.Concat(other.Diagnostics)));
@@ -186,7 +253,7 @@ public static class O
                 var only = new VerifierOptions();
                 only.Only.AddRange(b.Methods.Select(m => m.Name));
                 var c = Engine.VerifyFiles(files, only);
-                Assert.True(Agree(c, b) > 0, dir + ": no method went to Boogie");
+                Assert.True(Agree(c, b) > 0, dir + ": no method went to Boogie: " + b.BoogieFailure);
             }
         }
     }

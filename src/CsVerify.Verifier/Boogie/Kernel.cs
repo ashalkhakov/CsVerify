@@ -157,6 +157,16 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At, InstanceAt;
     }
 
+    /// <summary>Own.New(obj, out View) (Kind "new": the view of a new object) or Own.Drop(Obj) (Kind "drop").</summary>
+    internal sealed class KOwn : KStmt
+    {
+        public string Kind;
+        public KExpr Obj;
+        public string View;
+        public ITypeSymbol Type;
+        public SyntaxNode At;
+    }
+
     /// <summary>new C(args): an object allocated into Var, its fields their defaults, then its constructor (null: an implicit one).</summary>
     internal sealed class KNewObj : KStmt
     {
@@ -191,6 +201,8 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KCall : KStmt
     {
         public IMethodSymbol Callee;
+        /// <summary>The variables its ref and out arguments are (by parameter ordinal): they get what it gives back.</summary>
+        public List<(int param, string var)> RefOuts = new List<(int, string)>();
         /// <summary>An instance method's receiver (null for a static one).</summary>
         public KExpr Receiver;
         public bool ReceiverIsThis;
@@ -311,6 +323,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An instance method or constructor: its receiver is the parameter this.</summary>
         public bool HasThis;
         public bool IsCtor;
+        /// <summary>A method of an [Owned] class that isn't [Pure] (or its constructor): it holds this object's view.</summary>
+        public bool ThisIsView;
+        /// <summary>It holds, gives or checks views: its permissions (perm, object to whether its view is in hand) are kept.</summary>
+        public bool UsesPerm;
         /// <summary>The fields it reads or writes (their maps are declared).</summary>
         public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public List<KLocal> Locals = new List<KLocal>();

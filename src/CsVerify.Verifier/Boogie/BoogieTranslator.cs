@@ -45,6 +45,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A line that says what a failure is about (a requires, an ensures, a return), not a check of its own.</summary>
         internal const string Aux = "aux";
 
+        /// <summary>A procedure's own line: what Boogie reports there (a timeout, running out of resources) isn't a check's failure.</summary>
+        internal const string Undecided = "undecided";
+
         private readonly HashSet<IMethodSymbol> _procedures = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         private readonly bool _checkOverflow;
 
@@ -61,8 +64,8 @@ namespace CsVerify.Verifier.Boogie
         public static bool Candidate(IMethodSymbol m, Contract c) =>
             (m.IsStatic ? m.MethodKind == MethodKind.Ordinary
                         : IsClass(m.ContainingType) && (m.MethodKind == MethodKind.Ordinary || m.MethodKind == MethodKind.Constructor) && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-            !m.IsAsync && !m.IsGenericMethod &&
-            (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind == RefKind.None && InSubset(p.Type)) &&
+            !m.IsAsync && !m.IsGenericMethod && !SpecSymbols.IsPredicate(m) &&
+            (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
             c.Modifies == null && c.Reads == null && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
             c.Ensures.All(e => e.Guard == null) && c.Bases.Count == 0;
 
@@ -70,9 +73,9 @@ namespace CsVerify.Verifier.Boogie
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !m.IsStatic && !IsClass(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a class outside the subset" :
             !m.IsStatic && (m.IsVirtual || m.IsAbstract || m.IsOverride) ? "virtual" :
-            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
+            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : SpecSymbols.IsPredicate(m) ? "[Predicate]" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
-            m.Parameters.FirstOrDefault(p => p.RefKind != RefKind.None || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
+            m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Modifies != null ? "Spec.Modifies" : c.Reads != null ? "Spec.Reads" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
             c.IsTrusted ? "[Trusted]" : "an inherited contract";
 
@@ -135,6 +138,8 @@ namespace CsVerify.Verifier.Boogie
 
         bool IProgramFacts.CheckOverflow => _checkOverflow;
 
+        bool IProgramFacts.IsFunction(IMethodSymbol m) => IsFunction(m);
+
         Contract IProgramFacts.ContractOf(IMethodSymbol m) => ContractOf(m);
 
         private readonly Dictionary<IMethodSymbol, KProcedure> _signatures = new Dictionary<IMethodSymbol, KProcedure>(SymbolEqualityComparer.Default);
@@ -166,6 +171,7 @@ namespace CsVerify.Verifier.Boogie
             var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Fields), SymbolEqualityComparer.Default);
             foreach (var p in _pending.Where(p => p.FunctionBody != null)) fields.UnionWith(FieldsOf(p.Method));
             _printer.Fields(fields);
+            _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             OwnArrays();
             foreach (var p in _pending.Where(p => p.FunctionBody != null)) _printer.Function(p, FunctionFields(p.Method), fields);
             var writes = Closed(p => p.Modifies);

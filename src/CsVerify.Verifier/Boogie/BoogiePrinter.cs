@@ -64,8 +64,14 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public Func<IMethodSymbol, List<(int arg, string param, string map)>> OwnArrays = _ => null;
 
+        /// <summary>The maps of [Owned] classes' fields: a call changes them only at the objects whose views it gets.</summary>
+        public HashSet<string> OwnedMaps = new HashSet<string>();
+
         private sealed class Context
         {
+            /// <summary>The ref parameters, named by their values on entry (p$x$in) where this says so: in requires, and in old().</summary>
+            public HashSet<string> Ins = new HashSet<string>();
+            public bool AtEntry;
             /// <summary>In such a function: each array parameter's elements.</summary>
             public Dictionary<string, string> Elems;
             public bool InFunction;
@@ -84,7 +90,10 @@ namespace CsVerify.Verifier.Boogie
             switch (e)
             {
                 case KLit l: return l.Text;
+                case KVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
                 case KVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
+                case KOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
+                    return $"old({E(old.Args[0], new Context { Ins = cx.Ins, AtEntry = true, Elems = cx.Elems, InFunction = cx.InFunction, Layer = cx.Layer, Result = cx.Result })})";
                 case KFnApp f:
                 {
                     var own = OwnArrays(f.Callee);
@@ -180,19 +189,40 @@ namespace CsVerify.Verifier.Boogie
         public void Procedure(KProcedure p, ISet<string> modifies, ISet<string> anyWrites, List<string> functionFields)
         {
             var m = p.Method;
-            var cx = InProcedure;
-            var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0]).Concat(m.Parameters.Select(x => $"{Local(x)}: {TypeOf(x.Type)}")));
-            var ret = m.ReturnsVoid ? "" : $" returns (result: {TypeOf(m.ReturnType)})";
-            Line($"procedure {p.Name}({ps}){ret}");
+            var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
+            var cx = new Context { Ins = ins };
+            var atEntry = new Context { Ins = ins, AtEntry = true };
+            // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out)
+            var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0])
+                .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
+            var outs = (m.ReturnsVoid ? new string[0] : new[] { $"result: {TypeOf(m.ReturnType)}" })
+                .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
+            var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
+            Line($"procedure {p.Name}({ps}){ret}", Undecided(p));
             if (modifies.Count > 0)
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             // (a field written only at this object, in its constructor, or at objects allocated since: the same at every other)
-            foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !anyWrites.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
+            foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !anyWrites.Contains(x) && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
                 Line($"  free ensures (forall o: Ref :: {(p.IsCtor ? "o != this && " : "")}old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
+            // (an [Owned] object's field: written only where its view is, which the procedure holds only for this, the
+            // views it gets, and the objects it makes)
+            var views = (p.ThisIsView ? new[] { "this" } : new string[0])
+                .Concat(m.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out).Select(x => Local(x) + (x.RefKind == RefKind.Ref ? "$in" : ""))).ToList();
+            foreach (var map in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
+                Line($"  free ensures (forall o: Ref :: old($Alloc[o]){string.Concat(views.Select(v => $" && o != {v}"))} ==> {map}[o] == old({map}[o]));");
             Line($"  free ensures {InRangeOfMemory};");
-            Given(p, cx);
-            foreach (var r in p.Requires) Line($"  requires {E(r.Expr, cx)};", r.Check);
+            Given(p, atEntry);
+            foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
+            {
+                if (IsIntegral(x.Type)) Line($"  free ensures {E(InRange(new KVar(Local(x)), x.Type), cx)};");
+                if (IsRef(x.Type))
+                {
+                    Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
+                    if (NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
+                }
+            }
+            foreach (var r in p.Requires) Line($"  requires {E(r.Expr, atEntry)};", r.Check);
             // (checked at each return, where it is reported: Boogie would report one return path of each)
             foreach (var e in p.Ensures) Line($"  free ensures {E(e.Expr, cx)};");
             if (!m.ReturnsVoid && IsIntegral(m.ReturnType) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), m.ReturnType), cx)};");
@@ -204,10 +234,12 @@ namespace CsVerify.Verifier.Boogie
                 if (NotNullable(m.ReturnType)) Line("  free ensures result != null;");
             }
             Line("{");
+            if (p.UsesPerm) Line("  var perm: [Ref]bool;");
             // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too)
             foreach (var l in p.Locals)
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
                      IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(InRange(new KVar(l.Name), l.Type), cx)};" : $"  var {l.Name}: {TypeOf(l.Type)};");
+            foreach (var x in ins) Line($"    {x} := {x}$in;");
             foreach (var b in p.Blocks)
             {
                 Line($"  {b.Label}:");
@@ -222,15 +254,21 @@ namespace CsVerify.Verifier.Boogie
             Line("}");
             // the preconditions well-defined: a procedure of their own, which doesn't assume them (as Dafny's
             // well-formedness checks are), each under those before it
-            if (p.Entry.Count > 0)
+            if (p.Entry.Any(s => s is KAssert))
             {
-                Line($"procedure {p.Name}$wf({ps})");
-                Given(p, cx);
+                Line($"procedure {p.Name}$wf({ps})", Undecided(p));
+                Given(p, atEntry);
                 Line("{");
-                foreach (var s in p.Entry) Statement(s, cx);
+                foreach (var s in p.Entry) Statement(s, atEntry);
                 Line("}");
             }
         }
+
+        private static Check Undecided(KProcedure p) => new Check
+        {
+            Id = BoogieTranslator.Undecided, Method = p.Result, Message = "Boogie couldn't decide it",
+            Span = (p.Method.Locations.FirstOrDefault() ?? Location.None).GetLineSpan(),
+        };
 
         /// <summary>What a procedure is given, free: memory in range, this, a new object's defaults, its parameters' ranges and allocation.</summary>
         private void Given(KProcedure p, Context cx)
@@ -242,15 +280,13 @@ namespace CsVerify.Verifier.Boogie
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).OrderBy(FieldMap, System.StringComparer.Ordinal))
                     Line($"  free requires {FieldMap(f)}[this] == {E(Default(FieldType(f)), cx)};");
-            foreach (var x in m.Parameters)
+            foreach (var x in m.Parameters.Where(x => x.RefKind != RefKind.Out))
             {
+                var name = E(new KVar(Local(x)), cx);
                 if (IsIntegral(x.Type)) Line($"  free requires {E(InRange(new KVar(Local(x)), x.Type), cx)};");
-                if (IsRef(x.Type))
-                {
-                    Line($"  free requires {Local(x)} == null || $Alloc[{Local(x)}];");
-                    // (not null: checked at each call's argument)
-                    if (NotNullable(x.Type)) Line($"  free requires {Local(x)} != null;");
-                }
+                if (IsRef(x.Type) || IsView(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
+                // (not null: checked at each call's argument)
+                if (IsRef(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
             }
         }
 
@@ -276,8 +312,12 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return;
                 case KCall c:
-                    Line($"    call {(c.Result == null ? "" : c.Result + " := ")}{Name(c.Callee)}({string.Join(", ", (c.Receiver == null ? c.Args : new[] { c.Receiver }.Concat(c.Args)).Select(a => E(a, cx)))});", c.Check);
+                {
+                    var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();
+                    var given = c.Args.Where((a, k) => c.Callee.Parameters[k].RefKind != RefKind.Out);
+                    Line($"    call {(targets.Count == 0 ? "" : string.Join(", ", targets) + " := ")}{Name(c.Callee)}({string.Join(", ", (c.Receiver == null ? given : new[] { c.Receiver }.Concat(given)).Select(a => E(a, cx)))});", c.Check);
                     return;
+                }
                 default: throw new NotTranslated("not printable: " + s.GetType().Name);
             }
         }
