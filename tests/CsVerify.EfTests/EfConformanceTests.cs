@@ -24,7 +24,21 @@ namespace CsVerify.Tests
             public string Email { get; set; } = "";
             public string Name { get; set; } = "";
             public List<Order> Orders { get; set; } = new List<Order>();
+            public Address Address { get; set; } = new Address();
+            public HashSet<Note> Notes { get; set; } = new HashSet<Note>();
             public string Display => Name + " <" + Email + ">";
+        }
+
+        public sealed class Note
+        {
+            public int Id { get; set; }
+            public int CustomerId { get; set; }
+            public string Text { get; set; } = "";
+        }
+
+        public sealed class Address
+        {
+            public string City { get; set; } = "";
         }
 
         public sealed class Order
@@ -34,7 +48,27 @@ namespace CsVerify.Tests
             public Customer? Customer { get; set; }
             public int Total { get; set; }
             public bool IsDeleted { get; set; }
+            public int? Rating { get; set; }
+            public List<Line> Lines { get; set; } = new List<Line>();
             [ConcurrencyCheck] public int Updated { get; set; }
+        }
+
+        public abstract class Animal
+        {
+            public int Id { get; set; }
+            public string Name { get; set; } = "";
+            public bool Gone { get; set; }
+        }
+
+        public sealed class Dog : Animal { public int Barks { get; set; } }
+
+        public sealed class Cat : Animal { public int Lives { get; set; } }
+
+        public sealed class Line
+        {
+            public int OrderId { get; set; }
+            public int No { get; set; }
+            public int Qty { get; set; }
         }
 
         public sealed class Shop : DbContext
@@ -43,16 +77,27 @@ namespace CsVerify.Tests
             public Shop(Action<DbContextOptionsBuilder> configure) { _configure = configure; }
             public DbSet<Customer> Customers => Set<Customer>();
             public DbSet<Order> Orders => Set<Order>();
+            public DbSet<Line> Lines => Set<Line>();
+            public DbSet<Animal> Animals => Set<Animal>();
+            public DbSet<Note> Notes => Set<Note>();
             protected override void OnConfiguring(DbContextOptionsBuilder o) => _configure(o);
             protected override void OnModelCreating(ModelBuilder b)
             {
                 b.Entity<Customer>().HasIndex(c => c.Email).IsUnique();
+                b.Entity<Customer>().OwnsOne(c => c.Address);
                 b.Entity<Order>().HasQueryFilter(o => !o.IsDeleted);
+                b.Entity<Line>().HasKey(l => new { l.OrderId, l.No });
+                b.Entity<Dog>();
+                b.Entity<Cat>();
+                b.Entity<Animal>().HasQueryFilter(a => !a.Gone).HasIndex(a => a.Name).IsUnique();
             }
         }
 
         /// <summary>How a context of this provider connects (to a database of this test's own).</summary>
         protected abstract void Configure(DbContextOptionsBuilder o);
+
+        /// <summary>The same, with SQL's null semantics (UseRelationalNulls).</summary>
+        protected abstract void ConfigureRelationalNulls(DbContextOptionsBuilder o);
 
         /// <summary>Does the provider's default collation ignore case and trailing spaces (SQL Server's does)?</summary>
         protected abstract bool CaseInsensitive { get; }
@@ -68,11 +113,15 @@ namespace CsVerify.Tests
             using var db = New();
             db.Database.EnsureDeleted();
             db.Database.EnsureCreated();
-            var ann = new Customer { Email = "ann@example.com", Name = "Ann" };
+            var ann = new Customer { Email = "ann@example.com", Name = "Ann", Address = new Address { City = "Oslo" } };
             var bob = new Customer { Email = "bob@example.com", Name = "Bob" };
             db.Customers.AddRange(ann, bob, new Customer { Email = "ann2@example.com", Name = "Ann" });
-            db.Orders.AddRange(new Order { Customer = ann, Total = 10 }, new Order { Customer = ann, Total = 50 },
+            db.Orders.AddRange(new Order { Customer = ann, Total = 10, Rating = 3 }, new Order { Customer = ann, Total = 50, Rating = 5 },
                                new Order { Customer = bob, Total = 70 }, new Order { Customer = bob, Total = 90, IsDeleted = true });
+            db.SaveChanges();
+            db.Lines.AddRange(new Line { OrderId = 1, No = 2, Qty = 5 }, new Line { OrderId = 2, No = 1, Qty = 7 });
+            db.Notes.AddRange(new Note { CustomerId = 1, Text = "a" }, new Note { CustomerId = 1, Text = "b" }, new Note { CustomerId = 2, Text = "c" });
+            db.Animals.AddRange(new Dog { Name = "Rex", Barks = 3 }, new Cat { Name = "Tom", Lives = 9 }, new Dog { Name = "Old", Gone = true });
             db.SaveChanges();
         }
 
@@ -97,6 +146,163 @@ namespace CsVerify.Tests
             using var db = New();
             Assert.All(db.Orders.AsNoTracking().ToList(), o => Assert.Null(o.Customer));
             Assert.All(db.Orders.AsNoTracking().Include(o => o.Customer).ToList(), o => Assert.NotNull(o.Customer));
+        }
+
+        [Fact]
+        public void Include_LoadsTheRowTheForeignKeyNames()
+        {
+            using var db = New();
+            Assert.All(db.Orders.AsNoTracking().Include(o => o.Customer).ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+            Assert.All(db.Orders.Include(o => o.Customer).ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+        }
+
+        [Fact]
+        public void Include_ACollection_LoadsTheRowsWithThisKey_ThroughTheQueryFilter()
+        {
+            using var db = New();
+            var customers = db.Customers.AsNoTracking().Include(c => c.Orders).ToList();
+            Assert.All(customers, c => Assert.All(c.Orders, o => Assert.True(o.CustomerId == c.Id && !o.IsDeleted)));
+            Assert.Contains(customers, c => c.Orders.Count == 2);
+        }
+
+        [Fact]
+        public void Collections_NotIncluded_AreAsTheInitializerMadeThem()
+        {
+            using var db = New();
+            Assert.All(db.Customers.AsNoTracking().ToList(), c => Assert.Empty(c.Orders));
+        }
+
+        [Fact]
+        public void ThenInclude_LoadsTheNextLevel()
+        {
+            using var db = New();
+            Assert.All(db.Orders.Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList(),
+                o => Assert.All(o.Customer!.Orders, p => Assert.True(p.CustomerId == o.CustomerId && !p.IsDeleted)));
+        }
+
+        [Fact]
+        public void Include_ACycleWithoutTracking_Throws()
+        {
+            using var db = New();
+            Assert.Throws<InvalidOperationException>(() => db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList());
+            db.Orders.AsNoTrackingWithIdentityResolution().Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList();
+        }
+
+        [Fact]
+        public void Owned_IsLoadedWithoutInclude()
+        {
+            using var db = New();
+            Assert.All(db.Customers.AsNoTracking().ToList(), c => Assert.NotNull(c.Address));
+            Assert.Contains(db.Customers.AsNoTracking().ToList(), c => c.Address.City == "Oslo");
+        }
+
+        [Fact]
+        public void Contains_OfStrings_ComparesByCollation()
+        {
+            using var db = New();
+            var names = new List<string> { "ANN" };
+            Assert.Equal(CaseInsensitive ? 2 : 0, db.Customers.Count(c => names.Contains(c.Name)));
+        }
+
+        // ---- operators that compare: on keys compared alike, LINQ to Objects' result, in some order ----
+
+        [Fact]
+        public void GroupBy_WithAnAggregate_IsLinqs()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(Sorted(orders.GroupBy(o => o.CustomerId).Select(g => (g.Key, g.Count(), g.Sum(o => o.Total)))),
+                         Sorted(db.Orders.GroupBy(o => o.CustomerId).Select(g => new { g.Key, N = g.Count(), T = g.Sum(o => o.Total) }).ToList().Select(x => (x.Key, x.N, x.T))));
+        }
+
+        [Fact]
+        public void GroupBy_AsTheLastOperator_IsLinqs()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(Sorted(orders.GroupBy(o => o.CustomerId).Select(g => (g.Key, string.Join(",", g.Select(o => o.Id).OrderBy(i => i))))),
+                         Sorted(db.Orders.AsNoTracking().GroupBy(o => o.CustomerId).ToList().Select(g => (g.Key, string.Join(",", g.Select(o => o.Id).OrderBy(i => i))))));
+        }
+
+        [Fact]
+        public void DistinctAndSetOperators_OnKeys_AreLinqs()
+        {
+            using var db = New();
+            var ids = db.Orders.AsNoTracking().Select(o => o.CustomerId).ToList();
+            var cs = db.Customers.AsNoTracking().Select(c => c.Id).ToList();
+            Assert.Equal(Sorted(ids.Distinct()), Sorted(db.Orders.Select(o => o.CustomerId).Distinct().ToList()));
+            Assert.Equal(Sorted(ids.Union(cs)), Sorted(db.Orders.Select(o => o.CustomerId).Union(db.Customers.Select(c => c.Id)).ToList()));
+            Assert.Equal(Sorted(cs.Intersect(ids)), Sorted(db.Customers.Select(c => c.Id).Intersect(db.Orders.Select(o => o.CustomerId)).ToList()));
+            Assert.Equal(Sorted(cs.Except(ids)), Sorted(db.Customers.Select(c => c.Id).Except(db.Orders.Select(o => o.CustomerId)).ToList()));
+            Assert.Equal(cs.Contains(2), db.Customers.Select(c => c.Id).Contains(2));
+        }
+
+        [Fact]
+        public void GroupJoin_IsLinqs_AndAsALeftJoin_Too()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            var customers = db.Customers.AsNoTracking().ToList();
+            Assert.Equal(Sorted(customers.GroupJoin(orders, c => c.Id, o => o.CustomerId, (c, os) => (c.Id, os.Count()))),
+                         Sorted(db.Customers.GroupJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, os) => new { c.Id, N = os.Count() }).ToList().Select(x => (x.Id, x.N))));
+            var left = (from c in db.Customers join o in db.Orders on c.Id equals o.CustomerId into os from o in os.DefaultIfEmpty() select new { c.Id, O = o == null ? -1 : o.Id }).ToList();
+            Assert.Contains(left, x => x.O == -1);
+        }
+
+        [Fact]
+        public void ThenInclude_WithoutTracking_LoadsEachLevel_AndFixesUpTheInverse()
+        {
+            using var db = New();
+            var cs = db.Customers.AsNoTracking().Include(c => c.Orders).ToList();
+            // (the inverse of an included collection is set: the row it hangs from)
+            Assert.All(cs, c => Assert.All(c.Orders, o => Assert.Same(c, o.Customer)));
+            var lines = db.Orders.AsNoTracking().Include(o => o.Customer).ThenInclude(c => c!.Address).ToList();
+            Assert.All(lines, o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+        }
+
+        [Fact]
+        public void Include_AHashSet_HoldsTheRowsWithThisKey_AndNotIncludedIsEmpty()
+        {
+            using var db = New();
+            var cs = db.Customers.AsNoTracking().Include(c => c.Notes).ToList();
+            Assert.All(cs, c => Assert.All(c.Notes, n => Assert.Equal(c.Id, n.CustomerId)));
+            Assert.Contains(cs, c => c.Notes.Count == 2);
+            Assert.All(db.Customers.AsNoTracking().ToList(), c => Assert.Empty(c.Notes));
+        }
+
+        [Fact]
+        public void Include_ACollectionWithoutAnInverse_ByTheConventionsKey()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().Include(o => o.Lines).ToList();
+            Assert.All(orders, o => Assert.All(o.Lines, l => Assert.Equal(o.Id, l.OrderId)));
+            Assert.Contains(orders, o => o.Lines.Count == 1);
+        }
+
+        [Fact]
+        public void Tracked_Include_IsTheRowTheForeignKeyNames()
+        {
+            using var db = New();
+            Assert.All(db.Orders.Include(o => o.Customer).ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
+            var cs = db.Customers.Include(c => c.Orders).ToList();
+            Assert.All(cs, c => Assert.All(c.Orders, o => Assert.Equal(c.Id, o.CustomerId)));
+        }
+
+        [Fact]
+        public void Tracked_OnANewContext_ThenInclude_IsEachLevelsRows_ThroughTheFilters()
+        {
+            using var db = New();
+            var orders = db.Orders.Include(o => o.Customer).ThenInclude(c => c!.Orders).ToList();
+            Assert.All(orders, o => Assert.All(o.Customer!.Orders, p => Assert.True(p.CustomerId == o.CustomerId && !p.IsDeleted)));
+            Assert.Contains(orders, o => o.Customer!.Orders.Count == 2);
+        }
+
+        [Fact]
+        public void Tracked_NavigationsAreFixedUp_FromWhatTheContextTracks()
+        {
+            using var db = New();
+            db.Customers.ToList();
+            Assert.All(db.Orders.ToList(), o => Assert.True(o.Customer != null && o.Customer.Id == o.CustomerId));
         }
 
         [Fact]
@@ -151,6 +357,44 @@ namespace CsVerify.Tests
             Assert.Equal(11, again.Total);
             // so a tracking query's rows needn't pass its predicate: a tracked one keeps its own values
             Assert.Contains(db.Orders.Where(o => o.Total == 10).ToList(), o => o.Total == 11);
+        }
+
+        [Fact]
+        public void Local_IsWhatTheContextTracks_ButWhatItDeletes()
+        {
+            using var db = New();
+            Assert.Empty(db.Orders.Local);
+            db.Orders.AsNoTracking().ToList();
+            Assert.Empty(db.Orders.Local); // (rows read without tracking aren't tracked)
+            var read = db.Orders.OrderBy(o => o.Id).ToList();
+            var added = new Order { CustomerId = read[0].CustomerId, Total = 1 };
+            db.Orders.Add(added);
+            read[1].Total = 7;
+            db.Orders.Remove(read[2]);
+            Assert.Equal(new[] { read[0], read[1], added }.OrderBy(o => o.Total), db.Orders.Local.OrderBy(o => o.Total));
+            Assert.Equal(EntityState.Modified, db.Entry(read[1]).State);
+        }
+
+        [Fact]
+        public void Find_ByACompositeKey_TakesItInTheKeysOrder()
+        {
+            using var db = New();
+            Assert.Equal(5, db.Lines.Find(1, 2)!.Qty);
+            Assert.Equal(7, db.Lines.Find(2, 1)!.Qty);
+            Assert.Null(db.Lines.Find(1, 1));
+        }
+
+        [Fact]
+        public void Inheritance_ADerivedSet_GivesItsType_ThroughTheRootsFilterAndIndex()
+        {
+            using var db = New();
+            Assert.Equal(new[] { "Rex" }, db.Set<Dog>().Select(d => d.Name).ToList());
+            Assert.Equal(2, db.Animals.Count());
+            var rex = db.Set<Dog>().AsNoTracking().Single();
+            Assert.Equal(rex.Id, db.Set<Dog>().Find(rex.Id)!.Id);
+            Assert.Null(db.Set<Cat>().Find(rex.Id));
+            db.Animals.Add(new Cat { Name = "Rex" });
+            Assert.Throws<DbUpdateException>(() => db.SaveChanges());
         }
 
         [Fact]
@@ -246,6 +490,83 @@ namespace CsVerify.Tests
         }
         // ---- where SQLite and SQL Server differ ----
 
+        // ---- joins: on a key the database and .NET compare alike, the pairs LINQ to Objects gives, in some order ----
+
+        private static List<string> Sorted<T>(IEnumerable<T> rows) => rows.Select(r => r?.ToString() ?? "null").OrderBy(s => s, StringComparer.Ordinal).ToList();
+
+        [Fact]
+        public void Join_GivesThePairsWithEqualKeys()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            var customers = db.Customers.AsNoTracking().ToList();
+            Assert.Equal(Sorted(orders.Join(customers, o => o.CustomerId, c => c.Id, (o, c) => (o.Id, c.Id))),
+                         Sorted(db.Orders.Join(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => new { O = o.Id, C = c.Id }).ToList().Select(x => (x.O, x.C))));
+        }
+
+        [Fact]
+        public void LeftJoin_AddsTheRowsThatMatchNone()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            var customers = db.Customers.AsNoTracking().ToList();
+            var left = db.Customers.LeftJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, o) => new { C = c.Id, O = o == null ? -1 : o.Id }).ToList();
+            Assert.Equal(Sorted(customers.LeftJoin(orders, c => c.Id, o => o.CustomerId, (c, o) => (c.Id, o == null ? -1 : o.Id))), Sorted(left.Select(x => (x.C, x.O))));
+            Assert.Contains(left, x => x.O == -1); // (Ann's second account has no orders)
+        }
+
+        [Fact]
+        public void RightJoin_FiltersTheLeftSideAfterTheJoin()
+        {
+            // EF Core applies the left side's query filter to the joined rows (WHERE NOT o.IsDeleted), which drops the
+            // right side's rows that match none: the model doesn't read a RightJoin on a database
+            using var db = New();
+            var right = db.Orders.RightJoin(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => new { O = o == null ? -1 : o.Id, C = c.Id }).ToList();
+            Assert.DoesNotContain(right, x => x.O == -1);
+            var unfiltered = db.Orders.IgnoreQueryFilters().RightJoin(db.Customers, o => o.CustomerId, c => c.Id, (o, c) => new { O = o == null ? -1 : o.Id, C = c.Id }).ToList();
+            Assert.Contains(unfiltered, x => x.O == -1);
+        }
+
+        [Fact]
+        public void Join_OnANullKey_MatchesNothing()
+        {
+            // as in LINQ to Objects, whose definition says so; the model reads only joins on keys that can't be null
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(0, orders.Join(orders, a => (int?)null, b => (int?)null, (a, b) => a.Id).Count());
+            Assert.Equal(0, db.Orders.Join(db.Orders, a => a.Total > 1000 ? a.Id : (int?)null, b => b.Total > 1000 ? b.Id : (int?)null, (a, b) => a.Id).Count());
+        }
+
+        // ---- nulls: by default, comparisons of nullable columns mean what they do in C#; with UseRelationalNulls, SQL's ----
+
+        private static readonly System.Linq.Expressions.Expression<Func<Order, bool>>[] NullablePredicates =
+        {
+            o => o.Rating != 3, o => o.Rating == 3, o => !(o.Rating == 3), o => o.Rating > 3, o => !(o.Rating > 3), o => o.Rating <= 3,
+            o => !(o.Rating > 3) && o.Total > 0, o => o.Rating == null || o.Rating < 4, o => !(o.Rating < 4 || o.Total > 60),
+        };
+
+        [Fact]
+        public void Nulls_ByDefault_CompareAsInCSharp()
+        {
+            using var db = New();
+            var orders = db.Orders.AsNoTracking().ToList();
+            foreach (var p in NullablePredicates)
+                Assert.True(orders.Count(p.Compile()) == db.Orders.Count(p), p.ToString());
+        }
+
+        [Fact]
+        public void Nulls_Relational_DropRowsWhereAComparisonIsUnknown()
+        {
+            using var db = new Shop(ConfigureRelationalNulls);
+            var orders = db.Orders.AsNoTracking().ToList();
+            Assert.Equal(3, orders.Count(o => o.Rating != 3 || o.Rating == 3));
+            Assert.Equal(2, db.Orders.Count(o => o.Rating != 3 || o.Rating == 3)); // (the order without a rating in neither)
+            Assert.Equal(1, db.Orders.Count(o => !(o.Rating == 3))); // (EF takes the NOT into the comparison: Rating <> 3)
+            // (other comparisons, and against null, stay C#'s: EF compensates for them)
+            Assert.Equal(orders.Count(o => !(o.Rating > 3)), db.Orders.Count(o => !(o.Rating > 3)));
+            Assert.Equal(orders.Count(o => o.Rating == null), db.Orders.Count(o => o.Rating == null));
+        }
+
         [Fact]
         public void Collation_EqualStringsMatch_AndCaseMayNot()
         {
@@ -280,8 +601,9 @@ namespace CsVerify.Tests
         public async Task TwoOperationsAtOnce_Throw()
         {
             using var db = New();
-            var first = db.Orders.ToListAsync();
-            if (!TrulyAsync) { await first; return; } // (SQLite's has finished before the next starts)
+            if (!TrulyAsync) { await db.Orders.ToListAsync(); return; } // (SQLite's has finished before the next starts)
+            // (one that is still running when the next starts: it waits on the server)
+            var first = db.Database.ExecuteSqlRawAsync("WAITFOR DELAY '00:00:02'");
             await Assert.ThrowsAsync<InvalidOperationException>(() => db.Customers.ToListAsync());
             await first;
         }
@@ -293,6 +615,7 @@ namespace CsVerify.Tests
         private readonly SqliteConnection _connection = new SqliteConnection("DataSource=:memory:");
         public SqliteConformanceTests() { _connection.Open(); Seed(); }
         protected override void Configure(DbContextOptionsBuilder o) => o.UseSqlite(_connection);
+        protected override void ConfigureRelationalNulls(DbContextOptionsBuilder o) => o.UseSqlite(_connection, x => x.UseRelationalNulls());
         protected override bool CaseInsensitive => false;
         protected override bool TrulyAsync => false;
         public override void Dispose() => _connection.Dispose();
@@ -335,6 +658,7 @@ namespace CsVerify.Tests
         }
 
         protected override void Configure(DbContextOptionsBuilder o) => o.UseSqlServer(_connection);
+        protected override void ConfigureRelationalNulls(DbContextOptionsBuilder o) => o.UseSqlServer(_connection, x => x.UseRelationalNulls());
         protected override bool CaseInsensitive => true;
         protected override bool TrulyAsync => true;
 

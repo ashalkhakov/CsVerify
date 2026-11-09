@@ -61,10 +61,92 @@ namespace CsVerify.Verifier
 
         /// <summary>
         /// What the method being verified did to a context: saves outside a transaction, a failed save or rollback,
-        /// entities it read or bulk updates made stale. Its own record: none at entry, and what it calls doesn't change
-        /// it (so these rules are checked within a method, not across calls).
+        /// entities it read or bulk updates made stale. Its own record: none at entry (what its caller did isn't seen),
+        /// and what it calls adds what the callee's code may do (EfCallEffects).
         /// </summary>
         private static readonly string[] MethodLocal = { "Failed", "Stale", "Read", "TokenRead", "SavedAlone", "Unshared" };
+
+        /// <summary>What a method of the program may do to a context that outlasts it, read from its code (and its callees').</summary>
+        private sealed class EfEffects
+        {
+            /// <summary>Returns with a context broken: it rolls back, or catches a failed save (or commit) and goes on.</summary>
+            public bool Breaks;
+            /// <summary>Saves (SaveChanges).</summary>
+            public bool Saves;
+            /// <summary>Changes rows behind the tracker (ExecuteUpdate, ExecuteDelete).</summary>
+            public bool BulkUpdates;
+        }
+
+        private readonly Dictionary<IMethodSymbol, EfEffects> _efEffects = new Dictionary<IMethodSymbol, EfEffects>(SymbolEqualityComparer.Default);
+
+        private EfEffects EfEffectsOf(IMethodSymbol m)
+        {
+            m = m.OriginalDefinition;
+            if (_efEffects.TryGetValue(m, out var known)) return known;
+            var e = _efEffects[m] = new EfEffects(); // (a recursive call adds nothing)
+            foreach (var r in m.DeclaringSyntaxReferences)
+            {
+                var node = r.GetSyntax();
+                var model = _model.Compilation.GetSemanticModel(node.SyntaxTree);
+                foreach (var inv in node.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                {
+                    if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol called)) continue;
+                    var name = called.Name.EndsWith("Async") ? called.Name.Substring(0, called.Name.Length - "Async".Length) : called.Name;
+                    // (in a try whose catch doesn't throw again: a failure there may be swallowed)
+                    bool swallowed = inv.Ancestors().OfType<TryStatementSyntax>().Any(t => t.Block.Span.Contains(inv.Span) &&
+                        t.Catches.Any(c => !c.Block.DescendantNodes().OfType<ThrowStatementSyntax>().Any()));
+                    if (IsEfMethod(called) || called.ContainingType != null && Ef.IsContextType(called.ContainingType) || IsTransactionType(called.ContainingType))
+                    {
+                        if (name == "SaveChanges") { e.Saves = true; if (swallowed) e.Breaks = true; }
+                        else if (name == "Commit" && swallowed || name == "Rollback") e.Breaks = true;
+                        else if (name == "ExecuteUpdate" || name == "ExecuteDelete") e.BulkUpdates = true;
+                    }
+                    else if (called.DeclaringSyntaxReferences.Length > 0 && !SymbolEqualityComparer.Default.Equals(called.OriginalDefinition, m))
+                    {
+                        var inner = EfEffectsOf(called);
+                        e.Saves |= inner.Saves;
+                        e.BulkUpdates |= inner.BulkUpdates;
+                        e.Breaks |= inner.Breaks || inner.Saves && swallowed;
+                    }
+                }
+            }
+            return e;
+        }
+
+        /// <summary>
+        /// After a call of the program's: what it may have done to any context, in this method's record. It may have
+        /// broken one, saved outside the transaction the caller had open, or changed rows the caller tracks.
+        /// </summary>
+        private void EfCallEffects(Frame f, IMethodSymbol callee)
+        {
+            if (Ef == null || TrackerModel("Failed") == null || callee == null || callee.DeclaringSyntaxReferences.Length == 0) return;
+            var e = EfEffectsOf(callee);
+            if (!e.Breaks && !e.Saves && !e.BulkUpdates) return;
+            if (e.Breaks)
+            {
+                var was = FieldMap(f, TrackerModel("Failed"));
+                var may = _z3.Fresh("broken", Sort.Row);
+                f.Link = null;
+                f.Fields[FieldEffects.Key(TrackerModel("Failed"))] = Pointwise("failed", Sort.Row, $"(ite (= (select {may.S} y) 1) 1 (select {was.S} y))");
+            }
+            if (e.Saves && TrackerModel("SavedAlone") is IMethodSymbol alone && TrackerModel("InTransaction") is IMethodSymbol inTx)
+            {
+                var was = FieldMap(f, alone);
+                var tx = FieldMap(f, inTx);
+                var may = _z3.Fresh("saved", Sort.Row);
+                f.Link = null;
+                f.Fields[FieldEffects.Key(alone)] = Pointwise("savedAlone", Sort.Row,
+                    $"(ite (and (= (select {may.S} y) 1) (= (select {tx.S} y) 0)) 1 (select {was.S} y))");
+            }
+            if (e.BulkUpdates && TrackerModel("Stale") is IMethodSymbol stale)
+            {
+                var was = FieldMap(f, stale);
+                var may = _z3.Fresh("stale", Sort.Heap);
+                f.Link = null;
+                f.Fields[FieldEffects.Key(stale)] = _z3.Define("stale", new Term(
+                    $"(lambda ((c Int)) (lambda ((o Int)) (ite (= (select (select {may.S} c) o) 1) 1 (select (select {was.S} c) o))))", Sort.Heap));
+            }
+        }
 
         private bool IsMethodLocalModel(ISymbol field) =>
             Ef != null && field is IMethodSymbol m && m.ContainingType?.Name == "Tracker" && m.ContainingNamespace?.ToDisplayString() == "CsVerify.Ef" && MethodLocal.Contains(m.Name);
@@ -114,14 +196,26 @@ namespace CsVerify.Verifier
             f.Link = null;
         }
 
-        /// <summary>The entities' columns before an await, to keep at the unshared ones (<see cref="KeepUnshared"/>).</summary>
-        private List<(IPropertySymbol column, Term map)> EntityColumns(Frame f) =>
-            Ef == null || TrackerModel("Unshared") == null || !EntitiesStayHere() ? null
-                : Ef.Entities.SelectMany(e => e.Type.GetMembers().OfType<IPropertySymbol>()).Where(FieldEffects.IsHeapField)
-                    .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Select(p => (p, FieldMap(f, p))).ToList();
+        /// <summary>
+        /// The entities' columns before an await, to keep at the unshared ones (<see cref="KeepUnshared"/>), and the
+        /// models of lists, for the lists of their collection navigations.
+        /// </summary>
+        private List<(ISymbol column, Term map)> EntityColumns(Frame f)
+        {
+            if (Ef == null || TrackerModel("Unshared") == null || !EntitiesStayHere()) return null;
+            var columns = Ef.Entities.SelectMany(e => EfModel.PropertiesOf(e.Type)).Where(FieldEffects.IsHeapField)
+                .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).Select(p => ((ISymbol)p, FieldMap(f, p))).ToList();
+            if (ListModels && Ef.Entities.Any(e => e.Collections.Any(MadeAsList)))
+                foreach (var model in new[] { ListModel("Items"), ListModel("Size") })
+                    columns.Add((model, FieldMap(f, model)));
+            if (Ef.Entities.Any(e => e.Collections.Any(MadeAsSet)))
+                foreach (var model in new[] { SetModel("Members"), SetModel("Size") })
+                    columns.Add((model, FieldMap(f, model)));
+            return columns;
+        }
 
         /// <summary>An await leaves an entity no other code reaches as it was: its columns, its concurrency token among them.</summary>
-        private void KeepUnshared(Frame f, List<(IPropertySymbol column, Term map)> before)
+        private void KeepUnshared(Frame f, List<(ISymbol column, Term map)> before)
         {
             if (before == null || before.Count == 0) return;
             var unshared = FieldMap(f, TrackerModel("Unshared"));
@@ -352,10 +446,7 @@ namespace CsVerify.Verifier
                     $"'{at}' also marks what the {e.Type.Name}'s navigations hold as modified, and SaveChanges then writes every column of each: " +
                     "update only this entity (Entry(e).State = EntityState.Modified), or load the graph tracked and change what changes");
             // the concurrency token is the one the context read: EF checks the row against it
-            if ((how == "Update" || how == "Attach") && e.Tokens.Count > 0 && KeyColumn(e.Tokens[0], o, f) is Term token)
-                ProveEf(T.Implies(AsBool(Model("Read", c, f, o)), T.Eq(T.Coerce(token, Sort.Int), T.Coerce(Model("TokenRead", c, f, o), Sort.Int))), TokenId, at,
-                    $"'{at}' takes {e.Tokens[0].Name}, the concurrency token, as the value the row had when read, but it was changed since: " +
-                    "EF would check the row against the new value. Attach first, then change it");
+            if (how == "Update" || how == "Attach") TokensAsRead(c, o, e, f, at, "Attach first, then change it");
             Term next;
             switch (how)
             {
@@ -408,18 +499,27 @@ namespace CsVerify.Verifier
             return n;
         }
 
-        /// <summary>Find(key): the tracked entity with that key, or the row read and tracked, or null.</summary>
+        /// <summary>
+        /// Find(key), or Find(a, b) for a composite key, in the key's order: the tracked entity with that key, or the
+        /// row read and tracked, or null.
+        /// </summary>
         private Term Find(IInvocationOperation inv, Term c, EfModel.Entity e, Frame f, SpecEnv spec)
         {
-            if (e == null || e.Key.Count != 1) return null;
+            if (e == null || e.Key.Count == 0) return null;
             var keyArg = inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value;
-            if (keyArg is IArrayCreationOperation arr && arr.Initializer?.ElementValues.Length == 1) keyArg = Unwrapped(arr.Initializer.ElementValues[0]);
-            if (keyArg == null) return null;
+            var parts = keyArg is IArrayCreationOperation arr && arr.Initializer != null
+                ? arr.Initializer.ElementValues.Select(Unwrapped).ToList()
+                : keyArg != null && e.Key.Count == 1 ? new List<IOperation> { keyArg } : null;
+            if (parts == null || parts.Count != e.Key.Count) return null;
+            // (each value of its column's type: EF throws for another, which is not read)
+            for (int j = 0; j < parts.Count; j++)
+                if (!SymbolEqualityComparer.Default.Equals(parts[j].Type, e.Key[j].Type)) return null;
             UsableContext(c, inv.Syntax, f);
-            var k = Eval(keyArg, f, spec);
+            var ks = parts.Select(p => Eval(p, f, spec)).ToList();
             var r = _z3.Fresh("found", Sort.Int);
-            var key = KeyColumn(e.Key[0], r, f);
-            _z3.Assume(T.Or(T.Eq(r, T.Int(0)), T.And(IsEntity(r, e), T.Eq(key, T.Coerce(k, key.Sort)))));
+            var keys = e.Key.Select(p => KeyColumn(p, r, f)).ToList();
+            if (keys.Any(k => k == null)) return null;
+            _z3.Assume(T.Or(T.Eq(r, T.Int(0)), T.And(new[] { IsEntity(r, e) }.Concat(keys.Select((k, j) => T.Eq(k, T.Coerce(ks[j], k.Sort)))).ToArray())));
             SetModelAt("State", c, r, T.Ite(T.Eq(T.Coerce(Model("State", c, f, r), Sort.Int), T.Int(EfDetached)), T.Int(Unchanged), Model("State", c, f, r)), f);
             MayRaise(T.True, f, null);
             return r;
@@ -433,7 +533,7 @@ namespace CsVerify.Verifier
                 case "Reload":
                     UsableContext(c, inv.Syntax, f);
                     // the row's values, as the database has them now
-                    foreach (var p in e.Type.GetMembers().OfType<IPropertySymbol>().Where(FieldEffects.IsHeapField))
+                    foreach (var p in EfModel.PropertiesOf(e.Type).Where(FieldEffects.IsHeapField))
                         f.Fields[FieldEffects.Key(p)] = T.Store(FieldMap(f, p), o, T.Coerce(_z3.Fresh(p.Name, SortOf(p.Type)), ValueSort(p)));
                     f.Link = null;
                     SetModelAt("Stale", c, o, T.False, f);
@@ -590,10 +690,7 @@ namespace CsVerify.Verifier
             var now = T.Coerce(Model("State", c, f, o), Sort.Int);
             ProveEf(T.Or(T.Not(T.Eq(now, T.Int(EfDetached))), NoOtherWithKey(c, o, e, f)), TrackerId, at,
                 $"'{at}' may meet another {e.Type.Name} with the same key that the context already tracks, and EF throws: use the tracked one, or a context that tracks none");
-            if (state == Modified && e.Tokens.Count > 0 && KeyColumn(e.Tokens[0], o, f) is Term token)
-                ProveEf(T.Implies(AsBool(Model("Read", c, f, o)), T.Eq(T.Coerce(token, Sort.Int), T.Coerce(Model("TokenRead", c, f, o), Sort.Int))), TokenId, at,
-                    $"'{at}' takes {e.Tokens[0].Name}, the concurrency token, as the value the row had when read, but it was changed since: " +
-                    "EF would check the row against the new value. Mark it modified first, then change it");
+            if (state == Modified) TokensAsRead(c, o, e, f, at, "Mark it modified first, then change it");
             SetModelAt("State", c, o, T.Int(state), f);
             if (state == Modified) SetModel("Unsaved", c, T.True, f);
         }

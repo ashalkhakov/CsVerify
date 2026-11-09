@@ -50,8 +50,11 @@ namespace CsVerify.Ef
         /// <summary>The context read the entity, without tracking it, in the method being verified.</summary>
         [Model] public static bool Read(this DbContext context, object entity) => throw null!;
 
-        /// <summary>The entity's (first) concurrency token as the context read it (where <see cref="Read"/>).</summary>
-        [Model] public static object? TokenRead(this DbContext context, object entity) => throw null!;
+        /// <summary>
+        /// The concurrency tokens of entities as the context read them (where <see cref="Read"/>): each at a key of its
+        /// own for the entity and the token (MethodVerifier.TokenKey).
+        /// </summary>
+        [Model] public static object? TokenRead(this DbContext context, object tokenKey) => throw null!;
 
         /// <summary>
         /// The entity was read without tracking in the method being verified, which lets none of the entities it reads

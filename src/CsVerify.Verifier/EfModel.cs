@@ -33,6 +33,10 @@ namespace CsVerify.Verifier
             public List<IPropertySymbol> References = new List<IPropertySymbol>();
             /// <summary>Navigations to many (a collection of entities).</summary>
             public List<IPropertySymbol> Collections = new List<IPropertySymbol>();
+            /// <summary>A reference navigation's foreign key, a property of this entity (where the model says which).</summary>
+            public Dictionary<IPropertySymbol, IPropertySymbol> ForeignKeys = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>A collection navigation's foreign key, a property of the entity it holds (where the model says which).</summary>
+            public Dictionary<IPropertySymbol, IPropertySymbol> CollectionKeys = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
 
             /// <summary>Every set of properties that identifies a row: the key, then the unique ones.</summary>
             public IEnumerable<List<IPropertySymbol>> Identifying => (Key.Count > 0 ? new[] { Key } : Array.Empty<List<IPropertySymbol>>()).Concat(Unique);
@@ -48,6 +52,26 @@ namespace CsVerify.Verifier
 
         public INamedTypeSymbol DbContextType { get; }
 
+        /// <summary>
+        /// Does the program turn on SQL's null semantics (UseRelationalNulls) for some context? Then for every one: which
+        /// context a provider's options are for isn't followed.
+        /// </summary>
+        public readonly bool RelationalNulls;
+
+        /// <summary>
+        /// Does the database compare strings as .NET's == does? When the only providers the program names are SQLite
+        /// (whose default collation, BINARY, compares them exactly) and the in-memory one, and nothing sets a collation
+        /// (UseCollation, a column type with COLLATE, EF.Functions.Collate). Then also for a database not made from this
+        /// model: the model can't tell.
+        /// </summary>
+        public readonly bool ExactStrings;
+
+        private static readonly string[] Providers =
+        {
+            "UseSqlServer", "UseAzureSql", "UseAzureSynapse", "UseSqlite", "UseNpgsql", "UseMySql", "UseMySQL", "UseOracle",
+            "UseInMemoryDatabase", "UseCosmos", "UseFirebird", "UseJet", "UseDb2", "UseSpanner",
+        };
+
         /// <summary>The model, or null for a program that does not reference EF Core.</summary>
         public static EfModel For(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes)
         {
@@ -58,6 +82,18 @@ namespace CsVerify.Verifier
         private EfModel(Compilation compilation, IReadOnlyList<SyntaxTree> userTrees, IReadOnlyList<INamedTypeSymbol> sourceTypes, INamedTypeSymbol dbContext)
         {
             DbContextType = dbContext;
+            ReadOwned(compilation, userTrees);
+            var called = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                .Select(i => i.Expression is MemberAccessExpressionSyntax ma ? ma.Name.Identifier.Text : (i.Expression as IdentifierNameSyntax)?.Identifier.Text)
+                .Where(n => n != null).ToList();
+            var providers = called.Where(n => Providers.Contains(n)).Distinct().ToList();
+            bool collation = called.Any(n => n == "UseCollation" || n == "Collate") ||
+                userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<LiteralExpressionSyntax>()
+                    .Any(l => l.Token.ValueText.IndexOf("COLLATE", StringComparison.OrdinalIgnoreCase) >= 0 || l.Token.ValueText.Contains("Relational:Collation")));
+            ExactStrings = providers.Count > 0 && providers.All(p => p == "UseSqlite" || p == "UseInMemoryDatabase") && !collation;
+            RelationalNulls = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i =>
+                i.Expression is MemberAccessExpressionSyntax { Name.Identifier.Text: "UseRelationalNulls" } &&
+                !(i.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))));
             foreach (var t in sourceTypes.Where(t => IsContextType(t)))
             {
                 Contexts.Add(t);
@@ -65,16 +101,25 @@ namespace CsVerify.Verifier
                     if (p.Type is INamedTypeSymbol set && set.Name == "DbSet" && set.TypeArguments.Length == 1 && set.TypeArguments[0] is INamedTypeSymbol e)
                         Add(e);
             }
-            // configured types are entity types too
+            // configured types are entity types too: modelBuilder.Entity<T>(), and what is called on its builder
             foreach (var (tree, inv, builder) in Configuration(compilation, userTrees))
                 if (builder.TypeArguments[0] is INamedTypeSymbol e) Add(e);
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                    if (inv.Expression is MemberAccessExpressionSyntax { Name: GenericNameSyntax { Identifier.Text: "Entity" } } &&
+                        model.GetSymbolInfo(inv).Symbol is IMethodSymbol { ContainingType.Name: "ModelBuilder", TypeArguments.Length: 1 } entity &&
+                        entity.TypeArguments[0] is INamedTypeSymbol configured && IsSourceClass(configured, sourceTypes))
+                        Add(configured);
+            }
             // and what navigations reach
             for (bool grew = true; grew;)
             {
                 grew = false;
                 foreach (var e in _entities.Values.ToList())
-                    foreach (var p in e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
-                        if (NavigationTarget(p.Type, out _) is INamedTypeSymbol target && IsSourceClass(target, sourceTypes) && !_entities.ContainsKey(target))
+                    foreach (var p in PropertiesOf(e.Type))
+                        if (NavigationTarget(p.Type, out _) is INamedTypeSymbol target && IsSourceClass(target, sourceTypes) && !_entities.ContainsKey(target) && !IsOwned(target))
                         { Add(target); grew = true; }
             }
             foreach (var e in _entities.Values) ReadAttributes(e);
@@ -82,9 +127,194 @@ namespace CsVerify.Verifier
             foreach (var e in _entities.Values)
             {
                 if (e.Key.Count == 0) e.Key.AddRange(ConventionKey(e.Type));
-                foreach (var p in e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+                foreach (var p in PropertiesOf(e.Type))
                     if (NavigationTarget(p.Type, out bool many) is INamedTypeSymbol target && _entities.ContainsKey(target))
                         (many ? e.Collections : e.References).Add(p);
+            }
+            Inherit();
+            ReadRelationships();
+        }
+
+        // ------------------------------------------------------------------ relationships
+
+        /// <summary>Navigations the fluent configuration names in a way this reading doesn't follow: no foreign key for them.</summary>
+        private readonly HashSet<IPropertySymbol> _unreadNavigations = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Entities with a relationship configured by name (HasOne("Customer")): no foreign key for any of their navigations.</summary>
+        private readonly HashSet<ITypeSymbol> _unreadEntities = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>From the fluent configuration: a reference navigation's foreign key, and a collection's inverse reference.</summary>
+        private readonly Dictionary<IPropertySymbol, IPropertySymbol> _fluentKeys = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
+        private readonly Dictionary<IPropertySymbol, IPropertySymbol> _fluentInverse = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// The foreign keys of navigations, as EF finds them: the fluent HasOne/HasMany ... HasForeignKey, [ForeignKey] on
+        /// the navigation or on the key, or EF's convention (the navigation's name, or the principal's, then the key's
+        /// name or Id), for a dependent with one navigation to the principal. A collection's is its inverse
+        /// reference's: the one the configuration pairs it with, or the dependent's only navigation to the principal.
+        /// Only to a principal of one key property, and only where nothing else (a principal key, [InverseProperty])
+        /// could make it another.
+        /// </summary>
+        private void ReadRelationships()
+        {
+            foreach (var d in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
+                foreach (var nav in d.References)
+                {
+                    if (_unreadNavigations.Contains(nav) || Has(nav, "InversePropertyAttribute") || _unreadEntities.Contains(nav.Type.OriginalDefinition)) continue;
+                    var p = EntityOf(nav.Type);
+                    if (p == null || p.Key.Count != 1) continue;
+                    var key = p.Key[0];
+                    var props = PropertiesOf(d.Type).ToList();
+                    IPropertySymbol fk = _fluentKeys.TryGetValue(nav, out var fluent) ? fluent : null;
+                    if (fk == null && Attribute(nav, "ForeignKeyAttribute") is string named)
+                    {
+                        // (a composite key, "A,B", isn't followed)
+                        fk = props.FirstOrDefault(x => x.Name == named);
+                        if (fk == null) continue;
+                    }
+                    fk ??= props.FirstOrDefault(x => Attribute(x, "ForeignKeyAttribute") == nav.Name);
+                    if (fk == null && d.References.Count(r => ReferenceEquals(EntityOf(r.Type), p)) == 1)
+                        foreach (var name in new[] { nav.Name + key.Name, nav.Name + "Id", p.Type.Name + key.Name, p.Type.Name + "Id" })
+                            if ((fk = props.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase))) != null) break;
+                    if (fk == null) continue;
+                    var t = fk.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : fk.Type;
+                    if (SymbolEqualityComparer.Default.Equals(t, key.Type)) d.ForeignKeys[nav] = fk;
+                }
+            foreach (var p in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
+                foreach (var nav in p.Collections)
+                {
+                    if (_unreadNavigations.Contains(nav) || Has(nav, "InversePropertyAttribute")) continue;
+                    var d = EntityOf(NavigationTarget(nav.Type, out _));
+                    if (d == null) continue;
+                    var inverse = _fluentInverse.TryGetValue(nav, out var paired) ? paired : null;
+                    if (inverse == null)
+                    {
+                        var back = d.References.Where(r => ReferenceEquals(EntityOf(r.Type), p)).ToList();
+                        int many = p.Collections.Count(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), d));
+                        if (back.Count == 1 && many == 1 && !_fluentInverse.Values.Contains(back[0], SymbolEqualityComparer.Default)) inverse = back[0];
+                    }
+                    if (inverse != null && d.ForeignKeys.TryGetValue(inverse, out var fk)) p.CollectionKeys[nav] = fk;
+                    else if (inverse == null && p.Key.Count == 1 && !d.References.Any(r => ReferenceEquals(EntityOf(r.Type), p)) &&
+                             p.Collections.Count(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), d)) == 1 &&
+                             !_fluentInverse.ContainsKey(nav) && !_fluentKeys.Keys.Any(k => ReferenceEquals(EntityOf(k.ContainingType), d)))
+                    {
+                        // (no navigation back: EF's convention, the principal's name and its key's, or Id)
+                        var key = p.Key[0];
+                        var props = PropertiesOf(d.Type).ToList();
+                        var named = new[] { p.Type.Name + key.Name, p.Type.Name + "Id" }
+                            .Select(n => props.FirstOrDefault(x => string.Equals(x.Name, n, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(x => x != null);
+                        var t = named?.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nt ? nt.TypeArguments[0] : named?.Type;
+                        if (named != null && SymbolEqualityComparer.Default.Equals(t, key.Type)) p.CollectionKeys[nav] = named;
+                    }
+                }
+        }
+
+        /// <summary>The string an attribute of this name is given ([ForeignKey("CustomerId")]), if any.</summary>
+        private static string Attribute(ISymbol s, string name) =>
+            s.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == name)?.ConstructorArguments.FirstOrDefault().Value as string;
+
+        /// <summary>
+        /// HasOne(x => x.Nav) or HasMany(x => x.Navs), then WithMany/WithOne, HasForeignKey: which navigations pair, and
+        /// the foreign key. Anything else on the chain (a principal key, a key by name, a one-to-one's key) leaves both
+        /// navigations without one.
+        /// </summary>
+        private void ReadRelationship(SemanticModel model, Entity e, string name, ExpressionSyntax arg, List<(string name, InvocationExpressionSyntax call)> next)
+        {
+            if (arg != null && !(arg is LambdaExpressionSyntax))
+            {
+                // (by name, or by type: HasOne("Customer"), HasMany(typeof(Order)): any of the entity's navigations)
+                _unreadEntities.Add(e.Type.OriginalDefinition);
+                return;
+            }
+            IPropertySymbol Nav(ExpressionSyntax x) =>
+                x is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax m } ? model.GetSymbolInfo(m).Symbol as IPropertySymbol : null;
+            var first = Nav(arg);
+            var with = next.FirstOrDefault(x => x.name == "WithMany" || x.name == "WithOne");
+            var second = with.call == null ? null : Nav(with.call.ArgumentList.Arguments.FirstOrDefault()?.Expression);
+            var reference = name == "HasOne" ? first : second;
+            var collection = name == "HasMany" ? first : with.name == "WithMany" ? second : null;
+            var key = next.FirstOrDefault(x => x.name == "HasForeignKey").call;
+            bool unread = first == null && arg != null || next.Any(x => x.name == "HasPrincipalKey") || name == "HasOne" && with.name == "WithOne" ||
+                          name == "HasMany" && with.name == "WithMany";
+            IPropertySymbol fk = null;
+            if (key != null)
+            {
+                var k = key.ArgumentList.Arguments.FirstOrDefault()?.Expression;
+                fk = (key.Expression as MemberAccessExpressionSyntax)?.Name is GenericNameSyntax || key.ArgumentList.Arguments.Count != 1 ? null : Nav(k);
+                if (fk == null) unread = true;
+            }
+            if (unread)
+            {
+                foreach (var nav in new[] { first, second }) if (nav != null) _unreadNavigations.Add(nav);
+                return;
+            }
+            if (reference != null && fk != null) _fluentKeys[reference] = fk;
+            if (reference != null && collection != null) _fluentInverse[collection] = reference;
+        }
+
+        /// <summary>
+        /// Owned types and complex types: their properties are columns of their owner, which EF always loads with it. They
+        /// are neither entities nor navigations here: nothing is said of them.
+        /// </summary>
+        private readonly HashSet<ITypeSymbol> _owned = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
+        public bool IsOwned(ITypeSymbol t) => t != null && _owned.Contains(t.OriginalDefinition);
+
+        private static readonly HashSet<string> OwningCalls = new HashSet<string>
+        { "OwnsOne", "OwnsMany", "Owned", "ComplexProperty", "ComplexCollection", "ComplexProperties" };
+
+        /// <summary>[Owned], [ComplexType], and OwnsOne/OwnsMany/ComplexProperty (of a navigation, or a type) or Owned&lt;T&gt;() anywhere.</summary>
+        private void ReadOwned(Compilation compilation, IReadOnlyList<SyntaxTree> trees)
+        {
+            foreach (var tree in trees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var decl in tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>())
+                    if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (Has(t, "OwnedAttribute") || Has(t, "ComplexTypeAttribute")))
+                        _owned.Add(t.OriginalDefinition);
+                foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                {
+                    var name = inv.Expression is MemberAccessExpressionSyntax ma ? ma.Name : inv.Expression as SimpleNameSyntax;
+                    if (name == null || !OwningCalls.Contains(name.Identifier.Text)) continue;
+                    if (name is GenericNameSyntax g)
+                        foreach (var a in g.TypeArgumentList.Arguments)
+                            if (model.GetTypeInfo(a).Type is ITypeSymbol owned) _owned.Add(owned.OriginalDefinition);
+                    if (inv.ArgumentList.Arguments.FirstOrDefault()?.Expression is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax m } &&
+                        model.GetSymbolInfo(m).Symbol is IPropertySymbol p)
+                        _owned.Add((NavigationTarget(p.Type, out _) ?? p.Type).OriginalDefinition);
+                }
+            }
+        }
+
+        /// <summary>
+        /// A type's instance properties, its source base classes' too (an entity's columns and navigations, declared
+        /// where it inherits them), each once.
+        /// </summary>
+        internal static IEnumerable<IPropertySymbol> PropertiesOf(INamedTypeSymbol t)
+        {
+            var seen = new HashSet<string>();
+            for (var b = t; b != null && b.Locations.Any(l => l.IsInSource); b = b.BaseType)
+                foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+                    if (seen.Add(p.Name)) yield return p;
+        }
+
+        /// <summary>
+        /// What a type inherits of its base entity's (EF reads them from the root of the hierarchy): its key, query
+        /// filters, unique indexes and concurrency tokens, the base's first so that a chain inherits from its root.
+        /// </summary>
+        private void Inherit()
+        {
+            int Depth(ITypeSymbol x) { int d = 0; for (var b = x.BaseType; b != null; b = b.BaseType) d++; return d; }
+            foreach (var e in _entities.Values.OrderBy(x => Depth(x.Type)))
+            {
+                Entity b = null;
+                for (var up = e.Type.BaseType; up != null && b == null; up = up.BaseType) b = EntityOf(up);
+                if (b == null) continue;
+                if (b.Key.Count > 0) e.Key = new List<IPropertySymbol>(b.Key);
+                foreach (var filter in b.Filters) if (!e.Filters.Contains(filter)) e.Filters.Add(filter);
+                foreach (var u in b.Unique) e.Unique.Add(u);
+                foreach (var token in b.Tokens) if (!e.Tokens.Contains(token)) e.Tokens.Add(token);
+                foreach (var v in b.RowVersions) e.RowVersions.Add(v);
             }
         }
 
@@ -102,7 +332,7 @@ namespace CsVerify.Verifier
 
         private void Add(INamedTypeSymbol t)
         {
-            if (!_entities.ContainsKey(t.OriginalDefinition)) _entities[t.OriginalDefinition] = new Entity { Type = t };
+            if (!_owned.Contains(t.OriginalDefinition) && !_entities.ContainsKey(t.OriginalDefinition)) _entities[t.OriginalDefinition] = new Entity { Type = t };
         }
 
         private static IEnumerable<ISymbol> AllMembers(INamedTypeSymbol t)
@@ -115,7 +345,7 @@ namespace CsVerify.Verifier
             t.TypeKind == TypeKind.Class && sourceTypes.Contains(t.OriginalDefinition, SymbolEqualityComparer.Default);
 
         /// <summary>The entity a navigation of this type leads to: the type itself, or the element of a collection of it.</summary>
-        private static INamedTypeSymbol NavigationTarget(ITypeSymbol t, out bool many)
+        internal static INamedTypeSymbol NavigationTarget(ITypeSymbol t, out bool many)
         {
             many = false;
             if (t is INamedTypeSymbol n && n.IsGenericType && n.TypeArguments.Length == 1 &&
@@ -134,7 +364,7 @@ namespace CsVerify.Verifier
         /// <summary>EF's convention: a property named Id, or the type's name and Id.</summary>
         private static IEnumerable<IPropertySymbol> ConventionKey(INamedTypeSymbol t)
         {
-            var props = t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && KeyTypes.Contains(p.Type.Name)).ToList();
+            var props = PropertiesOf(t).Where(p => KeyTypes.Contains(p.Type.Name)).ToList();
             var key = props.FirstOrDefault(p => string.Equals(p.Name, "Id", StringComparison.OrdinalIgnoreCase))
                    ?? props.FirstOrDefault(p => string.Equals(p.Name, t.Name + "Id", StringComparison.OrdinalIgnoreCase));
             return key == null ? Array.Empty<IPropertySymbol>() : new[] { key };
@@ -144,7 +374,7 @@ namespace CsVerify.Verifier
 
         private void ReadAttributes(Entity e)
         {
-            var props = e.Type.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic).ToList();
+            var props = PropertiesOf(e.Type).ToList();
             var keys = props.Where(p => Has(p, "KeyAttribute")).ToList();
             if (keys.Count > 0) e.Key = keys;
             foreach (var p in props)
@@ -225,6 +455,15 @@ namespace CsVerify.Verifier
                                  !e.Tokens.Contains(p[0]))
                             e.Tokens.Add(p[0]);
                     }
+                    break;
+                case "HasOne":
+                case "HasMany":
+                    ReadRelationship(model, e, name, arg, next);
+                    break;
+                case "OwnsOne":
+                case "OwnsMany":
+                    if (arg is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax owned } && model.GetSymbolInfo(owned).Symbol is IPropertySymbol ownedNav)
+                        _unreadNavigations.Add(ownedNav);
                     break;
                 case "HasQueryFilter":
                     if (arg is LambdaExpressionSyntax lambda && model.GetOperation(lambda) is IAnonymousFunctionOperation filter)

@@ -1098,8 +1098,9 @@ namespace CsVerify.Verifier
                     foreach (var e in ce.Elements) Eval(e, f, spec);
                     return Unknown(ce.Type, "params");
                 }
-                case IDefaultValueOperation _ when IsNullableValue(op.Type): return None();
-                case IDefaultValueOperation _: return SortOf(op.Type) == Sort.Bool ? T.False : IsFloating(op.Type) ? Zero(SortOf(op.Type)) : T.Int(0);
+                // (of a type parameter: as the instantiation has it, so default(B) with B = int? is null)
+                case IDefaultValueOperation _ when IsNullableValue(Resolve(op.Type)): return None();
+                case IDefaultValueOperation _: return SortOf(Resolve(op.Type)) == Sort.Bool ? T.False : IsFloating(Resolve(op.Type)) ? Zero(SortOf(Resolve(op.Type))) : T.Int(0);
                 case IDeclarationExpressionOperation d: return Eval(d.Expression, f, spec);
                 case IArgumentOperation arg: return Eval(arg.Value, f, spec);
                 case IExpressionStatementOperation es: return Eval(es.Operation, f, spec);
@@ -1238,12 +1239,31 @@ namespace CsVerify.Verifier
             return b.OperatorKind == BinaryOperatorKind.Equals ? T.Not(notNull) : notNull;
         }
 
+        /// <summary>
+        /// x == null (or !=) of a type parameter that this instantiation makes a value type (a definition's key): never
+        /// null (K = int), or null when it has no value (K = int?).
+        /// </summary>
+        private Term TypeParameterAgainstNull(IBinaryOperation b, Frame f, SpecEnv spec)
+        {
+            if (!(b.OperatorKind == BinaryOperatorKind.Equals || b.OperatorKind == BinaryOperatorKind.NotEquals)) return null;
+            bool right = IsNullConstant(Unconverted(b.RightOperand)), left = IsNullConstant(Unconverted(b.LeftOperand));
+            if (right == left) return null;
+            var operand = right ? b.LeftOperand : b.RightOperand;
+            while (operand is IConversionOperation c) operand = c.Operand; // (boxed to object)
+            var other = operand.Type;
+            if (!(other is ITypeParameterSymbol) || !(Resolve(other) is ITypeSymbol t) || !t.IsValueType) return null;
+            var notNull = IsNullableValue(t) ? HasValue(Eval(operand, f, spec)) : T.True;
+            return b.OperatorKind == BinaryOperatorKind.NotEquals ? notNull : T.Not(notNull);
+        }
+
         private Term EvalBinary(IBinaryOperation b, Frame f, SpecEnv spec)
         {
+            if (RelationalNullEquality(b, f, spec) is Term relational) return relational;
             // (x == null on an int? is not marked lifted, but compares the same way)
             if (b.IsLifted || b.OperatorMethod == null && (IsNullableValue(b.LeftOperand.Type) || IsNullableValue(b.RightOperand.Type)))
                 return LiftedBinary(b, f, spec);
             if (RecordAgainstNull(b, f, spec) is Term againstNull) return againstNull;
+            if (TypeParameterAgainstNull(b, f, spec) is Term againstNullValue) return againstNullValue;
             if (IsRecordEquality(b)) return RecordEquality(b, f, spec);
             if (b.OperatorMethod != null && b.OperatorMethod.IsImplicitlyDeclared && Data.IsData(b.OperatorMethod.ContainingType))
             {
@@ -1776,6 +1796,7 @@ namespace CsVerify.Verifier
             var m = inv.TargetMethod;
             if (LockEvent(inv, f, spec) is Term locked) return locked;
             if (MonitorSignal(inv, f, spec) is Term signalled) return signalled;
+            if (CompiledQueryCall(inv, f, spec) is Term compiled) return compiled;
             if (DbQueryCall(inv, f, spec) is Term dbQuery) return dbQuery;
             if (EfTrackerCall(inv, f, spec) is Term tracked) return tracked;
             if (AtomicCall(inv, f, spec) is Term atomic) return atomic;

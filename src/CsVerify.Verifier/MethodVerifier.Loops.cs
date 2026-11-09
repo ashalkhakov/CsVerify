@@ -204,6 +204,7 @@ namespace CsVerify.Verifier
                 // the array is evaluated once (a null array throws), and the index starts at 0
                 var collection = Unconverted(((IInvocationOperation)fc.Value).Instance);
                 var arr = Eval(collection, f, spec);
+                if (IsSetType(collection.Type)) _sourceTypes[T.Coerce(arr, Sort.Int).S] = collection.Type;
                 Deref(collection, arr, fc.Syntax);
                 _captured[fc.Id] = fc.Value;
                 f.ForEach[loop.Id] = (arr, T.Int(0));
