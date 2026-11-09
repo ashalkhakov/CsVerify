@@ -94,6 +94,8 @@ namespace CsVerify.Verifier.Boogie
                 case KVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
                 case KOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
                     return $"old({E(old.Args[0], new Context { Ins = cx.Ins, AtEntry = true, Elems = cx.Elems, InFunction = cx.InFunction, Layer = cx.Layer, Result = cx.Result })})";
+                case KFnApp f when f.Snap != null:
+                    return $"{f.Function}({string.Join(", ", new[] { f.Snap }.Concat(f.Args).Select(a => E(a, cx)))})";
                 case KFnApp f:
                 {
                     var own = OwnArrays(f.Callee);
@@ -191,6 +193,47 @@ namespace CsVerify.Verifier.Boogie
         /// precondition holds, by its body on the next layer (so one unfolding per use); its postcondition, and its
         /// range for a run-time one, of every value.
         /// </summary>
+        /// <summary>Does it read memory, or a procedure's state (a global, a snapshot, a function of the memory)?</summary>
+        private static bool ReadsMemory(KExpr e) => e switch
+        {
+            KVar v => v.Name.StartsWith("$") || v.Name == "psnap",
+            KOp op => op.Op == "old" || op.Args.Any(ReadsMemory),
+            KQuant q => (q.Range != null && ReadsMemory(q.Range)) || ReadsMemory(q.Body),
+            KFnApp _ => true,
+            _ => false,
+        };
+
+        /// <summary>Does it speak of snapshots (a function over a predicate)?</summary>
+        private static bool Snapshots(KExpr e) => e switch
+        {
+            KFnApp f => f.Snap != null || f.Args.Any(Snapshots),
+            KOp op => op.Args.Any(Snapshots),
+            KQuant q => (q.Range != null && Snapshots(q.Range)) || Snapshots(q.Body),
+            KVar v => v.Name == "psnap",
+            _ => false,
+        };
+
+        /// <summary>
+        /// A function over a predicate: of the instance's snapshot and its arguments, its value what folding and unfolding
+        /// the instance say (no axioms but its range).
+        /// </summary>
+        public void FunctionOverPredicate(KProcedure p)
+        {
+            var m = p.Method;
+            var name = FunctionName(m);
+            var ps = string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
+            Line($"function {name}(s: int{ps}): {TypeOf(m.ReturnType)};");
+            var app = $"{name}(s{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
+            if (!p.Ghost && IsIntegral(m.ReturnType))
+                Line($"axiom (forall s: int{ps} :: {{ {app} }} {E(InRange(new KLit(app), m.ReturnType), InProcedure)});");
+            // its postconditions, of every snapshot, where its precondition's facts hold (those that read no memory: an
+            // axiom is about every state)
+            var cx = new Context { Result = app };
+            var pre = p.Requires.Where(r => !ReadsMemory(r.Expr)).Select(r => E(r.Expr, cx)).DefaultIfEmpty("true");
+            foreach (var e in p.Ensures.Where(e => !ReadsMemory(e.Expr)))
+                Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e.Expr, cx)});");
+        }
+
         public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols)
         {
             var m = p.Method;
@@ -252,9 +295,10 @@ namespace CsVerify.Verifier.Boogie
                     if (NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
                 }
             }
-            foreach (var r in p.Requires) Line($"  requires {E(r.Expr, atEntry)};", r.Check);
+            // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
+            foreach (var r in p.Requires) Line($"  requires {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", r.Check);
             // (checked at each return, where it is reported: Boogie would report one return path of each)
-            foreach (var e in p.Ensures) Line($"  free ensures {E(e.Expr, cx)};");
+            foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) ? "true" : E(e.Expr, cx))};");
             if (!m.ReturnsVoid && IsIntegral(m.ReturnType) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), m.ReturnType), cx)};");
             if (functionFields != null)
                 Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
@@ -269,6 +313,8 @@ namespace CsVerify.Verifier.Boogie
                 Line("  var perm: [Ref]bool;");
                 Line("  var pinst: [Inst]int;");
                 Line("  var owner: [Ref]Inst;");
+                Line("  var psnap: [Inst]int;");
+                Line("  var psnap$entry: [Inst]int;");
                 if (p.UsesFields)
                 {
                     Line("  var fperm: [Ref][int]bool;");
@@ -304,6 +350,7 @@ namespace CsVerify.Verifier.Boogie
                 Line($"procedure {p.Name}$wf({ps})", Undecided(p));
                 Given(p, atEntry);
                 Line("{");
+                if (p.UsesPerm) Line("  var psnap: [Inst]int;");
                 foreach (var s in p.Entry) Statement(s, atEntry);
                 Line("}");
             }
@@ -346,8 +393,8 @@ namespace CsVerify.Verifier.Boogie
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
                 case KCallFrame { After: false } frame:
-                    foreach (var x in new[] { "perm", "pinst", "owner", "$Alloc" }.Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
-                                 .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]))
+                    foreach (var x in new[] { "perm", "pinst", "owner", "psnap", "$Alloc" }.Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
+                                 .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]).Concat(frame.OldGlobals).Distinct())
                         Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
                     return;
                 case KCallFrame frame:

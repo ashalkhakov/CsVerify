@@ -26,6 +26,13 @@ namespace CsVerify.Verifier.Boogie
         bool UsesFieldPermissions { get; }
         /// <summary>A field's id, for its single-field permission.</summary>
         int FieldId(ISymbol field);
+        /// <summary>
+        /// A function over a predicate (its precondition holds one instance, of its parameters): the predicate, and
+        /// for each of the function's parameters, the instance's argument it is. Null for any other.
+        /// </summary>
+        (IMethodSymbol pred, int[] arg)? OverPredicate(IMethodSymbol f);
+        /// <summary>The functions over a predicate.</summary>
+        IEnumerable<IMethodSymbol> FunctionsOver(IMethodSymbol pred);
     }
 
     /// <summary>
@@ -82,7 +89,7 @@ namespace CsVerify.Verifier.Boogie
             KVar v => vars.Contains(v.Name),
             KOp op => op.Args.Any(a => Mentions(a, vars)),
             KQuant q => Mentions(q.Range, vars) || Mentions(q.Body, vars),
-            KFnApp f => f.Args.Any(a => Mentions(a, vars)),
+            KFnApp f => f.Args.Any(a => Mentions(a, vars)) || f.Snap != null && Mentions(f.Snap, vars),
             _ => false,
         };
 
@@ -115,7 +122,7 @@ namespace CsVerify.Verifier.Boogie
             _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
             // the contract as mathematics (each with what makes it well-defined)
             var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
-            var ensures = _p.Ensures.Select(e => (spec: e, math: Spec(e.Expr, out var wf), wf, facts: Take())).ToList();
+            var ensures = _p.Ensures.Select(e => (spec: e, math: OldAtEntry(Spec(e.Expr, out var wf)), wf, facts: Take())).ToList();
             foreach (var r in requires)
             {
                 r.spec.Expr = r.math;
@@ -124,6 +131,10 @@ namespace CsVerify.Verifier.Boogie
             foreach (var e in ensures) e.spec.Expr = e.math;
             var decreases = _p.Decreases?.Select(d => Spec(d, out _)).ToList();
             if (_p.FunctionBody != null) _p.FunctionBody = Spec(_p.FunctionBody, out _);
+            // (a function's axioms are about every state: what they say can't be of a procedure's snapshots)
+            if (_p.FunctionBody != null && _program.OverPredicate(m) == null &&
+                new[] { _p.FunctionBody }.Concat(requires.Select(r => r.math)).Concat(ensures.Select(e => e.math)).Any(x => Mentions(x, Snaps)))
+                throw new NotTranslated("a function that reads a function over a predicate");
             var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: Spec(i.Expr, out var wf), wf, facts: Take())).ToList());
             var measures = _p.Measures.ToDictionary(kv => kv.Key, kv => kv.Value.Select(x => Spec(x.Expr, out _)).ToList());
             _facts.Clear();
@@ -149,6 +160,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     EnterOwned();
                     foreach (var r in _rawRequires) Inhale(r, null, null);
+                    // (what the preconditions say of snapshots: Boogie's requires can't name them)
+                    Emit(new KAssign { Var = "psnap$entry", Value = new KVar("psnap") });
+                    foreach (var r in requires.Where(r => Mentions(r.math, Snaps))) Assume(r.math);
                 }
                 bool head = b.Label == $"b{b.Ordinal}";
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
@@ -249,7 +263,12 @@ namespace CsVerify.Verifier.Boogie
             if (!m.ReturnsVoid && IsRef(m.ReturnType) && NotNullable(m.ReturnType))
                 Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable"));
             // the permissions the postconditions give back are in hand
-            if (_p.UsesPerm) foreach (var e in _rawEnsures) Exhale(e, null, ret.At, null);
+            if (_p.UsesPerm)
+            {
+                _old = OldAtEntry;
+                try { foreach (var e in _rawEnsures) Exhale(e, null, ret.At, null); }
+                finally { _old = null; }
+            }
             var before = new List<KExpr>();
             foreach (var e in ensures)
             {
@@ -398,6 +417,14 @@ namespace CsVerify.Verifier.Boogie
             if (_p.ArrayMode && !cellCall && !pure)
                 Emit(new KAssert { Cond = new KLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
             var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee, Cells = cellCall, Given = gave, Fields = _p.UsesFields } : null;
+            // (what its preconditions say of snapshots: checked here, as Boogie's requires can't name them)
+            if (_p.UsesPerm)
+                foreach (var r in sig.Requires)
+                {
+                    var math = Subst(Spec(r.Expr, out _), given);
+                    _facts.Clear();
+                    if (Mentions(math, Snaps)) Assert(math, At("CSV1001", c.At, $"'{c.At}': its precondition '{r.At}'"));
+                }
             if (frame != null) Emit(frame);
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
@@ -417,7 +444,15 @@ namespace CsVerify.Verifier.Boogie
                 var back = new Dictionary<string, KExpr>(given);
                 if (c.Result != null) back["result"] = new KVar(c.Result);
                 foreach (var (ordinal, var) in c.RefOuts) back[Local(callee.Parameters[ordinal])] = new KVar(var);
-                if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null);
+                _old = x => OldBefore(x, frame);
+                try { if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null); }
+                finally { _old = null; }
+                foreach (var e in sig.Ensures)
+                {
+                    var math = Subst(Spec(e.Expr, out _), back);
+                    _facts.Clear();
+                    if (Mentions(math, Snaps)) Assume(OldBefore(math, frame));
+                }
             }
         }
 
@@ -428,6 +463,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Reading a permission as a condition (Spec.Assert, Spec.Assume): in hand. Elsewhere it is given or got, and reads as true.</summary>
         private bool _held;
         private int _frames;
+        /// <summary>What old(...) means where a permission assertion is read: at a return, the entry; after a call, before it.</summary>
+        private Func<KExpr, KExpr> _old;
 
         internal static KExpr Instance(IMethodSymbol pred, KExpr[] args) =>
             new KOp("inst", new[] { (KExpr)new KLit(InstanceName(pred)) }.Concat(args).ToArray());
@@ -454,7 +491,13 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr Walk(KExpr e, Dictionary<string, KExpr> given, KExpr guard, Action<KExpr, KExpr> atom, Action<KExpr, KExpr> fact)
         {
-            KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return given == null ? v : Subst(v, given); }
+            KExpr M(KExpr x)
+            {
+                var v = Spec(x, out _);
+                _facts.Clear();
+                v = given == null ? v : Subst(v, given);
+                return _old == null ? v : _old(v);
+            }
             switch (e)
             {
                 case KOp { Op: "&&" } and:
@@ -516,6 +559,7 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     var inst = (KInst)a;
+                    Refresh(Instance(inst.Pred, inst.Args), g);
                     AddInst(Instance(inst.Pred, inst.Args), g, +1);
                 }
             }, null);
@@ -599,7 +643,10 @@ namespace CsVerify.Verifier.Boogie
                             Ite(Conj(g, new KOp("==", new KOp("sel", new KVar("owner"), y), q)), p, new KOp("sel", new KVar("owner"), y))) });
                     }
                 }, (g, fact) => Assert(Implies(g, fact), At("CSV1019", at, $"'{fold.InstAt}' might not hold when folding it: its body's facts")));
+                // (folded now: a snapshot of its own, of which the functions over it are what their bodies say now)
+                Refresh(p, new KLit("true"));
                 AddInst(p, new KLit("true"), +1);
+                Define(fold.Inst.Pred, args, p);
                 return;
             }
             Assert(new KOp(">=", new KOp("sel", new KVar("pinst"), p), new KLit("1")), At("CSV1016", at, $"'{fold.InstAt}' is not held here"));
@@ -639,10 +686,13 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var inst = (KInst)a;
                     var q = Instance(inst.Pred, inst.Args);
+                    Refresh(q, g);
                     AddInst(q, g, +1);
                     nested.Add((g, q));
                 }
             }, (g, fact) => Assume(Implies(g, fact)));
+            // (what was folded hasn't changed: the functions over it are what their bodies say of it now)
+            Define(fold.Inst.Pred, args, p);
             // the footprint splits: the body's own objects are free now, the rest belongs to one of its instances
             var yv = new KVar("y$");
             KExpr Footprint(KExpr y) => new KOp("sel", new KVar("footprint$"), y);
@@ -674,6 +724,87 @@ namespace CsVerify.Verifier.Boogie
             if (nested.Count > 0)
                 celsewhere = Ite(nested.Select(n => (KExpr)new KOp("==", CFoot(), n.q)).Aggregate((a, b) => new KOp("||", a, b)), None, CFoot());
             Emit(new KAssign { Var = "cowner", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"), Ite(new KOp("==", CFoot(), p), cto, celsewhere))) });
+        }
+
+        // ------------------------------------------------------------------ functions over predicates (snapshots, as Carbon's)
+
+        private static readonly HashSet<string> Snaps = new HashSet<string> { "psnap" };
+
+        /// <summary>The snapshot of the instance a function over a predicate is applied to, at these arguments.</summary>
+        private static KExpr Snap(IMethodSymbol pred, int[] map, KExpr[] args)
+        {
+            var instArgs = new KExpr[pred.Parameters.Length];
+            for (int k = 0; k < map.Length; k++) instArgs[map[k]] = args[k];
+            return new KOp("sel", new KVar("psnap"), Instance(pred, instArgs));
+        }
+
+        /// <summary>
+        /// A new snapshot of an instance (received, or folded): nothing is known of the functions over it yet. Unless a
+        /// copy is in hand already: two copies have no footprint (its permissions would be had twice), so the functions
+        /// over them are the same.
+        /// </summary>
+        private void Refresh(KExpr q, KExpr g)
+        {
+            g = Conj(g, new KOp("==", new KOp("sel", new KVar("pinst"), q), new KLit("0")));
+            if (!_p.Locals.Any(l => l.Name == "snap$")) _p.Locals.Add(new KLocal { Name = "snap$", Raw = "int" });
+            Emit(new KHavoc { Var = "snap$" });
+            Emit(new KAssign { Var = "psnap", Value = new KOp("store", new KVar("psnap"), q, Ite(g, new KVar("snap$"), new KOp("sel", new KVar("psnap"), q))) });
+        }
+
+        /// <summary>
+        /// The functions over a predicate, of an instance whose footprint is in hand as it was folded (folding it,
+        /// unfolding it): where its precondition holds, the value of its snapshot is its body, read now.
+        /// </summary>
+        private void Define(IMethodSymbol pred, KExpr[] instArgs, KExpr p)
+        {
+            foreach (var f in _program.FunctionsOver(pred))
+            {
+                if (!(_program.OverPredicate(f) is (IMethodSymbol, int[] map))) continue;
+                var sig = _program.Signature(f);
+                if (sig.FunctionBody == null) continue;
+                var args = map.Select(j => instArgs[j]).ToArray();
+                var given = f.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
+                KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, given); }
+                var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((KExpr)new KLit("true"), Conj);
+                var app = new KFnApp { Callee = f, Function = FunctionName(f), Args = args, Snap = new KOp("sel", new KVar("psnap"), p) };
+                Assume(Implies(pre, new KOp("==", app, M(sig.FunctionBody))));
+            }
+        }
+
+        /// <summary>old(...) of a procedure's snapshots is of those it had at entry.</summary>
+        private static KExpr OldAtEntry(KExpr e) => e switch
+        {
+            KOp { Op: "old" } old => new KOp("old", Subst(old.Args[0], new Dictionary<string, KExpr> { ["psnap"] = new KVar("psnap$entry") })),
+            KOp op => new KOp(op.Op, op.Args.Select(OldAtEntry).ToArray()),
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body) },
+            _ => e,
+        };
+
+        /// <summary>A callee's postcondition, in the caller after the call: old(...) of its snapshots is of the caller's before it (and of nothing else, here).</summary>
+        private static KExpr OldBefore(KExpr e, KCallFrame frame) => e switch
+        {
+            KOp { Op: "old" } old => Before(old.Args[0], frame),
+            KOp op => new KOp(op.Op, op.Args.Select(a => OldBefore(a, frame)).ToArray()),
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame) },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => OldBefore(a, frame)).ToArray(), Snap = f.Snap == null ? null : OldBefore(f.Snap, frame) },
+            _ => e,
+        };
+
+        /// <summary>What a callee's old(...) reads, as it was just before the call: the snapshots the frame took then.</summary>
+        private static KExpr Before(KExpr e, KCallFrame frame)
+        {
+            switch (e)
+            {
+                case KVar v when v.Name == "psnap": return new KVar($"s{frame.Id}$psnap");
+                case KVar v when v.Name.StartsWith("$"):
+                    frame.OldGlobals.Add(v.Name);
+                    return new KVar($"s{frame.Id}{v.Name}");
+                case KOp op: return new KOp(op.Op, op.Args.Select(a => Before(a, frame)).ToArray());
+                case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame) };
+                case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
+                case KFnApp _: throw new NotTranslated("a callee's postcondition that reads a function's value as it was, and a snapshot");
+                default: return e;
+            }
         }
 
         // ------------------------------------------------------------------ single fields (Viper's acc(o.f))
@@ -955,6 +1086,7 @@ namespace CsVerify.Verifier.Boogie
             // (no instances held yet: the preconditions bring them; who owns what is unknown)
             Emit(new KAssign { Var = "pinst", Value = new KLit("(lambda q: Inst :: 0)") });
             Emit(new KHavoc { Var = "owner" });
+            Emit(new KHavoc { Var = "psnap" });
             if (_p.UsesFields)
             {
                 Emit(new KAssign { Var = "fperm", Value = new KLit("(lambda y$: Ref :: (lambda k$: int :: false))") });
@@ -1277,6 +1409,9 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var r in _program.Signature(fn.Callee).Requires) Need(Subst(Spec(r.Expr, out _), given));
                     _facts.Clear();
                     _facts.AddRange(saved);
+                    // (over a predicate: its value is of the instance's snapshot)
+                    if (_program.OverPredicate(fn.Callee) is (IMethodSymbol pred, int[] map))
+                        return new KFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Args = args, Snap = Snap(pred, map, args) };
                     return new KFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Fields = _program.FunctionFields(fn.Callee),
                                         Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
                 }
@@ -1290,7 +1425,7 @@ namespace CsVerify.Verifier.Boogie
             KVar v when given.TryGetValue(v.Name, out var x) => x,
             KOp op => new KOp(op.Op, op.Args.Select(a => Subst(a, given)).ToArray()),
             KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given) },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray() },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray(), Snap = f.Snap == null ? null : Subst(f.Snap, given) },
             _ => e,
         };
     }

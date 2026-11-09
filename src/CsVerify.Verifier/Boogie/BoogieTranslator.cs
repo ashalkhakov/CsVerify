@@ -146,6 +146,51 @@ namespace CsVerify.Verifier.Boogie
 
         public bool UsesFieldPermissions { get; set; }
 
+        private readonly Dictionary<IMethodSymbol, (IMethodSymbol pred, int[] arg)?> _over = new Dictionary<IMethodSymbol, (IMethodSymbol, int[])?>(SymbolEqualityComparer.Default);
+
+        public (IMethodSymbol pred, int[] arg)? OverPredicate(IMethodSymbol f)
+        {
+            f = f.OriginalDefinition;
+            if (_over.TryGetValue(f, out var known)) return known;
+            (IMethodSymbol, int[])? over = null;
+            try
+            {
+                // (static, its precondition holding one instance, whose arguments are its parameters, each once)
+                if (f.IsStatic && IsFunction(f) && ContractOf(f).Requires.Any(Lowering.HasAtoms))
+                {
+                    var sig = ((IProgramFacts)this).Signature(f);
+                    var atoms = sig.Requires.SelectMany(r => AtomsOf(r.Expr)).ToList();
+                    if (atoms.Count == 1 && atoms[0] is KInst q && q.Args.All(a => a is KVar) && q.Args.Length == f.Parameters.Length)
+                    {
+                        var names = q.Args.Select(a => ((KVar)a).Name).ToList();
+                        var map = f.Parameters.Select(x => names.IndexOf(Local(x))).ToArray();
+                        if (map.All(j => j >= 0) && map.Distinct().Count() == map.Length) over = (q.Pred, map);
+                    }
+                    if (over == null) throw new NotTranslated("a function over a predicate, of other than one instance of its parameters");
+                }
+            }
+            catch (NotTranslated) { _over[f] = null; throw; }
+            return _over[f] = over;
+        }
+
+        private static IEnumerable<KExpr> AtomsOf(KExpr e) => e switch
+        {
+            KCells _ or KAcc _ or KInst _ or KFieldAcc _ => new[] { e },
+            KOp op => op.Args.SelectMany(AtomsOf),
+            _ => Enumerable.Empty<KExpr>(),
+        };
+
+        public IEnumerable<IMethodSymbol> FunctionsOver(IMethodSymbol pred)
+        {
+            foreach (var f in _procedures)
+            {
+                (IMethodSymbol pred, int[] arg)? over;
+                try { over = OverPredicate(f); }
+                catch (NotTranslated) { continue; }
+                if (over is (IMethodSymbol p, _) && SymbolEqualityComparer.Default.Equals(p, pred.OriginalDefinition)) yield return f;
+            }
+        }
+
         private readonly Dictionary<ISymbol, int> _fieldIds = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default);
 
         public int FieldId(ISymbol field)
@@ -201,7 +246,9 @@ namespace CsVerify.Verifier.Boogie
             _printer.Fields(fields);
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             OwnArrays();
-            foreach (var p in _pending.Where(p => p.FunctionBody != null && !p.IsPredicate)) _printer.Function(p, FunctionFields(p.Method), fields);
+            foreach (var p in _pending.Where(p => p.FunctionBody != null && !p.IsPredicate))
+                if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
+                else _printer.Function(p, FunctionFields(p.Method), fields);
             var writes = Closed(p => p.Modifies);
             var any = Closed(p => p.AnyWrites);
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
@@ -213,6 +260,7 @@ namespace CsVerify.Verifier.Boogie
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$perm", Raw = "[Ref]bool" });
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$pinst", Raw = "[Inst]int" });
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$owner", Raw = "[Ref]Inst" });
+                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$psnap", Raw = "[Inst]int" });
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
                     foreach (var map in frame.Maps)
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
@@ -229,6 +277,13 @@ namespace CsVerify.Verifier.Boogie
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cowner", Raw = "[Ref][int]Inst" });
                         foreach (var map in frame.ElementMaps)
                             p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = map == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int" });
+                    }
+                    // (and the globals its postconditions read as they were)
+                    foreach (var g in frame.OldGlobals.Where(g => !p.Locals.Any(l => l.Name == $"s{frame.Id}{g}")).ToList())
+                    {
+                        var raw = g.StartsWith("$E.") ? (g == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int")
+                                : fields.FirstOrDefault(f => FieldMap(f) == g) is ISymbol fs ? $"[Ref]{TypeOf(FieldType(fs))}" : null;
+                        if (raw != null) p.Locals.Add(new KLocal { Name = $"s{frame.Id}{g}", Raw = raw });
                     }
                 }
             // (a call, in array mode, that may write any array: reported only if it may)
@@ -247,7 +302,7 @@ namespace CsVerify.Verifier.Boogie
                 }
             foreach (var p in _pending)
             {
-                _printer.Procedure(p, writes[p.Method], any[p.Method], p.FunctionBody != null && !p.IsPredicate ? FunctionFields(p.Method) : null);
+                _printer.Procedure(p, writes[p.Method], any[p.Method], p.FunctionBody != null && !p.IsPredicate && OverPredicate(p.Method) == null ? FunctionFields(p.Method) : null);
                 Obligations[p.Result] = p.Obligations;
             }
             _pending.Clear();
@@ -260,7 +315,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void OwnArrays()
         {
-            var functions = _pending.Where(p => p.FunctionBody != null && !p.IsPredicate).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            var functions = _pending.Where(p => p.FunctionBody != null && !p.IsPredicate && OverPredicate(p.Method) == null).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             var own = functions.Keys.ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             List<(int arg, string param, string map)> Of(IMethodSymbol m) =>
                 m.Parameters.Where(x => IsArray(x.Type)).Select(x => (x.Ordinal + (m.IsStatic ? 0 : 1), Local(x), Elements(x.Type))).ToList();

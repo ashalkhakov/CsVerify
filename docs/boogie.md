@@ -311,8 +311,19 @@ field id):
   makes it whole again; a whole object received holds none of its fields apart;
 - a field is folded and unfolded as an object is, and a call keeps a field the caller holds, alone or folded.
 
-Not yet: functions over predicates (a `[Pure]` or `[GhostFunction]` whose precondition holds a permission, which reads its
-footprint), ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read shares, `in` views, packages, and
+**Functions over predicates.** A `[Pure]` or `[GhostFunction]` whose precondition holds one predicate instance (of
+its parameters) reads that instance's footprint, and its value survives any change outside it (Viper's functions
+over predicates). As Carbon does it, with snapshots: a procedure keeps `psnap: [Inst]int`, a snapshot of each
+instance it holds, new where the instance is received or folded (unless a copy is in hand already, whose footprint is
+then empty). Such a function is a Boogie function of the snapshot and its arguments, `f$Sum(psnap[i$Seg(from, to, n)],
+from, to, n)`, with no definition of its own: at each fold and unfold of the instance, where its precondition holds,
+its value for the instance's snapshot is its body, read then (nobody writes a folded footprint, so that is what it
+was folded with). A snapshot is the procedure's own state, so a precondition or postcondition that names one is
+checked and assumed in the body (at a call, at entry, after the call), not in Boogie's header; `old(...)` of it is of
+the snapshots at entry (`psnap$entry`), or, in a caller, of those and of the memory just before the call. Its
+postconditions that read no memory are axioms of every snapshot.
+
+Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state), ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read shares, `in` views, packages, and
 `Spec.Modifies` lending trees.
 
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
@@ -378,9 +389,9 @@ reads, writes, lengths and allocation, fields, object creation, calls of each ot
 `Spec.Exists`, `Spec.Old`, `Spec.Result` and calls of functions.
 
 Also `ref` and `out` parameters, `[Owned]` classes with their views and invariants, `Spec.Acc` of objects, and
-predicates with `Spec.Fold` and `Spec.Unfold`, array-cell and single-field permissions.
+predicates with `Spec.Fold` and `Spec.Unfold`, functions over them, array-cell and single-field permissions.
 
-Not yet (such a method is verified by CsVerify's engine): functions over predicates, ownership trees, shares, virtual
+Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, virtual
 members, interfaces, inheritance, records (data types), generics, strings, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, permissions and views, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
@@ -403,7 +414,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
 5. frames (`Spec.Modifies`, `Spec.Reads`), and the library's stub contracts;
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
-   objects, predicates, array cells, single fields; next: functions over predicates, trees, shares, packages);
+   objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
+   `Spec.Modifies`);
 7. locks, async and threads;
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.

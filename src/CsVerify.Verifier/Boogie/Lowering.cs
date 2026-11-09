@@ -54,7 +54,7 @@ namespace CsVerify.Verifier.Boogie
             if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
             // (the permissions its postconditions give back, and a predicate's body, for folding and unfolding it)
             foreach (var e in contract.Ensures) l._p.Ensures.Add(new KSpec { Expr = l.Spec(e.Expr, e.ResultParameter), At = e.Syntax });
-            if (SpecSymbols.IsPredicate(m) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
+            if ((SpecSymbols.IsPredicate(m) || isFunction(m) && contract.Requires.Any(HasAtoms)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
             return l._p;
         }
 
@@ -84,7 +84,6 @@ namespace CsVerify.Verifier.Boogie
         {
             if (SpecSymbols.IsPredicate(_m)) return Predicate();
             // (Viper's functions over predicates read their footprint: not yet)
-            if (_isFunction(_m) && _contract.Requires.Any(HasAtoms)) throw new NotTranslated("a function over a predicate");
             _p.UsesPerm |= _contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr));
             var cfg = _model.GetOperation(_decl) switch
             {

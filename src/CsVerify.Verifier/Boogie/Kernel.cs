@@ -74,6 +74,8 @@ namespace CsVerify.Verifier.Boogie
         public string Layer;
         public List<string> Fields = new List<string>();
         public KExpr[] Args;
+        /// <summary>A function over a predicate: the snapshot of the instance its value is of (in place of the memory).</summary>
+        public KExpr Snap;
     }
 
     // (C#'s meaning, until Checks)
@@ -193,6 +195,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Each [Owned] map's field id (its single-field permission's).</summary>
         public Dictionary<string, int> FieldIds = new Dictionary<string, int>();
         public bool Fields;
+        /// <summary>The globals the callee's postconditions read as they were (old): snapshotted before the call.</summary>
+        public HashSet<string> OldGlobals = new HashSet<string>();
     }
 
     /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
