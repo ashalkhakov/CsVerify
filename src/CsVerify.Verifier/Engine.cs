@@ -45,6 +45,8 @@ namespace CsVerify.Verifier
         public string Engine;
         internal bool Boogie => string.Equals(Engine, "boogie", StringComparison.OrdinalIgnoreCase) || BoogieOnly;
         /// <summary>"boogie-only": the methods Boogie verifies, and nothing else (to compare the engines on them).</summary>
+        /// <summary>Where to write the Boogie program the engine verifies (to read the translation), if anywhere.</summary>
+        public string BoogieOut;
         internal bool BoogieOnly => string.Equals(Engine, "boogie-only", StringComparison.OrdinalIgnoreCase);
         public List<string> Defines = new List<string>();
         public List<string> References = new List<string>();
@@ -641,6 +643,8 @@ namespace CsVerify.Verifier
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
                     if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract)) forBoogie.Add((method, contract, decl, mr));
+                    else if (options.Boogie && Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
+                        Console.Error.WriteLine($"not translated to Boogie: {mr.Name}: {Boogie.BoogieTranslator.WhyNot(method, contract)}");
                     else RunMethod(engine, contract, mr, decl.GetLocation());
                     // its lambdas and local functions, each a unit of its own
                     foreach (var (nested, graph) in NestedFunctions(decl, model))
@@ -800,7 +804,8 @@ namespace CsVerify.Verifier
             {
                 translator = new Boogie.BoogieTranslator(engine.Options.CheckOverflow);
                 translator.Prelude();
-                translator.Declare(included.Select(x => x.method));
+                translator.ContractOf = engine.ContractOf;
+                translator.Declare(included.Select(x => (x.method, x.decl, (SemanticModel)compilation.GetSemanticModel(x.decl.SyntaxTree))));
                 var refused = new List<(IMethodSymbol, Contract, SyntaxNode, MethodResult)>();
                 foreach (var x in included)
                 {
@@ -815,6 +820,7 @@ namespace CsVerify.Verifier
                 included = included.Except(refused).ToList();
             }
             translator.Finish();
+            if (engine.Options.BoogieOut != null) System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
             foreach (var x in held.Except(included)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
             if (included.Count == 0) return;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;

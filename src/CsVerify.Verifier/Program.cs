@@ -22,6 +22,7 @@ options:
   --method-budget <ms> the most one method may take (all rounds); past it, the rest is not verified (default: none)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
   --engine boogie     verify the methods Boogie's translation covers with Boogie (docs/boogie.md)
+  --boogie-out <file> with --engine boogie: write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
   --smt-log <file>    write the SMT-LIB2 conversation with Z3
@@ -67,6 +68,7 @@ options:
                         case "--method-budget": options.MethodBudgetMs = int.Parse(args[++i]); break;
                         case "--z3": options.Z3Path = args[++i]; break;
                         case "--engine": options.Engine = args[++i]; break;
+                        case "--boogie-out": options.BoogieOut = args[++i]; break;
                         case "-d": options.Defines.Add(args[++i]); break;
                         case "-r": options.References.Add(args[++i]); break;
                         case "--smt-log": smtLog = args[++i]; options.SmtLog = new System.Text.StringBuilder(); break;

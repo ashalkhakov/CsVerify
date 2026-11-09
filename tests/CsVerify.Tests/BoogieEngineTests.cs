@@ -47,6 +47,21 @@ public static class A
     public static int Read(int[] a, int i) { Spec.Requires(0 <= i && i < a.Length); Spec.Ensures<int>(r => r == a[i]); return a[i]; }
     public static void CallNull() { int[]? n = null; First(n!); }
     public static int[] Make(int n) { Spec.Requires(n >= 0); Spec.Ensures<int[]>(r => r.Length == n); return new int[n]; }
+    public static int Digit(char c) { Spec.Requires('0' <= c && c <= '9'); Spec.Ensures<int>(r => 0 <= r && r <= 9); return c - '0'; }
+    public static byte Low(int x) => (byte)x;
+    public static byte LowChecked(int x) { Spec.Ensures<byte>(r => r == x); return checked((byte)x); }
+    public static byte LowWraps(int x) { Spec.Requires(x == 257); Spec.Ensures<byte>(r => r == 1); return unchecked((byte)x); }
+    public static uint TwiceU(uint u) => u * 2;
+    public static short Neg(short s) { Spec.Ensures<short>(r => r == -s); return (short)-s; }
+    [Pure] public static int Max(int a, int b) => a > b ? a : b;
+    [GhostFunction] public static int Fact(int n) { Spec.Requires(n >= 0); Spec.Decreases(n); return n == 0 ? 1 : n * Fact(n - 1); }
+    public static int UseMax(int x) { Spec.Ensures<int>(r => r == Max(x, 0)); return x > 0 ? x : 0; }
+    public static void UnfoldsOnce() { Spec.Assert(Fact(3) == 6); }
+    public static void OutsideTheDomain() { Spec.Assert(Fact(-1) == 1); }
+    [GhostFunction] public static int Up(int n) { Spec.Decreases(n); return n <= 0 ? 0 : Up(n + 1); }
+    [Pure] public static int NoMeasure(int n) => n <= 0 ? 0 : NoMeasure(n - 1);
+    public static int CountDown(int n) { Spec.Requires(n >= 0); int i = n; while (i > 0) { Spec.Decreases(i); i--; } return i; }
+    public static int Stuck(int n) { Spec.Requires(n >= 0); int i = n; while (i > 0) { Spec.Decreases(i); if (n > 5) i--; } return i; }
     public static bool Has(int[] a, int v) { Spec.Ensures<bool>(r => !r || Spec.Exists(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length); if (a[i] == v) return true; } return false; }
 }";
 
@@ -79,9 +94,12 @@ public static class A
         public void Corpus_BothEnginesReportTheSame()
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, o));
-            Assert.Equal(25, Agree(c, b));
-            foreach (var bug in new[] { "UseAbs", "Overflows", "Div", "Assertion", "BadInv", "BadPost", "FirstBad", "KeepsOwn", "WfBad", "CallNull" }) Assert.False(b["A." + bug].Verified, bug);
-            foreach (var good in new[] { "Abs", "Sum", "Wide", "Twice", "UseAbsSafely", "Between", "Checked", "Truncates", "Remainder", "Fill", "First", "Wraps", "Read", "Make", "Has" })
+            Assert.Equal(40, Agree(c, b));
+            foreach (var bug in new[] { "UseAbs", "Overflows", "Div", "Assertion", "BadInv", "BadPost", "FirstBad", "KeepsOwn", "WfBad", "CallNull",
+                                        "Low", "TwiceU", "Neg", "UnfoldsOnce", "OutsideTheDomain", "Up", "NoMeasure", "Stuck" })
+                Assert.False(b["A." + bug].Verified, bug);
+            foreach (var good in new[] { "Abs", "Sum", "Wide", "Twice", "UseAbsSafely", "Between", "Checked", "Truncates", "Remainder", "Fill", "First", "Wraps", "Read", "Make", "Has",
+                                         "Digit", "LowChecked", "LowWraps", "Max", "Fact", "UseMax", "CountDown" })
                 Assert.True(b["A." + good].Verified, good);
         }
 
