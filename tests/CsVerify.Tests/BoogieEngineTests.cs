@@ -279,9 +279,10 @@ public static class P
             {
                 var files = Directory.GetFiles(Path.Combine(Harness.RepoRoot(), "samples", dir), "*.cs");
                 // (Boogie's methods, then those alone by CsVerify's engine)
-                // (a solver's time limit long enough for a loaded machine: this compares what the engines say, not how fast)
+                // (Boogie's time limit long enough for a loaded machine, where Z3 giving up reads as a failure: this compares
+                // what the engines say, not how fast; CsVerify's engine retries a query that runs out of time)
                 var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
-                var only = new VerifierOptions { TimeoutMs = 60000 };
+                var only = new VerifierOptions();
                 only.Only.AddRange(b.Methods.Select(m => m.Name));
                 var c = Engine.VerifyFiles(files, only);
                 Assert.True(Agree(c, b) > 0, dir + ": no method went to Boogie: " + b.BoogieFailure);

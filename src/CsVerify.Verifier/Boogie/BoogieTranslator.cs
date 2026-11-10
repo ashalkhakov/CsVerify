@@ -66,7 +66,7 @@ namespace CsVerify.Verifier.Boogie
                         : IsClass(m.ContainingType) && (m.MethodKind == MethodKind.Ordinary || m.MethodKind == MethodKind.Constructor) && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
             !m.IsAsync && !m.IsGenericMethod &&
             (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
-            c.Modifies == null && c.Reads == null && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
+            c.Reads == null && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
             c.Ensures.All(e => e.Guard == null) && c.Bases.Count == 0;
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
@@ -76,7 +76,7 @@ namespace CsVerify.Verifier.Boogie
             m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
-            c.Modifies != null ? "Spec.Modifies" : c.Reads != null ? "Spec.Reads" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
+            c.Reads != null ? "Spec.Reads" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
             c.IsTrusted ? "[Trusted]" : "an inherited contract";
 
         /// <summary>Each method's contract (CsVerify's reading of its Spec statements).</summary>
@@ -314,7 +314,12 @@ namespace CsVerify.Verifier.Boogie
                 }
             // (a call, in array mode, that may write any array: reported only if it may)
             foreach (var a in _pending.SelectMany(p => p.Blocks).SelectMany(b => b.Stmts).OfType<KAssert>().Where(a => a.UnlessWritesArrays != null))
-                if (!(writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out var cw) && cw.Any(x => x.StartsWith("$E.")))) a.Cond = new KLit("true");
+            {
+                var cw = writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out var w) ? w : new HashSet<string>();
+                bool arrays = cw.Any(x => x.StartsWith("$E.")), writesFields = cw.Any(x => x.StartsWith("$F.") && !_printer.OwnedMaps.Contains(x));
+                bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
+                if (!stands) a.Cond = new KLit("true");
+            }
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KLoopFrame>())

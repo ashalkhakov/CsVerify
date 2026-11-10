@@ -60,6 +60,8 @@ namespace CsVerify.Verifier.Boogie
     {
         public bool Forall;
         public string Var;
+        /// <summary>Its variable's Boogie type (int, unless said).</summary>
+        public string Type = "int";
         public KExpr Range, Body;
     }
 
@@ -297,6 +299,8 @@ namespace CsVerify.Verifier.Boogie
         public Check Check;
         /// <summary>Holds unless this callee may write arrays (decided when the program is: what it calls is known then).</summary>
         public IMethodSymbol UnlessWritesArrays;
+        /// <summary>What the callee must write for it to stand: "arrays" (the default), "fields" (fields but no arrays), "any".</summary>
+        public string UnlessKind;
         /// <summary>Not assumed after it ({:subsumption 0}).</summary>
         public bool NotAssumedAfter;
     }
@@ -412,6 +416,8 @@ namespace CsVerify.Verifier.Boogie
         public bool ArrayMode;
         /// <summary>It keeps single-field permissions (fperm, fowner): the program uses some.</summary>
         public bool UsesFields;
+        /// <summary>Its Spec.Modifies: the objects (an ObjSet, a [Ref]bool) whose fields and cells it may write, as of entry.</summary>
+        public KExpr Frame;
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The predicates it names.</summary>

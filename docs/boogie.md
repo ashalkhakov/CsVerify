@@ -345,6 +345,13 @@ preconditions hold, its non-nullable result not null; a call checks its receiver
 mathematics, read as the source has it; its body's checks (null, bounds, division, a function's precondition) are
 asserted for every value in its range, under the conditions before them.
 
+**Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
+`.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
+as it was on entry (`w$entry`), or allocated since (CSV1017; a constructor's own object counts as new); it calls only
+what writes within that: a callee's frame inside ours, or none needed (a callee that may write fields or arrays without
+one is CSV1017). It ensures every field and cell of an object allocated before the call, and not in `old(W)`, is as it
+was. `[Owned]` classes are framed by their views instead; `Spec.Reads` isn't translated yet.
+
 **Calls and frames.** A call of another translated method is a Boogie `call`. A procedure `modifies` the maps it
 writes (an element map, a field map, or `$Alloc` when it allocates), and those of everything it calls; after a call,
 what the callee modifies is unknown, as CsVerify's engine forgets the arrays and fields a callee may write. Allocation
@@ -414,7 +421,7 @@ Also strings and the string members with stub contracts, and quantifiers in code
 
 Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, virtual
 members, interfaces, inheritance, records (data types), generics, string members without stubs, collections,
-`foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Modifies`, `Spec.Reads`,
+`foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
 
@@ -434,7 +441,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    models (`List`, `Dictionary`, `HashSet`), and the ghost types;
 3. `foreach`, lambdas and delegates;
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
-5. frames (`Spec.Modifies`, `Spec.Reads`), and the library's stub contracts;
+5. frames (done: `Spec.Modifies`; next: `Spec.Reads` and ghost `ObjSet` fields), and the library's stub contracts
+   (done for strings' `[Pure]` members);
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
    objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
    `Spec.Modifies`);

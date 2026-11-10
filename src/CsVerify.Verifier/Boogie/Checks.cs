@@ -107,6 +107,13 @@ namespace CsVerify.Verifier.Boogie
             _rawRequires = _p.Requires.Select(r => r.Expr).ToList();
             _rawEnsures = _p.Ensures.Select(e => e.Expr).ToList();
             _rawInvariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (i.Expr, i.At)).ToList());
+            if (_p.Frame != null)
+            {
+                _p.Frame = Spec(_p.Frame, out _);
+                _facts.Clear();
+                _p.Locals.Add(new KLocal { Name = "w$entry", Raw = "[Ref]bool" });
+                _p.Locals.Add(new KLocal { Name = "alloc$entry", Raw = "[Ref]bool" });
+            }
             // cells: a method whose contract names some holds none but those it gets (it is in array mode); one that
             // exchanges some (a call, a fold) keeps them; any other holds every cell, which nothing then changes
             if (_program.UsesPermissions)
@@ -163,6 +170,13 @@ namespace CsVerify.Verifier.Boogie
                     // (what the preconditions say of snapshots: Boogie's requires can't name them)
                     Emit(new KAssign { Var = "psnap$entry", Value = new KVar("psnap") });
                     foreach (var r in requires.Where(r => Mentions(r.math, Snaps))) Assume(r.math);
+                }
+                if (b == _p.Blocks[0] && _p.Frame != null)
+                {
+                    // (the frame as it is on entry, and what was allocated then)
+                    Emit(new KAssign { Var = "w$entry", Value = _p.Frame });
+                    // (a constructor's object was allocated just before it ran: new, as far as its frame is concerned)
+                    Emit(new KAssign { Var = "alloc$entry", Value = _p.IsCtor ? new KOp("store", new KVar("$Alloc"), new KVar("this"), new KLit("false")) : new KVar("$Alloc") });
                 }
                 bool head = b.Label == $"b{b.Ordinal}";
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
@@ -299,6 +313,7 @@ namespace CsVerify.Verifier.Boogie
                     var o = fs.Instance == null ? new KLit("null") : Code(fs.Instance);
                     if (fs.Instance != null && !fs.OnThis)
                         Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fs.At, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
+                    if (fs.Instance != null && !IsOwnedField(fs.Field)) WithinFrame(o, fs.At);
                     if (IsOwnedField(fs.Field))
                         Assert(CanWrite(o, fs.Field), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                     if (NonNullField(fs.Field))
@@ -346,6 +361,7 @@ namespace CsVerify.Verifier.Boogie
                     var a = Code(st.Array);
                     var i = Code(st.Index);
                     InBounds(a, i, st.At, st.ArrayAt);
+                    WithinFrame(a, st.At);
                     if (_p.UsesCells) Assert(new KOp(">=", Cell(a, i), new KLit("1.0")), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
                     Emit(new KStore { Array = a, Index = i, Value = value, ArrayType = st.ArrayType, At = st.At, ArrayAt = st.ArrayAt, Checked = true });
                     return;
@@ -417,6 +433,30 @@ namespace CsVerify.Verifier.Boogie
                 Subst(Spec(r.Expr, out _), given);
                 foreach (var f in _facts.ToList()) Assume(Subst(f, given));
                 _facts.Clear();
+            }
+            // (a frame of ours: the callee's within it, or it changes nothing a frame would tell)
+            if (_p.Frame != null && !pure)
+            {
+                if (sig.Frame == null)
+                {
+                    Emit(new KAssert { Cond = new KLit("false"), UnlessWritesArrays = callee, UnlessKind = "arrays",
+                                       Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
+                    Emit(new KAssert { Cond = new KLit("false"), UnlessWritesArrays = callee, UnlessKind = "fields",
+                                       Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
+                }
+                else
+                {
+                    var theirs = Subst(Spec(sig.Frame, out _), given);
+                    _facts.Clear();
+                    var r = new KVar("r$");
+                    Emit(new KAssert
+                    {
+                        Cond = new KQuant { Forall = true, Var = "r$", Type = "Ref", Range = null, Body = new KOp("==>", new KOp("sel", theirs, r),
+                            new KOp("||", new KOp("sel", new KVar("w$entry"), r), new KOp("!", new KOp("sel", new KVar("alloc$entry"), r)))) },
+                        UnlessWritesArrays = callee, UnlessKind = "any",
+                        Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),
+                    });
+                }
             }
             var gave = new List<(KExpr, KExpr)>();
             if (_p.UsesPerm && !pure) foreach (var r in sig.Requires) Exhale(r.Expr, given, c.At, gave);
@@ -775,6 +815,16 @@ namespace CsVerify.Verifier.Boogie
             _ => Enumerable.Empty<KFnApp>(),
         };
 
+        // ------------------------------------------------------------------ frames (Dafny's Spec.Modifies)
+
+        /// <summary>A write of an (unowned) object's field or an array's cell: within Spec.Modifies as of entry, or allocated since (CSV1017).</summary>
+        private void WithinFrame(KExpr o, SyntaxNode at)
+        {
+            if (_p.Frame == null) return;
+            Assert(new KOp("||", new KOp("sel", new KVar("w$entry"), o), new KOp("!", new KOp("sel", new KVar("alloc$entry"), o))),
+                At("CSV1017", at, $"'{at}' writes an object that is not in Spec.Modifies and was not allocated here"));
+        }
+
         // ------------------------------------------------------------------ strings
 
         /// <summary>
@@ -859,7 +909,7 @@ namespace CsVerify.Verifier.Boogie
         {
             KOp { Op: "old" } old => new KOp("old", Subst(old.Args[0], new Dictionary<string, KExpr> { ["psnap"] = new KVar("psnap$entry") })),
             KOp op => new KOp(op.Op, op.Args.Select(OldAtEntry).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body) },
             _ => e,
         };
 
@@ -868,7 +918,7 @@ namespace CsVerify.Verifier.Boogie
         {
             KOp { Op: "old" } old => Before(old.Args[0], frame),
             KOp op => new KOp(op.Op, op.Args.Select(a => OldBefore(a, frame)).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame) },
             KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => OldBefore(a, frame)).ToArray(), Snap = f.Snap == null ? null : OldBefore(f.Snap, frame) },
             _ => e,
         };
@@ -883,7 +933,7 @@ namespace CsVerify.Verifier.Boogie
                     frame.OldGlobals.Add(v.Name);
                     return new KVar($"s{frame.Id}{v.Name}");
                 case KOp op: return new KOp(op.Op, op.Args.Select(a => Before(a, frame)).ToArray());
-                case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame) };
+                case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame) };
                 case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
                 case KFnApp _: throw new NotTranslated("a callee's postcondition that reads a function's value as it was, and a snapshot");
                 default: return e;
@@ -1268,7 +1318,7 @@ namespace CsVerify.Verifier.Boogie
             switch (e)
             {
                 case null: return null;
-                case KLit _: case KVar _: return e;
+                case KLit _: case KVar _: case KFnApp _: return e;
                 case KOp { Op: "scat" } cat:
                 {
                     var (l, r) = (Code(cat.Args[0]), Code(cat.Args[1]));
@@ -1327,7 +1377,7 @@ namespace CsVerify.Verifier.Boogie
                                 _ => throw new NotTranslated("a quantifier whose body changes state"),
                             });
                     }
-                    return new KQuant { Forall = q.Forall, Var = q.Var, Range = mathRange, Body = body };
+                    return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = mathRange, Body = body };
                 }
                 case KFnCall fc when !fc.Stub:
                 {
@@ -1579,7 +1629,7 @@ namespace CsVerify.Verifier.Boogie
                     finally { if (added) _bound.Remove(q.Var); }
                     foreach (var c in inner) Need(new KQuant { Forall = true, Var = q.Var, Range = null, Body = c });
                     if (!Mentions(range, _bound)) Unfoldings(q.Var, range, body);
-                    return new KQuant { Forall = q.Forall, Var = q.Var, Range = range, Body = body };
+                    return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = range, Body = body };
                 }
                 case KFnCall fn:
                 {
@@ -1611,7 +1661,7 @@ namespace CsVerify.Verifier.Boogie
         {
             KVar v when given.TryGetValue(v.Name, out var x) => x,
             KOp op => new KOp(op.Op, op.Args.Select(a => Subst(a, given)).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given) },
             KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray(), Snap = f.Snap == null ? null : Subst(f.Snap, given) },
             _ => e,
         };

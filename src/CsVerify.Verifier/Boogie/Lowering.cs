@@ -65,6 +65,7 @@ namespace CsVerify.Verifier.Boogie
             if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
             // (the permissions its postconditions give back, and a predicate's body, for folding and unfolding it)
             foreach (var e in contract.Ensures) l._p.Ensures.Add(new KSpec { Expr = l.Spec(e.Expr, e.ResultParameter), At = e.Syntax });
+            if (contract.Modifies != null) l._p.Frame = l.Spec(contract.Modifies, null);
             if ((SpecSymbols.IsPredicate(m) || isFunction(m)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
             return l._p;
         }
@@ -94,6 +95,12 @@ namespace CsVerify.Verifier.Boogie
         private KProcedure Run()
         {
             if (SpecSymbols.IsPredicate(_m)) return Predicate();
+            // (Dafny's dynamic frames: what it may write. An [Owned] class's objects are framed by their views instead)
+            if (_contract.Modifies != null)
+            {
+                if (SpecSymbols.IsOwned(_m.ContainingType)) throw new NotTranslated("Spec.Modifies of an [Owned] class's method");
+                _p.Frame = Spec(_contract.Modifies, null);
+            }
             // (Viper's functions over predicates read their footprint: not yet)
             _p.UsesPerm |= _contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr));
             var cfg = _model.GetOperation(_decl) switch
@@ -241,7 +248,7 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
-                        case "Requires": case "Ensures": case "Invariant": case "Decreases": return; // (the contract; the loop heads)
+                        case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": return; // (the contract; the loop heads)
                         case "Fold": case "Unfold":
                         {
                             var whole = SpecArgument(inv);
@@ -718,6 +725,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification: mathematics, its array reads, lengths, divisions and functions' calls kept for Checks' well-definedness.</summary>
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
+            // (ObjSet.Empty: no objects)
+            if ((e is IFieldReferenceOperation { Field.Name: "Empty", Instance: null } || e is IPropertyReferenceOperation { Property.Name: "Empty", Instance: null }) && IsObjSet(e.Type))
+                return new KLit("(lambda r$: Ref :: false)");
             switch (e)
             {
                 case IDelegateCreationOperation d: return Spec(d.Target, result);
@@ -796,6 +806,17 @@ namespace CsVerify.Verifier.Boogie
                     return StubCall(st, x => Spec(x, result));
                 case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(pr.Instance?.Type):
                     return new KLen { Array = Spec(pr.Instance, result), InSpec = true, At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
+                // (ghost sets of objects)
+                case IPropertyReferenceOperation { Property.Name: "Empty" } empty when IsObjSet(empty.Type) && empty.Instance == null:
+                    return new KLit("(lambda r$: Ref :: false)");
+                case IInvocationOperation of when IsObjSet(of.TargetMethod.ContainingType) && of.TargetMethod.Name == "Of" && of.Arguments.Length == 1 && IsRef(Unconverted(of.Arguments[0].Value).Type):
+                    return new KOp("set.of", Spec(Unconverted(of.Arguments[0].Value), result));
+                case IInvocationOperation add when IsObjSet(add.TargetMethod.ContainingType) && add.TargetMethod.Name == "Add" && add.Instance != null && IsRef(Unconverted(add.Arguments[0].Value).Type):
+                    return new KOp("set.add", Spec(add.Instance, result), Spec(Unconverted(add.Arguments[0].Value), result));
+                case IInvocationOperation has when IsObjSet(has.TargetMethod.ContainingType) && has.TargetMethod.Name == "Contains" && has.Instance != null && IsRef(Unconverted(has.Arguments[0].Value).Type):
+                    return new KOp("sel", Spec(has.Instance, result), Spec(Unconverted(has.Arguments[0].Value), result));
+                case IInvocationOperation union when IsObjSet(union.TargetMethod.ContainingType) && union.TargetMethod.Name == "Union" && union.Instance != null:
+                    return new KOp("set.union", Spec(union.Instance, result), Spec(union.Arguments[0].Value, result));
                 case IInvocationOperation acc when SpecSymbols.IsSpecClass(acc.TargetMethod.ContainingType) && acc.TargetMethod.Name == "Acc" &&
                                                    acc.Arguments.Length == 1 && IsOwnedClass(Unconverted(acc.Arguments[0].Value).Type):
                 {
@@ -824,7 +845,9 @@ namespace CsVerify.Verifier.Boogie
                         case "Old": return new KOp("old", Spec(inv.Arguments[0].Value, result));
                         // (allocated during the call)
                         case "Fresh" when IsRef(Unconverted(inv.Arguments[0].Value).Type):
-                            return new KOp("!", new KOp("old", new KOp("sel", new KVar("$Alloc"), Spec(Unconverted(inv.Arguments[0].Value), result))));
+                            // (its argument read now: only the allocated set is as it was)
+                            return new KOp("&&", new KOp("!=", Spec(Unconverted(inv.Arguments[0].Value), result), new KLit("null")),
+                                new KOp("!", new KOp("sel", new KOp("old", new KVar("$Alloc")), Spec(Unconverted(inv.Arguments[0].Value), result))));
                         case "Acc" or "AccRead" when IsArray(Unconverted(inv.Arguments[0].Value).Type) && inv.Arguments.Length is 1 or 3:
                         {
                             var arr = Spec(Unconverted(inv.Arguments[0].Value), result);

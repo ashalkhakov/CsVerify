@@ -126,8 +126,8 @@ namespace CsVerify.Verifier.Boogie
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
-                case KQuant q when q.Range == null: return $"(forall {q.Var}: int :: {E(q.Body, cx)})";
-                case KQuant q: return q.Forall ? $"(forall {q.Var}: int :: {E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: int :: {E(q.Range, cx)} && {E(q.Body, cx)})";
+                case KQuant q when q.Range == null: return $"(forall {q.Var}: {q.Type} :: {E(q.Body, cx)})";
+                case KQuant q: return q.Forall ? $"(forall {q.Var}: {q.Type} :: {E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {E(q.Range, cx)} && {E(q.Body, cx)})";
                 case KOp op:
                 {
                     var a = op.Args.Select(x => E(x, cx)).ToArray();
@@ -144,6 +144,9 @@ namespace CsVerify.Verifier.Boogie
                             return $"{elems}[{a[2]}]";
                         case "sel": return a.Length == 2 ? $"{a[0]}[{a[1]}]" : $"{a[0]}[{a[1]}][{a[2]}]";
                         case "store": return $"{a[0]}[{a[1]} := {a[2]}]";
+                        case "set.of": return $"(lambda r$: Ref :: r$ == {a[0]})";
+                        case "set.add": return $"{a[0]}[{a[1]} := true]";
+                        case "set.union": return $"(lambda r$: Ref :: {a[0]}[r$] || {a[1]}[r$])";
                         case "slen": return $"slen({a[0]})";
                         case "sl": return $"sl({a[0]})";
                         case "sat": return $"sat({a[0]}, {a[1]})";
@@ -344,6 +347,15 @@ namespace CsVerify.Verifier.Boogie
                 .Concat(m.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out).Select(x => Local(x) + (x.RefKind == RefKind.Ref ? "$in" : ""))).ToList();
             foreach (var map in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
                 Line($"  free ensures (forall o: Ref :: old($Alloc[o]){string.Concat(views.Select(v => $" && o != {v}"))} ==> {map}[o] == old({map}[o]));");
+            // (Spec.Modifies: every field and cell of an object allocated before, and not in the frame then, is as it was)
+            if (p.Frame != null)
+            {
+                var w = E(new KOp("old", p.Frame), cx);
+                foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
+                    Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !{w}[o] ==> {map}[o] == old({map}[o]));");
+                foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
+                    Line($"  free ensures (forall a: Ref, i: int :: old($Alloc[a]) && !{w}[a] ==> {map}[a][i] == old({map}[a][i]));");
+            }
             Line($"  free ensures {InRangeOfMemory};");
             Given(p, atEntry);
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))

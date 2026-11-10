@@ -36,6 +36,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A string: a value (its length, its characters), a Ref only so that null is one; never allocated.</summary>
         public static bool IsString(ITypeSymbol t) => t?.SpecialType == SpecialType.System_String;
 
+        /// <summary>A ghost set of objects (Spec.Modifies, Spec.Reads): a [Ref]bool.</summary>
+        public static bool IsObjSet(ITypeSymbol t) => SpecSymbols.IsCsVerifyType(t, "ObjSet");
+
         /// <summary>What may be null: a reference or a string.</summary>
         public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t);
 
