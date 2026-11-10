@@ -239,6 +239,8 @@ namespace CsVerify.Verifier.Boogie
         public KCall Call;
         public KExpr Overflow;
         public string Target;
+        /// <summary>The exception it throws, where it isn't a call's (null: any).</summary>
+        public string Exception = "T#System.OverflowException";
     }
 
     /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
@@ -377,7 +379,20 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KHavocAll : KStmt { }
 
     /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
-    internal sealed class KAwait : KStmt { public List<string> Keep = new List<string>(); }
+    /// <summary>Around a call of an async method: the objects of these (confined) locals, which no code can reach, are as they were.</summary>
+    internal sealed class KKeep : KStmt
+    {
+        public int Id;
+        public bool After;
+        public List<string> Keep = new List<string>();
+    }
+
+    internal sealed class KAwait : KStmt
+    {
+        public List<string> Keep = new List<string>();
+        /// <summary>Only where this holds (a task it started still running); null: always.</summary>
+        public KExpr When;
+    }
 
     /// <summary>A data value's field: checked not null in code, well-defined if so in a specification.</summary>
     internal sealed class KDataField : KExpr

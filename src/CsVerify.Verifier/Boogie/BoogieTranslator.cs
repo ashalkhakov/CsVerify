@@ -76,6 +76,7 @@ namespace CsVerify.Verifier.Boogie
         private static readonly HashSet<string> Known = new HashSet<string>
         {
             "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
+            "RunsConcurrentlyAttribute",
         };
 
         private static bool KnownAttributes(IMethodSymbol m) =>
@@ -370,6 +371,11 @@ namespace CsVerify.Verifier.Boogie
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
                 if (!stands) a.Cond = new KLit("true");
             }
+            // (around a call of an async method: a copy of each map, for the confined objects it can't reach)
+            foreach (var p in _pending)
+                foreach (var keep in p.Blocks.SelectMany(b => b.Stmts).OfType<KKeep>().Where(k => !k.After))
+                    foreach (var (name, type) in _printer.StateMaps)
+                        p.Locals.Add(new KLocal { Name = $"k${keep.Id}{name}", Raw = type });
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KLoopFrame>())

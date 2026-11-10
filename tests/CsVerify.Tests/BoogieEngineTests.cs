@@ -650,6 +650,45 @@ public static class As
                 Assert.True(b[good].Verified, good);
         }
 
+        private const string Tasks = @"using System.Threading; using System.Threading.Tasks;
+public sealed class Box { public int V; }
+public static class Tk
+{
+    public static async Task<int> Twice(int x) { Spec.Requires(0 <= x && x < 1000); Spec.Ensures<int>(r => r == 2 * x); await Task.Yield(); return 2 * x; }
+    public static async Task<int> Both() { Spec.Ensures<int>(r => r == 10); var a = Twice(2); var b = Twice(3); await Task.WhenAll(a, b); return a.Result + b.Result; }
+    public static async Task<int> Later() { Spec.Ensures<int>(r => r == 8); var t = Twice(4); int k = 1; int y = await t; return y * k; }
+    public static async Task<int> LaterBad() { Spec.Ensures<int>(r => r == 9); var t = Twice(4); return await t; }
+    public static async Task Lost(bool w) { var t = Twice(1); if (w) await t; }
+    public static async Task<int> Early() { var t = Twice(1); int x = t.Result; await t; return x; }
+    public static async Task Shared(Box b) { b.V = 1; var t = Twice(1); Spec.Assert(b.V == 1); await t; }
+    public static async Task Mine() { var b = new Box(); b.V = 1; var t = Twice(1); Spec.Assert(b.V == 1); await t; }
+    public static async Task<int> PreBad() { var t = Twice(5000); return await t; }
+}
+public sealed class Cell { public int V; }
+public static class Th
+{
+    [RunsConcurrently] public static int Work(int x) { Spec.Requires(x >= 0 && x < 100); Spec.Ensures<int>(r => r == x + 1); return x + 1; }
+    public static async Task<int> Run() { Spec.Ensures<int>(r => r == 4); var t = Task.Run(() => Work(3)); return await t; }
+    public static async Task<int> RunBad() { var t = Task.Run(() => Work(300)); return await t; }
+    public static async Task Lambda() { var t = Task.Run(() => { int y = 0; y++; }); await t; }
+    public static void Threads() { var th = new Thread(() => Work(1)); th.Start(); th.Join(); }
+    public static void ThreadsBad() { var th = new Thread(() => Work(500)); th.Start(); th.Join(); }
+    public static async Task Shared(Cell c) { c.V = 1; var t = Task.Run(() => Work(1)); Spec.Assert(c.V == 1); await t; }
+    public static async Task Mine() { var c = new Cell(); c.V = 1; var t = Task.Run(() => Work(1)); Spec.Assert(c.V == 1); await t; }
+}
+";
+
+        [Fact]
+        public void TasksAndThreads_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Tasks) }, o));
+            Assert.Equal(17, Agree(c, b));
+            foreach (var bug in new[] { "Tk.LaterBad", "Tk.Lost", "Tk.Early", "Tk.Shared", "Tk.PreBad", "Tk.Both", "Th.Run", "Th.Shared", "Th.Mine" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Tk.Twice", "Tk.Later", "Tk.Mine", "Th.Work", "Th.Lambda", "Th.Threads" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {

@@ -370,6 +370,14 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free ensures {InRangeOfMemory};");
             foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
                 Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
+            // (and where only a task the method started may be running alongside: changing nothing if none is)
+            Line("procedure $awaitIf(c: bool, k: [Ref]bool);");
+            if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+            Line($"  free ensures {InRangeOfMemory};");
+            foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
+                Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
+            foreach (var m in modifies) Line($"  free ensures !c ==> {m} == old({m});");
         }
 
         // ------------------------------------------------------------------ exceptions
@@ -493,6 +501,9 @@ namespace CsVerify.Verifier.Boogie
                 if (Bound(v, $"$kvp.Value.{v}(p)") is string b) Line($"axiom (forall p: Ref :: {{ $kvp.Value.{v}(p) }} {b});");
             }
         }
+
+        /// <summary>The memory's maps, with their types (once the fields and models are declared).</summary>
+        public IReadOnlyList<(string name, string type)> StateMaps => _stateMaps;
 
         public void Fields(IEnumerable<ISymbol> fields)
         {
@@ -755,9 +766,19 @@ namespace CsVerify.Verifier.Boogie
                 case KHavocAll _:
                     Line("    call $havoc();");
                     return;
-                case KAwait aw:
-                    Line($"    call $await((lambda r$: Ref :: {(aw.Keep.Count == 0 ? "false" : string.Join(" || ", aw.Keep.Select(k => $"r$ == {E(new KVar(k), cx)}")))}));");
+                case KKeep keep when !keep.After:
+                    foreach (var m in _stateMaps) Line($"    k${keep.Id}{m.name} := {m.name};");
                     return;
+                case KKeep keep:
+                    foreach (var m in _stateMaps)
+                        Line($"    assume (forall o: Ref :: ({string.Join(" || ", keep.Keep.Select(x => $"o == {E(new KVar(x), cx)}"))}) ==> {m.name}[o] == k${keep.Id}{m.name}[o]);");
+                    return;
+                case KAwait aw:
+                {
+                    var k = $"(lambda r$: Ref :: {(aw.Keep.Count == 0 ? "false" : string.Join(" || ", aw.Keep.Select(x => $"r$ == {E(new KVar(x), cx)}")))})";
+                    Line(aw.When == null ? $"    call $await({k});" : $"    call $awaitIf({E(aw.When, cx)}, {k});");
+                    return;
+                }
                 case KInvoke iv:
                     Line($"    call {(iv.Result == null ? "" : iv.Result + " := ")}$call.{iv.Key}({string.Join(", ", new[] { iv.Delegate }.Concat(iv.Args).Select(x => E(x, cx)))});");
                     return;
@@ -803,7 +824,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Line($"    assume !({E(fork.Overflow, cx)});");
                         Line("    havoc ex$;");
-                        Line($"    assume ex$ != null && dtype(ex$) == T#System.OverflowException;");
+                        Line(fork.Exception == null ? "    assume ex$ != null;" : $"    assume ex$ != null && dtype(ex$) == {fork.Exception};");
                     }
                     Line($"    goto {fork.Target};");
                     Line($"  f${n}:");

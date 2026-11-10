@@ -612,7 +612,6 @@ namespace CsVerify.Verifier
         /// no field a lock guards.
         /// </summary>
         private static bool Sequential(Engine engine, IMethodSymbol method, SyntaxNode decl, SemanticModel model) =>
-            !engine.StartedDelegates.RunsAlongside(method) &&
             !decl.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>()
                 .Any(n => model.GetSymbolInfo(n).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && engine.Locks.GuardOf(s) is ISymbol g &&
                           // (a lock statement's lock, an object: Boogie's; a semaphore or a flag: not yet)
@@ -646,6 +645,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.Locks = engine.Locks;
+            Boogie.KernelTypes.Started = engine.StartedDelegates;
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             foreach (var tree in userTrees)

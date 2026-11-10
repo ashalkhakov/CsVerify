@@ -401,6 +401,9 @@ namespace CsVerify.Verifier.Boogie
                                        PreS = lam.PreS == null ? null : M(lam.PreS), Reads = lam.Reads == null ? null : M(lam.Reads), Changes = lam.Changes == null ? null : M(lam.Changes) });
                     return;
                 }
+                case KAwait aw when aw.When != null:
+                    Emit(new KAwait { Keep = aw.Keep, When = Code(aw.When) });
+                    return;
                 case KThrowExit _:
                     // leaving by an exception: its own clauses for the exception's type hold
                     foreach (var (type, cond, at) in _p.ThrowEnsures)

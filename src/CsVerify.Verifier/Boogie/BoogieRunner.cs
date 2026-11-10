@@ -34,7 +34,8 @@ namespace CsVerify.Verifier.Boogie
             }, "csverify", default).GetAwaiter().GetResult();
             if (outcome != PipelineOutcome.VerificationCompleted && outcome != PipelineOutcome.Done)
                 throw new InvalidOperationException("Boogie: " + outcome + "\n" + output);
-            return failures.Where(f => f.Item1 != null).ToList();
+            // (one report of a check, however many paths fail it)
+            return failures.Where(f => f.Item1 != null).GroupBy(f => (f.Item1, f.Item2.Id, f.Item2.Span.StartLinePosition, f.Item2.Message)).Select(g => g.First()).ToList();
         }
 
         /// <summary>A failure as CsVerify reports it: the check of its line, of the kind Boogie says it is.</summary>

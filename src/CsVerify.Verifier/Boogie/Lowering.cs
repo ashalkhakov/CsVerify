@@ -262,7 +262,12 @@ namespace CsVerify.Verifier.Boogie
                 if (b.Kind == BasicBlockKind.Exit) { _block.Jump = new KStop(); continue; }
                 // (an erased finally: nothing goes there)
                 if (b.EnclosingRegion.Kind == ControlFlowRegionKind.Finally && _erased.Contains(b.EnclosingRegion.EnclosingRegion)) { _block.Jump = new KStop(); continue; }
-                foreach (var op in b.Operations) Statement(op);
+                foreach (var op in b.Operations)
+                {
+                    Statement(op);
+                    // (while a task it started runs alongside, what the method doesn't hold is forgotten from each statement to the next)
+                    if (_tasks.Count > 0 && !InSpec(op.Syntax)) Alongside();
+                }
                 Branch(b);
             }
             if (_exitUsed) _p.Blocks.Add(new KBlock { Label = "x$exit", Ordinal = cfg.Blocks.Length, Stmts = { new KThrowExit() }, Jump = new KStop() });
@@ -632,11 +637,38 @@ namespace CsVerify.Verifier.Boogie
                             return;
                         default: throw new NotTranslated("Spec." + inv.TargetMethod.Name);
                     }
+                case IInvocationOperation { TargetMethod.Name: "Start", Instance: ILocalReferenceOperation sl, Arguments.Length: 0 } when _threads.TryGetValue(sl.Local, out var startedLambda):
+                    Start(sl.Local, StartedCall(startedLambda), thread: true);
+                    return;
+                case IInvocationOperation { TargetMethod.Name: "Join", Instance: ILocalReferenceOperation jl, Arguments.Length: 0 } when _tasks.TryGetValue(jl.Local, out var joined):
+                    Emit(new KAssign { Var = joined.Awaited, Value = new KLit("true") });
+                    var jk = new KAwait();
+                    if (!_opaque) foreach (var l in Confined()) jk.Keep.Add(Declare(Local(l), l.Type));
+                    _p.Awaits = true;
+                    _p.CallsDelegates = true;
+                    Emit(jk);
+                    return;
                 case IInvocationOperation call:
                     Call(call);
                     return;
                 case IAwaitOperation aw:
                     Await(aw);
+                    return;
+                case ISimpleAssignmentOperation st when st.Target is ILocalReferenceOperation { Local: var tl } && IsTaskLike(tl.Type) &&
+                                                        Unconverted(st.Value) is IInvocationOperation started && started.TargetMethod.IsAsync && started.TargetMethod.DeclaringSyntaxReferences.Length > 0:
+                    Start(tl, started);
+                    return;
+                // (Task.Run(() => F(...)): a task of the call, proved where it starts; of any other lambda, a task of code verified on its own)
+                case ISimpleAssignmentOperation run when run.Target is ILocalReferenceOperation { Local: var rl } && IsTaskLike(rl.Type) &&
+                                                         Unconverted(run.Value) is IInvocationOperation tr && tr.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" &&
+                                                         tr.TargetMethod.Name == "Run" && tr.Arguments.Length == 1 && LambdaSyntax(tr.Arguments[0]) is AnonymousFunctionExpressionSyntax runLambda:
+                    Start(rl, StartedCall(runLambda));
+                    return;
+                // (new Thread(() => F(...)): started by Start, finished by Join)
+                case ISimpleAssignmentOperation th when th.Target is ILocalReferenceOperation { Local: var thl } && thl.Type.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Threading.Thread" &&
+                                                        Unconverted(th.Value) is IObjectCreationOperation tc && tc.Arguments.Length == 1 && LambdaSyntax(tc.Arguments[0]) is AnonymousFunctionExpressionSyntax thLambda:
+                    if (_threads.ContainsKey(thl)) throw new NotTranslated("a thread local assigned again");
+                    _threads[thl] = thLambda;
                     return;
                 case ISimpleAssignmentOperation a:
                     Assign(a.Target, Expr(a.Value));
@@ -712,6 +744,7 @@ namespace CsVerify.Verifier.Boogie
                 case IArrayElementReferenceOperation e when IsArray(e.ArrayReference.Type) && e.Indices.Length == 1:
                 {
                     var v = Operands(e.ArrayReference, e.Indices[0]);
+                    HeldCell(v[0], e.Syntax, write: true);
                     Emit(new KStore { Array = v[0], Index = v[1], Value = value, ArrayType = e.ArrayReference.Type, At = e.Syntax, ArrayAt = e.ArrayReference.Syntax });
                     return;
                 }
@@ -756,6 +789,8 @@ namespace CsVerify.Verifier.Boogie
                 elseBlock.Jump = Edge(b, fall);
                 Next(b, b.ConditionalSuccessor.Destination, thenBlock);
                 Next(b, fall?.Destination, elseBlock);
+                if (b.ConditionalSuccessor.Destination?.Kind == BasicBlockKind.Exit) TasksAwaited(thenBlock);
+                if (fall?.Destination?.Kind == BasicBlockKind.Exit) TasksAwaited(elseBlock);
                 _p.Blocks.Add(thenBlock);
                 _p.Blocks.Add(elseBlock);
                 return;
@@ -776,6 +811,8 @@ namespace CsVerify.Verifier.Boogie
                 _block.Jump = target == null ? new KStop() : new KGoto(target);
                 return;
             }
+            // (a return: every task it started was awaited, else a failure in it would be lost)
+            if (fall?.Destination?.Kind == BasicBlockKind.Exit) TasksAwaited(_block);
             // (a constructor's end: the invariants of its object's locks hold, before anyone can take them)
             if (fall?.Destination?.Kind == BasicBlockKind.Exit && _p.IsCtor && KernelTypes.Locks != null)
                 foreach (var (lockField, invariant) in KernelTypes.Locks.InvariantsIn(_m.ContainingType).Where(x => !x.lockField.IsStatic))
@@ -843,10 +880,94 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = stmt, Message = $"the invariant of lock '{lockField.Name}' might not hold when it is released" });
         }
 
+        // ------------------------------------------------------------------ gates and concurrent code
+
+        /// <summary>A SemaphoreSlim of count 1 that is this object's field (or a static one) and guards state: a lock that can be held across awaits.</summary>
+        private IFieldSymbol GateOf(IInvocationOperation call)
+        {
+            if (!(Unconverted(call.Instance) is IFieldReferenceOperation { Field: IFieldSymbol gate } fr) || !(gate.IsStatic || fr.Instance is IInstanceReferenceOperation) ||
+                KernelTypes.Locks == null || !KernelTypes.Locks.IsMutexGate(gate))
+                throw new NotTranslated("a semaphore other than this object's gate");
+            var at = call.Syntax;
+            // (taking one while it's held waits for itself: CsVerify's engine's static checks report it, CSV1025)
+            if (GatesHeld(at).Any(g => !SymbolEqualityComparer.Default.Equals(g, gate)) || at.AncestorsAndSelf().OfType<LockStatementSyntax>().Any())
+                throw new NotTranslated("a gate taken while another lock is held");
+            return gate;
+        }
+
+        /// <summary>Taking a gate: what it guards is forgotten (others have had it), and its invariants hold.</summary>
+        private void Take(IFieldSymbol gate, SyntaxNode at)
+        {
+            var owner = gate.IsStatic ? null : (KExpr)new KVar("this");
+            foreach (var g in KernelTypes.Locks.GuardedBy(gate).Where(g => g.IsStatic == gate.IsStatic))
+            {
+                if (!IsField(g)) throw new NotTranslated("a guarded member the kernel doesn't have: " + g.Name);
+                var t = Declare("t$" + _temps++, FieldType(g));
+                Emit(new KHavoc { Var = t });
+                _p.Fields.Add(g.OriginalDefinition);
+                Emit(new KFieldStore { Field = g.OriginalDefinition, Instance = owner, OnThis = owner != null, Value = new KVar(t), At = at, InstanceAt = at });
+            }
+            foreach (var inv in KernelTypes.Locks.InvariantsOf(gate))
+                Emit(new KSpecStmt { Spec = InvariantCall(inv, owner), Assume = true, At = at, ArgumentAt = at });
+        }
+
+        /// <summary>Giving a gate back: its invariants must hold (CSV1024).</summary>
+        private void Give(IFieldSymbol gate, SyntaxNode at)
+        {
+            var owner = gate.IsStatic ? null : (KExpr)new KVar("this");
+            foreach (var inv in KernelTypes.Locks.InvariantsOf(gate))
+                Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = at, Message = $"the invariant of lock '{gate.Name}' might not hold when it is released" });
+        }
+
+        /// <summary>The gates held at a point: the try of 'await g.WaitAsync(); try { here } finally { g.Release(); }'.</summary>
+        private IEnumerable<IFieldSymbol> GatesHeld(SyntaxNode at)
+        {
+            if (KernelTypes.Locks == null) yield break;
+            foreach (var t in at.Ancestors().OfType<TryStatementSyntax>().Where(t => _decl.Span.Contains(t.Span) && t.Block.Span.Contains(at.Span)))
+                if (KernelTypes.Locks.GateOfTry(t, _model) is IFieldSymbol g) yield return g;
+        }
+
+        private bool Concurrent => KernelTypes.Started != null && KernelTypes.Started.RunsAlongside(_m) && !_p.Ghost;
+
+        /// <summary>
+        /// A field used by code that runs alongside other code: it never changes, a lock guards it (CsVerify's engine's
+        /// static checks have their say), or its object is in hand (a confined local's, or the one a constructor is
+        /// building); otherwise another could be writing it (CSV1027).
+        /// </summary>
+        private void Held(ISymbol field, KExpr o, SyntaxNode at)
+        {
+            if (!Concurrent || InSpec(at) || KernelTypes.Locks?.GuardOf(field) != null) return;
+            if (field is IFieldSymbol x ? x.IsReadOnly || x.IsConst : field is IPropertySymbol p && (p.SetMethod == null || p.SetMethod.IsInitOnly)) return;
+            string fix = "guard it with a lock, hold a Spec.Acc for it (the class must be [Owned]), or make it [Atomic]";
+            if (o == null)
+            {
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1027", At = at, NotAssumedAfter = true, Message = $"'{at}' is static, with no lock, and this runs alongside other code: {fix}" });
+                return;
+            }
+            if (_p.IsCtor && o is KVar { Name: "this" }) return;
+            // (an [Owned] object's field, under permissions: checked as permissions are)
+            if (IsOwnedField(field) && _p.UsesPerm) return;
+            Emit(new KCheck { Cond = InHand(o), Id = "CSV1027", At = at, NotAssumedAfter = true,
+                              Message = $"'{at}' has no lock and no permission here, and this runs alongside other code that could be using it: {fix}" });
+        }
+
+        private void HeldCell(KExpr array, SyntaxNode at, bool write)
+        {
+            // (under cell permissions, they say: checked as any cell is, CSV1016)
+            if (!Concurrent || InSpec(at) || _p.UsesPerm || _p.UsesCells || _p.ArrayMode) return;
+            Emit(new KCheck { Cond = InHand(array), Id = "CSV1027", At = at, NotAssumedAfter = true,
+                              Message = write ? $"'{at}' writes an array this code has no Spec.Acc for, and it runs alongside other code that could be using it"
+                                              : $"'{at}' reads an array this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it" });
+        }
+
+        /// <summary>An object only this code has: a confined local's.</summary>
+        private KExpr InHand(KExpr o) =>
+            Confined().Select(l => (KExpr)new KOp("==", o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(new KLit("false")).Aggregate((a, b) => new KOp("||", a, b));
+
         /// <summary>A call while a lock is held, of what may take it again (or other locks, in an order not translated yet): not yet.</summary>
         private void UnderLock(IMethodSymbol callee, SyntaxNode at)
         {
-            if (at == null || !at.AncestorsAndSelf().OfType<LockStatementSyntax>().Any(l => _decl.Span.Contains(l.Span))) return;
+            if (at == null || !at.AncestorsAndSelf().OfType<LockStatementSyntax>().Any(l => _decl.Span.Contains(l.Span)) && !GatesHeld(at).Any()) return;
             if (_contractOf?.Invoke(callee) is Contract c && (c.IsPure || c.IsLemma)) return;
             if (callee.DeclaringSyntaxReferences.Length > 0) throw new NotTranslated("a call under a lock of the program's " + callee.Name);
         }
@@ -864,16 +985,31 @@ namespace CsVerify.Verifier.Boogie
         {
             if (_p.Ghost || _contract.IsPure || _contract.IsLemma) throw new NotTranslated("an await in a proof");
             if (_p.UsesPerm) throw new NotTranslated("an await with permissions");
-            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("an await where exceptions are seen");
             var op = aw.Operation;
+            IFieldSymbol gate = null;
             while (op is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null) op = ca.Instance;
             KExpr value = null;
             switch (op)
             {
+                case ILocalReferenceOperation tl when _tasks.TryGetValue(tl.Local, out var task):
+                    Emit(new KAssign { Var = task.Awaited, Value = new KLit("true") });
+                    value = task.Result == null ? null : new KVar(task.Result);
+                    break;
+                case IInvocationOperation all when all.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && all.TargetMethod.Name == "WhenAll" &&
+                                                   (aw.Parent is IExpressionStatementOperation || aw.Parent == null):
+                    foreach (var a in all.Arguments.SelectMany(x => x.Value is IArrayCreationOperation ac ? ac.Initializer?.ElementValues.AsEnumerable() ?? new IOperation[0]
+                                                                  : x.Value is ICollectionExpressionOperation ce ? ce.Elements.AsEnumerable() : new[] { x.Value }))
+                        if (Unconverted(a is IFlowCaptureReferenceOperation wc && _captured.TryGetValue(wc.Id, out var wv) ? wv : a) is ILocalReferenceOperation wl &&
+                            _tasks.TryGetValue(wl.Local, out var wt)) Emit(new KAssign { Var = wt.Awaited, Value = new KLit("true") });
+                        else throw new NotTranslated("Task.WhenAll of a task not started here");
+                    break;
                 case IInvocationOperation call when call.TargetMethod.IsAsync && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
                     _awaiting = true;
                     try { value = Call(call); }
                     finally { _awaiting = false; }
+                    break;
+                case IInvocationOperation wait when IsSemaphore(wait.TargetMethod.ContainingType) && wait.TargetMethod.Name == "WaitAsync" && wait.Arguments.All(a => !InSubset(a.Value.Type)):
+                    gate = GateOf(wait);
                     break;
                 case IInvocationOperation lib when lib.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && lib.TargetMethod.Name is "Yield" or "Delay":
                     foreach (var a in lib.Arguments.Select(x => x.Value))
@@ -886,11 +1022,128 @@ namespace CsVerify.Verifier.Boogie
             }
             _p.Awaits = true;
             _p.CallsDelegates = true;
+            // (what a gate held here guards stays, as nobody else can have it)
+            var kept = new List<(ISymbol field, string var)>();
+            foreach (var g in GatesHeld(aw.Syntax))
+                foreach (var f in KernelTypes.Locks.GuardedBy(g).Where(f => !f.IsStatic && IsField(f)))
+                {
+                    var t = Declare("t$" + _temps++, FieldType(f));
+                    _p.Fields.Add(f.OriginalDefinition);
+                    Emit(new KAssign { Var = t, Value = new KField { Field = f.OriginalDefinition, Instance = new KVar("this"), OnThis = true, At = aw.Syntax, InstanceAt = aw.Syntax } });
+                    kept.Add((f.OriginalDefinition, t));
+                }
             var keep = new KAwait();
-            foreach (var l in Confined()) keep.Keep.Add(Declare(Local(l), l.Type));
+            if (!_opaque) foreach (var l in Confined()) keep.Keep.Add(Declare(Local(l), l.Type));
             Emit(keep);
+            foreach (var (f, t) in kept)
+                Emit(new KAssume { Cond = new KOp("==", new KField { Field = f, Instance = new KVar("this"), OnThis = true, At = aw.Syntax, InstanceAt = aw.Syntax }, new KVar(t)) });
             ForgetCaptured();
+            // (where exceptions are seen: a library's await may throw, a cancellation say)
+            if (!(op is IInvocationOperation awaited && awaited.TargetMethod.IsAsync && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) &&
+                _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
+                Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
+            if (gate != null) Take(gate, aw.Syntax);
             return value;
+        }
+
+        /// <summary>A task started and kept in a local, awaited later: whether it has been, and its result.</summary>
+        private sealed class Task
+        {
+            public IMethodSymbol Method;
+            public string Awaited, Result;
+            public SyntaxNode At;
+            /// <summary>A thread, or a task of code of its own: not reported if never finished.</summary>
+            public bool Thread;
+        }
+
+        private readonly Dictionary<ILocalSymbol, Task> _tasks = new Dictionary<ILocalSymbol, Task>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// var t = F(...): F's precondition is checked here, and what it gives is the task's result, known once it's
+        /// awaited; t is used only by await t, Task.WhenAll and t.Result, and never assigned again.
+        /// </summary>
+        private void Start(ILocalSymbol local, IInvocationOperation call, bool thread = false)
+        {
+            if (_tasks.ContainsKey(local)) throw new NotTranslated("a task local assigned again");
+            foreach (var id in _decl.DescendantNodes().OfType<IdentifierNameSyntax>().Where(i => i.Identifier.Text == local.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(i).Symbol, local)))
+            {
+                SyntaxNode e = id;
+                while (e.Parent is ParenthesizedExpressionSyntax) e = e.Parent;
+                bool ok = thread ? e.Parent is MemberAccessExpressionSyntax tm && tm.Name.Identifier.Text is "Start" or "Join" || e.Parent is VariableDeclaratorSyntax || e is VariableDeclaratorSyntax
+                        : e.Parent is AwaitExpressionSyntax || e.Parent is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "Result" ||
+                          e.Parent is ArgumentSyntax arg && arg.Parent?.Parent is InvocationExpressionSyntax wa && wa.Expression.ToString().EndsWith("WhenAll");
+                if (!ok || id.Ancestors().Any(a => a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax)) throw new NotTranslated("a task used otherwise than awaited: " + local.Name);
+            }
+            KExpr result = null;
+            if (call != null)
+            {
+                _awaiting = true;
+                try { result = Call(call); }
+                finally { _awaiting = false; }
+                if (_p.UsesPerm) throw new NotTranslated("a task with permissions");
+            }
+            // (of code of its own: what it gives isn't known, and it may reach anything, a confined local's object too)
+            if (call == null && local.Type is INamedTypeSymbol { Arity: 1 } tt && InSubset(tt.TypeArguments[0]))
+            {
+                var unknown = Declare("t$" + _temps++, tt.TypeArguments[0]);
+                Emit(new KHavoc { Var = unknown });
+                result = new KVar(unknown);
+            }
+            if (call == null) _opaque = true;
+            var task = new Task { Method = call?.TargetMethod, At = call?.Syntax, Result = (result as KVar)?.Name, Thread = thread || call == null,
+                                  Awaited = Declare($"aw${_tasks.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)) };
+            if (result != null && task.Result == null) { task.Result = Declare("t$" + _temps++, Returns(call.TargetMethod)); Emit(new KAssign { Var = task.Result, Value = result }); }
+            Emit(new KAssign { Var = task.Awaited, Value = new KLit("false") });
+            _tasks[local] = task;
+        }
+
+        /// <summary>A task of code of its own was started: no object is in hand from then on.</summary>
+        private bool _opaque;
+
+        private static AnonymousFunctionExpressionSyntax LambdaSyntax(IArgumentOperation a) =>
+            (a.Syntax as ArgumentSyntax)?.Expression as AnonymousFunctionExpressionSyntax ?? a.Value.Syntax as AnonymousFunctionExpressionSyntax;
+
+        private readonly Dictionary<ILocalSymbol, AnonymousFunctionExpressionSyntax> _threads = new Dictionary<ILocalSymbol, AnonymousFunctionExpressionSyntax>(SymbolEqualityComparer.Default);
+
+        /// <summary>The one call a started lambda is, with values that don't change (proved where it starts); null for any other lambda.</summary>
+        private IInvocationOperation StartedCall(AnonymousFunctionExpressionSyntax lambda)
+        {
+            var call = KernelTypes.Started?.CallOf(lambda);
+            if (call == null)
+            {
+                // (code of its own, verified on its own: what it may change, anything)
+                if (lambda.AsyncKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.AsyncKeyword)) throw new NotTranslated("an async lambda started");
+                return null;
+            }
+            return _model.GetOperation(call) as IInvocationOperation ?? throw new NotTranslated("a started call without its operation");
+        }
+
+        private void TasksAwaited(KBlock at)
+        {
+            foreach (var t in _tasks.Values.Where(t => !t.Thread))
+                at.Stmts.Add(new KCheck { Cond = new KVar(t.Awaited), Id = "CSV1026", At = t.At, NotAssumedAfter = true,
+                                          Message = $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost" });
+        }
+
+        private int _keeps;
+
+        /// <summary>Between two statements, while a task started here may still be running: other code may change what the method doesn't hold.</summary>
+        private void Alongside()
+        {
+            _p.Awaits = true;
+            _p.CallsDelegates = true;
+            var running = _tasks.Values.Select(t => (KExpr)new KOp("!", new KVar(t.Awaited))).Aggregate((a, b) => new KOp("||", a, b));
+            var k = new KAwait { When = running };
+            if (!_opaque) foreach (var l in Confined()) k.Keep.Add(Declare(Local(l), l.Type));
+            Emit(k);
+        }
+
+        /// <summary>t.Result: of a task that has finished (else it blocks, CSV1026).</summary>
+        private KExpr ResultOf(Task task, SyntaxNode at)
+        {
+            Emit(new KCheck { Cond = new KVar(task.Awaited), Id = "CSV1026", At = at, NotAssumedAfter = true,
+                              Message = $"the task of '{task.Method.Name}' might not have finished: reading Result blocks until it does, and that can deadlock (await it first)" });
+            return task.Result == null ? throw new NotTranslated("the Result of a task of nothing") : new KVar(task.Result);
         }
 
         private List<ILocalSymbol> _confined;
@@ -1281,9 +1534,16 @@ namespace CsVerify.Verifier.Boogie
             symbol = symbol.OriginalDefinition;
             if (symbol.IsStatic && IsNullable(FieldType(symbol)) && NotNullable(FieldType(symbol))) throw new NotTranslated("a non-nullable static field");
             _p.Fields.Add(symbol);
-            if (symbol.IsStatic) return (symbol, null, false, null);
-            if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) return (symbol, new KVar("this"), true, instance.Syntax);
-            return (symbol, spec ? Spec(instance, specResult) : Expr(instance), false, instance.Syntax);
+            var name = (access.Syntax as MemberAccessExpressionSyntax)?.Name ?? access.Syntax;
+            if (symbol.IsStatic) { if (!spec) Held(symbol, null, name); return (symbol, null, false, null); }
+            if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance })
+            {
+                if (!spec) Held(symbol, new KVar("this"), name);
+                return (symbol, new KVar("this"), true, instance.Syntax);
+            }
+            var o = spec ? Spec(instance, specResult) : Expr(instance);
+            if (!spec) Held(symbol, o, name);
+            return (symbol, o, false, instance.Syntax);
         }
 
         // ------------------------------------------------------------------ expressions (run time)
@@ -1336,6 +1596,7 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Expr(IOperation e)
         {
             if (DataExpr(e, Expr, BindInCode) is KExpr data) return data;
+            if (e is IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation resultOf } && _tasks.TryGetValue(resultOf.Local, out var resultTask)) return ResultOf(resultTask, e.Syntax);
             switch (e)
             {
                 case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsNullable(e.Type): return Constant(cv.Value, e.Type);
@@ -1426,8 +1687,11 @@ namespace CsVerify.Verifier.Boogie
                 case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
                 {
                     var v = Operands(el.ArrayReference, el.Indices[0]);
+                    HeldCell(v[0], el.Syntax, write: false);
                     return new KElem { Array = v[0], Index = v[1], ArrayType = el.ArrayReference.Type, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax };
                 }
+                case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation rl } when _tasks.TryGetValue(rl.Local, out var rt):
+                    return ResultOf(rt, e.Syntax);
                 // (a list's Count and indexer: its stub's getters)
                 case IPropertyReferenceOperation kp when IsPair(kp.Instance?.Type) && kp.Property.Name is "Key" or "Value":
                     return Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
@@ -1594,6 +1858,15 @@ namespace CsVerify.Verifier.Boogie
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
             // (a lock statement's Monitor.Enter and Monitor.Exit)
             if (call.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Monitor" && call.TargetMethod.Name is "Enter" or "Exit") { Monitor(call); return null; }
+            // (a gate: taken by Wait, given back by Release)
+            if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Wait" && call.Arguments.Length == 0) { Take(GateOf(call), call.Syntax); return null; }
+            if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Release" && call.Arguments.Length == 0)
+            {
+                if (!(Unconverted(call.Instance) is IFieldReferenceOperation { Field: IFieldSymbol released } rf) || !(released.IsStatic || rf.Instance is IInstanceReferenceOperation))
+                    throw new NotTranslated("a semaphore other than this object's gate");
+                Give(released, call.Syntax);
+                return null;
+            }
             // (an async method's task is awaited at once, or it runs alongside: not yet)
             if (call.TargetMethod.IsAsync && !_awaiting) throw new NotTranslated("a task that isn't awaited at once: " + call.TargetMethod.Name);
             if (IsCollection(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
@@ -1953,9 +2226,14 @@ namespace CsVerify.Verifier.Boogie
             // (where exceptions are seen, a call of what may throw (not a proof) throws, or returns)
             var throwsTo = _cfgBlock == null || _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
             SteadyArguments(callee, args, call.Syntax);
+            // (an async callee's awaits let other code run, which can't reach this method's confined objects)
+            var keepers = constructed.IsAsync && !list ? Confined().Select(l => Declare(Local(l), l.Type)).ToList() : new List<string>();
+            int keepId = _keeps++;
+            if (keepers.Count > 0) Emit(new KKeep { Id = keepId, Keep = keepers });
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = throwsTo,
                              Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).Concat(value == null ? new SyntaxNode[0] : new[] { at }).ToArray(),
                              Result = result, At = call.Syntax, RefOuts = refOuts });
+            if (keepers.Count > 0) Emit(new KKeep { Id = keepId, After = true, Keep = keepers });
             if (!(_contractOf?.Invoke(callee) is Contract pc && (pc.IsPure || pc.IsLemma))) ForgetCaptured();
             foreach (var (_, rv) in refOuts) { var ro = ordered.First(a => RefVariableName(a) == rv); if (HasInvariants(ro.Parameter.Type)) AssumeValid(new KVar(rv), ro.Parameter.Type); }
             if (result == null) return null;

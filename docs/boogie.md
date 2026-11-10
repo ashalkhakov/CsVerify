@@ -533,8 +533,20 @@ procedure.
 and `Task.CompletedTask` give nothing; `ConfigureAwait` is seen through. At every await other code may run: `call
 $await(k)` may change every map but at the objects in `k`, the method's confined locals (each starts null, and only ever
 holds a new object or array whose construction doesn't let it out, used only by its fields, cells, null tests,
-specifications and `return`), as CsVerify's engine keeps them; and the locals lambdas write are forgotten. A task not
-awaited at once, an await where exceptions are seen, an async lambda and `async void` aren't translated yet.
+specifications and `return`), as CsVerify's engine keeps them; and the locals lambdas write are forgotten. Where
+exceptions are seen, a library's await may throw (a fork, as a call's). A call of an async method keeps the caller's
+confined objects as they were (no code can reach them).
+- **Tasks awaited later.** `var t = F(...)` checks `F`'s precondition there; its result is the task's, given by `await
+  t`, `await Task.WhenAll(t, ...)` and, once awaited, `t.Result` (before: CSV1026, it blocks). A ghost `aw$`*n* says
+  whether it has been awaited: each return asserts it (CSV1026, "might not be awaited on every path"), and while one
+  isn't, every statement is followed by `call $awaitIf(running, k)`, which may change what the method doesn't hold.
+- **`Task.Run` and threads.** `Task.Run(() => F(...))`, and `new Thread(() => F(...))` with its `Start()` and
+  `Join()`, are tasks: of the call where CsVerify's engine proves it where it starts (a callee of permissions, values
+  that don't change), else of code verified on its own, whose result isn't known and which may reach anything (no
+  object is kept in hand from then on). A thread needn't be joined.
+- **Concurrent code** (`[RunsConcurrently]`, or started alongside) must hold what it uses (CSV1027): a field that may
+  change and that no lock guards, or an array's cell, is used only on an object a confined local has, or the one its
+  constructor is building.
 
 **Locks.** `lock (_lock) { ... }` of a lock object (a readonly `object` field of this object, or a static one) is its
 `Monitor.Enter` and its `finally`'s `Monitor.Exit`. Entering forgets what the lock guards (`[GuardedBy]`, at this
@@ -542,8 +554,12 @@ object: others have had it) and gives its `[LockInvariant]`s; leaving proves the
 exceptions included; a constructor's end proves its object's (CSV1024). Whether each use of guarded state is under its
 lock (CSV1023), and the other checks made from the syntax (lock levels, concurrency marks, flags, atomics, a data
 type's invariant's dependence), are CsVerify's engine's static checks, which run for every method Boogie verifies too.
-A lock inside another, a call of the program's code under a lock, semaphores, try-locks, lock levels, `Task.Run`,
-threads, atomics and `[RunsConcurrently]` code aren't translated yet.
+A `SemaphoreSlim` of count 1 that guards state is a lock that can be held across awaits: `await g.WaitAsync()` (or
+`g.Wait()`) takes it as entering a lock does, an await inside its `try` keeps what it guards (nobody else can have it),
+and `g.Release()` proves its invariants (CSV1024). Taking it while it's held is reported by the static checks (CSV1025).
+
+A lock inside another, a call of the program's code under a lock or a gate, try-locks, lock levels, atomics, and tasks
+with permissions aren't translated yet.
 
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
 preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
@@ -646,8 +662,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
    objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
    `Spec.Modifies`);
-7. locks, async and threads (done: awaits with confined locals, lock statements with guards and invariants; next:
-   tasks awaited later, semaphores, try-locks, lock levels, Task.Run and threads, atomics, `[RunsConcurrently]`);
+7. locks, async and threads (done: awaits with confined locals, lock statements, semaphore gates, tasks awaited
+   later, `Task.Run`, threads, concurrent code; next: try-locks, lock levels, atomics, tasks with permissions);
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
 

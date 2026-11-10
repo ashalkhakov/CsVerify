@@ -140,7 +140,12 @@ namespace CsVerify.Verifier.Boogie
             m.IsAsync && IsTaskLike(m.ReturnType) ? ((INamedTypeSymbol)m.ReturnType).TypeArguments.FirstOrDefault() : m.ReturnsVoid ? null : m.ReturnType;
 
         /// <summary>A lock's object (readonly, of type object): no state of the kernel's.</summary>
-        public static bool IsLockObject(ISymbol s) => s is IFieldSymbol { IsReadOnly: true } f && f.Type.SpecialType == SpecialType.System_Object;
+        public static bool IsLockObject(ISymbol s) => s is IFieldSymbol { IsReadOnly: true } f && (f.Type.SpecialType == SpecialType.System_Object || IsSemaphore(f.Type));
+
+        public static bool IsSemaphore(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.SemaphoreSlim";
+
+        /// <summary>What runs concurrently (CsVerify's engine's: marked, or started alongside), for the run this thread is in.</summary>
+        [System.ThreadStatic] public static StartedDelegates Started;
 
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
@@ -236,7 +241,7 @@ namespace CsVerify.Verifier.Boogie
             // (derived from object, or from a class of the subset; an [Owned] one from object)
             (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
             n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable") && !SpecSymbols.IsContractsClass(n) &&
-            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "OwnedAttribute") &&
+            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute")) &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
             n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0
                                      : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
