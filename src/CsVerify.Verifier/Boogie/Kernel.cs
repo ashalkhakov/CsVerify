@@ -418,6 +418,8 @@ namespace CsVerify.Verifier.Boogie
         public bool UsesFields;
         /// <summary>Its Spec.Modifies: the objects (an ObjSet, a [Ref]bool) whose fields and cells it may write, as of entry.</summary>
         public KExpr Frame;
+        /// <summary>A function's Spec.Reads: the objects whose fields and cells its value depends on (a frame axiom says so).</summary>
+        public KExpr ReadsFrame;
         /// <summary>An abstract member: a procedure with no body, which calls go to.</summary>
         public bool Abstract;
         /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>

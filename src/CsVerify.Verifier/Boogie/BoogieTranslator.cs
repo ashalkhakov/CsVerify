@@ -63,19 +63,33 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c) =>
             (m.IsStatic ? m.MethodKind == MethodKind.Ordinary
-                        : IsClass(m.ContainingType) && (m.MethodKind == MethodKind.Ordinary || m.MethodKind == MethodKind.Constructor)) &&
-            !m.IsAsync && !m.IsGenericMethod &&
+                        : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract) &&
+                          (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
+            !m.IsAsync && !m.IsGenericMethod && KnownAttributes(m) &&
             (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
-            c.Reads == null && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
+            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
+
+        /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is CsVerify's engine's to check.</summary>
+        private static readonly HashSet<string> Known = new HashSet<string>
+        {
+            "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute",
+        };
+
+        private static bool KnownAttributes(IMethodSymbol m) =>
+            m.GetAttributes().All(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace || Known.Contains(a.AttributeClass.Name)) &&
+            // (nor one another member's attribute names: an atomic field's step, a lock's invariant)
+            !m.ContainingType.GetMembers().SelectMany(x => x.GetAttributes())
+                .Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace)
+                .Any(a => a.ConstructorArguments.Concat(a.NamedArguments.Select(n => n.Value)).Any(v => v.Value is string name && name == m.Name));
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
-            !m.IsStatic && !IsClass(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a class outside the subset" :
-            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
+            !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
+            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
-            c.Reads != null ? "Spec.Reads" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
+            c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
             c.IsTrusted ? "[Trusted]" : "an inherited contract";
 
         /// <summary>Each method's contract (CsVerify's reading of its Spec statements).</summary>
@@ -118,8 +132,12 @@ namespace CsVerify.Verifier.Boogie
         /// A [Pure] or [GhostFunction] method with a single expression for its body: a Boogie function too, which
         /// specifications call (as Dafny's functions, with fuel: one unfolding per use, as CsVerify's engine).
         /// </summary>
+        /// <summary>(an abstract [Pure] member too, of its contract alone; and a virtual one, which an override may answer: of its contract alone)</summary>
         private bool IsFunction(IMethodSymbol m) => _procedures.Contains(m.OriginalDefinition) && !SpecSymbols.IsPredicate(m.OriginalDefinition) &&
-                                                     ContractOf?.Invoke(m) is Contract c && c.IsPure && c.PureBody != null;
+                                                     ContractOf?.Invoke(m) is Contract c && Pure(m, c) && (c.PureBody != null || m.IsAbstract);
+
+        /// <summary>[Pure]: the method, or (a getter) its property.</summary>
+        private static bool Pure(IMethodSymbol m, Contract c) => c.IsPure || m.MethodKind == MethodKind.PropertyGet && m.AssociatedSymbol != null && SpecSymbols.IsPure(m.AssociatedSymbol);
 
         /// <summary>The fields each procedure's declaration names.</summary>
         private readonly Dictionary<IMethodSymbol, HashSet<ISymbol>> _fieldsRead = new Dictionary<IMethodSymbol, HashSet<ISymbol>>(SymbolEqualityComparer.Default);
@@ -129,6 +147,8 @@ namespace CsVerify.Verifier.Boogie
         {
             m = m.OriginalDefinition;
             var all = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            // (one an override may answer reads what any of them might: every field the program names)
+            if (Engine.IsOverridable(m)) { foreach (var f in _fieldsRead.Values) all.UnionWith(f); return all; }
             foreach (var x in new[] { m }.Concat(_reaches.TryGetValue(m, out var r) ? r : Enumerable.Empty<IMethodSymbol>()))
                 if (_fieldsRead.TryGetValue(x, out var f)) all.UnionWith(f);
             return all;
@@ -240,7 +260,7 @@ namespace CsVerify.Verifier.Boogie
         public void Finish()
         {
             var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Fields), SymbolEqualityComparer.Default);
-            foreach (var p in _pending.Where(p => p.FunctionBody != null)) fields.UnionWith(FieldsOf(p.Method));
+            foreach (var p in _pending.Where(p => IsFunction(p.Method))) fields.UnionWith(FieldsOf(p.Method));
             // the predicates named, and those their bodies name
             var preds = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Preds), SymbolEqualityComparer.Default);
             for (var work = new Stack<IMethodSymbol>(preds); work.Count > 0;)
@@ -274,7 +294,7 @@ namespace CsVerify.Verifier.Boogie
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             OwnArrays();
-            foreach (var p in _pending.Where(p => p.FunctionBody != null && !p.IsPredicate))
+            foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap)).ToHashSet();
@@ -336,7 +356,8 @@ namespace CsVerify.Verifier.Boogie
                 }
             foreach (var p in _pending)
             {
-                _printer.Procedure(p, writes[p.Method], any[p.Method], p.FunctionBody != null && !p.IsPredicate && OverPredicate(p.Method) == null ? FunctionFields(p.Method) : null);
+                // (the function's value is its body's: not where an override may answer the call)
+                _printer.Procedure(p, writes[p.Method], any[p.Method], IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && !Engine.IsOverridable(p.Method) ? FunctionFields(p.Method) : null);
                 Obligations[p.Result] = p.Obligations;
             }
             _pending.Clear();

@@ -107,6 +107,12 @@ namespace CsVerify.Verifier.Boogie
             _rawRequires = _p.Requires.Select(r => r.Expr).ToList();
             _rawEnsures = _p.Ensures.Select(e => e.Expr).ToList();
             _rawInvariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (i.Expr, i.At)).ToList());
+            if (_p.ReadsFrame != null)
+            {
+                _p.ReadsFrame = Spec(_p.ReadsFrame, out _);
+                _facts.Clear();
+                _p.Locals.Add(new KLocal { Name = "r$entry", Raw = "[Ref]bool" });
+            }
             if (_p.Frame != null)
             {
                 _p.Frame = Spec(_p.Frame, out _);
@@ -187,6 +193,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign { Var = "psnap$entry", Value = new KVar("psnap") });
                     foreach (var r in requires.Where(r => Mentions(r.math, Snaps))) Assume(r.math);
                 }
+                if (b == _p.Blocks[0] && _p.ReadsFrame != null) Emit(new KAssign { Var = "r$entry", Value = _p.ReadsFrame });
                 if (b == _p.Blocks[0] && _p.Frame != null)
                 {
                     // (the frame as it is on entry, and what was allocated then)
@@ -1434,6 +1441,9 @@ namespace CsVerify.Verifier.Boogie
                     if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
                     var o = Code(fd.Instance);
                     if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fd.At, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
+                    // (a function with Spec.Reads reads only objects in it, as of entry: CSV1017)
+                    if (_p.ReadsFrame != null && !fd.Field.IsStatic)
+                        Assert(new KOp("sel", new KVar("r$entry"), o), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
                     // (in a predicate's body: read only what a Spec.Acc to its left holds, so it can't change while folded)
                     if (_p.IsPredicate)
                         Assert(CanWrite(o, fd.Field), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));

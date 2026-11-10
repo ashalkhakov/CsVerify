@@ -260,8 +260,14 @@ public class Picky : Account
 {
     public override void Deposit(int amount) { Spec.Requires(amount > 10 && Balance <= 1000000); Balance += amount; }
 }
+public interface ICounter { int Next(); }
+[ContractClassFor(typeof(ICounter))]
+internal abstract class CounterContract : ICounter { public int Next() { Spec.Ensures<int>(r => r > 0); return default; } }
+public class One : ICounter { public int Next() { return 1; } }
+public class Zero : ICounter { public int Next() { return 0; } }
 public static class I
 {
+    public static int Ask(ICounter c) { Spec.Ensures<int>(r => r > 0); return c.Next(); }
     public static void Use(Account a) { Spec.Requires(a.Balance == 0); a.Deposit(5); Spec.Assert(a.Balance == 5); }
     public static int Charge(Account a) { Spec.Ensures<int>(r => r >= 0); return a.Fee(); }
     public static int Measure(Shape s) { Spec.Ensures<int>(r => r >= 0); return s.Area(); }
@@ -274,10 +280,10 @@ public static class I
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Inheritance) }, o));
             var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
-            Assert.True(Agree(c, b) >= 14, "by Boogie: " + string.Join(", ", boogie));
-            foreach (var bug in new[] { "Hole.Area", "Greedy.Deposit", "Greedy.Fee", "Picky.Deposit", "I.Forgets" })
+            Assert.True(Agree(c, b) >= 17, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "Hole.Area", "Greedy.Deposit", "Greedy.Fee", "Picky.Deposit", "I.Forgets", "Zero.Next" })
                 Assert.False(b[bug].Verified, bug);
-            foreach (var good in new[] { "Shape..ctor", "Square..ctor", "Square.Area", "Account.Deposit", "Account.Fee", "Savings..ctor", "Savings.Deposit", "Savings.Fee", "I.Use", "I.Charge", "I.Measure", "I.Build" })
+            foreach (var good in new[] { "Shape..ctor", "Square..ctor", "Square.Area", "Account.Deposit", "Account.Fee", "Savings..ctor", "Savings.Deposit", "Savings.Fee", "I.Use", "I.Charge", "I.Measure", "I.Build", "One.Next", "I.Ask" })
                 Assert.True(b[good].Verified, good);
         }
 

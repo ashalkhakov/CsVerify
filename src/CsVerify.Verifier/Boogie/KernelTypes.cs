@@ -58,7 +58,20 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsOwnedField(ISymbol field) => !field.IsStatic && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>A reference: an array or an object.</summary>
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t);
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t);
+
+        /// <summary>An interface of the program's, not generic, of abstract members only (their contracts from a contract class).</summary>
+        public static bool IsInterface(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Interface && n.Arity == 0 && n.DeclaringSyntaxReferences.Length > 0 &&
+            n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace && !CsVerifyAttributes(n) &&
+            n.GetMembers().All(m => m.IsAbstract && !m.IsStatic && !CsVerifyAttributes(m)) && n.AllInterfaces.All(IsInterface);
+
+        /// <summary>
+        /// A property computed by code (or an abstract or an interface one, specified by its contract): its getter and
+        /// setter are methods, called where it is read and written. Not an auto-property's, which is a field.
+        /// </summary>
+        public static bool IsComputed(IPropertySymbol p) =>
+            p != null && !FieldEffects.IsHeapField(p) && p.DeclaringSyntaxReferences.Length > 0 && p.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace;
 
         /// <summary>
         /// A class of the program whose objects are plain mutable state: not generic, not static, not a record (a data
@@ -70,11 +83,15 @@ namespace CsVerify.Verifier.Boogie
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
             (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            n.AllInterfaces.Length == 0 && !SpecSymbols.IsContractsClass(n) &&
+            n.AllInterfaces.All(IsInterface) && !SpecSymbols.IsContractsClass(n) &&
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "OwnedAttribute") &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
-            n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0 : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-                                    !((m is IFieldSymbol || m is IPropertySymbol) && CsVerifyAttributes(m))) &&
+            n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0
+                                     : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
+                                     : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
+                                    !(m is IFieldSymbol && CsVerifyAttributes(m)) &&
+                                    // (a property may be [Pure]: a function)
+                                    !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "PureAttribute"))) &&
             // (an invariant of an [Owned] class travels with its view; any other's is a data type's, assumed of every object)
             (SpecSymbols.IsOwned(n) || !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute")));
 

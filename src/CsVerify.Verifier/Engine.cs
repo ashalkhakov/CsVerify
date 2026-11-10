@@ -642,6 +642,7 @@ namespace CsVerify.Verifier
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
             using var engine = new Engine(compilation, options, userTrees);
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
+            var boogieAccessors = new HashSet<SyntaxNode>();
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
@@ -683,6 +684,38 @@ namespace CsVerify.Verifier
                     }
                 }
             }
+            // accessors with code: properties are methods too (Boogie's, where they are in its subset; an abstract or an
+            // interface one is a procedure of its contract, which has nothing of its own to verify)
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var node in tree.GetRoot().DescendantNodes())
+                {
+                    if (!options.Boogie) break;
+                    IMethodSymbol accessor = node switch
+                    {
+                        AccessorDeclarationSyntax acc => model.GetDeclaredSymbol(acc) as IMethodSymbol,
+                        ArrowExpressionClauseSyntax arrow when arrow.Parent is BasePropertyDeclarationSyntax prop => (model.GetDeclaredSymbol(prop) as IPropertySymbol)?.GetMethod,
+                        _ => null,
+                    };
+                    if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.IsContractsClass(accessor.ContainingType) ||
+                        accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
+                    bool hasCode = node is ArrowExpressionClauseSyntax || node is AccessorDeclarationSyntax a && (a.Body != null || a.ExpressionBody != null);
+                    if (!hasCode && !accessor.IsAbstract) continue; // (an auto-property's: a field)
+                    var contract = engine.ContractOf(accessor);
+                    if (!Boogie.BoogieTranslator.Candidate(accessor, contract) || !Sequential(engine, accessor, node, model))
+                    {
+                        if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
+                            Console.Error.WriteLine($"not translated to Boogie: {accessor.ContainingType.Name}.{accessor.Name}: {Boogie.BoogieTranslator.WhyNot(accessor, contract)}");
+                        continue;
+                    }
+                    var span = node.GetLocation().GetLineSpan();
+                    var mr = new MethodResult { Name = hasCode ? accessor.ContainingType.Name + "." + accessor.Name : null, Declared = span.Path + ":" + (span.StartLinePosition.Line + 1) };
+                    if (hasCode && !options.Selects(mr.Name)) continue;
+                    if (hasCode) { result.Methods.Add(mr); declarations.Add((node, mr)); boogieAccessors.Add(node); }
+                    forBoogie.Add((accessor, contract, node, mr));
+                }
+            }
             if (forBoogie.Count > 0) result.BoogieFailure = RunBoogie(engine, compilation, forBoogie);
             // accessors with code: properties are methods too
             foreach (var tree in userTrees)
@@ -698,7 +731,10 @@ namespace CsVerify.Verifier
                     };
                     if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.IsContractsClass(accessor.ContainingType) ||
                         accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
-                    var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name };
+                    // (Boogie's: verified there, or as always if it couldn't; its lambdas, as always)
+                    if (boogieAccessors.Contains(node)) { RunNested(engine, node, model, accessor.ContainingType.Name + "." + accessor.Name, result, declarations, options); continue; }
+                    var where = node.GetLocation().GetLineSpan();
+                    var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name, Declared = where.Path + ":" + (where.StartLinePosition.Line + 1) };
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
@@ -841,7 +877,7 @@ namespace CsVerify.Verifier
                     catch (Boogie.NotTranslated why)
                     {
                         refused.Add(x);
-                        if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine($"not translated to Boogie: {x.result.Name}: {why.Message}");
+                        if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {why.Message}");
                     }
                 }
                 if (refused.Count == 0) break;

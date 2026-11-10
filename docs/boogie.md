@@ -360,7 +360,18 @@ override only of the program's members, an abstract member's contract from its c
 - `base(...)` in a constructor calls the base class's constructor on `this`; a new object's fields, inherited ones
   too, are their defaults; a constructor ensures the non-nullable fields it sets aren't null.
 
-Not yet: interfaces, virtual properties, `this(...)`, type tests and casts.
+- interfaces of the program's (abstract members only, their contracts from a contract class) are references; their
+  members are procedures with no body, and an implementation inherits their contracts as an override does;
+- a property with code (or an abstract or an interface one) is its accessors: a read calls its getter, a write its
+  setter; a `[Pure]` one is a function; an abstract or virtual `[Pure]` member is a function of its contract alone (an
+  override may answer the call), of every field the program names, with no definition;
+- on `this`, a member whose override in this class (or a base) is sealed, or whose class is, is that override, as in
+  CsVerify's engine; a contract class's member is the member it specifies;
+- `Spec.Reads(R)` of a `[Pure]` member is Dafny's frame axiom: two memories that agree on every object in `R` give it
+  one value; its body reads only objects in `R` (CSV1017).
+
+Not yet: `this(...)`, type tests and casts, generic types, invariants of classes that aren't `[Owned]` (immutable
+objects).
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
@@ -436,10 +447,10 @@ predicates with `Spec.Fold` and `Spec.Unfold`, functions over them, array-cell a
 
 Also strings and the string members with stub contracts, and quantifiers in code.
 
-Also inheritance: base classes, virtual, abstract and override methods.
+Also inheritance: base classes, virtual, abstract and override methods, interfaces, properties with code, and
+`Spec.Reads`.
 
-Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, virtual
-properties, interfaces, records (data types), generics, string members without stubs, collections,
+Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics, string members without stubs, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
@@ -455,13 +466,13 @@ two quickly.
 
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
-   them (done for plain classes, base classes and virtual methods; next: interfaces, virtual properties, data
-   records, object initializers, `this(...)`);
+   them (done for plain classes, base classes, virtual methods, interfaces and properties; next: data records,
+   immutable objects' invariants, object initializers, `this(...)`);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (`List`, `Dictionary`, `HashSet`), and the ghost types;
 3. `foreach`, lambdas and delegates;
 4. exceptions (`try`, `catch`, `finally` as blocks, a throw as a jump to its handler), `Spec.EnsuresOnThrow`;
-5. frames (done: `Spec.Modifies`; next: `Spec.Reads` and ghost `ObjSet` fields), and the library's stub contracts
+5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
    objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,

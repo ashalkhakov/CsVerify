@@ -64,7 +64,7 @@ namespace CsVerify.Verifier.Boogie
             // (the permissions its postconditions give back, and a predicate's body, for folding and unfolding it)
             ContractOf(l, contract);
             if (contract.Modifies != null) l._p.Frame = l.Spec(contract.Modifies, null);
-            if ((SpecSymbols.IsPredicate(m) || isFunction(m)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
+            if ((SpecSymbols.IsPredicate(m) || isFunction(m) && !Engine.IsOverridable(m)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
             return l._p;
         }
 
@@ -83,6 +83,7 @@ namespace CsVerify.Verifier.Boogie
                 l._p.Ensures.Add(new KSpec { Expr = post, At = e.Syntax });
             }
             if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
+            if (contract.Reads != null) l._p.ReadsFrame = l.Spec(contract.Reads, null);
             if (contract.OwnRequires.Count > 0)
             {
                 l._p.OwnRequires = contract.OwnRequires.Select(r => l.Spec(r, null)).ToList();
@@ -90,6 +91,31 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var (b, frame) in contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, contract.Modifies)))
                 l._p.BaseFrames.Add((b.Method, l.Spec(frame, null)));
+        }
+
+        /// <summary>
+        /// A virtual member called on this: where this class (or a base of it) overrides it and nothing below may again
+        /// (the override sealed, or the class), the call is of that override, as CsVerify's engine reads it.
+        /// </summary>
+        private IMethodSymbol OnThis(IMethodSymbol m, IOperation instance)
+        {
+            m = m.OriginalDefinition;
+            if (!(instance is IInstanceReferenceOperation) || !Engine.IsOverridable(m) || _m.ContainingType == null) return m;
+            for (var t = _m.ContainingType; t != null; t = t.BaseType)
+                foreach (var o in t.GetMembers(m.Name).OfType<IMethodSymbol>())
+                    for (var b = o.OverriddenMethod; b != null; b = b.OverriddenMethod)
+                        if (SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, m))
+                            return o.IsSealed || _m.ContainingType.IsSealed ? o.OriginalDefinition : m;
+            return m;
+        }
+
+        /// <summary>A contract class's member means the member it specifies (the one it overrides or implements).</summary>
+        private static IPropertySymbol Specified(IPropertySymbol p)
+        {
+            if (p == null || !SpecSymbols.IsContractsClass(p.ContainingType)) return p;
+            if (p.OverriddenProperty != null) return p.OverriddenProperty;
+            var target = SpecSymbols.ContractClassTarget(p.ContainingType);
+            return target?.GetMembers(p.Name).OfType<IPropertySymbol>().FirstOrDefault() ?? p;
         }
 
         /// <summary>Does a specification name permissions (Spec.Acc, or a predicate)?</summary>
@@ -132,11 +158,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 IMethodBodyOperation body => ControlFlowGraph.Create(body),
                 IConstructorBodyOperation body => ControlFlowGraph.Create(body),
+                // (an accessor, an expression-bodied property's getter)
+                IBlockOperation block => ControlFlowGraph.Create(block),
                 _ => throw new NotTranslated("no body"),
             };
             if (cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions).Any(r => r.Kind != ControlFlowRegionKind.LocalLifetime))
                 throw new NotTranslated("try, catch or finally");
-            if (_isFunction(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
+            // (a function's definition is its body: not one an override may answer, which is of its contract alone)
+            if (_isFunction(_m) && _contract.PureBody != null && !Engine.IsOverridable(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
             var heads = LoopHeads(cfg);
             foreach (var h in heads)
             {
@@ -268,6 +297,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     // base(...): the base class's constructor, on this object
                     var ctor = chain.TargetMethod.OriginalDefinition;
+                    // (an implicit one of a class without field initializers does nothing)
+                    if (ctor.IsImplicitlyDeclared && !ctor.ContainingType.GetMembers().Any(x => !x.IsStatic && x.DeclaringSyntaxReferences.Any(r =>
+                            r.GetSyntax() is VariableDeclaratorSyntax { Initializer: not null } || r.GetSyntax() is PropertyDeclarationSyntax { Initializer: not null }))) return;
                     if (!_isProcedure(ctor)) throw new NotTranslated("a call of " + ctor.ContainingType.Name + "'s constructor");
                     _p.Calls.Add(ctor);
                     var ordered = chain.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
@@ -333,6 +365,10 @@ namespace CsVerify.Verifier.Boogie
                                        NotNullAt = nonNull ? l.Syntax.Parent ?? l.Syntax : null, NotNullName = l.Local.Name });
                     return;
                 }
+                // (a computed property: its setter, called with the value)
+                case IPropertyReferenceOperation sp when IsComputed(sp.Property) && sp.Property.SetMethod != null:
+                    Invoke(sp.Property.SetMethod, sp.Instance, sp.Arguments, sp.Syntax, value);
+                    return;
                 case IFieldReferenceOperation _: case IPropertyReferenceOperation _:
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(target);
@@ -504,6 +540,9 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar("this");
                 case IInstanceReferenceOperation _:
                     throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
+                // (a computed property: its getter, called)
+                case IPropertyReferenceOperation cp when IsComputed(cp.Property) && cp.Property.GetMethod != null:
+                    return Invoke(cp.Property.GetMethod, cp.Instance, cp.Arguments, cp.Syntax, null);
                 case IFieldReferenceOperation _:
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type):
                 {
@@ -688,11 +727,21 @@ namespace CsVerify.Verifier.Boogie
                 return new KOp("&&", new KOp(">=", deref, new KLit("0")), new KOp("streq", v[0], v[1]));
             }
             if (!_isProcedure(callee) && IsStub(callee)) return StubCall(call, null);
-            if (!_isProcedure(callee)) throw new NotTranslated("a call of " + call.TargetMethod.Name);
+            return Invoke(callee, call.Instance, call.Arguments, call.Syntax, null);
+        }
+
+        /// <summary>
+        /// A call of a procedure: a method, or a property's accessor (its indices the arguments, and a setter's value
+        /// after them). A virtual one is of the member as bound here, whose contract every override keeps.
+        /// </summary>
+        private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
+        {
+            callee = callee.OriginalDefinition;
+            if (!_isProcedure(callee)) throw new NotTranslated("a call of " + callee.Name);
             _p.Calls.Add(callee);
-            var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-            // (a virtual call: of the member as bound here, whose contract every override keeps)
-            if (!callee.IsStatic && call.Instance == null) throw new NotTranslated("a call of " + callee.Name + " without its receiver");
+            var ordered = arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            if (!callee.IsStatic && instance == null) throw new NotTranslated("a call of " + callee.Name + " without its receiver");
+            var call = (Instance: instance, Syntax: at);
             bool onThis = call.Instance is IInstanceReferenceOperation;
             // (a ref or out argument is a variable, which gets what the callee gives back; an out one isn't read)
             var refOuts = ordered.Where(a => a.Parameter.RefKind != RefKind.None).Select(a => (a.Parameter.Ordinal, RefVariable(a))).ToList();
@@ -701,13 +750,15 @@ namespace CsVerify.Verifier.Boogie
             var values = Operands(operands);
             var receiver = call.Instance == null ? null : onThis ? Expr(call.Instance) : values[0];
             var inValues = call.Instance == null || onThis ? values : values.Skip(1).ToArray();
-            var args = new KExpr[ordered.Count];
+            var args = new KExpr[ordered.Count + (value == null ? 0 : 1)];
             for (int k = 0; k < ins.Count; k++) args[ins[k].Parameter.Ordinal] = inValues[k];
+            if (value != null) args[ordered.Count] = value;
             foreach (var (ordinal, v) in refOuts) args[ordinal] ??= new KVar(v);
             if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
             if (ordered.Any(a => IsView(a.Parameter.Type)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
             var result = callee.ReturnsVoid ? null : Declare("t$" + _temps++, callee.ReturnType);
-            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(),
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax,
+                             Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).Concat(value == null ? new SyntaxNode[0] : new[] { at }).ToArray(),
                              Result = result, At = call.Syntax, RefOuts = refOuts });
             return result == null ? null : new KVar(result);
         }
@@ -782,6 +833,14 @@ namespace CsVerify.Verifier.Boogie
                 // (a view's object: v.Obj.Value)
                 case IPropertyReferenceOperation { Property.Name: "Value", Instance: IPropertyReferenceOperation { Property.Name: "Obj" } obj } when IsView(obj.Instance?.Type):
                     return Spec(obj.Instance, result);
+                // (a [Pure] computed property: its getter, a function; in a contract class, the member it specifies)
+                case IPropertyReferenceOperation cp when Specified(cp.Property) is IPropertySymbol sp && IsComputed(sp) && sp.GetMethod != null && _isFunction(sp.GetMethod):
+                    return new KFnCall
+                    {
+                        Callee = OnThis(Specified(cp.Property).GetMethod, cp.Instance), Receiver = cp.Instance == null ? null : Spec(cp.Instance, result),
+                        ReceiverIsThis = cp.Instance is IInstanceReferenceOperation, ReceiverAt = cp.Instance?.Syntax,
+                        Args = cp.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = cp.Syntax,
+                    };
                 case IFieldReferenceOperation _:
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type):
                 {
@@ -789,7 +848,8 @@ namespace CsVerify.Verifier.Boogie
                     return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
                 }
                 case IParenthesizedOperation par: return Spec(par.Operand, result);
-                case IConversionOperation conv when conv.Conversion.IsIdentity || IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric && conv.IsImplicit:
+                case IConversionOperation conv when conv.Conversion.IsIdentity || IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric &&
+                                                    (conv.IsImplicit || Range(conv.Operand.Type).lo >= Range(conv.Type).lo && Range(conv.Operand.Type).hi <= Range(conv.Type).hi):
                     return Spec(conv.Operand, result);
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Spec(conv.Operand, result);
@@ -848,7 +908,8 @@ namespace CsVerify.Verifier.Boogie
                 // (ghost sets of objects)
                 case IPropertyReferenceOperation { Property.Name: "Empty" } empty when IsObjSet(empty.Type) && empty.Instance == null:
                     return new KLit("(lambda r$: Ref :: false)");
-                case IInvocationOperation of when IsObjSet(of.TargetMethod.ContainingType) && of.TargetMethod.Name == "Of" && of.Arguments.Length == 1 && IsRef(Unconverted(of.Arguments[0].Value).Type):
+                case IInvocationOperation of when IsObjSet(of.TargetMethod.ContainingType) && of.TargetMethod.Name == "Of" && of.Arguments.Length == 1 &&
+                                                  (IsRef(Unconverted(of.Arguments[0].Value).Type) || Unconverted(of.Arguments[0].Value) is IInstanceReferenceOperation):
                     return new KOp("set.of", Spec(Unconverted(of.Arguments[0].Value), result));
                 case IInvocationOperation add when IsObjSet(add.TargetMethod.ContainingType) && add.TargetMethod.Name == "Add" && add.Instance != null && IsRef(Unconverted(add.Arguments[0].Value).Type):
                     return new KOp("set.add", Spec(add.Instance, result), Spec(Unconverted(add.Arguments[0].Value), result));

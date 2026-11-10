@@ -85,6 +85,8 @@ namespace CsVerify.Verifier.Boogie
             /// <summary>The ref parameters, named by their values on entry (p$x$in) where this says so: in requires, and in old().</summary>
             public HashSet<string> Ins = new HashSet<string>();
             public bool AtEntry;
+            /// <summary>In a function's axioms: what its memory's parameters are named by (h$E.Int32...).</summary>
+            public string Prefix = "h";
             /// <summary>In a function's axioms: is a callee in its recursion group?</summary>
             public Func<IMethodSymbol, bool> Group;
             /// <summary>In such a function: each array parameter's elements.</summary>
@@ -96,7 +98,7 @@ namespace CsVerify.Verifier.Boogie
 
         private static readonly Context InProcedure = new Context();
 
-        private static string Map(string name, Context cx) => cx.InFunction && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? "h" + name : name;
+        private static string Map(string name, Context cx) => cx.InFunction && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? cx.Prefix + name : name;
 
         private static string Maps(Context cx) => string.Join(", ", ElementTypes.Select(t => Map(ElementMap(t), cx)));
 
@@ -314,7 +316,19 @@ namespace CsVerify.Verifier.Boogie
             var cx = new Context { InFunction = true, Layer = "ly", Result = At("ly"), Elems = own?.ToDictionary(o => o.param, o => "e" + o.param),
                                    Group = callee => callee != null && Recursive(m, callee) };
             var guard = p.Requires.Count == 0 ? "true" : string.Join(" && ", p.Requires.Select(r => E(r.Expr, cx)));
-            Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {guard} ==> {At("$LS(ly)")} == {E(p.FunctionBody, cx)});");
+            // (its Spec.Reads, Dafny's frame axiom: two memories that agree on every object it reads give one value)
+            if (p.ReadsFrame != null && own == null)
+            {
+                string Mem(string pre) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{(t == SpecialType.System_Boolean ? "bool" : "int")}"))
+                                        + string.Join("", fields.Select(x => $", {pre}{x}: [Ref]{TypeOf(FieldType(symbols.First(f => FieldMap(f) == x)))}"));
+                string App(string pre) => $"{name}(ly, {string.Join(", ", ElementTypes.Select(t => pre + ElementMap(t)))}{string.Join("", fields.Select(x => ", " + pre + x))}{(m.IsStatic ? "" : ", this")}{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
+                var r = E(p.ReadsFrame, new Context { InFunction = true, Layer = "ly", Prefix = "a", Group = cx.Group });
+                var agree = ElementTypes.Select(t => $"(forall o: Ref, i: int :: {r}[o] ==> a{ElementMap(t)}[o][i] == b{ElementMap(t)}[o][i])")
+                    .Concat(fields.Select(x => $"(forall o: Ref :: {r}[o] ==> a{x}[o] == b{x}[o])"));
+                Line($"axiom (forall ly: LayerType, {Mem("a")}, {Mem("b")}{self}{string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"))} :: {{ {App("a")}, {App("b")} }} {string.Join(" && ", agree)} ==> {App("a")} == {App("b")});");
+            }
+            // (its definition, where it has one: an abstract or virtual one is of its contract alone)
+            if (p.FunctionBody != null) Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {guard} ==> {At("$LS(ly)")} == {E(p.FunctionBody, cx)});");
             foreach (var e in p.Ensures) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {guard} ==> {E(e.Expr, cx)});");
             if (!p.Ghost && IsIntegral(m.ReturnType)) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {E(InRange(new KLit(At("ly")), m.ReturnType), cx)});");
         }
