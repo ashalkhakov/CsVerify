@@ -1427,6 +1427,21 @@ namespace CsVerify.Verifier.Boogie
                     InBounds(a, i, el.At, el.ArrayAt);
                     return new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
                 }
+                case KDataField df:
+                {
+                    var v = Code(df.Value);
+                    Assert(new KOp("!=", v, new KLit("null")), At("CSV1013", df.At, $"'{df.ValueAt}' might be null in '{df.At}'"));
+                    return new KOp(df.Function, v);
+                }
+                case KCast cast:
+                {
+                    // (in code, a failing cast throws, which ends the path; a proof must show it doesn't)
+                    var v = Code(cast.Value);
+                    var test = Code(cast.Test);
+                    if (_p.Ghost || _p.Contract.IsPure || _p.Contract.IsLemma) Assert(test, At("CSV1011", cast.At, $"cast '{cast.At}' might fail"));
+                    else Assume(test);
+                    return v;
+                }
                 case KLen len:
                 {
                     var a = Code(len.Array);
@@ -1659,6 +1674,18 @@ namespace CsVerify.Verifier.Boogie
                     Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp(el.String ? "slen" : "len", a))));
                     return el.String ? new KOp("sat", a, i) : new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
                 }
+                case KDataField df:
+                {
+                    var v = Spec(df.Value, wf, guard);
+                    Need(new KOp("!=", v, new KLit("null")));
+                    return new KOp(df.Function, v);
+                }
+                case KCast cast:
+                {
+                    var v = Spec(cast.Value, wf, guard);
+                    Need(Spec(cast.Test, wf, guard));
+                    return v;
+                }
                 case KLen len:
                 {
                     var a = Spec(len.Array, wf, guard);
@@ -1766,6 +1793,9 @@ namespace CsVerify.Verifier.Boogie
                 default: throw new NotTranslated("in a specification: " + e.GetType().Name);
             }
         }
+
+        /// <summary>A variable given a value (mathematics).</summary>
+        internal static KExpr Rename(KExpr e, string name, KExpr value) => Subst(e, new Dictionary<string, KExpr> { [name] = value });
 
         /// <summary>Parameters given values (mathematics in, mathematics out).</summary>
         private static KExpr Subst(KExpr e, Dictionary<string, KExpr> given) => e switch

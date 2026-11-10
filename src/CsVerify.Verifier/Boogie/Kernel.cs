@@ -376,6 +376,21 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
     internal sealed class KHavocAll : KStmt { }
 
+    /// <summary>A data value's field: checked not null in code, well-defined if so in a specification.</summary>
+    internal sealed class KDataField : KExpr
+    {
+        public string Function;
+        public KExpr Value;
+        public SyntaxNode At, ValueAt;
+    }
+
+    /// <summary>A cast to a data type: checked (an InvalidCastException in code, ill-defined in a specification).</summary>
+    internal sealed class KCast : KExpr
+    {
+        public KExpr Value, Test;
+        public SyntaxNode At;
+    }
+
     internal sealed class KAssert : KStmt
     {
         public KExpr Cond;
@@ -480,6 +495,10 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
         public bool CallsDelegates;
+        /// <summary>The data types it names (their definitions): each case's constructor, fields and tag.</summary>
+        public HashSet<INamedTypeSymbol> DataTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The data types with invariants whose values it takes to be valid.</summary>
+        public HashSet<INamedTypeSymbol> Valid = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         /// <summary>It calls code whose contract isn't known ($havoc).</summary>
         public bool HavocsAll;
         /// <summary>The library's members it calls (list members, by their stub contracts), and the kinds of lists whose models it names.</summary>

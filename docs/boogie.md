@@ -501,6 +501,33 @@ Not yet: `Spec.Total` of a delegate that may read state, a method group of an in
 a delegate type with a contract, delegates with permissions or method `Spec.Modifies`, and a delegate's call where
 exceptions are seen.
 
+**Data types.** A data record (a closed hierarchy of positional records, as CsVerify's engine finds them) is Dafny's
+datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its
+tag (`$tag`, tested by `$is.`*C*) the case's, each field (a function `$d.`*R.f*, a base's field the argument the
+record header gives it, as `Ind(Fact Prev) : Fact(Prev.N + 1, ...)`) what was given, and its rank (`$rank`, never
+negative) above its data parts'. A value of a case is that case's constructor of its fields (triggered on `$is.`*C*),
+so equal fields mean equal values, and a record's `==` (where its fields compare as values) is the references' `==`.
+- A field of a data type is one of its cases, and not null where its type says so (each construction checks its
+  arguments, CSV1014); an integer one is in its type's range. A parameter, `this` and a result are of their type's
+  cases.
+- Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,
+  `var`, discard, `not`, `and`, `or`, positional and property patterns) test tags and fields and bind their variables;
+  a specification's `switch` is an `if`-chain. A cast to a case: in code, where it fails it throws; in a proof, CSV1011.
+- `Spec.Decreases(d)` of a data value is its rank. A lemma or `[Pure]` function that may throw (a `switch` without
+  a case) is CSV1011.
+- Instance members of a data record are procedures (and functions) on `this`, a value.
+- A record's `[Invariant]`s (of its fields alone) hold of its values: each construction checks them (CSV1015), and a
+  value that comes in (a parameter, `this`, a call's result, a field read in code, a constructed one) is `$valid.`*T*,
+  which gives its invariants, and, where a case is tested, its parts' validity. An invariant that reads more (mutable
+  state) is CsVerify's engine's, which reports it.
+- `Ghost<T>` is erased: `Ghost.Of(x)` and `g.Value` are the value.
+
+**Generics.** A type parameter's values are boxes (`Box`); `$box.`*T* and `$unbox.`*T* (each the other's inverse)
+take an integer, a boolean or a reference to a box and back where generic code meets code of a type argument: a
+generic method's arguments and result, a generic data type's fields. A generic data type is one data type for all its
+instantiations (`List<T>.Cons` of a `List<int>`), and a static generic method (of unconstrained type parameters) is one
+procedure.
+
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
 preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
 assumes at entry), each under those before it; at each return for the postconditions, at the loop head for an
@@ -565,7 +592,11 @@ and `Map`, `foreach` over arrays, strings and collections, `Spec.Index`, and del
 `Spec.Post`, `Spec.Total`, `Spec.ChangesNothing`, `Spec.Reads`, `Spec.ReadsOf`, `Spec.Changes`, calls of them,
 lambdas and method groups; delegate types with contracts.
 
-Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics,
+Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types and static
+generic methods.
+
+Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records compared as `object`,
+invariants of records that read mutable state, generic classes and constrained type parameters,
 string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
 exception filters, a method that assigns a parameter, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
 and threads, LINQ, and library calls with stub contracts other than strings' and lists'.
@@ -581,8 +612,8 @@ two quickly.
 
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
-   them (done for plain classes, base classes, virtual methods, interfaces and properties; next: data records,
-   immutable objects' invariants, object initializers, `this(...)`);
+   them (done for plain classes, base classes, virtual methods, interfaces, properties, data records and their
+   invariants, generic data and methods; next: generic classes, object initializers, `this(...)`);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (done: `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `Seq`, `Map`; next: `Bag`, string keys), and the ghost types;
 3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,

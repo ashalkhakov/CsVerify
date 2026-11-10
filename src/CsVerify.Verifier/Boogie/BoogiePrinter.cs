@@ -36,6 +36,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What every program has: C#'s division, fuel, and the heap of arrays (Dafny's encoding).</summary>
         public void Prelude()
         {
+            // (a type parameter's values, Dafny's boxes)
+            Line("type Box;");
+            foreach (var t in new[] { "int", "bool", "Ref" })
+            {
+                Line($"function $box.{t}(x: {t}): Box;");
+                Line($"function $unbox.{t}(b: Box): {t};");
+                Line($"axiom (forall x: {t} :: {{ $box.{t}(x) }} $unbox.{t}($box.{t}(x)) == x);");
+            }
+
             Line("// C#'s / and % truncate toward zero; Boogie's div and mod are Euclidean");
             Line("function cs#div(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
             Line("function cs#rem(a: int, b: int): int { a - b * cs#div(a, b) }");
@@ -166,7 +175,7 @@ namespace CsVerify.Verifier.Boogie
                         case "streq": return $"({a[0]} == {a[1]})";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
-                        case var f when f.StartsWith("$"): return $"{f}({string.Join(", ", a)})";
+                        case var f when f.StartsWith("$") || f.StartsWith("mk."): return $"{f}({string.Join(", ", a)})";
                         default:
                             if (a.Length != 2) throw new NotTranslated("the kernel's operator " + op.Op);
                             return $"({a[0]} {op.Op} {a[1]})";
@@ -204,6 +213,65 @@ namespace CsVerify.Verifier.Boogie
             // (trusted for its annotations: a non-nullable result isn't null; an integer one is in its type's range)
             if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line(Axiom($"{app} != null"));
             if (IsIntegral(m.ReturnType)) Line(Axiom(E(InRange(new KLit(app), m.ReturnType), InProcedure)));
+        }
+
+        // ------------------------------------------------------------------ data types
+
+        /// <summary>A data case: its constructor's parameters, its tag, and what each field of a value it makes is.</summary>
+        public sealed class DataCase
+        {
+            public INamedTypeSymbol Type;
+            public string Name;
+            public int Tag;
+            public List<(string name, string type, bool data, string field)> Params = new List<(string, string, bool, string)>();
+            public List<(string function, KExpr value)> Fields = new List<(string, KExpr)>();
+        }
+
+        /// <summary>
+        /// Data types as Dafny's: boxes for generic values; a value's tag ($tag, tested by $is.C) and rank ($rank, never
+        /// negative); each field a function; each case's constructor a function whose value has its tag, its fields,
+        /// and a rank above its data parts'; and a value of a case is that case's constructor of its fields.
+        /// </summary>
+        public void Data(List<DataCase> cases, List<(string function, string type, KExpr fact)> fields)
+        {
+            Line("function $tag(d: Ref): int;");
+            Line("function $rank(d: Ref): int;");
+            Line("axiom (forall d: Ref :: { $rank(d) } $rank(d) >= 0);");
+            var cx = InProcedure;
+            foreach (var (function, type, fact) in fields)
+            {
+                Line($"function {function}(d: Ref): {type};");
+                if (fact != null) Line($"axiom (forall d: Ref :: {{ {function}(d) }} {E(fact, cx)});");
+            }
+            foreach (var c in cases)
+            {
+                Line($"function $is.{c.Name.Substring(3)}(d: Ref): bool {{ $tag(d) == {c.Tag} }}");
+                var ps = string.Join(", ", c.Params.Select(x => $"{x.name}: {x.type}"));
+                var app = $"{c.Name}({string.Join(", ", c.Params.Select(x => x.name))})";
+                Line($"function {c.Name}({ps}): Ref;");
+                var facts = new List<string> { $"{app} != null", $"$tag({app}) == {c.Tag}" };
+                foreach (var (function, value) in c.Fields) facts.Add($"{function}({app}) == {E(value, cx)}");
+                foreach (var x in c.Params.Where(x => x.data)) facts.Add($"({x.name} != null ==> $rank({x.name}) < $rank({app}))");
+                Line(c.Params.Count == 0 ? $"axiom {string.Join(" && ", facts)};" : $"axiom (forall {ps} :: {{ {app} }} {string.Join(" && ", facts)});");
+                // (a value of the case is the case's constructor of its fields)
+                var eta = $"{c.Name}({string.Join(", ", c.Params.Select(x => $"{x.field}(d)"))})";
+                Line($"axiom (forall d: Ref :: {{ $is.{c.Name.Substring(3)}(d) }} d != null && $is.{c.Name.Substring(3)}(d) ==> d == {eta});");
+            }
+        }
+
+        /// <summary>
+        /// Valid values of data types with invariants: their invariants hold; and, of each case, the parts with
+        /// invariants are valid (where the case is tested, so the parts aren't unfolded without end).
+        /// </summary>
+        public void Valid(List<(string name, KExpr invariant, List<(string isCase, KExpr part)> parts)> types)
+        {
+            foreach (var (name, _, _) in types) Line($"function {name}(d: Ref): bool;");
+            foreach (var (name, invariant, parts) in types)
+            {
+                Line($"axiom (forall d: Ref :: {{ {name}(d) }} {name}(d) && d != null ==> {E(invariant, InProcedure)});");
+                foreach (var (isCase, part) in parts)
+                    Line($"axiom (forall d: Ref :: {{ {name}(d), {isCase}(d) }} {name}(d) && {isCase}(d) ==> {E(part, InProcedure)});");
+            }
         }
 
         // ------------------------------------------------------------------ delegates
@@ -575,6 +643,7 @@ namespace CsVerify.Verifier.Boogie
             // (a list's constructor: a new list)
             if (p.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
             if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line("  free ensures result != null;");
+            if (!m.ReturnsVoid && IsData(m.ReturnType)) Line($"  free ensures result == null || {E(IsCase(new KVar("result"), m.ReturnType), cx)};");
             // (a constructor has set the fields that may not be null: it asserts so at each return)
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f)) &&
@@ -641,7 +710,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = p.Method;
             Line($"  free requires {InRangeOfMemory};");
-            if (p.HasThis) Line("  free requires this != null && $Alloc[this];");
+            if (p.HasThis) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
             // (a new object's fields are their defaults: its caller made them so)
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).OrderBy(FieldMap, System.StringComparer.Ordinal))
@@ -653,6 +722,8 @@ namespace CsVerify.Verifier.Boogie
                 if (IsRef(x.Type) || IsView(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
                 // (not null: checked at each call's argument)
                 if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
+                // (a data value is one of its type's cases)
+                if (IsData(x.Type)) Line($"  free requires {name} == null || {E(IsCase(new KVar(Local(x)), x.Type), cx)};");
             }
         }
 

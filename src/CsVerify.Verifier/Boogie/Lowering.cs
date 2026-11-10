@@ -59,6 +59,39 @@ namespace CsVerify.Verifier.Boogie
             IsString(m.ContainingType) && _contractOf?.Invoke(m) is Contract c && c.IsStub && c.IsPure && !m.ReturnsVoid && InSubset(m.ReturnType) &&
             m.Parameters.All(x => x.RefKind == RefKind.None && InSubset(x.Type)) && c.Stub.Parameters.All(x => x.RefKind == RefKind.None && InSubset(x.Type));
 
+        /// <summary>
+        /// A data type's invariant's body, of the value "this" (its own fields only: an invariant that calls anything, or
+        /// reads anything but its fields, isn't translated, as CsVerify's engine reports one that reads mutable state).
+        /// </summary>
+        public static KExpr InvariantBody(IMethodSymbol inv, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal, Func<IMethodSymbol, Contract> contractOf)
+        {
+            var c = contractOf(inv);
+            if (c.PureBody == null) throw new NotTranslated("an invariant without an expression body: " + inv.Name);
+            if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation || o is IFieldReferenceOperation ||
+                                                       o is IPropertyReferenceOperation pr && !(pr.Instance != null && IsData(pr.Instance.Type) && DataTypes.IsPositional(pr.Property.OriginalDefinition))))
+                throw new NotTranslated("an invariant that reads more than its record's fields: " + inv.Name);
+            var l = new Lowering(inv, c, null, c.Model, null, _ => false, isFunction, literal, contractOf);
+            return l.Spec(c.PureBody, null);
+        }
+
+        /// <summary>
+        /// A data case's field that its base record has: the argument its record header gives the base's primary
+        /// constructor, over the case's own constructor parameters (Ind(Fact Prev) : Fact(Prev.N + 1, ...)).
+        /// </summary>
+        public static KExpr BaseArgument(INamedTypeSymbol c, IPropertySymbol prop, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal, Func<IMethodSymbol, Contract> contractOf)
+        {
+            var def = DataTypes.Def(c);
+            var decl = def.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<RecordDeclarationSyntax>().FirstOrDefault();
+            var baseType = decl?.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() ?? throw new NotTranslated("a base field without its argument: " + prop.Name);
+            var ctor = DataTypes.PrimaryConstructor(def);
+            var model = KernelTypes.Compilation.GetSemanticModel(decl.SyntaxTree);
+            var call = model.GetOperation(baseType)?.DescendantsAndSelf().OfType<IInvocationOperation>().FirstOrDefault(i => i.TargetMethod.MethodKind == MethodKind.Constructor)
+                       ?? throw new NotTranslated("a base constructor call not found: " + c.Name);
+            var arg = call.Arguments.FirstOrDefault(a => a.Parameter?.Name == prop.Name) ?? throw new NotTranslated("a base field not given by name: " + prop.Name);
+            var l = new Lowering(ctor, contractOf(ctor), decl, model, null, _ => false, isFunction, literal, contractOf);
+            return l.Spec(arg.Value, null);
+        }
+
         /// <summary>A callee's contract alone (its requires and its measure, over its parameters): what a call of it is checked against.</summary>
         public static KProcedure Signature(IMethodSymbol m, Contract contract, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal = null, Func<IMethodSymbol, Contract> contractOf = null)
         {
@@ -90,7 +123,7 @@ namespace CsVerify.Verifier.Boogie
                 if (e.Guard != null) post = new KOp("==>", new KOp("old", And(e.Guard.Select(g => l.Spec(g, null)))), post);
                 l._p.Ensures.Add(new KSpec { Expr = post, At = e.Syntax });
             }
-            if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
+            if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Measure(d)).ToList();
             if (contract.Reads != null) l._p.ReadsFrame = l.Spec(contract.Reads, null);
             if (contract.OwnRequires.Count > 0)
             {
@@ -212,6 +245,12 @@ namespace CsVerify.Verifier.Boogie
                 _block = new KBlock { Label = $"b{b.Ordinal}", Ordinal = b.Ordinal };
                 _p.Blocks.Add(_block);
                 _cfgBlock = b;
+                // (its data values are valid: their invariants hold)
+                if (b.Ordinal == 0)
+                {
+                    if (_p.HasThis && HasInvariants(_m.ContainingType)) AssumeValid(new KVar("this"), _m.ContainingType);
+                    foreach (var dp in _m.Parameters.Where(x => x.RefKind != RefKind.Out && HasInvariants(x.Type))) AssumeValid(new KVar(Local(dp)), dp.Type);
+                }
                 // (the delegates it takes to be steady are: its callers prove it)
                 if (b.Ordinal == 0)
                     foreach (var sp in SteadyParams(_m).Where(x => IsFunc(x.Type)))
@@ -509,8 +548,8 @@ namespace CsVerify.Verifier.Boogie
                         var measure = new List<KSpec>();
                         for (int k = 0; k < whole.Arguments.Length; k++)
                         {
-                            measure.Add(new KSpec { Expr = Spec(whole.Arguments[k].Value, null), At = whole.Arguments[k].Value.Syntax });
-                            Declare($"m${h}${k}", whole.Arguments[k].Value.Type);
+                            measure.Add(new KSpec { Expr = Measure(whole.Arguments[k].Value), At = whole.Arguments[k].Value.Syntax });
+                            Declare($"m${h}${k}", IsData(whole.Arguments[k].Value.Type) ? _model.Compilation.GetSpecialType(SpecialType.System_Int32) : whole.Arguments[k].Value.Type);
                         }
                         _p.Measures[h] = measure;
                     }
@@ -719,6 +758,10 @@ namespace CsVerify.Verifier.Boogie
                 // (a path that throws need not meet the postcondition: it ends, or, where exceptions are seen, goes to the
                 // handlers; a rethrow, past this try's)
                 var target = ThrowTarget(b.EnclosingRegion);
+                // (a proof may not escape its obligations by throwing)
+                if (_p.Ghost || _contract.IsPure || _contract.IsLemma)
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1011", At = b.BranchValue?.Syntax ?? b.Operations.LastOrDefault()?.Syntax ?? _decl,
+                                      Message = "a lemma or [Pure] function must not throw" });
                 if (fall.Semantics == ControlFlowBranchSemantics.Throw && b.BranchValue != null)
                     Emit(new KThrow { Value = Expr(b.BranchValue), Seen = target != null, At = b.BranchValue.Syntax });
                 _block.Jump = target == null ? new KStop() : new KGoto(target);
@@ -739,6 +782,216 @@ namespace CsVerify.Verifier.Boogie
         {
             if (to != null && _forEachAt.TryGetValue(to.Ordinal, out var fe) && from.Ordinal >= fe.Head)
                 edge.Stmts.Add(new KAssign { Var = fe.Index, Value = new KOp("+", new KVar(fe.Index), new KLit("1")) });
+        }
+
+        // ------------------------------------------------------------------ data types
+
+        /// <summary>Pattern variables in a specification: what they are bound to.</summary>
+        private readonly Dictionary<ILocalSymbol, KExpr> _bound = new Dictionary<ILocalSymbol, KExpr>(SymbolEqualityComparer.Default);
+
+        /// <summary>(a call's declared result type, where it's a local's: for unboxing)</summary>
+        private ITypeSymbol _resultType;
+
+        private void BindInCode(ILocalSymbol l, KExpr v) => Emit(new KAssign { Var = Declare(Local(l), l.Type), Value = v });
+
+        /// <summary>A measure: a number, or a data value's rank (how deep it is).</summary>
+        private KExpr Measure(IOperation d)
+        {
+            var v = Spec(d, null);
+            return IsData(d.Type) ? new KOp("$rank", v) : v;
+        }
+
+        /// <summary>A value of a type with invariants: valid (where it isn't null).</summary>
+        private void AssumeValid(KExpr v, ITypeSymbol t)
+        {
+            if (!HasInvariants(t)) return;
+            foreach (var inv in DataTypes.Invariants(DataTypes.Def(t))) InvariantBody(inv.OriginalDefinition, _isFunction, _literal, _contractOf);
+            Data(t);
+            _p.Valid.Add(DataTypes.Def(t));
+            Emit(new KAssume { Cond = new KOp("||", new KOp("==", v, new KLit("null")), new KOp(ValidName(t), v)) });
+        }
+
+        private void Data(ITypeSymbol t)
+        {
+            var def = DataTypes.Def(t);
+            _p.DataTypes.Add(def);
+            foreach (var c in KernelTypes.Data.Cases(def)) _p.DataTypes.Add(c);
+        }
+
+        /// <summary>A positional property as the type it's read at has it (its own or a base's).</summary>
+        private static IPropertySymbol Actual(ITypeSymbol t, string name)
+        {
+            for (var s = t as INamedTypeSymbol; s != null; s = s.BaseType)
+                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p) return p;
+            return null;
+        }
+
+        /// <summary>A data value's field, as the type it's read at has it (unboxed where generic).</summary>
+        private KExpr FieldOfData(KExpr v, IPropertySymbol prop, ITypeSymbol at) =>
+            Unbox(new KOp(FieldFunction(prop), v), prop.OriginalDefinition.Type, Actual(at, prop.Name)?.Type ?? prop.Type);
+
+        /// <summary>
+        /// The data types' operations, in code or in a specification (each lowers its operands its own way): a case's
+        /// construction, a field's read, type tests and patterns, casts, a record's ==; null where it is none.
+        /// </summary>
+        private KExpr DataExpr(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec = false)
+        {
+            switch (e)
+            {
+                case IObjectCreationOperation oc when IsData(oc.Type) && oc.Initializer == null && oc.Constructor != null:
+                {
+                    Data(oc.Type);
+                    var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var values = inSpec ? ordered.Select(a => lower(a.Value)).ToArray() : Operands(ordered.Select(a => a.Value).ToArray());
+                    var def = oc.Constructor.OriginalDefinition;
+                    // (a non-nullable field isn't null: each construction says so)
+                    if (!inSpec)
+                        for (int k = 0; k < ordered.Count; k++)
+                            if (IsNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type) && NotNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type))
+                                Emit(new KCheck { Cond = new KOp("!=", values[k], new KLit("null")), Id = "CSV1014", At = ordered[k].Value.Syntax,
+                                                  Message = $"'{ordered[k].Value.Syntax}' might be null, but parameter '{ordered[k].Parameter.Name}' of '{oc.Type.Name}' is not nullable" });
+                    var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray();
+                    var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args);
+                    if (inSpec || !HasInvariants(oc.Type)) return made;
+                    // (an immutable value's invariants: proved where it's built, assumed everywhere else)
+                    var t = Declare("t$" + _temps++, oc.Type);
+                    Emit(new KAssign { Var = t, Value = made });
+                    foreach (var inv in DataTypes.Invariants(DataTypes.Def(oc.Type)))
+                    {
+                        if (!_isFunction(inv.OriginalDefinition)) throw new NotTranslated("an invariant that isn't a function: " + inv.Name);
+                        Emit(new KCheck { Cond = new KFnCall { Callee = inv.OriginalDefinition, Receiver = new KVar(t), Args = new KExpr[0], At = oc.Syntax }, Id = "CSV1015", At = oc.Syntax,
+                                          Message = $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'" });
+                    }
+                    AssumeValid(new KVar(t), oc.Type);
+                    return new KVar(t);
+                }
+                case IPropertyReferenceOperation dp when dp.Instance != null && IsData(dp.Instance.Type) && DataTypes.IsPositional(dp.Property.OriginalDefinition):
+                {
+                    Data(dp.Instance.Type);
+                    var v = lower(dp.Instance);
+                    var prop = dp.Property.OriginalDefinition;
+                    var read = Unbox(new KDataField { Function = FieldFunction(prop), Value = v, At = dp.Syntax, ValueAt = dp.Instance.Syntax }, prop.Type, dp.Type);
+                    if (inSpec || !HasInvariants(dp.Type)) return read;
+                    var t = Declare("t$" + _temps++, dp.Type);
+                    Emit(new KAssign { Var = t, Value = read });
+                    AssumeValid(new KVar(t), dp.Type);
+                    return new KVar(t);
+                }
+                // (a ghost value: the value itself)
+                case IInvocationOperation go when SpecSymbols.IsCsVerifyType(go.TargetMethod.ContainingType, "Ghost") && go.TargetMethod.Name == "Of" && go.Arguments.Length == 1:
+                    return lower(go.Arguments[0].Value);
+                case IPropertyReferenceOperation gv when gv.Property.Name == "Value" && IsGhost(gv.Instance?.Type) &&
+                                                         !(gv.Instance is IPropertyReferenceOperation { Property.Name: "Obj" } obj && IsView(obj.Instance?.Type)):
+                    return lower(gv.Instance);
+                case IIsTypeOperation it when IsData(it.TypeOperand) && !it.IsNegated:
+                    Data(it.TypeOperand);
+                    return IsCase(Operand(it.ValueOperand, lower, inSpec), it.TypeOperand);
+                case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type):
+                {
+                    var v = Operand(Unconverted(ip.Value), lower, inSpec);
+                    return Pattern(ip.Pattern, v, Unconverted(ip.Value).Type, lower, bind);
+                }
+                case ISwitchExpressionOperation sw when inSpec:
+                {
+                    var v = lower(sw.Value);
+                    KExpr acc = null;
+                    var arms = sw.Arms.Select(arm =>
+                    {
+                        var cond = Pattern(arm.Pattern, v, sw.Value.Type, lower, bind);
+                        if (arm.Guard != null) cond = new KOp("&&", cond, lower(arm.Guard));
+                        return (cond, value: lower(arm.Value));
+                    }).ToList();
+                    // (where no arm matches, the definition throws: its check says so; the value is the last arm's)
+                    for (int k = arms.Count - 1; k >= 0; k--) acc = acc == null ? arms[k].value : new KOp("ite", arms[k].cond, arms[k].value, acc);
+                    return acc ?? throw new NotTranslated("a switch with no arms");
+                }
+                case IConversionOperation up when up.IsImplicit && IsData(up.Type) && IsData(up.Operand.Type):
+                    return lower(up.Operand);
+                case IConversionOperation down when !down.IsImplicit && down.Conversion.IsReference && IsData(down.Type) && IsData(down.Operand.Type):
+                {
+                    Data(down.Type);
+                    var v = Operand(down.Operand, lower, inSpec);
+                    if (!inSpec && _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a cast where exceptions are seen");
+                    return new KCast { Value = v, Test = new KOp("||", new KOp("==", v, new KLit("null")), IsCase(v, down.Type)), At = down.Syntax };
+                }
+                // (a record's == and !=: its values' equality, which is its references', a value being its constructor's)
+                case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                                              IsData(eq.OperatorMethod.ContainingType):
+                {
+                    if (!KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType)) throw new NotTranslated("== of a record whose fields don't compare as values");
+                    var l = lower(eq.LeftOperand);
+                    var r = lower(eq.RightOperand);
+                    return new KOp(eq.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", l, r);
+                }
+                default: return null;
+            }
+        }
+
+        /// <summary>An operand that's tested more than once: in code, in a variable of its own.</summary>
+        private KExpr Operand(IOperation op, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            var v = lower(op);
+            if (inSpec || v is KVar || v is KLit) return v;
+            var t = Declare("t$" + _temps++, op.Type);
+            Emit(new KAssign { Var = t, Value = v });
+            return new KVar(t);
+        }
+
+        /// <summary>A pattern, as a condition of the value; the variables it declares bound to their parts.</summary>
+        private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
+        {
+            KExpr TypeTest(ITypeSymbol t)
+            {
+                if (t == null || SymbolEqualityComparer.Default.Equals(DataTypes.Def(t), DataTypes.Def(type)) && !IsData(t)) return new KLit("true");
+                if (IsData(t)) { Data(t); return IsCase(v, t); }
+                if (Scalar(t) && SymbolEqualityComparer.Default.Equals(t, type)) return new KLit("true");
+                throw new NotTranslated("a type test of " + t);
+            }
+            switch (p)
+            {
+                case IDiscardPatternOperation _: return new KLit("true");
+                case IDeclarationPatternOperation d:
+                {
+                    if (d.DeclaredSymbol is ILocalSymbol l) bind(l, v);
+                    return d.MatchesNull ? new KLit("true") : IsData(d.MatchedType) ? TypeTest(d.MatchedType) : IsNullable(type) ? new KOp("!=", v, new KLit("null")) : new KLit("true");
+                }
+                case ITypePatternOperation tp: return TypeTest(tp.MatchedType);
+                case IConstantPatternOperation cp: return new KOp("==", v, lower(cp.Value));
+                case IRelationalPatternOperation rp:
+                {
+                    var op = rp.OperatorKind switch
+                    {
+                        BinaryOperatorKind.LessThan => "<", BinaryOperatorKind.LessThanOrEqual => "<=", BinaryOperatorKind.GreaterThan => ">",
+                        BinaryOperatorKind.GreaterThanOrEqual => ">=", BinaryOperatorKind.Equals => "==", BinaryOperatorKind.NotEquals => "!=",
+                        _ => throw new NotTranslated("the pattern " + rp.Syntax),
+                    };
+                    return new KOp(op, v, lower(rp.Value));
+                }
+                case INegatedPatternOperation np: return new KOp("!", Pattern(np.Pattern, v, type, lower, bind));
+                case IBinaryPatternOperation bp:
+                    return new KOp(bp.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Pattern(bp.LeftPattern, v, type, lower, bind), Pattern(bp.RightPattern, v, type, lower, bind));
+                case IRecursivePatternOperation rp when rp.MatchedType == null || IsData(rp.MatchedType):
+                {
+                    var matched = rp.MatchedType ?? type;
+                    if (!IsData(matched)) throw new NotTranslated("a recursive pattern of " + matched);
+                    KExpr cond = TypeTest(matched);
+                    if (rp.DeclaredSymbol is ILocalSymbol l) bind(l, v);
+                    for (int k = 0; k < rp.DeconstructionSubpatterns.Length; k++)
+                    {
+                        var prop = DataTypes.PositionalProperty((INamedTypeSymbol)matched, k) ?? throw new NotTranslated("a deconstruction of " + matched);
+                        var actual = Actual(matched, prop.Name);
+                        cond = new KOp("&&", cond, Pattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, lower, bind));
+                    }
+                    foreach (var sp in rp.PropertySubpatterns)
+                    {
+                        if (!(sp.Member is IPropertyReferenceOperation { Property: IPropertySymbol member }) || !DataTypes.IsPositional(member.OriginalDefinition))
+                            throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
+                        cond = new KOp("&&", cond, Pattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, lower, bind));
+                    }
+                    return cond;
+                }
+                default: throw new NotTranslated("the pattern " + p.Kind);
+            }
         }
 
         // ------------------------------------------------------------------ finally
@@ -919,6 +1172,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Expr(IOperation e)
         {
+            if (DataExpr(e, Expr, BindInCode) is KExpr data) return data;
             switch (e)
             {
                 case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsNullable(e.Type): return Constant(cv.Value, e.Type);
@@ -1489,6 +1743,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
         {
+            var constructed = callee;
             // (a list's member: the procedure of its stub, as it is for this list's kind)
             bool list = IsCollection(callee.ContainingType);
             bool listCtor = list && callee.MethodKind == MethodKind.Constructor;
@@ -1514,12 +1769,16 @@ namespace CsVerify.Verifier.Boogie
             var receiver = call.Instance == null ? null : onThis ? Expr(call.Instance) : values[0];
             var inValues = call.Instance == null || onThis ? values : values.Skip(1).ToArray();
             var args = new KExpr[ordered.Count + (value == null ? 0 : 1)];
-            for (int k = 0; k < ins.Count; k++) args[ins[k].Parameter.Ordinal] = inValues[k];
+            for (int k = 0; k < ins.Count; k++)
+            {
+                var ordinal = ins[k].Parameter.Ordinal;
+                args[ordinal] = list ? inValues[k] : Box(inValues[k], callee.OriginalDefinition.Parameters[ordinal].Type, ins[k].Parameter.Type);
+            }
             if (value != null) args[ordered.Count] = value;
             foreach (var (ordinal, v) in refOuts) args[ordinal] ??= new KVar(v);
             if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
             if (ordered.Any(a => IsView(a.Parameter.Type)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
-            var result = listCtor ? Declare("t$" + _temps++, callee.ContainingType) : callee.ReturnsVoid ? null : Declare("t$" + _temps++, callee.ReturnType);
+            var result = listCtor ? Declare("t$" + _temps++, callee.ContainingType) : callee.ReturnsVoid ? null : Declare("t$" + _temps++, !list && callee.OriginalDefinition.ReturnType is ITypeParameterSymbol ? callee.OriginalDefinition.ReturnType : constructed.ReturnType);
             // (where exceptions are seen, a call of what may throw (not a proof) throws, or returns)
             var throwsTo = _cfgBlock == null || _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
             SteadyArguments(callee, args, call.Syntax);
@@ -1527,15 +1786,26 @@ namespace CsVerify.Verifier.Boogie
                              Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).Concat(value == null ? new SyntaxNode[0] : new[] { at }).ToArray(),
                              Result = result, At = call.Syntax, RefOuts = refOuts });
             if (!(_contractOf?.Invoke(callee) is Contract pc && (pc.IsPure || pc.IsLemma))) ForgetCaptured();
-            return result == null ? null : new KVar(result);
+            foreach (var (_, rv) in refOuts) { var ro = ordered.First(a => RefVariableName(a) == rv); if (HasInvariants(ro.Parameter.Type)) AssumeValid(new KVar(rv), ro.Parameter.Type); }
+            if (result == null) return null;
+            if (HasInvariants(constructed.ReturnType)) AssumeValid(new KVar(result), constructed.ReturnType);
+            return list ? new KVar(result) : Unbox(new KVar(result), callee.OriginalDefinition.ReturnType, constructed.ReturnType);
         }
 
         /// <summary>The variable a ref or out argument is: a local (declared there, for out var), or a ref or out parameter.</summary>
-        private string RefVariable(IArgumentOperation a)
+        private readonly Dictionary<IArgumentOperation, string> _refVariables = new Dictionary<IArgumentOperation, string>();
+
+        private string RefVariableName(IArgumentOperation a) => _refVariables.TryGetValue(a, out var v) ? v : null;
+
+        private string RefVariable(IArgumentOperation a) => _refVariables[a] = RefVariableOf(a);
+
+        private string RefVariableOf(IArgumentOperation a)
         {
             var v = a.Value is IDeclarationExpressionOperation d ? d.Expression : a.Value;
             switch (v)
             {
+                // (out _: a variable of its own, never read)
+                case IDiscardOperation discard when InSubset(discard.Type): return Declare("t$" + _temps++, discard.Type);
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return Declare(Local(l.Local), l.Local.Type);
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind is RefKind.Ref or RefKind.Out: return Local(p.Parameter);
                 default: throw new NotTranslated("a ref or out argument that isn't a variable");
@@ -1580,6 +1850,8 @@ namespace CsVerify.Verifier.Boogie
             // (ObjSet.Empty: no objects)
             if ((e is IFieldReferenceOperation { Field.Name: "Empty", Instance: null } || e is IPropertyReferenceOperation { Property.Name: "Empty", Instance: null }) && IsObjSet(e.Type))
                 return new KLit("(lambda r$: Ref :: false)");
+            if (e is ILocalReferenceOperation bl && _bound.TryGetValue(bl.Local, out var bv)) return bv;
+            if (DataExpr(e, x => Spec(x, result), (l, v) => _bound[l] = v, inSpec: true) is KExpr data) return data;
             switch (e)
             {
                 case IDelegateCreationOperation d: return Spec(d.Target, result);
@@ -1869,11 +2141,14 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation fn when _isFunction(fn.TargetMethod) && (fn.TargetMethod.IsStatic || fn.Instance != null && !fn.TargetMethod.IsVirtual && !fn.TargetMethod.IsAbstract && !fn.TargetMethod.IsOverride):
                 {
                     bool onThis = fn.Instance is IInstanceReferenceOperation;
-                    return new KFnCall
+                    var call = new KFnCall
                     {
                         Callee = fn.TargetMethod.OriginalDefinition, Receiver = fn.Instance == null ? null : Spec(fn.Instance, result), ReceiverIsThis = onThis, ReceiverAt = fn.Instance?.Syntax,
-                        Args = fn.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = fn.Syntax,
+                        Args = fn.Arguments.OrderBy(a => a.Parameter.Ordinal)
+                                 .Select(a => Box(Spec(a.Value, result), fn.TargetMethod.OriginalDefinition.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray(),
+                        At = fn.Syntax,
                     };
+                    return Unbox(call, fn.TargetMethod.OriginalDefinition.ReturnType, fn.TargetMethod.ReturnType);
                 }
                 default:
                     throw new NotTranslated("in a specification: " + e.Kind + " '" + e.Syntax + "'");

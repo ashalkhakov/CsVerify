@@ -701,6 +701,24 @@ public static class Dc
         }
 
         [Fact]
+        public void DataTypesAndGenerics_AreBoogies()
+        {
+            // records as data types (patterns, switches, casts, ranks, invariants), generic data and generic methods
+            var root = Harness.RepoRoot();
+            var files = new[] { Path.Combine(root, "samples", "Good", "DataTypes.cs"), Path.Combine(root, "samples", "Buggy", "DataBugs.cs") };
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var only = new VerifierOptions();
+            only.Only.AddRange(b.Methods.Select(m => m.Name));
+            var c = Engine.VerifyFiles(files, only);
+            Assert.True(Agree(c, b) >= 28, "agreeing: " + Agree(c, b));
+            foreach (var good in new[] { "DataTypes.Length", "DataTypes.AppendLength", "DataTypes.ReverseLength", "DataTypes.ReversedCount", "DataTypes.Evaluate",
+                                         "DataTypes.FoldPreservesEval", "DataTypes.FactIsFunctional", "DataTypes.Factorial", "DataTypes.Widen", "DataTypes.Demo", "Interval.Width" })
+                Assert.True(b[good].Verified, good);
+            foreach (var bug in new[] { "DataBugs.Key", "DataBugs.Size", "DataBugs.FoldPreservesEval", "DataBugs.Factorial", "DataBugs.Backwards" })
+                Assert.False(b[bug].Verified, bug);
+        }
+
+        [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, new VerifierOptions { Engine = "boogie" });

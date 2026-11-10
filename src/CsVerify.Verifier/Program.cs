@@ -118,7 +118,7 @@ options:
             }
             catch (Exception e) when (e is ArgumentException || e is FileNotFoundException || e is DirectoryNotFoundException || e is FormatException)
             {
-                Console.Error.WriteLine("csverify: " + e.Message);
+                Console.Error.WriteLine("csverify: " + (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null ? e.ToString() : e.Message));
                 return 2;
             }
         }

@@ -641,6 +641,8 @@ namespace CsVerify.Verifier
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
             using var engine = new Engine(compilation, options, userTrees);
+            Boogie.KernelTypes.Data = engine.Data;
+            Boogie.KernelTypes.Compilation = compilation;
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             foreach (var tree in userTrees)

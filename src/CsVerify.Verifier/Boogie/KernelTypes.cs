@@ -31,7 +31,49 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
+                                                    IsData(t) || IsTypeParameter(t) || IsGhost(t) && InSubset(GhostOf(t));
+
+        /// <summary>The program's data types (closed hierarchies of positional records), for the run this thread is in.</summary>
+        [System.ThreadStatic] public static DataTypes Data;
+        [System.ThreadStatic] public static Compilation Compilation;
+
+        /// <summary>A data record (Dafny's datatype): a value is its constructor applied to its fields; null too, as a reference.</summary>
+        public static bool IsData(ITypeSymbol t) =>
+            Data != null && t is INamedTypeSymbol n && Data.IsData(n) && Data.Cases(DataTypes.Def(n)) != null &&
+            (!n.IsGenericType || n.TypeArguments.All(a => IsTypeParameter(a) || FuncValue(a) || IsData(a)));
+
+        /// <summary>A type parameter without constraints: its values are boxes (Box), as Dafny's are.</summary>
+        public static bool IsTypeParameter(ITypeSymbol t) =>
+            t is ITypeParameterSymbol tp && !tp.HasReferenceTypeConstraint && !tp.HasValueTypeConstraint && !tp.HasUnmanagedTypeConstraint &&
+            !tp.HasNotNullConstraint && !tp.HasConstructorConstraint && tp.ConstraintTypes.Length == 0;
+
+        /// <summary>A ghost value (Ghost&lt;T&gt;): erased, the value itself.</summary>
+        public static bool IsGhost(ITypeSymbol t) => SpecSymbols.IsCsVerifyType(t, "Ghost`1");
+        public static ITypeSymbol GhostOf(ITypeSymbol t) => ((INamedTypeSymbol)t).TypeArguments[0];
+
+        /// <summary>A data type's names: its case's constructor function, a field's function.</summary>
+        public static string CaseName(INamedTypeSymbol c) => "mk." + Ident(DataTypes.Def(c).ToDisplayString());
+        public static string FieldFunction(IPropertySymbol p) => "$d." + Ident(p.OriginalDefinition.ContainingType.OriginalDefinition.ToDisplayString() + "." + p.Name);
+
+        /// <summary>A data type with [Invariant]s (its own or its bases'): its values are valid ($valid.T).</summary>
+        public static bool HasInvariants(ITypeSymbol t) => IsData(t) && DataTypes.Invariants(DataTypes.Def(t)).Any();
+        public static string ValidName(ITypeSymbol t) => "$valid." + Ident(DataTypes.Def(t).ToDisplayString());
+
+        /// <summary>A data value is of this type: not null, and its tag one of the type's cases'.</summary>
+        public static KExpr IsCase(KExpr v, ITypeSymbol type)
+        {
+            var tags = Data.Cases(DataTypes.Def(type)).Select(c => (KExpr)new KOp("$is." + CaseName(c).Substring(3), v)).ToList();
+            var any = tags.Count == 0 ? new KLit("false") : tags.Aggregate((a, b) => new KOp("||", a, b));
+            return new KOp("&&", new KOp("!=", v, new KLit("null")), any);
+        }
+
+        /// <summary>A value as a box (where generic code takes it), and back.</summary>
+        public static KExpr Box(KExpr v, ITypeSymbol def, ITypeSymbol actual) =>
+            def is ITypeParameterSymbol && !(actual is ITypeParameterSymbol) && actual != null ? new KOp("$box." + BoxKind(actual), v) : v;
+        public static KExpr Unbox(KExpr v, ITypeSymbol def, ITypeSymbol actual) =>
+            def is ITypeParameterSymbol && !(actual is ITypeParameterSymbol) && actual != null ? new KOp("$unbox." + BoxKind(actual), v) : v;
+        public static string BoxKind(ITypeSymbol t) => t.SpecialType == SpecialType.System_Boolean ? "bool" : Scalar(t) ? "int" : "Ref";
 
         /// <summary>A delegate of the subset's values: a Func or an Action, or a non-generic delegate type of the program's.</summary>
         public static bool IsDelegate(ITypeSymbol t) =>
@@ -71,7 +113,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeConst(ITypeSymbol t) => "T#" + Ident(t.OriginalDefinition.ToDisplayString());
 
         /// <summary>What may be null: a reference or a string.</summary>
-        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t);
+        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t);
 
         /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
         public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
@@ -217,7 +259,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
-        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+        public static string TypeOf(ITypeSymbol t) =>
+            IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" :
+            IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

@@ -64,9 +64,10 @@ namespace CsVerify.Verifier.Boogie
         public static bool Candidate(IMethodSymbol m, Contract c) =>
             (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
              m.IsStatic ? m.MethodKind == MethodKind.Ordinary
-                        : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract) &&
+                        : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
+                           IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
-            !m.IsAsync && !m.IsGenericMethod && KnownAttributes(m) &&
+            !m.IsAsync && (!m.IsGenericMethod || m.IsStatic && m.TypeParameters.All(IsTypeParameter)) && KnownAttributes(m) &&
             (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
             (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
@@ -87,7 +88,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
-            m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
+            m.IsAsync ? "async" : m.IsGenericMethod && !(m.IsStatic && m.TypeParameters.All(IsTypeParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
@@ -308,6 +309,7 @@ namespace CsVerify.Verifier.Boogie
             // (the literals last: the stubs' contracts may have some)
             _printer.Literals(_literals);
             _printer.Fields(fields);
+            DataTypes();
             // (the lists' models: maps as fields are)
             var models = _pending.SelectMany(p => p.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
                 .GroupBy(m => m.Name).Select(g => g.First()).OrderBy(m => m.Name, StringComparer.Ordinal).ToList();
@@ -397,6 +399,69 @@ namespace CsVerify.Verifier.Boogie
             }
             _printer.Throwing.Clear();
             _pending.Clear();
+        }
+
+        /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
+        private void DataTypes()
+        {
+            var defs = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.DataTypes).Concat(_signatures.Values.SelectMany(s => s.DataTypes)), SymbolEqualityComparer.Default);
+            if (defs.Count == 0) return;
+            var cases = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+            for (var work = new Stack<INamedTypeSymbol>(defs); work.Count > 0;)
+            {
+                var d = work.Pop();
+                foreach (var c in Data.Cases(Verifier.DataTypes.Def(d)) ?? new INamedTypeSymbol[0])
+                    if (cases.Add(c))
+                        foreach (var f in Data.Fields(c).Where(f => IsData(f.Type)))
+                            work.Push(Verifier.DataTypes.Def(f.Type));
+            }
+            var list = new List<BoogiePrinter.DataCase>();
+            var fields = new Dictionary<string, (string type, KExpr fact)>();
+            foreach (var c in cases.OrderBy(x => Data.TagOf(x)))
+            {
+                var ctor = Verifier.DataTypes.PrimaryConstructor(c) ?? throw new NotTranslated("a data case without its primary constructor: " + c.Name);
+                var dc = new BoogiePrinter.DataCase { Type = c, Name = CaseName(c), Tag = Data.TagOf(c) };
+                foreach (var p in ctor.Parameters)
+                {
+                    var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
+                    dc.Params.Add((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
+                }
+                foreach (var prop in Data.Fields(c))
+                {
+                    var fn = FieldFunction(prop);
+                    KExpr value = SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
+                        ? new KVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
+                        : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
+                    dc.Fields.Add((fn, value));
+                    // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
+                    // an integer one in its type's range)
+                    if (!fields.ContainsKey(fn))
+                        fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
+                            ? NotNullable(prop.OriginalDefinition.Type) ? IsCase(new KOp(fn, new KVar("d")), prop.Type)
+                              : new KOp("||", new KOp("==", new KOp(fn, new KVar("d")), new KLit("null")), IsCase(new KOp(fn, new KVar("d")), prop.Type))
+                            : IsIntegral(prop.OriginalDefinition.Type) ? InRange(new KOp(fn, new KVar("d")), prop.OriginalDefinition.Type) : null);
+                }
+                list.Add(dc);
+            }
+            _printer.Data(list, fields.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => (kv.Key, kv.Value.type, kv.Value.fact)).ToList());
+            // (valid values: their invariants hold, and their parts with invariants are valid, case by case)
+            var valid = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Valid).Concat(_signatures.Values.SelectMany(s => s.Valid)), SymbolEqualityComparer.Default);
+            for (var work = new Stack<INamedTypeSymbol>(valid); work.Count > 0;)
+                foreach (var c in Data.Cases(work.Pop()) ?? new INamedTypeSymbol[0])
+                    foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
+                        if (valid.Add(Verifier.DataTypes.Def(f.Type))) work.Push(Verifier.DataTypes.Def(f.Type));
+            var dv = new KVar("d");
+            var validity = new List<(string name, KExpr invariant, List<(string isCase, KExpr part)> parts)>();
+            foreach (var t in valid.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
+            {
+                var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.Rename(Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition), "this", dv)).ToList();
+                var parts = new List<(string, KExpr)>();
+                foreach (var c in Data.Cases(t))
+                    foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
+                        parts.Add(("$is." + CaseName(c).Substring(3), new KOp("||", new KOp("==", new KOp(FieldFunction(f), dv), new KLit("null")), new KOp(ValidName(f.Type), new KOp(FieldFunction(f), dv)))));
+                validity.Add((ValidName(t), invs.Count == 0 ? new KLit("true") : invs.Aggregate((a, b) => new KOp("&&", a, b)), parts));
+            }
+            _printer.Valid(validity);
         }
 
         /// <summary>System.Exception, of the program's compilation (what every exception is).</summary>
