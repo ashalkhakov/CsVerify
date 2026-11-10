@@ -31,8 +31,8 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsTypeParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t);
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
         public static bool IsToken(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.CancellationToken";
@@ -50,6 +50,21 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsTypeParameter(ITypeSymbol t) =>
             t is ITypeParameterSymbol tp && !tp.HasReferenceTypeConstraint && !tp.HasValueTypeConstraint && !tp.HasUnmanagedTypeConstraint &&
             !tp.HasNotNullConstraint && !tp.HasConstructorConstraint && tp.ConstraintTypes.Length == 0;
+
+        /// <summary>
+        /// A type parameter constrained to references (where T : class, or to interfaces and classes of the subset's): its
+        /// values are references, as its instantiations must be.
+        /// </summary>
+        public static bool IsRefParameter(ITypeSymbol t) =>
+            t is ITypeParameterSymbol tp && !tp.HasValueTypeConstraint && !tp.HasUnmanagedTypeConstraint && !tp.HasConstructorConstraint &&
+            (tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0) && tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c));
+
+        /// <summary>A type parameter the subset has: unconstrained (boxes), or constrained to references.</summary>
+        public static bool IsGenericParameter(ITypeSymbol t) => IsTypeParameter(t) || IsRefParameter(t);
+
+        /// <summary>A type argument for a type parameter: any that boxes for an unconstrained one, a reference for a constrained one.</summary>
+        public static bool Instantiates(ITypeParameterSymbol p, ITypeSymbol a) =>
+            IsTypeParameter(p) ? IsGenericParameter(a) || Scalar(a) || IsString(a) || IsData(a) || IsRef(a) : IsRefParameter(p) && (IsRefParameter(a) || IsRef(a) && !(a is ITypeParameterSymbol));
 
         /// <summary>A ghost value (Ghost&lt;T&gt;): erased, the value itself.</summary>
         public static bool IsGhost(ITypeSymbol t) => SpecSymbols.IsCsVerifyType(t, "Ghost`1");
@@ -75,15 +90,23 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A value as a box (where generic code takes it), and back.</summary>
         public static KExpr Box(KExpr v, ITypeSymbol def, ITypeSymbol actual) =>
-            def is ITypeParameterSymbol && !(actual is ITypeParameterSymbol) && actual != null ? new KOp("$box." + BoxKind(actual), v) : v;
+            IsTypeParameter(def) && !IsTypeParameter(actual) && actual != null ? new KOp("$box." + BoxKind(actual), v) : v;
         public static KExpr Unbox(KExpr v, ITypeSymbol def, ITypeSymbol actual) =>
-            def is ITypeParameterSymbol && !(actual is ITypeParameterSymbol) && actual != null ? new KOp("$unbox." + BoxKind(actual), v) : v;
+            IsTypeParameter(def) && !IsTypeParameter(actual) && actual != null ? new KOp("$unbox." + BoxKind(actual), v) : v;
         public static string BoxKind(ITypeSymbol t) => t.SpecialType == SpecialType.System_Boolean ? "bool" : Scalar(t) ? "int" : "Ref";
 
         /// <summary>A delegate of the subset's values: a Func or an Action, or a non-generic delegate type of the program's.</summary>
         public static bool IsDelegate(ITypeSymbol t) =>
             IsFunc(t) || t is INamedTypeSymbol { TypeKind: TypeKind.Delegate, Arity: 0 } d && d.DeclaringSyntaxReferences.Length > 0 &&
             d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && FuncValue(p.Type)) && (inv.ReturnsVoid || FuncValue(inv.ReturnType));
+
+        /// <summary>
+        /// A class's type arguments: none, or a generic class's (Box&lt;T&gt;) whose type parameters are unconstrained (its
+        /// values of T are boxes, as generic data's are), given values that box: scalars, references, its own parameters.
+        /// </summary>
+        private static bool GenericClassArguments(INamedTypeSymbol n) =>
+            n.Arity == 0 || n.OriginalDefinition.TypeParameters.All(IsGenericParameter) &&
+            n.OriginalDefinition.TypeParameters.Zip(n.TypeArguments).All(x => !(x.Second is INamedTypeSymbol an && SymbolEqualityComparer.Default.Equals(an.OriginalDefinition, n.OriginalDefinition)) && Instantiates(x.First, x.Second));
 
         /// <summary>A Func or an Action of the subset's values: a reference, which Spec.Pre and Spec.Post speak of.</summary>
         public static bool IsFunc(ITypeSymbol t) =>
@@ -155,9 +178,12 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsTaskLike(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks" && n.Name is "Task" or "ValueTask";
 
+        /// <summary>A method whose call is a task: an async one, or an abstract one (an interface's) that returns a task.</summary>
+        public static bool IsTaskMethod(IMethodSymbol m) => (m.IsAsync || m.IsAbstract && m.DeclaringSyntaxReferences.Length > 0) && IsTaskLike(m.ReturnType);
+
         /// <summary>What a method gives back: an async one's task's result (null for none); else its return type (null for void).</summary>
         public static ITypeSymbol Returns(IMethodSymbol m) =>
-            m.IsAsync && IsTaskLike(m.ReturnType) ? ((INamedTypeSymbol)m.ReturnType).TypeArguments.FirstOrDefault() : m.ReturnsVoid ? null : m.ReturnType;
+            IsTaskMethod(m) ? ((INamedTypeSymbol)m.ReturnType).TypeArguments.FirstOrDefault() : m.ReturnsVoid ? null : m.ReturnType;
 
         /// <summary>A lock's object (readonly, of type object): no state of the kernel's.</summary>
         public static bool IsLockObject(ISymbol s) => s is IFieldSymbol { IsReadOnly: true } f && (f.Type.SpecialType == SpecialType.System_Object || IsSemaphore(f.Type));
@@ -176,7 +202,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsCollection(t) || t?.SpecialType == SpecialType.System_Object;
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || t?.SpecialType == SpecialType.System_Object;
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
         private static readonly string[] Collections =
@@ -246,7 +272,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An interface of the program's, not generic, of abstract members only (their contracts from a contract class).</summary>
         public static bool IsInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Interface && n.Arity == 0 && n.DeclaringSyntaxReferences.Length > 0 &&
-            n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace && !CsVerifyAttributes(n) &&
+            n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            // (its implementations may run concurrently: [RunsConcurrently], as a class may be)
+            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "RunsConcurrentlyAttribute") &&
             n.GetMembers().All(m => m.IsAbstract && !m.IsStatic && !CsVerifyAttributes(m)) && n.AllInterfaces.All(IsInterface);
 
         /// <summary>
@@ -262,7 +290,7 @@ namespace CsVerify.Verifier.Boogie
         /// see), and none of CsVerify's attributes on it or its fields ([Owned], [Invariant], locks, atomics, models).
         /// </summary>
         public static bool IsClass(ITypeSymbol t) =>
-            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && n.Arity == 0 &&
+            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
             (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
@@ -321,7 +349,8 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
-        public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
+        /// (Not a type parameter's: where T : class may be instantiated with K?, as CsVerify's engine has it.)
+        public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
 
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" :

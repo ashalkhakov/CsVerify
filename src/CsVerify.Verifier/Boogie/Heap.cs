@@ -56,7 +56,8 @@ namespace CsVerify.Verifier.Boogie
                             {
                                 var map = FieldMap(field);
                                 p.Modifies.Add(map);
-                                stmts.Add(new KMapUpdate { Map = map, Ref = t, Value = Default(FieldType(field)) });
+                                // (a generic class's field of T: the default of a T the class doesn't know, a box nothing is known of)
+                                if (!IsTypeParameter(FieldType(field))) stmts.Add(new KMapUpdate { Map = map, Ref = t, Value = Default(FieldType(field)) });
                             }
                             if (n.Ctor != null)
                                 stmts.Add(new KCall { Callee = n.Ctor, Receiver = t, ReceiverIsThis = false, Args = n.Args, At = n.At, Check = n.Check });

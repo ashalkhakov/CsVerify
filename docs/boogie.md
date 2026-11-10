@@ -426,8 +426,11 @@ override only of the program's members, an abstract member's contract from its c
 - `base(...)` in a constructor calls the base class's constructor on `this`; a new object's fields, inherited ones
   too, are their defaults; a constructor ensures the non-nullable fields it sets aren't null.
 
-- interfaces of the program's (abstract members only, their contracts from a contract class) are references; their
-  members are procedures with no body, and an implementation inherits their contracts as an override does;
+- interfaces of the program's (abstract members only, their contracts from a contract class; `[RunsConcurrently]` too)
+  are references, as parameters, locals, fields and results; their members are procedures with no body, and an
+  implementation inherits their contracts as an override does. A member that returns a task is awaited as an async
+  method of the program is: a call of it, its contract of the task's result, other code running meanwhile (what the
+  method doesn't hold is forgotten, its confined objects kept);
 - a property with code (or an abstract or an interface one) is its accessors: a read calls its getter, a write its
   setter; a `[Pure]` one is a function; an abstract or virtual `[Pure]` member is a function of its contract alone (an
   override may answer the call), of every field the program names, with no definition;
@@ -441,8 +444,29 @@ proves them at every return (CSV1015, "when the constructor of C returns"). They
 class that comes in: a parameter, `this` (except in an invariant, or what one calls), a field read, a call's result,
 a new object. `object` is a reference type of the subset.
 
-Not yet: type tests and casts, generic types, and a virtual call on an object the method made, which CsVerify's
-engine resolves by the object's class. That needs dynamic types for objects, as exceptions have.
+**Resolved by class.** A virtual `[Pure]` function called on a local that every write gives an object of one class
+(`Shape s = new Square(3); s.Area()`: its declaration, assignments, `ref` and `out` too, each a `new Square(...)`) is
+that class's implementation, whose body answers, as CsVerify's engine has it. A procedure called so is called by the
+contract of the member as bound (CsVerify's engine's way too, though the override's contract would prove more); a local
+given objects of different classes, or one made elsewhere too, falls back.
+
+**Generic classes.** A class with type parameters (`Cell<T>`) is one class: its procedures and field maps are the
+definition's, and a field of `T` holds a `Box`, as generic data's do. Where it's used at a type (`Cell<int>`), a read
+of that field unboxes (`$unbox.int`), a write, an argument and a constructor's argument box, a result unboxes; the
+arguments must be values that box (scalars, references, data, type parameters). A new object's field of `T` is the
+default of a `T` the class doesn't know: a box nothing is known of, so a caller learns its value only from contracts.
+
+**Constrained type parameters.** A type parameter constrained to references (`where T : class`, or to interfaces and
+classes of the program's: `where T : IKeyed`) has references for values: `Ref`, not boxes; its members are its
+constraints' (`a.Key()` calls `IKeyed.Key`). Its instantiations must be references (a call of a generic method with
+others falls back). As in CsVerify's engine, a value of a type parameter may be null even under `where T : class`
+(`K?` instantiates it), so dereferencing one is checked (CSV1013). Generic instance methods, not virtual, are
+procedures as generic static ones are.
+
+(CsVerify's engine is weaker here in one place: it doesn't keep that a constrained generic method's result is what its
+postcondition says of the arguments, `r == a || r == b`, where Boogie proves it, and its callers' uses of it.)
+
+Not yet: type tests and casts, dispatch by an object's dynamic type beyond a local made here, arrays of objects.
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
@@ -734,11 +758,10 @@ and `Map`, `foreach` over arrays, strings and collections, `Spec.Index`, and del
 `Spec.Post`, `Spec.Total`, `Spec.ChangesNothing`, `Spec.Reads`, `Spec.ReadsOf`, `Spec.Changes`, calls of them,
 lambdas and method groups; delegate types with contracts.
 
-Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types and static
-generic methods.
+Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types, generic
+methods, generic classes and type parameters constrained to references; interfaces as parameters and fields.
 
-Not yet (such a method is verified by CsVerify's engine): generic classes and constrained type parameters,
-string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
+Not yet (such a method is verified by CsVerify's engine): arrays of objects (`Shape[]`, `string[]`), string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
 exception filters, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
 and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
 
@@ -763,7 +786,8 @@ They are not CsVerify's engine's symbolic execution, and stay when it goes, as a
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
    them (done for plain classes, base classes, virtual methods, interfaces, properties, data records and their
-   invariants, generic data and methods; object initializers, `this(...)`, parameters the body assigns; next: generic classes);
+   invariants, generic data and methods; object initializers, `this(...)`, parameters the body assigns, generic
+   classes, constrained type parameters, interfaces as parameters; next: arrays of objects);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (done: `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `Seq`, `Map`; next: `Bag`, string keys), and the ghost types;
 3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,
@@ -787,7 +811,9 @@ methods that fall back for it):
 3. invariants that call functions, records compared as `object`, records' invariants that read mutable state,
    immutable classes' invariants (done);
 4. interfaces as parameters, generic classes and constrained type parameters, virtual calls resolved by an object's
-   dynamic type;
+   class (done);
+4a. arrays of objects (`Shape[]`, `string[]`, `string?[]`): an element map of references, allocated, null as their
+   types allow;
 5. exception filters, `Spec.Multiset`, `Bag`, collections keyed by strings, `Keys` and `Values`, interfaces'
    collections;
 6. `Spec.Modifies` lending trees, ghost `ObjSet` fields, functions over more than one predicate instance;

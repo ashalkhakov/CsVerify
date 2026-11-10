@@ -870,7 +870,8 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1016", At = target.Syntax, NotAssumedAfter = true,
                                           Message = $"'{target.Syntax}': an [Owns] field changes hands only through Own.Take and Own.Give" });
                     if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis) && !(target.Syntax.Parent is InitializerExpressionSyntax)) value = AtomicWrite(field, instance, onThis, value, target.Syntax);
-                    Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = value, At = target.Syntax, InstanceAt = instanceAt });
+                    // (a generic class's field of T holds a box: Box<int>'s Item, written an int)
+                    Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = Box(value, FieldType(field), target.Type), At = target.Syntax, InstanceAt = instanceAt });
                     return;
                 }
                 case IArrayElementReferenceOperation e when IsArray(e.ArrayReference.Type) && e.Indices.Length == 1:
@@ -1349,7 +1350,7 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var t in inlineStarts) JoinOf(t);
                     break;
                 }
-                case IInvocationOperation call when call.TargetMethod.IsAsync && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
+                case IInvocationOperation call when IsTaskMethod(call.TargetMethod) && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
                     _awaiting = true;
                     try { value = Call(call); }
                     finally { _awaiting = false; }
@@ -1385,7 +1386,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KAssume { Cond = new KOp("==", new KField { Field = f, Instance = new KVar("this"), OnThis = true, At = aw.Syntax, InstanceAt = aw.Syntax }, new KVar(t)) });
             ForgetCaptured();
             // (where exceptions are seen: a library's await may throw, a cancellation say)
-            if (!(op is IInvocationOperation awaited && awaited.TargetMethod.IsAsync && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) &&
+            if (!(op is IInvocationOperation awaited && IsTaskMethod(awaited.TargetMethod) && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) &&
                 _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
                 Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
             if (gate != null) Take(gate, aw.Syntax);
@@ -2094,7 +2095,7 @@ namespace CsVerify.Verifier.Boogie
                             new KOp("&&", new KOp("==", new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), new KOp("!=", new KOp("sel", r, new KVar(t)), new KVar(t)))) });
                         return new KVar(t);
                     }
-                    return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
+                    return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
                 }
                 case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
                 {
@@ -2104,6 +2105,8 @@ namespace CsVerify.Verifier.Boogie
                     if (!isImplicit) _p.Calls.Add(ctor);
                     var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
                     var args = Operands(ordered.Select(a => a.Value).ToArray());
+                    // (a generic class's constructor takes boxes for its T: new Box<int>(3))
+                    for (int k = 0; k < args.Length; k++) args[k] = Box(args[k], ctor.Parameters[ordered[k].Parameter.Ordinal].Type, ordered[k].Parameter.Type);
                     var t = Declare("t$" + _temps++, oc.Type);
                     foreach (var f in InstanceFields(oc.Type)) _p.Fields.Add(f);
                     Emit(new KNewObj { Var = t, Type = oc.Type, Ctor = isImplicit ? null : ctor, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = oc.Syntax });
@@ -2326,7 +2329,7 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             // (an async method's task is awaited at once, or it runs alongside: not yet)
-            if (call.TargetMethod.IsAsync && !_awaiting) throw new NotTranslated("a task that isn't awaited at once: " + call.TargetMethod.Name);
+            if (IsTaskMethod(call.TargetMethod) && !_awaiting) throw new NotTranslated("a task that isn't awaited at once: " + call.TargetMethod.Name);
             if (IsCollection(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
             // (IDisposable.Dispose of a class's object, as using calls it: that class's Dispose runs, its contract a
             // library interface's, so what it does isn't known: anything, as for a delegate)
@@ -2352,7 +2355,8 @@ namespace CsVerify.Verifier.Boogie
                 return new KOp("&&", new KOp(">=", deref, new KLit("0")), new KOp("streq", v[0], v[1]));
             }
             if (!_isProcedure(callee) && IsStub(callee)) return StubCall(call, null);
-            return Invoke(callee, call.Instance, call.Arguments, call.Syntax, null);
+            // (as called: a generic one's instantiation boxes its arguments and unboxes its result)
+            return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
         }
 
         /// <summary>
@@ -2645,14 +2649,21 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
         {
+            // (a generic method's type arguments: references where its parameters are constrained to them)
+            if (callee.IsGenericMethod && !callee.OriginalDefinition.TypeParameters.Zip(callee.TypeArguments).All(x => Instantiates(x.First, x.Second)))
+                throw new NotTranslated("a call of " + callee.Name + " with its type arguments");
+            // (a virtual [Pure] function called on an object made here: its class is known, as CsVerify's engine has it,
+            // and that class's body answers: every write of the local an object of that class. A procedure is called
+            // by the contract of the member as bound, as CsVerify's engine does.)
+            if ((callee.IsVirtual || callee.IsAbstract || callee.IsOverride) && !callee.ContainingType.IsSealed && _isFunction(callee.OriginalDefinition) &&
+                Unconverted(instance) is ILocalReferenceOperation { Local: var recv } && MadeHere(recv) is var made && made.Count > 0)
+            {
+                var classes = made.Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToList();
+                if (classes.Count != 1 || classes[0] == null || !(Implementation(callee, (INamedTypeSymbol)classes[0]) is IMethodSymbol impl))
+                    throw new NotTranslated("a virtual call on an object made here");
+                callee = impl;
+            }
             var constructed = callee;
-            // (a virtual call on an object made here: CsVerify's engine knows its class and runs its override; dispatch
-            // by an object's dynamic type isn't translated yet)
-            if ((callee.IsVirtual || callee.IsAbstract || callee.IsOverride) && !callee.ContainingType.IsSealed &&
-                Unconverted(instance) is ILocalReferenceOperation { Local: var recv } && _cfg != null &&
-                _cfg.Blocks.SelectMany(bl => bl.Operations).SelectMany(o => o.DescendantsAndSelf()).OfType<ISimpleAssignmentOperation>()
-                    .Any(asg => asg.Target is ILocalReferenceOperation { Local: var tl } && SymbolEqualityComparer.Default.Equals(tl, recv) && Unconverted(asg.Value) is IObjectCreationOperation))
-                throw new NotTranslated("a virtual call on an object made here");
             // (a list's member: the procedure of its stub, as it is for this list's kind)
             bool list = IsCollection(callee.ContainingType);
             bool listCtor = list && callee.MethodKind == MethodKind.Constructor;
@@ -2684,7 +2695,7 @@ namespace CsVerify.Verifier.Boogie
                 var ordinal = ins[k].Parameter.Ordinal;
                 args[ordinal] = list ? inValues[k] : Box(inValues[k], callee.OriginalDefinition.Parameters[ordinal].Type, ins[k].Parameter.Type);
             }
-            if (value != null) args[ordered.Count] = value;
+            if (value != null) args[ordered.Count] = list ? value : Box(value, callee.OriginalDefinition.Parameters.Last().Type, constructed.Parameters.Last().Type);
             foreach (var (ordinal, v) in refOuts) args[ordinal] ??= new KVar(v);
             if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
             if (ordered.Any(a => IsView(a.Parameter.Type) || IsShare(a.Parameter.Type) || IsPackage(a.Parameter.Type)) || IsPackage(Returns(callee)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
@@ -2694,7 +2705,7 @@ namespace CsVerify.Verifier.Boogie
             var throwsTo = _cfgBlock == null || _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
             SteadyArguments(callee, args, call.Syntax);
             // (an async callee's awaits let other code run, which can't reach this method's confined objects)
-            var keepers = constructed.IsAsync && !list ? Confined().Select(l => Declare(Local(l), l.Type)).ToList() : new List<string>();
+            var keepers = IsTaskMethod(constructed) && !list ? Confined().Select(l => Declare(Local(l), l.Type)).ToList() : new List<string>();
             int keepId = _keeps++;
             if (keepers.Count > 0) Emit(new KKeep { Id = keepId, Keep = keepers });
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = _phase == 1 ? null : throwsTo, Phase = _phase,
@@ -2706,6 +2717,39 @@ namespace CsVerify.Verifier.Boogie
             if (result == null) return null;
             if (gives != null && HasInvariants(gives)) AssumeValid(new KVar(result), gives);
             return list || gives == null ? new KVar(result) : Unbox(new KVar(result), Returns(callee.OriginalDefinition), gives);
+        }
+
+        /// <summary>
+        /// The classes of the objects a local is given, where some write of it makes one (new C(...)): each write's (null
+        /// for one that isn't a new object), in the method and its lambdas, by ref and out too. Empty where none is new.
+        /// </summary>
+        private List<ITypeSymbol> MadeHere(ILocalSymbol local)
+        {
+            var writes = new List<ExpressionSyntax>();
+            foreach (var n in _decl.DescendantNodes())
+                switch (n)
+                {
+                    case VariableDeclaratorSyntax v when v.Initializer != null && SymbolEqualityComparer.Default.Equals(_model.GetDeclaredSymbol(v), local): writes.Add(v.Initializer.Value); break;
+                    case AssignmentExpressionSyntax asg when SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(asg.Left).Symbol, local): writes.Add(asg.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SimpleAssignmentExpression) ? asg.Right : null); break;
+                    case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) && arg.Expression is IdentifierNameSyntax or DeclarationExpressionSyntax &&
+                                                 SymbolEqualityComparer.Default.Equals(arg.Expression is DeclarationExpressionSyntax { Designation: SingleVariableDesignationSyntax d } ? _model.GetDeclaredSymbol(d) : _model.GetSymbolInfo(arg.Expression).Symbol, local):
+                        writes.Add(null); break;
+                }
+            static ExpressionSyntax Bare(ExpressionSyntax e) => e is ParenthesizedExpressionSyntax p ? Bare(p.Expression) : e is CastExpressionSyntax c ? Bare(c.Expression) : e;
+            if (!writes.Any(w => w != null && Bare(w) is BaseObjectCreationExpressionSyntax)) return new List<ITypeSymbol>();
+            return writes.Select(w => w != null && Bare(w) is BaseObjectCreationExpressionSyntax oc ? _model.GetTypeInfo(oc).Type : null).ToList();
+        }
+
+        /// <summary>The method that runs for a call of m on an object whose class is c: m's override in c or its nearest base, or c's implementation of an interface's m.</summary>
+        private static IMethodSymbol Implementation(IMethodSymbol m, INamedTypeSymbol c)
+        {
+            var def = m.OriginalDefinition;
+            if (def.ContainingType.TypeKind == TypeKind.Interface) return c.FindImplementationForInterfaceMember(def) as IMethodSymbol;
+            for (var t = c; t != null; t = t.BaseType)
+                foreach (var x in t.GetMembers(def.Name).OfType<IMethodSymbol>())
+                    for (var o = x; o != null; o = o.OverriddenMethod)
+                        if (SymbolEqualityComparer.Default.Equals(o.OriginalDefinition, def)) return x.IsAbstract ? null : x;
+            return null;
         }
 
         /// <summary>The variable a ref or out argument is: a local (declared there, for out var), or a ref or out parameter.</summary>
@@ -2841,7 +2885,7 @@ namespace CsVerify.Verifier.Boogie
                                                       !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2"):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
-                    return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
+                    return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
                 }
                 case IParenthesizedOperation par: return Spec(par.Operand, result);
                 case IConversionOperation conv when conv.Conversion.IsIdentity || IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric &&

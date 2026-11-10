@@ -823,7 +823,7 @@ namespace CsVerify.Verifier.Boogie
             if (p.HasThis) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
             // (a new object's fields are their defaults: its caller made them so)
             if (p.IsCtor)
-                foreach (var f in InstanceFields(m.ContainingType).OrderBy(FieldMap, System.StringComparer.Ordinal))
+                foreach (var f in InstanceFields(m.ContainingType).Where(f => !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal))
                     Line($"  free requires {FieldMap(f)}[this] == {E(Default(FieldType(f)), cx)};");
             foreach (var x in m.Parameters.Where(x => x.RefKind != RefKind.Out))
             {

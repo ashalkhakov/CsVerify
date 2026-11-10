@@ -1064,6 +1064,145 @@ public static class Iv
                 Assert.True(b.Methods.Any(m => m.Name == good && m.Verified), good + ": " + names);
         }
 
+        // interfaces as parameters, generic classes, constrained type parameters, a function's call resolved by its object's class
+        private const string Polymorphism = @"
+public interface ICounter { int Get(); void Bump(); }
+public sealed class Ct : ICounter
+{
+    public int N;
+    public int Get() { Spec.Ensures((int r) => r >= 0); return N; }
+    public void Bump() { N = N + 1; }
+}
+public interface IPos { int Next(int x); }
+public sealed class Bx { public int V; }
+public static class If
+{
+    public static int Twice(ICounter c)
+    {
+        int a = c.Get();
+        int b = c.Get();
+        Spec.Assert(a == b);
+        return 0;
+    }
+    public static int Keep(IPos p, Bx b)
+    {
+        Spec.Requires(b.V == 3);
+        int r = p.Next(1);
+        Spec.Assert(b.V == 3);
+        return r;
+    }
+    public static int Mine(IPos p)
+    {
+        var b = new Bx();
+        b.V = 3;
+        p.Next(1);
+        Spec.Assert(b.V == 3);
+        return b.V;
+    }
+}
+public interface IKeyed { int Key(); }
+public sealed class K : IKeyed { public int K0; public int Key() { return K0; } }
+public sealed class Cell<T>
+{
+    public T Item;
+    public int Uses;
+    public Cell(T item) { Spec.Ensures(Uses == 0); Item = item; }
+    public T Take() { Spec.Requires(Uses < 10); Spec.Ensures(Uses == Spec.Old(Uses) + 1); Uses = Uses + 1; return Item; }
+    public void Set(T x) { Item = x; }
+    public void Bad() { Uses = Uses + 1; }
+}
+public sealed class Holder<T> where T : class, IKeyed
+{
+    public T? Held;
+    public int Peek() { return Held!.Key(); }
+    public int Safe() { return Held == null ? 0 : Held.Key(); }
+}
+public static class Gn
+{
+    public static int Keyed<T>(T a) where T : IKeyed { return a.Key(); }
+    public static int KeyedSafe<T>(T a) where T : class, IKeyed { return a == null ? 0 : a.Key(); }
+    public static void Use(K x, K y)
+    {
+        var c = new Cell<K>(x);
+        c.Set(y);
+        Spec.Assert(c.Item == y);
+        var k = c.Take();
+        Spec.Assert(c.Uses == 1);
+    }
+    public static int Ints()
+    {
+        var c = new Cell<int>(5);
+        c.Set(7);
+        int v = c.Take();
+        Spec.Assert(c.Uses == 2);
+        return v;
+    }
+    public static int Counts()
+    {
+        var c = new Cell<bool>(true);
+        c.Take();
+        c.Take();
+        return c.Uses;
+    }
+}
+public abstract class Sh { [Pure] public abstract long Area(); public abstract int Grow(int by); }
+public sealed class Sq : Sh
+{
+    public readonly int Side;
+    [Invariant, Pure] public bool Valid() => Side >= 0 && Side <= 1000;
+    public Sq(int side) { Spec.Requires(side >= 0 && side <= 1000); Spec.Ensures(Side == side); Side = side; }
+    [Pure] public override long Area() => (long)Side * Side;
+    public override int Grow(int by) { Spec.Ensures((int r) => r == Side + 1); return Side + 1; }
+}
+public sealed class Ci : Sh
+{
+    [Pure] public override long Area() => 7;
+    public override int Grow(int by) { return 0; }
+}
+public static class Dv
+{
+    public static long Nine() { Spec.Ensures((long r) => r == 9); Sh s = new Sq(3); return s.Area(); }
+    public static long Ten() { Spec.Ensures((long r) => r == 10); Sh s = new Sq(3); return s.Area(); }
+    public static int Four() { Spec.Ensures((int r) => r == 4); Sh s = new Sq(3); return s.Grow(1); }
+    public static long Again() { Spec.Ensures((long r) => r == 16); Sh s = new Sq(3); s = new Sq(4); return s.Area(); }
+    public static long Seven() { Spec.Ensures((long r) => r == 7); Sh s = new Ci(); return s.Area(); }
+}
+";
+
+        [Fact]
+        public void Polymorphism_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Polymorphism) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 28, "by Boogie: " + string.Join(", ", boogie));
+            var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
+            foreach (var bug in new[] { "If.Twice", "If.Keep", "If.Mine", "Cell.Bad", "Holder.Peek", "Gn.Keyed", "Gn.Use", "Gn.Ints", "Dv.Ten", "Dv.Four" })
+                Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
+            foreach (var good in new[] { "Cell.Take", "Holder.Safe", "Gn.KeyedSafe", "Gn.Counts", "Dv.Nine", "Dv.Again", "Dv.Seven" })
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+        }
+
+        [Fact]
+        public void ConstrainedGenerics_BoogieProvesWhatTheirContractsSay()
+        {
+            // (CsVerify's engine doesn't keep that the result is one of the arguments; Boogie does)
+            var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Polymorphism + @"
+public static class Pk
+{
+    public static T Pick<T>(T a, T b) where T : class, IKeyed
+    {
+        Spec.Requires(a != null && b != null);
+        Spec.Ensures((T r) => r == a || r == b);
+        return a.Key() >= b.Key() ? a : b;
+    }
+    public static void Use(K x, K y) { var p = Pick(x, y); Spec.Assert(p == x || p == y); }
+    public static void Wrong(K x, K y) { var p = Pick(x, y); Spec.Assert(p == x); }
+}") }, new VerifierOptions { Engine = "boogie-only" });
+            Assert.True(r["Pk.Pick"].Verified && r["Pk.Pick"].Engine == "boogie");
+            Assert.True(r["Pk.Use"].Verified);
+            Assert.False(r["Pk.Wrong"].Verified);
+        }
+
         [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
