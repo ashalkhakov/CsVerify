@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsList(t);
 
         /// <summary>A delegate of the subset's values: a Func or an Action, or a non-generic delegate type of the program's.</summary>
         public static bool IsDelegate(ITypeSymbol t) =>
@@ -89,7 +89,23 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsOwnedField(ISymbol field) => !field.IsStatic && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>A reference: an array or an object.</summary>
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t);
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsList(t);
+
+        /// <summary>A List&lt;T&gt; of the subset's values: an object, its contents the model CsVerify.Bcl's contracts speak of.</summary>
+        public static bool IsList(ITypeSymbol t) =>
+            t is INamedTypeSymbol { Arity: 1 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.List<T>" && FuncValue(n.TypeArguments[0]);
+
+        /// <summary>A list's elements' kind, as Boogie keeps them: an integer type's name, Boolean, or Ref.</summary>
+        public static string ListKey(ITypeSymbol list)
+        {
+            var e = ((INamedTypeSymbol)list).TypeArguments[0];
+            return Scalar(e) ? e.SpecialType.ToString().Substring("System_".Length) : "Ref";
+        }
+
+        /// <summary>The model's maps: how many elements (Size), the version (Version), and the elements (Items, of a kind).</summary>
+        public const string SizeMap = "$F.$M.Size", VersionMap = "$F.$M.Version";
+        public static string ItemsMap(string key) => "$F.$M.Items." + key;
+        public static string ItemsType(string key) => key == "Ref" ? "[Ref][int]Ref" : key == "Boolean" ? "[Ref][int]bool" : "[Ref][int]int";
 
         /// <summary>An interface of the program's, not generic, of abstract members only (their contracts from a contract class).</summary>
         public static bool IsInterface(ITypeSymbol t) =>

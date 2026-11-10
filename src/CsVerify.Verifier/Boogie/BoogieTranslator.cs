@@ -238,7 +238,7 @@ namespace CsVerify.Verifier.Boogie
 
         KProcedure IProgramFacts.Signature(IMethodSymbol m)
         {
-            m = m.OriginalDefinition;
+            if (!IsList(m.ContainingType)) m = m.OriginalDefinition;
             if (!_signatures.TryGetValue(m, out var sig)) _signatures[m] = sig = Lowering.Signature(m, ContractOf(m), IsFunction, Literal, ContractOf);
             return sig;
         }
@@ -254,8 +254,24 @@ namespace CsVerify.Verifier.Boogie
             var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
             Checks.Run(p, this);
             Heap.Run(p);
+            // (the library members it calls: each a procedure of its stub's contract, once; one that doesn't translate refuses this)
+            var lib = new List<KProcedure>();
+            foreach (var callee in p.LibCalls.Where(c => !_libraries.Contains(c)))
+            {
+                try
+                {
+                    var lp = Lowering.Lower(callee, ContractOf(callee), null, null, new MethodResult(), x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
+                    Checks.Run(lp, this);
+                    Heap.Run(lp);
+                    lib.Add(lp);
+                }
+                catch (NotTranslated why) { throw new NotTranslated("a call of List's " + callee.Name + ": " + why.Message); }
+            }
+            foreach (var lp in lib) { _libraries.Add(lp.Method); _pending.Add(lp); }
             _pending.Add(p);
         }
+
+        private readonly HashSet<IMethodSymbol> _libraries = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
 
         /// <summary>Writes the functions and the procedures: each modifies what it writes, and what what it calls does.</summary>
         public void Finish()
@@ -292,13 +308,17 @@ namespace CsVerify.Verifier.Boogie
             // (the literals last: the stubs' contracts may have some)
             _printer.Literals(_literals);
             _printer.Fields(fields);
+            // (the lists' models: maps as fields are)
+            var listKeys = _pending.SelectMany(p => p.ListKeys).Concat(_signatures.Values.SelectMany(s => s.ListKeys)).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+            _printer.Models(listKeys);
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             OwnArrays();
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
-            _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap)).ToHashSet();
+            _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
+                .Concat(listKeys.Count == 0 ? new string[0] : new[] { SizeMap, VersionMap }.Concat(listKeys.Select(ItemsMap))).ToHashSet();
             var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);
             var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
             _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
@@ -340,7 +360,7 @@ namespace CsVerify.Verifier.Boogie
             // (a call, in array mode, that may write any array: reported only if it may)
             foreach (var a in _pending.SelectMany(p => p.Blocks).SelectMany(b => b.Stmts).OfType<KAssert>().Where(a => a.UnlessWritesArrays != null))
             {
-                var cw = writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out var w) ? w : new HashSet<string>();
+                var cw = writes.TryGetValue(a.UnlessWritesArrays, out var w) || writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out w) ? w : new HashSet<string>();
                 bool arrays = cw.Any(x => x.StartsWith("$E.")), writesFields = cw.Any(x => x.StartsWith("$F.") && !_printer.OwnedMaps.Contains(x));
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
                 if (!stands) a.Cond = new KLit("true");
@@ -371,7 +391,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var sig = ((IProgramFacts)this).Signature(callee);
                 var clauses = sig.ThrowEnsures.Select(t => (t.type, Checks.MathOf(t.cond, this, callee))).ToList();
-                _printer.Throws(sig, writes.TryGetValue(callee.OriginalDefinition, out var w) ? w : _allMaps, clauses);
+                _printer.Throws(sig, writes.TryGetValue(callee, out var w) || writes.TryGetValue(callee.OriginalDefinition, out w) ? w : _allMaps, clauses);
             }
             _printer.Throwing.Clear();
             _pending.Clear();

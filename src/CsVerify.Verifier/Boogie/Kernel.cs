@@ -110,6 +110,8 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>A string's character (s[i]), not an array's element.</summary>
         public bool String;
+        /// <summary>A list's element in a specification (its model's), of this kind.</summary>
+        public string ListKey;
         public KExpr Array, Index;
         public ITypeSymbol ArrayType;
         public bool InSpec;
@@ -475,6 +477,11 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
         public bool CallsDelegates;
+        /// <summary>The library's members it calls (list members, by their stub contracts), and the kinds of lists whose models it names.</summary>
+        public HashSet<IMethodSymbol> LibCalls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        public HashSet<string> ListKeys = new HashSet<string>();
+        /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
+        public bool ListCtor;
         public HashSet<string> DelegateKeys = new HashSet<string>();
         public IMethodSymbol Method;
         public Contract Contract;

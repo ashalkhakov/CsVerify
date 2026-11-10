@@ -412,6 +412,51 @@ public static class Rd
                 Assert.True(b[good].Verified, good);
         }
 
+        private const string Lists = @"using System.Collections.Generic; using CsVerify.Bcl;
+public sealed class Item { public int V; }
+public static class Ls
+{
+    public static int Sum(List<int> l)
+    {
+        Spec.Requires(l.Count <= 1000 && Spec.Forall(0, l.Count, i => 0 <= l[i] && l[i] <= 100));
+        Spec.Ensures<int>(r => 0 <= r && r <= 100 * l.Count);
+        int s = 0;
+        foreach (int x in l) { Spec.Invariant(0 <= s && s <= 100 * Spec.Index(x)); s += x; }
+        return s;
+    }
+    public static int SumBad(List<int> l)
+    {
+        int s = 0;
+        foreach (int x in l) s += x;
+        return s;
+    }
+    public static int First(List<int> l) { Spec.Requires(l.Count > 0); return l[0]; }
+    public static int FirstBad(List<int> l) => l[0];
+    public static void Grow(List<int> l) { Spec.Ensures(l.Count == Spec.Old(l.Count) + 1); l.Add(3); }
+    public static void GrowBad(List<int> l) { Spec.Ensures(l.Count == Spec.Old(l.Count)); l.Add(3); }
+    public static int Fresh() { var l = new List<int>(); l.Add(4); l.Add(5); Spec.Assert(l.Count == 2 && l[1] == 5); return l[0]; }
+    public static void Keeps(List<int> a, List<int> b) { Spec.Requires(a != b && b.Count == 1); a.Add(1); Spec.Assert(b.Count == 1); }
+    public static void Loses(List<int> a, List<int> b) { Spec.Requires(b.Count == 1); a.Add(1); Spec.Assert(b.Count == 1); }
+    public static bool Has(List<int> l) { Spec.Requires(l.Count == 1 && l[0] == 7); return l.Contains(7); }
+    public static void Set(List<int> l) { Spec.Requires(l.Count == 2); l[1] = 9; Spec.Assert(l[1] == 9 && l.Count == 2); }
+    public static void Items(List<int> l) { Spec.Requires(l.Size() == 2); l.Add(1); Spec.Assert(l.Items()[2] == Ghost.Of(1)); }
+    public static int Objs(List<Item> l) { Spec.Requires(l.Count > 0 && l[0] != null); return l[0].V; }
+    public static int WfBad(List<int> l) { Spec.Requires(l[0] > 0); return 0; }
+    public static int Mutates(List<int> l) { int s = 0; foreach (var x in l) { l.Add(1); s = x; } return s; }
+}
+";
+
+        [Fact]
+        public void Lists_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Lists) }, o));
+            Assert.Equal(15, Agree(c, b));
+            foreach (var bug in new[] { "Ls.SumBad", "Ls.FirstBad", "Ls.GrowBad", "Ls.Loses", "Ls.WfBad", "Ls.Mutates" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Ls.Sum", "Ls.First", "Ls.Grow", "Ls.Fresh", "Ls.Keeps", "Ls.Has", "Ls.Set", "Ls.Items", "Ls.Objs" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {

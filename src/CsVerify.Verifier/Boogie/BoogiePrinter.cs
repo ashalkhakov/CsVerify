@@ -146,6 +146,9 @@ namespace CsVerify.Verifier.Boogie
                             return $"{elems}[{a[2]}]";
                         case "sel": return a.Length == 2 ? $"{a[0]}[{a[1]}]" : $"{a[0]}[{a[1]}][{a[2]}]";
                         case "store": return $"{a[0]}[{a[1]} := {a[2]}]";
+                        case "seq.drop": return $"(lambda j$: int :: {a[0]}[j$ + {a[1]}])";
+                        case "seq.concat": return $"(lambda j$: int :: (if j$ < {a[1]} then {a[0]}[j$] else {a[2]}[j$ - {a[1]}]))";
+                        case "seq.const": return $"(lambda j$: int :: {a[0]})";
                         case "set.of": return $"(lambda r$: Ref :: r$ == {a[0]})";
                         case "set.add": return $"{a[0]}[{a[1]} := true]";
                         case "set.union": return $"(lambda r$: Ref :: {a[0]}[r$] || {a[1]}[r$])";
@@ -361,6 +364,28 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>This state, as delegates take it.</summary>
         private string State => $"$st({string.Join(", ", _stateMaps.Select(m => m.name))})";
 
+        /// <summary>The lists' models: each list's size (never negative), version and elements (in their type's range).</summary>
+        public void Models(List<string> keys)
+        {
+            if (keys.Count == 0) return;
+            Line($"var {SizeMap}: [Ref]int where (forall o: Ref :: {SizeMap}[o] >= 0);");
+            Line($"var {VersionMap}: [Ref]int;");
+            foreach (var k in keys)
+            {
+                string where = "";
+                if (!(k is "Ref" or "Boolean"))
+                {
+                    var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + k));
+                    var at = $"{ItemsMap(k)}[o][j]";
+                    where = $" where (forall o: Ref, j: int :: {(lo < 0 ? $"({lo})" : lo.ToString())} <= {at} && {at} <= {hi})";
+                }
+                Line($"var {ItemsMap(k)}: {ItemsType(k)}{where};");
+            }
+            _stateMaps.Add((SizeMap, "[Ref]int"));
+            _stateMaps.Add((VersionMap, "[Ref]int"));
+            foreach (var k in keys) _stateMaps.Add((ItemsMap(k), ItemsType(k)));
+        }
+
         public void Fields(IEnumerable<ISymbol> fields)
         {
             _stateMaps.Clear();
@@ -480,7 +505,7 @@ namespace CsVerify.Verifier.Boogie
             // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out)
             var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
-            var outs = (m.ReturnsVoid ? new string[0] : new[] { $"result: {TypeOf(m.ReturnType)}" })
+            var outs = (p.ListCtor ? new[] { "result: Ref" } : m.ReturnsVoid ? new string[0] : new[] { $"result: {TypeOf(m.ReturnType)}" })
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
             // (an abstract member's: a declaration, its specifications after it, no body)
@@ -522,6 +547,8 @@ namespace CsVerify.Verifier.Boogie
             if (functionFields != null)
                 Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
             if (!m.ReturnsVoid && IsRef(m.ReturnType)) Line("  free ensures result == null || $Alloc[result];");
+            // (a list's constructor: a new list)
+            if (p.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
             if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line("  free ensures result != null;");
             // (a constructor has set the fields that may not be null: it asserts so at each return)
             if (p.IsCtor)

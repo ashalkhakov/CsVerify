@@ -1615,6 +1615,14 @@ namespace CsVerify.Verifier.Boogie
                     var l = Spec(or.Args[0], wf, guard);
                     return new KOp("||", l, Under(new KOp("!", l), or.Args[1]));
                 }
+                case KOp { Op: "old" } old:
+                {
+                    // (what it needs to be well-defined, it needs in the old state too)
+                    var inner = new List<KExpr>();
+                    var v = Spec(old.Args[0], inner, new List<KExpr>());
+                    foreach (var c in inner) Need(new KOp("old", c));
+                    return new KOp("old", v);
+                }
                 case KOp { Op: "streq" } eq:
                 {
                     var (l, r) = (Spec(eq.Args[0], wf, guard), Spec(eq.Args[1], wf, guard));
@@ -1633,6 +1641,14 @@ namespace CsVerify.Verifier.Boogie
                     var r = Spec(ar.Right, wf, guard);
                     Need(new KOp("!=", r, new KLit("0")));
                     return new KOp(ar.Op == "/" ? "div" : "rem", l, r);
+                }
+                case KElem { ListKey: string lk } le:
+                {
+                    // (a list's element, of its model: where the list's indexer's precondition holds)
+                    var a = Spec(le.Array, wf, guard);
+                    var i = Spec(le.Index, wf, guard);
+                    Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp("sel", new KVar(SizeMap), a))));
+                    return new KOp("sel", new KVar(ItemsMap(lk)), a, i);
                 }
                 case KElem el:
                 {

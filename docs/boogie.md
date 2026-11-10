@@ -419,7 +419,25 @@ evaluated once into `fe$`*n*`$a` (its length read, so a null one is CSV1013), an
 edge back to the head (the body's end, a `continue`) `i := i + 1`. The enumerator's `try`/`finally`, which disposes it,
 isn't there: C# emits none for an array. `Spec.Index(x)` is the index: the number of elements gone through in the
 loop's invariants, and `x`'s own in the body. The loop's first invariant is `0 <= i && i <= len(a)`, which holds by
-itself. A `foreach` over anything else (a list, a query, an enumerable of the program's) isn't translated yet.
+itself.
+
+A `foreach` over a `List<T>` whose loop changes no list (it calls only specifications, `[Pure]` members and lists'
+`[Pure]` members) is the same loop over the list's model: the index up to `Size()`, each element `Items()[i]`, and
+`Spec.Index` the index. A loop that may change a list goes through the enumerator, as C# does: `GetEnumerator()` keeps
+the list's `Version()`, each `MoveNext()` checks the list's is still that (else it throws: CSV1001) and gives an
+unknown answer, and `Current` is unknown; `Spec.Index` of such a loop isn't translated. A `foreach` over anything else
+(an interface's list, a query, an enumerable of the program's) isn't translated yet.
+
+**Lists.** A `List<T>` of the subset's values is an object whose contents are CsVerify.Bcl's model: maps as fields
+are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and per kind of element
+`$F.$M.Items.`*K*`: [Ref][int]`*T* (an integer type's in its range), so frames, modifies clauses and delegates' states
+take them in as they do fields. In specifications `l.Size()`, `l.Items()` and `l.Version()` read them, `l.Count` is
+`Size`, and `l[i]` is `Items[l][i]`, well-defined where `0 <= i < Size` (CSV1012). A `Seq<T>` is an `[int]` map:
+`s[i]`, `s.Update(i, v)` (a store), `s.Drop(k)` and `s.Concat(k, t)` (lambdas), `Seq.Const(v)`, `==`; `Ghost.Of(x)`
+is `x`, and `Spec.Equal` is `==`. In code every member of a list is a call of a procedure of its stub contract
+(`ListContracts<T>`, its `@this` the receiver), named for the list's kind: `Count`, the indexer (CSV1001 out of
+range), `Add`, `RemoveAt`, `Insert`, `Contains`, … modify only their own list's model (their `Spec.Modifies`), and a
+constructor returns a new list. `Spec.Old` of a list's element is well-defined where it was in the old state.
 
 **Delegates.** A `Func` or an `Action` of the subset's values is a reference; what it accepts, gives and changes are
 functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, int>`), as Dafny's `f.requires` and
@@ -522,12 +540,12 @@ Also inheritance: base classes, virtual, abstract and override methods, interfac
 
 Also exceptions: `throw`, `try`/`catch` by type, rethrow, caught checked overflow, `Spec.EnsuresOnThrow`.
 
-Also `foreach` over arrays and strings, `Spec.Index`, and delegates: `Func` and `Action` values with `Spec.Pre`,
+Also `List<T>` with its model and stub contracts, `foreach` over arrays, strings and lists, `Spec.Index`, and delegates: `Func` and `Action` values with `Spec.Pre`,
 `Spec.Post`, `Spec.Total`, `Spec.ChangesNothing`, `Spec.Reads`, `Spec.ReadsOf`, `Spec.Changes`, calls of them,
 lambdas and method groups; delegate types with contracts.
 
 Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics, string members without stubs, collections,
-`foreach` over collections, `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
+collections other than lists (dictionaries, sets, interfaces' lists, queries), `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
 
 ## How it's checked
@@ -544,9 +562,9 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    them (done for plain classes, base classes, virtual methods, interfaces and properties; next: data records,
    immutable objects' invariants, object initializers, `this(...)`);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
-   models (`List`, `Dictionary`, `HashSet`), and the ghost types;
+   models (done: `List` and `Seq`; next: `Dictionary`, `HashSet`, `Map`, `Bag`), and the ghost types;
 3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,
-   method groups, delegate types with contracts; next: `foreach` over collections);
+   method groups, delegate types with contracts, `foreach` over lists; next: over dictionaries, sets, interfaces' lists);
 4. exceptions (done: `throw`, `try`/`catch`, rethrow, `Spec.EnsuresOnThrow`; next: `finally`, filters, `using`);
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
