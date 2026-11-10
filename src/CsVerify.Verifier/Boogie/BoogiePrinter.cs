@@ -357,6 +357,21 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free ensures {InRangeOfMemory};");
         }
 
+        /// <summary>
+        /// An await: other code runs, which may change anything but the objects the method alone has (its confined
+        /// locals'); what's allocated stays so.
+        /// </summary>
+        public void Await(ISet<string> maps)
+        {
+            var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
+            Line("procedure $await(k: [Ref]bool);");
+            if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+            Line($"  free ensures {InRangeOfMemory};");
+            foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
+                Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
+        }
+
         // ------------------------------------------------------------------ exceptions
 
         private int _forks;
@@ -598,7 +613,7 @@ namespace CsVerify.Verifier.Boogie
             // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out)
             var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
-            var outs = (p.ListCtor ? new[] { "result: Ref" } : m.ReturnsVoid ? new string[0] : new[] { $"result: {TypeOf(m.ReturnType)}" })
+            var outs = (p.ListCtor ? new[] { "result: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
             // (an abstract member's: a declaration, its specifications after it, no body)
@@ -636,14 +651,14 @@ namespace CsVerify.Verifier.Boogie
             foreach (var r in p.Requires) Line($"  requires {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", r.Check);
             // (checked at each return, where it is reported: Boogie would report one return path of each)
             foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) ? "true" : E(e.Expr, cx))};");
-            if (!m.ReturnsVoid && IsIntegral(m.ReturnType) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), m.ReturnType), cx)};");
+            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), Returns(m)), cx)};");
             if (functionFields != null)
                 Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
-            if (!m.ReturnsVoid && IsRef(m.ReturnType)) Line("  free ensures result == null || $Alloc[result];");
+            if (Returns(m) != null && IsRef(Returns(m))) Line("  free ensures result == null || $Alloc[result];");
             // (a list's constructor: a new list)
             if (p.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
-            if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line("  free ensures result != null;");
-            if (!m.ReturnsVoid && IsData(m.ReturnType)) Line($"  free ensures result == null || {E(IsCase(new KVar("result"), m.ReturnType), cx)};");
+            if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m))) Line("  free ensures result != null;");
+            if (Returns(m) != null && IsData(Returns(m))) Line($"  free ensures result == null || {E(IsCase(new KVar("result"), Returns(m)), cx)};");
             // (a constructor has set the fields that may not be null: it asserts so at each return)
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f)) &&
@@ -739,6 +754,9 @@ namespace CsVerify.Verifier.Boogie
                 case KRaw raw: Line("    " + raw.Text); return;
                 case KHavocAll _:
                     Line("    call $havoc();");
+                    return;
+                case KAwait aw:
+                    Line($"    call $await((lambda r$: Ref :: {(aw.Keep.Count == 0 ? "false" : string.Join(" || ", aw.Keep.Select(k => $"r$ == {E(new KVar(k), cx)}")))}));");
                     return;
                 case KInvoke iv:
                     Line($"    call {(iv.Result == null ? "" : iv.Result + " := ")}$call.{iv.Key}({string.Join(", ", new[] { iv.Delegate }.Concat(iv.Args).Select(x => E(x, cx)))});");

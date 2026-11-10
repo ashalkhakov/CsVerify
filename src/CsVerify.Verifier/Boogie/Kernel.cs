@@ -376,6 +376,9 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
     internal sealed class KHavocAll : KStmt { }
 
+    /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
+    internal sealed class KAwait : KStmt { public List<string> Keep = new List<string>(); }
+
     /// <summary>A data value's field: checked not null in code, well-defined if so in a specification.</summary>
     internal sealed class KDataField : KExpr
     {
@@ -501,6 +504,8 @@ namespace CsVerify.Verifier.Boogie
         public HashSet<INamedTypeSymbol> Valid = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         /// <summary>It calls code whose contract isn't known ($havoc).</summary>
         public bool HavocsAll;
+        /// <summary>It awaits ($await).</summary>
+        public bool Awaits;
         /// <summary>The library's members it calls (list members, by their stub contracts), and the kinds of lists whose models it names.</summary>
         public HashSet<IMethodSymbol> LibCalls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         public Dictionary<string, KernelTypes.ModelMap> Models = new Dictionary<string, KernelTypes.ModelMap>();

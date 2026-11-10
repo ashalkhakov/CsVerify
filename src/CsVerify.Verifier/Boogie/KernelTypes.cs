@@ -131,6 +131,20 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsOwnedField(ISymbol field) => !field.IsStatic && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>A reference: an array or an object.</summary>
+        /// <summary>A task type (Task, Task&lt;T&gt;, ValueTask, ValueTask&lt;T&gt;).</summary>
+        public static bool IsTaskLike(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && n.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks" && n.Name is "Task" or "ValueTask";
+
+        /// <summary>What a method gives back: an async one's task's result (null for none); else its return type (null for void).</summary>
+        public static ITypeSymbol Returns(IMethodSymbol m) =>
+            m.IsAsync && IsTaskLike(m.ReturnType) ? ((INamedTypeSymbol)m.ReturnType).TypeArguments.FirstOrDefault() : m.ReturnsVoid ? null : m.ReturnType;
+
+        /// <summary>A lock's object (readonly, of type object): no state of the kernel's.</summary>
+        public static bool IsLockObject(ISymbol s) => s is IFieldSymbol { IsReadOnly: true } f && f.Type.SpecialType == SpecialType.System_Object;
+
+        /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
+        [System.ThreadStatic] public static LockGuards Locks;
+
         public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsCollection(t);
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
@@ -227,11 +241,15 @@ namespace CsVerify.Verifier.Boogie
             n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0
                                      : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
                                      : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-                                    !(m is IFieldSymbol && CsVerifyAttributes(m)) &&
+                                    !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
                                     // (a property may be [Pure]: a function)
-                                    !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "PureAttribute"))) &&
+                                    !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute")))) &&
             // (an invariant of an [Owned] class travels with its view; any other's is a data type's, assumed of every object)
             (SpecSymbols.IsOwned(n) || !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute")));
+
+        /// <summary>Guarded by a lock, and nothing else of CsVerify's.</summary>
+        private static bool OnlyGuardedBy(ISymbol s) =>
+            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name == "GuardedByAttribute");
 
         private static bool CsVerifyAttributes(ISymbol s) =>
             s.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace);
@@ -239,7 +257,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A field the kernel has: a heap field (an instance field or auto-property, or a mutable static field) of a class in the subset, of a type in it.</summary>
         public static bool IsField(ISymbol s) =>
             s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) &&
-            (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && !CsVerifyAttributes(s) : IsClass(s.ContainingType));
+            (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && (!CsVerifyAttributes(s) || OnlyGuardedBy(s)) : IsClass(s.ContainingType));
 
         public static ITypeSymbol FieldType(ISymbol s) => s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
 

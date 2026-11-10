@@ -297,7 +297,7 @@ namespace CsVerify.Verifier.Boogie
                     if (!IsRequired(field) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))
                         Assert(new KOp("!=", new KOp("sel", new KVar(FieldMap(field)), new KVar("this")), new KLit("null")),
                             At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
-            if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType))
+            if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m)))
                 Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable"));
             // the permissions the postconditions give back are in hand
             if (_p.UsesPerm)

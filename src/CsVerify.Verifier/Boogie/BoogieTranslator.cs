@@ -67,15 +67,15 @@ namespace CsVerify.Verifier.Boogie
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
                            IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
-            !m.IsAsync && (!m.IsGenericMethod || m.IsStatic && m.TypeParameters.All(IsTypeParameter)) && KnownAttributes(m) &&
-            (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
+            (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || m.IsStatic && m.TypeParameters.All(IsTypeParameter)) && KnownAttributes(m) &&
+            (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
             (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
 
         /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is CsVerify's engine's to check.</summary>
         private static readonly HashSet<string> Known = new HashSet<string>
         {
-            "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute",
+            "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
         };
 
         private static bool KnownAttributes(IMethodSymbol m) =>
@@ -88,8 +88,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
-            m.IsAsync ? "async" : m.IsGenericMethod && !(m.IsStatic && m.TypeParameters.All(IsTypeParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
-            !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
+            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(m.IsStatic && m.TypeParameters.All(IsTypeParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
+            !(Returns(m) == null || InSubset(Returns(m))) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
             c.IsTrusted ? "[Trusted]" : "an inherited contract";
@@ -326,6 +326,7 @@ namespace CsVerify.Verifier.Boogie
             var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
             _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
             if (_pending.Any(p => p.HavocsAll)) _printer.Havoc(_allMaps);
+            if (_pending.Any(p => p.Awaits)) _printer.Await(_allMaps);
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KCallFrame>().Where(f => !f.After))

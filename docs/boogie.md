@@ -528,6 +528,23 @@ generic method's arguments and result, a generic data type's fields. A generic d
 instantiations (`List<T>.Cons` of a `List<int>`), and a static generic method (of unconstrained type parameters) is one
 procedure.
 
+**Async.** An async method's contract is of its task's result (`T` of `Task<T>`, nothing of `Task`), its procedure's
+`result`. `await F(...)` of an async method of the program is a call of it; `await Task.Yield()`, `Task.Delay(...)`
+and `Task.CompletedTask` give nothing; `ConfigureAwait` is seen through. At every await other code may run: `call
+$await(k)` may change every map but at the objects in `k`, the method's confined locals (each starts null, and only ever
+holds a new object or array whose construction doesn't let it out, used only by its fields, cells, null tests,
+specifications and `return`), as CsVerify's engine keeps them; and the locals lambdas write are forgotten. A task not
+awaited at once, an await where exceptions are seen, an async lambda and `async void` aren't translated yet.
+
+**Locks.** `lock (_lock) { ... }` of a lock object (a readonly `object` field of this object, or a static one) is its
+`Monitor.Enter` and its `finally`'s `Monitor.Exit`. Entering forgets what the lock guards (`[GuardedBy]`, at this
+object: others have had it) and gives its `[LockInvariant]`s; leaving proves them (CSV1024), on every way out,
+exceptions included; a constructor's end proves its object's (CSV1024). Whether each use of guarded state is under its
+lock (CSV1023), and the other checks made from the syntax (lock levels, concurrency marks, flags, atomics, a data
+type's invariant's dependence), are CsVerify's engine's static checks, which run for every method Boogie verifies too.
+A lock inside another, a call of the program's code under a lock, semaphores, try-locks, lock levels, `Task.Run`,
+threads, atomics and `[RunsConcurrently]` code aren't translated yet.
+
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
 preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
 assumes at entry), each under those before it; at each return for the postconditions, at the loop head for an
@@ -599,7 +616,7 @@ Not yet (such a method is verified by CsVerify's engine): ownership trees, share
 invariants of records that read mutable state, generic classes and constrained type parameters,
 string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
 exception filters, a method that assigns a parameter, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
-and threads, LINQ, and library calls with stub contracts other than strings' and lists'.
+and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
 
 ## How it's checked
 
@@ -607,6 +624,11 @@ On every method the Boogie engine verifies, it must report what CsVerify's engin
 the same lines. `BoogieEngineTests` checks that on a corpus written for it (one of each construct, a bug of each kind),
 on `samples/Good` and on `samples/Buggy`. `--engine boogie-only` verifies only what Boogie translates, to compare the
 two quickly.
+
+CsVerify's engine's checks made from the syntax and the declarations alone (`MethodVerifier.Run` with `StaticOnly`:
+locking, lock levels, atomics, flags, concurrency marks, Entity Framework contexts, a data type's invariant's
+dependence, and the warnings they give) run for each method Boogie verifies as well, and their diagnostics are its.
+They are not CsVerify's engine's symbolic execution, and stay when it goes, as a pass of their own.
 
 ## What comes next
 
@@ -624,7 +646,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
    objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
    `Spec.Modifies`);
-7. locks, async and threads;
+7. locks, async and threads (done: awaits with confined locals, lock statements with guards and invariants; next:
+   tasks awaited later, semaphores, try-locks, lock levels, Task.Run and threads, atomics, `[RunsConcurrently]`);
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
 

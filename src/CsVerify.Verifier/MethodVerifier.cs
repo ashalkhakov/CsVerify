@@ -178,6 +178,12 @@ namespace CsVerify.Verifier
         }
         private bool _budgetReported;
 
+        /// <summary>
+        /// Only the checks made from the method's syntax and the program's declarations (locking, lock levels, atomics,
+        /// flags, concurrency marks, a data type's invariant's dependence): for a method another engine verifies.
+        /// </summary>
+        public bool StaticOnly;
+
         public void Run()
         {
             var body = _model.GetOperation(_contract.Declaration);
@@ -198,13 +204,14 @@ namespace CsVerify.Verifier
             CheckContextConcurrency();
             CheckConcurrentMarks();
             CheckDelegateContract();
-            if (SpecSymbols.IsPredicate(_method)) { VerifyPredicate(); return; }
+            if (SpecSymbols.IsPredicate(_method)) { if (!StaticOnly) VerifyPredicate(); return; }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
             if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType) || IsImmutableClass(_method.ContainingType)) &&
                 _engine.Fields.InvariantDependence(_method, !Data.IsData(_method.ContainingType)) is string why)
                 Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
             if (ProofCode && _method.IsAsync) NotModeled(MethodLocationNode(), "a lemma or [Pure] function cannot be async");
+            if (StaticOnly) return;
             FindLoops(cfg);
             _cfg = cfg;
 

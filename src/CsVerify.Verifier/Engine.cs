@@ -614,7 +614,9 @@ namespace CsVerify.Verifier
         private static bool Sequential(Engine engine, IMethodSymbol method, SyntaxNode decl, SemanticModel model) =>
             !engine.StartedDelegates.RunsAlongside(method) &&
             !decl.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>()
-                .Any(n => model.GetSymbolInfo(n).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && engine.Locks.GuardOf(s) != null);
+                .Any(n => model.GetSymbolInfo(n).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && engine.Locks.GuardOf(s) is ISymbol g &&
+                          // (a lock statement's lock, an object: Boogie's; a semaphore or a flag: not yet)
+                          !Boogie.KernelTypes.IsLockObject(g));
 
         /// <summary>A member whose body is not known at the call: virtual, abstract, an interface member (not sealed).</summary>
         internal static bool IsOverridable(IMethodSymbol m) =>
@@ -643,6 +645,7 @@ namespace CsVerify.Verifier
             using var engine = new Engine(compilation, options, userTrees);
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
+            Boogie.KernelTypes.Locks = engine.Locks;
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             foreach (var tree in userTrees)
@@ -928,6 +931,15 @@ namespace CsVerify.Verifier
                 x.result.Clear();
                 x.result.Engine = "boogie";
                 x.result.Diagnostics.AddRange(mine);
+                // (what's checked from the syntax and the declarations, as for any method: locking, concurrency marks, ...)
+                if (x.result.Name != null)
+                {
+                    var staticResult = new MethodResult();
+                    engine.Solver.Reset();
+                    try { new MethodVerifier(engine, x.contract, staticResult, null) { StaticOnly = true }.Run(); }
+                    catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan())); }
+                    x.result.Diagnostics.AddRange(staticResult.Diagnostics);
+                }
                 x.result.Obligations = translator.Obligations.TryGetValue(x.result, out var n) ? n : 0;
                 x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count);
                 x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;

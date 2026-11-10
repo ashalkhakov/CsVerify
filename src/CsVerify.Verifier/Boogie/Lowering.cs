@@ -248,6 +248,7 @@ namespace CsVerify.Verifier.Boogie
                 // (its data values are valid: their invariants hold)
                 if (b.Ordinal == 0)
                 {
+                    foreach (var cl in Confined()) Emit(new KAssign { Var = Declare(Local(cl), cl.Type), Value = new KLit("null") });
                     if (_p.HasThis && HasInvariants(_m.ContainingType)) AssumeValid(new KVar("this"), _m.ContainingType);
                     foreach (var dp in _m.Parameters.Where(x => x.RefKind != RefKind.Out && HasInvariants(x.Type))) AssumeValid(new KVar(Local(dp)), dp.Type);
                 }
@@ -508,6 +509,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var init = (SyntaxNode)(syntax as VariableDeclaratorSyntax)?.Initializer ?? (syntax as PropertyDeclarationSyntax)?.Initializer;
                     if (init == null) continue;
+                    if (IsLockObject(member)) continue; // (a lock's object: no state of the kernel's)
                     if (!IsField(member)) throw new NotTranslated("an initializer of " + member.Name);
                     if (init.SyntaxTree != _decl.SyntaxTree) throw new NotTranslated("an initializer in another file");
                     if (!(_model.GetOperation(init) is ISymbolInitializerOperation op)) throw new NotTranslated("the initializer of " + member.Name);
@@ -633,6 +635,9 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation call:
                     Call(call);
                     return;
+                case IAwaitOperation aw:
+                    Await(aw);
+                    return;
                 case ISimpleAssignmentOperation a:
                     Assign(a.Target, Expr(a.Value));
                     return;
@@ -658,7 +663,11 @@ namespace CsVerify.Verifier.Boogie
                     else if (fe.Collection == null) Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
                     return;
                 }
+                case IFlowCaptureOperation lk when Unconverted(lk.Value) is IFieldReferenceOperation { Field: var lf } && IsLockObject(lf):
+                    _captured[lk.Id] = Unconverted(lk.Value);
+                    return; // (a lock's object: no value of the kernel's)
                 case IFlowCaptureOperation fc:
+                    _captured[fc.Id] = fc.Value;
                     // (a field captured as what an assignment writes, x.f = c ? a : b: its object, kept)
                     if (fc.Value is IFieldReferenceOperation { Field.IsStatic: false } cf &&
                         cf.Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation)
@@ -767,6 +776,11 @@ namespace CsVerify.Verifier.Boogie
                 _block.Jump = target == null ? new KStop() : new KGoto(target);
                 return;
             }
+            // (a constructor's end: the invariants of its object's locks hold, before anyone can take them)
+            if (fall?.Destination?.Kind == BasicBlockKind.Exit && _p.IsCtor && KernelTypes.Locks != null)
+                foreach (var (lockField, invariant) in KernelTypes.Locks.InvariantsIn(_m.ContainingType).Where(x => !x.lockField.IsStatic))
+                    Emit(new KCheck { Cond = InvariantCall(invariant, new KVar("this")), Id = "CSV1024", At = _decl,
+                                      Message = $"the constructor might not establish the invariant of lock '{lockField.Name}'" });
             // (the end of a finally: on to where whatever ran it was going)
             if (fall?.Semantics == ControlFlowBranchSemantics.StructuredExceptionHandling && FinallyOf(b.EnclosingRegion) is ControlFlowRegion fin)
             {
@@ -782,6 +796,155 @@ namespace CsVerify.Verifier.Boogie
         {
             if (to != null && _forEachAt.TryGetValue(to.Ordinal, out var fe) && from.Ordinal >= fe.Head)
                 edge.Stmts.Add(new KAssign { Var = fe.Index, Value = new KOp("+", new KVar(fe.Index), new KLit("1")) });
+        }
+
+        // ------------------------------------------------------------------ locks
+
+        private readonly Dictionary<CaptureId, IOperation> _captured = new Dictionary<CaptureId, IOperation>();
+
+        private KExpr InvariantCall(IMethodSymbol invariant, KExpr owner)
+        {
+            if (!_isFunction(invariant.OriginalDefinition)) throw new NotTranslated("a lock invariant that isn't a function: " + invariant.Name);
+            return new KFnCall { Callee = invariant.OriginalDefinition, Receiver = invariant.IsStatic ? null : owner, ReceiverIsThis = owner is KVar { Name: "this" }, Args = new KExpr[0], At = _decl };
+        }
+
+        /// <summary>
+        /// lock (o) { ... }: Monitor.Enter forgets what the lock guards (others have had it) and gives its invariants;
+        /// Monitor.Exit, in its finally, proves them (CSV1024). Only a lock field of this object or a static one, not
+        /// inside another lock (whose order, lock levels, isn't translated yet).
+        /// </summary>
+        private void Monitor(IInvocationOperation call)
+        {
+            var arg = call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
+            var lockOp = Unconverted(arg is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) ? v : arg);
+            if (!(lockOp is IFieldReferenceOperation { Field: IFieldSymbol lockField } fr) || !(lockField.IsStatic || fr.Instance is IInstanceReferenceOperation))
+                throw new NotTranslated("a lock of something other than this object's lock field, or a static one");
+            if (KernelTypes.Locks == null) throw new NotTranslated("locks without their guards");
+            var stmt = call.Syntax.AncestorsAndSelf().OfType<LockStatementSyntax>().FirstOrDefault() ?? (SyntaxNode)call.Syntax;
+            if (stmt.Ancestors().OfType<LockStatementSyntax>().Any() || stmt.DescendantNodes().OfType<LockStatementSyntax>().Any())
+                throw new NotTranslated("a lock inside another");
+            var owner = lockField.IsStatic ? null : (KExpr)new KVar("this");
+            if (call.TargetMethod.Name == "Enter")
+            {
+                if (call.Arguments.Length == 2) Emit(new KAssign { Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()), Value = new KLit("true") });
+                foreach (var g in KernelTypes.Locks.GuardedBy(lockField).Where(g => g.IsStatic == lockField.IsStatic))
+                {
+                    if (!IsField(g)) throw new NotTranslated("a guarded member the kernel doesn't have: " + g.Name);
+                    var t = Declare("t$" + _temps++, FieldType(g));
+                    Emit(new KHavoc { Var = t });
+                    _p.Fields.Add(g.OriginalDefinition);
+                    Emit(new KFieldStore { Field = g.OriginalDefinition, Instance = owner, OnThis = owner != null, Value = new KVar(t), At = stmt, InstanceAt = stmt });
+                }
+                foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
+                    Emit(new KSpecStmt { Spec = InvariantCall(inv, owner), Assume = true, At = stmt, ArgumentAt = stmt });
+            }
+            else
+                foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
+                    Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = stmt, Message = $"the invariant of lock '{lockField.Name}' might not hold when it is released" });
+        }
+
+        /// <summary>A call while a lock is held, of what may take it again (or other locks, in an order not translated yet): not yet.</summary>
+        private void UnderLock(IMethodSymbol callee, SyntaxNode at)
+        {
+            if (at == null || !at.AncestorsAndSelf().OfType<LockStatementSyntax>().Any(l => _decl.Span.Contains(l.Span))) return;
+            if (_contractOf?.Invoke(callee) is Contract c && (c.IsPure || c.IsLemma)) return;
+            if (callee.DeclaringSyntaxReferences.Length > 0) throw new NotTranslated("a call under a lock of the program's " + callee.Name);
+        }
+
+        // ------------------------------------------------------------------ async
+
+        private bool _awaiting;
+
+        /// <summary>
+        /// await t: other code may run, so what the method doesn't hold is forgotten (all but its confined locals'
+        /// objects). An awaited async method of the program is a call, its contract of the task's result; a library's
+        /// Task.Yield, Task.Delay, Task.CompletedTask gives nothing. ConfigureAwait is seen through.
+        /// </summary>
+        private KExpr Await(IAwaitOperation aw)
+        {
+            if (_p.Ghost || _contract.IsPure || _contract.IsLemma) throw new NotTranslated("an await in a proof");
+            if (_p.UsesPerm) throw new NotTranslated("an await with permissions");
+            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("an await where exceptions are seen");
+            var op = aw.Operation;
+            while (op is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null) op = ca.Instance;
+            KExpr value = null;
+            switch (op)
+            {
+                case IInvocationOperation call when call.TargetMethod.IsAsync && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
+                    _awaiting = true;
+                    try { value = Call(call); }
+                    finally { _awaiting = false; }
+                    break;
+                case IInvocationOperation lib when lib.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && lib.TargetMethod.Name is "Yield" or "Delay":
+                    foreach (var a in lib.Arguments.Select(x => x.Value))
+                        if (InSubset(a.Type)) Expr(a);
+                        else if (!(Unconverted(a) is IParameterReferenceOperation or ILocalReferenceOperation)) throw new NotTranslated("an argument of " + lib.TargetMethod.Name);
+                    break;
+                case IPropertyReferenceOperation { Property.Name: "CompletedTask" } done when done.Property.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task":
+                    break;
+                default: throw new NotTranslated("an await of " + op.Syntax);
+            }
+            _p.Awaits = true;
+            _p.CallsDelegates = true;
+            var keep = new KAwait();
+            foreach (var l in Confined()) keep.Keep.Add(Declare(Local(l), l.Type));
+            Emit(keep);
+            ForgetCaptured();
+            return value;
+        }
+
+        private List<ILocalSymbol> _confined;
+
+        /// <summary>
+        /// The locals that only ever hold objects the method made itself, used only in ways that can't hand them to other
+        /// code: no code that runs at an await can reach their objects.
+        /// </summary>
+        private List<ILocalSymbol> Confined()
+        {
+            if (_confined != null) return _confined;
+            _confined = new List<ILocalSymbol>();
+            if (_decl == null) return _confined;
+            var locals = _decl.DescendantNodes().OfType<VariableDeclaratorSyntax>().Select(d => _model.GetDeclaredSymbol(d) as ILocalSymbol).Where(l => l != null).ToList();
+            foreach (var l in locals.Where(l => IsClass(l.Type) || IsArray(l.Type)))
+            {
+                bool ok = true;
+                foreach (var d in l.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>())
+                    if (d.Initializer != null && !Fresh(d.Initializer.Value)) ok = false;
+                foreach (var id in _decl.DescendantNodes().OfType<IdentifierNameSyntax>().Where(i => i.Identifier.Text == l.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(i).Symbol, l)))
+                {
+                    if (id.Ancestors().Any(a => a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax)) { ok = false; break; }
+                    switch (id.Parent)
+                    {
+                        case MemberAccessExpressionSyntax ma when ma.Expression == id && _model.GetSymbolInfo(ma.Name).Symbol is IFieldSymbol or IPropertySymbol: continue;
+                        case ElementAccessExpressionSyntax ea when ea.Expression == id: continue;
+                        case BinaryExpressionSyntax be when (be.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.EqualsExpression) || be.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NotEqualsExpression)) &&
+                                                          (be.Left.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression) || be.Right.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression)): continue;
+                        case AssignmentExpressionSyntax asg when asg.Left == id && Fresh(asg.Right): continue;
+                        case ArgumentSyntax arg when InSpec(arg): continue;
+                        case ReturnStatementSyntax _: continue;
+                        default: ok = false; break;
+                    }
+                    if (!ok) break;
+                }
+                if (ok) _confined.Add(l);
+            }
+            return _confined;
+        }
+
+        /// <summary>A new array, or a new object of a program class whose construction doesn't let it out (it calls nothing, and uses this only for its fields).</summary>
+        private bool Fresh(ExpressionSyntax e)
+        {
+            if (e is ArrayCreationExpressionSyntax || e is ImplicitArrayCreationExpressionSyntax) return true;
+            if (!(e is BaseObjectCreationExpressionSyntax oc) || !(_model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctor) || !IsClass(ctor.ContainingType)) return false;
+            if (ctor.ContainingType.BaseType?.SpecialType != SpecialType.System_Object) return false;
+            var code = ctor.DeclaringSyntaxReferences.Select(r => r.GetSyntax())
+                .Concat(ctor.ContainingType.GetMembers().Where(m => !m.IsStatic).SelectMany(m => m.DeclaringSyntaxReferences).Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>());
+            foreach (var n in code.SelectMany(c => c.DescendantNodesAndSelf()))
+            {
+                if (n is InvocationExpressionSyntax inv && !(inv.Expression.ToString() is "nameof") && !inv.Expression.ToString().StartsWith("Spec.")) return false;
+                if (n is ThisExpressionSyntax t && !(t.Parent is MemberAccessExpressionSyntax)) return false;
+            }
+            return true;
         }
 
         // ------------------------------------------------------------------ data types
@@ -1297,6 +1460,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IInvocationOperation call:
                     return Call(call);
+                case IAwaitOperation aw:
+                    return Await(aw) ?? throw new NotTranslated("an await of nothing, as a value");
                 case IIsNullOperation isNull:
                     return new KOp("==", Expr(Unconverted(isNull.Operand)), new KLit("null"));
                 case IDelegateCreationOperation cd when Contracted(cd.Type) && LambdaOf(cd.Target) != null:
@@ -1427,6 +1592,10 @@ namespace CsVerify.Verifier.Boogie
                 return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
             }
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
+            // (a lock statement's Monitor.Enter and Monitor.Exit)
+            if (call.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Monitor" && call.TargetMethod.Name is "Enter" or "Exit") { Monitor(call); return null; }
+            // (an async method's task is awaited at once, or it runs alongside: not yet)
+            if (call.TargetMethod.IsAsync && !_awaiting) throw new NotTranslated("a task that isn't awaited at once: " + call.TargetMethod.Name);
             if (IsCollection(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
             // (IDisposable.Dispose of a class's object, as using calls it: that class's Dispose runs, its contract a
             // library interface's, so what it does isn't known: anything, as for a delegate)
@@ -1756,6 +1925,7 @@ namespace CsVerify.Verifier.Boogie
             }
             else callee = callee.OriginalDefinition;
             if (!list && !_isProcedure(callee)) throw new NotTranslated("a call of " + callee.Name);
+            UnderLock(callee, at);
             _p.Calls.Add(callee);
             var ordered = arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             if (!callee.IsStatic && instance == null && !listCtor) throw new NotTranslated("a call of " + callee.Name + " without its receiver");
@@ -1778,7 +1948,8 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (ordinal, v) in refOuts) args[ordinal] ??= new KVar(v);
             if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
             if (ordered.Any(a => IsView(a.Parameter.Type)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
-            var result = listCtor ? Declare("t$" + _temps++, callee.ContainingType) : callee.ReturnsVoid ? null : Declare("t$" + _temps++, !list && callee.OriginalDefinition.ReturnType is ITypeParameterSymbol ? callee.OriginalDefinition.ReturnType : constructed.ReturnType);
+            var gives = Returns(constructed);
+            var result = listCtor ? Declare("t$" + _temps++, callee.ContainingType) : gives == null ? null : Declare("t$" + _temps++, !list && Returns(callee.OriginalDefinition) is ITypeParameterSymbol tp ? tp : gives);
             // (where exceptions are seen, a call of what may throw (not a proof) throws, or returns)
             var throwsTo = _cfgBlock == null || _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
             SteadyArguments(callee, args, call.Syntax);
@@ -1788,8 +1959,8 @@ namespace CsVerify.Verifier.Boogie
             if (!(_contractOf?.Invoke(callee) is Contract pc && (pc.IsPure || pc.IsLemma))) ForgetCaptured();
             foreach (var (_, rv) in refOuts) { var ro = ordered.First(a => RefVariableName(a) == rv); if (HasInvariants(ro.Parameter.Type)) AssumeValid(new KVar(rv), ro.Parameter.Type); }
             if (result == null) return null;
-            if (HasInvariants(constructed.ReturnType)) AssumeValid(new KVar(result), constructed.ReturnType);
-            return list ? new KVar(result) : Unbox(new KVar(result), callee.OriginalDefinition.ReturnType, constructed.ReturnType);
+            if (gives != null && HasInvariants(gives)) AssumeValid(new KVar(result), gives);
+            return list || gives == null ? new KVar(result) : Unbox(new KVar(result), Returns(callee.OriginalDefinition), gives);
         }
 
         /// <summary>The variable a ref or out argument is: a local (declared there, for out var), or a ref or out parameter.</summary>

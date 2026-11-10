@@ -608,6 +608,48 @@ public static class Dc
                 Assert.True(b[good].Verified, good);
         }
 
+        private const string Concurrency = @"using System.Threading.Tasks;
+public sealed class Counter { public int N; }
+public sealed class Account
+{
+    private readonly object _lock = new object();
+    [GuardedBy(nameof(_lock))] private int _balance;
+    [LockInvariant(nameof(_lock)), Pure] private bool Valid() => _balance >= 0;
+    public Account() { }
+    public int Balance() { Spec.Ensures<int>(r => r >= 0); lock (_lock) { return _balance; } }
+    public void Deposit(int x) { Spec.Requires(x >= 0); lock (_lock) { _balance = _balance <= int.MaxValue - x ? _balance + x : _balance; } }
+    public void Breaks() { lock (_lock) { _balance = -1; } }
+    public void Reset() { _balance = 0; }
+    public int Forgets() { lock (_lock) { _balance = 5; } lock (_lock) { return _balance == 5 ? 1 : 0; } }
+    public void Twice() { lock (_lock) { _balance = 3; Spec.Assert(_balance == 3); } }
+    public void TwiceBad() { lock (_lock) { _balance = 3; } lock (_lock) { Spec.Assert(_balance == 3); } }
+}
+public static class As
+{
+    public static async Task<int> Double(int x) { Spec.Requires(0 <= x && x < 1000); Spec.Ensures<int>(r => r == 2 * x); await Task.Yield(); return 2 * x; }
+    public static async Task<int> Use() { Spec.Ensures<int>(r => r == 8); int y = await Double(4); return y; }
+    public static async Task<int> UseBad() { Spec.Ensures<int>(r => r == 9); return await Double(4); }
+    public static async Task<int> Pre() { return await Double(5000); }
+    public static async Task Keeps() { var c = new Counter(); c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1); }
+    public static async Task Loses(Counter c) { c.N = 1; await Task.Yield(); Spec.Assert(c.N == 1); }
+    public static async Task Arrays(int[] a) { Spec.Requires(a.Length == 1); a[0] = 2; await Task.Delay(1); Spec.Assert(a[0] == 2); }
+    public static async Task<int> Loop(int n) { Spec.Requires(n >= 0); int i = 0; while (i < n) { Spec.Invariant(0 <= i && i <= n); await Task.Yield(); i++; } return i; }
+    public static async Task Config() { await Task.Delay(1).ConfigureAwait(false); }
+    public static async Task<int> Overflow(int x) { await Task.Yield(); return x + 1; }
+}
+";
+
+        [Fact]
+        public void AsyncAndLocks_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Concurrency) }, o));
+            Assert.Equal(19, Agree(c, b));
+            foreach (var bug in new[] { "Account.Breaks", "Account.Reset", "Account.TwiceBad", "As.UseBad", "As.Pre", "As.Loses", "As.Arrays", "As.Overflow" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Account..ctor", "Account.Balance", "Account.Deposit", "Account.Twice", "Account.Forgets", "As.Double", "As.Use", "As.Keeps", "As.Loop", "As.Config" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {
