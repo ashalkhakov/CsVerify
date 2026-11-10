@@ -159,6 +159,7 @@ namespace CsVerify.Verifier.Boogie
                         case "streq": return $"({a[0]} == {a[1]})";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
+                        case var f when f.StartsWith("$"): return $"{f}({string.Join(", ", a)})";
                         default:
                             if (a.Length != 2) throw new NotTranslated("the kernel's operator " + op.Op);
                             return $"({a[0]} {op.Op} {a[1]})";
@@ -196,6 +197,47 @@ namespace CsVerify.Verifier.Boogie
             // (trusted for its annotations: a non-nullable result isn't null; an integer one is in its type's range)
             if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line(Axiom($"{app} != null"));
             if (IsIntegral(m.ReturnType)) Line(Axiom(E(InRange(new KLit(app), m.ReturnType), InProcedure)));
+        }
+
+        // ------------------------------------------------------------------ delegates
+
+        /// <summary>
+        /// For each Func and Action signature: what one accepts ($pre), gives ($post) and accepts always ($total), the
+        /// same in every state; a call of one ($call), which may change anything, unless it changes nothing ($nochange).
+        /// </summary>
+        public void Delegates(IEnumerable<string> keys, ISet<string> maps)
+        {
+            var all = keys.Distinct().OrderBy(x => x, System.StringComparer.Ordinal).ToList();
+            if (all.Count == 0) return;
+            string Ty(string part) => part == "Ref" ? "Ref" : part == "Boolean" ? "bool" : "int";
+            Line("function $nochange(d: Ref): bool;");
+            var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
+            foreach (var key in all)
+            {
+                var parts = key.Split('.');
+                var res = parts[parts.Length - 1];
+                var xs = parts.Take(parts.Length - 1).Select((t, k) => (name: $"x{k}", type: Ty(t))).ToList();
+                var decl = string.Concat(xs.Select(x => $", {x.name}: {x.type}"));
+                var use = string.Concat(xs.Select(x => $", {x.name}"));
+                Line($"function $pre.{key}(d: Ref{decl}): bool;");
+                Line($"function $post.{key}(d: Ref{decl}{(res == "void" ? "" : $", r: {Ty(res)}")}): bool;");
+                Line($"function $total.{key}(d: Ref): bool;");
+                Line(xs.Count == 0
+                    ? $"axiom (forall d: Ref :: {{ $total.{key}(d) }} $total.{key}(d) <==> $pre.{key}(d));"
+                    : $"axiom (forall d: Ref :: {{ $total.{key}(d) }} $total.{key}(d) <==> (forall {string.Join(", ", xs.Select(x => $"{x.name}: {x.type}"))} :: {{ $pre.{key}(d{use}) }} $pre.{key}(d{use})));");
+                Line($"procedure $call.{key}(d: Ref{decl}){(res == "void" ? "" : $" returns (res: {Ty(res)})")};");
+                if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+                if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                Line($"  free ensures {InRangeOfMemory};");
+                Line($"  free ensures $post.{key}(d{use}{(res == "void" ? "" : ", res")});");
+                if (res != "void" && res != "Ref" && res != "Boolean")
+                {
+                    var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + res));
+                    Line($"  free ensures {(lo < 0 ? $"({lo})" : lo.ToString())} <= res && res <= {hi};");
+                }
+                var same = modifies.Where(x => x != "$Alloc").ToList();
+                if (same.Count > 0) Line($"  free ensures $nochange(d) ==> {string.Join(" && ", same.Select(x => $"{x} == old({x})"))};");
+            }
         }
 
         // ------------------------------------------------------------------ exceptions
@@ -528,6 +570,24 @@ namespace CsVerify.Verifier.Boogie
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
+                case KInvoke iv:
+                    Line($"    call {(iv.Result == null ? "" : iv.Result + " := ")}$call.{iv.Key}({string.Join(", ", new[] { iv.Delegate }.Concat(iv.Args).Select(x => E(x, cx)))});");
+                    return;
+                case KLambda lam:
+                {
+                    string Bind(IEnumerable<string> more) => string.Join(", ", lam.Params.Select(x => $"{x.name}: {x.type}").Concat(more));
+                    string App(string fn, string more) => $"{fn}({lam.Var}{string.Concat(lam.Params.Select(x => ", " + x.name))}{more})";
+                    string All(IEnumerable<string> more, string trigger, string body) =>
+                        lam.Params.Count == 0 && !more.Any() ? body : $"(forall {Bind(more)} :: {{ {trigger} }} {body})";
+                    var pre = App("$pre." + lam.Key, "");
+                    Line($"    assume {All(new string[0], pre, lam.Pre == null ? pre : $"{pre} == ({E(lam.Pre, cx)})")};");
+                    var rs = lam.ResultType == null ? new string[0] : new[] { $"q$r: {lam.ResultType}" };
+                    var post = App("$post." + lam.Key, lam.ResultType == null ? "" : ", q$r");
+                    foreach (var fact in lam.Posts)
+                        Line($"    assume {All(rs, post, $"{post} && {pre} ==> ({E(fact, cx)})")};");
+                    if (lam.NoChange) Line($"    assume $nochange({lam.Var});");
+                    return;
+                }
                 case KNewExc ne:
                     Line($"    havoc {ne.Var};");
                     Line($"    assume {ne.Var} != null && dtype({ne.Var}) == {TypeConst(ne.Type)};");

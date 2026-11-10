@@ -18,7 +18,9 @@ namespace CsVerify.Verifier.Boogie
         {
             var output = new StringWriter();
             var options = new CommandLineOptions(output, new ConsolePrinter());
-            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000) });
+            // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
+            var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
+            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000) }.Concat(extra).ToArray());
             using var engine = ExecutionEngine.CreateWithoutSharedCache(options);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
                 throw new InvalidOperationException("the translated program doesn't parse:\n" + output);

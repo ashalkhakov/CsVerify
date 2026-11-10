@@ -97,6 +97,13 @@ namespace CsVerify.Verifier.Boogie
                                     stmts.Add(new KMapUpdate { Map = map, Ref = t, Index = new KLit(k.ToString()), Value = n.Elements[k] });
                             break;
                         }
+                        case KLambda lam:
+                            // (a new reference: no other delegate's facts are its)
+                            p.Modifies.Add("$Alloc");
+                            p.AnyWrites.Add("$Alloc");
+                            Allocate(stmts, lam.Var);
+                            stmts.Add(lam);
+                            break;
                         default:
                             stmts.Add(s);
                             break;
@@ -116,7 +123,7 @@ namespace CsVerify.Verifier.Boogie
                 var body = p.Blocks.Where(b => b.Ordinal >= head && b.Ordinal <= last).ToList();
                 var assigned = new HashSet<string>(body.SelectMany(b => b.Stmts).Select(s => s switch
                 {
-                    KAssign a => a.Var, KCall c => c.Result, KNew n => n.Var, KNewObj o => o.Var, KHavoc h => h.Var, _ => null,
+                    KAssign a => a.Var, KCall c => c.Result, KInvoke iv => iv.Result, KLambda lam => lam.Var, KNew n => n.Var, KNewObj o => o.Var, KHavoc h => h.Var, _ => null,
                 }).Where(x => x != null));
                 var frame = new KLoopFrame { Head = head };
                 bool keeps = true;
@@ -127,6 +134,7 @@ namespace CsVerify.Verifier.Boogie
                             if (!frame.Writers.Any(w => ((KVar)w).Name == v.Name)) frame.Writers.Add(v);
                             break;
                         case KStore _: keeps = false; break;
+                        case KInvoke _: keeps = false; break; // (a delegate may write any array)
                         case KCall c: frame.Callees.Add(c.Callee); break;
                         case KNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
                     }

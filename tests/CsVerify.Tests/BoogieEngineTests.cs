@@ -275,6 +275,52 @@ public static class I
     public static int Build() { var q = new Square(3); Spec.Assert(q.Side == 3 && q.Sides == 4); return q.Side; }
 }";
 
+        private const string Higher = @"
+public static class F
+{
+    public static int Sum(int[] a)
+    {
+        Spec.Requires(a.Length < 100 && Spec.Forall(0, a.Length, k => 0 <= a[k] && a[k] < 100));
+        int s = 0;
+        foreach (var x in a) { Spec.Invariant(0 <= s && s <= 100 * Spec.Index(x)); s += x; }
+        return s;
+    }
+    public static int Count(string t) { int n = 0; foreach (char c in t) { Spec.Invariant(n == Spec.Index(c)); n++; } return n; }
+    public static int BadInv(int[] a) { int s = 0; foreach (var x in a) { Spec.Invariant(s == Spec.Index(x) + 1); s++; } return s; }
+    public static long Widen(int[] a) { Spec.Ensures<long>(r => r == (a.Length > 0 ? a[a.Length - 1] : 0)); long s = 0; foreach (long x in a) { Spec.Invariant(Spec.Index(x) == 0 ? s == 0 : s == a[Spec.Index(x) - 1]); s = x; } return s; }
+    public static int Overflow(int[] a) { int s = 0; foreach (var x in a) s += x; return s; }
+    public static int Skip(int[] a) { int s = 0; foreach (var x in a) { Spec.Invariant(0 <= s && s <= Spec.Index(x)); if (x < 0) continue; s++; } return s; }
+    public static int Upto(string t) { Spec.Ensures<int>(r => 0 <= r && r <= t.Length); int n = 0; foreach (var c in t) { Spec.Invariant(n == Spec.Index(c)); if (c == ' ') break; n++; } return n; }
+}
+public static class D
+{
+    public static int Apply(Func<int, int> f, int x) { Spec.Requires(Spec.Pre(f, x)); Spec.Ensures<int>(r => Spec.Post(f, x, r)); return f(x); }
+    public static int NoPre(Func<int, int> f) => f(1);
+    public static int ApplyAll(Func<int, int> f) { Spec.Requires(Spec.Total(f)); return f(3) + 0 * f(4); }
+    public static void UseValue() { int y = Apply(x => x + 1, 1); Spec.Assert(y == 2); }
+    public static void UseValueBad() { int y = Apply(x => x + 1, 1); Spec.Assert(y == 3); }
+    public static void Needs() { int y = Apply(x => { Spec.Requires(x > 5); return x; }, 1); }
+    public static void NeedsOk() { int y = Apply(x => { Spec.Requires(x > 0); Spec.Ensures<int>(r => r == x); return x; }, 1); Spec.Assert(y == 1); }
+    public static void Captured(int k) { Spec.Requires(k >= 0 && k < 100); int y = Apply(x => x + k, 1); Spec.Assert(y == 1 + k); }
+    public static void Keeps(int[] a, Func<int, int> f) { Spec.Requires(a.Length == 1 && Spec.Pre(f, 0) && Spec.ChangesNothing(f)); a[0] = 5; f(0); Spec.Assert(a[0] == 5); }
+    public static void Loses(int[] a, Func<int, int> f) { Spec.Requires(a.Length == 1 && Spec.Pre(f, 0)); a[0] = 5; f(0); Spec.Assert(a[0] == 5); }
+    public static void Act(Action<int> g) { Spec.Requires(Spec.Total(g)); g(1); }
+    public static void UseAct() { Act(x => { }); }
+    public static void TotalBad() { int y = ApplyAll(x => { Spec.Requires(x != 4); return x; }); }
+}";
+
+        [Fact]
+        public void ForEachAndDelegates_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Higher) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.Equal(20, Agree(c, b));
+            foreach (var bug in new[] { "F.BadInv", "F.Overflow", "D.NoPre", "D.UseValueBad", "D.Needs", "D.Loses", "D.TotalBad" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "F.Sum", "F.Count", "F.Widen", "F.Skip", "F.Upto", "D.Apply", "D.ApplyAll", "D.UseValue", "D.NeedsOk", "D.Captured", "D.Keeps", "D.Act", "D.UseAct" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void Inheritance_BothEnginesReportTheSame()
         {

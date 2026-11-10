@@ -413,6 +413,35 @@ from Roslyn's base types, reflexive and transitive), and every type derives from
 
 Not yet: `finally`, exception filters (`when`), `using`, `lock`, and reading an exception's members.
 
+**foreach.** A `foreach` over a one-dimensional array or a string is what C# compiles it to: the collection
+evaluated once into `fe$`*n*`$a` (its length read, so a null one is CSV1013), an index `fe$`*n*`$i` from 0, the head's
+`MoveNext()` the test `i < len(a)`, `Current` the element `a[i]` (widened to the iteration variable's type), and every
+edge back to the head (the body's end, a `continue`) `i := i + 1`. The enumerator's `try`/`finally`, which disposes it,
+isn't there: C# emits none for an array. `Spec.Index(x)` is the index: the number of elements gone through in the
+loop's invariants, and `x`'s own in the body. The loop's first invariant is `0 <= i && i <= len(a)`, which holds by
+itself. A `foreach` over anything else (a list, a query, an enumerable of the program's) isn't translated yet.
+
+**Delegates.** A `Func` or an `Action` of the subset's values is a reference; what it accepts, gives and changes are
+functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, int>`), as Dafny's `f.requires` and
+`f.ensures` of its `->` arrows, the same in every state:
+- `Spec.Pre(f, x)` is `$pre.K(f, x)`, `Spec.Post(f, x, r)` is `$post.K(f, x, r)`, `Spec.Total(f)` is `$total.K(f)`
+  (an axiom makes it `$pre.K(f, x)` for every `x`), and `Spec.ChangesNothing(f)` is `$nochange(f)`.
+- A call `f(x)` checks `f` isn't null (CSV1013) and `$pre.K(f, x)` (CSV1001), then is `call r := $call.K(f, x)`: a
+  procedure that may modify everything, ensures `$post.K(f, x, r)`, `r` in its type's range, and every map as it was
+  where `$nochange(f)`. A method that calls one modifies everything (its callers' frames too), and a loop that does
+  keeps no arrays.
+- A lambda made one is a new reference (allocated, so no other delegate's facts are its) with, for every argument,
+  `$pre` its `Spec.Requires` (or `true`), `$post` (with `$pre`) implying its postconditions and an expression's value,
+  and `$nochange` if it writes no field, cell or object and calls only what's `[Pure]`. They count only as far as they
+  depend on its parameters, constants, `this`, and variables never written after they're declared (the rest is left
+  out); a precondition that depends on more isn't translated. Its body is verified on its own.
+- A method whose specifications speak of a parameter's `Spec.Pre`, `Spec.Post` or `Spec.Total` takes it to be the
+  same in every state; a call of it is translated where the argument is a lambda or such a parameter of the caller's.
+
+Not yet: delegate types with contracts, method groups, `Spec.Reads(f, ...)`, `Spec.ReadsOf`, `Spec.Changes`, a lambda
+that writes a captured variable, delegates with permissions or `Spec.Modifies`, and a delegate's call where exceptions
+are seen.
+
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
 preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
 assumes at entry), each under those before it; at each return for the postconditions, at the loop head for an
@@ -472,8 +501,11 @@ Also inheritance: base classes, virtual, abstract and override methods, interfac
 
 Also exceptions: `throw`, `try`/`catch` by type, rethrow, caught checked overflow, `Spec.EnsuresOnThrow`.
 
+Also `foreach` over arrays and strings, `Spec.Index`, and `Func` and `Action` values: `Spec.Pre`, `Spec.Post`,
+`Spec.Total`, `Spec.ChangesNothing`, calls of them and lambdas.
+
 Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics, string members without stubs, collections,
-`foreach`, lambdas, `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
+`foreach` over collections, delegates that read state, delegate types with contracts, method groups, `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
 
 ## How it's checked
@@ -491,7 +523,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    immutable objects' invariants, object initializers, `this(...)`);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (`List`, `Dictionary`, `HashSet`), and the ghost types;
-3. `foreach`, lambdas and delegates;
+3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, steady `Func`s and `Action`s, lambdas;
+   next: delegates that read state, delegate types with contracts, method groups, `foreach` over collections);
 4. exceptions (done: `throw`, `try`/`catch`, rethrow, `Spec.EnsuresOnThrow`; next: `finally`, filters, `using`);
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);

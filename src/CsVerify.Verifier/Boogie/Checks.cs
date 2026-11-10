@@ -372,6 +372,26 @@ namespace CsVerify.Verifier.Boogie
                     if (th.Seen) Emit(new KAssign { Var = "ex$", Value = v });
                     return;
                 }
+                case KInvoke iv:
+                {
+                    // (a call of a delegate: not null, and it accepts the arguments; what it gives is its $post)
+                    var d = Code(iv.Delegate);
+                    var args = iv.Args.Select(Code).ToArray();
+                    Assert(new KOp("!=", d, new KLit("null")), At("CSV1013", iv.At, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
+                    Assert(new KOp("$pre." + iv.Key, new[] { d }.Concat(args).ToArray()),
+                        At("CSV1001", iv.At, $"'{iv.DelegateAt}' might not accept these arguments: say what it accepts with Spec.Requires(Spec.Pre({iv.DelegateAt}, ...))"));
+                    Emit(new KInvoke { Result = iv.Result, Delegate = d, Args = args, Key = iv.Key, At = iv.At, DelegateAt = iv.DelegateAt });
+                    return;
+                }
+                case KLambda lam:
+                {
+                    // (its facts are mathematics of its parameters and of what never changes)
+                    var r = new Dictionary<string, KExpr> { ["result"] = new KVar("q$r") };
+                    KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, r); }
+                    Emit(new KLambda { Var = lam.Var, Key = lam.Key, Params = lam.Params, ResultType = lam.ResultType, NoChange = lam.NoChange,
+                                       Pre = lam.Pre == null ? null : M(lam.Pre), Posts = lam.Posts.Select(M).ToList() });
+                    return;
+                }
                 case KThrowExit _:
                     // leaving by an exception: its own clauses for the exception's type hold
                     foreach (var (type, cond, at) in _p.ThrowEnsures)

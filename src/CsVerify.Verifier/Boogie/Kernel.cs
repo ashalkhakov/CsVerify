@@ -326,6 +326,33 @@ namespace CsVerify.Verifier.Boogie
         public string ThrowsTo;
     }
 
+    /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>
+    internal sealed class KInvoke : KStmt
+    {
+        public string Result;
+        public KExpr Delegate;
+        public KExpr[] Args;
+        /// <summary>Its signature, as Boogie's types ("int.int"): which $pre, $post and $call.</summary>
+        public string Key;
+        public SyntaxNode At, DelegateAt;
+    }
+
+    /// <summary>
+    /// A lambda made a delegate: a new reference, and what it accepts ($pre: its Spec.Requires, or anything) and gives
+    /// ($post: its postconditions and an expression's value), for every argument; whether it changes nothing.
+    /// </summary>
+    internal sealed class KLambda : KStmt
+    {
+        public string Var, Key;
+        public List<(string name, string type)> Params = new List<(string, string)>();
+        public string ResultType;
+        /// <summary>Its precondition (of the parameters q$x); null: it accepts anything.</summary>
+        public KExpr Pre;
+        /// <summary>What it gives (of the parameters, and "result").</summary>
+        public List<KExpr> Posts = new List<KExpr>();
+        public bool NoChange;
+    }
+
     internal sealed class KAssert : KStmt
     {
         public KExpr Cond;
@@ -428,6 +455,9 @@ namespace CsVerify.Verifier.Boogie
 
     internal sealed class KProcedure
     {
+        /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
+        public bool CallsDelegates;
+        public HashSet<string> DelegateKeys = new HashSet<string>();
         public IMethodSymbol Method;
         public Contract Contract;
         public MethodResult Result;

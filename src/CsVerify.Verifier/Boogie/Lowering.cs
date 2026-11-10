@@ -168,9 +168,12 @@ namespace CsVerify.Verifier.Boogie
                 IBlockOperation block => ControlFlowGraph.Create(block),
                 _ => throw new NotTranslated("no body"),
             };
+            // (foreach over an array or a string: a loop over an index, its enumerator's try/finally gone)
+            ForEachLoops(cfg);
             // (try and catch: each catch of an exception type the kernel has; not finally, nor filters, yet)
             foreach (var r in cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions))
-                if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try ||
+                if (_erased.Contains(r) || _erased.Contains(r.EnclosingRegion)) continue;
+                else if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try ||
                       r.Kind == ControlFlowRegionKind.Catch && (r.ExceptionType == null || IsException(r.ExceptionType))))
                     throw new NotTranslated(r.Kind == ControlFlowRegionKind.Catch ? "a catch of " + r.ExceptionType : r.Kind.ToString());
             _cfg = cfg;
@@ -187,6 +190,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var h in heads)
                 _p.LoopBodies[h] = cfg.Blocks.Where(x => new[] { x.FallThroughSuccessor, x.ConditionalSuccessor }.Any(s => s?.Destination?.Ordinal == h) && x.Ordinal >= h).Max(x => x.Ordinal);
             ReadLoopSpecs(cfg, heads);
+            ForEachInvariants();
             if (_p.IsCtor) Initializers();
             foreach (var b in cfg.Blocks)
             {
@@ -194,11 +198,85 @@ namespace CsVerify.Verifier.Boogie
                 _p.Blocks.Add(_block);
                 _cfgBlock = b;
                 if (b.Kind == BasicBlockKind.Exit) { _block.Jump = new KStop(); continue; }
+                // (an erased finally: nothing goes there)
+                if (b.EnclosingRegion.Kind == ControlFlowRegionKind.Finally && _erased.Contains(b.EnclosingRegion.EnclosingRegion)) { _block.Jump = new KStop(); continue; }
                 foreach (var op in b.Operations) Statement(op);
                 Branch(b);
             }
             if (_exitUsed) _p.Blocks.Add(new KBlock { Label = "x$exit", Ordinal = cfg.Blocks.Length, Stmts = { new KThrowExit() }, Jump = new KStop() });
             return _p;
+        }
+
+        // ------------------------------------------------------------------ foreach
+
+        /// <summary>A foreach over an array or a string, as C# compiles it: an index from 0 to its length.</summary>
+        private sealed class ForEach
+        {
+            public int Head;
+            public string Array, Index;
+            public ITypeSymbol Type, Element;
+            public bool String;
+            public SyntaxNode At;
+        }
+
+        private readonly Dictionary<CaptureId, ForEach> _forEach = new Dictionary<CaptureId, ForEach>();
+        private readonly Dictionary<int, ForEach> _forEachAt = new Dictionary<int, ForEach>();
+        private readonly Dictionary<ILocalSymbol, ForEach> _forEachOf = new Dictionary<ILocalSymbol, ForEach>(SymbolEqualityComparer.Default);
+        /// <summary>The try/finally regions of those loops' enumerators: C# emits neither.</summary>
+        private readonly HashSet<ControlFlowRegion> _erased = new HashSet<ControlFlowRegion>();
+
+        private void ForEachLoops(ControlFlowGraph cfg)
+        {
+            foreach (var fs in _decl.DescendantNodes().OfType<CommonForEachStatementSyntax>())
+            {
+                if (!(_model.GetOperation(fs) is IForEachLoopOperation fo) || fo.IsAsynchronous) continue;
+                var collection = Unconverted(fo.Collection);
+                bool isString = IsString(collection.Type);
+                if (!IsArray(collection.Type) && !isString) continue;
+                var element = isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char) : ((IArrayTypeSymbol)collection.Type).ElementType;
+                var conv = Microsoft.CodeAnalysis.CSharp.CSharpExtensions.GetForEachStatementInfo(_model, fs).ElementConversion;
+                var target = fo.Locals.FirstOrDefault()?.Type;
+                if (!(conv.IsIdentity || conv.IsImplicit && conv.IsNumeric && IsIntegral(element) && target != null && IsIntegral(target)))
+                    throw new NotTranslated("a foreach's conversion of its elements");
+                var capture = cfg.Blocks.SelectMany(b => b.Operations).OfType<IFlowCaptureOperation>()
+                    .FirstOrDefault(c => c.Syntax == fs.Expression && c.Value is IInvocationOperation gi && gi.TargetMethod.Name == "GetEnumerator");
+                var head = capture == null ? null : cfg.Blocks.FirstOrDefault(b => b.BranchValue is IInvocationOperation mn && mn.TargetMethod.Name == "MoveNext" &&
+                                                                                   mn.Instance is IFlowCaptureReferenceOperation r && r.Id.Equals(capture.Id));
+                if (head == null) throw new NotTranslated("a foreach without its enumerator");
+                var n = _forEachAt.Count;
+                var fe = new ForEach
+                {
+                    Head = head.Ordinal, Array = Declare($"fe${n}$a", collection.Type), Index = Declare($"fe${n}$i", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
+                    Type = collection.Type, Element = element, String = isString, At = fs.Expression,
+                };
+                _forEach[capture.Id] = fe;
+                _forEachAt[head.Ordinal] = fe;
+                foreach (var l in fo.Locals) _forEachOf[l] = fe;
+                for (var region = head.EnclosingRegion; region != null; region = region.EnclosingRegion)
+                    if (region.Kind == ControlFlowRegionKind.Try && region.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally)
+                    {
+                        _erased.Add(region.EnclosingRegion);
+                        break;
+                    }
+            }
+        }
+
+        private static KExpr Current(ForEach fe) =>
+            new KElem { String = fe.String, Array = new KVar(fe.Array), Index = new KVar(fe.Index), ArrayType = fe.String ? null : fe.Type, At = fe.At, ArrayAt = fe.At };
+
+        /// <summary>A foreach's index stays within its collection: the loop's first invariant (it holds by itself).</summary>
+        private void ForEachInvariants()
+        {
+            foreach (var fe in _forEachAt.Values)
+            {
+                if (!_p.Invariants.TryGetValue(fe.Head, out var list)) _p.Invariants[fe.Head] = list = new List<KSpec>();
+                var i = new KVar(fe.Index);
+                list.Insert(0, new KSpec
+                {
+                    Expr = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, new KLen { String = fe.String, Array = new KVar(fe.Array), InSpec = true, At = fe.At, ArrayAt = fe.At })),
+                    At = fe.At,
+                });
+            }
         }
 
         // ------------------------------------------------------------------ exceptions
@@ -420,6 +498,16 @@ namespace CsVerify.Verifier.Boogie
                 case IIncrementOrDecrementOperation id:
                     Assign(id.Target, Arith(id.Kind == OperationKind.Increment ? "+" : "-", Expr(id.Target), new KLit("1"), id.Type, id.Syntax, id.IsChecked));
                     return;
+                case IFlowCaptureOperation en when _forEach.TryGetValue(en.Id, out var fe):
+                {
+                    // the collection, evaluated once (a null one throws), and the index at its start
+                    var coll = Expr(Unconverted(((IInvocationOperation)en.Value).Instance ?? ((IInvocationOperation)en.Value).Arguments[0].Value));
+                    Emit(new KAssign { Var = fe.Array, Value = coll });
+                    Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
+                    // (its length, read once: where a null one throws)
+                    Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
+                    return;
+                }
                 case IFlowCaptureOperation fc:
                     var value = Expr(fc.Value);
                     Emit(new KAssign { Var = Capture(fc.Id, fc.Value.Type), Value = value });
@@ -496,6 +584,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 thenBlock.Jump = To(b, b.ConditionalSuccessor.Destination);
                 elseBlock.Jump = To(b, fall?.Destination);
+                Next(b, b.ConditionalSuccessor.Destination, thenBlock);
+                Next(b, fall?.Destination, elseBlock);
                 _p.Blocks.Add(thenBlock);
                 _p.Blocks.Add(elseBlock);
                 return;
@@ -513,6 +603,14 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             _block.Jump = To(b, fall?.Destination);
+            Next(b, fall?.Destination, _block);
+        }
+
+        /// <summary>An edge back to a foreach's head: the next element.</summary>
+        private void Next(BasicBlock from, BasicBlock to, KBlock edge)
+        {
+            if (to != null && _forEachAt.TryGetValue(to.Ordinal, out var fe) && from.Ordinal >= fe.Head)
+                edge.Stmts.Add(new KAssign { Var = fe.Index, Value = new KOp("+", new KVar(fe.Index), new KLit("1")) });
         }
 
         /// <summary>A jump to a block, or a return where it is to the exit.</summary>
@@ -620,6 +718,15 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation q when SpecSymbols.IsSpecClass(q.TargetMethod.ContainingType) && q.TargetMethod.Name is "Forall" or "Exists" && q.Arguments.Length == 3:
                     // (read as the source has it: the graph lowers its lambda)
                     return Spec(_model.GetOperation(q.Syntax) as IInvocationOperation ?? q, null);
+                case IInvocationOperation mn when mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation er && _forEach.TryGetValue(er.Id, out var fm):
+                    return new KOp("<", new KVar(fm.Index), new KLen { String = fm.String, Array = new KVar(fm.Array), At = fm.At, ArrayAt = fm.At });
+                case IConversionOperation cc when Unconverted(cc) is IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr } && _forEach.TryGetValue(cr.Id, out var fcur):
+                {
+                    var el = Current(fcur);
+                    return SymbolEqualityComparer.Default.Equals(cc.Type, fcur.Element) ? el : new KConv { Value = el, From = fcur.Element, To = cc.Type, Mode = KMode.Default, At = cc.Syntax };
+                }
+                case IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr2 } when _forEach.TryGetValue(cr2.Id, out var fcur2):
+                    return Current(fcur2);
                 case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
                 case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when !_p.IsCtor:
                     return new KVar("this");
@@ -705,6 +812,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IInvocationOperation call:
                     return Call(call);
+                case IDelegateCreationOperation dc when IsFunc(dc.Type) && LambdaOf(dc.Target) is IAnonymousFunctionOperation af:
+                    return Lambda(dc, af);
                 default:
                     if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type)) return new KLit("null");
                     throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
@@ -814,6 +923,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Call(IInvocationOperation call)
         {
+            if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
             var callee = call.TargetMethod.OriginalDefinition;
             if (StringEquals(call) is (IOperation ea, IOperation eb))
             {
@@ -831,10 +941,167 @@ namespace CsVerify.Verifier.Boogie
         /// A call of a procedure: a method, or a property's accessor (its indices the arguments, and a setter's value
         /// after them). A virtual one is of the member as bound here, whose contract every override keeps.
         /// </summary>
+        // ------------------------------------------------------------------ delegates
+
+        /// <summary>
+        /// The Func and Action parameters whose Spec.Pre, Spec.Post or Spec.Total a method's specifications speak of: it
+        /// takes them to be the same in every state, and its callers must give such ones (a lambda reading no state, or
+        /// one of their own such parameters).
+        /// </summary>
+        private HashSet<IParameterSymbol> SteadyParams(IMethodSymbol m)
+        {
+            var named = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
+            var c = _contractOf?.Invoke(m);
+            if (c == null) return named;
+            foreach (var op in c.Requires.Concat(c.Ensures.Select(e => e.Expr)).Where(x => x != null).SelectMany(x => x.DescendantsAndSelf()).OfType<IInvocationOperation>())
+                if (SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && op.Arguments.Length > 0 && Unconverted(op.Arguments[0].Value) is IParameterReferenceOperation pr)
+                    switch (op.TargetMethod.Name)
+                    {
+                        case "Pre": case "Post": case "Total": named.Add(pr.Parameter.OriginalDefinition); break;
+                        case "Reads": case "ReadsOf": case "Changes": throw new NotTranslated("Spec." + op.TargetMethod.Name + " of a delegate");
+                    }
+            return named;
+        }
+
+        /// <summary>A delegate a callee takes to be steady: a lambda, or a parameter this method takes so.</summary>
+        private void SteadyArguments(IMethodSymbol callee, IReadOnlyList<IArgumentOperation> arguments)
+        {
+            var steady = SteadyParams(callee);
+            if (steady.Count == 0) return;
+            foreach (var a in arguments.Where(a => a.Parameter != null && steady.Contains(a.Parameter.OriginalDefinition)))
+            {
+                var v = Unconverted(a.Value);
+                bool ok = v is IDelegateCreationOperation dc && LambdaOf(dc.Target) != null ||
+                          v is IParameterReferenceOperation pr && SteadyParams(_m).Contains(pr.Parameter.OriginalDefinition) && NeverWritten(pr.Parameter);
+                if (!ok) throw new NotTranslated("a delegate argument not known to be steady");
+            }
+        }
+
+        /// <summary>A lambda, as written (the control-flow graph has its own operation for it).</summary>
+        private IAnonymousFunctionOperation LambdaOf(IOperation target) => target switch
+        {
+            IAnonymousFunctionOperation af => af,
+            IFlowAnonymousFunctionOperation ff => ff.Symbol.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is SyntaxNode syn ? _model.GetOperation(syn) as IAnonymousFunctionOperation : null,
+            _ => null,
+        };
+
+        private void DelegatesHere(string what)
+        {
+            if (_p.UsesPerm || _contract.Modifies != null) throw new NotTranslated(what + " with permissions or Spec.Modifies");
+        }
+
+        private KExpr DelegateCall(IInvocationOperation call)
+        {
+            if (!IsFunc(call.Instance?.Type)) throw new NotTranslated("a call of a delegate of " + call.Instance?.Type);
+            DelegatesHere("a call of a delegate");
+            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a call of a delegate where exceptions are seen");
+            var values = Operands(new[] { call.Instance }.Concat(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToArray());
+            var key = FuncKey(call.Instance.Type);
+            _p.DelegateKeys.Add(key);
+            _p.CallsDelegates = true;
+            var result = call.TargetMethod.ReturnsVoid ? null : Declare("t$" + _temps++, call.TargetMethod.ReturnType);
+            Emit(new KInvoke { Result = result, Delegate = values[0], Args = values.Skip(1).ToArray(), Key = key, At = call.Syntax, DelegateAt = call.Instance.Syntax });
+            return result == null ? null : new KVar(result);
+        }
+
+        /// <summary>
+        /// A lambda made a Func or an Action: what it accepts is its Spec.Requires, what it gives its postconditions and an
+        /// expression's value, as far as they depend on its parameters and what never changes (the rest left out); it
+        /// changes nothing if it writes nothing. Its body is verified on its own.
+        /// </summary>
+        private KExpr Lambda(IDelegateCreationOperation dc, IAnonymousFunctionOperation af)
+        {
+            DelegatesHere("a lambda");
+            var fn = af.Symbol;
+            var c = _contractOf?.Invoke(fn) ?? throw new NotTranslated("a lambda without its contract");
+            if (c.Modifies != null || c.Reads != null) throw new NotTranslated("a lambda with Spec.Modifies or Spec.Reads");
+            var own = new HashSet<ISymbol>(fn.Parameters, SymbolEqualityComparer.Default);
+            if (!c.Requires.All(r => Steady(r, own))) throw new NotTranslated("a lambda whose precondition depends on state");
+            var key = FuncKey(dc.Type);
+            _p.DelegateKeys.Add(key);
+            var invoke = ((INamedTypeSymbol)dc.Type).DelegateInvokeMethod;
+            var t = Declare("t$" + _temps++, dc.Type);
+            var lam = new KLambda { Var = t, Key = key, ResultType = invoke.ReturnsVoid ? null : TypeOf(invoke.ReturnType), NoChange = WritesNothing(af) };
+            foreach (var p in fn.Parameters) lam.Params.Add(("q$" + p.Name, TypeOf(p.Type)));
+            if (c.Requires.Count > 0)
+                lam.Pre = c.Requires.Select(r => Spec(r, null)).Aggregate((a, b) => new KOp("&&", a, b));
+            foreach (var post in c.Ensures.Where(e => e.Guard == null))
+            {
+                var mine = new HashSet<ISymbol>(own, SymbolEqualityComparer.Default);
+                if (post.ResultParameter != null) mine.Add(post.ResultParameter);
+                if (!Steady(post.Expr, mine)) continue;
+                lam.Posts.Add(Spec(post.Expr, post.ResultParameter));
+            }
+            // (an expression's value)
+            if (!invoke.ReturnsVoid && fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax { ExpressionBody: ExpressionSyntax body } &&
+                _model.GetOperation(body) is IOperation value && Steady(value, own))
+            {
+                try { lam.Posts.Add(new KOp("==", new KVar("result"), Spec(value, null))); }
+                catch (NotTranslated) { }
+            }
+            Emit(lam);
+            return new KVar(t);
+        }
+
+        /// <summary>The same in every state: of its own parameters, constants, this, and variables never written after they're declared.</summary>
+        private bool Steady(IOperation op, ISet<ISymbol> own) => op.DescendantsAndSelf().All(o => o.ConstantValue.HasValue || o switch
+        {
+            IBinaryOperation or IUnaryOperation or IParenthesizedOperation or IConditionalOperation or IInstanceReferenceOperation => true,
+            IConversionOperation conv => !IsFunc(conv.Type),
+            IParameterReferenceOperation p => own.Contains(p.Parameter) || NeverWritten(p.Parameter),
+            ILocalReferenceOperation l => NeverWritten(l.Local),
+            _ => false,
+        });
+
+        /// <summary>A local or parameter assigned nowhere after its declaration (nor passed by ref or out).</summary>
+        private bool NeverWritten(ISymbol s)
+        {
+            var owner = s.ContainingSymbol?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+            if (owner == null) return false;
+            var model = _model.Compilation.GetSemanticModel(owner.SyntaxTree);
+            foreach (var id in owner.DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (id.Identifier.Text != s.Name || !SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, s)) continue;
+                SyntaxNode e = id;
+                while (e.Parent is ParenthesizedExpressionSyntax) e = e.Parent;
+                if (e.Parent is AssignmentExpressionSyntax a && a.Left == e) return false;
+                if (e.Parent is PrefixUnaryExpressionSyntax || e.Parent is PostfixUnaryExpressionSyntax pu && !pu.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression)) return false;
+                if (e.Parent is ArgumentSyntax arg && !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>A lambda that writes no field, array cell or captured variable, makes no object and calls only what's [Pure].</summary>
+        private bool WritesNothing(IAnonymousFunctionOperation af)
+        {
+            foreach (var op in af.Body.DescendantsAndSelf())
+            {
+                if (InSpec(op.Syntax)) continue;
+                switch (op)
+                {
+                    case IAssignmentOperation a when a.Target is ILocalReferenceOperation l && !SymbolEqualityComparer.Default.Equals(l.Local.ContainingSymbol, af.Symbol):
+                    case IIncrementOrDecrementOperation i when i.Target is ILocalReferenceOperation il && !SymbolEqualityComparer.Default.Equals(il.Local.ContainingSymbol, af.Symbol):
+                        throw new NotTranslated("a lambda that writes a captured variable");
+                    case IAssignmentOperation a when !(a.Target is ILocalReferenceOperation || a.Target is IParameterReferenceOperation { Parameter.RefKind: RefKind.None }):
+                    case IIncrementOrDecrementOperation i when !(i.Target is ILocalReferenceOperation || i.Target is IParameterReferenceOperation):
+                    case IDeconstructionAssignmentOperation _:
+                    case IObjectCreationOperation _:
+                    case IArrayCreationOperation _:
+                        return false;
+                    case IArgumentOperation arg when arg.Parameter?.RefKind != RefKind.None && arg.Parameter?.RefKind != RefKind.In:
+                        return false;
+                    case IInvocationOperation inv when !(SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract ic && ic.IsPure):
+                        return false;
+                }
+            }
+            return true;
+        }
+
         private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
         {
             callee = callee.OriginalDefinition;
             if (!_isProcedure(callee)) throw new NotTranslated("a call of " + callee.Name);
+            SteadyArguments(callee, arguments);
             _p.Calls.Add(callee);
             var ordered = arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             if (!callee.IsStatic && instance == null) throw new NotTranslated("a call of " + callee.Name + " without its receiver");
@@ -1042,6 +1309,24 @@ namespace CsVerify.Verifier.Boogie
                     switch (inv.TargetMethod.Name)
                     {
                         case "Old": return new KOp("old", Spec(inv.Arguments[0].Value, result));
+                        // (what a Func or an Action accepts and gives, the same in every state; whether it changes nothing)
+                        case "Pre" or "Post" or "Total" or "ChangesNothing" when IsFunc(Unconverted(inv.Arguments[0].Value).Type):
+                        {
+                            var f = Unconverted(inv.Arguments[0].Value);
+                            var key = FuncKey(f.Type);
+                            _p.DelegateKeys.Add(key);
+                            var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Select((a, k) => k == 0 ? Spec(f, result) : Spec(a.Value, result)).ToArray();
+                            return inv.TargetMethod.Name switch
+                            {
+                                "Pre" => new KOp("$pre." + key, args),
+                                "Post" => new KOp("$post." + key, args),
+                                "Total" => new KOp("$total." + key, args[0]),
+                                _ => new KOp("$nochange", args[0]),
+                            };
+                        }
+                        // (a foreach's index: of its element in the body, the number gone through at its head)
+                        case "Index" when Unconverted(inv.Arguments[0].Value) is ILocalReferenceOperation ix && _forEachOf.TryGetValue(ix.Local, out var fx):
+                            return new KVar(fx.Index);
                         // (allocated during the call)
                         case "Fresh" when IsRef(Unconverted(inv.Arguments[0].Value).Type):
                             // (its argument read now: only the allocated set is as it was)
