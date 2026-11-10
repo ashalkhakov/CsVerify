@@ -387,6 +387,9 @@ namespace CsVerify.Verifier.Boogie
         public List<string> Keep = new List<string>();
     }
 
+    /// <summary>At a loop's head: every atomic field went by steps from where it was on entry (each change of it is one).</summary>
+    internal sealed class KAtomicSteps : KStmt { }
+
     internal sealed class KAwait : KStmt
     {
         public List<string> Keep = new List<string>();

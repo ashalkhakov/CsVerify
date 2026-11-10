@@ -76,14 +76,14 @@ namespace CsVerify.Verifier.Boogie
         private static readonly HashSet<string> Known = new HashSet<string>
         {
             "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
-            "RunsConcurrentlyAttribute",
+            "RunsConcurrentlyAttribute", "TakesNoLocksAttribute",
         };
 
         private static bool KnownAttributes(IMethodSymbol m) =>
             m.GetAttributes().All(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace || Known.Contains(a.AttributeClass.Name)) &&
             // (nor one another member's attribute names: an atomic field's step, a lock's invariant)
             !m.ContainingType.GetMembers().SelectMany(x => x.GetAttributes())
-                .Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace)
+                .Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "AtomicAttribute")
                 .Any(a => a.ConstructorArguments.Concat(a.NamedArguments.Select(n => n.Value)).Any(v => v.Value is string name && name == m.Name));
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
@@ -321,6 +321,14 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
+            // (the atomic fields' steps, kept wherever the fields are forgotten)
+            foreach (var f in fields.Where(f => Atomics.IsAtomic(f) && Atomics.StepOf(f) != null && IsFunction(Atomics.StepOf(f).OriginalDefinition)))
+            {
+                var step = Atomics.StepOf(f).OriginalDefinition;
+                var a = new KVar("x$old");
+                var b = new KVar("x$now");
+                _printer.AtomicSteps[FieldMap(f)] = new KOp("||", new KOp("==", a, b), Checks.MathOf(new KFnCall { Callee = step, Args = new KExpr[] { a, b } }, this, step));
+            }
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
                 .Concat(models.Select(m => m.Name)).ToHashSet();
             var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);

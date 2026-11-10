@@ -558,7 +558,24 @@ A `SemaphoreSlim` of count 1 that guards state is a lock that can be held across
 `g.Wait()`) takes it as entering a lock does, an await inside its `try` keeps what it guards (nobody else can have it),
 and `g.Release()` proves its invariants (CSV1024). Taking it while it's held is reported by the static checks (CSV1025).
 
-A lock inside another, a call of the program's code under a lock or a gate, try-locks, lock levels, atomics, and tasks
+**Lock levels.** Locks may be taken one inside another, and code may be called under them: in which order levels
+are taken, what a call may take (through every call, override and callback), delegates, waits under a lock, and
+`Monitor.Wait`, are CsVerify's engine's static checks (CSV1025), from its lock-level analysis. What it proves, Boogie
+proves: two locks of one `OrderedBy` field or class, of two objects (a variable's, a parameter's, a readonly field's,
+or this), are taken in increasing order of their id, where both are taken (`from.Id < to.Id` before `lock (from.Lock)
+lock (to.Lock)`) and at a call that takes the second of an argument (CSV1025). A lock may be another object's lock
+field, its guarded fields forgotten at that object, or an object of a class with a level. A call under a lock that may
+take the same lock again, and array elements as locks, aren't translated yet.
+
+**Atomic fields.** An `[Atomic(Step = nameof(S))]` field's map is what this thread last saw or wrote there. A read in
+code first lets the others take steps (a fresh value, the same or `S(last, now)`), and is then known; a plain write is
+proved a step from what it overwrites, which the others may have moved too (CSV1030); `Volatile.Read`/`Write` and
+`Interlocked`'s `Read`, `Exchange`, `CompareExchange` (a step where it compares equal), `Increment`, `Decrement` and
+`Add` (wrapping, as at run time) are each one step after the others'. A plain read or write of one that isn't
+`volatile` is CSV1030. Wherever the field is forgotten (a call, an await, `$havoc`, a delegate's call) it went by
+steps (free postconditions, at every object allocated before and at the statics'), and at every loop head it went
+by steps since the method's entry: each change of it is a step, and steps are transitive (proved by the static checks,
+CSV1030). An atomic field needs no lock in concurrent code. Try-lock flags (`Interlocked` on a lock's flag) and tasks
 with permissions aren't translated yet.
 
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
@@ -663,7 +680,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
    `Spec.Modifies`);
 7. locks, async and threads (done: awaits with confined locals, lock statements, semaphore gates, tasks awaited
-   later, `Task.Run`, threads, concurrent code; next: try-locks, lock levels, atomics, tasks with permissions);
+   later, `Task.Run`, threads, concurrent code, lock levels' order by id, atomic fields; next: try-locks, tasks with
+   permissions, locks taken again through calls);
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
 

@@ -32,7 +32,10 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsTypeParameter(t) || IsGhost(t) && InSubset(GhostOf(t));
+                                                    IsData(t) || IsTypeParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t);
+
+        /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
+        public static bool IsToken(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.CancellationToken";
 
         /// <summary>The program's data types (closed hierarchies of positional records), for the run this thread is in.</summary>
         [System.ThreadStatic] public static DataTypes Data;
@@ -147,6 +150,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What runs concurrently (CsVerify's engine's: marked, or started alongside), for the run this thread is in.</summary>
         [System.ThreadStatic] public static StartedDelegates Started;
 
+        /// <summary>The locks' levels and what code takes (CsVerify's engine's static analysis), for the run this thread is in.</summary>
+        [System.ThreadStatic] public static LockLevels Levels;
+
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
@@ -241,7 +247,7 @@ namespace CsVerify.Verifier.Boogie
             // (derived from object, or from a class of the subset; an [Owned] one from object)
             (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
             n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable") && !SpecSymbols.IsContractsClass(n) &&
-            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute")) &&
+            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute")) &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
             n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0
                                      : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
@@ -254,7 +260,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Guarded by a lock, and nothing else of CsVerify's.</summary>
         private static bool OnlyGuardedBy(ISymbol s) =>
-            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name == "GuardedByAttribute");
+            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name is "GuardedByAttribute" or "LockLevelAttribute" or "AtomicAttribute");
 
         private static bool CsVerifyAttributes(ISymbol s) =>
             s.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace);
@@ -284,7 +290,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" :
-            IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+            IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

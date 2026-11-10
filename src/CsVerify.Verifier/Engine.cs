@@ -646,6 +646,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.Started = engine.StartedDelegates;
+            Boogie.KernelTypes.Levels = engine.Levels;
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             foreach (var tree in userTrees)

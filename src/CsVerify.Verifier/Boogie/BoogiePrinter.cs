@@ -331,6 +331,7 @@ namespace CsVerify.Verifier.Boogie
                      $"{Agree(r1)} ==> $postS.{key}(d, s1{use}{ru}) == $postS.{key}(d, s2{use}{ru}));");
                 Line($"procedure $call.{key}(d: Ref{decl}){(res == "void" ? "" : $" returns (res: {Ty(res)})")};");
                 if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+                foreach (var l in StepsKept(modifies, true)) Line("  " + l);
                 if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
                 Line($"  free ensures {InRangeOfMemory};");
                 Line($"  free ensures $postS.{key}(d, old({State}){use}{(res == "void" ? "" : ", res")});");
@@ -353,6 +354,7 @@ namespace CsVerify.Verifier.Boogie
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
             Line("procedure $havoc();");
             if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             Line($"  free ensures {InRangeOfMemory};");
         }
@@ -366,6 +368,7 @@ namespace CsVerify.Verifier.Boogie
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
             Line("procedure $await(k: [Ref]bool);");
             if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             Line($"  free ensures {InRangeOfMemory};");
             foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
@@ -373,6 +376,7 @@ namespace CsVerify.Verifier.Boogie
             // (and where only a task the method started may be running alongside: changing nothing if none is)
             Line("procedure $awaitIf(c: bool, k: [Ref]bool);");
             if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             Line($"  free ensures {InRangeOfMemory};");
             foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
@@ -499,6 +503,20 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"function $kvp.Value.{v}(p: Ref): {BoogieOf(v)};");
                 if (Bound(v, $"$kvp.Value.{v}(p)") is string b) Line($"axiom (forall p: Ref :: {{ $kvp.Value.{v}(p) }} {b});");
+            }
+        }
+
+        /// <summary>The atomic fields' maps with a step, and their steps (of x$old and x$now).</summary>
+        public Dictionary<string, KExpr> AtomicSteps = new Dictionary<string, KExpr>();
+
+        /// <summary>Every atomic field among these maps went by steps since the state "before" (old(...)), at every object there then (and the statics').</summary>
+        private IEnumerable<string> StepsKept(IEnumerable<string> maps, bool free)
+        {
+            foreach (var map in maps.Where(AtomicSteps.ContainsKey).OrderBy(x => x, System.StringComparer.Ordinal))
+            {
+                string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new KLit($"old({map}[{o}])")), "x$now", new KLit($"{map}[{o}]")), InProcedure);
+                yield return $"{(free ? "free ensures" : "assume")} (forall o: Ref :: old($Alloc[o]) ==> {At("o")});";
+                yield return $"{(free ? "free ensures" : "assume")} {At("null")};";
             }
         }
 
@@ -651,6 +669,7 @@ namespace CsVerify.Verifier.Boogie
                     Line($"  free ensures (forall a: Ref, i: int :: old($Alloc[a]) && !{w}[a] ==> {map}[a][i] == old({map}[a][i]));");
             }
             Line($"  free ensures {InRangeOfMemory};");
+            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
             Given(p, atEntry);
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
@@ -763,6 +782,9 @@ namespace CsVerify.Verifier.Boogie
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
+                case KAtomicSteps _:
+                    foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
+                    return;
                 case KHavocAll _:
                     Line("    call $havoc();");
                     return;

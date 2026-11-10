@@ -262,6 +262,8 @@ namespace CsVerify.Verifier.Boogie
                 if (b.Kind == BasicBlockKind.Exit) { _block.Jump = new KStop(); continue; }
                 // (an erased finally: nothing goes there)
                 if (b.EnclosingRegion.Kind == ControlFlowRegionKind.Finally && _erased.Contains(b.EnclosingRegion.EnclosingRegion)) { _block.Jump = new KStop(); continue; }
+                // (at a loop's head, every atomic field went by steps since entry)
+                if (heads.Contains(b.Ordinal) && _p.Fields.Any(Atomics.IsAtomic)) Emit(new KAtomicSteps());
                 foreach (var op in b.Operations)
                 {
                     Statement(op);
@@ -695,9 +697,13 @@ namespace CsVerify.Verifier.Boogie
                     else if (fe.Collection == null) Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
                     return;
                 }
-                case IFlowCaptureOperation lk when Unconverted(lk.Value) is IFieldReferenceOperation { Field: var lf } && IsLockObject(lf):
+                case IFlowCaptureOperation lk when Unconverted(lk.Value) is IFieldReferenceOperation { Field: var lf } lkf && IsLockObject(lf):
                     _captured[lk.Id] = Unconverted(lk.Value);
-                    return; // (a lock's object: no value of the kernel's)
+                    // (a lock's object: no value of the kernel's; another object's lock field is read of it, which mustn't be null)
+                    if (!lf.IsStatic && !(lkf.Instance is IInstanceReferenceOperation) && lkf.Instance != null && InSubset(lkf.Instance.Type))
+                        Emit(new KCheck { Cond = new KOp("!=", Expr(lkf.Instance), new KLit("null")), Id = "CSV1013", At = lkf.Syntax,
+                                          Message = $"'{lkf.Instance.Syntax}' might be null in '{lkf.Syntax}'" });
+                    return;
                 case IFlowCaptureOperation fc:
                     _captured[fc.Id] = fc.Value;
                     // (a field captured as what an assignment writes, x.f = c ? a : b: its object, kept)
@@ -738,6 +744,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(target);
                     if (IsOwnedField(field)) _p.UsesPerm = true;
+                    if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis) && !(target.Syntax.Parent is InitializerExpressionSyntax)) value = AtomicWrite(field, instance, onThis, value, target.Syntax);
                     Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = value, At = target.Syntax, InstanceAt = instanceAt });
                     return;
                 }
@@ -854,16 +861,23 @@ namespace CsVerify.Verifier.Boogie
         {
             var arg = call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
             var lockOp = Unconverted(arg is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) ? v : arg);
-            if (!(lockOp is IFieldReferenceOperation { Field: IFieldSymbol lockField } fr) || !(lockField.IsStatic || fr.Instance is IInstanceReferenceOperation))
-                throw new NotTranslated("a lock of something other than this object's lock field, or a static one");
             if (KernelTypes.Locks == null) throw new NotTranslated("locks without their guards");
             var stmt = call.Syntax.AncestorsAndSelf().OfType<LockStatementSyntax>().FirstOrDefault() ?? (SyntaxNode)call.Syntax;
-            if (stmt.Ancestors().OfType<LockStatementSyntax>().Any() || stmt.DescendantNodes().OfType<LockStatementSyntax>().Any())
-                throw new NotTranslated("a lock inside another");
-            var owner = lockField.IsStatic ? null : (KExpr)new KVar("this");
+            // (whose lock: a lock field of this object, of an object a variable holds, a static one; or an object of a class with a level)
+            IFieldSymbol lockField = null;
+            KExpr owner;
+            if (lockOp is IFieldReferenceOperation { Field: IFieldSymbol lf } fr && IsLockObject(lf))
+            {
+                lockField = lf;
+                owner = lf.IsStatic ? null : fr.Instance is IInstanceReferenceOperation ? new KVar("this") : Fixed(fr.Instance) ? Expr(fr.Instance) : throw new NotTranslated("a lock of an object that may change");
+            }
+            else if (Fixed(lockOp) && LockLevels.LeveledClass(lockOp.Type) != null) owner = Expr(lockOp);
+            else throw new NotTranslated("a lock of something other than a lock field or an object with a level");
             if (call.TargetMethod.Name == "Enter")
             {
                 if (call.Arguments.Length == 2) Emit(new KAssign { Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()), Value = new KLit("true") });
+                ProveOrderAt(stmt);
+                if (lockField == null) return;
                 foreach (var g in KernelTypes.Locks.GuardedBy(lockField).Where(g => g.IsStatic == lockField.IsStatic))
                 {
                     if (!IsField(g)) throw new NotTranslated("a guarded member the kernel doesn't have: " + g.Name);
@@ -875,9 +889,151 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
                     Emit(new KSpecStmt { Spec = InvariantCall(inv, owner), Assume = true, At = stmt, ArgumentAt = stmt });
             }
-            else
+            else if (lockField != null)
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
                     Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = stmt, Message = $"the invariant of lock '{lockField.Name}' might not hold when it is released" });
+        }
+
+        /// <summary>This object, a local or a parameter assigned nowhere in the method, or a field of one: the same object while a lock of it is held.</summary>
+        private bool Fixed(IOperation op)
+        {
+            while (op is IConversionOperation { IsImplicit: true } c) op = c.Operand;
+            return op switch
+            {
+                IInstanceReferenceOperation _ => true,
+                ILocalReferenceOperation l => NeverWritten(l.Local) || l.Local.DeclaringSyntaxReferences.Length == 1 && OnlyDeclared(l.Local),
+                IParameterReferenceOperation p => NeverWritten(p.Parameter),
+                IFieldReferenceOperation f => (f.Field.IsReadOnly || f.Field.IsConst) && (f.Instance == null || Fixed(f.Instance)),
+                _ => false,
+            };
+        }
+
+        private bool OnlyDeclared(ILocalSymbol l) =>
+            !_decl.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => a.Left is IdentifierNameSyntax n && n.Identifier.Text == l.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(n).Symbol, l));
+
+        /// <summary>An owner as written (null: this), as a value in a specification.</summary>
+        private KExpr OwnerValue(ExpressionSyntax owner)
+        {
+            if (owner == null) return new KVar("this");
+            var op = _model.GetOperation(owner);
+            while (op is IConversionOperation { IsImplicit: true } c) op = c.Operand;
+            while (op is IParenthesizedOperation p) op = p.Operand;
+            return op != null && Fixed(op) ? Spec(op, null) : throw new NotTranslated("a lock's owner that may change: " + owner);
+        }
+
+        private KExpr KeyOf(IFieldSymbol key, KExpr owner)
+        {
+            _p.Fields.Add(key.OriginalDefinition);
+            return new KField { Field = key.OriginalDefinition, Instance = owner, At = _decl, InstanceAt = _decl };
+        }
+
+        /// <summary>
+        /// A lock taken while another of its field or class is held (Account's Lock of from, then of to): in increasing
+        /// order of its OrderedBy id (CSV1025), as CsVerify's engine proves it. Which locks are held is its static analysis's.
+        /// </summary>
+        private void ProveOrderAt(SyntaxNode stmt)
+        {
+            var levels = KernelTypes.Levels;
+            if (levels == null) return;
+            var a = levels.AcquiredAt(stmt, _model);
+            if (a?.Lock == null || a.Element || a.Static || !(LockLevels.OrderedBy(a.Lock) is IFieldSymbol key)) return;
+            if (!(key.IsReadOnly || key.IsConst)) throw new NotTranslated("a lock ordered by what may change");
+            foreach (var h in levels.HeldAt(a.At, _decl, _model))
+            {
+                if (h == null || !SymbolEqualityComparer.Default.Equals(h.Lock, a.Lock) || h.Element || h.Receiver == a.Receiver) continue;
+                Emit(new KCheck { Cond = new KOp("<", KeyOf(key, OwnerValue(h.Owner)), KeyOf(key, OwnerValue(a.Owner))), Id = "CSV1025", At = a.At, NotAssumedAfter = true,
+                                  Message = $"'{a.Receiver}''s '{a.Lock.Name}' might not come after '{h.Receiver}''s by '{key.Name}': two of them taken in different orders can deadlock" });
+            }
+        }
+
+        // ------------------------------------------------------------------ atomic fields
+
+        private KExpr Step(ISymbol field, KExpr old, KExpr now)
+        {
+            var step = Atomics.StepOf(field)?.OriginalDefinition;
+            if (step == null) return null;
+            if (!_isFunction(step)) throw new NotTranslated("an atomic field's step that isn't a function: " + step.Name);
+            return new KOp("||", new KOp("==", old, now), new KFnCall { Callee = step, Args = new[] { old, now }, At = _decl });
+        }
+
+        /// <summary>
+        /// The others take their steps: the field at the object is now the same as this thread last knew, or a step on;
+        /// this thread now knows that value.
+        /// </summary>
+        private KExpr OthersStep(ISymbol field, KExpr o, bool onThis, SyntaxNode at)
+        {
+            var now = Declare("t$" + _temps++, FieldType(field));
+            Emit(new KHavoc { Var = now });
+            var last = new KField { Field = field, Instance = o, OnThis = onThis, At = at, InstanceAt = at };
+            if (Step(field, last, new KVar(now)) is KExpr step) Emit(new KSpecStmt { Spec = step, Assume = true, At = at, ArgumentAt = at });
+            Emit(new KFieldStore { Field = field, Instance = o, OnThis = onThis, Value = new KVar(now), At = at, InstanceAt = at });
+            return new KVar(now);
+        }
+
+        private KExpr AtomicRead(ISymbol field, KExpr o, bool onThis, SyntaxNode at)
+        {
+            if (field is IFieldSymbol { IsVolatile: false })
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1030", At = at, NotAssumedAfter = true,
+                                  Message = $"'{at}' reads [Atomic] '{field.Name}' plainly, which the compiler may reorder or keep from an earlier read: declare it volatile, or read it with Volatile.Read or Interlocked" });
+            return OthersStep(field, o, onThis, at);
+        }
+
+        /// <summary>A plain write: one step from whatever the others have made it, which this thread doesn't read first (CSV1030).</summary>
+        private KExpr AtomicWrite(ISymbol field, KExpr o, bool onThis, KExpr v, SyntaxNode at)
+        {
+            if (field is IFieldSymbol { IsVolatile: false })
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1030", At = at, NotAssumedAfter = true,
+                                  Message = $"'{at}' writes [Atomic] '{field.Name}' plainly, which the compiler may reorder: declare it volatile, or write it with Volatile.Write or Interlocked" });
+            var written = Declare("t$" + _temps++, FieldType(field));
+            Emit(new KAssign { Var = written, Value = v });
+            var cur = OthersStep(field, o, onThis, at);
+            if (Step(field, cur, new KVar(written)) is KExpr step)
+                Emit(new KCheck { Cond = step, Id = "CSV1030", At = at,
+                                  Message = $"this write of [Atomic] '{field.Name}' might not be a step from what it overwrites, which another thread may have changed since this one read it: write it with Interlocked.CompareExchange, or a value any it could replace allows" });
+            return new KVar(written);
+        }
+
+        /// <summary>Volatile.Read/Write and Interlocked's operations on an atomic field: each one step after the others'; what it writes, a step (CSV1030).</summary>
+        private KExpr AtomicCall(IInvocationOperation inv)
+        {
+            var ordered = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var target = ordered[0].Value is IFlowCaptureReferenceOperation c && _captured.TryGetValue(c.Id, out var cv) ? cv : ordered[0].Value;
+            if (!(Unconverted(target) is IFieldReferenceOperation fr) || !Atomics.IsAtomic(fr.Field)) throw new NotTranslated("Interlocked of a field that isn't atomic");
+            var (field, o, onThis, _) = FieldOf(fr);
+            // (each argument evaluated, in a variable of its own: the checks below are of values)
+            var args = ordered.Skip(1).Select(a =>
+            {
+                var t = Declare("t$" + _temps++, a.Value.Type);
+                Emit(new KAssign { Var = t, Value = Expr(a.Value) });
+                return (KExpr)new KVar(t);
+            }).ToArray();
+            var type = FieldType(field);
+            var cur = OthersStep(field, o, onThis, inv.Syntax);
+            string what = $"'{inv.Syntax}' might not be a step of [Atomic] '{field.Name}'";
+            void Write(KExpr v, KExpr when = null)
+            {
+                if (Step(field, cur, v) is KExpr step)
+                    Emit(new KCheck { Cond = when == null ? step : new KOp("==>", when, step), Id = "CSV1030", At = inv.Syntax, Message = what });
+                Emit(new KFieldStore { Field = field, Instance = o, OnThis = onThis, Value = when == null ? v : new KOp("ite", when, v, cur), At = inv.Syntax, InstanceAt = inv.Syntax });
+            }
+            var name = (inv.TargetMethod.ContainingType.Name == "Volatile" ? "Volatile." : "") + inv.TargetMethod.Name;
+            switch (name)
+            {
+                case "Volatile.Read": case "Read": return cur;
+                case "Volatile.Write": Write(args[0]); return null;
+                case "Increment": case "Decrement": case "Add":
+                {
+                    // (wrapping at the type's ends, as at run time)
+                    var delta = name == "Increment" ? new KLit("1") : name == "Decrement" ? new KLit("(-1)") : args[0];
+                    var t = Declare("t$" + _temps++, type);
+                    Emit(new KAssign { Var = t, Value = new KArith { Op = "+", Left = cur, Right = delta, Type = type, Mode = KMode.Unchecked, At = inv.Syntax } });
+                    Write(new KVar(t));
+                    return new KVar(t);
+                }
+                case "Exchange": Write(args[0]); return cur;
+                case "CompareExchange": Write(args[0], new KOp("==", cur, args[1])); return cur;
+                default: throw new NotTranslated(name + " of an atomic field");
+            }
         }
 
         // ------------------------------------------------------------------ gates and concurrent code
@@ -890,8 +1046,7 @@ namespace CsVerify.Verifier.Boogie
                 throw new NotTranslated("a semaphore other than this object's gate");
             var at = call.Syntax;
             // (taking one while it's held waits for itself: CsVerify's engine's static checks report it, CSV1025)
-            if (GatesHeld(at).Any(g => !SymbolEqualityComparer.Default.Equals(g, gate)) || at.AncestorsAndSelf().OfType<LockStatementSyntax>().Any())
-                throw new NotTranslated("a gate taken while another lock is held");
+            // (taken inside another lock: in order of levels, CsVerify's engine's static checks say)
             return gate;
         }
 
@@ -936,7 +1091,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void Held(ISymbol field, KExpr o, SyntaxNode at)
         {
-            if (!Concurrent || InSpec(at) || KernelTypes.Locks?.GuardOf(field) != null) return;
+            if (!Concurrent || InSpec(at) || KernelTypes.Locks?.GuardOf(field) != null || Atomics.IsAtomic(field)) return;
             if (field is IFieldSymbol x ? x.IsReadOnly || x.IsConst : field is IPropertySymbol p && (p.SetMethod == null || p.SetMethod.IsInitOnly)) return;
             string fix = "guard it with a lock, hold a Spec.Acc for it (the class must be [Owned]), or make it [Atomic]";
             if (o == null)
@@ -965,11 +1120,24 @@ namespace CsVerify.Verifier.Boogie
             Confined().Select(l => (KExpr)new KOp("==", o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(new KLit("false")).Aggregate((a, b) => new KOp("||", a, b));
 
         /// <summary>A call while a lock is held, of what may take it again (or other locks, in an order not translated yet): not yet.</summary>
-        private void UnderLock(IMethodSymbol callee, SyntaxNode at)
+        private void UnderLock(IMethodSymbol callee, SyntaxNode at, IOperation instance, IReadOnlyList<IArgumentOperation> arguments)
         {
-            if (at == null || !at.AncestorsAndSelf().OfType<LockStatementSyntax>().Any(l => _decl.Span.Contains(l.Span)) && !GatesHeld(at).Any()) return;
-            if (_contractOf?.Invoke(callee) is Contract c && (c.IsPure || c.IsLemma)) return;
-            if (callee.DeclaringSyntaxReferences.Length > 0) throw new NotTranslated("a call under a lock of the program's " + callee.Name);
+            if (at == null || KernelTypes.Levels == null || _contractOf?.Invoke(callee) is Contract c && (c.IsPure || c.IsLemma)) return;
+            var held = KernelTypes.Levels.HeldAt(at, _decl, _model).Where(h => h?.Lock != null).ToList();
+            if (held.Count == 0) return;
+            foreach (var t in KernelTypes.Levels.OfCall(at, _model, _m).Taken)
+                foreach (var h in held.Where(h => SymbolEqualityComparer.Default.Equals(h.Lock, t.Lock) && !t.Element))
+                {
+                    // (another object's: in increasing order of id, proved at the call; the same one's, taken again: not yet)
+                    if (!(t.Origin is LockLevels.Origin { AtCall: true } o) || !(LockLevels.OrderedBy(t.Lock) is IFieldSymbol key) || h.Static)
+                        throw new NotTranslated("a call under a lock that may take it again");
+                    var given = o.Index < 0 ? instance : arguments.FirstOrDefault(x => x.Parameter?.Ordinal == o.Index)?.Value;
+                    while (given is IConversionOperation { IsImplicit: true } cv) given = cv.Operand;
+                    if (given == null || given.Syntax.ToString() == h.Receiver || !Fixed(given)) throw new NotTranslated("a call under a lock that may take it again");
+                    if (!(key.IsReadOnly || key.IsConst)) throw new NotTranslated("a lock ordered by what may change");
+                    Emit(new KCheck { Cond = new KOp("<", KeyOf(key, OwnerValue(h.Owner)), KeyOf(key, Spec(given, null))), Id = "CSV1025", At = at, NotAssumedAfter = true,
+                                      Message = $"'{at}' takes '{t.Lock.Name}' (in '{t.In?.Name}') of '{given.Syntax}', which might not come after '{h.Receiver}''s by '{key.Name}': two of them taken in different orders can deadlock" });
+                }
         }
 
         // ------------------------------------------------------------------ async
@@ -1008,7 +1176,7 @@ namespace CsVerify.Verifier.Boogie
                     try { value = Call(call); }
                     finally { _awaiting = false; }
                     break;
-                case IInvocationOperation wait when IsSemaphore(wait.TargetMethod.ContainingType) && wait.TargetMethod.Name == "WaitAsync" && wait.Arguments.All(a => !InSubset(a.Value.Type)):
+                case IInvocationOperation wait when IsSemaphore(wait.TargetMethod.ContainingType) && wait.TargetMethod.Name == "WaitAsync" && wait.Arguments.All(a => IsToken(a.Value.Type)):
                     gate = GateOf(wait);
                     break;
                 case IInvocationOperation lib when lib.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && lib.TargetMethod.Name is "Yield" or "Delay":
@@ -1655,6 +1823,7 @@ namespace CsVerify.Verifier.Boogie
                                                       !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2"):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e);
+                    if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis)) return AtomicRead(field, instance, onThis, e.Syntax);
                     return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
                 }
                 case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
@@ -1852,12 +2021,15 @@ namespace CsVerify.Verifier.Boogie
             // (a delegate type's contract: its Invoke is a procedure of it alone, as an interface member is)
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke && Contracted(call.TargetMethod.ContainingType))
             {
-                if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a call of a delegate where exceptions are seen");
                 return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
             }
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
             // (a lock statement's Monitor.Enter and Monitor.Exit)
             if (call.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Monitor" && call.TargetMethod.Name is "Enter" or "Exit") { Monitor(call); return null; }
+            // (Interlocked and Volatile of an atomic field: one step each)
+            if (call.TargetMethod.ContainingType?.ToDisplayString() is "System.Threading.Interlocked" or "System.Threading.Volatile" && call.Arguments.Length > 0 &&
+                call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Parameter.RefKind != RefKind.None)
+                return AtomicCall(call);
             // (a gate: taken by Wait, given back by Release)
             if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Wait" && call.Arguments.Length == 0) { Take(GateOf(call), call.Syntax); return null; }
             if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Release" && call.Arguments.Length == 0)
@@ -1989,13 +2161,15 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!IsFunc(call.Instance?.Type)) throw new NotTranslated("a call of a delegate of " + call.Instance?.Type);
             DelegatesHere("a call of a delegate");
-            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a call of a delegate where exceptions are seen");
+            var throwsTo = _cfgBlock != null ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
             var values = Operands(new[] { call.Instance }.Concat(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToArray());
             var key = FuncKey(call.Instance.Type);
             _p.DelegateKeys.Add(key);
             _p.CallsDelegates = true;
             var result = call.TargetMethod.ReturnsVoid ? null : Declare("t$" + _temps++, call.TargetMethod.ReturnType);
             Emit(new KInvoke { Result = result, Delegate = values[0], Args = values.Skip(1).ToArray(), Key = key, At = call.Syntax, DelegateAt = call.Instance.Syntax });
+            // (where exceptions are seen: it may throw, anything)
+            if (throwsTo != null) Emit(new KFork { Overflow = new KLit("false"), Target = throwsTo, Exception = null });
             ForgetCaptured();
             return result == null ? null : new KVar(result);
         }
@@ -2198,7 +2372,7 @@ namespace CsVerify.Verifier.Boogie
             }
             else callee = callee.OriginalDefinition;
             if (!list && !_isProcedure(callee)) throw new NotTranslated("a call of " + callee.Name);
-            UnderLock(callee, at);
+            UnderLock(callee, at, instance, arguments);
             _p.Calls.Add(callee);
             var ordered = arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             if (!callee.IsStatic && instance == null && !listCtor) throw new NotTranslated("a call of " + callee.Name + " without its receiver");

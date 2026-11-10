@@ -800,6 +800,24 @@ public static class Th
         }
 
         [Fact]
+        public void LockLevelsAndAtomics_AreBoogies()
+        {
+            // locks in order of levels and ids (through calls too), semaphores above them, atomic fields by their steps
+            var root = Harness.RepoRoot();
+            var files = new[] { "Good/LockLevels.cs", "Buggy/LockLevelBugs.cs", "Good/AtomicFields.cs", "Buggy/AtomicBugs.cs" }
+                .Select(f => Path.Combine(root, "samples", f)).ToArray();
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var only = new VerifierOptions();
+            only.Only.AddRange(b.Methods.Select(m => m.Name));
+            var c = Engine.VerifyFiles(files, only);
+            Assert.True(Agree(c, b) >= 30, "agreeing: " + Agree(c, b));
+            foreach (var good in new[] { "Bank.Transfer", "Bank.Sweep", "AuditLog.WriteAsync", "Stats.Hit", "Stats.Observe", "Stats.Configuration", "Stats.Use" })
+                Assert.True(b[good].Verified, good);
+            foreach (var bug in new[] { "LevelBugs.Transfer", "Counter.LostUpdate", "Counter.Wraps", "Counter.TwoReads", "Counter.Torn" })
+                Assert.False(b[bug].Verified, bug);
+        }
+
+        [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, new VerifierOptions { Engine = "boogie" });
