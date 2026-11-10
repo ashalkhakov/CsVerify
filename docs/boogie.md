@@ -436,8 +436,13 @@ override only of the program's members, an abstract member's contract from its c
 - `Spec.Reads(R)` of a `[Pure]` member is Dafny's frame axiom: two memories that agree on every object in `R` give it
   one value; its body reads only objects in `R` (CSV1017).
 
-Not yet: type tests and casts, generic types, invariants of classes that aren't `[Owned]` (immutable
-objects).
+An immutable class (each instance field readonly) may have `[Invariant]`s, as a data type does. Each constructor
+proves them at every return (CSV1015, "when the constructor of C returns"). They are assumed of every object of the
+class that comes in: a parameter, `this` (except in an invariant, or what one calls), a field read, a call's result,
+a new object. `object` is a reference type of the subset.
+
+Not yet: type tests and casts, generic types, and a virtual call on an object the method made, which CsVerify's
+engine resolves by the object's class. That needs dynamic types for objects, as exceptions have.
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
@@ -582,10 +587,17 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
 - `Spec.Decreases(d)` of a data value is its rank. A lemma or `[Pure]` function that may throw (a `switch` without
   a case) is CSV1011.
 - Instance members of a data record are procedures (and functions) on `this`, a value.
-- A record's `[Invariant]`s (of its fields alone) hold of its values: each construction checks them (CSV1015), and a
-  value that comes in (a parameter, `this`, a call's result, a field read in code, a constructed one) is `$valid.`*T*,
-  which gives its invariants, and, where a case is tested, its parts' validity. An invariant that reads more (mutable
-  state) is CsVerify's engine's, which reports it.
+- A record's `[Invariant]`s (of its fields, and of functions of values: static ones whose parameters are data or
+  scalars, `Math.Max`, `Min` and `Abs`) hold of its values. Each construction checks them (CSV1015). A value that
+  comes in (a parameter, `this`, a call's result, a field read in code, a constructed one, one a pattern binds) is
+  `$valid.`*T*, which gives its invariants. Where a case is tested, it also gives its parts' validity, and a base
+  type's validity is its cases' (`$valid.Ins(d) && $is.Viol(d) ==> $valid.Viol(d)`). The functions an invariant calls
+  read no arrays, so its axiom names no memory. An invariant that reads mutable state is reported from its
+  declaration by the checks shared with CsVerify's engine (CSV1015). A value's validity then says nothing of it,
+  which is sound, and a construction still checks it.
+- A record as an `object` is an object of its own: a reference not null, which no other is known to be, even when
+  their values are equal (records have no identity CsVerify models).
+- A closed base's constructor that does nothing (`private Avl() { }`) is a procedure of no statements.
 - `Ghost<T>` is erased: `Ghost.Of(x)` and `g.Value` are the value.
 
 **Generics.** A type parameter's values are boxes (`Box`); `$box.`*T* and `$unbox.`*T* (each the other's inverse)
@@ -725,8 +737,7 @@ lambdas and method groups; delegate types with contracts.
 Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types and static
 generic methods.
 
-Not yet (such a method is verified by CsVerify's engine): records compared as `object`,
-invariants of records that read mutable state, generic classes and constrained type parameters,
+Not yet (such a method is verified by CsVerify's engine): generic classes and constrained type parameters,
 string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
 exception filters, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
 and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
@@ -773,8 +784,10 @@ The steps still to take, in order (each is one construct or two, under the same 
 methods that fall back for it):
 1. assigning a parameter, `this(...)`, object initializers (done);
 2. `Math.Max`, `Min` and `Abs`, bitwise operators (done);
-3. invariants that call functions, records compared as `object`, records' invariants that read mutable state;
-4. interfaces as parameters, generic classes and constrained type parameters;
+3. invariants that call functions, records compared as `object`, records' invariants that read mutable state,
+   immutable classes' invariants (done);
+4. interfaces as parameters, generic classes and constrained type parameters, virtual calls resolved by an object's
+   dynamic type;
 5. exception filters, `Spec.Multiset`, `Bag`, collections keyed by strings, `Keys` and `Values`, interfaces'
    collections;
 6. `Spec.Modifies` lending trees, ghost `ObjSet` fields, functions over more than one predicate instance;

@@ -994,6 +994,76 @@ public static class Bi {
                 Assert.True(b[good].Verified, good);
         }
 
+        // (invariants that call functions of values, a base type's values valid as their cases, records as objects,
+        // an invariant over mutable state, immutable classes' invariants)
+        private const string Invariants = @"
+public abstract record Av
+{
+    private Av() { }
+    public sealed record E() : Av;
+    public sealed record N(int H, Av L, Av R) : Av
+    {
+        [Invariant, GhostFunction] public bool Bal() => H == 1 + Math.Max(Iv.Ht(L), Iv.Ht(R)) && Math.Abs(Iv.Ht(L) - Iv.Ht(R)) <= 1;
+    }
+}
+public sealed class Gg { public int Level; }
+public sealed record Rd(Gg G)
+{
+    [Invariant, Pure] public bool Positive() => G.Level > 0;
+}
+public sealed class Sq
+{
+    public readonly int Side;
+    [Invariant, Pure] public bool Valid() => Side >= 0;
+    public Sq(int side) { Spec.Requires(side >= 0); Spec.Ensures(Side == side); Side = side; }
+    [Pure] public long Area() { Spec.Ensures((long r) => r >= 0); return (long)Side * Side; }
+}
+public sealed class Tl
+{
+    public readonly int Side;
+    [Invariant, Pure] public bool Valid() => Side > 0;
+    public Tl(int side) { Side = side; }
+}
+public static class Iv
+{
+    [Pure] public static int Ht(Av t) => t switch { Av.N n => n.H, _ => 0 };
+    public static Av Node(Av l, Av r)
+    {
+        Spec.Requires(Math.Abs(Ht(l) - Ht(r)) <= 1);
+        Spec.Ensures((Av t) => Ht(t) == 1 + Math.Max(Ht(l), Ht(r)));
+        return new Av.N(checked(1 + Math.Max(Ht(l), Ht(r))), l, r);
+    }
+    public static Av Bad(Av l) { return new Av.N(checked(Ht(l) + 3), l, new Av.E()); }
+    public static int Kids(Av t)
+    {
+        Spec.Ensures((int r) => r <= 1);
+        if (t is not Av.N n) return 0;
+        Spec.Assume(n.L is Av.E);
+        return Ht(n.R) <= 1 ? Ht(n.R) : 1;
+    }
+    public static void Same()
+    {
+        object a = new Av.E();
+        object b = new Av.E();
+        Spec.Assert(a == b);
+    }
+    public static long Uses(Sq s) { Spec.Requires(s != null); Spec.Ensures((long r) => r >= 0); return s.Side; }
+}
+";
+
+        [Fact]
+        public void Invariants_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Invariants) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 14, "by Boogie: " + string.Join(", ", boogie));
+            var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
+            foreach (var bug in new[] { "Iv.Bad", "Iv.Same", "Rd.Positive", "Tl..ctor" })
+                Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
+            foreach (var good in new[] { "Iv.Node", "Iv.Kids", "Iv.Uses", "Sq.Area", "N.Bal" })
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified), good + ": " + names);
+        }
+
         [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {

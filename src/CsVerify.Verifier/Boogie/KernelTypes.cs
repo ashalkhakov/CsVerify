@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
                                                     IsData(t) || IsTypeParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t);
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
@@ -60,7 +60,9 @@ namespace CsVerify.Verifier.Boogie
         public static string FieldFunction(IPropertySymbol p) => "$d." + Ident(p.OriginalDefinition.ContainingType.OriginalDefinition.ToDisplayString() + "." + p.Name);
 
         /// <summary>A data type with [Invariant]s (its own or its bases'): its values are valid ($valid.T).</summary>
-        public static bool HasInvariants(ITypeSymbol t) => IsData(t) && DataTypes.Invariants(DataTypes.Def(t)).Any();
+        /// <summary>A data type with invariants: its own, or (a base's) one of its cases'.</summary>
+        public static bool HasInvariants(ITypeSymbol t) => IsData(t) && (DataTypes.Invariants(DataTypes.Def(t)).Any() ||
+            (Data.Cases(DataTypes.Def(t))?.Any(c => !SymbolEqualityComparer.Default.Equals(c, DataTypes.Def(t)) && DataTypes.Invariants(c).Any()) ?? false));
         public static string ValidName(ITypeSymbol t) => "$valid." + Ident(DataTypes.Def(t).ToDisplayString());
 
         /// <summary>A data value is of this type: not null, and its tag one of the type's cases'.</summary>
@@ -174,7 +176,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsCollection(t);
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsCollection(t) || t?.SpecialType == SpecialType.System_Object;
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
         private static readonly string[] Collections =
@@ -273,8 +275,22 @@ namespace CsVerify.Verifier.Boogie
                                     !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
                                     // (a property may be [Pure]: a function)
                                     !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute")))) &&
-            // (an invariant of an [Owned] class travels with its view; any other's is a data type's, assumed of every object)
-            (SpecSymbols.IsOwned(n) || !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute")));
+            // (an invariant of an [Owned] class travels with its view; any other's is an immutable object's, assumed of every one)
+            (SpecSymbols.IsOwned(n) || !HasInvariantMethods(n) || Immutable(n));
+
+        private static bool HasInvariantMethods(INamedTypeSymbol n) =>
+            n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute"));
+
+        /// <summary>A class whose fields never change once it is built (each readonly, or an auto-property without a setter).</summary>
+        private static bool Immutable(INamedTypeSymbol n) =>
+            n.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic && !f.IsConst).All(f => f.IsReadOnly);
+
+        /// <summary>
+        /// An immutable class with invariants (not [Owned]): proved where each object is built, and assumed of every
+        /// object of it after, as its fields never change (as CsVerify's engine has a data type's).
+        /// </summary>
+        public static bool HasObjectInvariant(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && IsClass(n) && !SpecSymbols.IsOwned(n) && HasInvariantMethods(n) && Immutable(n);
 
         /// <summary>Guarded by a lock, and nothing else of CsVerify's.</summary>
         private static bool OnlyGuardedBy(ISymbol s) =>
@@ -285,7 +301,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A field the kernel has: a heap field (an instance field or auto-property, or a mutable static field) of a class in the subset, of a type in it.</summary>
         public static bool IsField(ISymbol s) =>
-            s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) &&
+            s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) && !IsLockObject(s) && // (a lock's object: no state of the kernel's)
+           
             (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && (!CsVerifyAttributes(s) || OnlyGuardedBy(s)) : IsClass(s.ContainingType));
 
         public static ITypeSymbol FieldType(ISymbol s) => s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;

@@ -195,6 +195,13 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var r in requires.Where(r => Mentions(r.math, Snaps))) Assume(r.math);
                 }
                 if (b == _p.Blocks[0] && _p.ReadsFrame != null) Emit(new KAssign { Var = "r$entry", Value = _p.ReadsFrame });
+                if (b == _p.Blocks[0])
+                {
+                    // (immutable objects received hold their invariants: not this, in its constructor or its invariant)
+                    foreach (var param in _p.Method.Parameters.Where(x => x.RefKind != RefKind.Out))
+                        ObjectInvariant(new KVar(Local(param)), param.Type);
+                    if (_p.HasThis && !_p.IsCtor && !DefinesInvariant(_p.Method)) ObjectInvariant(new KVar("this"), _p.Method.ContainingType);
+                }
                 if (b == _p.Blocks[0] && _p.Frame != null)
                 {
                     // (the frame as it is on entry, and what was allocated then)
@@ -289,6 +296,9 @@ namespace CsVerify.Verifier.Boogie
             foreach (var param in m.Parameters.Where(x => IsView(x.Type) && x.RefKind is RefKind.Ref or RefKind.Out))
                 ProveInvariant(ViewOf(param.Type), new KVar(Local(param)), ret.At, $"when the view '{param.Name}' is given back");
             if (_p.ThisIsView && !_p.IsCtor) ProveInvariant(m.ContainingType, new KVar("this"), ret.At, $"when '{m.Name}' returns");
+            // (an immutable object's invariant: established by its constructor)
+            if (_p.IsCtor && HasObjectInvariant(m.ContainingType))
+                ProveInvariant(m.ContainingType, new KVar("this"), ret.At, $"when the constructor of {m.ContainingType.Name} returns");
             // a non-nullable ref or out parameter is given back not null
             foreach (var param in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out && IsNullable(x.Type) && NotNullable(x.Type)))
                 Assert(new KOp("!=", new KVar(Local(param)), new KLit("null")), At("CSV1014", ret.At, $"'{param.Name}' might be null on return, but its type '{param.Type}' is not nullable"));
@@ -510,6 +520,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KNewObj { Var = n.Var, Type = n.Type, Ctor = n.Ctor, Args = args, ArgsAt = n.ArgsAt, At = n.At,
                                        Check = n.Ctor == null ? null : At("CSV1001", n.At, $"'{n.At}'") });
                     if (sig != null) foreach (var e in sig.Ensures) Inhale(e.Expr, given, null);
+                    ObjectInvariant(new KVar(n.Var), n.Type);
                     return;
                 }
                 case KStore st:
@@ -687,6 +698,8 @@ namespace CsVerify.Verifier.Boogie
                 Receive(v);
             }
             if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
+            if (c.Result != null && Returns(callee) != null) ObjectInvariant(new KVar(c.Result), Returns(callee));
+            foreach (var (ordinal, var) in c.RefOuts) ObjectInvariant(new KVar(var), callee.Parameters[ordinal].Type);
             // (the packages it gives back: its result, and its ref and out arguments)
             foreach (var (ordinal, var) in c.RefOuts.Where(x => IsPackage(callee.Parameters[x.param].Type))) Arrive(new KVar(var), callee.Parameters[ordinal].Type);
             if (c.Result != null && IsPackage(Returns(callee))) Arrive(new KVar(c.Result), Returns(callee));
@@ -1429,6 +1442,25 @@ namespace CsVerify.Verifier.Boogie
             if (KernelTypes.Trees) Assume(new KOp("==", new KOp("sel", new KVar("$root"), o), o));
         }
 
+        /// <summary>
+        /// An invariant, or what one of its class's invariants calls: while it is verified, the invariant isn't assumed
+        /// (a helper could otherwise be proved from the very invariant it defines).
+        /// </summary>
+        private static bool DefinesInvariant(IMethodSymbol m)
+        {
+            var invariants = DataTypes.Invariants(m.ContainingType).Select(i => i.OriginalDefinition).ToList();
+            if (invariants.Any(i => SymbolEqualityComparer.Default.Equals(i, m.OriginalDefinition))) return true;
+            return invariants.SelectMany(i => i.DeclaringSyntaxReferences).Select(r => r.GetSyntax())
+                .Any(n => n.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>().Any(id => id.Identifier.Text == m.Name));
+        }
+
+        /// <summary>An immutable object (or null) of a class with invariants: they hold, as they did when it was built.</summary>
+        private void ObjectInvariant(KExpr o, ITypeSymbol type)
+        {
+            if (!HasObjectInvariant(type) || !(Invariant(type, o) is KExpr inv)) return;
+            Assume(new KOp("||", new KOp("==", o, new KLit("null")), inv));
+        }
+
         /// <summary>The class's [Invariant]s of o (null if it has none).</summary>
         private KExpr Invariant(ITypeSymbol type, KExpr o)
         {
@@ -1705,6 +1737,7 @@ namespace CsVerify.Verifier.Boogie
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis)) Assume(new KOp("!=", v, new KLit("null")));
                     // (a field of an allocated object refers to an allocated object, as CsVerify's engine assumes where it reads one)
                     if (IsRef(FieldType(fd.Field))) Assume(Allocated(o, v));
+                    ObjectInvariant(v, FieldType(fd.Field));
                     return v;
                 }
                 default: throw new NotTranslated("in code: " + e.GetType().Name);

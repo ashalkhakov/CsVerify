@@ -61,7 +61,7 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ the subset
 
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
-        public static bool Candidate(IMethodSymbol m, Contract c) =>
+        public static bool Candidate(IMethodSymbol m, Contract c) => EmptyDataConstructor(m) ||
             (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
              m.IsStatic ? m.MethodKind == MethodKind.Ordinary
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
@@ -71,6 +71,12 @@ namespace CsVerify.Verifier.Boogie
             (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
             (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
+
+        /// <summary>A data type's constructor that does nothing (a closed base's private Avl() { }): nothing to verify.</summary>
+        public static bool EmptyDataConstructor(IMethodSymbol m) =>
+            m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsData(m.ContainingType) && m.Parameters.Length == 0 &&
+            m.DeclaringSyntaxReferences.Length == 1 && m.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax
+                { Initializer: null, ExpressionBody: null, Body: { Statements.Count: 0 } };
 
         /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is CsVerify's engine's to check.</summary>
         private static readonly HashSet<string> Known = new HashSet<string>
@@ -88,7 +94,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
-            !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
+            !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) && !EmptyDataConstructor(m) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
             m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(m.IsStatic && m.TypeParameters.All(IsTypeParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(Returns(m) == null || InSubset(Returns(m))) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In && !HoldsShare(p) || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type) || IsShare(p.Type) && !HoldsShare(p)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
@@ -310,6 +316,8 @@ namespace CsVerify.Verifier.Boogie
             // (the literals last: the stubs' contracts may have some)
             _printer.Literals(_literals);
             _printer.Fields(fields);
+            // (before the data types: their invariants may call functions, which read no arrays)
+            OwnArrays();
             DataTypes();
             // (the lists' models: maps as fields are)
             var models = _pending.SelectMany(p => p.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
@@ -317,7 +325,6 @@ namespace CsVerify.Verifier.Boogie
             _printer.Models(models, _pending.SelectMany(p => p.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
-            OwnArrays();
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
@@ -475,14 +482,20 @@ namespace CsVerify.Verifier.Boogie
             var valid = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Valid).Concat(_signatures.Values.SelectMany(s => s.Valid)), SymbolEqualityComparer.Default);
             for (var work = new Stack<INamedTypeSymbol>(valid); work.Count > 0;)
                 foreach (var c in Data.Cases(work.Pop()) ?? new INamedTypeSymbol[0])
+                {
+                    // (a base's value is valid as the case it is)
+                    if (HasInvariants(c) && valid.Add(c)) work.Push(c);
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
                         if (valid.Add(Verifier.DataTypes.Def(f.Type))) work.Push(Verifier.DataTypes.Def(f.Type));
+                }
             var dv = new KVar("d");
             var validity = new List<(string name, KExpr invariant, List<(string isCase, KExpr part)> parts)>();
             foreach (var t in valid.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
             {
                 var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.Rename(Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition), "this", dv)).ToList();
                 var parts = new List<(string, KExpr)>();
+                foreach (var c in Data.Cases(t).Where(c => !SymbolEqualityComparer.Default.Equals(c, t) && HasInvariants(c)))
+                    parts.Add(("$is." + CaseName(c).Substring(3), new KOp(ValidName(c), dv)));
                 foreach (var c in Data.Cases(t))
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
                         parts.Add(("$is." + CaseName(c).Substring(3), new KOp("||", new KOp("==", new KOp(FieldFunction(f), dv), new KLit("null")), new KOp(ValidName(f.Type), new KOp(FieldFunction(f), dv)))));

@@ -132,10 +132,15 @@ namespace CsVerify.Verifier.Boogie
         {
             var c = contractOf(inv);
             if (c.PureBody == null) throw new NotTranslated("an invariant without an expression body: " + inv.Name);
-            if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation || o is IFieldReferenceOperation ||
+            // (a function it calls is of values alone: static, its parameters data or scalars, as the record's are)
+            bool OfValues(IInvocationOperation call) => IntegerMath(call) ||
+                isFunction(call.TargetMethod) && call.TargetMethod.IsStatic && call.TargetMethod.Parameters.All(x => x.RefKind == RefKind.None && (Scalar(x.Type) || IsData(x.Type)));
+            if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation call && !OfValues(call) || o is IFieldReferenceOperation ||
                                                        o is IPropertyReferenceOperation pr && !(pr.Instance != null && IsData(pr.Instance.Type) && DataTypes.IsPositional(pr.Property.OriginalDefinition)) &&
                                                        !IsViewsObject(pr) && !(pr.Property.Name == "Value" && pr.Instance is IPropertyReferenceOperation inner && IsViewsObject(inner))))
-                throw new NotTranslated("an invariant that reads more than its record's fields: " + inv.Name);
+                // (one that reads mutable state is reported, from its declaration, by the checks shared with CsVerify's
+                // engine; a value's validity then says nothing of it, which is sound, and a construction still checks it)
+                return new KLit("true");
             var l = new Lowering(inv, c, null, c.Model, null, _ => false, isFunction, literal, contractOf);
             return l.Spec(c.PureBody, null);
         }
@@ -250,6 +255,12 @@ namespace CsVerify.Verifier.Boogie
         private KProcedure Run()
         {
             if (SpecSymbols.IsPredicate(_m)) return Predicate();
+            // (a data type's constructor that does nothing: a procedure of no statements, and no object)
+            if (BoogieTranslator.EmptyDataConstructor(_m))
+            {
+                _p.Blocks.Add(new KBlock { Label = "b0", Ordinal = 0, Jump = new KReturn { At = _decl } });
+                return _p;
+            }
             // (Dafny's dynamic frames: what it may write. An [Owned] class's objects are framed by their views instead)
             if (_contract.Modifies != null)
             {
@@ -1590,7 +1601,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>(a call's declared result type, where it's a local's: for unboxing)</summary>
         private ITypeSymbol _resultType;
 
-        private void BindInCode(ILocalSymbol l, KExpr v) => Emit(new KAssign { Var = Declare(Local(l), l.Type), Value = v });
+        private void BindInCode(ILocalSymbol l, KExpr v)
+        {
+            Emit(new KAssign { Var = Declare(Local(l), l.Type), Value = v });
+            // (a value a pattern binds is valid, as every data value is: its invariant was proved where it was built)
+            if (HasInvariants(l.Type)) AssumeValid(new KVar(Local(l)), l.Type);
+        }
 
         /// <summary>A measure: a number, or a data value's rank (how deep it is).</summary>
         private KExpr Measure(IOperation d)
@@ -2096,6 +2112,15 @@ namespace CsVerify.Verifier.Boogie
                 case IParenthesizedOperation par: return Expr(par.Operand);
                 case IConversionOperation conv when conv.Conversion.IsIdentity || conv.IsImplicit && IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
                     return Expr(conv.Operand);
+                // (a data value as an object: an object of its own, which no other is known to be, though they be equal values)
+                case IConversionOperation dobj when dobj.IsImplicit && IsData(dobj.Operand.Type) && dobj.Type.SpecialType == SpecialType.System_Object:
+                {
+                    Expr(dobj.Operand);
+                    var t = Declare("t$" + _temps++, dobj.Type);
+                    Emit(new KHavoc { Var = t });
+                    Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+                    return new KVar(t);
+                }
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
                 case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
@@ -2621,6 +2646,13 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
         {
             var constructed = callee;
+            // (a virtual call on an object made here: CsVerify's engine knows its class and runs its override; dispatch
+            // by an object's dynamic type isn't translated yet)
+            if ((callee.IsVirtual || callee.IsAbstract || callee.IsOverride) && !callee.ContainingType.IsSealed &&
+                Unconverted(instance) is ILocalReferenceOperation { Local: var recv } && _cfg != null &&
+                _cfg.Blocks.SelectMany(bl => bl.Operations).SelectMany(o => o.DescendantsAndSelf()).OfType<ISimpleAssignmentOperation>()
+                    .Any(asg => asg.Target is ILocalReferenceOperation { Local: var tl } && SymbolEqualityComparer.Default.Equals(tl, recv) && Unconverted(asg.Value) is IObjectCreationOperation))
+                throw new NotTranslated("a virtual call on an object made here");
             // (a list's member: the procedure of its stub, as it is for this list's kind)
             bool list = IsCollection(callee.ContainingType);
             bool listCtor = list && callee.MethodKind == MethodKind.Constructor;
