@@ -16,7 +16,7 @@ namespace CsVerify.Verifier.Boogie
     internal static class Heap
     {
         /// <summary>The globals, in the order a modifies clause lists them (the field maps after these, by name).</summary>
-        public static readonly string[] Globals = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).ToArray();
+        public static readonly string[] Globals = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Append("$root").ToArray();
 
         /// <summary>Allocates t: not null, not allocated before (so no reference in hand), now allocated.</summary>
         private static void Allocate(List<KStmt> stmts, string var, KExpr extra = null)

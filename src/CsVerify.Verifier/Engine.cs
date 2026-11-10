@@ -647,6 +647,8 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.Started = engine.StartedDelegates;
             Boogie.KernelTypes.Levels = engine.Levels;
+            Boogie.KernelTypes.Trees = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
+                .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             foreach (var tree in userTrees)

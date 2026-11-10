@@ -277,6 +277,18 @@ namespace CsVerify.Verifier.Boogie
         public string View;
         public ITypeSymbol Type;
         public SyntaxNode At;
+        /// <summary>Own.Take and Own.Give: the [Owns] field, the object given and its view, as written.</summary>
+        public ISymbol Field;
+        public KExpr Value, ViewValue;
+        public SyntaxNode SlotAt, ValueAt, ViewAt;
+    }
+
+    /// <summary>The tree roots change: Take's split (what was below the taken object is in its tree or the container's), Give's join.</summary>
+    internal sealed class KRoots : KStmt
+    {
+        public bool Join;
+        public KExpr Container, Child;
+        public List<string> Siblings = new List<string>();
     }
 
     /// <summary>new C(args): an object allocated into Var, its fields their defaults, then its constructor (null: an implicit one).</summary>

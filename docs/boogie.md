@@ -260,6 +260,25 @@ preconditions are checked well-defined with the views' invariants assumed, as at
 specification is the view's object. `Own.ToAcc` and `Own.FromAcc` change nothing here: a view and `Spec.Acc` are one
 permission.
 
+**Ownership trees.** An `[Owns]` field of an `[Owned]` class holds an object whose view its container keeps
+([objects.md](objects.md#mutable-objects)). Where the program has one, a global `$root: [Ref]Ref` maps each object to
+its tree's root: an object whose view is in hand (made, received, given back) is its own root, and what an `[Owns]`
+field holds is in its container's tree, and isn't its root.
+- `Own.Take(ref c.F, out v)` needs c (CSV1016) and c.F not null (CSV1016); the object comes out with its view, its
+  invariant holding, and c.F is null. c's tree splits: the object is a root now, and of the rest of c's tree, a havocked
+  `split$` says what goes with it, never c and never what c's other `[Owns]` fields hold (those stay in c's tree, each
+  a different object, and different from the one taken).
+- `Own.Give(ref c.F, x, v)` needs c and x (CSV1016), c.F null, v x's view, x not c's root (a cycle, CSV1016), and x's
+  invariant (CSV1015, "when it is given to its owner"); x's tree joins c's:
+  `$root := (lambda y: Ref :: (if $root[y] == x then $root[c] else $root[y]))`.
+- Any other write of an `[Owns]` field is CSV1016; a read of one in code assumes the tree fact of what it holds.
+- `Own.Tree(x)` in a specification is the set of objects in x's tree.
+- A call's frame is the trees it doesn't own: a procedure that writes `[Owned]` fields ensures each unchanged at every
+  object allocated before whose root then wasn't the root of `this` or of a view it got (`old($root[o]) !=
+  old($root[this])`), and `$root` unchanged there too; a constructor's `this` is new, so its frame stays `o != this`.
+- Where a view's invariant is assumed, so is that its reference fields hold allocated objects, so a constructor called
+  in between can't have changed them.
+
 **Predicates.** Viper's, over the same permissions (as [objects.md](objects.md#mutable-objects) describes them, and as
 Viper's Boogie backend, Carbon, encodes them). Instances are a type of their own, `Inst`, each `[Predicate]` an
 injective constructor of its arguments (`i$Seg(from, to, n)`). Beside `perm`, a procedure keeps `pinst: [Inst]int`, how
@@ -323,7 +342,7 @@ checked and assumed in the body (at a call, at entry, after the call), not in Bo
 the snapshots at entry (`psnap$entry`), or, in a caller, of those and of the memory just before the call. Its
 postconditions that read no memory are axioms of every snapshot.
 
-Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state), ownership trees (`[Owns]`, `Own.Take`, `Own.Give`, `Own.Tree`), read shares, `in` views, packages, and
+Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state), read shares, `in` views, packages, and
 `Spec.Modifies` lending trees.
 
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
@@ -658,7 +677,7 @@ lambdas and method groups; delegate types with contracts.
 Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types and static
 generic methods.
 
-Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records compared as `object`,
+Not yet (such a method is verified by CsVerify's engine): shares, records compared as `object`,
 invariants of records that read mutable state, generic classes and constrained type parameters,
 string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
 exception filters, a method that assigns a parameter, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
@@ -690,7 +709,7 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
-   objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
+   objects, predicates, functions over them, array cells, single fields, ownership trees; next: shares, packages,
    `Spec.Modifies`);
 7. locks, async and threads (done: awaits with confined locals, lock statements, semaphore gates, tasks awaited
    later, `Task.Run`, threads, concurrent code, lock levels' order by id, atomic fields, try-locks, tasks with

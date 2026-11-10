@@ -162,6 +162,7 @@ namespace CsVerify.Verifier.Boogie
                         case "set.of": return $"(lambda r$: Ref :: r$ == {a[0]})";
                         case "set.add": return $"{a[0]}[{a[1]} := true]";
                         case "set.union": return $"(lambda r$: Ref :: {a[0]}[r$] || {a[1]}[r$])";
+                        case "$tree": return $"(lambda r$: Ref :: $root[r$] == $root[{a[0]}])";
                         case "set.subset": return $"(forall r$: Ref :: {a[0]}[r$] ==> {a[1]}[r$])";
                         case "set.disjoint": return $"(forall r$: Ref :: !({a[0]}[r$] && {a[1]}[r$]))";
                         case "$state": return State;
@@ -545,6 +546,8 @@ namespace CsVerify.Verifier.Boogie
                 var where = IsIntegral(t) ? $" where (forall o: Ref :: {E(InRange(new KOp("sel", new KVar(map), new KVar("o")), t), InProcedure)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
+            // (each object's ownership tree's root)
+            if (KernelTypes.Trees) Line("var $root: [Ref]Ref;");
         }
 
         private static string FieldParams(IEnumerable<string> fields, IEnumerable<ISymbol> symbols) =>
@@ -667,8 +670,15 @@ namespace CsVerify.Verifier.Boogie
             // views it gets, and the objects it makes)
             var views = (p.ThisIsView ? new[] { "this" } : new string[0])
                 .Concat(m.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out).Select(x => Local(x) + (x.RefKind == RefKind.Ref ? "$in" : ""))).ToList();
+            // (with ownership trees: the views' whole trees, and their roots)
+            // (a constructor's own object is a tree of its own, its root not set yet)
+            string Outside(string o) => KernelTypes.Trees
+                ? string.Concat(views.Select(v => p.IsCtor && v == "this" ? $" && {o} != this" : $" && old($root[{o}]) != old($root[{v}])"))
+                : string.Concat(views.Select(v => $" && {o} != {v}"));
             foreach (var map in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
-                Line($"  free ensures (forall o: Ref :: old($Alloc[o]){string.Concat(views.Select(v => $" && o != {v}"))} ==> {map}[o] == old({map}[o]));");
+                Line($"  free ensures (forall o: Ref :: old($Alloc[o]){Outside("o")} ==> {map}[o] == old({map}[o]));");
+            if (KernelTypes.Trees && modifies.Contains("$root"))
+                Line($"  free ensures (forall o: Ref :: old($Alloc[o]){Outside("o")} ==> $root[o] == old($root[o]));");
             // (Spec.Modifies: every field and cell of an object allocated before, and not in the frame then, is as it was)
             if (p.Frame != null)
             {
@@ -765,6 +775,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = p.Method;
             Line($"  free requires {InRangeOfMemory};");
+            if (p.HasThis && p.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
             if (p.HasThis) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
             // (a new object's fields are their defaults: its caller made them so)
             if (p.IsCtor)
@@ -777,6 +788,8 @@ namespace CsVerify.Verifier.Boogie
                 if (IsRef(x.Type) || IsView(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
                 // (not null: checked at each call's argument)
                 if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
+                // (a view's object is its tree's root)
+                if (KernelTypes.Trees && IsView(x.Type)) Line($"  free requires $root[{name}] == {name};");
                 // (a data value is one of its type's cases)
                 if (IsData(x.Type)) Line($"  free requires {name} == null || {E(IsCase(new KVar(Local(x)), x.Type), cx)};");
             }
@@ -792,6 +805,17 @@ namespace CsVerify.Verifier.Boogie
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
+                case KRoots roots when roots.Join:
+                    Line($"    $root := (lambda y: Ref :: (if $root[y] == {E(roots.Child, cx)} then $root[{E(roots.Container, cx)}] else $root[y]));");
+                    return;
+                case KRoots roots:
+                {
+                    var c = E(roots.Container, cx);
+                    var x = E(roots.Child, cx);
+                    Line("    havoc split$;");
+                    Line($"    $root := (lambda y: Ref :: (if y == {x} then {x} else (if $root[y] == $root[{c}] && y != {c}{string.Concat(roots.Siblings.Select(g => $" && y != {g}[{c}]"))} && split$[y] then {x} else $root[y])));");
+                    return;
+                }
                 case KAtomicSteps _:
                     foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
                     return;

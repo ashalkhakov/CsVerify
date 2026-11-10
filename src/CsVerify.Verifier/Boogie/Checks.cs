@@ -350,7 +350,57 @@ namespace CsVerify.Verifier.Boogie
                     var o = Code(own.Obj);
                     ProveInvariant(own.Type, o, own.At, "when its view is made");
                     Emit(new KAssign { Var = own.View, Value = o });
+                    // (a new tree of its own)
+                    if (KernelTypes.Trees) { _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root"); Emit(new KMapUpdate { Map = "$root", Ref = o, Value = o }); }
                     Receive(o);
+                    return;
+                }
+                case KOwn { Kind: "take" } take:
+                {
+                    // Own.Take(ref c.F, out v): the object c.F owns comes out with its view, its invariant held at rest; c.F is null;
+                    // c's tree splits: what was below the object is now in its own tree, or still in c's
+                    var c = Code(take.Obj);
+                    Assert(Held(c), At("CSV1016", take.At, $"'{take.SlotAt}' changes an [Owned] {take.Field.ContainingType.Name} without holding its view"));
+                    var x = new KOp("sel", new KVar(FieldMap(take.Field)), c);
+                    Assert(new KOp("!=", x, new KLit("null")), At("CSV1016", take.At, $"'{take.SlotAt}' might be null: there is nothing to take"));
+                    Emit(new KAssign { Var = take.View, Value = x });
+                    var child = new KVar(take.View);
+                    // (what an [Owns] field holds is in its container's tree, and isn't its root)
+                    var root = new KVar("$root");
+                    Assume(new KOp("&&", new KOp("==", new KOp("sel", root, child), new KOp("sel", root, c)), new KOp("!=", new KOp("sel", root, child), child)));
+                    var siblings = InstanceFields(take.Field.ContainingType).Where(g => SpecSymbols.IsOwnsField(g) && !SymbolEqualityComparer.Default.Equals(g, take.Field.OriginalDefinition)).Select(FieldMap).ToList();
+                    // (and so is what the container's other [Owns] fields hold, each a different object: they stay in its tree)
+                    foreach (var g in siblings)
+                    {
+                        var held = new KOp("sel", new KVar(g), c);
+                        Assume(new KOp("||", new KOp("==", held, new KLit("null")),
+                            new KOp("&&", new KOp("&&", new KOp("==", new KOp("sel", root, held), new KOp("sel", root, c)), new KOp("!=", new KOp("sel", root, held), held)),
+                                new KOp("!=", held, child))));
+                    }
+                    Emit(new KFieldStore { Field = take.Field, Instance = c, OnThis = true, Value = new KLit("null"), At = take.At, InstanceAt = take.At });
+                    _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root");
+                    if (!_p.Locals.Any(l => l.Name == "split$")) _p.Locals.Add(new KLocal { Name = "split$", Raw = "[Ref]bool" });
+                    Emit(new KRoots { Container = c, Child = child, Siblings = siblings });
+                    AssumeInvariant(take.Type, child);
+                    Receive(child);
+                    return;
+                }
+                case KOwn { Kind: "give" } give:
+                {
+                    // Own.Give(ref c.F, x, v): x and its tree join c's under c.F, which must be empty; v, x's view, is handed over
+                    var c = Code(give.Obj);
+                    var x = Code(give.Value);
+                    var v = Code(give.ViewValue);
+                    Assert(Held(c), At("CSV1016", give.At, $"'{give.SlotAt}' changes an [Owned] {give.Field.ContainingType.Name} without holding its view"));
+                    Assert(new KOp("==", new KOp("sel", new KVar(FieldMap(give.Field)), c), new KLit("null")), At("CSV1016", give.At, $"'{give.SlotAt}' might still own an object: take it first"));
+                    Assert(new KOp("==", v, x), At("CSV1016", give.At, $"'{give.ViewAt}' might not be the view of '{give.ValueAt}'"));
+                    Assert(Held(x), At("CSV1016", give.At, $"'{give.ValueAt}' might have read shares out: join them back (Own.Unshare) first"));
+                    Assert(new KOp("!=", new KOp("sel", new KVar("$root"), c), x), At("CSV1016", give.At, $"'{give.ValueAt}' might own the container: ownership would be a cycle"));
+                    ProveInvariant(give.Type, x, give.At, "when it is given to its owner");
+                    Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("false") });
+                    Emit(new KFieldStore { Field = give.Field, Instance = c, OnThis = true, Value = x, At = give.At, InstanceAt = give.At });
+                    _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root");
+                    Emit(new KRoots { Join = true, Container = c, Child = x });
                     return;
                 }
                 case KOwn { Kind: "fromacc" } from:
@@ -1299,6 +1349,8 @@ namespace CsVerify.Verifier.Boogie
         {
             Assume(new KOp("!", Held(o)));
             Emit(new KMapUpdate { Map = "perm", Ref = o, Value = new KLit("true") });
+            // (an object whose view is in hand is its tree's root: no [Owns] field holds it)
+            if (KernelTypes.Trees) Assume(new KOp("==", new KOp("sel", new KVar("$root"), o), o));
         }
 
         /// <summary>The class's [Invariant]s of o (null if it has none).</summary>
@@ -1322,6 +1374,10 @@ namespace CsVerify.Verifier.Boogie
         private void AssumeInvariant(ITypeSymbol type, KExpr o)
         {
             if (Invariant(type, o) is KExpr inv) Assume(inv);
+            // (what a view's object refers to was there before it: allocated, so nothing built later is any of it)
+            if (KernelTypes.Trees && IsOwnedClass(type))
+                foreach (var g in InstanceFields(type).Where(g => IsRef(FieldType(g))))
+                    Assume(Allocated(o, new KOp("sel", new KVar(FieldMap(g)), o)));
         }
 
         /// <summary>

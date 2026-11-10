@@ -872,6 +872,24 @@ public static class Pw
         }
 
         [Fact]
+        public void OwnershipTrees_AreBoogies()
+        {
+            // [Owns] fields: Own.Take splits a tree, Own.Give joins one; a call's frame is the trees it doesn't own
+            var root = Harness.RepoRoot();
+            var files = new[] { "Good/OwnedList.cs", "Good/AtsViewtypes.cs", "Buggy/TreeOwnershipBugs.cs", "Buggy/ViewtypeBugs.cs" }
+                .Select(f => Path.Combine(root, "samples", f)).ToArray();
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var only = new VerifierOptions();
+            only.Only.AddRange(b.Methods.Select(m => m.Name));
+            var c = Engine.VerifyFiles(files, only);
+            Assert.True(Agree(c, b) >= 35, "agreeing: " + Agree(c, b));
+            foreach (var good in new[] { "SortedNode.InsertAfter", "SortedNode.Digits", "BNode.Insert" })
+                Assert.True(b[good].Verified, good);
+            foreach (var bug in new[] { "Link.AppendSmaller", "TreeOwnershipBugs.Reach", "TreeOwnershipBugs.Bypass", "TreeOwnershipBugs.Cycle", "TreeOwnershipBugs.Stale" })
+                Assert.False(b[bug].Verified, bug);
+        }
+
+        [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, new VerifierOptions { Engine = "boogie" });

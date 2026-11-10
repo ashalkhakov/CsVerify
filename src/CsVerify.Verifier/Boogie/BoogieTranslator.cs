@@ -330,7 +330,7 @@ namespace CsVerify.Verifier.Boogie
                 _printer.AtomicSteps[FieldMap(f)] = new KOp("||", new KOp("==", a, b), Checks.MathOf(new KFnCall { Callee = step, Args = new KExpr[] { a, b } }, this, step));
             }
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
-                .Concat(models.Select(m => m.Name)).ToHashSet();
+                .Concat(models.Select(m => m.Name)).Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).ToHashSet();
             var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);
             var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
             _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);

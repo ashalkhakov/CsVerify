@@ -153,6 +153,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks' levels and what code takes (CsVerify's engine's static analysis), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockLevels Levels;
 
+        /// <summary>The program has ownership trees ([Owns] fields): each object's tree root is the ghost map $root.</summary>
+        [System.ThreadStatic] public static bool Trees;
+
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
@@ -260,7 +263,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Guarded by a lock, and nothing else of CsVerify's.</summary>
         private static bool OnlyGuardedBy(ISymbol s) =>
-            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name is "GuardedByAttribute" or "LockLevelAttribute" or "AtomicAttribute");
+            s.GetAttributes().Where(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace).All(a => a.AttributeClass.Name is "GuardedByAttribute" or "LockLevelAttribute" or "AtomicAttribute" or "OwnsAttribute");
 
         private static bool CsVerifyAttributes(ISymbol s) =>
             s.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace);
@@ -283,7 +286,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m))) yield return m.OriginalDefinition;
         }
 
-        public static KExpr Default(ITypeSymbol t) => new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+        public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;

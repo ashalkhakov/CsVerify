@@ -750,6 +750,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(target);
                     if (IsOwnedField(field)) _p.UsesPerm = true;
+                    if (SpecSymbols.IsOwnsField(field))
+                        Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1016", At = target.Syntax, NotAssumedAfter = true,
+                                          Message = $"'{target.Syntax}': an [Owns] field changes hands only through Own.Take and Own.Give" });
                     if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis) && !(target.Syntax.Parent is InitializerExpressionSyntax)) value = AtomicWrite(field, instance, onThis, value, target.Syntax);
                     Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = value, At = target.Syntax, InstanceAt = instanceAt });
                     return;
@@ -1565,8 +1568,9 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(t);
                 }
                 // (a ghost value: the value itself)
+                // (ghost code: mathematics, in code too)
                 case IInvocationOperation go when SpecSymbols.IsCsVerifyType(go.TargetMethod.ContainingType, "Ghost") && go.TargetMethod.Name == "Of" && go.Arguments.Length == 1:
-                    return lower(go.Arguments[0].Value);
+                    return inSpec ? lower(go.Arguments[0].Value) : Spec(go.Arguments[0].Value, null);
                 case IPropertyReferenceOperation gv when gv.Property.Name == "Value" && IsGhost(gv.Instance?.Type) &&
                                                          !(gv.Instance is IPropertyReferenceOperation { Property.Name: "Obj" } obj && IsView(obj.Instance?.Type)):
                     return lower(gv.Instance);
@@ -1927,6 +1931,16 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e);
                     if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis)) return AtomicRead(field, instance, onThis, e.Syntax);
+                    if (KernelTypes.Trees && SpecSymbols.IsOwnsField(field) && instance != null)
+                    {
+                        // (what an [Owns] field holds is in its container's tree, and isn't its root: it's owned)
+                        var t = Declare("t$" + _temps++, FieldType(field));
+                        Emit(new KAssign { Var = t, Value = new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt } });
+                        var r = new KVar("$root");
+                        Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")),
+                            new KOp("&&", new KOp("==", new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), new KOp("!=", new KOp("sel", r, new KVar(t)), new KVar(t)))) });
+                        return new KVar(t);
+                    }
                     return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
                 }
                 case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
@@ -2565,6 +2579,25 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KOwn { Kind = "fromacc", Obj = obj, View = RefVariable(own.Arguments[1]), Type = own.Arguments[0].Value.Type, At = own.Syntax });
                     return null;
                 }
+                // (Own.Take(ref c.F, out v) and Own.Give(ref c.F, x, v): a tree's unfolding and folding)
+                case "Take" or "Give" when KernelTypes.Trees && Unconverted(own.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value) is IFieldReferenceOperation { Field: var owns } slot &&
+                                           SpecSymbols.IsOwnsField(owns) && slot.Instance != null && IsOwnedClass(owns.ContainingType):
+                {
+                    var args = own.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var container = slot.Instance is IInstanceReferenceOperation ? new KVar("this") : Expr(slot.Instance);
+                    _p.Fields.Add(owns.OriginalDefinition);
+                    if (own.TargetMethod.Name == "Take")
+                    {
+                        var view = RefVariable(args[1]);
+                        Emit(new KOwn { Kind = "take", Obj = container, Field = owns.OriginalDefinition, View = view, Type = owns.Type, At = own.Syntax, SlotAt = slot.Syntax });
+                        return new KVar(view);
+                    }
+                    Emit(new KOwn { Kind = "give", Obj = container, Field = owns.OriginalDefinition, Value = Expr(args[1].Value), ViewValue = Expr(args[2].Value), Type = owns.Type,
+                                    At = own.Syntax, SlotAt = slot.Syntax, ValueAt = args[1].Value.Syntax, ViewAt = args[2].Value.Syntax });
+                    return null;
+                }
+                case "Tree" when KernelTypes.Trees:
+                    return new KOp("$tree", Expr(own.Arguments[0].Value));
                 case "Drop" when IsView(own.Arguments[0].Value.Type):
                     Emit(new KOwn { Kind = "drop", Obj = Expr(own.Arguments[0].Value), Type = ViewOf(own.Arguments[0].Value.Type), At = own.Syntax });
                     return null;
