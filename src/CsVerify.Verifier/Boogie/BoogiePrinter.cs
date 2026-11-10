@@ -110,6 +110,17 @@ namespace CsVerify.Verifier.Boogie
             Optional("$arr(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
             foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
+            Optional("$mem.", "// manual memory (ATS's): a pointer's, a view's ghost properties, functions of it");
+            Optional("$mem.", "function $mem.Addr(v: Ref): int;");
+            Optional("$mem.", "function $mem.Length(v: Ref): int;");
+            Optional("$mem.", "function $mem.Index(v: Ref): int;");
+            foreach (var t in Widths.Keys.Append(SpecialType.System_Boolean))
+            {
+                var k = t.ToString().Substring("System_".Length);
+                var ty = t == SpecialType.System_Boolean ? "bool" : "int";
+                Optional("$mem.", $"function $mem.Value.{k}(v: Ref): {ty};");
+                Optional("$mem.", $"function $mem.Elems.{k}(v: Ref): [int]{ty};");
+            }
             Line("// strings: values, of a length and UTF-16 code units (null counts as empty where it is concatenated)");
             Line("function slen(s: Ref): int;");
             Line("axiom (forall s: Ref :: { slen(s) } 0 <= slen(s) && slen(s) <= 2147483647);");

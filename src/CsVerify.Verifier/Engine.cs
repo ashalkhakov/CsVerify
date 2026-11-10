@@ -102,7 +102,8 @@ namespace CsVerify.Verifier
         public int Unmodeled;
         public bool Verified => Diagnostics.All(d => !d.IsError);
         /// <summary>The engine that verified it: "csverify", or "boogie".</summary>
-        public string Engine = "csverify";
+        /// <summary>csverify, boogie (Boogie where it translates, CsVerify's engine elsewhere), boogie-only; CSVERIFY_ENGINE sets the default.</summary>
+        public string Engine = Environment.GetEnvironmentVariable("CSVERIFY_ENGINE") ?? "csverify";
 
         /// <summary>Starts the method's results over (for a run again: see Engine.RunMethod).</summary>
         internal void Clear()
@@ -681,8 +682,7 @@ namespace CsVerify.Verifier
                     if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract) && Sequential(engine, method, decl, model)) forBoogie.Add((method, contract, decl, mr));
                     else
                     {
-                        if (options.Boogie && Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
-                            Console.Error.WriteLine($"not translated to Boogie: {mr.Name}: {Boogie.BoogieTranslator.WhyNot(method, contract)}");
+                        if (options.Boogie) Trace($"not translated to Boogie: {mr.Name}: {Boogie.BoogieTranslator.WhyNot(method, contract)}");
                         RunMethod(engine, contract, mr, decl.GetLocation());
                     }
                     // its lambdas and local functions, each a unit of its own
@@ -719,8 +719,7 @@ namespace CsVerify.Verifier
                     var contract = engine.ContractOf(accessor);
                     if (!Boogie.BoogieTranslator.Candidate(accessor, contract) || !Sequential(engine, accessor, node, model))
                     {
-                        if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
-                            Console.Error.WriteLine($"not translated to Boogie: {accessor.ContainingType.Name}.{accessor.Name}: {Boogie.BoogieTranslator.WhyNot(accessor, contract)}");
+                        Trace($"not translated to Boogie: {accessor.ContainingType.Name}.{accessor.Name}: {Boogie.BoogieTranslator.WhyNot(accessor, contract)}");
                         continue;
                     }
                     var span = node.GetLocation().GetLineSpan();
@@ -861,6 +860,19 @@ namespace CsVerify.Verifier
             }
         }
 
+        private static readonly object TraceLock = new object();
+
+        /// <summary>
+        /// Why a method went to CsVerify's engine: on stderr with CSVERIFY_TRACE, and appended to the file
+        /// CSVERIFY_TRACE_FILE names (a test run's, whose stderr isn't shown).
+        /// </summary>
+        private static void Trace(string line)
+        {
+            if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine(line);
+            if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE_FILE") is string file)
+                lock (TraceLock) System.IO.File.AppendAllText(file, line + "\n");
+        }
+
         private static string NestedName(IMethodSymbol m) =>
             m.MethodKind == MethodKind.LocalFunction ? m.Name : "<lambda:" + (m.Locations[0].GetLineSpan().StartLinePosition.Line + 1) + ">";
 
@@ -879,7 +891,9 @@ namespace CsVerify.Verifier
                 translator = new Boogie.BoogieTranslator(engine.Options.CheckOverflow);
                 translator.Prelude();
                 translator.ContractOf = engine.ContractOf;
-                translator.UsesPermissions = engine.UsesPermissions;
+                // (and memory views hold cells, as Spec.Acc of an array's does)
+                translator.UsesPermissions = engine.UsesPermissions || compilation.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                    .Any(n => n.Identifier.Text is "PointsTo" or "ArrayView" or "ArrayHole"));
                 translator.ExceptionType = compilation.GetTypeByMetadataName("System.Exception");
                 translator.OverridesOf = m => engine.Fields.Overrides(m);
                 translator.UsesFieldPermissions = engine.UsesPermissions && compilation.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
@@ -892,7 +906,7 @@ namespace CsVerify.Verifier
                     catch (Boogie.NotTranslated why)
                     {
                         refused.Add(x);
-                        if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {why.Message}");
+                        Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {why.Message}");
                     }
                 }
                 if (refused.Count == 0) break;

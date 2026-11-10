@@ -337,8 +337,24 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>A write of an array's element (checked for null and bounds, until Checks; a map's, after).</summary>
+    /// <summary>A view's cells come into hand (Grant), or go (they're another's now, or freed).</summary>
+    internal sealed class KMemCells : KStmt
+    {
+        public List<KCells> Cells;
+        public bool Grant;
+    }
+
+    /// <summary>Memory cells [Lo, Hi) of Map's row at null set to Value (AllocArray's fill).</summary>
+    internal sealed class KFill : KStmt
+    {
+        public string Map;
+        public KExpr Lo, Hi, Value;
+    }
+
     internal sealed class KStore : KStmt
     {
+        /// <summary>A memory cell (the row at null), written through a view: no array to check.</summary>
+        public bool Memory;
         public KExpr Array, Index, Value;
         public ITypeSymbol ArrayType;
         public SyntaxNode At, ArrayAt;
@@ -579,6 +595,8 @@ namespace CsVerify.Verifier.Boogie
         public bool CallsDelegates;
         /// <summary>It reads a collection through an interface: values of the state ($st), declared then.</summary>
         public bool UsesState;
+        /// <summary>It holds memory views (ATS's): cells in hand as views say (array mode).</summary>
+        public bool MemViews;
         /// <summary>A twin's: its preconditions free (a join's call, checked at its start).</summary>
         public bool FreeRequires;
         public KProcedure Clone() => (KProcedure)MemberwiseClone();

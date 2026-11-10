@@ -58,7 +58,56 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t);
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t);
+
+        /// <summary>
+        /// ATS's manual memory: a pointer (Ptr&lt;T&gt;), a view (PointsTo, ArrayView, ArrayHole) or a token (FreeGc) of
+        /// scalars: a value, its ghost properties functions of it ($mem.Addr, $mem.Elems.Int32, ...).
+        /// </summary>
+        public static bool IsMemValue(ITypeSymbol t) =>
+            (IsMemView(t) || SpecSymbols.IsCsVerifyType(t, "Ptr`1") || SpecSymbols.IsCsVerifyType(t, "FreeGc`1")) && Scalar(((INamedTypeSymbol)t).TypeArguments[0]);
+
+        /// <summary>A view of memory cells, which holds them while in hand.</summary>
+        public static bool IsMemView(ITypeSymbol t) =>
+            (SpecSymbols.IsCsVerifyType(t, "PointsTo`1") || SpecSymbols.IsCsVerifyType(t, "ArrayView`1") || SpecSymbols.IsCsVerifyType(t, "ArrayHole`1")) &&
+            Scalar(((INamedTypeSymbol)t).TypeArguments[0]);
+
+        /// <summary>A ghost sequence of scalars (Seq&lt;int&gt;): a Boogie map from index to value.</summary>
+        public static bool IsSeqValue(ITypeSymbol t) => SpecSymbols.IsCsVerifyType(t, "Seq`1") && Scalar(((INamedTypeSymbol)t).TypeArguments[0]);
+
+        /// <summary>A memory value's ghost property (Addr, Length, Index; Value and Elems of its kind of element).</summary>
+        public static KExpr MemProp(string name, KExpr v, ITypeSymbol type) =>
+            new KOp(name is "Value" or "Elems" ? $"$mem.{name}.{Kind(((INamedTypeSymbol)type).TypeArguments[0])}" : "$mem." + name, v);
+
+        /// <summary>The memory's map of a view's kind of element: the row at null of that element map.</summary>
+        public static string MemMap(ITypeSymbol type) => ElementMap(((INamedTypeSymbol)type).TypeArguments[0].SpecialType);
+
+        /// <summary>The cells a view holds: [Addr, Addr + Length) (one for PointsTo), a hole's all but its index.</summary>
+        public static List<KCells> MemCells(KExpr v, ITypeSymbol type, SyntaxNode at)
+        {
+            var addr = MemProp("Addr", v, type);
+            KCells Of(KExpr lo, KExpr hi) => new KCells { Arr = new KLit("null"), Lo = lo, Hi = hi, At = at };
+            if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1")) return new List<KCells> { Of(addr, new KOp("+", addr, new KLit("1"))) };
+            var end = new KOp("+", addr, MemProp("Length", v, type));
+            if (SpecSymbols.IsCsVerifyType(type, "ArrayView`1")) return new List<KCells> { Of(addr, end) };
+            var hole = new KOp("+", addr, MemProp("Index", v, type));
+            return new List<KCells> { Of(addr, hole), Of(new KOp("+", hole, new KLit("1")), end) };
+        }
+
+        /// <summary>What a view says is what its cells hold (true while it's in hand: nobody else writes them).</summary>
+        public static KExpr MemTie(KExpr v, ITypeSymbol type)
+        {
+            var map = new KVar(MemMap(type));
+            var addr = MemProp("Addr", v, type);
+            if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
+                return new KOp("==", new KOp("sel", map, new KLit("null"), addr), MemProp("Value", v, type));
+            var i = new KVar("m$i");
+            KExpr range = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, MemProp("Length", v, type)));
+            KExpr body = new KOp("==", new KOp("sel", map, new KLit("null"), new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
+            // (a hole's: all but its index)
+            if (SpecSymbols.IsCsVerifyType(type, "ArrayHole`1")) body = new KOp("==>", new KOp("!=", i, MemProp("Index", v, type)), body);
+            return new KQuant { Forall = true, Var = "m$i", Range = range, Body = body };
+        }
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
         public static bool IsToken(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.CancellationToken";
@@ -422,7 +471,8 @@ namespace CsVerify.Verifier.Boogie
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
 
         public static string TypeOf(ITypeSymbol t) =>
-            IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" :
+            IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" :
+            IsSeqValue(t) ? "[int]" + (((INamedTypeSymbol)t).TypeArguments[0].SpecialType == SpecialType.System_Boolean ? "bool" : "int") :
             IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);

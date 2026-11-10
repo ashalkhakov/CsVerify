@@ -403,6 +403,22 @@ but `Spec` and `Math`) takes no memory, so its value is the same before and afte
 
 Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state).
 
+**Manual memory.** ATS's views of `Mem`'s cells, on CsVerify's engine's model: the cells are the element maps' rows at
+`null` (`$E.Int32[null][a]`), and a view holds permissions to its cells as `Spec.Acc` holds an array's (array mode).
+A `Ptr<T>`, `PointsTo<T>`, `ArrayView<T>`, `ArrayHole<T>` or `FreeGc<T>` of scalars is a value whose ghost properties
+are functions of it (`$mem.Addr`, `$mem.Length`, `$mem.Index`, `$mem.Value.Int32`, `$mem.Elems.Int32`); a `Seq<T>` of
+scalars is an `[int]` map. A view parameter holds its cells (`[Addr, Addr + Length)`, one for `PointsTo`, a hole's all
+but its index): a `Spec.Acc` of them in its method's requires, and in its ensures where it's lent (`ref`, `in`) or
+given (`out`, a result), so two views in hand are of different cells, and a call changes only the cells it gets. A view
+that comes into hand (on entry, from a call, from `Mem`) says what its cells hold: its `Value` or `Elems` is the
+memory there. `Mem`'s operations are its contracts, lowered at their instantiation: `Alloc` and `AllocArray` grant new
+cells (not held before) and write them, `Read` and `Get` read the view, `Write` and `Set` write the view and the
+memory, `Free` and `FreeArray` give the cells up, and `Split`, `Join`, `TakeOut`, `PutBack` (and `LengthIsNatural`)
+trade views without touching memory; `p.Offset(k)` is `Addr + k`. Their preconditions are CSV1001. A new view's room is
+said at the first cells of the views granted before it too (two intervals overlap only where one starts inside the
+other). Linearity (a view used once, given back) is the analyzer's (CSV0001 and on), as for CsVerify's engine; a call
+that gives one variable by `ref` twice isn't translated.
+
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
 `p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
 assigns.
@@ -893,7 +909,7 @@ methods that fall back for it):
 6. `Spec.Modifies` lending trees, ghost `ObjSet` fields, functions over more than one predicate instance (done for
    lending without `[Owns]` fields, `ObjSet` fields, functions with parameters beyond the instance's, snapshots' states;
    functions over two instances aren't needed by any sample);
-7. `ArrayView`, `PointsTo` and `Mem`;
+7. `ArrayView`, `PointsTo` and `Mem` (done);
 8. `Monitor.Wait` and `Pulse`, locks taken again through calls, tasks one is given;
 9. tasks whose permissions overlap, without the timeout that hands them to CsVerify's engine now (CSV1900);
 10. floats;

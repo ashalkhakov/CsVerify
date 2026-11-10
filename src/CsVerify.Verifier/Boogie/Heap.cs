@@ -72,6 +72,15 @@ namespace CsVerify.Verifier.Boogie
                                 }
                             break;
                         }
+                        case KFill fill:
+                        {
+                            p.Modifies.Add(fill.Map);
+                            p.AnyWrites.Add(fill.Map);
+                            var j = new KVar("j$");
+                            stmts.Add(new KMapUpdate { Map = fill.Map, Ref = new KLit("null"), Value = new KOp("lambda", new KLit("j$: int"),
+                                new KOp("ite", new KOp("&&", new KOp("<=", fill.Lo, j), new KOp("<", j, fill.Hi)), fill.Value, new KOp("sel", new KVar(fill.Map), new KLit("null"), j))) });
+                            break;
+                        }
                         case KStore st:
                         {
                             var map = Elements(st.ArrayType);

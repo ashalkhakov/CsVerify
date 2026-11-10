@@ -138,7 +138,7 @@ namespace CsVerify.Verifier.Boogie
                 var stmts = _p.Blocks.SelectMany(b => b.Stmts).ToList();
                 bool foldsCells = stmts.OfType<KFold>().Any(f => PredicateHasCells(f.Inst.Pred));
                 bool callsCells(Func<KProcedure, IEnumerable<KExpr>> specs) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
-                _p.ArrayMode = NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
+                _p.ArrayMode = _p.MemViews || NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
                                callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(Atoms).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
                 _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
                 if (_p.UsesCells) _p.UsesPerm = true;
@@ -546,6 +546,21 @@ namespace CsVerify.Verifier.Boogie
                     ObjectInvariant(new KVar(n.Var), n.Type);
                     return;
                 }
+                case KStore { Memory: true } ms:
+                    Emit(new KStore { Array = new KLit("null"), Index = Code(ms.Index), Value = Code(ms.Value), ArrayType = ms.ArrayType, At = ms.At, ArrayAt = ms.ArrayAt, Checked = true });
+                    return;
+                case KFill fill:
+                    Emit(new KFill { Map = fill.Map, Lo = Code(fill.Lo), Hi = Code(fill.Hi), Value = Code(fill.Value) });
+                    return;
+                case KMemCells mc:
+                    if (!_p.UsesCells) return;
+                    foreach (var c in mc.Cells)
+                    {
+                        var cells = new KCells { Arr = new KLit("null"), Lo = Code(c.Lo), Hi = Code(c.Hi), At = c.At };
+                        if (mc.Grant) InhaleCells(new KLit("true"), cells);
+                        else ChangeCells(new KLit("true"), cells, "-");
+                    }
+                    return;
                 case KStore st:
                 {
                     var value = Code(st.Value);
@@ -1320,6 +1335,9 @@ namespace CsVerify.Verifier.Boogie
                 Ite(InCells(g, c, x, i), new KOp(op, Cell(x, i), Amount(c)), Cell(x, i)))) });
         }
 
+        /// <summary>The first cells of the memory views granted so far: where a new one's room is said too.</summary>
+        private readonly List<KExpr> _memLos = new List<KExpr>();
+
         private void InhaleCells(KExpr g, KCells c)
         {
             // two whole permissions to one cell can't both be in hand (a method that holds every cell learns nothing)
@@ -1330,6 +1348,13 @@ namespace CsVerify.Verifier.Boogie
                 Assume(new KQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), room) });
                 var lo = c.Read ? new KOp("<=", Cell(c.Arr, c.Lo), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, c.Lo), new KLit("1.0"));
                 Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
+                // (memory: two intervals overlap only where one starts inside the other, so at the other views' first cells too)
+                if (c.Arr is KLit { Text: "null" })
+                {
+                    foreach (var other in _memLos)
+                        Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new KOp("<=", Cell(c.Arr, other), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, other), new KLit("1.0"))));
+                    _memLos.Add(c.Lo);
+                }
             }
             ChangeCells(g, c, "+");
         }

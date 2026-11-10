@@ -1331,6 +1331,19 @@ public static class Il
         }
 
         [Fact]
+        public void ManualMemory_IsBoogies()
+        {
+            // ATS's views (PointsTo, ArrayView, ArrayHole) and Mem: every method of these samples by Boogie, verified
+            foreach (var name in new[] { "Memory", "ArrayViews", "MemoryModel", "AtsIntro", "AtsArrays", "AtsMatrixAndTakeOut" })
+            {
+                var file = Path.Combine(Harness.RepoRoot(), "samples", "Good", name + ".cs");
+                var r = Engine.VerifyFiles(new[] { file }, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
+                Assert.True(r.Methods.Count > 0 && r.Methods.All(m => m.Engine == "boogie" && m.Verified),
+                    name + ": " + string.Join(", ", r.Methods.Select(m => m.Name + "/" + m.Engine + (m.Verified ? "" : "!"))) + " " + r.BoogieFailure);
+            }
+        }
+
+        [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, new VerifierOptions { Engine = "boogie" });
