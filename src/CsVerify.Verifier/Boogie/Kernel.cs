@@ -110,8 +110,8 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>A string's character (s[i]), not an array's element.</summary>
         public bool String;
-        /// <summary>A list's element in a specification (its model's), of this kind.</summary>
-        public string ListKey;
+        /// <summary>A collection's element in a specification: of this model (Items, Entries), where the index is below Size or in this Domain.</summary>
+        public string Model, Domain;
         public KExpr Array, Index;
         public ITypeSymbol ArrayType;
         public bool InSpec;
@@ -484,7 +484,9 @@ namespace CsVerify.Verifier.Boogie
         public bool HavocsAll;
         /// <summary>The library's members it calls (list members, by their stub contracts), and the kinds of lists whose models it names.</summary>
         public HashSet<IMethodSymbol> LibCalls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-        public HashSet<string> ListKeys = new HashSet<string>();
+        public Dictionary<string, KernelTypes.ModelMap> Models = new Dictionary<string, KernelTypes.ModelMap>();
+        /// <summary>The kinds of the dictionaries' pairs it reads (key kind, value kind).</summary>
+        public HashSet<(string key, string value)> Pairs = new HashSet<(string, string)>();
         /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
         public bool ListCtor;
         public HashSet<string> DelegateKeys = new HashSet<string>();

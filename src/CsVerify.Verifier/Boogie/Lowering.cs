@@ -37,11 +37,11 @@ namespace CsVerify.Verifier.Boogie
             _literal = literal; _contractOf = contractOf;
             _p = new KProcedure
             {
-                Method = IsList(m.ContainingType) ? m : m.OriginalDefinition, Contract = contract, Result = result, Name = Name(m), Params = m.Parameters.ToList(),
+                Method = IsCollection(m.ContainingType) ? m : m.OriginalDefinition, Contract = contract, Result = result, Name = Name(m), Params = m.Parameters.ToList(),
                 Ghost = SpecSymbols.IsGhostFunction(m) || contract.IsLemma,
-                HasThis = !m.IsStatic && !(IsList(m.ContainingType) && m.MethodKind == MethodKind.Constructor),
-                IsCtor = m.MethodKind == MethodKind.Constructor && !IsList(m.ContainingType),
-                ListCtor = m.MethodKind == MethodKind.Constructor && IsList(m.ContainingType),
+                HasThis = !m.IsStatic && !(IsCollection(m.ContainingType) && m.MethodKind == MethodKind.Constructor),
+                IsCtor = m.MethodKind == MethodKind.Constructor && !IsCollection(m.ContainingType),
+                ListCtor = m.MethodKind == MethodKind.Constructor && IsCollection(m.ContainingType),
                 ThisIsView = !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && (m.MethodKind == MethodKind.Constructor || !contract.IsPure),
             };
             _p.UsesPerm = _p.ThisIsView || m.Parameters.Any(x => IsView(x.Type));
@@ -162,15 +162,16 @@ namespace CsVerify.Verifier.Boogie
             ContractOf(this, _contract);
             // (an abstract member: its contract alone)
             if (_m.IsAbstract || _m.MethodKind == MethodKind.DelegateInvoke) { _p.Abstract = true; return _p; }
-            // (a list's member: its stub's contract alone; what it may change is its own list's model, a new one's for a constructor)
-            if (IsList(_m.ContainingType))
+            // (a collection's member: its stub's contract alone; what it may change is its own collection's models, a new one's for a constructor)
+            if (IsCollection(_m.ContainingType))
             {
-                if (!_contract.IsStub) throw new NotTranslated("a list's member without a stub contract: " + _m.Name);
+                if (!_contract.IsStub) throw new NotTranslated("a collection's member without a stub contract: " + _m.Name);
                 _p.Abstract = true;
-                var key = ListKey(_m.ContainingType);
-                _p.ListKeys.Add(key);
-                if (_contract.Modifies != null)
-                    foreach (var map in new[] { SizeMap, VersionMap, ItemsMap(key) }) { _p.Modifies.Add(map); _p.AnyWrites.Add(map); }
+                foreach (var model in ModelsOf((INamedTypeSymbol)_m.ContainingType))
+                {
+                    _p.Models[model.Name] = model;
+                    if (_contract.Modifies != null) { _p.Modifies.Add(model.Name); _p.AnyWrites.Add(model.Name); }
+                }
                 if (_p.ListCtor) { _p.Modifies.Add("$Alloc"); _p.AnyWrites.Add("$Alloc"); }
                 return _p;
             }
@@ -238,8 +239,8 @@ namespace CsVerify.Verifier.Boogie
             public string Array, Index;
             public ITypeSymbol Type, Element;
             public bool String;
-            /// <summary>Over a list's model, of this kind (null: an array or a string).</summary>
-            public string ListKey;
+            /// <summary>Over a collection (null: an array or a string).</summary>
+            public INamedTypeSymbol Collection;
             /// <summary>A list its loop may change: through its enumerator, whose MoveNext checks the list's version (Version, as it was).</summary>
             public string Version;
             public SyntaxNode At;
@@ -258,11 +259,16 @@ namespace CsVerify.Verifier.Boogie
                 if (!(_model.GetOperation(fs) is IForEachLoopOperation fo) || fo.IsAsynchronous) continue;
                 var collection = Unconverted(fo.Collection);
                 bool isString = IsString(collection.Type);
-                bool isList = IsList(collection.Type);
-                if (!IsArray(collection.Type) && !isString && !isList) continue;
-                // (a list: over its model, where the loop changes no list (else its MoveNext would throw, which the enumerator is for))
-                bool enumerated = isList && !ChangesNoList(fs.Statement);
-                var element = isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char) : isList ? ((INamedTypeSymbol)collection.Type).TypeArguments[0] : ((IArrayTypeSymbol)collection.Type).ElementType;
+                bool isCollection = IsCollection(collection.Type);
+                if (!IsArray(collection.Type) && !isString && !isCollection) continue;
+                // (a list: over its model, where the loop changes no list; any other collection, or a list it may change,
+                // through its enumerator, whose MoveNext checks the collection's version)
+                bool enumerated = isCollection && !(IsList(collection.Type) && ChangesNoList(fs.Statement));
+                bool pairs = CollectionKind(collection.Type) == "Dictionary";
+                var element = isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char)
+                            : pairs ? fo.Locals.FirstOrDefault()?.Type ?? throw new NotTranslated("a foreach over a dictionary without its variable")
+                            : isCollection ? ((INamedTypeSymbol)collection.Type).TypeArguments[0] : ((IArrayTypeSymbol)collection.Type).ElementType;
+                if (pairs && !IsPair(element)) throw new NotTranslated("a foreach over a dictionary not by its pairs");
                 var conv = Microsoft.CodeAnalysis.CSharp.CSharpExtensions.GetForEachStatementInfo(_model, fs).ElementConversion;
                 var target = fo.Locals.FirstOrDefault()?.Type;
                 if (!(conv.IsIdentity || conv.IsImplicit && conv.IsNumeric && IsIntegral(element) && target != null && IsIntegral(target)))
@@ -276,9 +282,9 @@ namespace CsVerify.Verifier.Boogie
                 var fe = new ForEach
                 {
                     Head = head.Ordinal, Array = Declare($"fe${n}$a", collection.Type), Index = Declare($"fe${n}$i", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
-                    Type = collection.Type, Element = element, String = isString, At = fs.Expression, ListKey = isList ? ListKey(collection.Type) : null,
+                    Type = collection.Type, Element = element, String = isString, At = fs.Expression, Collection = isCollection ? (INamedTypeSymbol)collection.Type : null,
                 };
-                if (isList) _p.ListKeys.Add(fe.ListKey);
+                if (isCollection) foreach (var model in ModelsOf(fe.Collection)) _p.Models[model.Name] = model;
                 if (enumerated) fe.Version = Declare($"fe${n}$v", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
                 _forEach[capture.Id] = fe;
                 _forEachAt[head.Ordinal] = fe;
@@ -295,28 +301,44 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Current(ForEach fe)
         {
             if (fe.Version == null) return CurrentOf(fe);
-            // (through the enumerator: what it gives isn't known)
+            // (through the enumerator: what it gives isn't known; a dictionary's, a pair it has)
             var v = Declare("t$" + _temps++, fe.Element);
             Emit(new KHavoc { Var = v });
+            if (CollectionKind(fe.Collection) == "Dictionary")
+            {
+                var key = Pair(new KVar(v), fe.Element, "Key");
+                var value = Pair(new KVar(v), fe.Element, "Value");
+                Emit(new KAssume { Cond = new KOp("&&", new KOp("sel", new KVar(ModelOf("Domain", fe.Collection).Name), new KVar(fe.Array), key),
+                                                       new KOp("==", new KOp("sel", new KVar(ModelOf("Entries", fe.Collection).Name), new KVar(fe.Array), key), value)) });
+            }
             return new KVar(v);
         }
 
-        private static KExpr CurrentOf(ForEach fe) => fe.ListKey != null ? new KOp("sel", new KVar(ItemsMap(fe.ListKey)), new KVar(fe.Array), new KVar(fe.Index)) :
+        /// <summary>A dictionary's pair's Key or Value.</summary>
+        private KExpr Pair(KExpr pair, ITypeSymbol type, string member)
+        {
+            var args = ((INamedTypeSymbol)type).TypeArguments;
+            var (k, v) = (Kind(args[0]), Kind(args[1]));
+            _p.Pairs.Add((k, v));
+            return new KOp(member == "Key" ? "$kvp.Key." + k : "$kvp.Value." + v, pair);
+        }
+
+        private static KExpr CurrentOf(ForEach fe) => fe.Collection != null ? new KOp("sel", new KVar(ModelOf("Items", fe.Collection).Name), new KVar(fe.Array), new KVar(fe.Index)) :
             new KElem { String = fe.String, Array = new KVar(fe.Array), Index = new KVar(fe.Index), ArrayType = fe.String ? null : fe.Type, At = fe.At, ArrayAt = fe.At };
 
         /// <summary>A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs.</summary>
         private bool ChangesNoList(SyntaxNode body) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null).All(o => o switch
         {
             IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma),
-            IObjectCreationOperation oc => !IsList(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure),
-            IPropertyReferenceOperation pr => !IsList(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
+            IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure),
+            IPropertyReferenceOperation pr => !IsCollection(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
             IAnonymousFunctionOperation _ => false,
             _ => true,
         });
 
         /// <summary>The collection's length: an array's or a string's, or a list's Size.</summary>
-        private KExpr LengthOf(ForEach fe, bool inSpec = false) => fe.ListKey != null
-            ? new KOp("sel", new KVar(SizeMap), new KVar(fe.Array))
+        private KExpr LengthOf(ForEach fe, bool inSpec = false) => fe.Collection != null
+            ? Model("Size", fe.Collection, new KVar(fe.Array))
             : new KLen { String = fe.String, Array = new KVar(fe.Array), InSpec = inSpec, At = fe.At, ArrayAt = fe.At };
 
         /// <summary>A foreach's index stays within its collection: the loop's first invariant (it holds by itself).</summary>
@@ -591,10 +613,10 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign { Var = fe.Array, Value = coll });
                     Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
                     // (its length, read once: where a null one throws)
-                    if (fe.ListKey != null)
+                    if (fe.Collection != null)
                         Emit(new KCheck { Cond = new KOp("!=", new KVar(fe.Array), new KLit("null")), Id = "CSV1013", At = fe.At, Message = $"'{fe.At}' might be null in '{fe.At}'" });
                     if (fe.Version != null) Emit(new KAssign { Var = fe.Version, Value = new KOp("sel", new KVar(VersionMap), new KVar(fe.Array)) });
-                    else Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
+                    else if (fe.Collection == null) Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
                     return;
                 }
                 case IFlowCaptureOperation fc:
@@ -625,7 +647,7 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 }
                 // (a list's indexer: its stub's setter)
-                case IPropertyReferenceOperation ls when IsList(ls.Instance?.Type) && ls.Property.SetMethod != null:
+                case IPropertyReferenceOperation ls when IsCollection(ls.Instance?.Type) && ls.Property.SetMethod != null:
                     Invoke(ls.Property.SetMethod, ls.Instance, ls.Arguments, ls.Syntax, value);
                     return;
                 // (a computed property: its setter, called with the value)
@@ -798,16 +820,28 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// A list's kind: of a List of the subset's values, or, in a list member's stub (written over List&lt;T&gt;), of
-        /// the list it is for; null for anything else.
+        /// A collection: of the subset's values, or, in a collection member's stub (written over List&lt;T&gt;), the
+        /// collection it is for; null for anything else.
         /// </summary>
-        private string KeyOf(ITypeSymbol t)
+        private INamedTypeSymbol CollectionOf(ITypeSymbol t)
         {
-            if (IsList(t)) return ListKey(t);
-            if (t is INamedTypeSymbol { Arity: 1 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.List<T>" &&
-                n.TypeArguments[0] is ITypeParameterSymbol && _contract.IsStub && IsList(_m.ContainingType))
-                return ListKey(_m.ContainingType);
+            if (IsCollection(t)) return (INamedTypeSymbol)t;
+            if (CollectionKind(t) != null && ((INamedTypeSymbol)t).TypeArguments.Any(a => a is ITypeParameterSymbol) && _contract.IsStub && IsCollection(_m.ContainingType) &&
+                SymbolEqualityComparer.Default.Equals(t.OriginalDefinition, _m.ContainingType.OriginalDefinition))
+                return (INamedTypeSymbol)_m.ContainingType;
             return null;
+        }
+
+        /// <summary>A type as it is here: in a collection member's stub, its type parameters are the collection's arguments.</summary>
+        private ITypeSymbol Actual(ITypeSymbol t) =>
+            t is ITypeParameterSymbol tp && _contract.IsStub && IsCollection(_m.ContainingType) && tp.Ordinal < ((INamedTypeSymbol)_m.ContainingType).TypeArguments.Length
+                ? ((INamedTypeSymbol)_m.ContainingType).TypeArguments[tp.Ordinal] : t;
+
+        private KExpr Model(string name, INamedTypeSymbol collection, KExpr of)
+        {
+            var model = ModelOf(name, collection) ?? throw new NotTranslated("the model " + name);
+            _p.Models[model.Name] = model;
+            return new KOp("sel", new KVar(model.Name), of);
         }
 
         private readonly Dictionary<CaptureId, IFieldReferenceOperation> _lvalues = new Dictionary<CaptureId, IFieldReferenceOperation>();
@@ -899,8 +933,9 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation mv when mv.TargetMethod.Name == "MoveNext" && mv.Instance is IFlowCaptureReferenceOperation ev && _forEach.TryGetValue(ev.Id, out var fv) && fv.Version != null:
                 {
                     // (the list may not have changed since: MoveNext throws if it has; whether there's another, unknown)
+                    var what = CollectionKind(fv.Collection) switch { "Dictionary" => "dictionary", "HashSet" => "set", "Stack" => "stack", "Queue" => "queue", _ => "list" };
                     Emit(new KCheck { Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(fv.Array)), new KVar(fv.Version)), Id = "CSV1001", At = fv.At,
-                                      Message = "the list may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
+                                      Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
                     var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
                     Emit(new KHavoc { Var = more });
                     return new KVar(more);
@@ -922,7 +957,7 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar("ex$");
                 // (a new exception of the library's: its arguments' values aren't kept, only what is in the kernel is checked)
                 // (a list: its stub's constructor, which gives a new one)
-                case IObjectCreationOperation lo when IsList(lo.Type) && lo.Initializer == null && lo.Constructor != null:
+                case IObjectCreationOperation lo when IsCollection(lo.Type) && lo.Initializer == null && lo.Constructor != null:
                     return Invoke(lo.Constructor, null, lo.Arguments, lo.Syntax, null);
                 case IObjectCreationOperation ne when IsException(ne.Type) && ne.Initializer == null:
                 {
@@ -938,7 +973,8 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation cp when IsComputed(cp.Property) && cp.Property.GetMethod != null:
                     return Invoke(cp.Property.GetMethod, cp.Instance, cp.Arguments, cp.Syntax, null);
                 case IFieldReferenceOperation _:
-                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && KeyOf(pf.Instance?.Type) == null && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1"):
+                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2"):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e);
                     return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
@@ -976,7 +1012,9 @@ namespace CsVerify.Verifier.Boogie
                     return new KElem { Array = v[0], Index = v[1], ArrayType = el.ArrayReference.Type, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax };
                 }
                 // (a list's Count and indexer: its stub's getters)
-                case IPropertyReferenceOperation lp when IsList(lp.Instance?.Type) && lp.Property.GetMethod != null:
+                case IPropertyReferenceOperation kp when IsPair(kp.Instance?.Type) && kp.Property.Name is "Key" or "Value":
+                    return Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
+                case IPropertyReferenceOperation lp when IsCollection(lp.Instance?.Type) && lp.Property.GetMethod != null:
                     return Invoke(lp.Property.GetMethod, lp.Instance, lp.Arguments, lp.Syntax, null);
                 case IPropertyReferenceOperation sl when sl.Property.Name == "Length" && IsString(sl.Instance?.Type):
                     return new KLen { String = true, Array = Expr(sl.Instance), At = sl.Syntax, ArrayAt = sl.Instance.Syntax };
@@ -1135,7 +1173,7 @@ namespace CsVerify.Verifier.Boogie
                 return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
             }
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
-            if (IsList(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
+            if (IsCollection(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
             // (IDisposable.Dispose of a class's object, as using calls it: that class's Dispose runs, its contract a
             // library interface's, so what it does isn't known: anything, as for a delegate)
             if (call.TargetMethod.ContainingType.ToDisplayString() == "System.IDisposable" && call.TargetMethod.Name == "Dispose" && call.Instance != null &&
@@ -1452,14 +1490,14 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
         {
             // (a list's member: the procedure of its stub, as it is for this list's kind)
-            bool list = IsList(callee.ContainingType);
+            bool list = IsCollection(callee.ContainingType);
             bool listCtor = list && callee.MethodKind == MethodKind.Constructor;
             if (list)
             {
                 if (!(_contractOf?.Invoke(callee) is Contract lc && lc.IsStub)) throw new NotTranslated("a call of List's " + callee.Name + ", which has no stub contract");
                 if (_p.UsesPerm) throw new NotTranslated("a list with permissions");
                 _p.LibCalls.Add(callee);
-                _p.ListKeys.Add(ListKey(callee.ContainingType));
+                foreach (var model in ModelsOf((INamedTypeSymbol)callee.ContainingType)) _p.Models[model.Name] = model;
             }
             else callee = callee.OriginalDefinition;
             if (!list && !_isProcedure(callee)) throw new NotTranslated("a call of " + callee.Name);
@@ -1557,7 +1595,7 @@ namespace CsVerify.Verifier.Boogie
                                                          p.Parameter.Ordinal < _m.Parameters.Length:
                     return new KVar(Local(_m.Parameters[p.Parameter.Ordinal]));
                 // (a list member's stub: its @this is the receiver, the rest the member's own parameters)
-                case IParameterReferenceOperation p when _contract.IsStub && IsList(_m.ContainingType) && _contract.Stub != null &&
+                case IParameterReferenceOperation p when _contract.IsStub && IsCollection(_m.ContainingType) && _contract.Stub != null &&
                                                          SymbolEqualityComparer.Default.Equals(p.Parameter.ContainingSymbol.OriginalDefinition, _contract.Stub.OriginalDefinition):
                 {
                     int shift = _p.HasThis ? 1 : 0;
@@ -1579,7 +1617,8 @@ namespace CsVerify.Verifier.Boogie
                         Args = cp.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = cp.Syntax,
                     };
                 case IFieldReferenceOperation _:
-                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && KeyOf(pf.Instance?.Type) == null && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1"):
+                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2"):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
                     return new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt };
@@ -1644,23 +1683,41 @@ namespace CsVerify.Verifier.Boogie
                     return new KLen { Array = Spec(pr.Instance, result), InSpec = true, At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
                 // (a list's model: its size, its version, its elements; Count and the indexer as their contracts say)
                 case IInvocationOperation mo when SpecSymbols.IsModel(mo.TargetMethod.OriginalDefinition) && mo.Arguments.Length == 1 &&
-                                                  KeyOf(Unconverted(mo.Arguments[0].Value).Type) != null && mo.TargetMethod.Name is "Size" or "Items" or "Version":
+                                                  CollectionOf(Unconverted(mo.Arguments[0].Value).Type) is INamedTypeSymbol mc:
+                    return Model(mo.TargetMethod.Name, mc, Spec(Unconverted(mo.Arguments[0].Value), result));
+                case IPropertyReferenceOperation lc when lc.Property.Name == "Count" && CollectionOf(lc.Instance?.Type) is INamedTypeSymbol cc:
+                    return Model("Size", cc, Spec(lc.Instance, result));
+                case IPropertyReferenceOperation li when li.Property.IsIndexer && CollectionOf(li.Instance?.Type) is INamedTypeSymbol ic && li.Arguments.Length == 1 &&
+                                                         CollectionKind(ic) is "List" or "Dictionary":
                 {
-                    var l = Unconverted(mo.Arguments[0].Value);
-                    var key = KeyOf(l.Type);
-                    _p.ListKeys.Add(key);
-                    var map = mo.TargetMethod.Name switch { "Size" => SizeMap, "Version" => VersionMap, _ => ItemsMap(key) };
-                    return new KOp("sel", new KVar(map), Spec(l, result));
+                    bool dict = CollectionKind(ic) == "Dictionary";
+                    var items = ModelOf(dict ? "Entries" : "Items", ic);
+                    var bound = ModelOf(dict ? "Domain" : "Size", ic);
+                    _p.Models[items.Name] = items;
+                    _p.Models[bound.Name] = bound;
+                    return new KElem { Model = items.Name, Domain = dict ? bound.Name : null, Array = Spec(li.Instance, result), Index = Spec(li.Arguments[0].Value, result),
+                                       InSpec = true, At = li.Syntax, ArrayAt = li.Instance.Syntax };
                 }
-                case IPropertyReferenceOperation lc when lc.Property.Name == "Count" && KeyOf(lc.Instance?.Type) != null:
-                    _p.ListKeys.Add(KeyOf(lc.Instance.Type));
-                    return new KOp("sel", new KVar(SizeMap), Spec(lc.Instance, result));
-                case IPropertyReferenceOperation li when li.Property.IsIndexer && KeyOf(li.Instance?.Type) != null && li.Arguments.Length == 1:
+                // (a dictionary's ContainsKey and a set's Contains: its model, as their stubs say)
+                case IInvocationOperation ck when ck.Instance != null && CollectionOf(ck.Instance.Type) is INamedTypeSymbol cd && ck.Arguments.Length == 1 &&
+                                                  (CollectionKind(cd) == "Dictionary" && ck.TargetMethod.Name == "ContainsKey" || CollectionKind(cd) == "HashSet" && ck.TargetMethod.Name == "Contains"):
                 {
-                    var key = KeyOf(li.Instance.Type);
-                    _p.ListKeys.Add(key);
-                    return new KElem { ListKey = key, Array = Spec(li.Instance, result), Index = Spec(li.Arguments[0].Value, result), InSpec = true, At = li.Syntax, ArrayAt = li.Instance.Syntax };
+                    var model = ModelOf(CollectionKind(cd) == "Dictionary" ? "Domain" : "Members", cd);
+                    _p.Models[model.Name] = model;
+                    var of = Spec(ck.Instance, result);
+                    return new KOp("&&", new KOp("!=", of, new KLit("null")), new KOp("sel", new KVar(model.Name), of, Spec(ck.Arguments[0].Value, result)));
                 }
+                case IPropertyReferenceOperation sk when IsPair(sk.Instance?.Type) && sk.Property.Name is "Key" or "Value":
+                    return Pair(Spec(sk.Instance, result), sk.Instance.Type, sk.Property.Name);
+                // (a ghost map: a Boogie map; a ghost value's Value: the value)
+                case IPropertyReferenceOperation mi when mi.Property.IsIndexer && SpecSymbols.IsCsVerifyType(mi.Instance?.Type, "Map`2") && mi.Arguments.Length == 1:
+                    return new KOp("sel", Spec(mi.Instance, result), Spec(mi.Arguments[0].Value, result));
+                case IPropertyReferenceOperation gv when gv.Property.Name == "Value" && SpecSymbols.IsCsVerifyType(gv.Instance?.Type, "Ghost`1"):
+                    return Spec(gv.Instance, result);
+                case IInvocationOperation mu when SpecSymbols.IsCsVerifyType(mu.TargetMethod.ContainingType, "Map`2") && mu.TargetMethod.Name == "Update" && mu.Instance != null:
+                    return new KOp("store", Spec(mu.Instance, result), Spec(mu.Arguments[0].Value, result), Spec(mu.Arguments[1].Value, result));
+                case IInvocationOperation mk when SpecSymbols.IsCsVerifyType(mk.TargetMethod.ContainingType, "Map") && mk.TargetMethod.Name == "Const" && mk.Arguments.Length == 1:
+                    return new KOp("map.const." + BoogieOf(Kind(Actual(mk.TargetMethod.TypeArguments[0]))), Spec(mk.Arguments[0].Value, result));
                 // (a ghost sequence: an [int] map; a ghost value: the value)
                 case IPropertyReferenceOperation si when si.Property.IsIndexer && SpecSymbols.IsCsVerifyType(si.Instance?.Type, "Seq`1") && si.Arguments.Length == 1:
                     return new KOp("sel", Spec(si.Instance, result), Spec(si.Arguments[0].Value, result));
@@ -1681,7 +1738,8 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation go when SpecSymbols.IsCsVerifyType(go.TargetMethod.ContainingType, "Ghost") && go.TargetMethod.Name == "Of" && go.Arguments.Length == 1:
                     return Spec(go.Arguments[0].Value, result);
                 case IBinaryOperation gb when gb.OperatorMethod != null && gb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
-                                              (SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Seq`1") || SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Ghost`1")):
+                                              (SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Seq`1") || SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Ghost`1") ||
+                                               SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Map`2")):
                     return new KOp(gb.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", Spec(gb.LeftOperand, result), Spec(gb.RightOperand, result));
                 case IConversionOperation gc when gc.OperatorMethod != null && SpecSymbols.IsCsVerifyType(gc.OperatorMethod.ContainingType, "Ghost`1"):
                     return Spec(gc.Operand, result);
@@ -1689,7 +1747,7 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation { Property.Name: "Empty" } empty when IsObjSet(empty.Type) && empty.Instance == null:
                     return new KLit("(lambda r$: Ref :: false)");
                 case IInvocationOperation of when IsObjSet(of.TargetMethod.ContainingType) && of.TargetMethod.Name == "Of" && of.Arguments.Length == 1 &&
-                                                  (IsRef(Unconverted(of.Arguments[0].Value).Type) || KeyOf(Unconverted(of.Arguments[0].Value).Type) != null || Unconverted(of.Arguments[0].Value) is IInstanceReferenceOperation):
+                                                  (IsRef(Unconverted(of.Arguments[0].Value).Type) || CollectionOf(Unconverted(of.Arguments[0].Value).Type) != null || Unconverted(of.Arguments[0].Value) is IInstanceReferenceOperation):
                     return new KOp("set.of", Spec(Unconverted(of.Arguments[0].Value), result));
                 case IInvocationOperation add when IsObjSet(add.TargetMethod.ContainingType) && add.TargetMethod.Name == "Add" && add.Instance != null && IsRef(Unconverted(add.Arguments[0].Value).Type):
                     return new KOp("set.add", Spec(add.Instance, result), Spec(Unconverted(add.Arguments[0].Value), result));

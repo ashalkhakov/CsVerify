@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsList(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t);
 
         /// <summary>A delegate of the subset's values: a Func or an Action, or a non-generic delegate type of the program's.</summary>
         public static bool IsDelegate(ITypeSymbol t) =>
@@ -89,23 +89,72 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsOwnedField(ISymbol field) => !field.IsStatic && SpecSymbols.IsOwned(field.ContainingType);
 
         /// <summary>A reference: an array or an object.</summary>
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsList(t);
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsCollection(t);
 
-        /// <summary>A List&lt;T&gt; of the subset's values: an object, its contents the model CsVerify.Bcl's contracts speak of.</summary>
-        public static bool IsList(ITypeSymbol t) =>
-            t is INamedTypeSymbol { Arity: 1 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.List<T>" && FuncValue(n.TypeArguments[0]);
-
-        /// <summary>A list's elements' kind, as Boogie keeps them: an integer type's name, Boolean, or Ref.</summary>
-        public static string ListKey(ITypeSymbol list)
+        /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
+        private static readonly string[] Collections =
         {
-            var e = ((INamedTypeSymbol)list).TypeArguments[0];
-            return Scalar(e) ? e.SpecialType.ToString().Substring("System_".Length) : "Ref";
+            "System.Collections.Generic.List<T>", "System.Collections.Generic.Dictionary<TKey, TValue>",
+            "System.Collections.Generic.HashSet<T>", "System.Collections.Generic.Stack<T>", "System.Collections.Generic.Queue<T>",
+        };
+
+        /// <summary>The collection's kind: List, Dictionary, HashSet, Stack, Queue (null: not one).</summary>
+        public static string CollectionKind(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && n.IsGenericType && Collections.Contains(n.OriginalDefinition.ToDisplayString()) ? n.Name : null;
+
+        /// <summary>
+        /// A collection of the subset's values: an object, its contents its models. The keys of a dictionary and the
+        /// members of a set are compared as the verifier compares them, as values or by reference: not strings.
+        /// </summary>
+        public static bool IsCollection(ITypeSymbol t) =>
+            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.All(FuncValue) &&
+            (kind is "List" or "Stack" or "Queue" || !IsString(((INamedTypeSymbol)t).TypeArguments[0]));
+
+        public static bool IsList(ITypeSymbol t) => CollectionKind(t) == "List" && IsCollection(t);
+
+        /// <summary>A dictionary's pair (a foreach's): a value whose Key and Value are functions of it.</summary>
+        public static bool IsPair(ITypeSymbol t) =>
+            t is INamedTypeSymbol { Arity: 2 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.KeyValuePair<TKey, TValue>" &&
+            n.TypeArguments.All(FuncValue) && !IsString(n.TypeArguments[0]);
+
+        /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, or Ref.</summary>
+        public static string Kind(ITypeSymbol t) => Scalar(t) ? t.SpecialType.ToString().Substring("System_".Length) : "Ref";
+
+        /// <summary>A kind's Boogie type.</summary>
+        public static string BoogieOf(string kind) => kind == "Ref" ? "Ref" : kind == "Boolean" ? "bool" : "int";
+
+        /// <summary>A model map: its name, its Boogie type, and the kind of what it holds where that has a range (else null).</summary>
+        public sealed class ModelMap
+        {
+            public string Name, Type, Range;
         }
 
-        /// <summary>The model's maps: how many elements (Size), the version (Version), and the elements (Items, of a kind).</summary>
         public const string SizeMap = "$F.$M.Size", VersionMap = "$F.$M.Version";
-        public static string ItemsMap(string key) => "$F.$M.Items." + key;
-        public static string ItemsType(string key) => key == "Ref" ? "[Ref][int]Ref" : key == "Boolean" ? "[Ref][int]bool" : "[Ref][int]int";
+
+        /// <summary>A collection's model by name (Size, Version, Items, Members, Domain, Entries), for its type's kinds.</summary>
+        public static ModelMap ModelOf(string model, INamedTypeSymbol collection)
+        {
+            var args = collection.TypeArguments.Select(Kind).ToArray();
+            return model switch
+            {
+                "Size" => new ModelMap { Name = SizeMap, Type = "[Ref]int" },
+                "Version" => new ModelMap { Name = VersionMap, Type = "[Ref]int" },
+                "Items" => new ModelMap { Name = "$F.$M.Items." + args[0], Type = $"[Ref][int]{BoogieOf(args[0])}", Range = args[0] },
+                "Members" => new ModelMap { Name = "$F.$M.Members." + args[0], Type = $"[Ref][{BoogieOf(args[0])}]bool" },
+                "Domain" => new ModelMap { Name = "$F.$M.Domain." + args[0], Type = $"[Ref][{BoogieOf(args[0])}]bool" },
+                "Entries" => new ModelMap { Name = $"$F.$M.Entries.{args[0]}.{args[1]}", Type = $"[Ref][{BoogieOf(args[0])}]{BoogieOf(args[1])}", Range = args[1] },
+                _ => null,
+            };
+        }
+
+        /// <summary>All of a collection's models (what a member that changes it may change).</summary>
+        public static IEnumerable<ModelMap> ModelsOf(INamedTypeSymbol collection) =>
+            (CollectionKind(collection) switch
+            {
+                "Dictionary" => new[] { "Size", "Version", "Domain", "Entries" },
+                "HashSet" => new[] { "Size", "Version", "Members" },
+                _ => new[] { "Size", "Version", "Items" },
+            }).Select(x => ModelOf(x, collection));
 
         /// <summary>An interface of the program's, not generic, of abstract members only (their contracts from a contract class).</summary>
         public static bool IsInterface(ITypeSymbol t) =>
@@ -168,7 +217,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
-        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

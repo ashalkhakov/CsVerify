@@ -149,6 +149,7 @@ namespace CsVerify.Verifier.Boogie
                         case "seq.drop": return $"(lambda j$: int :: {a[0]}[j$ + {a[1]}])";
                         case "seq.concat": return $"(lambda j$: int :: (if j$ < {a[1]} then {a[0]}[j$] else {a[2]}[j$ - {a[1]}]))";
                         case "seq.const": return $"(lambda j$: int :: {a[0]})";
+                        case var mc when mc.StartsWith("map.const."): return $"(lambda k$: {mc.Substring("map.const.".Length)} :: {a[0]})";
                         case "set.of": return $"(lambda r$: Ref :: r$ == {a[0]})";
                         case "set.add": return $"{a[0]}[{a[1]} := true]";
                         case "set.union": return $"(lambda r$: Ref :: {a[0]}[r$] || {a[1]}[r$])";
@@ -374,26 +375,40 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>This state, as delegates take it.</summary>
         private string State => $"$st({string.Join(", ", _stateMaps.Select(m => m.name))})";
 
-        /// <summary>The lists' models: each list's size (never negative), version and elements (in their type's range).</summary>
-        public void Models(List<string> keys)
+        /// <summary>
+        /// The collections' models: maps as fields are (a size never negative, what an integer's holds in its range); and
+        /// the dictionaries' pairs' Key and Value, functions of them.
+        /// </summary>
+        public void Models(List<ModelMap> models, List<(string key, string value)> pairs)
         {
-            if (keys.Count == 0) return;
-            Line($"var {SizeMap}: [Ref]int where (forall o: Ref :: {SizeMap}[o] >= 0);");
-            Line($"var {VersionMap}: [Ref]int;");
-            foreach (var k in keys)
+            string Bound(string kind, string at)
+            {
+                if (kind == null || kind is "Ref" or "Boolean") return null;
+                var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + kind));
+                return $"{(lo < 0 ? $"({lo})" : lo.ToString())} <= {at} && {at} <= {hi}";
+            }
+            foreach (var m in models)
             {
                 string where = "";
-                if (!(k is "Ref" or "Boolean"))
+                if (m.Name == SizeMap) where = $" where (forall o: Ref :: {SizeMap}[o] >= 0)";
+                else if (m.Range != null && Bound(m.Range, "x") != null)
                 {
-                    var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + k));
-                    var at = $"{ItemsMap(k)}[o][j]";
-                    where = $" where (forall o: Ref, j: int :: {(lo < 0 ? $"({lo})" : lo.ToString())} <= {at} && {at} <= {hi})";
+                    var key = m.Type.Substring("[Ref][".Length, m.Type.IndexOf(']', 5) - "[Ref][".Length);
+                    where = $" where (forall o: Ref, j: {key} :: {Bound(m.Range, $"{m.Name}[o][j]")})";
                 }
-                Line($"var {ItemsMap(k)}: {ItemsType(k)}{where};");
+                Line($"var {m.Name}: {m.Type}{where};");
+                _stateMaps.Add((m.Name, m.Type));
             }
-            _stateMaps.Add((SizeMap, "[Ref]int"));
-            _stateMaps.Add((VersionMap, "[Ref]int"));
-            foreach (var k in keys) _stateMaps.Add((ItemsMap(k), ItemsType(k)));
+            foreach (var k in pairs.Select(p => p.key).Distinct().OrderBy(x => x, System.StringComparer.Ordinal))
+            {
+                Line($"function $kvp.Key.{k}(p: Ref): {BoogieOf(k)};");
+                if (Bound(k, $"$kvp.Key.{k}(p)") is string b) Line($"axiom (forall p: Ref :: {{ $kvp.Key.{k}(p) }} {b});");
+            }
+            foreach (var v in pairs.Select(p => p.value).Distinct().OrderBy(x => x, System.StringComparer.Ordinal))
+            {
+                Line($"function $kvp.Value.{v}(p: Ref): {BoogieOf(v)};");
+                if (Bound(v, $"$kvp.Value.{v}(p)") is string b) Line($"axiom (forall p: Ref :: {{ $kvp.Value.{v}(p) }} {b});");
+            }
         }
 
         public void Fields(IEnumerable<ISymbol> fields)

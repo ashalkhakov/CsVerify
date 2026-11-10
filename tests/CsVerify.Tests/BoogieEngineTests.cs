@@ -564,6 +564,50 @@ public static class Fin
                 Assert.True(b[good].Verified, good);
         }
 
+        private const string Dictionaries = @"using System.Collections.Generic; using CsVerify.Bcl;
+public sealed class Key { public int V; }
+public static class Dc
+{
+    public static int Get(Dictionary<int, int> d) { Spec.Requires(d.ContainsKey(3)); return d[3]; }
+    public static int GetBad(Dictionary<int, int> d) => d[3];
+    public static void Put(Dictionary<int, int> d) { d[1] = 5; Spec.Assert(d.ContainsKey(1) && d[1] == 5); }
+    public static void PutBad(Dictionary<int, int> d) { d[1] = 5; Spec.Assert(d[1] == 6); }
+    public static void Adds(Dictionary<int, int> d) { Spec.Requires(!d.ContainsKey(2)); d.Add(2, 7); Spec.Assert(d.Count == Spec.Old(d.Count) + 1); }
+    public static void AddsBad(Dictionary<int, int> d) { d.Add(2, 7); }
+    public static int Fresh() { var d = new Dictionary<int, int>(); d[4] = 9; Spec.Assert(d.Count == 1); return d[4]; }
+    public static bool Tries(Dictionary<int, int> d) { Spec.Requires(d.ContainsKey(8) && d[8] == 1); int v; bool ok = d.TryGetValue(8, out v); Spec.Assert(ok && v == 1); return ok; }
+    public static void Removes(Dictionary<int, int> d) { Spec.Requires(d.ContainsKey(1)); bool r = d.Remove(1); Spec.Assert(r && !d.ContainsKey(1)); }
+    public static void Keeps(Dictionary<int, int> a, Dictionary<int, int> b) { Spec.Requires(a != b && b.ContainsKey(1)); a[1] = 2; Spec.Assert(b.ContainsKey(1)); }
+    public static int Sum(Dictionary<int, int> d)
+    {
+        int s = 0;
+        foreach (var kv in d) { Spec.Assert(d.ContainsKey(kv.Key) && d[kv.Key] == kv.Value); s = kv.Value; }
+        return s;
+    }
+    public static void Writes(Dictionary<int, int> d)
+    {
+        foreach (var kv in d) { d[kv.Key + 1] = 0; }
+    }
+    public static void SetHas(HashSet<int> s) { s.Add(3); Spec.Assert(s.Contains(3) && s.Members()[3].Value); }
+    public static void SetBad(HashSet<int> s) { s.Remove(3); Spec.Assert(s.Contains(3)); }
+    public static int SetCount() { var s = new HashSet<Key>(); var k = new Key(); s.Add(k); s.Add(k); Spec.Assert(s.Count == 1); return s.Count; }
+    public static int SetLoop(HashSet<int> s) { int n = 0; foreach (var x in s) { n = x; } return n; }
+    public static int SetLoopBad(HashSet<int> s) { int n = 0; foreach (var x in s) { s.Add(x + 1); } return n; }
+    public static void Stacks(Stack<int> st) { st.Push(4); Spec.Assert(st.Count >= 1); }
+}
+";
+
+        [Fact]
+        public void DictionariesAndSets_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Dictionaries) }, o));
+            Assert.Equal(18, Agree(c, b));
+            foreach (var bug in new[] { "Dc.GetBad", "Dc.PutBad", "Dc.AddsBad", "Dc.Writes", "Dc.SetBad", "Dc.SetLoopBad" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Dc.Get", "Dc.Put", "Dc.Adds", "Dc.Fresh", "Dc.Tries", "Dc.Removes", "Dc.Keeps", "Dc.Sum", "Dc.SetHas", "Dc.SetCount", "Dc.SetLoop", "Dc.Stacks" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {

@@ -1642,13 +1642,15 @@ namespace CsVerify.Verifier.Boogie
                     Need(new KOp("!=", r, new KLit("0")));
                     return new KOp(ar.Op == "/" ? "div" : "rem", l, r);
                 }
-                case KElem { ListKey: string lk } le:
+                case KElem { Model: string model } le:
                 {
-                    // (a list's element, of its model: where the list's indexer's precondition holds)
+                    // (a collection's element, of its model: where its indexer's precondition holds)
                     var a = Spec(le.Array, wf, guard);
                     var i = Spec(le.Index, wf, guard);
-                    Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp("sel", new KVar(SizeMap), a))));
-                    return new KOp("sel", new KVar(ItemsMap(lk)), a, i);
+                    Need(le.Domain != null
+                        ? new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("sel", new KVar(le.Domain), a, i))
+                        : new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp("sel", new KVar(SizeMap), a))));
+                    return new KOp("sel", new KVar(model), a, i);
                 }
                 case KElem el:
                 {

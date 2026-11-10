@@ -238,7 +238,7 @@ namespace CsVerify.Verifier.Boogie
 
         KProcedure IProgramFacts.Signature(IMethodSymbol m)
         {
-            if (!IsList(m.ContainingType)) m = m.OriginalDefinition;
+            if (!IsCollection(m.ContainingType)) m = m.OriginalDefinition;
             if (!_signatures.TryGetValue(m, out var sig)) _signatures[m] = sig = Lowering.Signature(m, ContractOf(m), IsFunction, Literal, ContractOf);
             return sig;
         }
@@ -309,8 +309,9 @@ namespace CsVerify.Verifier.Boogie
             _printer.Literals(_literals);
             _printer.Fields(fields);
             // (the lists' models: maps as fields are)
-            var listKeys = _pending.SelectMany(p => p.ListKeys).Concat(_signatures.Values.SelectMany(s => s.ListKeys)).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
-            _printer.Models(listKeys);
+            var models = _pending.SelectMany(p => p.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
+                .GroupBy(m => m.Name).Select(g => g.First()).OrderBy(m => m.Name, StringComparer.Ordinal).ToList();
+            _printer.Models(models, _pending.SelectMany(p => p.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             OwnArrays();
@@ -318,7 +319,7 @@ namespace CsVerify.Verifier.Boogie
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
-                .Concat(listKeys.Count == 0 ? new string[0] : new[] { SizeMap, VersionMap }.Concat(listKeys.Select(ItemsMap))).ToHashSet();
+                .Concat(models.Select(m => m.Name)).ToHashSet();
             var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);
             var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
             _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
