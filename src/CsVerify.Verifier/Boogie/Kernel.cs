@@ -328,6 +328,18 @@ namespace CsVerify.Verifier.Boogie
         public Check Check;
         /// <summary>Where an exception it throws goes, where exceptions are seen (a try's handlers, or the method's exit).</summary>
         public string ThrowsTo;
+        /// <summary>
+        /// A call that runs alongside (a task's, a thread's): 1, its start, where its preconditions are checked and the
+        /// permissions they ask for given; 2, its join (of <see cref="Started"/>), where it returns what its postconditions give.
+        /// </summary>
+        public int Phase;
+        public KCall Started;
+        /// <summary>(its start's, kept for its join: what Checks made of it)</summary>
+        public KExpr MathReceiver;
+        public KExpr[] MathArgs;
+        public Dictionary<string, KExpr> GivenMap;
+        public List<(KExpr, KExpr)> Gave;
+        public bool CellCall, Pure;
     }
 
     /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>
@@ -395,6 +407,8 @@ namespace CsVerify.Verifier.Boogie
         public List<string> Keep = new List<string>();
         /// <summary>Only where this holds (a task it started still running); null: always.</summary>
         public KExpr When;
+        /// <summary>The method holds permissions (cells, views): what they cover is kept too.</summary>
+        public bool Cells, Perm;
     }
 
     /// <summary>A data value's field: checked not null in code, well-defined if so in a specification.</summary>
@@ -516,6 +530,9 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
         public bool CallsDelegates;
+        /// <summary>A twin's: its preconditions free (a join's call, checked at its start).</summary>
+        public bool FreeRequires;
+        public KProcedure Clone() => (KProcedure)MemberwiseClone();
         /// <summary>The data types it names (their definitions): each case's constructor, fields and tag.</summary>
         public HashSet<INamedTypeSymbol> DataTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         /// <summary>The data types with invariants whose values it takes to be valid.</summary>

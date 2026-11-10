@@ -575,8 +575,21 @@ proved a step from what it overwrites, which the others may have moved too (CSV1
 `volatile` is CSV1030. Wherever the field is forgotten (a call, an await, `$havoc`, a delegate's call) it went by
 steps (free postconditions, at every object allocated before and at the statics'), and at every loop head it went
 by steps since the method's entry: each change of it is a step, and steps are transitive (proved by the static checks,
-CSV1030). An atomic field needs no lock in concurrent code. Try-lock flags (`Interlocked` on a lock's flag) and tasks
-with permissions aren't translated yet.
+CSV1030). An atomic field needs no lock in concurrent code.
+
+**Try-locks.** An `int` or `bool` flag that guards state is a lock taken by `Interlocked.Exchange(ref f, 1)` (or
+`CompareExchange(ref f, 1, 0)`), which gives back what it was (unknown): on the edge of the `if` where it was free,
+what it guards is forgotten and its invariants hold, as a lock's on entering; `Volatile.Write(ref f, 0)` (or
+`Interlocked.Exchange(ref f, 0)`) gives it back, proving them (CSV1024). Whether it's taken and given back in that form
+(CSV1023) is the static checks'.
+
+**Tasks with permissions.** A task or thread of a callee whose contract names permissions (`Spec.Acc`) runs in two
+phases, as a fork and a join: its start (`Task.Run(() => F(...))`, `new Thread(...).Start()`, a call `Task.WhenAll`
+awaits, `var t = F(...)`) checks its preconditions there and gives it the permissions they ask for, and nothing
+returns; its join (`await t`, `Task.WhenAll`, `Join()`) calls its twin `F$started`, whose preconditions are free (they
+were checked), and takes back what its postconditions give. In between the method holds only what it kept. An await,
+and each statement while a task runs, keeps what the method's permissions cover too: the cells it holds (`cells`), the
+fields of the objects whose views it holds (`perm`).
 
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
 preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
@@ -680,8 +693,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    objects, predicates, functions over them, array cells, single fields; next: trees, shares, packages,
    `Spec.Modifies`);
 7. locks, async and threads (done: awaits with confined locals, lock statements, semaphore gates, tasks awaited
-   later, `Task.Run`, threads, concurrent code, lock levels' order by id, atomic fields; next: try-locks, tasks with
-   permissions, locks taken again through calls);
+   later, `Task.Run`, threads, concurrent code, lock levels' order by id, atomic fields, try-locks, tasks with
+   permissions; next: locks taken again through calls, `Monitor.Wait` and `Pulse`, tasks one is given);
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
 

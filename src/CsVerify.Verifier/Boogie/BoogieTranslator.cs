@@ -413,6 +413,18 @@ namespace CsVerify.Verifier.Boogie
                 _printer.Throws(sig, writes.TryGetValue(callee, out var w) || writes.TryGetValue(callee.OriginalDefinition, out w) ? w : _allMaps, clauses);
             }
             _printer.Throwing.Clear();
+            // the twins of what's started as a task or a thread: its preconditions free, as its start checked them
+            foreach (var callee in _printer.Started.ToList())
+            {
+                var p = _pending.FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.Method, callee.OriginalDefinition));
+                if (p == null) continue;
+                var twin = p.Clone();
+                twin.Name = p.Name + "$started";
+                twin.Abstract = true;
+                twin.FreeRequires = true;
+                _printer.Procedure(twin, writes[p.Method], any[p.Method], null);
+            }
+            _printer.Started.Clear();
             _pending.Clear();
         }
 

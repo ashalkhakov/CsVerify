@@ -401,8 +401,8 @@ namespace CsVerify.Verifier.Boogie
                                        PreS = lam.PreS == null ? null : M(lam.PreS), Reads = lam.Reads == null ? null : M(lam.Reads), Changes = lam.Changes == null ? null : M(lam.Changes) });
                     return;
                 }
-                case KAwait aw when aw.When != null:
-                    Emit(new KAwait { Keep = aw.Keep, When = Code(aw.When) });
+                case KAwait aw:
+                    Emit(new KAwait { Keep = aw.Keep, When = aw.When == null ? null : Code(aw.When), Cells = _p.UsesCells, Perm = _p.UsesPerm });
                     return;
                 case KThrowExit _:
                     // leaving by an exception: its own clauses for the exception's type hold
@@ -472,6 +472,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void Call(KCall c, List<KExpr> decreases)
         {
+            if (c.Phase == 2) { Join(c); return; }
             var callee = c.Callee;
             KExpr receiver = null;
             if (c.Receiver != null)
@@ -537,6 +538,18 @@ namespace CsVerify.Verifier.Boogie
             // (in array mode, a call that may write any array: which cells it writes is unknown)
             if (_p.ArrayMode && !cellCall && !pure)
                 Emit(new KAssert { Cond = new KLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
+            // (a task's or thread's start: its preconditions checked here, as no Boogie call will; it returns at its join)
+            if (c.Phase == 1)
+            {
+                foreach (var r in sig.Requires)
+                {
+                    var math = Subst(Spec(r.Expr, out _), given);
+                    _facts.Clear();
+                    Assert(math, At("CSV1001", c.At, $"'{c.At}' might throw: its precondition (precondition '{r.At}' of '{callee.Name}') might not hold"));
+                }
+                c.MathReceiver = receiver; c.MathArgs = args; c.GivenMap = given; c.Gave = gave; c.CellCall = cellCall; c.Pure = pure;
+                return;
+            }
             var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee, Cells = cellCall, Given = gave, Fields = _p.UsesFields } : null;
             // (what its preconditions say of snapshots: checked here, as Boogie's requires can't name them)
             if (_p.UsesPerm)
@@ -552,6 +565,24 @@ namespace CsVerify.Verifier.Boogie
             if (frame != null) Emit(frame);
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
+            AfterCall(c, callee, receiver, given, frame, sig, pure, ownedReceiver);
+        }
+
+        /// <summary>A task's or thread's join: its call, of its twin whose preconditions were checked at its start; what it gives back is in hand.</summary>
+        private void Join(KCall c)
+        {
+            var st = c.Started;
+            var callee = c.Callee;
+            var sig = _program.Signature(callee);
+            var frame = _p.UsesPerm ? new KCallFrame { Id = _frames++, Receiver = null, Callee = callee, Cells = st.CellCall, Given = st.Gave, Fields = _p.UsesFields } : null;
+            if (frame != null) Emit(frame);
+            Emit(new KCall { Callee = callee, Receiver = st.MathReceiver, ReceiverIsThis = st.ReceiverIsThis, ReceiverAt = st.ReceiverAt, Args = st.MathArgs, Result = c.Result, At = c.At,
+                             ArgsAt = st.ArgsAt, RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'"), Phase = 2 });
+            AfterCall(c, callee, st.MathReceiver, st.GivenMap, frame, sig, st.Pure, false);
+        }
+
+        private void AfterCall(KCall c, IMethodSymbol callee, KExpr receiver, Dictionary<string, KExpr> given, KCallFrame frame, KProcedure sig, bool pure, bool ownedReceiver)
+        {
             // and the views it gives back are in hand again, their invariants holding
             foreach (var (ordinal, var) in c.RefOuts.Where(x => IsView(callee.Parameters[x.param].Type)))
             {

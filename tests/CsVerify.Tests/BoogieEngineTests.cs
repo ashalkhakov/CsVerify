@@ -689,6 +689,60 @@ public static class Th
                 Assert.True(b[good].Verified, good);
         }
 
+        private const string TaskPermissions = @"using System.Threading; using System.Threading.Tasks;
+public static class Pw
+{
+    [RunsConcurrently]
+    public static void Part(int[] a, int lo, int hi)
+    {
+        Spec.Requires(0 <= lo && lo <= hi && hi <= a.Length && Spec.Acc(a, lo, hi));
+        Spec.Ensures(Spec.Acc(a, lo, hi) && Spec.Forall(lo, hi, i => a[i] == 1));
+        for (int k = lo; k < hi; k++) { Spec.Invariant(lo <= k && k <= hi && Spec.Acc(a, lo, hi) && Spec.Forall(lo, k, i => a[i] == 1)); a[k] = 1; }
+    }
+    public static async Task Halves(int[] a)
+    {
+        Spec.Requires(Spec.Acc(a));
+        Spec.Ensures(Spec.Acc(a) && Spec.Forall(0, a.Length, i => a[i] == 1));
+        int mid = a.Length / 2;
+        var l = Task.Run(() => Part(a, 0, mid));
+        var r = Task.Run(() => Part(a, mid, a.Length));
+        await l; await r;
+    }
+    public static async Task Early(int[] a)
+    {
+        Spec.Requires(Spec.Acc(a) && a.Length > 2);
+        var l = Task.Run(() => Part(a, 0, a.Length));
+        a[0] = 2;
+        await l;
+    }
+    public static async Task Bad(int[] a)
+    {
+        Spec.Requires(Spec.Acc(a));
+        var l = Task.Run(() => Part(a, 0, a.Length + 1));
+        await l;
+    }
+    public static void Threads(int[] a)
+    {
+        Spec.Requires(Spec.Acc(a));
+        Spec.Ensures(Spec.Acc(a) && Spec.Forall(0, a.Length, i => a[i] == 1));
+        var t = new Thread(() => Part(a, 0, a.Length));
+        t.Start();
+        t.Join();
+    }
+}
+";
+
+        [Fact]
+        public void TasksWithPermissions_BothEnginesReportTheSame()
+        {
+            // a task's start gives its callee's permissions, its join takes back what it gives
+            var (c, b) = Both(o => { if (o.Engine == "boogie") o.TimeoutMs = 60000; return Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + TaskPermissions) }, o); });
+            Assert.True(Agree(c, b) >= 4, "agreeing: " + Agree(c, b));
+            foreach (var good in new[] { "Pw.Part", "Pw.Halves", "Pw.Threads" })
+                Assert.True(b[good].Verified, good);
+            Assert.False(b["Pw.Bad"].Verified);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {

@@ -359,6 +359,15 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free ensures {InRangeOfMemory};");
         }
 
+        /// <summary>What the method's permissions cover stays: the cells it holds, the fields of the [Owned] objects whose views it holds.</summary>
+        private IEnumerable<string> HeldKept(ICollection<string> modifies)
+        {
+            foreach (var t in ElementTypes.Select(ElementMap).Where(modifies.Contains))
+                yield return $"  free ensures (forall a: Ref, i: int :: c[a][i] > 0.0 ==> {t}[a][i] == old({t}[a][i]));";
+            foreach (var m in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
+                yield return $"  free ensures (forall o: Ref :: p[o] ==> {m}[o] == old({m}[o]));";
+        }
+
         /// <summary>
         /// An await: other code runs, which may change anything but the objects the method alone has (its confined
         /// locals'); what's allocated stays so.
@@ -366,27 +375,28 @@ namespace CsVerify.Verifier.Boogie
         public void Await(ISet<string> maps)
         {
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
-            Line("procedure $await(k: [Ref]bool);");
-            if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
-            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
-            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
-            Line($"  free ensures {InRangeOfMemory};");
-            foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
-                Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
-            // (and where only a task the method started may be running alongside: changing nothing if none is)
-            Line("procedure $awaitIf(c: bool, k: [Ref]bool);");
-            if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
-            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
-            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
-            Line($"  free ensures {InRangeOfMemory};");
-            foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
-                Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
-            foreach (var m in modifies) Line($"  free ensures !c ==> {m} == old({m});");
+            // (each: always, or where a task the method started may be running alongside, changing nothing if none is;
+            // and, for a method of permissions, keeping what they cover)
+            foreach (var (name, when, held) in new[] { ("$await", false, false), ("$awaitIf", true, false), ("$awaitHeld", false, true), ("$awaitIfHeld", true, true) })
+            {
+                Line($"procedure {name}({(when ? "w: bool, " : "")}k: [Ref]bool{(held ? ", c: [Ref][int]real, p: [Ref]bool" : "")});");
+                if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+                foreach (var l in StepsKept(modifies, true)) Line("  " + l);
+                if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                Line($"  free ensures {InRangeOfMemory};");
+                foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
+                    Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
+                if (when) foreach (var m in modifies) Line($"  free ensures !w ==> {m} == old({m});");
+                if (held) foreach (var l in HeldKept(modifies)) Line(l);
+            }
         }
 
         // ------------------------------------------------------------------ exceptions
 
         private int _forks;
+
+        /// <summary>The callees started as tasks or threads (their twins, of free preconditions, are declared once the procedures are).</summary>
+        public readonly HashSet<IMethodSymbol> Started = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
 
         /// <summary>The callees a call of throws (their twins are declared once the procedures are).</summary>
         public readonly HashSet<IMethodSymbol> Throwing = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
@@ -678,7 +688,7 @@ namespace CsVerify.Verifier.Boogie
                 if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
             }
             // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
-            foreach (var r in p.Requires) Line($"  requires {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", r.Check);
+            foreach (var r in p.Requires) Line($"  {(p.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.FreeRequires ? null : r.Check);
             // (checked at each return, where it is reported: Boogie would report one return path of each)
             foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) ? "true" : E(e.Expr, cx))};");
             if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), Returns(m)), cx)};");
@@ -798,7 +808,10 @@ namespace CsVerify.Verifier.Boogie
                 case KAwait aw:
                 {
                     var k = $"(lambda r$: Ref :: {(aw.Keep.Count == 0 ? "false" : string.Join(" || ", aw.Keep.Select(x => $"r$ == {E(new KVar(x), cx)}")))})";
-                    Line(aw.When == null ? $"    call $await({k});" : $"    call $awaitIf({E(aw.When, cx)}, {k});");
+                    // (what its permissions cover, kept too: cells it holds, objects whose views it holds)
+                    var held = aw.Cells || aw.Perm ? $", {(aw.Cells ? "cells" : "(lambda a: Ref :: (lambda i: int :: 0.0))")}, {(aw.Perm ? "perm" : "(lambda o: Ref :: false)")}" : "";
+                    var suffix = held.Length > 0 ? "Held" : "";
+                    Line(aw.When == null ? $"    call $await{suffix}({k}{held});" : $"    call $awaitIf{suffix}({E(aw.When, cx)}, {k}{held});");
                     return;
                 }
                 case KInvoke iv:
@@ -913,7 +926,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();
                     var given = c.Args.Where((a, k) => c.Callee.Parameters[k].RefKind != RefKind.Out);
-                    Line($"    call {(targets.Count == 0 ? "" : string.Join(", ", targets) + " := ")}{Name(c.Callee)}({string.Join(", ", (c.Receiver == null ? given : new[] { c.Receiver }.Concat(given)).Select(a => E(a, cx)))});", c.Check);
+                    if (c.Phase == 2) Started.Add(c.Callee);
+                    Line($"    call {(targets.Count == 0 ? "" : string.Join(", ", targets) + " := ")}{Name(c.Callee)}{(c.Phase == 2 ? "$started" : "")}({string.Join(", ", (c.Receiver == null ? given : new[] { c.Receiver }.Concat(given)).Select(a => E(a, cx)))});", c.Check);
                     return;
                 }
                 default: throw new NotTranslated("not printable: " + s.GetType().Name);

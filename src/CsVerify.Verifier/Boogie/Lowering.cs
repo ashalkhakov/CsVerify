@@ -268,7 +268,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Statement(op);
                     // (while a task it started runs alongside, what the method doesn't hold is forgotten from each statement to the next)
-                    if (_tasks.Count > 0 && !InSpec(op.Syntax)) Alongside();
+                    if (_tasks.Count + _startedCaptures.Count > 0 && !InSpec(op.Syntax)) Alongside();
                 }
                 Branch(b);
             }
@@ -643,6 +643,7 @@ namespace CsVerify.Verifier.Boogie
                     Start(sl.Local, StartedCall(startedLambda), thread: true);
                     return;
                 case IInvocationOperation { TargetMethod.Name: "Join", Instance: ILocalReferenceOperation jl, Arguments.Length: 0 } when _tasks.TryGetValue(jl.Local, out var joined):
+                    JoinOf(joined);
                     Emit(new KAssign { Var = joined.Awaited, Value = new KLit("true") });
                     var jk = new KAwait();
                     if (!_opaque) foreach (var l in Confined()) jk.Keep.Add(Declare(Local(l), l.Type));
@@ -703,6 +704,11 @@ namespace CsVerify.Verifier.Boogie
                     if (!lf.IsStatic && !(lkf.Instance is IInstanceReferenceOperation) && lkf.Instance != null && InSubset(lkf.Instance.Type))
                         Emit(new KCheck { Cond = new KOp("!=", Expr(lkf.Instance), new KLit("null")), Id = "CSV1013", At = lkf.Syntax,
                                           Message = $"'{lkf.Instance.Syntax}' might be null in '{lkf.Syntax}'" });
+                    return;
+                case IFlowCaptureOperation wa when Unconverted(wa.Value) is IInvocationOperation wc && wc.TargetMethod.IsAsync && wc.TargetMethod.DeclaringSyntaxReferences.Length > 0 &&
+                                                   wc.Syntax.Parent is ArgumentSyntax { Parent.Parent: InvocationExpressionSyntax { Parent: AwaitExpressionSyntax } wi } &&
+                                                   wi.Expression.ToString().EndsWith("WhenAll"):
+                    StartCaptured(wa.Id, wc);
                     return;
                 case IFlowCaptureOperation fc:
                     _captured[fc.Id] = fc.Value;
@@ -796,6 +802,9 @@ namespace CsVerify.Verifier.Boogie
                 elseBlock.Jump = Edge(b, fall);
                 Next(b, b.ConditionalSuccessor.Destination, thenBlock);
                 Next(b, fall?.Destination, elseBlock);
+                // (the C# condition is true on the then edge when it jumps on true)
+                if (b.ConditionKind == ControlFlowConditionKind.WhenTrue) FlagTakenOn(b, thenBlock, elseBlock);
+                else FlagTakenOn(b, elseBlock, thenBlock);
                 if (b.ConditionalSuccessor.Destination?.Kind == BasicBlockKind.Exit) TasksAwaited(thenBlock);
                 if (fall?.Destination?.Kind == BasicBlockKind.Exit) TasksAwaited(elseBlock);
                 _p.Blocks.Add(thenBlock);
@@ -1067,11 +1076,49 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Giving a gate back: its invariants must hold (CSV1024).</summary>
-        private void Give(IFieldSymbol gate, SyntaxNode at)
+        private void Give(IFieldSymbol gate, SyntaxNode at, string how = "released")
         {
             var owner = gate.IsStatic ? null : (KExpr)new KVar("this");
             foreach (var inv in KernelTypes.Locks.InvariantsOf(gate))
-                Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = at, Message = $"the invariant of lock '{gate.Name}' might not hold when it is released" });
+                Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = at, Message = $"the invariant of lock '{gate.Name}' might not hold when it is {how}" });
+        }
+
+        /// <summary>The try-lock flag a call of Interlocked or Volatile is on (this object's, or a static one), or null.</summary>
+        private IFieldSymbol FlagOf(IInvocationOperation call)
+        {
+            var first = call.Arguments.OrderBy(a => a.Parameter.Ordinal).First();
+            if (first.Parameter.RefKind == RefKind.None || KernelTypes.Locks == null) return null;
+            var target = first.Value is IFlowCaptureReferenceOperation c && _captured.TryGetValue(c.Id, out var cv) ? cv : first.Value;
+            if (!(Unconverted(target) is IFieldReferenceOperation { Field: IFieldSymbol f } fr) || !KernelTypes.Locks.IsFlag(f)) return null;
+            if (!(f.IsStatic || fr.Instance is IInstanceReferenceOperation)) throw new NotTranslated("another object's try-lock");
+            return f;
+        }
+
+        /// <summary>
+        /// Interlocked or Volatile on a try-lock's flag: taking it (setting it to 1) gives back what it was, which isn't
+        /// known (the if that tests it says where it was taken); giving it back (setting it to 0) proves its invariants (CSV1024).
+        /// </summary>
+        private KExpr FlagCall(IInvocationOperation call, IFieldSymbol flag)
+        {
+            var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var set = ordered.Count > 1 ? ordered[1].Value.ConstantValue : default;
+            bool givesBack = set.HasValue && (set.Value is int i && i == 0 || set.Value is false);
+            if (givesBack) Give(flag, call.Syntax, "given back");
+            if (call.TargetMethod.ReturnsVoid) return null;
+            var was = Declare("t$" + _temps++, call.TargetMethod.ReturnType);
+            Emit(new KHavoc { Var = was });
+            return new KVar(was);
+        }
+
+        /// <summary>The edge of an if where a try-lock's flag was taken: it's held there, as a lock is once taken.</summary>
+        private void FlagTakenOn(BasicBlock b, KBlock whenTrue, KBlock whenFalse)
+        {
+            if (KernelTypes.Locks == null || !(b.BranchValue?.Syntax is ExpressionSyntax cond) || !(LockGuards.FlagTaken(cond, _model) is var (lockExpr, _, takenWhenTrue))) return;
+            if (!(_model.GetSymbolInfo(lockExpr).Symbol is IFieldSymbol flag) || !KernelTypes.Locks.IsFlag(flag)) return;
+            var saved = _block;
+            _block = takenWhenTrue ? whenTrue : whenFalse;
+            try { Take(flag, cond); }
+            finally { _block = saved; }
         }
 
         /// <summary>The gates held at a point: the try of 'await g.WaitAsync(); try { here } finally { g.Release(); }'.</summary>
@@ -1143,6 +1190,8 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ async
 
         private bool _awaiting;
+        /// <summary>The call being lowered is a task's or thread's start (1): it returns at its join.</summary>
+        private int _phase;
 
         /// <summary>
         /// await t: other code may run, so what the method doesn't hold is forgotten (all but its confined locals'
@@ -1152,7 +1201,6 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Await(IAwaitOperation aw)
         {
             if (_p.Ghost || _contract.IsPure || _contract.IsLemma) throw new NotTranslated("an await in a proof");
-            if (_p.UsesPerm) throw new NotTranslated("an await with permissions");
             var op = aw.Operation;
             IFieldSymbol gate = null;
             while (op is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null) op = ca.Instance;
@@ -1160,17 +1208,25 @@ namespace CsVerify.Verifier.Boogie
             switch (op)
             {
                 case ILocalReferenceOperation tl when _tasks.TryGetValue(tl.Local, out var task):
+                    JoinOf(task);
                     Emit(new KAssign { Var = task.Awaited, Value = new KLit("true") });
                     value = task.Result == null ? null : new KVar(task.Result);
                     break;
                 case IInvocationOperation all when all.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && all.TargetMethod.Name == "WhenAll" &&
                                                    (aw.Parent is IExpressionStatementOperation || aw.Parent == null):
+                {
+                    var inlineStarts = new List<Task>();
                     foreach (var a in all.Arguments.SelectMany(x => x.Value is IArrayCreationOperation ac ? ac.Initializer?.ElementValues.AsEnumerable() ?? new IOperation[0]
                                                                   : x.Value is ICollectionExpressionOperation ce ? ce.Elements.AsEnumerable() : new[] { x.Value }))
                         if (Unconverted(a is IFlowCaptureReferenceOperation wc && _captured.TryGetValue(wc.Id, out var wv) ? wv : a) is ILocalReferenceOperation wl &&
-                            _tasks.TryGetValue(wl.Local, out var wt)) Emit(new KAssign { Var = wt.Awaited, Value = new KLit("true") });
+                            _tasks.TryGetValue(wl.Local, out var wt)) { JoinOf(wt); Emit(new KAssign { Var = wt.Awaited, Value = new KLit("true") }); }
+                        else if (a is IFlowCaptureReferenceOperation wr && _startedCaptures.TryGetValue(wr.Id, out var wst)) { JoinOf(wst); Emit(new KAssign { Var = wst.Awaited, Value = new KLit("true") }); }
+                        // (a call written in it: started with the others, joined with them)
+                        else if (Unconverted(a) is IInvocationOperation inline && inline.TargetMethod.IsAsync && inline.TargetMethod.DeclaringSyntaxReferences.Length > 0) inlineStarts.Add(StartInline(inline));
                         else throw new NotTranslated("Task.WhenAll of a task not started here");
+                    foreach (var t in inlineStarts) JoinOf(t);
                     break;
+                }
                 case IInvocationOperation call when call.TargetMethod.IsAsync && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
                     _awaiting = true;
                     try { value = Call(call); }
@@ -1222,6 +1278,8 @@ namespace CsVerify.Verifier.Boogie
             public SyntaxNode At;
             /// <summary>A thread, or a task of code of its own: not reported if never finished.</summary>
             public bool Thread;
+            /// <summary>Its call's start, where it's in two phases (a callee of permissions); and whether its join has been.</summary>
+            public KCall StartCall;
         }
 
         private readonly Dictionary<ILocalSymbol, Task> _tasks = new Dictionary<ILocalSymbol, Task>(SymbolEqualityComparer.Default);
@@ -1243,12 +1301,16 @@ namespace CsVerify.Verifier.Boogie
                 if (!ok || id.Ancestors().Any(a => a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax)) throw new NotTranslated("a task used otherwise than awaited: " + local.Name);
             }
             KExpr result = null;
+            KCall started = null;
             if (call != null)
             {
+                // (a callee of permissions: its start gives them, its join takes back what it gives; else the call at once)
+                bool twoPhase = Permissions(call.TargetMethod);
                 _awaiting = true;
+                _phase = twoPhase ? 1 : 0;
                 try { result = Call(call); }
-                finally { _awaiting = false; }
-                if (_p.UsesPerm) throw new NotTranslated("a task with permissions");
+                finally { _awaiting = false; _phase = 0; }
+                if (twoPhase) started = _block.Stmts.OfType<KCall>().Last();
             }
             // (of code of its own: what it gives isn't known, and it may reach anything, a confined local's object too)
             if (call == null && local.Type is INamedTypeSymbol { Arity: 1 } tt && InSubset(tt.TypeArguments[0]))
@@ -1258,7 +1320,7 @@ namespace CsVerify.Verifier.Boogie
                 result = new KVar(unknown);
             }
             if (call == null) _opaque = true;
-            var task = new Task { Method = call?.TargetMethod, At = call?.Syntax, Result = (result as KVar)?.Name, Thread = thread || call == null,
+            var task = new Task { Method = call?.TargetMethod, At = call?.Syntax, Result = (result as KVar)?.Name, Thread = thread || call == null, StartCall = started,
                                   Awaited = Declare($"aw${_tasks.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)) };
             if (result != null && task.Result == null) { task.Result = Declare("t$" + _temps++, Returns(call.TargetMethod)); Emit(new KAssign { Var = task.Result, Value = result }); }
             Emit(new KAssign { Var = task.Awaited, Value = new KLit("false") });
@@ -1270,6 +1332,47 @@ namespace CsVerify.Verifier.Boogie
 
         private static AnonymousFunctionExpressionSyntax LambdaSyntax(IArgumentOperation a) =>
             (a.Syntax as ArgumentSyntax)?.Expression as AnonymousFunctionExpressionSyntax ?? a.Value.Syntax as AnonymousFunctionExpressionSyntax;
+
+        /// <summary>A callee whose contract names permissions: started, it runs in two phases.</summary>
+        private bool Permissions(IMethodSymbol callee) =>
+            _contractOf?.Invoke(callee) is Contract c && (c.Requires.Any(HasAtoms) || c.Ensures.Any(e => HasAtoms(e.Expr)));
+
+        /// <summary>A task's join: where its call returns what its postconditions give, once.</summary>
+        private void JoinOf(Task t)
+        {
+            if (t.StartCall == null) return;
+            var st = t.StartCall;
+            Emit(new KCall { Callee = st.Callee, Started = st, Result = st.Result, At = st.At, ArgsAt = st.ArgsAt, RefOuts = st.RefOuts, Phase = 2 });
+            t.StartCall = null;
+        }
+
+        /// <summary>The tasks Task.WhenAll's arguments start, each as its own task.</summary>
+        private readonly Dictionary<CaptureId, Task> _startedCaptures = new Dictionary<CaptureId, Task>();
+
+        private Task StartInline(IInvocationOperation call)
+        {
+            bool twoPhase = Permissions(call.TargetMethod);
+            _awaiting = true;
+            _phase = twoPhase ? 1 : 0;
+            KExpr result;
+            try { result = Call(call); }
+            finally { _awaiting = false; _phase = 0; }
+            return new Task { Method = call.TargetMethod, At = call.Syntax, Result = (result as KVar)?.Name, StartCall = twoPhase ? _block.Stmts.OfType<KCall>().Last() : null };
+        }
+
+        private void StartCaptured(CaptureId id, IInvocationOperation call)
+        {
+            bool twoPhase = Permissions(call.TargetMethod);
+            _awaiting = true;
+            _phase = twoPhase ? 1 : 0;
+            KExpr result;
+            try { result = Call(call); }
+            finally { _awaiting = false; _phase = 0; }
+            var task = new Task { Method = call.TargetMethod, At = call.Syntax, Result = (result as KVar)?.Name, StartCall = twoPhase ? _block.Stmts.OfType<KCall>().Last() : null,
+                                  Awaited = Declare($"aw${_tasks.Count + _startedCaptures.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)) };
+            Emit(new KAssign { Var = task.Awaited, Value = new KLit("false") });
+            _startedCaptures[id] = task;
+        }
 
         private readonly Dictionary<ILocalSymbol, AnonymousFunctionExpressionSyntax> _threads = new Dictionary<ILocalSymbol, AnonymousFunctionExpressionSyntax>(SymbolEqualityComparer.Default);
 
@@ -1288,7 +1391,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void TasksAwaited(KBlock at)
         {
-            foreach (var t in _tasks.Values.Where(t => !t.Thread))
+            foreach (var t in _tasks.Values.Concat(_startedCaptures.Values).Where(t => !t.Thread))
                 at.Stmts.Add(new KCheck { Cond = new KVar(t.Awaited), Id = "CSV1026", At = t.At, NotAssumedAfter = true,
                                           Message = $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost" });
         }
@@ -1300,7 +1403,7 @@ namespace CsVerify.Verifier.Boogie
         {
             _p.Awaits = true;
             _p.CallsDelegates = true;
-            var running = _tasks.Values.Select(t => (KExpr)new KOp("!", new KVar(t.Awaited))).Aggregate((a, b) => new KOp("||", a, b));
+            var running = _tasks.Values.Concat(_startedCaptures.Values).Select(t => (KExpr)new KOp("!", new KVar(t.Awaited))).Aggregate((a, b) => new KOp("||", a, b));
             var k = new KAwait { When = running };
             if (!_opaque) foreach (var l in Confined()) k.Keep.Add(Declare(Local(l), l.Type));
             Emit(k);
@@ -2026,6 +2129,10 @@ namespace CsVerify.Verifier.Boogie
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
             // (a lock statement's Monitor.Enter and Monitor.Exit)
             if (call.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Monitor" && call.TargetMethod.Name is "Enter" or "Exit") { Monitor(call); return null; }
+            // (a try-lock's flag: taken by Interlocked where the if says it was free, given back in the finally)
+            if (call.TargetMethod.ContainingType?.ToDisplayString() is "System.Threading.Interlocked" or "System.Threading.Volatile" && call.Arguments.Length > 0 &&
+                FlagOf(call) is IFieldSymbol flag)
+                return FlagCall(call, flag);
             // (Interlocked and Volatile of an atomic field: one step each)
             if (call.TargetMethod.ContainingType?.ToDisplayString() is "System.Threading.Interlocked" or "System.Threading.Volatile" && call.Arguments.Length > 0 &&
                 call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Parameter.RefKind != RefKind.None)
@@ -2404,7 +2511,7 @@ namespace CsVerify.Verifier.Boogie
             var keepers = constructed.IsAsync && !list ? Confined().Select(l => Declare(Local(l), l.Type)).ToList() : new List<string>();
             int keepId = _keeps++;
             if (keepers.Count > 0) Emit(new KKeep { Id = keepId, Keep = keepers });
-            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = throwsTo,
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = _phase == 1 ? null : throwsTo, Phase = _phase,
                              Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).Concat(value == null ? new SyntaxNode[0] : new[] { at }).ToArray(),
                              Result = result, At = call.Syntax, RefOuts = refOuts });
             if (keepers.Count > 0) Emit(new KKeep { Id = keepId, After = true, Keep = keepers });

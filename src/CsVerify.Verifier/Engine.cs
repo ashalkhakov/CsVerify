@@ -615,7 +615,7 @@ namespace CsVerify.Verifier
             !decl.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>()
                 .Any(n => model.GetSymbolInfo(n).Symbol is ISymbol s && (s is IFieldSymbol || s is IPropertySymbol) && engine.Locks.GuardOf(s) is ISymbol g &&
                           // (a lock statement's lock, an object: Boogie's; a semaphore or a flag: not yet)
-                          !Boogie.KernelTypes.IsLockObject(g));
+                          !Boogie.KernelTypes.IsLockObject(g) && !engine.Locks.IsFlag(g));
 
         /// <summary>A member whose body is not known at the call: virtual, abstract, an interface member (not sealed).</summary>
         internal static bool IsOverridable(IMethodSymbol m) =>
