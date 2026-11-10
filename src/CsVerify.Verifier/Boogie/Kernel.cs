@@ -351,6 +351,24 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What it gives (of the parameters, and "result").</summary>
         public List<KExpr> Posts = new List<KExpr>();
         public bool NoChange;
+        /// <summary>The same in every state ($steady): its $pre and $post are those in every state.</summary>
+        public bool Steady;
+        /// <summary>One that reads state (its own Spec.Reads): its precondition in the state it's made in, and what it reads there.</summary>
+        public KExpr PreS, Reads;
+        /// <summary>What it may change, for its arguments (its own Spec.Modifies).</summary>
+        public KExpr Changes;
+        /// <summary>A method group's parameters, as its contract names them, to the bound variables.</summary>
+        public Dictionary<string, KExpr> Rename = new Dictionary<string, KExpr>();
+    }
+
+    /// <summary>A check Lowering decides on: a specification (mathematics, its own well-definedness not checked), reported as given.</summary>
+    internal sealed class KCheck : KStmt
+    {
+        public KExpr Cond;
+        public string Id, Message;
+        public SyntaxNode At;
+        /// <summary>Not assumed after it: a report, not a fact.</summary>
+        public bool NotAssumedAfter;
     }
 
     internal sealed class KAssert : KStmt

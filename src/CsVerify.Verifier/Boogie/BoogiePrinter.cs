@@ -149,6 +149,9 @@ namespace CsVerify.Verifier.Boogie
                         case "set.of": return $"(lambda r$: Ref :: r$ == {a[0]})";
                         case "set.add": return $"{a[0]}[{a[1]} := true]";
                         case "set.union": return $"(lambda r$: Ref :: {a[0]}[r$] || {a[1]}[r$])";
+                        case "set.subset": return $"(forall r$: Ref :: {a[0]}[r$] ==> {a[1]}[r$])";
+                        case "set.disjoint": return $"(forall r$: Ref :: !({a[0]}[r$] && {a[1]}[r$]))";
+                        case "$state": return State;
                         case "slen": return $"slen({a[0]})";
                         case "sl": return $"sl({a[0]})";
                         case "sat": return $"sat({a[0]}, {a[1]})";
@@ -211,6 +214,17 @@ namespace CsVerify.Verifier.Boogie
             if (all.Count == 0) return;
             string Ty(string part) => part == "Ref" ? "Ref" : part == "Boolean" ? "bool" : "int";
             Line("function $nochange(d: Ref): bool;");
+            // (a state: the memory, each map of it given back; a steady delegate is the same in all of them)
+            Line("type St;");
+            Line("function $steady(d: Ref): bool;");
+            var ms = string.Join(", ", _stateMaps.Select(m => $"{m.name}: {m.type}"));
+            var mns = string.Join(", ", _stateMaps.Select(m => m.name));
+            Line($"function $st({ms}): St;");
+            foreach (var m in _stateMaps)
+            {
+                Line($"function $st.{m.name}(s: St): {m.type};");
+                Line($"axiom (forall {ms} :: {{ $st({mns}) }} $st.{m.name}($st({mns})) == {m.name});");
+            }
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
             foreach (var key in all)
             {
@@ -225,11 +239,32 @@ namespace CsVerify.Verifier.Boogie
                 Line(xs.Count == 0
                     ? $"axiom (forall d: Ref :: {{ $total.{key}(d) }} $total.{key}(d) <==> $pre.{key}(d));"
                     : $"axiom (forall d: Ref :: {{ $total.{key}(d) }} $total.{key}(d) <==> (forall {string.Join(", ", xs.Select(x => $"{x.name}: {x.type}"))} :: {{ $pre.{key}(d{use}) }} $pre.{key}(d{use})));");
+                var rr = res == "void" ? "" : $", r: {Ty(res)}";
+                var ru = res == "void" ? "" : ", r";
+                // in a state: steady, as in every state; one that reads state, the same where what it reads is
+                Line($"function $preS.{key}(d: Ref, s: St{decl}): bool;");
+                Line($"function $postS.{key}(d: Ref, s: St{decl}{rr}): bool;");
+                Line($"function $readsS.{key}(d: Ref, s: St{decl}): [Ref]bool;");
+                Line($"function $frame.{key}(d: Ref{decl}): [Ref]bool;");
+                Line($"axiom (forall d: Ref, s: St{decl} :: {{ $preS.{key}(d, s{use}) }} $steady(d) ==> $preS.{key}(d, s{use}) == $pre.{key}(d{use}));");
+                Line($"axiom (forall d: Ref, s: St{decl}{rr} :: {{ $postS.{key}(d, s{use}{ru}) }} $steady(d) ==> $postS.{key}(d, s{use}{ru}) == $post.{key}(d{use}{ru}));");
+                Line($"axiom (forall d: Ref, s: St{decl}, o: Ref :: {{ $readsS.{key}(d, s{use})[o] }} $steady(d) ==> !$readsS.{key}(d, s{use})[o]);");
+                Line($"axiom (forall d: Ref{decl}, o: Ref :: {{ $frame.{key}(d{use})[o] }} $nochange(d) ==> !$frame.{key}(d{use})[o]);");
+                string Agree(string r) => _stateMaps.Count == 0 ? "true" :
+                    $"(forall o: Ref :: {r}[o] ==> {string.Join(" && ", _stateMaps.Select(m => $"$st.{m.name}(s1)[o] == $st.{m.name}(s2)[o]"))})";
+                var r1 = $"$readsS.{key}(d, s1{use})";
+                Line($"axiom (forall d: Ref, s1: St, s2: St{decl} :: {{ $preS.{key}(d, s1{use}), $preS.{key}(d, s2{use}) }} {{ {r1}, $preS.{key}(d, s2{use}) }} {{ {r1}, $readsS.{key}(d, s2{use}) }} " +
+                     $"{Agree(r1)} ==> $preS.{key}(d, s1{use}) == $preS.{key}(d, s2{use}) && {r1} == $readsS.{key}(d, s2{use}));");
+                Line($"axiom (forall d: Ref, s1: St, s2: St{decl}{rr} :: {{ $postS.{key}(d, s1{use}{ru}), $postS.{key}(d, s2{use}{ru}) }} " +
+                     $"{Agree(r1)} ==> $postS.{key}(d, s1{use}{ru}) == $postS.{key}(d, s2{use}{ru}));");
                 Line($"procedure $call.{key}(d: Ref{decl}){(res == "void" ? "" : $" returns (res: {Ty(res)})")};");
                 if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
                 if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
                 Line($"  free ensures {InRangeOfMemory};");
-                Line($"  free ensures $post.{key}(d{use}{(res == "void" ? "" : ", res")});");
+                Line($"  free ensures $postS.{key}(d, old({State}){use}{(res == "void" ? "" : ", res")});");
+                // (only what's in its frame changes, of what was allocated)
+                foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
+                    Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !$frame.{key}(d{use})[o] ==> {m.name}[o] == old({m.name}[o]));");
                 if (res != "void" && res != "Ref" && res != "Boolean")
                 {
                     var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + res));
@@ -320,8 +355,17 @@ namespace CsVerify.Verifier.Boogie
         /// Each field's map, object to value (a static field's at null): an integer one's values in its type's range,
         /// which Boogie assumes wherever it forgets the map (after a call that modifies it, at a loop head).
         /// </summary>
+        /// <summary>The memory a delegate's state is: the element maps and the field maps (with their types).</summary>
+        private readonly List<(string name, string type)> _stateMaps = new List<(string, string)>();
+
+        /// <summary>This state, as delegates take it.</summary>
+        private string State => $"$st({string.Join(", ", _stateMaps.Select(m => m.name))})";
+
         public void Fields(IEnumerable<ISymbol> fields)
         {
+            _stateMaps.Clear();
+            foreach (var t in ElementTypes) _stateMaps.Add((ElementMap(t), t == SpecialType.System_Boolean ? "[Ref][int]bool" : "[Ref][int]int"));
+            foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal)) _stateMaps.Add((FieldMap(f), $"[Ref]{TypeOf(FieldType(f))}"));
             foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal))
             {
                 var map = FieldMap(f);
@@ -586,6 +630,13 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var fact in lam.Posts)
                         Line($"    assume {All(rs, post, $"{post} && {pre} ==> ({E(fact, cx)})")};");
                     if (lam.NoChange) Line($"    assume $nochange({lam.Var});");
+                    if (lam.Steady) Line($"    assume $steady({lam.Var});");
+                    var preS = $"$preS.{lam.Key}({lam.Var}, {State}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
+                    var readsS = $"$readsS.{lam.Key}({lam.Var}, {State}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
+                    if (lam.PreS != null) Line($"    assume {All(new string[0], preS, $"{preS} == ({E(lam.PreS, cx)})")};");
+                    if (lam.Reads != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{readsS}[o$]", $"{readsS}[o$] ==> ({E(lam.Reads, cx)})[o$]")};");
+                    var frame = $"$frame.{lam.Key}({lam.Var}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
+                    if (lam.Changes != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{frame}[o$]", $"{frame}[o$] ==> ({E(lam.Changes, cx)})[o$]")};");
                     return;
                 }
                 case KNewExc ne:

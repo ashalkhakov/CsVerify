@@ -378,18 +378,27 @@ namespace CsVerify.Verifier.Boogie
                     var d = Code(iv.Delegate);
                     var args = iv.Args.Select(Code).ToArray();
                     Assert(new KOp("!=", d, new KLit("null")), At("CSV1013", iv.At, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
-                    Assert(new KOp("$pre." + iv.Key, new[] { d }.Concat(args).ToArray()),
+                    Assert(new KOp("$preS." + iv.Key, new[] { d, new KOp("$state") }.Concat(args).ToArray()),
                         At("CSV1001", iv.At, $"'{iv.DelegateAt}' might not accept these arguments: say what it accepts with Spec.Requires(Spec.Pre({iv.DelegateAt}, ...))"));
                     Emit(new KInvoke { Result = iv.Result, Delegate = d, Args = args, Key = iv.Key, At = iv.At, DelegateAt = iv.DelegateAt });
+                    return;
+                }
+                case KCheck ck:
+                {
+                    var cond = Spec(ck.Cond, out _);
+                    _facts.Clear();
+                    Assert(cond, At(ck.Id, ck.At, ck.Message), ck.NotAssumedAfter);
                     return;
                 }
                 case KLambda lam:
                 {
                     // (its facts are mathematics of its parameters and of what never changes)
                     var r = new Dictionary<string, KExpr> { ["result"] = new KVar("q$r") };
+                    foreach (var kv in lam.Rename) r[kv.Key] = kv.Value;
                     KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, r); }
-                    Emit(new KLambda { Var = lam.Var, Key = lam.Key, Params = lam.Params, ResultType = lam.ResultType, NoChange = lam.NoChange,
-                                       Pre = lam.Pre == null ? null : M(lam.Pre), Posts = lam.Posts.Select(M).ToList() });
+                    Emit(new KLambda { Var = lam.Var, Key = lam.Key, Params = lam.Params, ResultType = lam.ResultType, NoChange = lam.NoChange, Steady = lam.Steady,
+                                       Pre = lam.Pre == null ? null : M(lam.Pre), Posts = lam.Posts.Select(M).ToList(),
+                                       PreS = lam.PreS == null ? null : M(lam.PreS), Reads = lam.Reads == null ? null : M(lam.Reads), Changes = lam.Changes == null ? null : M(lam.Changes) });
                     return;
                 }
                 case KThrowExit _:
@@ -1691,6 +1700,13 @@ namespace CsVerify.Verifier.Boogie
                         _facts.Add(new KOp("==>", new KOp("!=", o, new KLit("null")), new KOp("!=", v, new KLit("null"))));
                     if (IsRef(FieldType(fd.Field)) && !Mentions(o, _bound)) _facts.Add(Allocated(o, v));
                     return v;
+                }
+                case KQuant q when q.Range == null:
+                {
+                    // (over all of its type: a delegate's arguments)
+                    bool added = _bound.Add(q.Var);
+                    try { return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Body = Spec(q.Body, new List<KExpr>(), new List<KExpr>()) }; }
+                    finally { if (added) _bound.Remove(q.Var); }
                 }
                 case KQuant q:
                 {

@@ -309,6 +309,109 @@ public static class D
     public static void TotalBad() { int y = ApplyAll(x => { Spec.Requires(x != 4); return x; }); }
 }";
 
+        private const string Delegates = @"public delegate int Pricing(int q);
+[ContractClassFor(typeof(Pricing))]
+internal abstract class PricingContract { public int Invoke(int q) { Spec.Requires(0 <= q && q <= 1000); Spec.Ensures<int>(r => 0 <= r && r <= 100 * q); return default; } }
+public static class Mg
+{
+    public static int Apply(Func<int, int> f, int x) { Spec.Requires(Spec.Pre(f, x)); Spec.Ensures<int>(r => Spec.Post(f, x, r)); return f(x); }
+    public static int Inc(int x) { Spec.Requires(x < 100); Spec.Ensures<int>(r => r == x + 1); return x + 1; }
+    [Pure] public static int Twice(int x) { Spec.Requires(x >= 0 && x < 1000); Spec.Ensures<int>(r => r == 2 * x); return 2 * x; }
+    public static void UseInc() { int y = Apply(Inc, 5); Spec.Assert(y == 6); }
+    public static void UseIncBad() { int y = Apply(Inc, 500); }
+    public static void UseTwice() { int y = Apply(Twice, 4); Spec.Assert(y == 8); }
+    public static int Quote(Pricing p, int q) { Spec.Requires(0 <= q && q <= 1000); Spec.Ensures<int>(r => 5 <= r && r <= 100005); return p(q) + 5; }
+    public static int QuoteBad(Pricing p, int q) { Spec.Requires(0 <= q && q <= 2000); return p(q); }
+    public static int QuoteWrong(Pricing p) { Spec.Ensures<int>(r => r <= 50); return p(1); }
+    public static int MakeAndQuote() { Pricing p = q => 100 * q; return Quote(p, 3); }
+}
+public sealed class Cell { public int V; }
+public static class Rd
+{
+    public static bool Ask(Cell c, Cell other, Func<Cell, bool> rule)
+    {
+        Spec.Requires(c != other && Spec.Pre(rule, c) && Spec.ReadsOf(rule, c).IsSubsetOf(ObjSet.Of(c)));
+        other.V = 1;
+        return rule(c);
+    }
+    public static bool AskBad(Cell c, Func<Cell, bool> rule)
+    {
+        Spec.Requires(Spec.Pre(rule, c) && Spec.ReadsOf(rule, c).IsSubsetOf(ObjSet.Of(c)));
+        c.V = 1;
+        return rule(c);
+    }
+    public static int Probe(Cell c, Cell d, Func<int, int> g)
+    {
+        Spec.Requires(c != d && Spec.Pre(g, 0) && Spec.Reads(g, x => ObjSet.Of(c)));
+        d.V = 3;
+        return g(0);
+    }
+    public static int ProbeBad(Cell c, Func<int, int> g)
+    {
+        Spec.Requires(Spec.Pre(g, 0) && Spec.Reads(g, x => ObjSet.Of(c)));
+        c.V = 3;
+        return g(0);
+    }
+    public static bool UseAsk(Cell c, Cell other)
+    {
+        Spec.Requires(c != other);
+        c.V = 5;
+        return Ask(c, other, x => { Spec.Reads(ObjSet.Of(x)); Spec.Requires(x.V > 0); return x.V > 1; });
+    }
+    public static bool NoFrame(Cell c, Cell other)
+    {
+        Spec.Requires(c != other);
+        c.V = 5;
+        return Ask(c, other, x => { Spec.Requires(x.V > 0); return true; });
+    }
+    public static bool OutOfFrame(Cell c, Cell other)
+    {
+        Spec.Requires(c != other);
+        c.V = 5; other.V = 1;
+        return Ask(c, other, x => { Spec.Reads(ObjSet.Of(x)); Spec.Requires(x.V > 0 && other.V > 0); return true; });
+    }
+    public static int Apply(Func<int, int> f, int x) { Spec.Requires(Spec.Pre(f, x)); return f(x); }
+    public static int PassReading(Cell c, Func<int, int> g)
+    {
+        Spec.Requires(Spec.Pre(g, 0) && Spec.Reads(g, x => ObjSet.Of(c)));
+        return Apply(g, 0);
+    }
+    public static void Touch(Cell a, Cell b, Func<Cell, int> g)
+    {
+        Spec.Requires(a != b && a.V == 1 && b.V == 2 && Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x)));
+        g(a);
+        Spec.Assert(b.V == 2);
+    }
+    public static void TouchBad(Cell a, Cell b, Func<Cell, int> g)
+    {
+        Spec.Requires(a != b && a.V == 1 && Spec.Total(g) && Spec.Changes(g, x => ObjSet.Of(x)));
+        g(a);
+        Spec.Assert(a.V == 1);
+    }
+    public static void Run(Action<int> g) { Spec.Requires(Spec.Total(g)); g(1); }
+    public static void Sums()
+    {
+        int s = 0;
+        Action<int> add = x => { s = 7; };
+        Spec.Assert(s == 0);
+        Run(add);
+        Spec.Assert(s == 0);
+    }
+}
+";
+
+        [Fact]
+        public void DelegatesThatReadState_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Delegates) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.Equal(23, Agree(c, b));
+            foreach (var bug in new[] { "Mg.UseIncBad", "Mg.QuoteBad", "Mg.QuoteWrong", "Rd.AskBad", "Rd.ProbeBad", "Rd.NoFrame", "Rd.OutOfFrame", "Rd.PassReading", "Rd.TouchBad", "Rd.Sums" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Mg.UseInc", "Mg.UseTwice", "Mg.Quote", "Mg.MakeAndQuote", "Rd.Ask", "Rd.Probe", "Rd.UseAsk", "Rd.Touch", "Rd.Run" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {

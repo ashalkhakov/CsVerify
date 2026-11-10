@@ -62,7 +62,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c) =>
-            (m.IsStatic ? m.MethodKind == MethodKind.Ordinary
+            (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
+             m.IsStatic ? m.MethodKind == MethodKind.Ordinary
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract) &&
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
             !m.IsAsync && !m.IsGenericMethod && KnownAttributes(m) &&
@@ -433,6 +434,8 @@ namespace CsVerify.Verifier.Boogie
                 // allows, and without one, anything)
                 if (Engine.IsOverridable(p.Method) && p.Frame == null) sets[p.Method].UnionWith(_allMaps);
             }
+            // (a delegate's call runs whichever body it was made of: anything)
+            foreach (var p in _pending.Where(p => p.Method.MethodKind == MethodKind.DelegateInvoke)) sets[p.Method].UnionWith(_allMaps);
             for (bool grew = true; grew;)
             {
                 grew = false;

@@ -646,6 +646,11 @@ namespace CsVerify.Verifier
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
+                // a delegate type with a contract: for Boogie, its Invoke is a procedure of it alone, as an abstract member is
+                foreach (var dd in tree.GetRoot().DescendantNodes().OfType<DelegateDeclarationSyntax>())
+                    if (options.Boogie && model.GetDeclaredSymbol(dd) is INamedTypeSymbol dt && dt.DelegateInvokeMethod is IMethodSymbol di &&
+                        engine.HasDelegateContract(dt) && Boogie.BoogieTranslator.Candidate(di, engine.ContractOf(di)))
+                        forBoogie.Add((di, engine.ContractOf(di), dd, new MethodResult { Name = null }));
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<BaseMethodDeclarationSyntax>())
                 {
                     if (decl.Body == null && decl.ExpressionBody == null)

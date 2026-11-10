@@ -435,12 +435,33 @@ functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, i
   and `$nochange` if it writes no field, cell or object and calls only what's `[Pure]`. They count only as far as they
   depend on its parameters, constants, `this`, and variables never written after they're declared (the rest is left
   out); a precondition that depends on more isn't translated. Its body is verified on its own.
-- A method whose specifications speak of a parameter's `Spec.Pre`, `Spec.Post` or `Spec.Total` takes it to be the
-  same in every state; a call of it is translated where the argument is a lambda or such a parameter of the caller's.
+- A method whose specifications speak of a parameter's `Spec.Pre`, `Spec.Post` or `Spec.Total` (and not of what it
+  reads) takes it to be the same in every state: `$steady(p)` at entry, and each call of it asserts `$steady` of the
+  argument (CSV1001). A lambda or method group that reads no state is steady.
+- A state is `$st(`*every element and field map*`)`, of type `St`, with each map given back (`$st.$F.C.f(s)`). In a
+  state, a delegate accepts `$preS.K(d, s, x)`, gives `$postS.K(d, s, x, r)` and reads `$readsS.K(d, s, x)` (a
+  `[Ref]bool`); a steady one's are its `$pre` and `$post` and it reads nothing. Dafny's frame axiom: two states that
+  agree on every field and cell of the objects it reads in the first give it the same `$preS`, `$postS` and reads
+  (triggered on a pair of its terms, as CsVerify's engine relates its pairs of states). A call asserts `$preS` in the
+  state it's made in, and ensures `$postS` of the state before it.
+- `Spec.ReadsOf(f, x)` is `$readsS.K(f, now, x)`; `Spec.Reads(f, x => S)` is `forall x :: $readsS.K(f, now, x) ⊆ S`,
+  and `Spec.Changes(f, x => S)` is `forall x :: $frame.K(f, x) ⊆ S`: a call keeps every field and cell of an object
+  allocated before and not in `$frame.K(f, x)`, and `$nochange(f)` makes the frame empty. `ObjSet`'s `IsSubsetOf`
+  and `IsDisjointFrom` are the set relations.
+- A lambda whose precondition reads fields or cells says so with its own `Spec.Reads(R)`: its `$preS` in the state it's
+  made in is its precondition, it reads within `R`, and each object its precondition reads must be in `R` (CSV1029).
+  Without one, it is reported (CSV1029) and nothing is known of it. Its own `Spec.Modifies(S)` is its `$frame`.
+- A method group of a static method gives its contract (precondition and postconditions, as far as they're steady),
+  and changes nothing if it's `[Pure]`.
+- A delegate type of the program with a contract (`[ContractClassFor]`): its `Invoke` is a procedure of the contract
+  alone, as an interface member is, which modifies everything; a call of one is a call of it, and a lambda made one is
+  a new reference (proved against the contract on its own).
+- A local a lambda (or a local function) writes is forgotten after every call that may run it: any but a `[Pure]`
+  function's or a lemma's.
 
-Not yet: delegate types with contracts, method groups, `Spec.Reads(f, ...)`, `Spec.ReadsOf`, `Spec.Changes`, a lambda
-that writes a captured variable, delegates with permissions or `Spec.Modifies`, and a delegate's call where exceptions
-are seen.
+Not yet: `Spec.Total` of a delegate that may read state, a method group of an instance or generic method or one made
+a delegate type with a contract, delegates with permissions or method `Spec.Modifies`, and a delegate's call where
+exceptions are seen.
 
 **Well-definedness.** A specification is checked well-defined where it's evaluated, as Dafny's are (CSV1012): for the
 preconditions, in a procedure of their own (`P$wf`, given the parameters but not the preconditions, which `P` itself
@@ -501,11 +522,12 @@ Also inheritance: base classes, virtual, abstract and override methods, interfac
 
 Also exceptions: `throw`, `try`/`catch` by type, rethrow, caught checked overflow, `Spec.EnsuresOnThrow`.
 
-Also `foreach` over arrays and strings, `Spec.Index`, and `Func` and `Action` values: `Spec.Pre`, `Spec.Post`,
-`Spec.Total`, `Spec.ChangesNothing`, calls of them and lambdas.
+Also `foreach` over arrays and strings, `Spec.Index`, and delegates: `Func` and `Action` values with `Spec.Pre`,
+`Spec.Post`, `Spec.Total`, `Spec.ChangesNothing`, `Spec.Reads`, `Spec.ReadsOf`, `Spec.Changes`, calls of them,
+lambdas and method groups; delegate types with contracts.
 
 Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics, string members without stubs, collections,
-`foreach` over collections, delegates that read state, delegate types with contracts, method groups, `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
+`foreach` over collections, `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
 
 ## How it's checked
@@ -523,8 +545,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    immutable objects' invariants, object initializers, `this(...)`);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (`List`, `Dictionary`, `HashSet`), and the ghost types;
-3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, steady `Func`s and `Action`s, lambdas;
-   next: delegates that read state, delegate types with contracts, method groups, `foreach` over collections);
+3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,
+   method groups, delegate types with contracts; next: `foreach` over collections);
 4. exceptions (done: `throw`, `try`/`catch`, rethrow, `Spec.EnsuresOnThrow`; next: `finally`, filters, `using`);
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
