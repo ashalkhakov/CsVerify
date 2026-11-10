@@ -890,6 +890,62 @@ public static class Pw
         }
 
         [Fact]
+        public void SharesAndPackages_AreBoogies()
+        {
+            // read shares counted as CsVerify's engine's fractions, in views lent read-only; packages of views
+            var root = Harness.RepoRoot();
+            var files = new[] { "Good/Shares.cs", "Buggy/ShareBugs.cs", "Good/Packages.cs", "Buggy/PackageBugs.cs" }
+                .Select(f => Path.Combine(root, "samples", f)).ToArray();
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var only = new VerifierOptions();
+            only.Only.AddRange(b.Methods.Select(m => m.Name));
+            var c = Engine.VerifyFiles(files, only);
+            Assert.True(Agree(c, b) >= 30, "agreeing: " + Agree(c, b));
+            foreach (var good in new[] { "Shares.Demo", "Shares.Within", "Shares.Contains2", "Packages.Demo", "Packages.Tick", "Packages.Make" })
+                Assert.True(b[good].Verified, good);
+            foreach (var bug in new[] { "ShareBugs.WriteWhileShared", "ShareBugs.LendWhileShared", "ShareBugs.WriteThroughShare", "ShareBugs.WrongJoin",
+                                        "ShareBugs.LendBroken", "ShareBugs.Distinct", "PackageBugs.StaleRead", "PackageBugs.PackBroken",
+                                        "PackageBugs.WriteThroughBox", "PackageBugs.Mismatch" })
+                Assert.False(b[bug].Verified, bug);
+        }
+
+        // (parameters the body assigns, this(...), object initializers)
+        private const string Parameters = @"
+public static class Pa {
+    public static int Entry(int x) { Spec.Requires(0 <= x && x < 100); Spec.Ensures((int r) => r == x + 1); x = x + 1; return x; }
+    public static int Now(int x) { Spec.Requires(0 <= x && x < 100); Spec.Ensures((int r) => r == x); x = x + 1; return x; }
+    public static int Was(int x) { Spec.Requires(0 <= x && x < 100); Spec.Ensures((int r) => r == Spec.Old(x) + 1); x++; return x; }
+    public static int Loop(int n) { Spec.Requires(0 <= n && n < 100); Spec.Ensures((int r) => r == 0); while (n > 0) { Spec.Invariant(n >= 0); n--; } return n; }
+    public static int Caller() { Spec.Ensures((int r) => r == 0); return Loop(5); }
+}
+public sealed class Ch
+{
+    public int V; public int W = 3;
+    public Ch(int v) { Spec.Ensures(V == v && W == 3); V = v; }
+    public Ch() : this(7) { Spec.Ensures(V == 7 && W == 3); }
+    public Ch(bool b) : this(b ? 1 : 2) { Spec.Ensures(W == 4); }
+}
+public sealed class In { public int X; public int Y { get; set; } public required string Name { get; init; } }
+public static class Mk {
+    public static int Make() { Spec.Ensures((int r) => r == 3); var p = new In { X = 1, Y = 2, Name = ""a"" }; return p.X + p.Y; }
+    public static int Bad() { Spec.Ensures((int r) => r == 4); var p = new In { X = 1, Y = 2, Name = ""a"" }; return p.X + p.Y; }
+    public static int Seven() { Spec.Ensures((int r) => r == 7); return new Ch().V; }
+}
+";
+
+        [Fact]
+        public void Parameters_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Parameters) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 11, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "Pa.Entry", "Ch..ctor", "Mk.Bad" })
+                Assert.Contains(b.Methods, m => m.Name == bug && !m.Verified);
+            foreach (var good in new[] { "Pa.Now", "Pa.Was", "Pa.Loop", "Mk.Make", "Mk.Seven" })
+                Assert.True(b[good].Verified, good);
+        }
+
+        [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, new VerifierOptions { Engine = "boogie" });

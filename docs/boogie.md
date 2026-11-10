@@ -237,7 +237,9 @@ field's map has a `where` clause keeping every value in range.
 - A constructor is a procedure on `this`, whose fields are their defaults at entry; it runs the field initializers,
   then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. An
   implicit constructor's initialized fields are unknown values at the call, as in CsVerify's engine. A constructor that
-  chains to `this(...)`, or lets `this` escape, isn't translated yet.
+  chains to `this(...)` skips the initializers and calls the other constructor on `this`, as `base(...)` is called
+  (its arguments evaluated first, branching or not); one that lets `this` escape isn't translated yet. An object
+  initializer's assignments are field stores on the new object (the control-flow graph spells them out).
 - A method that runs alongside other code (`[RunsConcurrently]`, or started as a task or thread), or reads a field a
   lock guards, stays with CsVerify's engine, which checks races.
 
@@ -278,6 +280,29 @@ field holds is in its container's tree, and isn't its root.
   old($root[this])`), and `$root` unchanged there too; a constructor's `this` is new, so its frame stays `o != this`.
 - Where a view's invariant is assumed, so is that its reference fields hold allocated objects, so a constructor called
   in between can't have changed them.
+
+**Read shares.** As CsVerify's engine counts them (a view is 1, each share ε): beside `perm`, a procedure keeps
+`pk: [Ref]int`, the shares of each object in hand less those given away for good. A view is whole, so it may write,
+hand itself to code that may, or be given to an owner, when it is in `perm` and `pk` isn't negative (CSV1016).
+- A `Shared<C>` is its object (a `Ref`). `Own.Share(ref v, out s)` makes `s` of `v`: one share less with the view, one
+  more in hand, so nothing changes. `Own.Unshare(ref v, s)` checks that `s` is of `v` (CSV1016), and again nothing changes.
+- `Own.Drop(s)` and a share handed to a call by value give up a share: `pk[o]` goes down by one.
+- A share parameter, or a view lent `in`, arrives with its invariant, as one share in hand: `pk[o] := 1`. It may
+  alias other shares, but an `in` view isn't a view in hand. Handing either one to a call proves the invariant
+  (CSV1015). A procedure's frame doesn't name them, so a call that gets only shares changes nothing of theirs.
+
+**Packages.** A `[Linear]` positional `readonly record struct` is a data value (a datatype) whose views are its fields.
+Beside `perm`, a procedure keeps `pkg: [Ref]bool`, the objects whose views are in packages it holds.
+- Building one (`new P(v, o)`) proves each view's invariant (CSV1015, "when it is packed into P"), and moves it from
+  `perm` to `pkg`. Deconstructing one (`var (v, o) = p;`) moves each view back to `perm`, its invariant holding.
+- A package that arrives (a parameter, a call's result, a `ref` or `out` argument) brings its views into `pkg`. Each
+  is different from the others and from every view in hand (`Receive` assumes a view isn't in `pkg` either).
+- A call that gets a package (by value, or by `ref`) gets its views. Its procedure's frame names
+  `$d.P.View(p$x$in)` as it names a view parameter.
+- A struct is never null, and neither are its non-nullable references, which each construction checked. Each of
+  them is allocated. A parameter's free requires and a result's free ensures say so.
+
+A view moves from one variable to another (`view = back`) with its permission, which is its object's.
 
 **Predicates.** Viper's, over the same permissions (as [objects.md](objects.md#mutable-objects) describes them, and as
 Viper's Boogie backend, Carbon, encodes them). Instances are a type of their own, `Inst`, each `[Predicate]` an
@@ -342,12 +367,17 @@ checked and assumed in the body (at a call, at entry, after the call), not in Bo
 the snapshots at entry (`psnap$entry`), or, in a caller, of those and of the memory just before the call. Its
 postconditions that read no memory are axioms of every snapshot.
 
-Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state), read shares, `in` views, packages, and
-`Spec.Modifies` lending trees.
+Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state), and `Spec.Modifies` lending trees.
 
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
 `p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
 assigns.
+
+**Parameters the body assigns.** Boogie's parameters are constants, so a by-value parameter the body writes is a local
+of the body, `p$x$v`, which starts as `p$x`. The contract is read of the parameter: a precondition, and `old(x)`, are
+of its value at entry. A postcondition is checked at each return of the local, as CsVerify's engine reads it (the
+parameter's value then). Callers don't see that value, so a postcondition that names such a parameter (outside
+`old`) isn't one they assume. One that a lambda in the body captures isn't translated.
 
 **Strings.** As [the semantics](semantics.md#strings) says, a string is its value: a `Ref` (so that null is one), with
 a length `slen(s)` and UTF-16 code units `sat(s, i)` in `0..65535`, functions of the value. A literal is a unique
@@ -389,7 +419,7 @@ override only of the program's members, an abstract member's contract from its c
 - `Spec.Reads(R)` of a `[Pure]` member is Dafny's frame axiom: two memories that agree on every object in `R` give it
   one value; its body reads only objects in `R` (CSV1017).
 
-Not yet: `this(...)`, type tests and casts, generic types, invariants of classes that aren't `[Owned]` (immutable
+Not yet: type tests and casts, generic types, invariants of classes that aren't `[Owned]` (immutable
 objects).
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
@@ -640,7 +670,8 @@ mathematical.
 **Termination.** Ordinary methods are verified for partial correctness, as in CsVerify's engine, so only what
 `Spec.Decreases` gives is checked:
 - a call back into its own recursion group (the methods that call each other), of a method with a measure from one
-  with a measure: the callee's at the arguments below the caller's, lexicographically (CSV1008);
+  with a measure: the callee's at the arguments, in the state at the call, below the caller's at entry (`old`, as
+  Dafny's), lexicographically (CSV1008);
 - a `[Pure]` method or a lemma that recurses without a measure doesn't terminate, which would make its definition
   unsound: CSV1011;
 - a loop's `Spec.Decreases`: its value at the head of each iteration, and at each edge back to the head, below it
@@ -677,10 +708,10 @@ lambdas and method groups; delegate types with contracts.
 Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types and static
 generic methods.
 
-Not yet (such a method is verified by CsVerify's engine): shares, records compared as `object`,
+Not yet (such a method is verified by CsVerify's engine): records compared as `object`,
 invariants of records that read mutable state, generic classes and constrained type parameters,
 string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
-exception filters, a method that assigns a parameter, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
+exception filters, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
 and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
 
 ## How it's checked
@@ -700,7 +731,7 @@ They are not CsVerify's engine's symbolic execution, and stay when it goes, as a
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
    them (done for plain classes, base classes, virtual methods, interfaces, properties, data records and their
-   invariants, generic data and methods; next: generic classes, object initializers, `this(...)`);
+   invariants, generic data and methods; object initializers, `this(...)`, parameters the body assigns; next: generic classes);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (done: `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `Seq`, `Map`; next: `Bag`, string keys), and the ghost types;
 3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,
@@ -709,7 +740,7 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
-   objects, predicates, functions over them, array cells, single fields, ownership trees; next: shares, packages,
+   objects, predicates, functions over them, array cells, single fields, ownership trees, read shares, packages; next:
    `Spec.Modifies`);
 7. locks, async and threads (done: awaits with confined locals, lock statements, semaphore gates, tasks awaited
    later, `Task.Run`, threads, concurrent code, lock levels' order by id, atomic fields, try-locks, tasks with
@@ -717,5 +748,24 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
 
-Then the Boogie engine is the default, CsVerify's engine goes, and the rest of the documentation is revised to
-describe the one engine there is.
+The steps still to take, in order (each is one construct or two, under the same comparison, and unblocks the
+methods that fall back for it):
+1. assigning a parameter, `this(...)`, object initializers;
+2. `Math.Max`, `Min` and `Abs`, bitwise operators;
+3. invariants that call functions, records compared as `object`, records' invariants that read mutable state;
+4. interfaces as parameters, generic classes and constrained type parameters;
+5. exception filters, `Spec.Multiset`, `Bag`, collections keyed by strings, `Keys` and `Values`, interfaces'
+   collections;
+6. `Spec.Modifies` lending trees, ghost `ObjSet` fields, functions over more than one predicate instance;
+7. `ArrayView`, `PointsTo` and `Mem`;
+8. `Monitor.Wait` and `Pulse`, locks taken again through calls, tasks one is given;
+9. tasks whose permissions overlap, without the timeout that hands them to CsVerify's engine now (CSV1900);
+10. floats;
+11. the library's stub contracts in general, then LINQ;
+12. Entity Framework;
+13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, until nothing is left
+    untranslated;
+14. the Boogie engine the default (CsVerify's engine a fallback for a release);
+15. CsVerify's engine's symbolic execution removed, its static checks a module of their own, the differential
+    tests expected diagnostics;
+16. the rest of the documentation revised to describe the one engine there is.

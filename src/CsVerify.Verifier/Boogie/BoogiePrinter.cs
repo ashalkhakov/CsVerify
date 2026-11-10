@@ -669,7 +669,10 @@ namespace CsVerify.Verifier.Boogie
             // (an [Owned] object's field: written only where its view is, which the procedure holds only for this, the
             // views it gets, and the objects it makes)
             var views = (p.ThisIsView ? new[] { "this" } : new string[0])
-                .Concat(m.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out).Select(x => Local(x) + (x.RefKind == RefKind.Ref ? "$in" : ""))).ToList();
+                .Concat(m.Parameters.Where(HoldsView).Select(x => Local(x) + (x.RefKind == RefKind.Ref ? "$in" : "")))
+                // (and the views in the packages it gets)
+                .Concat(m.Parameters.Where(x => IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref)
+                    .SelectMany(x => PackageViews(x.Type).Select(f => $"{FieldFunction(f)}({Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")})"))).ToList();
             // (with ownership trees: the views' whole trees, and their roots)
             // (a constructor's own object is a tree of its own, its root not set yet)
             string Outside(string o) => KernelTypes.Trees
@@ -695,12 +698,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (IsIntegral(x.Type)) Line($"  free ensures {E(InRange(new KVar(Local(x)), x.Type), cx)};");
                 if (IsRef(x.Type)) Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
+                if (IsData(x.Type) && x.Type.IsValueType) Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
                 if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
             }
             // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
             foreach (var r in p.Requires) Line($"  {(p.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.FreeRequires ? null : r.Check);
             // (checked at each return, where it is reported: Boogie would report one return path of each)
-            foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) ? "true" : E(e.Expr, cx))};");
+            // (one of a parameter the body assigns is of its value at return, which callers don't see: they get none)
+            foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
             if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), Returns(m)), cx)};");
             if (functionFields != null)
                 Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
@@ -708,7 +713,7 @@ namespace CsVerify.Verifier.Boogie
             // (a list's constructor: a new list)
             if (p.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
             if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m))) Line("  free ensures result != null;");
-            if (Returns(m) != null && IsData(Returns(m))) Line($"  free ensures result == null || {E(IsCase(new KVar("result"), Returns(m)), cx)};");
+            if (Returns(m) != null && IsData(Returns(m))) Line($"  free ensures {DataFacts("result", Returns(m), cx)};");
             // (a constructor has set the fields that may not be null: it asserts so at each return)
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f)) &&
@@ -719,6 +724,8 @@ namespace CsVerify.Verifier.Boogie
             if (p.UsesPerm)
             {
                 Line("  var perm: [Ref]bool;");
+                Line("  var pk: [Ref]int;");
+                Line("  var pkg: [Ref]bool;");
                 Line("  var pinst: [Inst]int;");
                 Line("  var owner: [Ref]Inst;");
                 Line("  var psnap: [Inst]int;");
@@ -771,6 +778,33 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>What a procedure is given, free: memory in range, this, a new object's defaults, its parameters' ranges and allocation.</summary>
+        private static bool MentionsAny(KExpr e, IEnumerable<string> names) => names.Any() && e switch
+        {
+            KOp { Op: "old" } => false,
+            KLit => false,
+            KVar v => names.Contains(v.Name),
+            KOp op => op.Args.Any(a => MentionsAny(a, names)),
+            KQuant q => (q.Range != null && MentionsAny(q.Range, names)) || MentionsAny(q.Body, names),
+            KFnApp f => f.Args.Any(a => MentionsAny(a, names)),
+            KFnCall c => (c.Receiver != null && MentionsAny(c.Receiver, names)) || c.Args.Any(a => MentionsAny(a, names)),
+            _ => true,
+        };
+
+        /// <summary>
+        /// What a data value is: one of its type's cases (or null); a struct's (a package's) is never null, and its
+        /// non-nullable references aren't either (each construction checked them).
+        /// </summary>
+        private string DataFacts(string local, ITypeSymbol t, Context cx)
+        {
+            var name = E(new KVar(local), cx);
+            var isCase = E(IsCase(new KVar(local), t), cx);
+            if (!t.IsValueType) return $"{name} == null || {isCase}";
+            var refs = KernelTypes.Data.Fields((INamedTypeSymbol)t).Where(f => IsRef(f.Type) || IsView(f.Type)).ToList();
+            var fields = refs.Where(f => NotNullable(f.Type)).Select(f => $" && {FieldFunction(f)}({name}) != null")
+                .Concat(refs.Select(f => $" && ({FieldFunction(f)}({name}) == null || $Alloc[{FieldFunction(f)}({name})])"));
+            return $"{name} != null && {isCase}{string.Concat(fields)}";
+        }
+
         private void Given(KProcedure p, Context cx)
         {
             var m = p.Method;
@@ -785,13 +819,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 var name = E(new KVar(Local(x)), cx);
                 if (IsIntegral(x.Type)) Line($"  free requires {E(InRange(new KVar(Local(x)), x.Type), cx)};");
-                if (IsRef(x.Type) || IsView(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
+                if (IsRef(x.Type) || IsView(x.Type) || IsShare(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
                 // (not null: checked at each call's argument)
                 if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
                 // (a view's object is its tree's root)
-                if (KernelTypes.Trees && IsView(x.Type)) Line($"  free requires $root[{name}] == {name};");
+                if (KernelTypes.Trees && HoldsView(x)) Line($"  free requires $root[{name}] == {name};");
+                if (KernelTypes.Trees && IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref)
+                    foreach (var f in PackageViews(x.Type)) Line($"  free requires $root[{FieldFunction(f)}({name})] == {FieldFunction(f)}({name});");
                 // (a data value is one of its type's cases)
-                if (IsData(x.Type)) Line($"  free requires {name} == null || {E(IsCase(new KVar(Local(x)), x.Type), cx)};");
+                if (IsData(x.Type)) Line($"  free requires {DataFacts(Local(x), x.Type, cx)};");
             }
         }
 

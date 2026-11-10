@@ -142,7 +142,8 @@ namespace CsVerify.Verifier.Boogie
                 r.spec.Check = At(BoogieTranslator.Aux, r.spec.At, $"precondition '{r.spec.At}' of '{m.Name}'", "CSV1001");
             }
             foreach (var e in ensures) e.spec.Expr = e.math;
-            var decreases = _p.Decreases?.Select(d => Spec(d, out _)).ToList();
+            // (the caller's measure is as it was at entry, as Dafny's is: what the body writes before the call doesn't count)
+            var decreases = _p.Decreases?.Select(d => (KExpr)new KOp("old", Spec(d, out _))).ToList();
             if (_p.FunctionBody != null) _p.FunctionBody = Spec(_p.FunctionBody, out _);
             // (a function's axioms are about every state: what they say can't be of a procedure's snapshots)
             if (_p.FunctionBody != null && _program.OverPredicate(m) == null &&
@@ -309,10 +310,10 @@ namespace CsVerify.Verifier.Boogie
             var before = new List<KExpr>();
             foreach (var e in ensures)
             {
-                foreach (var f in e.facts) Assume(f);
-                WellDefined(e.wf, e.spec.At, before);
-                Assert(e.math, At("CSV1002", ret.At, $"postcondition '{e.spec.At}' might not hold on this return path"));
-                before.Add(e.math);
+                foreach (var f in e.facts) Assume(AtReturn(f));
+                WellDefined(e.wf.Select(AtReturn).ToList(), e.spec.At, before);
+                Assert(AtReturn(e.math), At("CSV1002", ret.At, $"postcondition '{e.spec.At}' might not hold on this return path"));
+                before.Add(AtReturn(e.math));
             }
         }
 
@@ -338,7 +339,7 @@ namespace CsVerify.Verifier.Boogie
                         Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fs.At, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
                     if (fs.Instance != null && !IsOwnedField(fs.Field)) WithinFrame(o, fs.At);
                     if (IsOwnedField(fs.Field))
-                        Assert(CanWrite(o, fs.Field), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                        Assert(_p.UsesFields ? new KOp("||", Whole(o), FieldHeld(o, fs.Field)) : Whole(o), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                     if (NonNullField(fs.Field))
                         Assert(new KOp("!=", value, new KLit("null")), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
                     Emit(new KFieldStore { Field = fs.Field, Instance = o, Value = value, OnThis = fs.OnThis, At = fs.At, InstanceAt = fs.InstanceAt });
@@ -360,7 +361,7 @@ namespace CsVerify.Verifier.Boogie
                     // Own.Take(ref c.F, out v): the object c.F owns comes out with its view, its invariant held at rest; c.F is null;
                     // c's tree splits: what was below the object is now in its own tree, or still in c's
                     var c = Code(take.Obj);
-                    Assert(Held(c), At("CSV1016", take.At, $"'{take.SlotAt}' changes an [Owned] {take.Field.ContainingType.Name} without holding its view"));
+                    Assert(Whole(c), At("CSV1016", take.At, $"'{take.SlotAt}' changes an [Owned] {take.Field.ContainingType.Name} without holding its view"));
                     var x = new KOp("sel", new KVar(FieldMap(take.Field)), c);
                     Assert(new KOp("!=", x, new KLit("null")), At("CSV1016", take.At, $"'{take.SlotAt}' might be null: there is nothing to take"));
                     Emit(new KAssign { Var = take.View, Value = x });
@@ -391,10 +392,10 @@ namespace CsVerify.Verifier.Boogie
                     var c = Code(give.Obj);
                     var x = Code(give.Value);
                     var v = Code(give.ViewValue);
-                    Assert(Held(c), At("CSV1016", give.At, $"'{give.SlotAt}' changes an [Owned] {give.Field.ContainingType.Name} without holding its view"));
+                    Assert(Whole(c), At("CSV1016", give.At, $"'{give.SlotAt}' changes an [Owned] {give.Field.ContainingType.Name} without holding its view"));
                     Assert(new KOp("==", new KOp("sel", new KVar(FieldMap(give.Field)), c), new KLit("null")), At("CSV1016", give.At, $"'{give.SlotAt}' might still own an object: take it first"));
                     Assert(new KOp("==", v, x), At("CSV1016", give.At, $"'{give.ViewAt}' might not be the view of '{give.ValueAt}'"));
-                    Assert(Held(x), At("CSV1016", give.At, $"'{give.ValueAt}' might have read shares out: join them back (Own.Unshare) first"));
+                    Assert(Whole(x), At("CSV1016", give.At, $"'{give.ValueAt}' might have read shares out: join them back (Own.Unshare) first"));
                     Assert(new KOp("!=", new KOp("sel", new KVar("$root"), c), x), At("CSV1016", give.At, $"'{give.ValueAt}' might own the container: ownership would be a cycle"));
                     ProveInvariant(give.Type, x, give.At, "when it is given to its owner");
                     Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("false") });
@@ -462,6 +463,39 @@ namespace CsVerify.Verifier.Boogie
                         _facts.Clear();
                         Assert(new KOp("==>", Is(new KVar("ex$"), type), holds), At("CSV1002", at, $"postcondition on throw '{at}' might not hold when '{_p.Method.Name}' throws"));
                     }
+                    return;
+                case KOwn { Kind: "pack" } pack:
+                {
+                    // a view packed: its invariant holds, and it is the package's now (not in hand to write with)
+                    var x = Code(pack.Obj);
+                    ProveInvariant(pack.Type, x, pack.At, $"when it is packed into {pack.Into.Name}");
+                    Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("false") });
+                    Emit(new KMapUpdate { Map = "pkg", Ref = x, Value = new KLit("true") });
+                    return;
+                }
+                case KOwn { Kind: "unpack" } unpack:
+                {
+                    // a view taken out of its package: in hand again, its invariant holding
+                    var x = Code(unpack.Obj);
+                    Assume(new KOp("!=", x, new KLit("null")));
+                    Emit(new KMapUpdate { Map = "pkg", Ref = x, Value = new KLit("false") });
+                    Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("true") });
+                    AssumeInvariant(unpack.Type, x);
+                    if (KernelTypes.Trees) Assume(new KOp("==", new KOp("sel", new KVar("$root"), x), x));
+                    return;
+                }
+                case KOwn { Kind: "share" } share:
+                    // Own.Share(ref v, out s): s is a share of v's object; v keeps the rest, so in sum nothing changes here
+                    Emit(new KAssign { Var = share.View, Value = Code(share.Obj) });
+                    return;
+                case KOwn { Kind: "unshare" } unshare:
+                {
+                    var v = Code(unshare.Obj);
+                    Assert(new KOp("==", Code(unshare.Value), v), At("CSV1016", unshare.At, $"'{unshare.ValueAt}' might not be a share of '{unshare.SlotAt}'"));
+                    return;
+                }
+                case KOwn { Kind: "dropshare" } dropShare:
+                    Shares(Code(dropShare.Obj), -1);
                     return;
                 case KOwn { Kind: "drop" } drop:
                     Emit(new KMapUpdate { Map = "perm", Ref = Code(drop.Obj), Value = new KLit("false") });
@@ -536,14 +570,25 @@ namespace CsVerify.Verifier.Boogie
             bool ownedReceiver = receiver != null && IsOwnedClass(callee.ContainingType) && !_program.ContractOf(callee).IsPure;
             if (ownedReceiver)
             {
-                Assert(Held(receiver), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                Assert(Whole(receiver), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                 ProveInvariant(callee.ContainingType, receiver, c.At, $"when '{callee.Name}' is called on it");
             }
-            foreach (var param in callee.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out))
+            // (a share, or a view lent read-only: whoever gets it relies on the invariant; a share by value goes with it)
+            foreach (var param in callee.Parameters.Where(HoldsShare))
             {
                 var x = args[param.Ordinal];
                 ProveInvariant(ViewOf(param.Type), x, c.ArgsAt[param.Ordinal], $"when its view is handed to '{callee.Name}'");
-                Assert(Held(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
+                if (IsShare(param.Type) && param.RefKind == RefKind.None) Shares(x, -1);
+            }
+            // (a package goes with its views: by value for good, by ref until it comes back)
+            foreach (var param in callee.Parameters.Where(x => IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref))
+                foreach (var f in PackageViews(param.Type))
+                    Emit(new KMapUpdate { Map = "pkg", Ref = new KOp(FieldFunction(f), args[param.Ordinal]), Value = new KLit("false") });
+            foreach (var param in callee.Parameters.Where(HoldsView))
+            {
+                var x = args[param.Ordinal];
+                ProveInvariant(ViewOf(param.Type), x, c.ArgsAt[param.Ordinal], $"when its view is handed to '{callee.Name}'");
+                Assert(Whole(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
                 Emit(new KMapUpdate { Map = "perm", Ref = x, Value = new KLit("false") });
             }
             // the permissions its preconditions ask for are given to it; what the caller keeps, the call can't change
@@ -642,6 +687,9 @@ namespace CsVerify.Verifier.Boogie
                 Receive(v);
             }
             if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
+            // (the packages it gives back: its result, and its ref and out arguments)
+            foreach (var (ordinal, var) in c.RefOuts.Where(x => IsPackage(callee.Parameters[x.param].Type))) Arrive(new KVar(var), callee.Parameters[ordinal].Type);
+            if (c.Result != null && IsPackage(Returns(callee))) Arrive(new KVar(c.Result), Returns(callee));
             if (frame != null)
             {
                 Emit(new KCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps, Fields = frame.Fields, FieldIds = frame.FieldIds });
@@ -1344,10 +1392,38 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Is the object's view in hand (full permission)?</summary>
         private static KExpr Held(KExpr o) => new KOp("sel", new KVar("perm"), o);
 
+        /// <summary>Is the object's view in a package held here?</summary>
+        private static KExpr Packed(KExpr o) => new KOp("sel", new KVar("pkg"), o);
+
+        /// <summary>A package arrives (a parameter, a call's result, a ref or out argument): its views, packed, are in hand, each different from the others and from the views in hand.</summary>
+        private void Arrive(KExpr p, ITypeSymbol type)
+        {
+            foreach (var f in PackageViews(type))
+            {
+                var v = new KOp(FieldFunction(f), p);
+                Assume(new KOp("!=", v, new KLit("null")));
+                AssumeInvariant(ViewOf(f.Type), v);
+                Assume(new KOp("&&", new KOp("!", Held(v)), new KOp("!", Packed(v))));
+                // (a view's object is its tree's root, packed or not)
+                if (KernelTypes.Trees) Assume(new KOp("==", new KOp("sel", new KVar("$root"), v), v));
+                Emit(new KMapUpdate { Map = "pkg", Ref = v, Value = new KLit("true") });
+            }
+        }
+
+        /// <summary>
+        /// Is the object's view in hand whole (write permission)? pk counts read shares as CsVerify's engine's
+        /// fractions do, each one ε: those in hand, less those given away for good; the view is whole with none missing.
+        /// </summary>
+        private static KExpr Whole(KExpr o) => new KOp("&&", Held(o), new KOp(">=", new KOp("sel", new KVar("pk"), o), new KLit("0")));
+
+        private void Shares(KExpr o, int by) =>
+            Emit(new KMapUpdate { Map = "pk", Ref = o, Value = new KOp(by > 0 ? "+" : "-", new KOp("sel", new KVar("pk"), o), new KLit(System.Math.Abs(by).ToString())) });
+
         /// <summary>A view received: nobody else has it (views are linear), so it isn't one in hand already; now it is.</summary>
         private void Receive(KExpr o)
         {
             Assume(new KOp("!", Held(o)));
+            Assume(new KOp("!", Packed(o)));
             Emit(new KMapUpdate { Map = "perm", Ref = o, Value = new KLit("true") });
             // (an object whose view is in hand is its tree's root: no [Owns] field holds it)
             if (KernelTypes.Trees) Assume(new KOp("==", new KOp("sel", new KVar("$root"), o), o));
@@ -1387,6 +1463,8 @@ namespace CsVerify.Verifier.Boogie
         private void EnterOwned()
         {
             Emit(new KAssign { Var = "perm", Value = new KLit("(lambda o: Ref :: false)") });
+            Emit(new KAssign { Var = "pk", Value = new KLit("(lambda o: Ref :: 0)") });
+            Emit(new KAssign { Var = "pkg", Value = new KLit("(lambda o: Ref :: false)") });
             // (no instances held yet: the preconditions bring them; who owns what is unknown)
             Emit(new KAssign { Var = "pinst", Value = new KLit("(lambda q: Inst :: 0)") });
             Emit(new KHavoc { Var = "owner" });
@@ -1408,13 +1486,27 @@ namespace CsVerify.Verifier.Boogie
         private void ViewsAtEntry(bool grant)
         {
             var m = _p.Method;
-            foreach (var param in m.Parameters.Where(x => IsView(x.Type) && x.RefKind != RefKind.Out))
+            foreach (var param in m.Parameters.Where(HoldsView))
             {
                 var v = new KVar(Local(param));
                 Assume(new KOp("!=", v, new KLit("null")));
                 AssumeInvariant(ViewOf(param.Type), v);
                 if (grant) Receive(v);
             }
+            // (a share, or a view lent read-only: a share's worth, which may alias other shares, but no view in hand)
+            foreach (var param in m.Parameters.Where(HoldsShare))
+            {
+                var v = new KVar(Local(param));
+                Assume(new KOp("!=", v, new KLit("null")));
+                AssumeInvariant(ViewOf(param.Type), v);
+                if (!grant) continue;
+                if (IsView(param.Type)) Assume(new KOp("!", Held(v)));
+                Shares(v, 1);
+            }
+            // (the views in the packages it gets: in hand, packed, each different from the others)
+            if (grant)
+                foreach (var param in m.Parameters.Where(x => IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref))
+                    Arrive(new KVar(Local(param)), param.Type);
             if (_p.ThisIsView && !_p.IsCtor) AssumeInvariant(m.ContainingType, new KVar("this"));
         }
 
@@ -1520,7 +1612,7 @@ namespace CsVerify.Verifier.Boogie
                 case KDataField df:
                 {
                     var v = Code(df.Value);
-                    Assert(new KOp("!=", v, new KLit("null")), At("CSV1013", df.At, $"'{df.ValueAt}' might be null in '{df.At}'"));
+                    if (!df.Struct) Assert(new KOp("!=", v, new KLit("null")), At("CSV1013", df.At, $"'{df.ValueAt}' might be null in '{df.At}'"));
                     return new KOp(df.Function, v);
                 }
                 case KCast cast:
@@ -1767,7 +1859,7 @@ namespace CsVerify.Verifier.Boogie
                 case KDataField df:
                 {
                     var v = Spec(df.Value, wf, guard);
-                    Need(new KOp("!=", v, new KLit("null")));
+                    if (!df.Struct) Need(new KOp("!=", v, new KLit("null")));
                     return new KOp(df.Function, v);
                 }
                 case KCast cast:
@@ -1883,6 +1975,17 @@ namespace CsVerify.Verifier.Boogie
                 default: throw new NotTranslated("in a specification: " + e.GetType().Name);
             }
         }
+
+        /// <summary>A postcondition at a return: of the parameters the body assigns, their values now (in old(...), at entry).</summary>
+        private KExpr AtReturn(KExpr e) => _p.AssignedParams.Count == 0 ? e : e switch
+        {
+            KOp { Op: "old" } => e,
+            KVar v when _p.AssignedParams.TryGetValue(v.Name, out var now) => new KVar(now),
+            KOp op => new KOp(op.Op, op.Args.Select(AtReturn).ToArray()),
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : AtReturn(q.Range), Body = AtReturn(q.Body) },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(AtReturn).ToArray(), Snap = f.Snap == null ? null : AtReturn(f.Snap) },
+            _ => e,
+        };
 
         /// <summary>A variable given a value (mathematics).</summary>
         internal static KExpr Rename(KExpr e, string name, KExpr value) => Subst(e, new Dictionary<string, KExpr> { [name] = value });

@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
                                                     IsData(t) || IsTypeParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t);
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
@@ -125,6 +125,21 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsView(ITypeSymbol t) => SpecSymbols.IsOwnType(t) && IsOwnedClass(((INamedTypeSymbol)t).TypeArguments[0]);
 
         public static ITypeSymbol ViewOf(ITypeSymbol view) => ((INamedTypeSymbol)view).TypeArguments[0];
+
+        /// <summary>A read share, Shared&lt;C&gt; of an [Owned] class: its value is the object (a Ref, never null).</summary>
+        public static bool IsShare(ITypeSymbol t) => t != null && SpecSymbols.IsSharedType(t) && t is INamedTypeSymbol n && n.TypeArguments.Length == 1 && IsOwnedClass(n.TypeArguments[0]);
+
+        /// <summary>A parameter that holds a read share: a Shared&lt;C&gt;, or a view lent read-only (in).</summary>
+        public static bool HoldsShare(IParameterSymbol p) => IsShare(p.Type) && p.RefKind is RefKind.None or RefKind.In || IsView(p.Type) && p.RefKind == RefKind.In;
+
+        /// <summary>A package: a [Linear] positional readonly record struct, which holds views (and anything else) together.</summary>
+        public static bool IsPackage(ITypeSymbol t) => t != null && SpecSymbols.IsLinearPackage(t) && IsData(t);
+
+        /// <summary>A package's views: its positional fields that are views.</summary>
+        public static IEnumerable<IPropertySymbol> PackageViews(ITypeSymbol t) => Data.Fields((INamedTypeSymbol)t).Where(p => IsView(p.Type));
+
+        /// <summary>A parameter that holds a whole view (by value or ref; out only gives one back).</summary>
+        public static bool HoldsView(IParameterSymbol p) => IsView(p.Type) && p.RefKind is RefKind.None or RefKind.Ref;
 
         /// <summary>The fields a whole object of this type has: those a split hands out one by one.</summary>
         public static List<ISymbol> WholeFields(ITypeSymbol type) =>
@@ -293,7 +308,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" :
-            IsRef(t) || IsView(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

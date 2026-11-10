@@ -281,6 +281,8 @@ namespace CsVerify.Verifier.Boogie
         public ISymbol Field;
         public KExpr Value, ViewValue;
         public SyntaxNode SlotAt, ValueAt, ViewAt;
+        /// <summary>A view packed: the package's type.</summary>
+        public ITypeSymbol Into;
     }
 
     /// <summary>The tree roots change: Take's split (what was below the taken object is in its tree or the container's), Give's join.</summary>
@@ -429,6 +431,8 @@ namespace CsVerify.Verifier.Boogie
         public string Function;
         public KExpr Value;
         public SyntaxNode At, ValueAt;
+        /// <summary>A struct's field: the value is never null.</summary>
+        public bool Struct;
     }
 
     /// <summary>A cast to a data type: checked (an InvalidCastException in code, ill-defined in a specification).</summary>
@@ -599,6 +603,8 @@ namespace CsVerify.Verifier.Boogie
         public HashSet<ITypeSymbol> ExceptionTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
+        /// <summary>The parameters the body assigns (by value): each a local of the body, its value at entry the parameter's.</summary>
+        public Dictionary<string, string> AssignedParams = new Dictionary<string, string>();
         /// <summary>The predicates it names.</summary>
         public HashSet<IMethodSymbol> Preds = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         /// <summary>The library stubs it uses (functions of the program's).</summary>
