@@ -945,6 +945,55 @@ public static class Mk {
                 Assert.True(b[good].Verified, good);
         }
 
+        // (bitwise operators and shifts, as CsVerify's engine has them; Math.Max, Min and Abs)
+        private const string Bits = @"
+public static class Bi {
+    public static void Holds0(int x) { Spec.Assert((x & 255) >= 0 && (x & 255) <= 255); }
+    public static void Holds1(int x) { Spec.Assert((x | 1) != 0); }
+    public static void Holds2(int x) { Spec.Assert((x >> 1) * 2 + (x & 1) == x); }
+    public static void Holds3(int x) { Spec.Assert((~x) == -x - 1); }
+    public static void Holds4(int x) { Spec.Assert((x >>> 31) == (x < 0 ? 1 : 0)); }
+    public static void Holds5(int x) { Spec.Assert((x ^ 0) == x); }
+    public static void Holds6(int x) { Spec.Assert((x ^ -1) == ~x); }
+    public static void Holds7(int x) { Spec.Assert((x & -1) == x); }
+    public static void Holds8(int x) { Spec.Assert((x << 32) == x); }
+    public static void Holds9(int x) { Spec.Assert((x >> 33) == (x >> 1)); }
+    public static void Wrong0(int x) { Spec.Assert((x >> 1) >= 0); }
+    public static void Wrong1(int x) { Spec.Assert((x >>> 1) == (x >> 1)); }
+    public static void Wrong2(int x) { Spec.Assert((x & 255) == x); }
+    public static void Wrong3(int x) { Spec.Assert((x | 1) == x + 1); }
+    public static void Wrong4(int x) { Spec.Assert((x ^ 1) == x + 1); }
+    public static void Long(long x) { Spec.Assert((x >> 40) * 1099511627776L + (x & 1099511627775L) == x); }
+    public static void Unsigned(uint x) { Spec.Assert((x >> 31) <= 1u && (~x) == 4294967295u - x); }
+    public static int Shifts(int x) { return checked(x << 8); }
+    public static void Packing(byte a, byte b) { int n = (a << 8) | b; Spec.Assert((n >> 8) == a && (n & 255) == b); }
+    public static void WrongHalf(byte a, byte b) { int n = (a << 8) | b; Spec.Assert((n >> 8) == b); }
+    public static void Masks(byte b) { if ((b & 0xE0) == 0xC0) Spec.Assert(0xC0 <= b && b <= 0xDF); }
+    public static void Compound(byte a, sbyte s, short h) { byte c = a; c &= 15; Spec.Assert(c <= 15); sbyte d = s; d &= 15; Spec.Assert(0 <= d && d <= 15); short e = h; e |= 1; Spec.Assert(e != 0); }
+    public static byte Narrow(int x) { return (byte)(x & 255); }
+    public static byte TooWide(int x) { return (byte)(x & 511); }
+    public static void TwoUnknowns(int x, int y) { Spec.Requires(x == 12 && y == 10); Spec.Assert((x & y) == 8 && (x | y) == 14 && (x ^ y) == 6); }
+    public static void NotAnything(int x, int y) { Spec.Assert((x & y) == x); }
+    public static int ByCount(int x, int k) { Spec.Requires(0 <= x && x < 1000 && 0 <= k && k < 4); Spec.Ensures((int r) => 0 <= r && r <= x); return x >> k; }
+    public static int Big(int a, int b) { Spec.Ensures((int r) => r >= a && r >= b && (r == a || r == b)); return Math.Max(a, b); }
+    public static int Clamp(int x) { Spec.Ensures((int r) => 0 <= r && r <= 10); return Math.Min(Math.Max(x, 0), 10); }
+    public static int Size(int a) { Spec.Ensures((int r) => r >= 0); return Math.Abs(a); }
+    public static int Wrongly(int a) { Spec.Ensures((int r) => r > 0); return Math.Abs(a); }
+}
+";
+
+        [Fact]
+        public void Bits_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Bits) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 31, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "Bi.Wrong0", "Bi.Wrong1", "Bi.Wrong2", "Bi.Wrong3", "Bi.Wrong4", "Bi.WrongHalf", "Bi.TooWide", "Bi.NotAnything", "Bi.Wrongly" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Bi.Holds0", "Bi.Holds2", "Bi.Long", "Bi.Packing", "Bi.Masks", "Bi.Compound", "Bi.TwoUnknowns", "Bi.ByCount", "Bi.Clamp", "Bi.Size" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {

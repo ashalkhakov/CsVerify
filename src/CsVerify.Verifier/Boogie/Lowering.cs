@@ -17,7 +17,7 @@ namespace CsVerify.Verifier.Boogie
     /// are read whole from the operations the source has, and what the graph lowers their arguments to is left out:
     /// they never run. Throws <see cref="NotTranslated"/> at anything outside the subset.
     /// </summary>
-    internal sealed class Lowering
+    internal sealed partial class Lowering
     {
         private readonly IMethodSymbol _m;
         private readonly Contract _contract;
@@ -58,6 +58,13 @@ namespace CsVerify.Verifier.Boogie
         private bool IsStub(IMethodSymbol m) =>
             IsString(m.ContainingType) && _contractOf?.Invoke(m) is Contract c && c.IsStub && c.IsPure && !m.ReturnsVoid && InSubset(m.ReturnType) &&
             m.Parameters.All(x => x.RefKind == RefKind.None && InSubset(x.Type)) && c.Stub.Parameters.All(x => x.RefKind == RefKind.None && InSubset(x.Type));
+
+        /// <summary>Math.Max, Math.Min (two arguments) and Math.Abs (one) of an integral type.</summary>
+        private static bool IntegerMath(IInvocationOperation inv) =>
+            inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Math" && IsIntegral(inv.Type) &&
+            (inv.TargetMethod.Name is "Max" or "Min" && inv.Arguments.Length == 2 || inv.TargetMethod.Name == "Abs" && inv.Arguments.Length == 1);
+
+        private static KExpr MinMax(string name, KExpr a, KExpr b) => new KOp("ite", new KOp(name == "Max" ? ">=" : "<=", a, b), a, b);
 
         private readonly Dictionary<IParameterSymbol, string> _assigned = new Dictionary<IParameterSymbol, string>(SymbolEqualityComparer.Default);
 
@@ -767,7 +774,8 @@ namespace CsVerify.Verifier.Boogie
                 case ICompoundAssignmentOperation ca:
                 {
                     var v = Operands(ca.Target, ca.Value);
-                    Assign(ca.Target, Arith(Op(ca.OperatorKind), v[0], v[1], ca.Type, ca.Syntax, ca.IsChecked));
+                    Assign(ca.Target, IsBitwise(ca.OperatorKind) && IsIntegral(ca.Type) ? Bitwise(ca.OperatorKind, v[0], v[1], ca.Type, inSpec: false)
+                                                                                         : Arith(Op(ca.OperatorKind), v[0], v[1], ca.Type, ca.Syntax, ca.IsChecked));
                     return;
                 }
                 case IIncrementOrDecrementOperation id:
@@ -1998,6 +2006,14 @@ namespace CsVerify.Verifier.Boogie
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal): return new KVar(apLocal);
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind is RefKind.None or RefKind.Ref or RefKind.Out: return new KVar(Local(p.Parameter));
+                // (Math.Max, Min and Abs of integers: Abs(MinValue) throws, as checked negation does)
+                case IInvocationOperation im when IntegerMath(im):
+                {
+                    var v = Operands(im.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray());
+                    return im.TargetMethod.Name == "Abs"
+                        ? new KOp("ite", new KOp(">=", v[0], new KLit("0")), v[0], Arith("-", new KLit("0"), v[0], im.Type, im.Syntax, isChecked: true))
+                        : MinMax(im.TargetMethod.Name, v[0], v[1]);
+                }
                 case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
                     return Own(own);
                 // (a quantifier in code, a [Pure] or ghost function's body: mathematics, its reads checked over its range)
@@ -2085,6 +2101,7 @@ namespace CsVerify.Verifier.Boogie
                 case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
                     return new KConv { Value = Expr(conv.Operand), From = conv.Operand.Type, To = conv.Type, Mode = Mode(conv.Syntax, conv.IsChecked), At = conv.Syntax };
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Expr(u.Operand));
+                case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
                     return Arith("-", new KLit("0"), Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
@@ -2196,6 +2213,8 @@ namespace CsVerify.Verifier.Boogie
                 case BinaryOperatorKind.Add: case BinaryOperatorKind.Subtract: case BinaryOperatorKind.Multiply:
                 case BinaryOperatorKind.Divide: case BinaryOperatorKind.Remainder:
                     return Arith(Op(b.OperatorKind), l, r, b.Type, b.Syntax, b.IsChecked);
+                case var bk when IsBitwise(bk) && IsIntegral(b.Type):
+                    return Bitwise(bk, l, r, b.Type, inSpec: false);
                 case BinaryOperatorKind.Equals: return new KOp("==", l, r);
                 case BinaryOperatorKind.NotEquals: return new KOp("!=", l, r);
                 case BinaryOperatorKind.LessThan: return new KOp("<", l, r);
@@ -2799,6 +2818,7 @@ namespace CsVerify.Verifier.Boogie
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Spec(conv.Operand, result);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Spec(u.Operand, result));
+                case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Spec(bn.Operand, result), bn.Type);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && _codeArith: return Arith("-", new KLit("0"), Spec(u.Operand, result), u.Type, u.Syntax, u.IsChecked);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus: return new KOp("-", new KLit("0"), Spec(u.Operand, result));
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Spec(u.Operand, result);
@@ -2808,6 +2828,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var l = Spec(b.LeftOperand, result);
                     var r = Spec(b.RightOperand, result);
+                    if (IsBitwise(b.OperatorKind) && IsIntegral(b.Type)) return Bitwise(b.OperatorKind, l, r, b.Type, inSpec: true);
                     return b.OperatorKind switch
                     {
                         BinaryOperatorKind.Add when _codeArith => Arith("+", l, r, b.Type, b.Syntax, b.IsChecked),
@@ -2844,6 +2865,11 @@ namespace CsVerify.Verifier.Boogie
                                              (sb.OperatorMethod == null || IsString(sb.OperatorMethod.ContainingType)) &&
                                              sb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.Add:
                     return StringBinary(sb.OperatorKind, Spec(sb.LeftOperand, result), Spec(sb.RightOperand, result));
+                case IInvocationOperation sm when IntegerMath(sm):
+                {
+                    var v = sm.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray();
+                    return sm.TargetMethod.Name == "Abs" ? new KOp("ite", new KOp(">=", v[0], new KLit("0")), v[0], new KOp("-", new KLit("0"), v[0])) : MinMax(sm.TargetMethod.Name, v[0], v[1]);
+                }
                 case IInvocationOperation se when StringEquals(se) is (IOperation ea, IOperation eb):
                     return new KOp("streq", Spec(ea, result), Spec(eb, result));
                 case IInvocationOperation st when !_isFunction(st.TargetMethod) && IsStub(st.TargetMethod.OriginalDefinition):

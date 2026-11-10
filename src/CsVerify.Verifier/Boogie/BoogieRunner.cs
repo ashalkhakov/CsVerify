@@ -13,29 +13,50 @@ namespace CsVerify.Verifier.Boogie
     /// </summary>
     internal static class BoogieRunner
     {
-        /// <summary>The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown.</summary>
+        /// <summary>
+        /// The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown. A procedure that
+        /// times out is verified once more an assertion at a time (/vcsSplitOnEveryAssert), as CsVerify's engine
+        /// proves its obligations one by one: a long one that is hard as a whole is often easy split.
+        /// </summary>
         public static List<(MethodResult method, VerificationDiagnostic diagnostic)> Verify(BoogieTranslator program, string z3Path, int timeoutMs)
+        {
+            var (failures, undecided) = Run(program, z3Path, timeoutMs, null);
+            if (undecided.Count == 0) return failures;
+            var (again, _) = Run(program, z3Path, timeoutMs, undecided);
+            var redone = new HashSet<MethodResult>(failures.Where(f => f.diagnostic.Id == "CSV1900").Select(f => f.method));
+            return failures.Where(f => !redone.Contains(f.method)).Concat(again.Where(f => redone.Contains(f.method))).ToList();
+        }
+
+        private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided) Run(
+            BoogieTranslator program, string z3Path, int timeoutMs, List<string> split)
         {
             var output = new StringWriter();
             var options = new CommandLineOptions(output, new ConsolePrinter());
             // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
             var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
-            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000) }.Concat(extra).ToArray());
+            var only = split == null ? new string[0] : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
+            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000) }.Concat(only).Concat(extra).ToArray());
             using var engine = ExecutionEngine.CreateWithoutSharedCache(options);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
                 throw new InvalidOperationException("the translated program doesn't parse:\n" + output);
             if (engine.ResolveAndTypecheck(parsed, "csverify.bpl", out _) != PipelineOutcome.ResolvedAndTypeChecked)
                 throw new InvalidOperationException("the translated program doesn't type check:\n" + output);
             var failures = new List<(MethodResult, VerificationDiagnostic)>();
+            var undecided = new List<string>();
             var stats = new PipelineStatistics();
             var outcome = engine.InferAndVerify(output, parsed, stats, "csverify", info =>
             {
-                lock (failures) failures.Add(Diagnostic(program, info));
+                var d = Diagnostic(program, info);
+                lock (failures)
+                {
+                    failures.Add(d);
+                    if (d.Item2?.Id == "CSV1900" && info.ImplementationName != null && !undecided.Contains(info.ImplementationName)) undecided.Add(info.ImplementationName);
+                }
             }, "csverify", default).GetAwaiter().GetResult();
             if (outcome != PipelineOutcome.VerificationCompleted && outcome != PipelineOutcome.Done)
                 throw new InvalidOperationException("Boogie: " + outcome + "\n" + output);
             // (one report of a check, however many paths fail it)
-            return failures.Where(f => f.Item1 != null).GroupBy(f => (f.Item1, f.Item2.Id, f.Item2.Span.StartLinePosition, f.Item2.Message)).Select(g => g.First()).ToList();
+            return (failures.Where(f => f.Item1 != null).GroupBy(f => (f.Item1, f.Item2.Id, f.Item2.Span.StartLinePosition, f.Item2.Message)).Select(g => g.First()).ToList(), undecided);
         }
 
         /// <summary>A failure as CsVerify reports it: the check of its line, of the kind Boogie says it is.</summary>

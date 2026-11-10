@@ -48,6 +48,14 @@ namespace CsVerify.Verifier.Boogie
             Line("// C#'s / and % truncate toward zero; Boogie's div and mod are Euclidean");
             Line("function cs#div(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
             Line("function cs#rem(a: int, b: int): int { a - b * cs#div(a, b) }");
+            Line("// bitwise operators of two variables (as CsVerify's engine has them), and a shift count's power of two");
+            foreach (var w in new[] { 32, 64 })
+            {
+                foreach (var op in new[] { "and", "or", "xor" }) Line($"function $bit.{op}{w}(x: int, y: int): int;");
+                var pow = (System.Numerics.BigInteger.One << (w - 1)).ToString();
+                for (int i = w - 2; i >= 0; i--) pow = $"(if n == {i} then {System.Numerics.BigInteger.One << i} else {pow})";
+                Line($"function $pow{w}(n: int): int {{ {pow} }}");
+            }
             Line("// fuel, as Dafny's: a function's definition unfolds once for each $LS");
             Line("type LayerType;");
             Line("const $LZ: LayerType;");
@@ -148,6 +156,8 @@ namespace CsVerify.Verifier.Boogie
                         case "ite": return $"(if {a[0]} then {a[1]} else {a[2]})";
                         case "div": return $"cs#div({a[0]}, {a[1]})";
                         case "rem": return $"cs#rem({a[0]}, {a[1]})";
+                        case "ediv": return $"({a[0]} div {a[1]})";
+                        case "emod": return $"({a[0]} mod {a[1]})";
                         case "len": return $"len({a[0]})";
                         case "old": return $"old({a[0]})";
                         case "wrap": return $"((({a[0]}) - ({a[1]})) mod {a[2]} + ({a[1]}))";

@@ -180,6 +180,7 @@ procedure Example.Max$int__(p$a: Ref) returns (result: int)
 | Declaration | What it is |
 |---|---|
 | `cs#div`, `cs#rem` | C#'s `/` and `%`, which truncate toward zero (Boogie's `div` and `mod` are Euclidean) |
+| `$bit.and32`, `$bit.or64`, …, `$pow32`, `$pow64` | bitwise operators of two variables; a shift count's power of two |
 | `LayerType`, `$LZ`, `$LS` | fuel, as Dafny's: how many times a function's definition may unfold |
 | `Ref`, `null`, `$Alloc` | references, and the allocated ones |
 | `len(a)` | an array's length: a function (it never changes), between 0 and `int.MaxValue` |
@@ -188,8 +189,8 @@ procedure Example.Max$int__(p$a: Ref) returns (result: int)
 
 ## The translation, construct by construct
 
-**Methods.** Each is a procedure. Its parameters are in-parameters (`p$x`, which the body doesn't assign: a method that
-assigns a parameter isn't translated yet), its result is `result`. `Spec.Requires` is a `requires`, checked at each
+**Methods.** Each is a procedure. Its parameters are in-parameters (`p$x`; one the body assigns is a local of the body,
+below), its result is `result`. `Spec.Requires` is a `requires`, checked at each
 call (CSV1001); `Spec.Ensures` is a `free ensures`, assumed at each call, and asserted at each return (CSV1002), so that
 each return path is reported, as CsVerify's engine reports them. `Spec.Ensures<R>(r => …)` binds `r` to `result`,
 `Spec.Old(e)` is `old(e)`, `Spec.Result<R>()` is `result`.
@@ -215,6 +216,22 @@ narrowing conversions are:
 - in an unchecked one, the value wrapped around (two's complement, as Euclidean `mod` of 2 to the type's bits).
 
 `/` and `%` assert a divisor that isn't zero (CSV1009) and assume not `MinValue / -1`, which throws in .NET.
+
+`Math.Max` and `Math.Min` of integers are `if`s; `Math.Abs(x)` is `x >= 0 ? x : checked(0 - x)`: `Abs(MinValue)`
+throws, as checked negation does.
+
+**Bitwise operators.** As CsVerify's engine has them (`MethodVerifier.Bits`): integer arithmetic over the two's
+complement bits, which Boogie's Euclidean `div` and `mod` by a power of two read for negative values too
+(bitvectors would make the solver convert between them and integers, which timed out on Base64's round trip).
+- With one operand constant, each is exact and linear: `x >> k` is `x div 2^k`, `x << k` is `x * 2^k` wrapped into
+  the type, `x & C` a sum of runs of `x`'s bits, `x | C` is `(x & ~C) + C`, `x ^ C` likewise, `~x` is `-1 - x` (or
+  `2^w - 1 - x` unsigned). A shift's count is taken modulo the width; an unknown one is `$pow32(k mod 32)`.
+- With neither constant, the result is `$bit.and32(x, y)` (or, xor; 64), of the type's range, with what is known of
+  it: if one operand has no bits where the other may (a value shifted by k, and one below 2^k, as when a word is
+  packed), their sum (or 0 for `&`); otherwise bit by bit, each bit of the result from the operands', and the value
+  they add up to. In a specification it is translated only where it stands in a statement (`Spec.Assert`), whose
+  facts are assumed just before it; not in a contract, nor of a quantifier's variable.
+- Types narrower than `int` are computed as `int` and narrowed, as `x op= y` is.
 
 **Arrays.** Dafny's encoding: an array is a `Ref`; `a.Length` is `len(a)`; `a[i]` is `$E.T[a][i]`. A read or a write
 asserts `a != null` (CSV1013) and `0 <= i && i < len(a)` (CSV1003). `new T[n]` is a reference not allocated before (`havoc`, then
@@ -721,6 +738,10 @@ the same lines. `BoogieEngineTests` checks that on a corpus written for it (one 
 on `samples/Good` and on `samples/Buggy`. `--engine boogie-only` verifies only what Boogie translates, to compare the
 two quickly.
 
+A procedure that times out is verified once more an assertion at a time (`/vcsSplitOnEveryAssert`, for it alone), as
+CsVerify's engine proves its obligations one by one. Only if that times out too does CsVerify's engine verify it
+(CSV1900). Base64's encoder, decoder and round trip need it.
+
 CsVerify's engine's checks made from the syntax and the declarations alone (`MethodVerifier.Run` with `StaticOnly`:
 locking, lock levels, atomics, flags, concurrency marks, Entity Framework contexts, a data type's invariant's
 dependence, and the warnings they give) run for each method Boogie verifies as well, and their diagnostics are its.
@@ -750,8 +771,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 
 The steps still to take, in order (each is one construct or two, under the same comparison, and unblocks the
 methods that fall back for it):
-1. assigning a parameter, `this(...)`, object initializers;
-2. `Math.Max`, `Min` and `Abs`, bitwise operators;
+1. assigning a parameter, `this(...)`, object initializers (done);
+2. `Math.Max`, `Min` and `Abs`, bitwise operators (done);
 3. invariants that call functions, records compared as `object`, records' invariants that read mutable state;
 4. interfaces as parameters, generic classes and constrained type parameters;
 5. exception filters, `Spec.Multiset`, `Bag`, collections keyed by strings, `Keys` and `Values`, interfaces'
