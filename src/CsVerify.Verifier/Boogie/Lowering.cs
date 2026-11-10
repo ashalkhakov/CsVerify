@@ -61,13 +61,35 @@ namespace CsVerify.Verifier.Boogie
         public static KProcedure Signature(IMethodSymbol m, Contract contract, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal = null, Func<IMethodSymbol, Contract> contractOf = null)
         {
             var l = new Lowering(m, contract, null, null, null, _ => false, isFunction, literal, contractOf);
-            foreach (var r in contract.Requires) l._p.Requires.Add(new KSpec { Expr = l.Spec(r, null), At = r.Syntax });
-            if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
             // (the permissions its postconditions give back, and a predicate's body, for folding and unfolding it)
-            foreach (var e in contract.Ensures) l._p.Ensures.Add(new KSpec { Expr = l.Spec(e.Expr, e.ResultParameter), At = e.Syntax });
+            ContractOf(l, contract);
             if (contract.Modifies != null) l._p.Frame = l.Spec(contract.Modifies, null);
             if ((SpecSymbols.IsPredicate(m) || isFunction(m)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
             return l._p;
+        }
+
+        /// <summary>
+        /// The contract: its requires, its ensures (an inherited one where its precondition was weakened: promised where the
+        /// base's held on entry), its measure; an override's own precondition and each base's, and the bases' frames.
+        /// </summary>
+        private static void ContractOf(Lowering l, Contract contract)
+        {
+            KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => new KOp("&&", a, b));
+            foreach (var r in contract.Requires) l._p.Requires.Add(new KSpec { Expr = l.Spec(r, null), At = r.Syntax });
+            foreach (var e in contract.Ensures)
+            {
+                var post = l.Spec(e.Expr, e.ResultParameter);
+                if (e.Guard != null) post = new KOp("==>", new KOp("old", And(e.Guard.Select(g => l.Spec(g, null)))), post);
+                l._p.Ensures.Add(new KSpec { Expr = post, At = e.Syntax });
+            }
+            if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Spec(d, null)).ToList();
+            if (contract.OwnRequires.Count > 0)
+            {
+                l._p.OwnRequires = contract.OwnRequires.Select(r => l.Spec(r, null)).ToList();
+                foreach (var b in contract.Bases) l._p.BaseRequires.Add((b.Method, b.Requires.Select(r => l.Spec(r, null)).ToList()));
+            }
+            foreach (var (b, frame) in contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, contract.Modifies)))
+                l._p.BaseFrames.Add((b.Method, l.Spec(frame, null)));
         }
 
         /// <summary>Does a specification name permissions (Spec.Acc, or a predicate)?</summary>
@@ -103,6 +125,9 @@ namespace CsVerify.Verifier.Boogie
             }
             // (Viper's functions over predicates read their footprint: not yet)
             _p.UsesPerm |= _contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr));
+            ContractOf(this, _contract);
+            // (an abstract member: its contract alone)
+            if (_m.IsAbstract) { _p.Abstract = true; return _p; }
             var cfg = _model.GetOperation(_decl) switch
             {
                 IMethodBodyOperation body => ControlFlowGraph.Create(body),
@@ -111,9 +136,6 @@ namespace CsVerify.Verifier.Boogie
             };
             if (cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions).Any(r => r.Kind != ControlFlowRegionKind.LocalLifetime))
                 throw new NotTranslated("try, catch or finally");
-            foreach (var r in _contract.Requires) _p.Requires.Add(new KSpec { Expr = Spec(r, null), At = r.Syntax });
-            foreach (var e in _contract.Ensures) _p.Ensures.Add(new KSpec { Expr = Spec(e.Expr, e.ResultParameter), At = e.Syntax });
-            if (_contract.Decreases != null) _p.Decreases = _contract.Decreases.Select(d => Spec(d, null)).ToList();
             if (_isFunction(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
             var heads = LoopHeads(cfg);
             foreach (var h in heads)
@@ -242,6 +264,17 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation baseCall when baseCall.TargetMethod.MethodKind == MethodKind.Constructor &&
                                                         baseCall.TargetMethod.ContainingType.SpecialType == SpecialType.System_Object:
                     return; // (object's constructor does nothing)
+                case IInvocationOperation chain when chain.TargetMethod.MethodKind == MethodKind.Constructor && chain.Instance is IInstanceReferenceOperation && _p.IsCtor:
+                {
+                    // base(...): the base class's constructor, on this object
+                    var ctor = chain.TargetMethod.OriginalDefinition;
+                    if (!_isProcedure(ctor)) throw new NotTranslated("a call of " + ctor.ContainingType.Name + "'s constructor");
+                    _p.Calls.Add(ctor);
+                    var ordered = chain.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var args = Operands(ordered.Select(a => a.Value).ToArray());
+                    Emit(new KCall { Callee = ctor, Receiver = new KVar("this"), ReceiverIsThis = true, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = chain.Syntax });
+                    return;
+                }
                 case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
                     Own(own);
                     return;
@@ -658,7 +691,8 @@ namespace CsVerify.Verifier.Boogie
             if (!_isProcedure(callee)) throw new NotTranslated("a call of " + call.TargetMethod.Name);
             _p.Calls.Add(callee);
             var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-            if (!callee.IsStatic && (call.Instance == null || callee.IsVirtual || callee.IsAbstract || callee.IsOverride)) throw new NotTranslated("a virtual call of " + callee.Name);
+            // (a virtual call: of the member as bound here, whose contract every override keeps)
+            if (!callee.IsStatic && call.Instance == null) throw new NotTranslated("a call of " + callee.Name + " without its receiver");
             bool onThis = call.Instance is IInstanceReferenceOperation;
             // (a ref or out argument is a variable, which gets what the callee gives back; an out one isn't read)
             var refOuts = ordered.Where(a => a.Parameter.RefKind != RefKind.None).Select(a => (a.Parameter.Ordinal, RefVariable(a))).ToList();
@@ -737,6 +771,11 @@ namespace CsVerify.Verifier.Boogie
                 case IParameterReferenceOperation p when result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result): return new KVar("result");
                 case IParameterReferenceOperation p when p.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction }:
                     return new KVar("q$" + p.Parameter.Name); // (a quantifier's variable)
+                // (a base's contract, inherited: its parameters are this method's, by position)
+                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && !_contract.IsStub && p.Parameter.ContainingSymbol is IMethodSymbol pm &&
+                                                         _contract.Aliases.Any(a => SymbolEqualityComparer.Default.Equals(a.OriginalDefinition, pm.OriginalDefinition)) &&
+                                                         p.Parameter.Ordinal < _m.Parameters.Length:
+                    return new KVar(Local(_m.Parameters[p.Parameter.Ordinal]));
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type): return new KVar(Local(p.Parameter));
                 case ILocalReferenceOperation l when InSubset(l.Local.Type): return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }: return new KVar("this");

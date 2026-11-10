@@ -151,11 +151,27 @@ namespace CsVerify.Verifier.Boogie
             // (the preconditions are well-defined given what entry gives: the views received hold their invariants)
             if (_p.UsesPerm) ViewsAtEntry(grant: false);
             var before = new List<KExpr>();
+            // (an abstract member: nothing of its own to check, its contract is what calls of it use)
+            if (_p.Abstract) { _p.Entry.Clear(); _p.Obligations = 0; return; }
             foreach (var r in requires)
             {
                 foreach (var f in r.facts) Assume(f);
                 WellDefined(r.wf, r.spec.At, before);
                 before.Add(r.math);
+            }
+            // behavioural subtyping: an override requires no more than what it overrides promises its callers, and
+            // changes no more than that allows (CSV1018); checked here, where its own precondition isn't assumed
+            var decl = _p.Method.DeclaringSyntaxReferences[0].GetSyntax();
+            KExpr Conjunction(IEnumerable<KExpr> xs) => xs.Select(x => { var v = Spec(x, out _); _facts.Clear(); return v; }).Aggregate((KExpr)new KLit("true"), Conj);
+            foreach (var (b, reqs) in _p.BaseRequires)
+                Assert(new KOp("==>", Conjunction(reqs), Conjunction(_p.OwnRequires)),
+                    At("CSV1018", decl, $"'{m.Name}' requires more than {b.ContainingType.Name}.{b.Name}, which it overrides, promises its callers"), true);
+            foreach (var (b, frame) in _p.BaseFrames.Where(_ => _p.Frame != null))
+            {
+                var allowed = Conjunction(new[] { frame });
+                var r = new KVar("r$");
+                Assert(new KQuant { Forall = true, Var = "r$", Type = "Ref", Range = null, Body = new KOp("==>", new KOp("sel", _p.Frame, r), new KOp("sel", allowed, r)) },
+                    At("CSV1018", decl, $"Spec.Modifies of '{m.Name}' might not be within that of {b.ContainingType.Name}.{b.Name}, which it overrides"), true);
             }
 
             _bodies = _p.Blocks.Select(b => new KBlock { Label = b.Label, Ordinal = b.Ordinal, Stmts = b.Stmts.ToList(), Jump = b.Jump }).ToList();
@@ -1291,7 +1307,7 @@ namespace CsVerify.Verifier.Boogie
             return given;
         }
 
-        private static bool IsRequired(ISymbol field) =>
+        internal static bool IsRequired(ISymbol field) =>
             (field is IFieldSymbol f ? f.IsRequired : field is IPropertySymbol p && p.IsRequired) ||
             field.GetAttributes().Any(a => a.AttributeClass?.Name == "JsonRequiredAttribute");
 

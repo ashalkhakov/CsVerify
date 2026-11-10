@@ -213,6 +213,74 @@ public static class P
                 Assert.True(b[good].Verified, good);
         }
 
+        // (inheritance: base classes, virtual and abstract members, overrides inheriting contracts, base(...))
+        private const string Inheritance = @"
+public abstract class Shape
+{
+    public int Sides;
+    protected Shape(int sides) { Spec.Requires(sides >= 0); Spec.Ensures(Sides == sides); Sides = sides; }
+    public abstract int Area();
+}
+[ContractClassFor(typeof(Shape))]
+internal abstract class ShapeContract : Shape
+{
+    protected ShapeContract() : base(0) { }
+    public override int Area() { Spec.Ensures<int>(r => r >= 0); return default; }
+}
+public class Square : Shape
+{
+    public int Side;
+    public Square(int side) : base(4) { Spec.Requires(0 <= side && side <= 1000); Spec.Ensures(Side == side && Sides == 4); Side = side; }
+    public override int Area() { return 0 <= Side && Side <= 1000 ? Side * Side : 0; }
+}
+public class Hole : Shape
+{
+    public Hole() : base(0) { }
+    public override int Area() { return -1; }
+}
+public class Account
+{
+    public int Balance;
+    public virtual void Deposit(int amount) { Spec.Requires(0 <= amount && amount <= 1000 && 0 <= Balance && Balance <= 1000000); Spec.Ensures(Balance == Spec.Old(Balance) + amount); Balance += amount; }
+    public virtual int Fee() { Spec.Ensures<int>(r => r >= 0); return 0; }
+}
+public class Savings : Account
+{
+    public int Rate;
+    public Savings(int rate) : base() { Spec.Requires(rate >= 0); Spec.Ensures(Rate == rate); Rate = rate; }
+    public override void Deposit(int amount) { Balance += amount; }
+    public override int Fee() { return 1; }
+}
+public class Greedy : Account
+{
+    public override void Deposit(int amount) { Balance += amount + 1; }
+    public override int Fee() { return -1; }
+}
+public class Picky : Account
+{
+    public override void Deposit(int amount) { Spec.Requires(amount > 10 && Balance <= 1000000); Balance += amount; }
+}
+public static class I
+{
+    public static void Use(Account a) { Spec.Requires(a.Balance == 0); a.Deposit(5); Spec.Assert(a.Balance == 5); }
+    public static int Charge(Account a) { Spec.Ensures<int>(r => r >= 0); return a.Fee(); }
+    public static int Measure(Shape s) { Spec.Ensures<int>(r => r >= 0); return s.Area(); }
+    public static void Forgets(Savings s) { Spec.Requires(s.Rate == 3 && s.Balance == 0); s.Deposit(2); Spec.Assert(s.Rate == 3); }
+    public static int Build() { var q = new Square(3); Spec.Assert(q.Side == 3 && q.Sides == 4); return q.Side; }
+}";
+
+        [Fact]
+        public void Inheritance_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Inheritance) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 14, "by Boogie: " + string.Join(", ", boogie));
+            foreach (var bug in new[] { "Hole.Area", "Greedy.Deposit", "Greedy.Fee", "Picky.Deposit", "I.Forgets" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Shape..ctor", "Square..ctor", "Square.Area", "Account.Deposit", "Account.Fee", "Savings..ctor", "Savings.Deposit", "Savings.Fee", "I.Use", "I.Charge", "I.Measure", "I.Build" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void Objects_BothEnginesReportTheSame()
         {

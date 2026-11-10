@@ -68,10 +68,13 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsClass(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && n.Arity == 0 &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
-            n.BaseType?.SpecialType == SpecialType.System_Object && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            // (derived from object, or from a class of the subset; an [Owned] one from object)
+            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
             n.AllInterfaces.Length == 0 && !SpecSymbols.IsContractsClass(n) &&
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name != "OwnedAttribute") &&
-            n.GetMembers().All(m => !m.IsVirtual && !m.IsAbstract && !m.IsOverride && !((m is IFieldSymbol || m is IPropertySymbol) && CsVerifyAttributes(m))) &&
+            // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
+            n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0 : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
+                                    !((m is IFieldSymbol || m is IPropertySymbol) && CsVerifyAttributes(m))) &&
             // (an invariant of an [Owned] class travels with its view; any other's is a data type's, assumed of every object)
             (SpecSymbols.IsOwned(n) || !n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute")));
 
@@ -89,7 +92,12 @@ namespace CsVerify.Verifier.Boogie
         public static string FieldMap(ISymbol s) => "$F." + Ident(s.ContainingType.ToDisplayString() + "." + s.Name);
 
         /// <summary>The fields of a class an object of it has (the static ones aren't its).</summary>
-        public static IEnumerable<ISymbol> InstanceFields(ITypeSymbol t) => t.GetMembers().Where(m => !m.IsStatic && IsField(m)).Select(m => m.OriginalDefinition);
+        public static IEnumerable<ISymbol> InstanceFields(ITypeSymbol t)
+        {
+            // (its base classes' too)
+            for (var c = t as INamedTypeSymbol; c != null && c.SpecialType != SpecialType.System_Object; c = c.BaseType)
+                foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m))) yield return m.OriginalDefinition;
+        }
 
         public static KExpr Default(ITypeSymbol t) => new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 

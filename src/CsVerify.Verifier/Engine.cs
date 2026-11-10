@@ -647,7 +647,14 @@ namespace CsVerify.Verifier
                 var model = compilation.GetSemanticModel(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<BaseMethodDeclarationSyntax>())
                 {
-                    if (decl.Body == null && decl.ExpressionBody == null) continue;
+                    if (decl.Body == null && decl.ExpressionBody == null)
+                    {
+                        // an abstract member: for Boogie, a procedure with no body, which calls through the base go to
+                        // (nothing of its own to verify: it has no result)
+                        if (options.Boogie && model.GetDeclaredSymbol(decl) is IMethodSymbol am && am.IsAbstract && Boogie.BoogieTranslator.Candidate(am, engine.ContractOf(am)))
+                            forBoogie.Add((am, engine.ContractOf(am), decl, new MethodResult { Name = null }));
+                        continue;
+                    }
                     if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
                     if (SpecSymbols.IsContractsClass(method.ContainingType) || SpecSymbols.IsModel(method)) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
@@ -823,6 +830,7 @@ namespace CsVerify.Verifier
                 translator.Prelude();
                 translator.ContractOf = engine.ContractOf;
                 translator.UsesPermissions = engine.UsesPermissions;
+                translator.OverridesOf = m => engine.Fields.Overrides(m);
                 translator.UsesFieldPermissions = engine.UsesPermissions && compilation.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
                     .Any(i => i.Expression.ToString().EndsWith("Acc") && i.ArgumentList.Arguments.Count == 2 && i.ArgumentList.Arguments[1].Expression.ToString().StartsWith("nameof")));
                 translator.Declare(included.Select(x => (x.method, x.decl, (SemanticModel)compilation.GetSemanticModel(x.decl.SyntaxTree))));
@@ -841,7 +849,7 @@ namespace CsVerify.Verifier
             }
             translator.Finish();
             if (engine.Options.BoogieOut != null) System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
-            foreach (var x in held.Except(included)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+            foreach (var x in held.Except(included).Where(x => x.result.Name != null)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
             if (included.Count == 0) return null;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
             try
@@ -856,7 +864,7 @@ namespace CsVerify.Verifier
             catch (Exception e)
             {
                 if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine("Boogie failed: " + e);
-                foreach (var x in included)
+                foreach (var x in included.Where(x => x.result.Name != null))
                 {
                     RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + e.Message.Split('\n')[0], x.decl.GetLocation().GetLineSpan()));

@@ -63,16 +63,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c) =>
             (m.IsStatic ? m.MethodKind == MethodKind.Ordinary
-                        : IsClass(m.ContainingType) && (m.MethodKind == MethodKind.Ordinary || m.MethodKind == MethodKind.Constructor) && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
+                        : IsClass(m.ContainingType) && (m.MethodKind == MethodKind.Ordinary || m.MethodKind == MethodKind.Constructor)) &&
             !m.IsAsync && !m.IsGenericMethod &&
             (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
             c.Reads == null && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
-            c.Ensures.All(e => e.Guard == null) && c.Bases.Count == 0;
+            c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !m.IsStatic && !IsClass(m.ContainingType) ? "a member of " + m.ContainingType.Name + ", a class outside the subset" :
-            !m.IsStatic && (m.IsVirtual || m.IsAbstract || m.IsOverride) ? "virtual" :
             m.IsAsync ? "async" : m.IsGenericMethod ? "generic" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
             !(m.ReturnsVoid || InSubset(m.ReturnType)) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
@@ -145,6 +144,9 @@ namespace CsVerify.Verifier.Boogie
         public bool UsesPermissions { get; set; }
 
         public bool UsesFieldPermissions { get; set; }
+
+        /// <summary>The overrides of a virtual member, in the program: a call of it may run any of them.</summary>
+        public Func<IMethodSymbol, IEnumerable<IMethodSymbol>> OverridesOf = _ => Enumerable.Empty<IMethodSymbol>();
 
         /// <summary>The string literals: one constant per contents.</summary>
         private readonly Dictionary<string, string> _literals = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -275,6 +277,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => p.FunctionBody != null && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
+            _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap)).ToHashSet();
             var writes = Closed(p => p.Modifies);
             var any = Closed(p => p.AnyWrites);
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
@@ -375,15 +378,28 @@ namespace CsVerify.Verifier.Boogie
             _printer.OwnArrays = m => own.Contains(m.OriginalDefinition) ? Of(m.OriginalDefinition) : null;
         }
 
+        private HashSet<string> _allMaps = new HashSet<string>();
+
         /// <summary>A set of globals of each procedure's, with those of everything it calls.</summary>
         private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<KProcedure, HashSet<string>> own)
         {
             var sets = _pending.ToDictionary(p => p.Method, p => new HashSet<string>(own(p)), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            // (a virtual member's call may run any override: what each does, it does; one of them not here, anything)
+            var edges = _pending.ToDictionary(p => p.Method, p => p.Calls.ToList(), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            foreach (var p in _pending.Where(p => p.Method.IsVirtual || p.Method.IsAbstract || p.Method.IsOverride))
+            {
+                foreach (var o in OverridesOf(p.Method).Select(o => o.OriginalDefinition))
+                    if (sets.ContainsKey(o)) edges[p.Method].Add(o);
+                    else sets[p.Method].UnionWith(_allMaps);
+                // (as CsVerify's engine says: a call that may run an override changes what the member's Spec.Modifies
+                // allows, and without one, anything)
+                if (Engine.IsOverridable(p.Method) && p.Frame == null) sets[p.Method].UnionWith(_allMaps);
+            }
             for (bool grew = true; grew;)
             {
                 grew = false;
                 foreach (var p in _pending)
-                    foreach (var c in p.Calls)
+                    foreach (var c in edges[p.Method])
                         if (sets.TryGetValue(c, out var w))
                             foreach (var g in w.ToList())
                                 if (sets[p.Method].Add(g)) grew = true;

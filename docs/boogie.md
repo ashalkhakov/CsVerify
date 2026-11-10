@@ -345,6 +345,23 @@ preconditions hold, its non-nullable result not null; a call checks its receiver
 mathematics, read as the source has it; its body's checks (null, bounds, division, a function's precondition) are
 asserted for every value in its range, under the conditions before them.
 
+**Inheritance.** A class of the subset may derive from another, and have virtual, abstract and override methods (an
+override only of the program's members, an abstract member's contract from its contract class), as
+[objects.md](objects.md#object-oriented-code) says:
+- a call is of the member as bound there: its procedure, whose contract every override keeps (behavioural
+  subtyping); an abstract member is a procedure with no body;
+- an override inherits its bases' contracts: their postconditions always (where it weakened the precondition,
+  promised only where the base's held on entry: `old(requires) ==> ensures`), their precondition when it gives
+  none; a base's contract names its parameters, which are the override's by position;
+- in its `$wf` procedure, where its own precondition isn't assumed, an override's precondition follows from each
+  base's, and its `Spec.Modifies` lies within theirs (CSV1018);
+- a virtual member's procedure modifies what any of its overrides writes, and, as in CsVerify's engine, everything
+  where it has no `Spec.Modifies` (an override not seen may write anything);
+- `base(...)` in a constructor calls the base class's constructor on `this`; a new object's fields, inherited ones
+  too, are their defaults; a constructor ensures the non-nullable fields it sets aren't null.
+
+Not yet: interfaces, virtual properties, `this(...)`, type tests and casts.
+
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
 as it was on entry (`w$entry`), or allocated since (CSV1017; a constructor's own object counts as new); it calls only
@@ -419,8 +436,10 @@ predicates with `Spec.Fold` and `Spec.Unfold`, functions over them, array-cell a
 
 Also strings and the string members with stub contracts, and quantifiers in code.
 
+Also inheritance: base classes, virtual, abstract and override methods.
+
 Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, virtual
-members, interfaces, inheritance, records (data types), generics, string members without stubs, collections,
+properties, interfaces, records (data types), generics, string members without stubs, collections,
 `foreach`, lambdas, `try`/`catch`/`finally`, a method that assigns a parameter, `Spec.Reads`,
 `Spec.EnsuresOnThrow`, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
 library calls with stub contracts.
@@ -436,7 +455,8 @@ two quickly.
 
 The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
-   them (done for plain classes; next: inheritance and virtual calls, data records, object initializers, `this(...)`);
+   them (done for plain classes, base classes and virtual methods; next: interfaces, virtual properties, data
+   records, object initializers, `this(...)`);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (`List`, `Dictionary`, `HashSet`), and the ghost types;
 3. `foreach`, lambdas and delegates;

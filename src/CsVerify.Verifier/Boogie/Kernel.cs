@@ -418,6 +418,13 @@ namespace CsVerify.Verifier.Boogie
         public bool UsesFields;
         /// <summary>Its Spec.Modifies: the objects (an ObjSet, a [Ref]bool) whose fields and cells it may write, as of entry.</summary>
         public KExpr Frame;
+        /// <summary>An abstract member: a procedure with no body, which calls go to.</summary>
+        public bool Abstract;
+        /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>
+        public List<KExpr> OwnRequires = new List<KExpr>();
+        public List<(IMethodSymbol method, List<KExpr> requires)> BaseRequires = new List<(IMethodSymbol, List<KExpr>)>();
+        /// <summary>A base's Spec.Modifies, which its own must lie within (CSV1018).</summary>
+        public List<(IMethodSymbol method, KExpr frame)> BaseFrames = new List<(IMethodSymbol, KExpr)>();
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The predicates it names.</summary>

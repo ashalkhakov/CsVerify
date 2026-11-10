@@ -334,7 +334,8 @@ namespace CsVerify.Verifier.Boogie
             var outs = (m.ReturnsVoid ? new string[0] : new[] { $"result: {TypeOf(m.ReturnType)}" })
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
-            Line($"procedure {p.Name}({ps}){ret}", Undecided(p));
+            // (an abstract member's: a declaration, its specifications after it, no body)
+            Line($"procedure {p.Name}({ps}){ret}{(p.Abstract ? ";" : "")}", Undecided(p));
             if (modifies.Count > 0)
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
@@ -373,6 +374,12 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
             if (!m.ReturnsVoid && IsRef(m.ReturnType)) Line("  free ensures result == null || $Alloc[result];");
             if (!m.ReturnsVoid && IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line("  free ensures result != null;");
+            // (a constructor has set the fields that may not be null: it asserts so at each return)
+            if (p.IsCtor)
+                foreach (var f in InstanceFields(m.ContainingType).Where(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f)) &&
+                                                                         (!Checks.IsRequired(f) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))))
+                    Line($"  free ensures {FieldMap(f)}[this] != null;");
+            if (p.Abstract) return;
             Line("{");
             if (p.UsesPerm)
             {
