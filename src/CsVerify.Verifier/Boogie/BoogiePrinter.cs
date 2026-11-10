@@ -154,6 +154,8 @@ namespace CsVerify.Verifier.Boogie
                         case "sat": return $"sat({a[0]}, {a[1]})";
                         case "scat": return $"scat({a[0]}, {a[1]})";
                         case "sdiff": return $"sdiff({a[0]}, {a[1]})";
+                        case "dtype": return $"dtype({a[0]})";
+                        case "sub": return $"sub({a[0]}, {a[1]})";
                         case "streq": return $"({a[0]} == {a[1]})";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
@@ -194,6 +196,53 @@ namespace CsVerify.Verifier.Boogie
             // (trusted for its annotations: a non-nullable result isn't null; an integer one is in its type's range)
             if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line(Axiom($"{app} != null"));
             if (IsIntegral(m.ReturnType)) Line(Axiom(E(InRange(new KLit(app), m.ReturnType), InProcedure)));
+        }
+
+        // ------------------------------------------------------------------ exceptions
+
+        private int _forks;
+
+        /// <summary>The callees a call of throws (their twins are declared once the procedures are).</summary>
+        public readonly HashSet<IMethodSymbol> Throwing = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Exception types: a constant each, how they derive (sub, as C# does), every one an Exception.</summary>
+        public void ExceptionTypes(IEnumerable<ITypeSymbol> types, ITypeSymbol exception)
+        {
+            var all = types.Append(exception).Distinct(SymbolEqualityComparer.Default).Cast<ITypeSymbol>().OrderBy(TypeConst, System.StringComparer.Ordinal).ToList();
+            Line("type Ty;");
+            Line("function dtype(r: Ref): Ty;");
+            Line("function sub(a: Ty, b: Ty): bool;");
+            Line("axiom (forall a: Ty :: sub(a, a));");
+            Line("axiom (forall a: Ty, b: Ty, c: Ty :: { sub(a, b), sub(b, c) } sub(a, b) && sub(b, c) ==> sub(a, c));");
+            foreach (var t in all) Line($"const unique {TypeConst(t)}: Ty;");
+            Line($"axiom (forall a: Ty :: sub(a, {TypeConst(exception)}));");
+            foreach (var a in all)
+                foreach (var b in all.Where(b => !SymbolEqualityComparer.Default.Equals(a, b)))
+                {
+                    bool derives = false;
+                    for (var c = (a as INamedTypeSymbol)?.BaseType; c != null; c = c.BaseType)
+                        if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b.OriginalDefinition)) derives = true;
+                    Line($"axiom {(derives ? "" : "!")}sub({TypeConst(a)}, {TypeConst(b)});");
+                }
+        }
+
+        /// <summary>
+        /// A callee's twin, for the way it throws: its inputs, what it modifies, an exception that isn't null, and only
+        /// what its EnsuresOnThrow clauses say of it (nothing of its postconditions).
+        /// </summary>
+        public void Throws(KProcedure callee, ISet<string> modifies, List<(ITypeSymbol type, KExpr cond)> clauses)
+        {
+            var m = callee.Method;
+            var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
+            var cx = new Context { Ins = ins };
+            var ps = string.Join(", ", (callee.HasThis ? new[] { "this: Ref" } : new string[0])
+                .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
+            Line($"procedure {callee.Name}$throws({ps}) returns (ex: Ref);");
+            if (modifies.Count > 0)
+                Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
+            Line("  free ensures ex != null;");
+            foreach (var (type, cond) in clauses)
+                Line($"  free ensures {E(new KOp("==>", Checks.Is(new KVar("ex"), type), cond), new Context { Ins = ins, AtEntry = false })};");
         }
 
         // ------------------------------------------------------------------ predicates
@@ -479,6 +528,32 @@ namespace CsVerify.Verifier.Boogie
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
+                case KNewExc ne:
+                    Line($"    havoc {ne.Var};");
+                    Line($"    assume {ne.Var} != null && dtype({ne.Var}) == {TypeConst(ne.Type)};");
+                    return;
+                case KFork fork:
+                {
+                    // the way it throws, then the way it doesn't (a block of its own each)
+                    var n = _forks++;
+                    Line($"    goto f${n}$x, f${n};");
+                    Line($"  f${n}$x:");
+                    if (fork.Call != null)
+                    {
+                        var given = fork.Call.Args.Where((a, k) => fork.Call.Callee.Parameters[k].RefKind != RefKind.Out);
+                        Line($"    call ex$ := {Name(fork.Call.Callee)}$throws({string.Join(", ", (fork.Call.Receiver == null ? given : new[] { fork.Call.Receiver }.Concat(given)).Select(a => E(a, cx)))});");
+                        Throwing.Add(fork.Call.Callee);
+                    }
+                    else
+                    {
+                        Line($"    assume !({E(fork.Overflow, cx)});");
+                        Line("    havoc ex$;");
+                        Line($"    assume ex$ != null && dtype(ex$) == T#System.OverflowException;");
+                    }
+                    Line($"    goto {fork.Target};");
+                    Line($"  f${n}:");
+                    return;
+                }
                 case KCallFrame { After: false } frame:
                     foreach (var x in new[] { "perm", "pinst", "owner", "psnap", "$Alloc" }.Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
                                  .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]).Concat(frame.OldGlobals).Distinct())

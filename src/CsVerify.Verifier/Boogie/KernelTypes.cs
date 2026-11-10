@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t);
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsView(t) || IsString(t) || IsException(t);
 
         /// <summary>A string: a value (its length, its characters), a Ref only so that null is one; never allocated.</summary>
         public static bool IsString(ITypeSymbol t) => t?.SpecialType == SpecialType.System_String;
@@ -39,8 +39,19 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A ghost set of objects (Spec.Modifies, Spec.Reads): a [Ref]bool.</summary>
         public static bool IsObjSet(ITypeSymbol t) => SpecSymbols.IsCsVerifyType(t, "ObjSet");
 
+        /// <summary>An exception: a reference of a type derived from System.Exception (its fields aren't the kernel's).</summary>
+        public static bool IsException(ITypeSymbol t)
+        {
+            for (var c = t as INamedTypeSymbol; c != null; c = c.BaseType)
+                if (c.OriginalDefinition.ToDisplayString() == "System.Exception") return t is INamedTypeSymbol n && n.Arity == 0;
+            return false;
+        }
+
+        /// <summary>An exception type's constant (Ty).</summary>
+        public static string TypeConst(ITypeSymbol t) => "T#" + Ident(t.OriginalDefinition.ToDisplayString());
+
         /// <summary>What may be null: a reference or a string.</summary>
-        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t);
+        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t);
 
         /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
         public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
@@ -121,7 +132,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
-        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) || IsString(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+        public static string TypeOf(ITypeSymbol t) => IsRef(t) || IsView(t) || IsString(t) || IsException(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

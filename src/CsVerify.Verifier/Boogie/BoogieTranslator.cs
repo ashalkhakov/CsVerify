@@ -67,7 +67,7 @@ namespace CsVerify.Verifier.Boogie
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
             !m.IsAsync && !m.IsGenericMethod && KnownAttributes(m) &&
             (m.ReturnsVoid || InSubset(m.ReturnType)) && m.Parameters.All(p => p.RefKind != RefKind.In && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type)) &&
-            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && c.ThrowEnsures.Count == 0 && !c.IsTrusted &&
+            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
 
         /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is CsVerify's engine's to check.</summary>
@@ -354,14 +354,30 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var map in frame.Maps)
                         p.Locals.Add(new KLocal { Name = $"s${frame.Head}{map}", Raw = map == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int" });
                 }
+            // the exception types named, and how they derive
+            var exceptions = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.ExceptionTypes).Concat(_signatures.Values.SelectMany(s => s.ExceptionTypes)), SymbolEqualityComparer.Default);
+            bool throws = _pending.Any(p => p.Blocks.SelectMany(b => b.Stmts).Any(s => s is KFork || s is KThrow || s is KNewExc || s is KThrowExit));
+            if (_compilationException != null && (exceptions.Count > 0 || throws)) _printer.ExceptionTypes(exceptions, _compilationException);
             foreach (var p in _pending)
             {
                 // (the function's value is its body's: not where an override may answer the call)
                 _printer.Procedure(p, writes[p.Method], any[p.Method], IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && !Engine.IsOverridable(p.Method) ? FunctionFields(p.Method) : null);
                 Obligations[p.Result] = p.Obligations;
             }
+            // the twins of what throws, for the ways calls of them throw
+            foreach (var callee in _printer.Throwing.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal).ToList())
+            {
+                var sig = ((IProgramFacts)this).Signature(callee);
+                var clauses = sig.ThrowEnsures.Select(t => (t.type, Checks.MathOf(t.cond, this, callee))).ToList();
+                _printer.Throws(sig, writes.TryGetValue(callee.OriginalDefinition, out var w) ? w : _allMaps, clauses);
+            }
+            _printer.Throwing.Clear();
             _pending.Clear();
         }
+
+        /// <summary>System.Exception, of the program's compilation (what every exception is).</summary>
+        public ITypeSymbol ExceptionType { set => _compilationException = value; }
+        private ITypeSymbol _compilationException;
 
         /// <summary>
         /// Which functions read arrays only through their own array parameters (and call only such functions, on

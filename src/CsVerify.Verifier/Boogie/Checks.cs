@@ -363,6 +363,24 @@ namespace CsVerify.Verifier.Boogie
                 case KFold fold:
                     Fold(fold);
                     return;
+                case KThrow th:
+                {
+                    // (throwing null throws a NullReferenceException instead: CsVerify's engine checks it, but in a proof)
+                    var v = Code(th.Value);
+                    if (!(_p.Ghost || _p.Contract.IsPure || _p.Contract.IsLemma))
+                        Assert(new KOp("!=", v, new KLit("null")), At("CSV1013", th.At, $"'{th.At}' might be null: throwing it would throw a NullReferenceException"));
+                    if (th.Seen) Emit(new KAssign { Var = "ex$", Value = v });
+                    return;
+                }
+                case KThrowExit _:
+                    // leaving by an exception: its own clauses for the exception's type hold
+                    foreach (var (type, cond, at) in _p.ThrowEnsures)
+                    {
+                        var holds = OldAtEntry(Spec(cond, out _));
+                        _facts.Clear();
+                        Assert(new KOp("==>", Is(new KVar("ex$"), type), holds), At("CSV1002", at, $"postcondition on throw '{at}' might not hold when '{_p.Method.Name}' throws"));
+                    }
+                    return;
                 case KOwn { Kind: "drop" } drop:
                     Emit(new KMapUpdate { Map = "perm", Ref = Code(drop.Obj), Value = new KLit("false") });
                     return;
@@ -496,6 +514,9 @@ namespace CsVerify.Verifier.Boogie
                     _facts.Clear();
                     if (Mentions(math, Snaps)) Assert(math, At("CSV1001", c.At, $"'{c.At}': its precondition '{r.At}'"));
                 }
+            // (where exceptions are seen: or it throws, and gives back only what its EnsuresOnThrow says)
+            if (c.ThrowsTo != null)
+                Emit(new KFork { Call = new KCall { Callee = callee, Receiver = receiver, Args = args, RefOuts = c.RefOuts }, Target = c.ThrowsTo });
             if (frame != null) Emit(frame);
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
@@ -847,6 +868,12 @@ namespace CsVerify.Verifier.Boogie
             Assert(new KOp("||", new KOp("sel", new KVar("w$entry"), o), new KOp("!", new KOp("sel", new KVar("alloc$entry"), o))),
                 At("CSV1017", at, $"'{at}' writes an object that is not in Spec.Modifies and was not allocated here"));
         }
+
+        // ------------------------------------------------------------------ exceptions
+
+        /// <summary>Is the exception of this type (any is a System.Exception)?</summary>
+        internal static KExpr Is(KExpr ex, ITypeSymbol type) =>
+            type.ToDisplayString() == "System.Exception" ? new KLit("true") : new KOp("sub", new KOp("dtype", ex), new KLit(TypeConst(type)));
 
         // ------------------------------------------------------------------ strings
 
@@ -1474,11 +1501,15 @@ namespace CsVerify.Verifier.Boogie
             if (ar.Op == "/" || ar.Op == "%")
             {
                 Assert(new KOp("!=", r, new KLit("0")), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
+                if (ar.ThrowsTo != null)
+                    Emit(new KFork { Overflow = new KOp("!", new KOp("&&", new KOp("==", l, Number(Range(ar.Type).lo)), new KOp("==", r, new KLit("(-1)")))), Target = ar.ThrowsTo });
                 // (MinValue / -1 throws in .NET, checked or not)
                 Assume(new KOp("!", new KOp("&&", new KOp("==", l, Number(Range(ar.Type).lo)), new KOp("==", r, new KLit("(-1)")))));
                 return new KOp(ar.Op == "/" ? "div" : "rem", l, r);
             }
             var value = new KOp(ar.Op, l, r);
+            // (checked: out of range, it throws an OverflowException, which the handlers may catch)
+            if (ar.ThrowsTo != null && ar.Mode == KMode.Checked) Emit(new KFork { Overflow = InRange(value, ar.Type), Target = ar.ThrowsTo });
             return Fit(value, ar.Type, ar.Mode, ar.At, $"arithmetic '{ar.At}' might overflow {ar.Type.Name}");
         }
 

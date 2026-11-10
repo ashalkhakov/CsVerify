@@ -92,6 +92,8 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol Type;
         public KMode Mode;
         public SyntaxNode At;
+        /// <summary>Where an OverflowException it throws (checked, or MinValue / -1) goes, where exceptions are seen.</summary>
+        public string ThrowsTo;
     }
 
     /// <summary>An explicit conversion between integer types.</summary>
@@ -208,6 +210,35 @@ namespace CsVerify.Verifier.Boogie
         public HashSet<string> OldGlobals = new HashSet<string>();
     }
 
+    /// <summary>throw Value: not null (CSV1013, but in a proof); where exceptions are seen, it is the exception (ex$).</summary>
+    internal sealed class KThrow : KStmt
+    {
+        public KExpr Value;
+        public bool Seen;
+        public SyntaxNode At;
+    }
+
+    /// <summary>new E(...) of an exception type: a new exception of exactly that type (dtype).</summary>
+    internal sealed class KNewExc : KStmt
+    {
+        public string Var;
+        public ITypeSymbol Type;
+    }
+
+    /// <summary>Leaving the method by an exception (ex$): its own EnsuresOnThrow clauses for the exception's type hold (CSV1002).</summary>
+    internal sealed class KThrowExit : KStmt { }
+
+    /// <summary>
+    /// After Checks: the way a call (Call), or checked arithmetic (Overflow, out of range), throws instead: ex$ the
+    /// exception, to the handlers at Target. The printer splits the block there.
+    /// </summary>
+    internal sealed class KFork : KStmt
+    {
+        public KCall Call;
+        public KExpr Overflow;
+        public string Target;
+    }
+
     /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
     internal sealed class KRaw : KStmt
     {
@@ -291,6 +322,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Where each argument is (for a non-null one's check).</summary>
         public SyntaxNode[] ArgsAt;
         public Check Check;
+        /// <summary>Where an exception it throws goes, where exceptions are seen (a try's handlers, or the method's exit).</summary>
+        public string ThrowsTo;
     }
 
     internal sealed class KAssert : KStmt
@@ -427,6 +460,10 @@ namespace CsVerify.Verifier.Boogie
         public List<(IMethodSymbol method, List<KExpr> requires)> BaseRequires = new List<(IMethodSymbol, List<KExpr>)>();
         /// <summary>A base's Spec.Modifies, which its own must lie within (CSV1018).</summary>
         public List<(IMethodSymbol method, KExpr frame)> BaseFrames = new List<(IMethodSymbol, KExpr)>();
+        /// <summary>Spec.EnsuresOnThrow&lt;E&gt;(Cond): what holds where it leaves by throwing an E.</summary>
+        public List<(ITypeSymbol type, KExpr cond, SyntaxNode at)> ThrowEnsures = new List<(ITypeSymbol, KExpr, SyntaxNode)>();
+        /// <summary>The exception types it names (catches, throws, clauses): the program declares them, and how they derive.</summary>
+        public HashSet<ITypeSymbol> ExceptionTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The predicates it names.</summary>

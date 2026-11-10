@@ -76,6 +76,12 @@ namespace CsVerify.Verifier.Boogie
         {
             KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => new KOp("&&", a, b));
             foreach (var r in contract.Requires) l._p.Requires.Add(new KSpec { Expr = l.Spec(r, null), At = r.Syntax });
+            foreach (var (type, cond, at) in contract.ThrowEnsures)
+            {
+                if (!IsException(type)) throw new NotTranslated("Spec.EnsuresOnThrow of " + type);
+                l._p.ThrowEnsures.Add((type, l.Spec(cond, null), at));
+                l._p.ExceptionTypes.Add(type);
+            }
             foreach (var e in contract.Ensures)
             {
                 var post = l.Spec(e.Expr, e.ResultParameter);
@@ -162,8 +168,12 @@ namespace CsVerify.Verifier.Boogie
                 IBlockOperation block => ControlFlowGraph.Create(block),
                 _ => throw new NotTranslated("no body"),
             };
-            if (cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions).Any(r => r.Kind != ControlFlowRegionKind.LocalLifetime))
-                throw new NotTranslated("try, catch or finally");
+            // (try and catch: each catch of an exception type the kernel has; not finally, nor filters, yet)
+            foreach (var r in cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions))
+                if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try ||
+                      r.Kind == ControlFlowRegionKind.Catch && (r.ExceptionType == null || IsException(r.ExceptionType))))
+                    throw new NotTranslated(r.Kind == ControlFlowRegionKind.Catch ? "a catch of " + r.ExceptionType : r.Kind.ToString());
+            _cfg = cfg;
             // (a function's definition is its body: not one an override may answer, which is of its contract alone)
             if (_isFunction(_m) && _contract.PureBody != null && !Engine.IsOverridable(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
             var heads = LoopHeads(cfg);
@@ -182,11 +192,79 @@ namespace CsVerify.Verifier.Boogie
             {
                 _block = new KBlock { Label = $"b{b.Ordinal}", Ordinal = b.Ordinal };
                 _p.Blocks.Add(_block);
+                _cfgBlock = b;
                 if (b.Kind == BasicBlockKind.Exit) { _block.Jump = new KStop(); continue; }
                 foreach (var op in b.Operations) Statement(op);
                 Branch(b);
             }
+            if (_exitUsed) _p.Blocks.Add(new KBlock { Label = "x$exit", Ordinal = cfg.Blocks.Length, Stmts = { new KThrowExit() }, Jump = new KStop() });
             return _p;
+        }
+
+        // ------------------------------------------------------------------ exceptions
+
+        private ControlFlowGraph _cfg;
+        private BasicBlock _cfgBlock;
+        private bool _exitUsed;
+        private readonly Dictionary<ControlFlowRegion, string> _dispatch = new Dictionary<ControlFlowRegion, string>();
+
+        /// <summary>The innermost try a region is in (not a handler of it: an exception there goes past it); null if none.</summary>
+        private static ControlFlowRegion TryOf(ControlFlowRegion r)
+        {
+            for (; r != null; r = r.EnclosingRegion)
+            {
+                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndCatch) return r;
+                if (r.Kind == ControlFlowRegionKind.Catch) r = r.EnclosingRegion; // (its TryAndCatch: go on outside it)
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Where an exception thrown in this region goes: its try's handlers, or the method's exit where it has
+        /// EnsuresOnThrow; null where exceptions aren't seen (the path just ends, as in CsVerify's engine).
+        /// </summary>
+        private string ThrowTarget(ControlFlowRegion r)
+        {
+            if (_p.Ghost || _contract.IsPure || _contract.IsLemma || _cfg == null) return null; // (proofs may not throw)
+            var t = TryOf(r);
+            if (t == null)
+            {
+                if (_contract.ThrowEnsures.Count == 0) return null;
+                if (!_exitUsed) Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
+                _exitUsed = true;
+                return "x$exit";
+            }
+            return Dispatch(t);
+        }
+
+        /// <summary>A try's handlers, in order: each catch tests the exception's type; none taken, it goes on outward.</summary>
+        private string Dispatch(ControlFlowRegion tryRegion)
+        {
+            if (_dispatch.TryGetValue(tryRegion, out var label)) return label;
+            label = $"x${tryRegion.FirstBlockOrdinal}";
+            _dispatch[tryRegion] = label;
+            var outer = ThrowTarget(tryRegion.EnclosingRegion.EnclosingRegion ?? tryRegion.EnclosingRegion);
+            var handlers = tryRegion.EnclosingRegion.NestedRegions.Where(x => x.Kind == ControlFlowRegionKind.Catch).ToList();
+            var ex = new KVar("ex$");
+            Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
+            // (handler k: taken where the type matches, else on to the next; past the last, outward)
+            for (int k = 0; k < handlers.Count; k++)
+            {
+                var h = handlers[k];
+                var all = h.ExceptionType == null || h.ExceptionType.ToDisplayString() == "System.Exception";
+                if (!all) _p.ExceptionTypes.Add(h.ExceptionType);
+                var test = all ? (KExpr)new KLit("true") : new KOp("sub", new KOp("dtype", ex), new KLit(TypeConst(h.ExceptionType)));
+                string here = k == 0 ? label : $"{label}$n{k - 1}", take = $"{label}$h{k}", pass = $"{label}$t{k}";
+                if (k > 0) _p.Blocks.Last(x => x.Label == here).Jump = new KGoto(take, pass);
+                else _p.Blocks.Add(new KBlock { Label = here, Ordinal = tryRegion.FirstBlockOrdinal, Jump = new KGoto(take, pass) });
+                _p.Blocks.Add(new KBlock { Label = take, Ordinal = tryRegion.FirstBlockOrdinal, Stmts = { new KAssume { Cond = test } }, Jump = new KGoto($"b{h.FirstBlockOrdinal}") });
+                var next = new KBlock { Label = pass, Ordinal = tryRegion.FirstBlockOrdinal, Stmts = { new KAssume { Cond = new KOp("!", test) } } };
+                _p.Blocks.Add(next);
+                if (k == handlers.Count - 1) next.Jump = outer == null ? new KStop() : new KGoto(outer);
+                else { next.Jump = new KGoto($"{label}$n{k}"); _p.Blocks.Add(new KBlock { Label = $"{label}$n{k}", Ordinal = tryRegion.FirstBlockOrdinal }); }
+            }
+            if (handlers.Count == 0) _p.Blocks.Add(new KBlock { Label = label, Ordinal = tryRegion.FirstBlockOrdinal, Jump = outer == null ? new KStop() : new KGoto(outer) });
+            return label;
         }
 
         /// <summary>
@@ -313,7 +391,7 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
-                        case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": return; // (the contract; the loop heads)
+                        case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": case "EnsuresOnThrow": return; // (the contract; the loop heads)
                         case "Fold": case "Unfold":
                         {
                             var whole = SpecArgument(inv);
@@ -426,9 +504,12 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KAssign { Var = "result", Value = Expr(b.BranchValue) });
             else if (fall?.Semantics == ControlFlowBranchSemantics.Throw || fall?.Semantics == ControlFlowBranchSemantics.Rethrow)
             {
-                // (a path that throws need not meet the postcondition: it ends)
-                if (b.BranchValue != null) Expr(b.BranchValue);
-                _block.Jump = new KStop();
+                // (a path that throws need not meet the postcondition: it ends, or, where exceptions are seen, goes to the
+                // handlers; a rethrow, past this try's)
+                var target = ThrowTarget(b.EnclosingRegion);
+                if (fall.Semantics == ControlFlowBranchSemantics.Throw && b.BranchValue != null)
+                    Emit(new KThrow { Value = Expr(b.BranchValue), Seen = target != null, At = b.BranchValue.Syntax });
+                _block.Jump = target == null ? new KStop() : new KGoto(target);
                 return;
             }
             _block.Jump = To(b, fall?.Destination);
@@ -512,7 +593,11 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Arith(string op, KExpr l, KExpr r, ITypeSymbol type, SyntaxNode at, bool isChecked)
         {
             if (!IsIntegral(type)) throw new NotTranslated("arithmetic on " + type);
-            return new KArith { Op = op, Left = l, Right = r, Type = type, Mode = Mode(at, isChecked), At = at };
+            var mode = Mode(at, isChecked);
+            // (checked overflow, and MinValue / -1, throw an OverflowException: where exceptions are seen, to the handlers)
+            var throwsTo = _cfgBlock != null && (mode == KMode.Checked || op is "/" or "%") && !_codeArith ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
+            if (throwsTo != null) _p.ExceptionTypes.Add(_model.Compilation.GetTypeByMetadataName("System.OverflowException"));
+            return new KArith { Op = op, Left = l, Right = r, Type = type, Mode = mode, At = at, ThrowsTo = throwsTo };
         }
 
         private static string Op(BinaryOperatorKind k) => k switch
@@ -538,6 +623,18 @@ namespace CsVerify.Verifier.Boogie
                 case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
                 case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when !_p.IsCtor:
                     return new KVar("this");
+                // (in a catch: the exception it caught)
+                case ICaughtExceptionOperation _:
+                    return new KVar("ex$");
+                // (a new exception of the library's: its arguments' values aren't kept, only what is in the kernel is checked)
+                case IObjectCreationOperation ne when IsException(ne.Type) && ne.Initializer == null:
+                {
+                    foreach (var a in ne.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation))) Expr(a.Value);
+                    var t = Declare("t$" + _temps++, ne.Type);
+                    _p.ExceptionTypes.Add(ne.Type);
+                    Emit(new KNewExc { Var = t, Type = ne.Type });
+                    return new KVar(t);
+                }
                 case IInstanceReferenceOperation _:
                     throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
                 // (a computed property: its getter, called)
@@ -619,7 +716,7 @@ namespace CsVerify.Verifier.Boogie
         /// objects is reference equality.
         /// </summary>
         private static bool Upcast(IConversionOperation conv) =>
-            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
+            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && IsException(conv.Type) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
 
         private static IOperation Unconverted(IOperation op)
         {
@@ -757,7 +854,9 @@ namespace CsVerify.Verifier.Boogie
             if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
             if (ordered.Any(a => IsView(a.Parameter.Type)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
             var result = callee.ReturnsVoid ? null : Declare("t$" + _temps++, callee.ReturnType);
-            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax,
+            // (where exceptions are seen, a call of what may throw (not a proof) throws, or returns)
+            var throwsTo = _cfgBlock == null || _contractOf?.Invoke(callee) is Contract cc && (cc.IsPure || cc.IsLemma) ? null : ThrowTarget(_cfgBlock.EnclosingRegion);
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = throwsTo,
                              Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).Concat(value == null ? new SyntaxNode[0] : new[] { at }).ToArray(),
                              Result = result, At = call.Syntax, RefOuts = refOuts });
             return result == null ? null : new KVar(result);

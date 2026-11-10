@@ -866,6 +866,7 @@ namespace CsVerify.Verifier
                 translator.Prelude();
                 translator.ContractOf = engine.ContractOf;
                 translator.UsesPermissions = engine.UsesPermissions;
+                translator.ExceptionType = compilation.GetTypeByMetadataName("System.Exception");
                 translator.OverridesOf = m => engine.Fields.Overrides(m);
                 translator.UsesFieldPermissions = engine.UsesPermissions && compilation.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
                     .Any(i => i.Expression.ToString().EndsWith("Acc") && i.ArgumentList.Arguments.Count == 2 && i.ArgumentList.Arguments[1].Expression.ToString().StartsWith("nameof")));
