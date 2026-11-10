@@ -134,7 +134,7 @@ namespace CsVerify.Verifier.Boogie
                             if (!frame.Writers.Any(w => ((KVar)w).Name == v.Name)) frame.Writers.Add(v);
                             break;
                         case KStore _: keeps = false; break;
-                        case KInvoke _: keeps = false; break; // (a delegate may write any array)
+                        case KInvoke _: case KHavocAll _: keeps = false; break; // (a delegate, or unknown code, may write any array)
                         case KCall c: frame.Callees.Add(c.Callee); break;
                         case KNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
                     }

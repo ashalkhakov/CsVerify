@@ -187,7 +187,7 @@ namespace CsVerify.Verifier.Boogie
             // (try and catch: each catch of an exception type the kernel has; not finally, nor filters, yet)
             foreach (var r in cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions))
                 if (_erased.Contains(r) || _erased.Contains(r.EnclosingRegion)) continue;
-                else if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try ||
+                else if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try or ControlFlowRegionKind.TryAndFinally or ControlFlowRegionKind.Finally ||
                       r.Kind == ControlFlowRegionKind.Catch && (r.ExceptionType == null || IsException(r.ExceptionType))))
                     throw new NotTranslated(r.Kind == ControlFlowRegionKind.Catch ? "a catch of " + r.ExceptionType : r.Kind.ToString());
             _cfg = cfg;
@@ -225,6 +225,7 @@ namespace CsVerify.Verifier.Boogie
                 Branch(b);
             }
             if (_exitUsed) _p.Blocks.Add(new KBlock { Label = "x$exit", Ordinal = cfg.Blocks.Length, Stmts = { new KThrowExit() }, Jump = new KStop() });
+            FinallyEnds();
             return _p;
         }
 
@@ -347,6 +348,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndCatch) return r;
                 if (r.Kind == ControlFlowRegionKind.Catch) r = r.EnclosingRegion; // (its TryAndCatch: go on outside it)
+                else if (r.Kind == ControlFlowRegionKind.Finally) r = r.EnclosingRegion;
             }
             return null;
         }
@@ -359,6 +361,16 @@ namespace CsVerify.Verifier.Boogie
         {
             if (_p.Ghost || _contract.IsPure || _contract.IsLemma || _cfg == null) return null; // (proofs may not throw)
             var t = TryOf(r);
+            // (a try with a finally, inside the handlers' try, or with none: the finally runs, then the exception goes on)
+            var f = FinallyTryOf(r);
+            if (f != null && (t == null || IsInside(f, t)))
+            {
+                if (_throughFinally.TryGetValue(f, out var known)) return known;
+                var outer = ThrowTarget(f.EnclosingRegion.EnclosingRegion ?? f.EnclosingRegion);
+                var via = (KGoto)ThroughFinally(f.EnclosingRegion.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Finally), outer == null ? new KStop() : new KGoto(outer), f.FirstBlockOrdinal);
+                Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
+                return _throughFinally[f] = via.Targets[0];
+            }
             if (t == null)
             {
                 if (_contract.ThrowEnsures.Count == 0) return null;
@@ -367,6 +379,26 @@ namespace CsVerify.Verifier.Boogie
                 return "x$exit";
             }
             return Dispatch(t);
+        }
+
+        private readonly Dictionary<ControlFlowRegion, string> _throughFinally = new Dictionary<ControlFlowRegion, string>();
+
+        /// <summary>The innermost try with a finally a region is in (not its finally: an exception there goes past it); null if none.</summary>
+        private ControlFlowRegion FinallyTryOf(ControlFlowRegion r)
+        {
+            for (; r != null; r = r.EnclosingRegion)
+            {
+                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally && !_erased.Contains(r.EnclosingRegion)) return r;
+                if (r.Kind == ControlFlowRegionKind.Finally) r = r.EnclosingRegion;
+            }
+            return null;
+        }
+
+        /// <summary>Is region a inside region b?</summary>
+        private static bool IsInside(ControlFlowRegion a, ControlFlowRegion b)
+        {
+            for (var r = a; r != null; r = r.EnclosingRegion) if (r == b) return true;
+            return false;
         }
 
         /// <summary>A try's handlers, in order: each catch tests the exception's type; none taken, it goes on outward.</summary>
@@ -650,8 +682,8 @@ namespace CsVerify.Verifier.Boogie
                     thenBlock.Stmts.Add(new KAssume { Cond = cond });
                     elseBlock.Stmts.Add(new KAssume { Cond = new KOp("!", cond) });
                 }
-                thenBlock.Jump = To(b, b.ConditionalSuccessor.Destination);
-                elseBlock.Jump = To(b, fall?.Destination);
+                thenBlock.Jump = Edge(b, b.ConditionalSuccessor);
+                elseBlock.Jump = Edge(b, fall);
                 Next(b, b.ConditionalSuccessor.Destination, thenBlock);
                 Next(b, fall?.Destination, elseBlock);
                 _p.Blocks.Add(thenBlock);
@@ -670,7 +702,13 @@ namespace CsVerify.Verifier.Boogie
                 _block.Jump = target == null ? new KStop() : new KGoto(target);
                 return;
             }
-            _block.Jump = To(b, fall?.Destination);
+            // (the end of a finally: on to where whatever ran it was going)
+            if (fall?.Semantics == ControlFlowBranchSemantics.StructuredExceptionHandling && FinallyOf(b.EnclosingRegion) is ControlFlowRegion fin)
+            {
+                _finEnds.Add((fin, _block));
+                return;
+            }
+            _block.Jump = Edge(b, fall);
             Next(b, fall?.Destination, _block);
         }
 
@@ -679,6 +717,63 @@ namespace CsVerify.Verifier.Boogie
         {
             if (to != null && _forEachAt.TryGetValue(to.Ordinal, out var fe) && from.Ordinal >= fe.Head)
                 edge.Stmts.Add(new KAssign { Var = fe.Index, Value = new KOp("+", new KVar(fe.Index), new KLit("1")) });
+        }
+
+        // ------------------------------------------------------------------ finally
+
+        /// <summary>Each finally's ways on: by the number its continuation variable holds, where to go after it.</summary>
+        private readonly Dictionary<ControlFlowRegion, List<(int id, KJump then)>> _finExits = new Dictionary<ControlFlowRegion, List<(int, KJump)>>();
+        private readonly List<(ControlFlowRegion fin, KBlock end)> _finEnds = new List<(ControlFlowRegion, KBlock)>();
+        private int _edges;
+
+        /// <summary>The finally a block is in (not one of a foreach's enumerator, which isn't there).</summary>
+        private ControlFlowRegion FinallyOf(ControlFlowRegion r)
+        {
+            for (; r != null; r = r.EnclosingRegion)
+                if (r.Kind == ControlFlowRegionKind.Finally) return _erased.Contains(r.EnclosingRegion) ? null : r;
+            return null;
+        }
+
+        private string Continuation(ControlFlowRegion fin) => Declare($"fin${fin.FirstBlockOrdinal}", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+
+        /// <summary>Runs this finally, then goes on as given.</summary>
+        private KJump ThroughFinally(ControlFlowRegion fin, KJump then, int ordinal)
+        {
+            if (!_finExits.TryGetValue(fin, out var exits)) _finExits[fin] = exits = new List<(int, KJump)>();
+            var id = exits.Count;
+            exits.Add((id, then));
+            var label = $"e${_edges++}";
+            _p.Blocks.Add(new KBlock { Label = label, Ordinal = ordinal, Stmts = { new KAssign { Var = Continuation(fin), Value = new KLit(id.ToString()) } }, Jump = new KGoto($"b{fin.FirstBlockOrdinal}") });
+            return new KGoto(label);
+        }
+
+        /// <summary>A way out of a block: through the finallies it leaves (innermost first), then to where it goes.</summary>
+        private KJump Edge(BasicBlock from, ControlFlowBranch branch)
+        {
+            var target = To(from, branch?.Destination);
+            if (branch == null) return target;
+            var fins = branch.FinallyRegions.Where(f => !_erased.Contains(f.EnclosingRegion)).ToList();
+            for (int k = fins.Count - 1; k >= 0; k--) target = ThroughFinally(fins[k], target, from.Ordinal);
+            return target;
+        }
+
+        /// <summary>Each finally's end: to each way on, where its continuation says (nowhere, if nothing runs it).</summary>
+        private void FinallyEnds()
+        {
+            foreach (var (fin, end) in _finEnds)
+            {
+                var exits = _finExits.TryGetValue(fin, out var x) ? x : new List<(int id, KJump then)>();
+                if (exits.Count == 0) { end.Jump = new KStop(); continue; }
+                var v = Continuation(fin);
+                var labels = new List<string>();
+                foreach (var (id, then) in exits)
+                {
+                    var label = $"{end.Label}$f{id}";
+                    labels.Add(label);
+                    _p.Blocks.Add(new KBlock { Label = label, Ordinal = end.Ordinal, Stmts = { new KAssume { Cond = new KOp("==", new KVar(v), new KLit(id.ToString())) } }, Jump = then });
+                }
+                end.Jump = new KGoto(labels.ToArray());
+            }
         }
 
         /// <summary>A jump to a block, or a return where it is to the exit.</summary>
@@ -910,6 +1005,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IInvocationOperation call:
                     return Call(call);
+                case IIsNullOperation isNull:
+                    return new KOp("==", Expr(Unconverted(isNull.Operand)), new KLit("null"));
                 case IDelegateCreationOperation cd when Contracted(cd.Type) && LambdaOf(cd.Target) != null:
                 {
                     // (a lambda made a delegate with a contract: proved against it on its own; here, a new reference)
@@ -1039,6 +1136,20 @@ namespace CsVerify.Verifier.Boogie
             }
             if (call.TargetMethod.MethodKind == MethodKind.DelegateInvoke) return DelegateCall(call);
             if (IsList(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
+            // (IDisposable.Dispose of a class's object, as using calls it: that class's Dispose runs, its contract a
+            // library interface's, so what it does isn't known: anything, as for a delegate)
+            if (call.TargetMethod.ContainingType.ToDisplayString() == "System.IDisposable" && call.TargetMethod.Name == "Dispose" && call.Instance != null &&
+                IsClass(Unconverted(call.Instance).Type))
+            {
+                DelegatesHere("a call of Dispose");
+                if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a call of Dispose where exceptions are seen");
+                Expr(Unconverted(call.Instance));
+                _p.HavocsAll = true;
+                _p.CallsDelegates = true;
+                Emit(new KHavocAll());
+                ForgetCaptured();
+                return null;
+            }
             var callee = call.TargetMethod.OriginalDefinition;
             if (StringEquals(call) is (IOperation ea, IOperation eb))
             {

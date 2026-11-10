@@ -37,7 +37,7 @@ public static class A
     public static void Assertion(int x) { Spec.Requires(x > 3); Spec.Assert(x > 4); }
     public static int BadInv(int n) { Spec.Requires(n >= 0 && n < 100); int i = 0; while (i < n) { Spec.Invariant(i < n); i++; } return i; }
     public static int BadPost(int x) { Spec.Ensures<int>(r => r > x); return x; }
-    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); int y = 0; try { y = x; } finally { y = y + 0; } return y; }
+    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); int y = 0; try { y = x; } catch (System.Exception) when (x > 0) { y = x; } return y; }
     public static void Fill(int[] a, int v) { Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length && Spec.Forall(0, i, k => a[k] == v)); a[i] = v; } }
     public static int First(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
     public static int FirstBad(int[] a) => a[0];
@@ -457,6 +457,113 @@ public static class Ls
                 Assert.True(b[good].Verified, good);
         }
 
+        private const string Finally = @"public sealed class Res : IDisposable
+{
+    public bool Open;
+    public Res() { Spec.Ensures(Open); Open = true; }
+    public void Dispose() { Spec.Ensures(!Open); Open = false; }
+}
+public static class Fin
+{
+    public static int Digit(char c)
+    {
+        Spec.Ensures((int r) => 0 <= r && r <= 9);
+        Spec.EnsuresOnThrow<ArgumentException>(true);
+        if (c < '0' || c > '9') throw new ArgumentException(""x"");
+        return c - '0';
+    }
+    public static int Marks(bool[] done, char c)
+    {
+        Spec.Requires(done.Length == 1);
+        Spec.Ensures((int r) => done[0]);
+        Spec.EnsuresOnThrow<Exception>(done[0]);
+        done[0] = false;
+        try { return Digit(c); }
+        finally { done[0] = true; }
+    }
+    public static int Forgets(bool[] done, char c)
+    {
+        Spec.Requires(done.Length == 1);
+        Spec.EnsuresOnThrow<Exception>(done[0]);
+        done[0] = false;
+        try { return Digit(c); }
+        finally { done[0] = done[0]; }
+    }
+    public static int Undoes(int[] a)
+    {
+        Spec.Requires(a.Length == 1);
+        Spec.Ensures((int r) => a[0] == 1);
+        try { a[0] = 1; return 3; }
+        finally { a[0] = 2; }
+    }
+    public static int Nested(int[] a, char c)
+    {
+        Spec.Requires(a.Length == 2);
+        Spec.Ensures((int r) => a[0] == 1 && a[1] == 1);
+        try
+        {
+            try { return Digit(c); }
+            catch (ArgumentException) { return -1; }
+            finally { a[0] = 1; }
+        }
+        finally { a[1] = 1; }
+    }
+    public static int Loop(int[] a)
+    {
+        Spec.Requires(a.Length == 1);
+        Spec.Ensures((int r) => a[0] == 7);
+        int i = 0;
+        while (i < 10)
+        {
+            Spec.Invariant(0 <= i && i <= 10);
+            try { if (i == 5) break; i++; }
+            finally { a[0] = 7; }
+        }
+        a[0] = 7;
+        return i;
+    }
+    public static int ResultKept()
+    {
+        Spec.Ensures((int r) => r == 1);
+        int x = 1;
+        try { return x; }
+        finally { x = 2; }
+    }
+    public static bool Uses()
+    {
+        Spec.Ensures((bool r) => r);
+        var r = new Res();
+        bool was;
+        using (r) { was = r.Open; }
+        return was && !r.Open;
+    }
+    public static bool UsesBad()
+    {
+        Spec.Ensures((bool r) => r);
+        var r = new Res();
+        using (r) { }
+        return r.Open;
+    }
+    public static int UsingVar()
+    {
+        using var r = new Res();
+        Spec.Assert(r.Open);
+        return 1;
+    }
+}
+";
+
+        [Fact]
+        public void FinallyAndUsing_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Finally) }, o));
+            Assert.Equal(11, Agree(c, b));
+            foreach (var bug in new[] { "Fin.Forgets", "Fin.Undoes", "Fin.Uses", "Fin.UsesBad" })
+                Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Fin.Digit", "Fin.Marks", "Fin.Nested", "Fin.Loop", "Fin.ResultKept", "Fin.UsingVar", "Res..ctor" })
+                Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void ForEachAndDelegates_BothEnginesReportTheSame()
         {
@@ -542,8 +649,8 @@ public static class Ls
             var only = new VerifierOptions();
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
-            Assert.Equal(10, Agree(c, b));
-            foreach (var good in new[] { "Digit", "DigitOrMinusOne", "SaturatingSum", "Update" })
+            Assert.Equal(11, Agree(c, b));
+            foreach (var good in new[] { "Digit", "DigitOrMinusOne", "SaturatingSum", "Update", "Guarded" })
                 Assert.True(b["ExceptionSamples." + good].Verified, good);
             foreach (var bug in new[] { "AtLeastOne", "NoRollback", "WrongKind", "ThrowsNull" })
                 Assert.False(b["ExceptionBugs." + bug].Verified, bug);

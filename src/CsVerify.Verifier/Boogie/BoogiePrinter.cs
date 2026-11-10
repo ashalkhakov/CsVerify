@@ -278,6 +278,16 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>A call of code whose contract isn't known: anything may change (but what's allocated stays so).</summary>
+        public void Havoc(ISet<string> maps)
+        {
+            var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
+            Line("procedure $havoc();");
+            if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
+            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+            Line($"  free ensures {InRangeOfMemory};");
+        }
+
         // ------------------------------------------------------------------ exceptions
 
         private int _forks;
@@ -641,6 +651,9 @@ namespace CsVerify.Verifier.Boogie
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
+                case KHavocAll _:
+                    Line("    call $havoc();");
+                    return;
                 case KInvoke iv:
                     Line($"    call {(iv.Result == null ? "" : iv.Result + " := ")}$call.{iv.Key}({string.Join(", ", new[] { iv.Delegate }.Concat(iv.Args).Select(x => E(x, cx)))});");
                     return;

@@ -411,7 +411,18 @@ from Roslyn's base types, reflexive and transitive), and every type derives from
 - Where nothing sees an exception (no enclosing `catch`, no `EnsuresOnThrow`), a throw ends the path, as in
   CsVerify's engine; proofs (lemmas, `[Pure]` and ghost code) never throw.
 
-Not yet: `finally`, exception filters (`when`), `using`, `lock`, and reading an exception's members.
+- A `finally` runs on every way out of its `try`: each edge that leaves it (a fall-through, a `return`, a `break`, a
+  jump out of a loop) sets the finally's continuation `fin$`*n* to a number of its own and goes to the finally; the
+  finally's end goes on, by that number, to where the edge was going (through the next finally out, for nested ones). A
+  throw in the `try` runs it too, then goes on outward (to the handlers around it, the method's exit, or nowhere);
+  inside a `try` with a `finally`, exceptions are seen, so calls and checked arithmetic fork as they do in a `try` with
+  catches. A `return`'s value is kept before the finally runs.
+- `using` is its `try`/`finally`: the resource disposed if it isn't null. A program class may implement `IDisposable`;
+  its `Dispose` called through the interface, as `using` calls it, is code whose contract isn't known (its contract is
+  partly the library interface's), so it may change anything (`$havoc`), as for a delegate. (CsVerify's engine forgets
+  only what `Dispose` writes; the diagnostics are the same where that doesn't matter.)
+
+Not yet: exception filters (`when`), `lock`, and reading an exception's members.
 
 **foreach.** A `foreach` over a one-dimensional array or a string is what C# compiles it to: the collection
 evaluated once into `fe$`*n*`$a` (its length read, so a null one is CSV1013), an index `fe$`*n*`$i` from 0, the head's
@@ -538,15 +549,16 @@ Also strings and the string members with stub contracts, and quantifiers in code
 Also inheritance: base classes, virtual, abstract and override methods, interfaces, properties with code, and
 `Spec.Reads`.
 
-Also exceptions: `throw`, `try`/`catch` by type, rethrow, caught checked overflow, `Spec.EnsuresOnThrow`.
+Also exceptions: `throw`, `try`/`catch` by type, rethrow, `finally`, `using`, caught checked overflow, `Spec.EnsuresOnThrow`.
 
 Also `List<T>` with its model and stub contracts, `foreach` over arrays, strings and lists, `Spec.Index`, and delegates: `Func` and `Action` values with `Spec.Pre`,
 `Spec.Post`, `Spec.Total`, `Spec.ChangesNothing`, `Spec.Reads`, `Spec.ReadsOf`, `Spec.Changes`, calls of them,
 lambdas and method groups; delegate types with contracts.
 
-Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics, string members without stubs, collections,
-collections other than lists (dictionaries, sets, interfaces' lists, queries), `finally`, exception filters, `using`, a method that assigns a parameter, ghost types (`Seq`, `Map`, `Bag`), async, locks and threads, LINQ, and
-library calls with stub contracts.
+Not yet (such a method is verified by CsVerify's engine): ownership trees, shares, records (data types), generics,
+string members without stubs, collections other than lists (dictionaries, sets, interfaces' lists, queries),
+exception filters, a method that assigns a parameter, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
+and threads, LINQ, and library calls with stub contracts other than strings' and lists'.
 
 ## How it's checked
 
@@ -565,7 +577,7 @@ The subset grows a construct at a time, each under the same comparison, until Cs
    models (done: `List` and `Seq`; next: `Dictionary`, `HashSet`, `Map`, `Bag`), and the ghost types;
 3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,
    method groups, delegate types with contracts, `foreach` over lists; next: over dictionaries, sets, interfaces' lists);
-4. exceptions (done: `throw`, `try`/`catch`, rethrow, `Spec.EnsuresOnThrow`; next: `finally`, filters, `using`);
+4. exceptions (done: `throw`, `try`/`catch`, rethrow, `finally`, `using`, `Spec.EnsuresOnThrow`; next: filters);
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of

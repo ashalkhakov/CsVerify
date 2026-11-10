@@ -322,6 +322,7 @@ namespace CsVerify.Verifier.Boogie
             var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);
             var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
             _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
+            if (_pending.Any(p => p.HavocsAll)) _printer.Havoc(_allMaps);
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KCallFrame>().Where(f => !f.After))

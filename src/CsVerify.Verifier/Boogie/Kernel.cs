@@ -373,6 +373,9 @@ namespace CsVerify.Verifier.Boogie
         public bool NotAssumedAfter;
     }
 
+    /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
+    internal sealed class KHavocAll : KStmt { }
+
     internal sealed class KAssert : KStmt
     {
         public KExpr Cond;
@@ -477,6 +480,8 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
         public bool CallsDelegates;
+        /// <summary>It calls code whose contract isn't known ($havoc).</summary>
+        public bool HavocsAll;
         /// <summary>The library's members it calls (list members, by their stub contracts), and the kinds of lists whose models it names.</summary>
         public HashSet<IMethodSymbol> LibCalls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         public HashSet<string> ListKeys = new HashSet<string>();
