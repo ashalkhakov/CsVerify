@@ -37,7 +37,7 @@ public static class A
     public static void Assertion(int x) { Spec.Requires(x > 3); Spec.Assert(x > 4); }
     public static int BadInv(int n) { Spec.Requires(n >= 0 && n < 100); int i = 0; while (i < n) { Spec.Invariant(i < n); i++; } return i; }
     public static int BadPost(int x) { Spec.Ensures<int>(r => r > x); return x; }
-    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); int y = 0; try { y = x; } catch (System.Exception) when (x > 0) { y = x; } return y; }
+    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); double d = 0.5; int y = x; if (d > 1.0) y = 0; return y; }
     public static void Fill(int[] a, int v) { Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length && Spec.Forall(0, i, k => a[k] == v)); a[i] = v; } }
     public static int First(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
     public static int FirstBad(int[] a) => a[0];
@@ -824,7 +824,7 @@ public static class Pw
             // throw, try/catch by type, rethrow, checked overflow caught, EnsuresOnThrow: by Boogie, as CsVerify's engine says
             var root = Harness.RepoRoot();
             var files = new[] { Path.Combine(root, "samples", "Good", "Exceptions.cs"), Path.Combine(root, "samples", "Buggy", "ExceptionBugs.cs") };
-            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
             var only = new VerifierOptions();
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
@@ -841,7 +841,7 @@ public static class Pw
             // records as data types (patterns, switches, casts, ranks, invariants), generic data and generic methods
             var root = Harness.RepoRoot();
             var files = new[] { Path.Combine(root, "samples", "Good", "DataTypes.cs"), Path.Combine(root, "samples", "Buggy", "DataBugs.cs") };
-            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
             var only = new VerifierOptions();
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
@@ -860,7 +860,7 @@ public static class Pw
             var root = Harness.RepoRoot();
             var files = new[] { "Good/LockLevels.cs", "Buggy/LockLevelBugs.cs", "Good/AtomicFields.cs", "Buggy/AtomicBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
-            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
             var only = new VerifierOptions();
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
@@ -878,7 +878,7 @@ public static class Pw
             var root = Harness.RepoRoot();
             var files = new[] { "Good/OwnedList.cs", "Good/AtsViewtypes.cs", "Buggy/TreeOwnershipBugs.cs", "Buggy/ViewtypeBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
-            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
             var only = new VerifierOptions();
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
@@ -896,7 +896,7 @@ public static class Pw
             var root = Harness.RepoRoot();
             var files = new[] { "Good/Shares.cs", "Buggy/ShareBugs.cs", "Good/Packages.cs", "Buggy/PackageBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
-            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+            var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
             var only = new VerifierOptions();
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
@@ -1203,6 +1203,133 @@ public static class Pk
             Assert.False(r["Pk.Wrong"].Verified);
         }
 
+        // arrays of objects, of strings, and null patterns of references
+        private const string ObjectArrays = @"
+public sealed class N { public int V; public N? Next; }
+public abstract class Sh { [Pure] public abstract long Area(); }
+public sealed class Sq : Sh
+{
+    public readonly int Side;
+    [Invariant, Pure] public bool Valid() => Side >= 0 && Side <= 1000;
+    public Sq(int side) { Spec.Requires(side >= 0 && side <= 1000); Spec.Ensures(Side == side); Side = side; }
+    [Pure] public override long Area() { Spec.Ensures((long r) => r >= 0); return (long)Side * Side; }
+}
+public static class Ar
+{
+    public static int A(N? n) { if (n is null) return 0; return n.V; }
+    public static int B(N? n) { if (n is not null) return n.V; return 0; }
+    public static int C(N? n) { if (n is { } m) return m.V; return 0; }
+    public static int D(N? n) { if (n is N m) return m.V; return 0; }
+    public static int E(N? n) { if (n is not { } m) return n!.V; return m.V; }
+    public static int F(string?[] xs) { Spec.Requires(xs.Length > 0); return xs[0] is null ? 0 : xs[0]!.Length; }
+    public static int G(N?[] xs) { Spec.Requires(xs.Length > 0); return xs[0]!.V; }
+    public static void H(N[] xs, N y) { Spec.Requires(xs.Length > 1); xs[0] = y; Spec.Assert(xs[0] == y); Spec.Assert(xs[1] == y); }
+    public static N?[] Mk() { Spec.Ensures((N?[] r) => r.Length == 2); var a = new N?[2]; Spec.Assert(a[0] == null); return a; }
+    public static long Total(Sh[] shapes)
+    {
+        Spec.Requires(Spec.Forall(0, shapes.Length, i => shapes[i] != null));
+        long total = 0;
+        for (int i = 0; i < shapes.Length; i++)
+        {
+            Spec.Invariant(0 <= i && i <= shapes.Length && total >= 0);
+            total = checked(total + shapes[i].Area());
+        }
+        return total;
+    }
+    public static long Unchecked(Sh[] shapes) { Spec.Requires(shapes.Length > 0); return shapes[0].Area(); }
+    public static int Count(string[] words)
+    {
+        int n = 0;
+        foreach (var w in words) { Spec.Invariant(n >= 0); if (w is not null && w.Length > 0 && n < int.MaxValue) n++; }
+        return n;
+    }
+    public static long Made() { var s = new Sh[] { new Sq(3), new Sq(4) }; return Total(s); }
+}
+";
+
+        [Fact]
+        public void ObjectArrays_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + ObjectArrays) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 15, "by Boogie: " + string.Join(", ", boogie));
+            var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
+            foreach (var bug in new[] { "Ar.E", "Ar.G", "Ar.H", "Ar.Total", "Ar.Unchecked" })
+                Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
+            foreach (var good in new[] { "Ar.A", "Ar.B", "Ar.C", "Ar.D", "Ar.F", "Ar.Mk", "Ar.Count", "Ar.Made" })
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+        }
+
+        // exception filters, multisets, collections keyed by strings, Keys and Values, collections through their interfaces
+        private const string Collections5 = @"
+using System.Collections.Generic;
+public sealed class E1 : Exception { }
+public static class Fl
+{
+    static void Thr(int c) { if (c > 0) throw new E1(); }
+    public static int A(int c) { Spec.Ensures((int r) => r == 0 || r == 1 || r == 2); try { Thr(c); return 0; } catch (E1) when (c > 5) { return 1; } catch (E1) { return 2; } }
+    public static int B(int c) { Spec.Ensures((int r) => r == 0 || r == 1); try { Thr(c); return 0; } catch (E1) when (c > 5) { return 1; } catch (Exception) { return 3; } }
+    public static int C(int c, int[] a) { Spec.Ensures((int r) => r >= 0); try { Thr(c); return 0; } catch (E1) when (a[0] > 0) { return 1; } catch (E1) { return 2; } }
+    public static int D(int c) { Spec.Ensures((int r) => r == 1); try { Thr(c); return 1; } catch (E1) when (c > 5) { return 1; } }
+}
+public static class Ms
+{
+    static void Sw(int[] a, int i, int j) { Spec.Requires(0 <= i && i < a.Length && 0 <= j && j < a.Length); Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length))); int t = a[i]; a[i] = a[j]; a[j] = t; }
+    static void Bad(int[] a, int i, int j) { Spec.Requires(0 <= i && i < a.Length && 0 <= j && j < a.Length); Spec.Ensures(Spec.Multiset(a, a.Length) == Spec.Old(Spec.Multiset(a, a.Length))); a[i] = a[j]; }
+    static void Out(int[] a, int n) { Spec.Requires(0 <= n && n < a.Length); var before = Ghost.Of(Spec.Multiset(a, n).Count(0)); a[n] = 42; Spec.Assert(Spec.Multiset(a, n).Count(0) == before.Value); }
+    static void Conc() { var a = new[] { 2, 7, 2 }; Spec.Assert(Spec.Multiset(a, 3).Count(2) == 2 && Spec.Multiset(a, 3).Count(5) == 0); Spec.Assert(Spec.Multiset(a, 3) == Bag.Of(7).Add(2).Add(2)); }
+    static void Wd(int[] a) { Spec.Requires(Spec.Multiset(a, a.Length + 1).Count(0) == 0); }
+    static void Un(int[] a) { Spec.Requires(a.Length == 2); Spec.Assert(Spec.Multiset(a, 2) == Bag.Of(a[0]).Union(Bag.Of(a[1]))); Spec.Assert(Spec.Multiset(a, 2).Contains(a[1])); }
+}
+public static class Sk
+{
+    public static int Lookup(Dictionary<string, int> d, string key) => d[key];
+    public static int Safe(Dictionary<string, int> d, string key) { if (d.ContainsKey(key)) return d[key]; return 0; }
+    public static void Put(Dictionary<string, int> d) { d[""a""] = 1; Spec.Assert(d.ContainsKey(""a"")); Spec.Assert(d[""a""] == 1); }
+    public static void Two(Dictionary<string, int> d, string x) { Spec.Requires(x == ""a""); d[""a""] = 1; Spec.Assert(d[x] == 1); }
+    public static void Other(Dictionary<string, int> d, string x) { d[""a""] = 1; Spec.Assert(d[x] == 1); }
+    public static void Set(HashSet<string> s) { s.Add(""x""); Spec.Assert(s.Contains(""x"")); Spec.Assert(s.Contains(""y"")); }
+    public static void Cnt() { var e = new Dictionary<string, int>(); e[""k""] = 1; e[""k""] = 2; Spec.Assert(e.Count == 1); Spec.Assert(e[""k""] == 2); }
+}
+public static class Kv
+{
+    public static void KeysAdd(Dictionary<int, int> d) { foreach (var k in d.Keys) { d[k + 1000] = 0; } }
+    public static void KeysAssign(Dictionary<string, int> d) { foreach (var k in d.Keys) { d[k] = 0; } }
+    public static void KeysRemove(Dictionary<int, int> d) { foreach (var k in d.Keys) { d.Remove(k); } }
+    public static int Count(Dictionary<int, int> d) { Spec.Ensures<int>(r => r == d.Count); return d.Keys.Count; }
+    public static int Has(Dictionary<int, int> d) { foreach (var k in d.Keys) { Spec.Assert(d.ContainsKey(k)); return d[k]; } return 0; }
+}
+public static class Qi
+{
+    public static int First(IReadOnlyList<int> xs) { Spec.Requires(xs.Count > 0); return xs[0]; }
+}
+public static class Il
+{
+    public static int List() { var l = new List<int>(); l.Add(4); return Qi.First(l); }
+    public static int Array() { var a = new int[] { 1, 2 }; return Qi.First(a); }
+    public static int Kept(List<int> l) { Spec.Requires(l.Count == 1 && l[0] == 7); Spec.Ensures<int>(r => r == 7); IReadOnlyList<int> xs = l; return xs[0]; }
+    public static int Stable(IReadOnlyList<int> xs) { Spec.Requires(xs.Count > 0); var a = xs[0]; Spec.Assert(a == xs[0]); return a; }
+    public static int Mutable(IList<int> xs) { Spec.Requires(xs.Count > 1); return xs[1]; }
+    public static int Empty() { var l = new List<int>(); return Qi.First(l); }
+    public static int Unchecked(IReadOnlyList<int> xs) => xs[0];
+    public static int Aliased(List<int> l, IReadOnlyList<int> xs) { Spec.Requires(xs.Count > 0); Spec.Modifies(ObjSet.Of(l)); l.Clear(); return xs[0]; }
+}
+";
+
+        [Fact]
+        public void Collections_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Collections5) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 32, "by Boogie: " + string.Join(", ", boogie));
+            var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
+            foreach (var bug in new[] { "Fl.B", "Fl.C", "Ms.Bad", "Ms.Wd", "Sk.Lookup", "Sk.Other", "Sk.Set", "Kv.KeysAdd", "Il.Empty", "Il.Unchecked", "Il.Aliased" })
+                Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
+            foreach (var good in new[] { "Fl.A", "Fl.D", "Ms.Sw", "Ms.Out", "Ms.Conc", "Ms.Un", "Sk.Safe", "Sk.Put", "Sk.Two", "Sk.Cnt", "Kv.KeysAssign", "Kv.KeysRemove",
+                                         "Kv.Count", "Kv.Has", "Qi.First", "Il.List", "Il.Array", "Il.Kept", "Il.Stable", "Il.Mutable" })
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+        }
+
         [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
@@ -1220,7 +1347,7 @@ public static class Pk
                 // (Boogie's methods, then those alone by CsVerify's engine)
                 // (Boogie's time limit long enough for a loaded machine, where Z3 giving up reads as a failure: this compares
                 // what the engines say, not how fast; CsVerify's engine retries a query that runs out of time)
-                var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 60000 });
+                var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
                 var only = new VerifierOptions();
                 only.Only.AddRange(b.Methods.Select(m => m.Name));
                 var c = Engine.VerifyFiles(files, only);

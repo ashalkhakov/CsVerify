@@ -141,9 +141,13 @@ namespace CsVerify.Verifier.Boogie
         /// A [Pure] or [GhostFunction] method with a single expression for its body: a Boogie function too, which
         /// specifications call (as Dafny's functions, with fuel: one unfolding per use, as CsVerify's engine).
         /// </summary>
-        /// <summary>(an abstract [Pure] member too, of its contract alone; and a virtual one, which an override may answer: of its contract alone)</summary>
+        /// <summary>
+        /// (an abstract [Pure] member too, of its contract alone; and a virtual one, which an override may answer: of its
+        /// contract alone; and one whose body is more than an expression, of its contract alone, as CsVerify's engine has
+        /// it: its procedure proves the contract, and gives the function's value)
+        /// </summary>
         private bool IsFunction(IMethodSymbol m) => _procedures.Contains(m.OriginalDefinition) && !SpecSymbols.IsPredicate(m.OriginalDefinition) &&
-                                                     ContractOf?.Invoke(m) is Contract c && Pure(m, c) && (c.PureBody != null || m.IsAbstract);
+                                                     ContractOf?.Invoke(m) is Contract c && Pure(m, c) && (c.PureBody != null || m.IsAbstract || !m.ReturnsVoid && m.DeclaringSyntaxReferences.Length > 0);
 
         /// <summary>[Pure]: the method, or (a getter) its property.</summary>
         private static bool Pure(IMethodSymbol m, Contract c) => c.IsPure || m.MethodKind == MethodKind.PropertyGet && m.AssociatedSymbol != null && SpecSymbols.IsPure(m.AssociatedSymbol);
@@ -195,16 +199,18 @@ namespace CsVerify.Verifier.Boogie
             (IMethodSymbol, int[])? over = null;
             try
             {
-                // (static, its precondition holding one instance, whose arguments are its parameters, each once)
+                // (static, its precondition holding one instance, whose arguments are its parameters, each once; its
+                // other parameters (an index) not of the instance: -1)
                 if (f.IsStatic && IsFunction(f) && ContractOf(f).Requires.Any(Lowering.HasAtoms))
                 {
                     var sig = ((IProgramFacts)this).Signature(f);
                     var atoms = sig.Requires.SelectMany(r => AtomsOf(r.Expr)).ToList();
-                    if (atoms.Count == 1 && atoms[0] is KInst q && q.Args.All(a => a is KVar) && q.Args.Length == f.Parameters.Length)
+                    if (atoms.Count == 1 && atoms[0] is KInst q && q.Args.All(a => a is KVar))
                     {
                         var names = q.Args.Select(a => ((KVar)a).Name).ToList();
                         var map = f.Parameters.Select(x => names.IndexOf(Local(x))).ToArray();
-                        if (map.All(j => j >= 0) && map.Distinct().Count() == map.Length) over = (q.Pred, map);
+                        var used = map.Where(j => j >= 0).ToList();
+                        if (used.Distinct().Count() == used.Count && used.Count == names.Count && names.Distinct().Count() == names.Count) over = (q.Pred, map);
                     }
                     if (over == null) throw new NotTranslated("a function over a predicate, of other than one instance of its parameters");
                 }
@@ -340,6 +346,7 @@ namespace CsVerify.Verifier.Boogie
                 .Concat(models.Select(m => m.Name)).Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).ToHashSet();
             var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);
             var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
+            _printer.UsesState |= _pending.Any(p => p.UsesState);
             _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
             if (_pending.Any(p => p.HavocsAll)) _printer.Havoc(_allMaps);
             if (_pending.Any(p => p.Awaits)) _printer.Await(_allMaps);
@@ -368,12 +375,12 @@ namespace CsVerify.Verifier.Boogie
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cells", Raw = "[Ref][int]real" });
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cowner", Raw = "[Ref][int]Inst" });
                         foreach (var map in frame.ElementMaps)
-                            p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = map == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int" });
+                            p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = "[Ref][int]" + ElementValue(map) });
                     }
                     // (and the globals its postconditions read as they were)
                     foreach (var g in frame.OldGlobals.Where(g => !p.Locals.Any(l => l.Name == $"s{frame.Id}{g}")).ToList())
                     {
-                        var raw = g.StartsWith("$E.") ? (g == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int")
+                        var raw = g.StartsWith("$E.") ? ("[Ref][int]" + ElementValue(g))
                                 : fields.FirstOrDefault(f => FieldMap(f) == g) is ISymbol fs ? $"[Ref]{TypeOf(FieldType(fs))}" : null;
                         if (raw != null) p.Locals.Add(new KLocal { Name = $"s{frame.Id}{g}", Raw = raw });
                     }
@@ -400,7 +407,7 @@ namespace CsVerify.Verifier.Boogie
                     if (frame.Maps.Count == 0) continue;
                     p.Locals.Add(new KLocal { Name = $"s${frame.Head}$Alloc", Raw = "[Ref]bool" });
                     foreach (var map in frame.Maps)
-                        p.Locals.Add(new KLocal { Name = $"s${frame.Head}{map}", Raw = map == ElementMap(SpecialType.System_Boolean) ? "[Ref][int]bool" : "[Ref][int]int" });
+                        p.Locals.Add(new KLocal { Name = $"s${frame.Head}{map}", Raw = "[Ref][int]" + ElementValue(map) });
                 }
             // the exception types named, and how they derive
             var exceptions = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.ExceptionTypes).Concat(_signatures.Values.SelectMany(s => s.ExceptionTypes)), SymbolEqualityComparer.Default);
@@ -518,7 +525,12 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void OwnArrays()
         {
-            var functions = _pending.Where(p => p.FunctionBody != null && !p.IsPredicate && OverPredicate(p.Method) == null).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            // (and a function of its contract alone whose body reads nothing of the memory: no array, no field, calling only
+            // such functions or mathematics; its procedure's value is then of its arguments alone too)
+            bool ReadsNothing(IMethodSymbol m) => m.IsStatic && !m.IsAbstract && !Engine.IsOverridable(m) && m.Parameters.All(x => Scalar(x.Type)) && FieldsOf(m).Count == 0 &&
+                m.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).All(d => !d.DescendantNodes().Any(n => n is ElementAccessExpressionSyntax || n is ObjectCreationExpressionSyntax ||
+                    n is InvocationExpressionSyntax inv && !(inv.Expression.ToString().StartsWith("Spec.") || inv.Expression.ToString().StartsWith("Math."))));
+            var functions = _pending.Where(p => (p.FunctionBody != null || IsFunction(p.Method) && ReadsNothing(p.Method)) && !p.IsPredicate && OverPredicate(p.Method) == null).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             var own = functions.Keys.ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             List<(int arg, string param, string map)> Of(IMethodSymbol m) =>
                 m.Parameters.Where(x => IsArray(x.Type)).Select(x => (x.Ordinal + (m.IsStatic ? 0 : 1), Local(x), Elements(x.Type))).ToList();
@@ -537,7 +549,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var p in functions.Values.Where(p => own.Contains(p.Method)).ToList())
                 {
                     var mine = Of(p.Method).Select(o => o.param).ToHashSet();
-                    if (!new[] { p.FunctionBody }.Concat(p.Requires.Select(r => r.Expr)).Concat(p.Ensures.Select(x => x.Expr)).All(x => Reads(x, mine)))
+                    if (!new[] { p.FunctionBody }.Where(x => x != null).Concat(p.Requires.Select(r => r.Expr)).Concat(p.Ensures.Select(x => x.Expr)).All(x => Reads(x, mine)))
                     {
                         own.Remove(p.Method);
                         shrank = true;
@@ -557,6 +569,8 @@ namespace CsVerify.Verifier.Boogie
             var edges = _pending.ToDictionary(p => p.Method, p => p.Calls.ToList(), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             foreach (var p in _pending.Where(p => p.Method.IsVirtual || p.Method.IsAbstract || p.Method.IsOverride))
             {
+                // (a [Pure] member whose every override is [Pure] too: no call of it writes anything, whichever runs)
+                if (IsFunction(p.Method) && OverridesOf(p.Method).All(o => ContractOf(o.OriginalDefinition) is Contract oc && oc.IsPure)) continue;
                 foreach (var o in OverridesOf(p.Method).Select(o => o.OriginalDefinition))
                     if (sets.ContainsKey(o)) edges[p.Method].Add(o);
                     else sets[p.Method].UnionWith(_allMaps);

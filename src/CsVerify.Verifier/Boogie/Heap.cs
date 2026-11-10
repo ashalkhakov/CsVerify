@@ -16,7 +16,7 @@ namespace CsVerify.Verifier.Boogie
     internal static class Heap
     {
         /// <summary>The globals, in the order a modifies clause lists them (the field maps after these, by name).</summary>
-        public static readonly string[] Globals = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Append("$root").ToArray();
+        public static string[] Globals => new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Append("$root").ToArray();
 
         /// <summary>Allocates t: not null, not allocated before (so no reference in hand), now allocated.</summary>
         private static void Allocate(List<KStmt> stmts, string var, KExpr extra = null)
@@ -91,8 +91,8 @@ namespace CsVerify.Verifier.Boogie
                             // (a negative size throws: the path ends)
                             stmts.Add(new KAssume { Cond = new KOp(">=", n.Size, new KLit("0")) });
                             Allocate(stmts, n.Var, new KOp("==", new KOp("len", t), n.Size));
-                            bool isBool = ((IArrayTypeSymbol)n.ArrayType).ElementType.SpecialType == SpecialType.System_Boolean;
-                            stmts.Add(new KMapUpdate { Map = map, Ref = t, Value = new KLit($"(lambda j: int :: {(isBool ? "false" : "0")})") });
+                            var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
+                            stmts.Add(new KMapUpdate { Map = map, Ref = t, Value = new KLit($"(lambda j: int :: {zero})") });
                             if (n.Elements != null)
                                 for (int k = 0; k < n.Elements.Length; k++)
                                     stmts.Add(new KMapUpdate { Map = map, Ref = t, Index = new KLit(k.ToString()), Value = n.Elements[k] });

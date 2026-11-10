@@ -78,6 +78,17 @@ namespace CsVerify.Verifier.Boogie
             _facts.Clear();
         }
 
+        private int _fresh;
+
+        /// <summary>A new local of this Boogie type, havocked: a value nothing is known of.</summary>
+        private KVar Fresh(string type)
+        {
+            var name = "f$" + _fresh++;
+            _p.Locals.Add(new KLocal { Name = name, Raw = type });
+            Emit(new KHavoc { Var = name });
+            return new KVar(name);
+        }
+
         private static KExpr Allocated(KExpr o, KExpr v) =>
             new KOp("==>", new KOp("&&", new KOp("sel", new KVar("$Alloc"), o), new KOp("!=", v, new KLit("null"))), new KOp("sel", new KVar("$Alloc"), v));
 
@@ -149,7 +160,7 @@ namespace CsVerify.Verifier.Boogie
             if (_p.FunctionBody != null && _program.OverPredicate(m) == null &&
                 new[] { _p.FunctionBody }.Concat(requires.Select(r => r.math)).Concat(ensures.Select(e => e.math)).Any(x => Mentions(x, Snaps)))
                 throw new NotTranslated("a function that reads a function over a predicate");
-            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: Spec(i.Expr, out var wf), wf, facts: Take())).ToList());
+            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: OldAtEntry(Spec(i.Expr, out var wf)), wf, facts: Take())).ToList());
             var measures = _p.Measures.ToDictionary(kv => kv.Key, kv => kv.Value.Select(x => Spec(x.Expr, out _)).ToList());
             _facts.Clear();
 
@@ -235,7 +246,11 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KAssign { Var = "cells", Value = new KVar($"l${b.Ordinal}$cells") });
                         Emit(new KHavoc { Var = "cowner" });
                     }
-                    foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(b.Ordinal) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null);
+                    // (the loop havocs the snapshots it changes: an instance's at the head is new already, and the
+                    // invariants' facts, assumed by Boogie at the head, are of it)
+                    _atLoopHead = true;
+                    try { foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(b.Ordinal) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null); }
+                    finally { _atLoopHead = false; }
                 }
                 foreach (var s in stmts) Statement(s, decreases);
                 switch (b.Jump)
@@ -520,6 +535,14 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KNewObj { Var = n.Var, Type = n.Type, Ctor = n.Ctor, Args = args, ArgsAt = n.ArgsAt, At = n.At,
                                        Check = n.Ctor == null ? null : At("CSV1001", n.At, $"'{n.At}'") });
                     if (sig != null) foreach (var e in sig.Ensures) Inhale(e.Expr, given, null);
+                    // (what its constructor left in its reference fields is allocated: it could store nothing else)
+                    if (n.Ctor != null)
+                        foreach (var f in InstanceFields(n.Type).Where(f => IsRef(FieldType(f)) && _p.Fields.Contains(f)))
+                            Assume(Allocated(new KVar(n.Var), new KOp("sel", new KVar(FieldMap(f)), new KVar(n.Var))));
+                    // (and its ghost sets of objects hold allocated ones)
+                    if (n.Ctor != null)
+                        foreach (var f in InstanceFields(n.Type).Where(f => IsObjSet(IsGhost(FieldType(f)) ? GhostOf(FieldType(f)) : FieldType(f)) && _p.Fields.Contains(f)))
+                            Assume(new KOp("set.subset", new KOp("sel", new KVar(FieldMap(f)), new KVar(n.Var)), new KVar("$Alloc")));
                     ObjectInvariant(new KVar(n.Var), n.Type);
                     return;
                 }
@@ -760,9 +783,12 @@ namespace CsVerify.Verifier.Boogie
             KExpr M(KExpr x)
             {
                 var v = Spec(x, out _);
+                // (what holds of the memory wherever it's read: a field's reference allocated, a non-nullable field set; assumed)
+                var known = _facts.ToList();
                 _facts.Clear();
-                v = given == null ? v : Subst(v, given);
-                return _old == null ? v : _old(v);
+                KExpr At(KExpr y) { y = given == null ? y : Subst(y, given); return _old == null ? y : _old(y); }
+                foreach (var k in known) Assume(Implies(guard, At(k)));
+                return At(v);
             }
             switch (e)
             {
@@ -806,6 +832,8 @@ namespace CsVerify.Verifier.Boogie
                 new KOp(by > 0 ? "+" : "-", new KOp("sel", new KVar("pinst"), q), Ite(guard, new KLit("1"), new KLit("0")))) });
 
         /// <summary>Receives an assertion's permissions (a precondition at entry, a postcondition after a call, an invariant at a loop head).</summary>
+        private bool _atLoopHead;
+
         private void Inhale(KExpr e, Dictionary<string, KExpr> given, KExpr _)
         {
             if (!HasAtoms(e)) return;
@@ -825,7 +853,10 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     var inst = (KInst)a;
-                    Refresh(Instance(inst.Pred, inst.Args), g);
+                    // (the guard as it is before the snapshot changes: it may read it)
+                    var held = Hold(g);
+                    if (!_atLoopHead) Refresh(Instance(inst.Pred, inst.Args), held);
+                    SnapFacts(inst.Pred, inst.Args, held);
                     AddInst(Instance(inst.Pred, inst.Args), g, +1);
                 }
             }, null);
@@ -911,6 +942,7 @@ namespace CsVerify.Verifier.Boogie
                 }, (g, fact) => Assert(Implies(g, fact), At("CSV1019", at, $"'{fold.InstAt}' might not hold when folding it: its body's facts")));
                 // (folded now: a snapshot of its own, of which the functions over it are what their bodies say now)
                 Refresh(p, new KLit("true"));
+                SnapFacts(fold.Inst.Pred, args, new KLit("true"));
                 AddInst(p, new KLit("true"), +1);
                 Define(fold.Inst.Pred, args, p);
                 return;
@@ -952,7 +984,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var inst = (KInst)a;
                     var q = Instance(inst.Pred, inst.Args);
-                    Refresh(q, g);
+                    var held = Hold(g);
+                    Refresh(q, held);
+                    SnapFacts(inst.Pred, inst.Args, held);
                     AddInst(q, g, +1);
                     nested.Add((g, q));
                 }
@@ -1091,7 +1125,7 @@ namespace CsVerify.Verifier.Boogie
         private static KExpr Snap(IMethodSymbol pred, int[] map, KExpr[] args)
         {
             var instArgs = new KExpr[pred.Parameters.Length];
-            for (int k = 0; k < map.Length; k++) instArgs[map[k]] = args[k];
+            for (int k = 0; k < map.Length; k++) if (map[k] >= 0) instArgs[map[k]] = args[k];
             return new KOp("sel", new KVar("psnap"), Instance(pred, instArgs));
         }
 
@@ -1100,6 +1134,54 @@ namespace CsVerify.Verifier.Boogie
         /// copy is in hand already: two copies have no footprint (its permissions would be had twice), so the functions
         /// over them are the same.
         /// </summary>
+        /// <summary>
+        /// The facts of a predicate's body (not its permissions) hold in the state of an instance's snapshot: it is of the
+        /// footprint as it was folded, when they held. (Those that read no other function of the memory.)
+        /// </summary>
+        private void SnapFacts(IMethodSymbol pred, KExpr[] args, KExpr g)
+        {
+            var sig = _program.Signature(pred);
+            if (sig.FunctionBody == null) return;
+            var snap = new KOp("$sst", new KOp("sel", new KVar("psnap"), Instance(pred, args)));
+            KExpr In(KExpr e) => e switch
+            {
+                KVar v when v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.") => new KOp("$st." + v.Name, snap),
+                KOp op => new KOp(op.Op, op.Args.Select(In).ToArray()),
+                KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : In(q.Range), Body = In(q.Body) },
+                _ => e,
+            };
+            bool Plain(KExpr e) => e switch
+            {
+                KFnApp f => f.Plain && f.Args.All(Plain),
+                KOp { Op: "old" } => false,
+                KVar v => v.Name != "psnap",
+                KOp op => op.Args.All(Plain),
+                KQuant q => (q.Range == null || Plain(q.Range)) && Plain(q.Body),
+                _ => true,
+            };
+            var given = pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
+            var facts = new List<(KExpr g, KExpr f)>();
+            var saved = _old;
+            Walk(sig.FunctionBody, given, g, (_, __) => { }, (gg, f) => facts.Add((gg, f)));
+            foreach (var (gg, f) in facts.Where(x => Plain(x.f) && Plain(x.g)))
+            {
+                _p.UsesState = true;
+                Assume(Implies(In(gg), In(f)));
+            }
+        }
+
+        private int _holds;
+
+        /// <summary>A condition's value now, in a local of its own (true stays true).</summary>
+        private KExpr Hold(KExpr g)
+        {
+            if (g is KLit { Text: "true" }) return g;
+            var name = "g$h" + _holds++;
+            _p.Locals.Add(new KLocal { Name = name, Raw = "bool" });
+            Emit(new KAssign { Var = name, Value = g });
+            return new KVar(name);
+        }
+
         private void Refresh(KExpr q, KExpr g)
         {
             g = Conj(g, new KOp("==", new KOp("sel", new KVar("pinst"), q), new KLit("0")));
@@ -1119,12 +1201,16 @@ namespace CsVerify.Verifier.Boogie
                 if (!(_program.OverPredicate(f) is (IMethodSymbol, int[] map))) continue;
                 var sig = _program.Signature(f);
                 if (sig.FunctionBody == null) continue;
-                var args = map.Select(j => instArgs[j]).ToArray();
+                // (its parameters not of the instance: for every value of them)
+                var args = map.Select((j, k) => j >= 0 ? instArgs[j] : new KVar($"q$x{k}")).ToArray();
                 var given = f.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
                 KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, given); }
                 var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((KExpr)new KLit("true"), Conj);
                 var app = new KFnApp { Callee = f, Function = FunctionName(f), Args = args, Snap = new KOp("sel", new KVar("psnap"), p) };
-                Assume(Implies(pre, new KOp("==", app, M(sig.FunctionBody))));
+                KExpr fact = Implies(pre, new KOp("==", app, M(sig.FunctionBody)));
+                for (int k = map.Length - 1; k >= 0; k--)
+                    if (map[k] < 0) fact = new KQuant { Forall = true, Var = $"q$x{k}", Type = TypeOf(f.Parameters[k].Type), Body = fact };
+                Assume(fact);
             }
         }
 
@@ -1159,7 +1245,12 @@ namespace CsVerify.Verifier.Boogie
                 case KOp op: return new KOp(op.Op, op.Args.Select(a => Before(a, frame)).ToArray());
                 case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame) };
                 case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
-                case KFnApp _: throw new NotTranslated("a callee's postcondition that reads a function's value as it was, and a snapshot");
+                // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
+                case KFnApp f when !f.Plain:
+                    foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields)) frame.OldGlobals.Add(map);
+                    return new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Before(a, frame)).ToArray(), MapsAt = $"s{frame.Id}" };
+                case KFnApp f:
+                    return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = true, Args = f.Args.Select(a => Before(a, frame)).ToArray() };
                 default: return e;
             }
         }
@@ -1626,6 +1717,32 @@ namespace CsVerify.Verifier.Boogie
                     return new KOp("==", l, r);
                 }
                 case KOp op: return new KOp(op.Op, op.Args.Select(Code).ToArray());
+                case KIfc ic:
+                {
+                    var x = Code(ic.Of);
+                    var i = ic.Index == null ? null : Code(ic.Index);
+                    Assert(new KOp("!=", x, new KLit("null")), At("CSV1013", ic.At, $"'{ic.OfAt}' might be null in '{ic.At}'"));
+                    KExpr count = IfcRead(x, null, ic.Element);
+                    if (ic.Fresh)
+                    {
+                        var c = Fresh("int");
+                        Assume(new KOp("<=", new KLit("0"), c));
+                        count = c;
+                    }
+                    if (i == null) return count;
+                    Assert(new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
+                    return ic.Fresh ? Fresh(TypeOf(ic.Element)) : IfcRead(x, i, ic.Element);
+                }
+                case KMultiset ms:
+                {
+                    var a = Code(ms.Array);
+                    var n = Code(ms.Count);
+                    Assert(new KOp("!=", a, new KLit("null")), At("CSV1013", ms.At, $"'{ms.At}' might dereference null"));
+                    Assert(new KOp("&&", new KOp("<=", new KLit("0"), n), new KOp("<=", n, new KOp("len", a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
+                    KExpr fuel = new KLit("$LZ");
+                    for (int k = 0; k < ms.Levels; k++) fuel = new KOp("$LS", fuel);
+                    return new KOp("$bag", fuel, new KOp("sel", new KVar(Elements(ms.ArrayType)), a), n);
+                }
                 case KElem { String: true } sc:
                 {
                     var s = Code(sc.Array);
@@ -1639,7 +1756,14 @@ namespace CsVerify.Verifier.Boogie
                     var a = Code(el.Array);
                     var i = Code(el.Index);
                     InBounds(a, i, el.At, el.ArrayAt);
-                    return new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
+                    var ev = new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
+                    // (an allocated array's element is an allocated object, as a field's value is; of its class's invariant)
+                    if (IsRefArray(el.ArrayType))
+                    {
+                        Assume(Allocated(a, ev));
+                        ObjectInvariant(ev, ((IArrayTypeSymbol)el.ArrayType).ElementType);
+                    }
+                    return ev;
                 }
                 case KDataField df:
                 {
@@ -1871,6 +1995,35 @@ namespace CsVerify.Verifier.Boogie
                     var r = Spec(ar.Right, wf, guard);
                     Need(new KOp("!=", r, new KLit("0")));
                     return new KOp(ar.Op == "/" ? "div" : "rem", l, r);
+                }
+                case KIfc si:
+                {
+                    var x = Spec(si.Of, wf, guard);
+                    var i = si.Index == null ? null : Spec(si.Index, wf, guard);
+                    var count = IfcRead(x, null, si.Element);
+                    Need(i == null ? new KOp("!=", x, new KLit("null")) : new KOp("&&", new KOp("!=", x, new KLit("null")), new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, count))));
+                    return i == null ? count : IfcRead(x, i, si.Element);
+                }
+                case KLet let:
+                {
+                    var value = Spec(let.Value, wf, guard);
+                    int from = wf.Count, facts = _facts.Count;
+                    var body = Spec(let.Body, wf, guard);
+                    // (what makes the body well-defined, and what it knows, are of the local's value too)
+                    var bound = new Dictionary<string, KExpr> { [let.Var] = value };
+                    for (int k = from; k < wf.Count; k++) wf[k] = Subst(wf[k], bound);
+                    for (int k = facts; k < _facts.Count; k++) _facts[k] = Subst(_facts[k], bound);
+                    return Subst(body, bound);
+                }
+                case KMultiset ms:
+                {
+                    // (well-defined within the array: 0 <= n <= a.Length; its contents as of where it's read)
+                    var a = Spec(ms.Array, wf, guard);
+                    var n = Spec(ms.Count, wf, guard);
+                    Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), n)), new KOp("<=", n, new KOp("len", a))));
+                    KExpr fuel = new KLit("$LZ");
+                    for (int k = 0; k < ms.Levels; k++) fuel = new KOp("$LS", fuel);
+                    return new KOp("$bag", fuel, new KOp("sel", new KVar(Elements(ms.ArrayType)), a), n);
                 }
                 case KElem { Model: string model } le:
                 {

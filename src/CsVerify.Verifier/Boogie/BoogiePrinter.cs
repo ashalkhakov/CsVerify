@@ -18,7 +18,31 @@ namespace CsVerify.Verifier.Boogie
 
         public readonly Dictionary<int, Check> Lines = new Dictionary<int, Check>();
 
-        public string Text => _text.ToString();
+        /// <summary>
+        /// The program. A prelude's optional part (multisets, a collection's kinds behind its interfaces, string keys) is
+        /// tagged with what it declares, and kept only where the rest of the program uses it: else a blank line (the
+        /// lines' numbers, which Lines maps to checks, stay), so a program that doesn't is the same as before them.
+        /// </summary>
+        public string Text
+        {
+            get
+            {
+                var lines = _text.ToString().Split('\n');
+                var used = string.Join("\n", lines.Where(l => !(l.Length > 0 && l[0] == '\u0001')));
+                return string.Join("\n", lines.Select(l =>
+                {
+                    if (!(l.Length > 0 && l[0] == '\u0001')) return l;
+                    int end = l.IndexOf('\u0002');
+                    var key = l.Substring(Tagged.Length, end - Tagged.Length);
+                    return used.Contains(key) ? l.Substring(end + 1) : "";
+                }));
+            }
+        }
+
+        private const string Tagged = "\u0001";
+
+        /// <summary>A prelude line kept only where the program names this.</summary>
+        private void Optional(string key, string text) => Line(Tagged + key + "\u0002" + text);
 
         private void Line(string text, Check check = null)
         {
@@ -31,7 +55,7 @@ namespace CsVerify.Verifier.Boogie
 
         private static readonly string InRangeOfMemory = "$InRange(" + string.Join(", ", Widths.Keys.Select(ElementMap)) + ")";
 
-        private static string MapParams => string.Join(", ", ElementTypes.Select(t => $"h{ElementMap(t)}: [Ref][int]{(t == SpecialType.System_Boolean ? "bool" : "int")}"));
+        private static string MapParams => string.Join(", ", ElementTypes.Select(t => $"h{ElementMap(t)}: [Ref][int]{ElementValue(t)}"));
 
         /// <summary>What every program has: C#'s division, fuel, and the heap of arrays (Dafny's encoding).</summary>
         public void Prelude()
@@ -60,13 +84,32 @@ namespace CsVerify.Verifier.Boogie
             Line("type LayerType;");
             Line("const $LZ: LayerType;");
             Line("function $LS(ly: LayerType): LayerType;");
+            Optional("$bag", "// multisets (Bag): maps from value to count, as CsVerify's engine has them. $bag(ly, r, n) is the multiset of");
+            Optional("$bag", "// r[0..n), unfolded once per $LS; writing r[i] inside the prefix trades the old element for the new one, outside");
+            Optional("$bag", "// it changes nothing. The write axioms are triggered only by the multiset of a written array, so they can't loop.");
+            Optional("$bag", "const $bag.empty: [int]int;");
+            Optional("$bag", "axiom (forall v: int :: $bag.empty[v] == 0);");
+            Optional("$bag", "function $badd(m: [int]int, x: int): [int]int { m[x := m[x] + 1] }");
+            Optional("$bag", "function $bremove(m: [int]int, x: int): [int]int { m[x := m[x] - 1] }");
+            Optional("$bag", "function $bunion(a: [int]int, b: [int]int): [int]int;");
+            Optional("$bag", "axiom (forall a: [int]int, b: [int]int, v: int :: { $bunion(a, b)[v] } $bunion(a, b)[v] == a[v] + b[v]);");
+            Optional("$bag", "function $bag(ly: LayerType, r: [int]int, n: int): [int]int;");
+            Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, n: int :: { $bag($LS(ly), r, n) } $bag($LS(ly), r, n) == $bag(ly, r, n));");
+            Optional("$bag", "axiom (forall ly: LayerType, r: [int]int :: { $bag(ly, r, 0) } $bag(ly, r, 0) == $bag.empty);");
+            Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, n: int :: { $bag($LS(ly), r, n) } 0 < n ==> $bag($LS(ly), r, n) == $badd($bag(ly, r, n - 1), r[n - 1]));");
+            Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, i: int, v: int, n: int :: { $bag(ly, r[i := v], n) } 0 <= i && i < n ==> $bag(ly, r[i := v], n) == $badd($bremove($bag(ly, r, n), r[i]), v));");
+            Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, i: int, v: int, n: int :: { $bag(ly, r[i := v], n) } (i < 0 || n <= i) ==> $bag(ly, r[i := v], n) == $bag(ly, r, n));");
             Line("// arrays: references, the allocated ones, each one's length, and a map of elements per element type");
             Line("type Ref;");
             Line("const null: Ref;");
             Line("var $Alloc: [Ref]bool;");
             Line("function len(a: Ref): int;");
+            Optional("$arr(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
+            Optional("$arr(", "function $arr(r: Ref): bool;");
+            Optional("$arr(", "function $coll(r: Ref): bool;");
+            Optional("$arr(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
-            foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{(t == SpecialType.System_Boolean ? "bool" : "int")};");
+            foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
             Line("// strings: values, of a length and UTF-16 code units (null counts as empty where it is concatenated)");
             Line("function slen(s: Ref): int;");
             Line("axiom (forall s: Ref :: { slen(s) } 0 <= slen(s) && slen(s) <= 2147483647);");
@@ -77,6 +120,11 @@ namespace CsVerify.Verifier.Boogie
             Line("axiom (forall a: Ref, b: Ref :: { scat(a, b) } sl(a) + sl(b) <= 2147483647 ==> scat(a, b) != null && slen(scat(a, b)) == sl(a) + sl(b));");
             Line("axiom (forall a: Ref, b: Ref, i: int :: { sat(scat(a, b), i) } sl(a) + sl(b) <= 2147483647 && 0 <= i && i < sl(a) + sl(b) ==> sat(scat(a, b), i) == (if i < sl(a) then sat(a, i) else sat(b, i - sl(a))));");
             Line("function sdiff(a: Ref, b: Ref): int;");
+            Optional("$keyed(", "// a collection's string key: the string itself, marked; two marked keys of one content are one key (a string is its characters)");
+            Optional("$keyed(", "function $key(s: Ref): bool;");
+            Optional("$keyed(", "function $keyed(s: Ref): Ref;");
+            Optional("$keyed(", "axiom (forall s: Ref :: { $keyed(s) } $keyed(s) == s && $key(s));");
+            Optional("$keyed(", "axiom (forall a: Ref, b: Ref :: { $key(a), $key(b) } a != null && b != null && a != b && slen(a) == slen(b) ==> 0 <= sdiff(a, b) && sdiff(a, b) < slen(a) && sat(a, sdiff(a, b)) != sat(b, sdiff(a, b)));");
             Line("// what is read from memory is in its type's range");
             Line("function $InRange(" + string.Join(", ", Widths.Keys.Select(t => $"{Param(t)}: [Ref][int]int")) + "): bool { " +
                  string.Join(" && ", Widths.Keys.Select(t => { var (lo, hi) = Range(t); return $"(forall r: Ref, j: int :: {lo} <= {Param(t)}[r][j] && {Param(t)}[r][j] <= {hi})"; })) + " }");
@@ -111,11 +159,15 @@ namespace CsVerify.Verifier.Boogie
             public bool InFunction;
             public string Layer = "$LS($LZ)";
             public string Result = "result";
+            /// <summary>A map read in another state (a snapshot's: $st.m($sst(s))), in place of the memory's.</summary>
+            public Func<string, string> MapAt;
         }
 
         private static readonly Context InProcedure = new Context();
 
-        private static string Map(string name, Context cx) => cx.InFunction && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? cx.Prefix + name : name;
+        private static string Map(string name, Context cx) =>
+            cx.MapAt != null && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? cx.MapAt(name) :
+            cx.InFunction && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? cx.Prefix + name : name;
 
         private static string Maps(Context cx) => string.Join(", ", ElementTypes.Select(t => Map(ElementMap(t), cx)));
 
@@ -139,9 +191,11 @@ namespace CsVerify.Verifier.Boogie
                     // any other has the fuel a specification's call has)
                     var layer = f.Layer ?? (cx.Group != null && !cx.Group(f.Callee) ? "$LS($LZ)" : cx.Layer);
                     var parts = new List<string> { layer };
-                    if (own == null) parts.Add(Maps(cx));
-                    else parts.AddRange(own.Select(o => Elements(o.map, f.Args[o.arg], cx)));
-                    parts.AddRange(f.Fields.Select(x => Map(x, cx)));
+                    // (of a call frame's snapshot of the memory: its maps as they were then)
+                    string At(string map) => f.MapsAt != null ? f.MapsAt + map : Map(map, cx);
+                    if (own == null) parts.Add(f.MapsAt != null ? string.Join(", ", ElementTypes.Select(t => At(ElementMap(t)))) : Maps(cx));
+                    else parts.AddRange(own.Select(o => f.MapsAt != null ? $"{At(o.map)}[{E(f.Args[o.arg], cx)}]" : Elements(o.map, f.Args[o.arg], cx)));
+                    parts.AddRange(f.Fields.Select(At));
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
@@ -171,6 +225,8 @@ namespace CsVerify.Verifier.Boogie
                         case var mc when mc.StartsWith("map.const."): return $"(lambda k$: {mc.Substring("map.const.".Length)} :: {a[0]})";
                         case "set.of": return $"(lambda r$: Ref :: r$ == {a[0]})";
                         case "set.add": return $"{a[0]}[{a[1]} := true]";
+                        case "set.freshc": return $"(forall r$: Ref :: {a[0]}[r$] ==> r$ == {a[2]} || !{a[1]}[r$])";
+                        case "set.fresh": return $"(forall r$: Ref :: {a[0]}[r$] ==> !{a[1]}[r$])";
                         case "set.union": return $"(lambda r$: Ref :: {a[0]}[r$] || {a[1]}[r$])";
                         case "$tree": return $"(lambda r$: Ref :: $root[r$] == $root[{a[0]}])";
                         case "set.subset": return $"(forall r$: Ref :: {a[0]}[r$] ==> {a[1]}[r$])";
@@ -294,7 +350,7 @@ namespace CsVerify.Verifier.Boogie
         public void Delegates(IEnumerable<string> keys, ISet<string> maps)
         {
             var all = keys.Distinct().OrderBy(x => x, System.StringComparer.Ordinal).ToList();
-            if (all.Count == 0) return;
+            if (all.Count == 0 && !UsesState) return;
             string Ty(string part) => part == "Ref" ? "Ref" : part == "Boolean" ? "bool" : "int";
             Line("function $nochange(d: Ref): bool;");
             // (a state: the memory, each map of it given back; a steady delegate is the same in all of them)
@@ -307,6 +363,23 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"function $st.{m.name}(s: St): {m.type};");
                 Line($"axiom (forall {ms} :: {{ $st({mns}) }} $st.{m.name}($st({mns})) == {m.name});");
+            }
+            if (UsesState)
+            {
+                // (a function over a predicate's snapshot: the state it is of)
+                Line("function $sst(s: int): St;");
+                // (a collection through its interface, neither an array nor a modeled collection: values of the state)
+                Line("function $ocount(r: Ref, s: St): int;");
+                Line("axiom (forall r: Ref, s: St :: { $ocount(r, s) } 0 <= $ocount(r, s) && $ocount(r, s) <= 2147483647);");
+                foreach (var k in ElementTypes.Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)))
+                {
+                    Line($"function $oitem.{k}(r: Ref, i: int, s: St): {BoogieOf(k)};");
+                    if (k is not ("Ref" or "Boolean"))
+                    {
+                        var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + k));
+                        Line($"axiom (forall r: Ref, i: int, s: St :: {{ $oitem.{k}(r, i, s) }} {(lo < 0 ? $"({lo})" : lo.ToString())} <= $oitem.{k}(r, i, s) && $oitem.{k}(r, i, s) <= {hi});");
+                    }
+                }
             }
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
             foreach (var key in all)
@@ -488,6 +561,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The memory a delegate's state is: the element maps and the field maps (with their types).</summary>
         private readonly List<(string name, string type)> _stateMaps = new List<(string, string)>();
 
+        /// <summary>Some procedure reads a collection through an interface: the state ($st) is declared, and its functions.</summary>
+        public bool UsesState;
+
         /// <summary>This state, as delegates take it.</summary>
         private string State => $"$st({string.Join(", ", _stateMaps.Select(m => m.name))})";
 
@@ -547,7 +623,7 @@ namespace CsVerify.Verifier.Boogie
         public void Fields(IEnumerable<ISymbol> fields)
         {
             _stateMaps.Clear();
-            foreach (var t in ElementTypes) _stateMaps.Add((ElementMap(t), t == SpecialType.System_Boolean ? "[Ref][int]bool" : "[Ref][int]int"));
+            foreach (var t in ElementTypes) _stateMaps.Add((ElementMap(t), "[Ref][int]" + ElementValue(t)));
             foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal)) _stateMaps.Add((FieldMap(f), $"[Ref]{TypeOf(FieldType(f))}"));
             foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal))
             {
@@ -616,7 +692,27 @@ namespace CsVerify.Verifier.Boogie
             // (conjunct by conjunct: those of them that read no memory)
             foreach (var e in p.Ensures.SelectMany(e => Conjuncts(e.Expr)).Where(e => !ReadsMemory(e)))
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
+            // (its value is its body, read in the snapshot's state: so the functions over one snapshot agree with each
+            // other, as CsVerify's engine's functions of one memory do; where its body reads no snapshot of its own)
+            if (p.FunctionBody != null && Closed(p.FunctionBody, m.Parameters.Select(Local).ToHashSet()))
+            {
+                UsesState = true;
+                var bx = new Context { Result = app, MapAt = map => $"$st.{map}($sst(s))" };
+                Line($"axiom (forall s: int{ps} :: {{ {app} }} {app} == {E(p.FunctionBody, bx)});");
+            }
         }
+
+        /// <summary>An expression of these variables and the memory's maps alone (no snapshot, no local, no old).</summary>
+        private bool Closed(KExpr e, HashSet<string> vars) => e switch
+        {
+            KVar v => vars.Contains(v.Name) || _stateMaps.Any(m => m.name == v.Name),
+            KLit _ => true,
+            KOp { Op: "old" } => false,
+            KOp op => op.Args.All(a => Closed(a, vars)),
+            KQuant q => Closed(q.Range ?? new KLit("true"), new HashSet<string>(vars) { q.Var }) && Closed(q.Body, new HashSet<string>(vars) { q.Var }),
+            KFnApp f => f.Snap == null && f.MapsAt == null && f.Args.All(a => Closed(a, vars)),
+            _ => false,
+        };
 
         public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols)
         {
@@ -626,7 +722,7 @@ namespace CsVerify.Verifier.Boogie
             var ps = FieldParams(fields, symbols) + self + string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
             var args = string.Join("", fields.Select(x => ", h" + x)) + (m.IsStatic ? "" : ", this") + string.Join("", m.Parameters.Select(x => ", " + Local(x)));
             var own = OwnArrays(m);
-            var memory = own == null ? MapParams : string.Join(", ", own.Select(o => $"e{o.param}: [int]{(o.map == ElementMap(SpecialType.System_Boolean) ? "bool" : "int")}"));
+            var memory = own == null ? MapParams : string.Join(", ", own.Select(o => $"e{o.param}: [int]{ElementValue(o.map)}"));
             var memoryArgs = own == null ? string.Join(", ", ElementTypes.Select(t => "h" + ElementMap(t))) : string.Join(", ", own.Select(o => "e" + o.param));
             string Sep(string x) => x.Length == 0 ? "" : ", " + x;
             var bound = $"ly: LayerType{Sep(memory)}{ps}";
@@ -639,7 +735,7 @@ namespace CsVerify.Verifier.Boogie
             // (its Spec.Reads, Dafny's frame axiom: two memories that agree on every object it reads give one value)
             if (p.ReadsFrame != null && own == null)
             {
-                string Mem(string pre) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{(t == SpecialType.System_Boolean ? "bool" : "int")}"))
+                string Mem(string pre) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{ElementValue(t)}"))
                                         + string.Join("", fields.Select(x => $", {pre}{x}: [Ref]{TypeOf(FieldType(symbols.First(f => FieldMap(f) == x)))}"));
                 string App(string pre) => $"{name}(ly, {string.Join(", ", ElementTypes.Select(t => pre + ElementMap(t)))}{string.Join("", fields.Select(x => ", " + pre + x))}{(m.IsStatic ? "" : ", this")}{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
                 var r = E(p.ReadsFrame, new Context { InFunction = true, Layer = "ly", Prefix = "a", Group = cx.Group });

@@ -644,6 +644,7 @@ namespace CsVerify.Verifier
             using var engine = new Engine(compilation, options, userTrees);
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
+            Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.Started = engine.StartedDelegates;
             Boogie.KernelTypes.Levels = engine.Levels;

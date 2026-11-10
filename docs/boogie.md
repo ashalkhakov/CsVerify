@@ -384,7 +384,24 @@ checked and assumed in the body (at a call, at entry, after the call), not in Bo
 the snapshots at entry (`psnap$entry`), or, in a caller, of those and of the memory just before the call. Its
 postconditions that read no memory are axioms of every snapshot.
 
-Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state), and `Spec.Modifies` lending trees.
+A function over a predicate may take more than the instance's parameters (`Key(t, i)` over `Table(t)`): at a fold or
+unfold its value is defined for every value of the others. A snapshot has a state too (`$sst(s)`, of the memory's
+maps, `$st.m($sst(s))`), in which the predicate's body's facts hold (they did when it was folded: assumed wherever a
+snapshot is made or received), and a function over the predicate whose body reads no other snapshot is its body read
+in that state: so `Contains(t, k)`, `Key(t, i)` and `Count(t)` of one snapshot agree, as CsVerify's engine's
+functions of one memory do, where nothing unfolds. One that unfolds its predicate in its body (`Spec.Unfold(Table(t));
+return t.Count;`) ensures `result == Count(t)`, so its call in code tells what its uses in specifications read. A loop
+head doesn't refresh a snapshot (the loop havocs those it changes, and Boogie assumes the invariants' facts of them),
+and `old(...)` in an invariant is of the snapshots at entry, as in a postcondition. Where an instance is inhaled under
+a guard that reads a snapshot (`r < Hedges(m) && Mesh(m)`), the guard is kept in a local before the snapshot changes.
+
+A `[Pure]` method whose body is more than an expression is a function too: its body of local declarations, `if`s and
+`return`s is one expression (each local bound in what follows, as CsVerify's engine's `PureStatementsTerm`), its
+definition; a body of anything else leaves it a function of its contract alone (its procedure proves the contract,
+and gives the function's value). One that reads nothing of the memory (scalar parameters, no field, no array, no call
+but `Spec` and `Math`) takes no memory, so its value is the same before and after a write.
+
+Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state).
 
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
 `p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
@@ -466,14 +483,34 @@ procedures as generic static ones are.
 (CsVerify's engine is weaker here in one place: it doesn't keep that a constrained generic method's result is what its
 postcondition says of the arguments, `r == a || r == b`, where Boogie proves it, and its callers' uses of it.)
 
-Not yet: type tests and casts, dispatch by an object's dynamic type beyond a local made here, arrays of objects.
+**Arrays of objects.** An array of references (`Shape[]`, `string[]`, `string?[]`, `object[]`, an interface's) has its
+elements in one map, `$E.Object: [Ref][int]Ref`, beside the scalars' maps; a new one's elements are null. An element
+read in code is allocated where it isn't null, as a field's value is, and of its class's invariant. An element may be
+null whatever its type says (C# lets `new string[n]` hold nulls), as in CsVerify's engine: a precondition rules nulls
+out. Array covariance isn't checked (a `Square[]` passed as a `Shape[]` and given a `Rectangle`), nor is it by
+CsVerify's engine. A null pattern of a reference (`x is null`, `is not null`, `is { } y`, `is C y` of its own class) is
+a null test.
+
+A `[Pure]` member whose every override is `[Pure]` writes nothing when called, whichever override runs.
+
+Not yet: type tests and casts, dispatch by an object's dynamic type beyond a local made here.
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
 as it was on entry (`w$entry`), or allocated since (CSV1017; a constructor's own object counts as new); it calls only
 what writes within that: a callee's frame inside ours, or none needed (a callee that may write fields or arrays without
 one is CSV1017). It ensures every field and cell of an object allocated before the call, and not in `old(W)`, is as it
-was. `[Owned]` classes are framed by their views instead; `Spec.Reads` isn't translated yet.
+was. `[Owned]` classes are framed by their views instead.
+
+A ghost `ObjSet` field (`Ghost<ObjSet> Repr`, the Dafny tutorial's representation set) is a field map of `[Ref]bool`
+values, empty by default; `ObjSet`'s members and `==` are mathematics in ghost code too, and `Spec.Fresh(s)` says every
+object in `s` is new since entry (a constructor's own object counts as new). A new object's reference fields are
+allocated or null after its constructor, and its `ObjSet` fields hold allocated objects: a constructor could store
+nothing else. A predicate's body's facts, and what a field read in a specification says (a reference allocated, a
+non-nullable field set), are assumed where an instance is unfolded or inhaled.
+
+`Own.Tree(x)` is `x`'s tree (`$tree`), or `{x}` where the program has no `[Owns]` fields; with `Spec.Modifies` a method
+borrows it: it writes the tree's objects without their views, and can't fold them away (CSV1016).
 
 **Calls and frames.** A call of another translated method is a Boogie `call`. A procedure `modifies` the maps it
 writes (an element map, a field map, or `$Alloc` when it allocates), and those of everything it calls; after a call,
@@ -517,7 +554,11 @@ from Roslyn's base types, reflexive and transitive), and every type derives from
   partly the library interface's), so it may change anything (`$havoc`), as for a delegate. (CsVerify's engine forgets
   only what `Dispose` writes; the diagnostics are the same where that doesn't matter.)
 
-Not yet: exception filters (`when`), `lock`, and reading an exception's members.
+- An exception filter (`catch (E e) when (cond)`): the handler's type is tested, then its filter runs; false, the
+  exception goes on to the next handler (or outward) as if the type hadn't matched. An exception thrown inside a filter
+  makes it false, as in .NET.
+
+Not yet: `lock` in a `try`, and reading an exception's members (`e.Code` of a program's exception class).
 
 **foreach.** A `foreach` over a one-dimensional array or a string is what C# compiles it to: the collection
 evaluated once into `fe$`*n*`$a` (its length read, so a null one is CSV1013), an index `fe$`*n*`$i` from 0, the head's
@@ -537,8 +578,7 @@ functions of it, `$kvp.Key.`*K* and `$kvp.Value.`*V*). `Spec.Index` of such a lo
 anything else (an interface's list, a dictionary's `Keys` or `Values`, a query, an enumerable of the program's) isn't
 translated yet.
 
-**Collections.** A `List<T>`, `Dictionary<K, V>`, `HashSet<T>`, `Stack<T>` or `Queue<T>` of the subset's values (a
-dictionary's keys and a set's members not strings, which the verifier compares by value) is an object whose contents
+**Collections.** A `List<T>`, `Dictionary<K, V>`, `HashSet<T>`, `Stack<T>` or `Queue<T>` of the subset's values is an object whose contents
 are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and
 per kind of value `$F.$M.Items.`*T*`: [Ref][int]`*T* (a list's, stack's or queue's), `$F.$M.Members.`*T*`: [Ref][T]bool`
 (a set's), `$F.$M.Domain.`*K*`: [Ref][K]bool` and `$F.$M.Entries.`*K*`.`*V*`: [Ref][K]V` (a dictionary's), an integer
@@ -546,7 +586,36 @@ type's values in its range, so frames, modifies clauses and delegates' states ta
 specifications the models read them, `Count` is `Size`, `l[i]` is `Items[l][i]` (well-defined where `0 <= i < Size`,
 CSV1012), `d[k]` is `Entries[d][k]` (where `Domain[d][k]`), `d.ContainsKey(k)` is `Domain[d][k]`, and `s.Contains(x)`
 is `Members[s][x]`. A `Map<K, V>` is a Boogie map (`m[k]`, `Update`, `Map.Const`, `==`), and a `Ghost<T>`'s `Value`
-the value. A `Seq<T>` is an `[int]` map:
+the value.
+
+A dictionary's string keys (a set's string members) index the models by reference, as every string is: a string is
+its characters, so two of one content are one reference where the verifier knows it. A key given to a collection's
+member, or read in a specification (`d[k]`, `d.ContainsKey(k)`, `s.Contains(x)`), is `$keyed(k)`: the string itself,
+marked; any two marked keys get the fact CsVerify's engine assumes where it compares two strings (of one length and
+different, they differ at some index), so `d["a"]` and `d[x]` where `x == "a"` are one entry, and only keys pay for it.
+
+A `foreach` over a dictionary's `Keys` or `Values` enumerates the dictionary (its version checked at each `MoveNext`,
+CSV1001): a key is one it has, never null; a value isn't known (as in CsVerify's engine). `Keys.Count` and
+`Values.Count` are its `Count`.
+
+Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`), a collection is
+a reference of one of three kinds: an array (`$arr`), a modeled collection (`$coll`: a `List`'s, or another's whose
+`Count` is `Size`), or anything else; a conversion from an array or a collection says which. `Count` is
+`if $arr(x) then len(x) else if $coll(x) then Size[x] else $ocount(x, $st(...))`, and `x[i]` the array's cell, the
+list's `Items`, or `$oitem(x, i, $st(...))`: a value of the whole state, so the same until something changes (an
+`l.Clear()` of a list that `x` may be changes `x.Count`), as CsVerify's engine has it. Where the program implements one of
+these interfaces itself, each read through them is a new unknown. `x[i]` checks `0 <= i < Count` (CSV1003). Writes and
+other members through the interfaces, and `foreach` over them, aren't translated yet.
+
+**Multisets.** A `Bag` is an `[int]int` map from value to count: `Bag.Empty` (`$bag.empty`), `Bag.Of(x)`, `Add`
+(`$badd`), `Union` (`$bunion`), `Count(x)` (a read), `Contains(x)` (`0 <` its count), `==`. `Spec.Multiset(a, n)` of an
+integer array is `$bag(ly, $E.T[a], n)`, well-defined where `a` isn't null and `0 <= n <= a.Length` (CSV1012; in ghost
+code CSV1013 and CSV1003), with CsVerify's engine's axioms: the empty prefix is the empty bag, and a write inside the
+prefix trades the old element for the new one, outside it changes nothing. Each is triggered only by the multiset of
+a written array. A use unfolds one element (`$LS($LZ)`, Dafny's fuel), and every element where `n` is a small
+constant (a concrete array). So a swap keeps the multiset with no lemma, and the sorts prove they permute.
+
+A `Seq<T>` is an `[int]` map:
 `s[i]`, `s.Update(i, v)` (a store), `s.Drop(k)` and `s.Concat(k, t)` (lambdas), `Seq.Const(v)`, `==`; `Ghost.Of(x)`
 is `x`, and `Spec.Equal` is `==`. In code every member of a collection is a call of a procedure of its stub contract
 (`ListContracts<T>`, `DictionaryContracts<K, V>`, …, its `@this` the receiver, its type parameters the collection's
@@ -761,8 +830,13 @@ lambdas and method groups; delegate types with contracts.
 Also data records (Dafny's datatypes, with patterns, ranks, invariants), `Ghost<T>`, generic data types, generic
 methods, generic classes and type parameters constrained to references; interfaces as parameters and fields.
 
-Not yet (such a method is verified by CsVerify's engine): arrays of objects (`Shape[]`, `string[]`), string members without stubs, interfaces' collections, a dictionary's `Keys` and `Values`, collections keyed by strings,
-exception filters, ghost types (`Map`, `Bag`, `Ghost<T>` fields), async, locks
+Also arrays of objects and strings, and null patterns of references.
+
+Also exception filters, `Spec.Multiset` and `Bag`, collections keyed by strings, a dictionary's `Keys` and `Values`,
+and reading collections through their interfaces.
+
+Not yet (such a method is verified by CsVerify's engine): string members without stubs, writes and other members of
+collections through their interfaces, ghost types (`Map`, `Ghost<T>` fields), async, locks
 and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
 
 ## How it's checked
@@ -787,12 +861,13 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
    them (done for plain classes, base classes, virtual methods, interfaces, properties, data records and their
    invariants, generic data and methods; object initializers, `this(...)`, parameters the body assigns, generic
-   classes, constrained type parameters, interfaces as parameters; next: arrays of objects);
+   classes, constrained type parameters, interfaces as parameters, arrays of objects);
 2. strings (done: values, literals, concatenation, comparison, the members with stub contracts) and the collections'
    models (done: `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `Seq`, `Map`; next: `Bag`, string keys), and the ghost types;
 3. `foreach`, lambdas and delegates (done: `foreach` over arrays and strings, delegates with their frames, lambdas,
    method groups, delegate types with contracts, `foreach` over collections; next: interfaces' lists, `Keys`, `Values`);
-4. exceptions (done: `throw`, `try`/`catch`, rethrow, `finally`, `using`, `Spec.EnsuresOnThrow`; next: filters);
+4. exceptions (done: `throw`, `try`/`catch`, rethrow, `finally`, `using`, `Spec.EnsuresOnThrow`, filters; next: an
+   exception's members);
 5. frames (done: `Spec.Modifies`, `Spec.Reads`; next: ghost `ObjSet` fields), and the library's stub contracts
    (done for strings' `[Pure]` members);
 6. views, permissions and ownership (done: `[Owned]` classes, views, `Own.New`, `Own.Drop`, invariants, `Spec.Acc` of
@@ -812,11 +887,12 @@ methods that fall back for it):
    immutable classes' invariants (done);
 4. interfaces as parameters, generic classes and constrained type parameters, virtual calls resolved by an object's
    class (done);
-4a. arrays of objects (`Shape[]`, `string[]`, `string?[]`): an element map of references, allocated, null as their
-   types allow;
+4a. arrays of objects (`Shape[]`, `string[]`, `string?[]`): an element map of references, allocated, maybe null (done);
 5. exception filters, `Spec.Multiset`, `Bag`, collections keyed by strings, `Keys` and `Values`, interfaces'
-   collections;
-6. `Spec.Modifies` lending trees, ghost `ObjSet` fields, functions over more than one predicate instance;
+   collections (done for reads; their writes and other members go with the library's stubs, step 11);
+6. `Spec.Modifies` lending trees, ghost `ObjSet` fields, functions over more than one predicate instance (done for
+   lending without `[Owns]` fields, `ObjSet` fields, functions with parameters beyond the instance's, snapshots' states;
+   functions over two instances aren't needed by any sample);
 7. `ArrayView`, `PointsTo` and `Mem`;
 8. `Monitor.Wait` and `Pulse`, locks taken again through calls, tasks one is given;
 9. tasks whose permissions overlap, without the timeout that hands them to CsVerify's engine now (CSV1900);

@@ -22,17 +22,43 @@ namespace CsVerify.Verifier.Boogie
             [SpecialType.System_Int64] = (64, true), [SpecialType.System_UInt64] = (64, false),
         };
 
-        /// <summary>The element types of arrays: each integer type, and bool.</summary>
-        public static readonly SpecialType[] ElementTypes = Widths.Keys.Append(SpecialType.System_Boolean).ToArray();
+        /// <summary>The element types of arrays: each integer type, bool, and references (object's map, of every reference element type).</summary>
+        public static SpecialType[] ElementTypes => RefArrays ? WithReferences : Scalars;
+        private static readonly SpecialType[] Scalars = Widths.Keys.Append(SpecialType.System_Boolean).ToArray();
+        private static readonly SpecialType[] WithReferences = Scalars.Append(SpecialType.System_Object).ToArray();
+
+        /// <summary>The program has arrays of references (its references' map, $E.Object, is declared), for the run this thread is in.</summary>
+        [System.ThreadStatic] public static bool RefArrays;
+
+        /// <summary>Does the program name an array of references (a type, or an array it makes)?</summary>
+        public static bool NamesRefArrays(Compilation c) =>
+            c.SyntaxTrees.Any(t =>
+            {
+                var model = c.GetSemanticModel(t);
+                return t.GetRoot().DescendantNodes().Any(n =>
+                    (n is Microsoft.CodeAnalysis.CSharp.Syntax.ArrayTypeSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.ImplicitArrayCreationExpressionSyntax ||
+                     n is Microsoft.CodeAnalysis.CSharp.Syntax.CollectionExpressionSyntax) &&
+                    (model.GetTypeInfo(n).Type ?? model.GetTypeInfo(n).ConvertedType) is IArrayTypeSymbol a && !Scalar(a.ElementType));
+            });
+
+        /// <summary>An element map's Boogie type of value.</summary>
+        public static string ElementValue(SpecialType t) => t == SpecialType.System_Boolean ? "bool" : t == SpecialType.System_Object ? "Ref" : "int";
+        public static string ElementValue(string map) => ElementValue(ElementTypes.First(t => ElementMap(t) == map));
+
+        /// <summary>An array's element type: a scalar, or a reference (an object, an interface's, a string, object).</summary>
+        public static bool IsElement(ITypeSymbol t) => Scalar(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || t?.SpecialType == SpecialType.System_Object);
 
         public static bool IsIntegral(ITypeSymbol t) => t != null && Widths.ContainsKey(t.SpecialType);
 
         public static bool Scalar(ITypeSymbol t) => IsIntegral(t) || t?.SpecialType == SpecialType.System_Boolean;
 
-        public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && Scalar(a.ElementType);
+        public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && IsElement(a.ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t);
+        /// <summary>An array of references (Shape[], string?[]): its elements in $E.Object, null where it's made.</summary>
+        public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType);
+
+        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t);
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
         public static bool IsToken(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.CancellationToken";
@@ -202,7 +228,48 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || t?.SpecialType == SpecialType.System_Object;
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object;
+
+        /// <summary>A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values.</summary>
+        public static bool IsCollectionInterface(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && FuncValue(n.TypeArguments[0]);
+
+        /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
+        public static bool ImplementedHere(INamedTypeSymbol ifc)
+        {
+            if (Compilation == null) return true;
+            if (!_implemented.TryGetValue(Compilation, out var set))
+            {
+                set = new HashSet<string>();
+                void Walk(INamespaceOrTypeSymbol ns)
+                {
+                    foreach (var m in ns.GetMembers())
+                        if (m is INamespaceSymbol sub) Walk(sub);
+                        else if (m is INamedTypeSymbol nt && nt.DeclaringSyntaxReferences.Length > 0)
+                        {
+                            foreach (var i in nt.AllInterfaces) set.Add(i.OriginalDefinition.ToDisplayString());
+                            Walk(nt);
+                        }
+                }
+                Walk(Compilation.Assembly.GlobalNamespace);
+                _implemented.Add(Compilation, set);
+            }
+            return set.Contains(ifc.OriginalDefinition.ToDisplayString());
+        }
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Compilation, HashSet<string>> _implemented = new System.Runtime.CompilerServices.ConditionalWeakTable<Compilation, HashSet<string>>();
+
+        /// <summary>A collection interface's Count or element, as an expression: an array's, a modeled collection's (Size, Items), or the state's.</summary>
+        public static KExpr IfcRead(KExpr x, KExpr index, ITypeSymbol element)
+        {
+            var list = (INamedTypeSymbol)Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
+            var kind = Kind(element);
+            if (index == null)
+                return new KOp("ite", new KOp("$arr", x), new KOp("len", x), new KOp("ite", new KOp("$coll", x), new KOp("sel", new KVar(SizeMap), x), new KOp("$ocount", x, new KOp("$state"))));
+            var array = (IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element);
+            return new KOp("ite", new KOp("$arr", x), new KOp("sel", new KVar(Elements(array)), x, index),
+                new KOp("ite", new KOp("$coll", x), new KOp("sel", new KVar(ModelOf("Items", list).Name), x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
+        }
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
         private static readonly string[] Collections =
@@ -217,18 +284,20 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A collection of the subset's values: an object, its contents its models. The keys of a dictionary and the
-        /// members of a set are compared as the verifier compares them, as values or by reference: not strings.
+        /// members of a set are compared as the verifier compares them: as values, by reference, strings by content.
         /// </summary>
         public static bool IsCollection(ITypeSymbol t) =>
-            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.All(FuncValue) &&
-            (kind is "List" or "Stack" or "Queue" || !IsString(((INamedTypeSymbol)t).TypeArguments[0]));
+            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.All(FuncValue);
+
+        /// <summary>A collection's key (a dictionary's key, a set's member) as its models index it: a string marked as a key ($keyed), so that two of one content are one.</summary>
+        public static KExpr Keyed(KExpr k, ITypeSymbol t) => IsString(t) ? new KOp("$keyed", k) : k;
 
         public static bool IsList(ITypeSymbol t) => CollectionKind(t) == "List" && IsCollection(t);
 
         /// <summary>A dictionary's pair (a foreach's): a value whose Key and Value are functions of it.</summary>
         public static bool IsPair(ITypeSymbol t) =>
             t is INamedTypeSymbol { Arity: 2 } n && n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.KeyValuePair<TKey, TValue>" &&
-            n.TypeArguments.All(FuncValue) && !IsString(n.TypeArguments[0]);
+            n.TypeArguments.All(FuncValue);
 
         /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, or Ref.</summary>
         public static string Kind(ITypeSymbol t) => Scalar(t) ? t.SpecialType.ToString().Substring("System_".Length) : "Ref";
@@ -346,20 +415,20 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m))) yield return m.OriginalDefinition;
         }
 
-        public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+        public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : IsObjSet(t) ? new KLit("(lambda r$: Ref :: false)") : new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         /// (Not a type parameter's: where T : class may be instantiated with K?, as CsVerify's engine has it.)
         public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
 
         public static string TypeOf(ITypeSymbol t) =>
-            IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" :
+            IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" :
             IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 
         /// <summary>The map of an array type's elements.</summary>
-        public static string Elements(ITypeSymbol array) => ElementMap(((IArrayTypeSymbol)array).ElementType.SpecialType);
+        public static string Elements(ITypeSymbol array) => ElementMap(IsRefArray(array) ? SpecialType.System_Object : ((IArrayTypeSymbol)array).ElementType.SpecialType);
 
         public static (BigInteger lo, BigInteger hi) Range(SpecialType t)
         {

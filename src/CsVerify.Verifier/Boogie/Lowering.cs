@@ -171,6 +171,7 @@ namespace CsVerify.Verifier.Boogie
             ContractOf(l, contract);
             if (contract.Modifies != null) l._p.Frame = l.Spec(contract.Modifies, null);
             if ((SpecSymbols.IsPredicate(m) || isFunction(m) && !Engine.IsOverridable(m)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
+            else if (isFunction(m) && !Engine.IsOverridable(m) && contract.PureStatements != null) l._p.FunctionBody = l.PureStatements(contract.PureStatements, 0);
             return l._p;
         }
 
@@ -194,6 +195,12 @@ namespace CsVerify.Verifier.Boogie
                 if (e.Guard != null) post = new KOp("==>", new KOp("old", And(e.Guard.Select(g => l.Spec(g, null)))), post);
                 l._p.Ensures.Add(new KSpec { Expr = post, At = e.Syntax });
             }
+            // (a function over a predicate, with its body: its procedure gives its value, of the instance's snapshot, as
+            // the body says where it unfolds it; so a call of it in code tells what a specification's use of it reads)
+            if (l._m.IsStatic && l._isFunction(l._m) && contract.PureBody != null && contract.Requires.Any(HasAtoms) && l._m.DeclaringSyntaxReferences.Length > 0 &&
+                l._m.DeclaringSyntaxReferences[0].GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i => i.Expression.ToString() == "Spec.Unfold"))
+                l._p.Ensures.Add(new KSpec { At = l._m.DeclaringSyntaxReferences[0].GetSyntax(), Expr = new KOp("==", new KVar("result"),
+                    new KFnCall { Callee = l._m.OriginalDefinition, Args = l._m.Parameters.Select(x => (KExpr)new KVar(Local(x))).ToArray(), At = l._m.DeclaringSyntaxReferences[0].GetSyntax() }) });
             if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Measure(d)).ToList();
             if (contract.Reads != null) l._p.ReadsFrame = l.Spec(contract.Reads, null);
             if (contract.OwnRequires.Count > 0)
@@ -295,15 +302,16 @@ namespace CsVerify.Verifier.Boogie
             };
             // (foreach over an array or a string: a loop over an index, its enumerator's try/finally gone)
             ForEachLoops(cfg);
-            // (try and catch: each catch of an exception type the kernel has; not finally, nor filters, yet)
+            // (try and catch: each catch of an exception type the kernel has, with its filter or not; finally)
             foreach (var r in cfg.Root.NestedRegions.SelectMany(AllRegions).Concat(cfg.Root.NestedRegions))
                 if (_erased.Contains(r) || _erased.Contains(r.EnclosingRegion)) continue;
-                else if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try or ControlFlowRegionKind.TryAndFinally or ControlFlowRegionKind.Finally ||
-                      r.Kind == ControlFlowRegionKind.Catch && (r.ExceptionType == null || IsException(r.ExceptionType))))
+                else if (!(r.Kind is ControlFlowRegionKind.LocalLifetime or ControlFlowRegionKind.TryAndCatch or ControlFlowRegionKind.Try or ControlFlowRegionKind.TryAndFinally or ControlFlowRegionKind.Finally or ControlFlowRegionKind.Filter ||
+                      r.Kind is ControlFlowRegionKind.Catch or ControlFlowRegionKind.FilterAndHandler && (r.ExceptionType == null || IsException(r.ExceptionType))))
                     throw new NotTranslated(r.Kind == ControlFlowRegionKind.Catch ? "a catch of " + r.ExceptionType : r.Kind.ToString());
             _cfg = cfg;
             // (a function's definition is its body: not one an override may answer, which is of its contract alone)
             if (_isFunction(_m) && _contract.PureBody != null && !Engine.IsOverridable(_m)) _p.FunctionBody = Spec(_contract.PureBody, null);
+            else if (_isFunction(_m) && _contract.PureStatements != null && !Engine.IsOverridable(_m)) _p.FunctionBody = PureStatements(_contract.PureStatements, 0);
             var heads = LoopHeads(cfg);
             foreach (var h in heads)
             {
@@ -371,6 +379,9 @@ namespace CsVerify.Verifier.Boogie
             public INamedTypeSymbol Collection;
             /// <summary>A list its loop may change: through its enumerator, whose MoveNext checks the list's version (Version, as it was).</summary>
             public string Version;
+            /// <summary>A dictionary's Keys or Values (null: the collection itself), enumerated as the dictionary is; Of, the dictionary.</summary>
+            public string View;
+            public IOperation Of;
             public SyntaxNode At;
         }
 
@@ -386,14 +397,22 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (!(_model.GetOperation(fs) is IForEachLoopOperation fo) || fo.IsAsynchronous) continue;
                 var collection = Unconverted(fo.Collection);
+                // (a dictionary's Keys or Values: a view of it, enumerated through the dictionary's enumerator, its version checked)
+                string view = null;
+                if (collection is IPropertyReferenceOperation { Property.Name: "Keys" or "Values" } kv && kv.Instance != null && CollectionKind(kv.Instance.Type) == "Dictionary" && IsCollection(kv.Instance.Type))
+                {
+                    view = kv.Property.Name;
+                    collection = Unconverted(kv.Instance);
+                }
                 bool isString = IsString(collection.Type);
                 bool isCollection = IsCollection(collection.Type);
                 if (!IsArray(collection.Type) && !isString && !isCollection) continue;
                 // (a list: over its model, where the loop changes no list; any other collection, or a list it may change,
                 // through its enumerator, whose MoveNext checks the collection's version)
                 bool enumerated = isCollection && !(IsList(collection.Type) && ChangesNoList(fs.Statement));
-                bool pairs = CollectionKind(collection.Type) == "Dictionary";
-                var element = isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char)
+                bool pairs = CollectionKind(collection.Type) == "Dictionary" && view == null;
+                var element = view != null ? ((INamedTypeSymbol)collection.Type).TypeArguments[view == "Keys" ? 0 : 1]
+                            : isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char)
                             : pairs ? fo.Locals.FirstOrDefault()?.Type ?? throw new NotTranslated("a foreach over a dictionary without its variable")
                             : isCollection ? ((INamedTypeSymbol)collection.Type).TypeArguments[0] : ((IArrayTypeSymbol)collection.Type).ElementType;
                 if (pairs && !IsPair(element)) throw new NotTranslated("a foreach over a dictionary not by its pairs");
@@ -411,6 +430,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Head = head.Ordinal, Array = Declare($"fe${n}$a", collection.Type), Index = Declare($"fe${n}$i", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
                     Type = collection.Type, Element = element, String = isString, At = fs.Expression, Collection = isCollection ? (INamedTypeSymbol)collection.Type : null,
+                    View = view, Of = view != null ? collection : null,
                 };
                 if (isCollection) foreach (var model in ModelsOf(fe.Collection)) _p.Models[model.Name] = model;
                 if (enumerated) fe.Version = Declare($"fe${n}$v", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
@@ -432,7 +452,14 @@ namespace CsVerify.Verifier.Boogie
             // (through the enumerator: what it gives isn't known; a dictionary's, a pair it has)
             var v = Declare("t$" + _temps++, fe.Element);
             Emit(new KHavoc { Var = v });
-            if (CollectionKind(fe.Collection) == "Dictionary")
+            if (fe.View == "Keys")
+            {
+                // (a key it has: never null)
+                Emit(new KAssume { Cond = new KOp("sel", new KVar(ModelOf("Domain", fe.Collection).Name), new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
+                if (fe.Element.IsReferenceType) Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
+            }
+            else if (fe.View == "Values") { } // (a value it has: not modeled, as in CsVerify's engine)
+            else if (CollectionKind(fe.Collection) == "Dictionary")
             {
                 var key = Pair(new KVar(v), fe.Element, "Key");
                 var value = Pair(new KVar(v), fe.Element, "Value");
@@ -510,6 +537,9 @@ namespace CsVerify.Verifier.Boogie
         private string ThrowTarget(ControlFlowRegion r)
         {
             if (_p.Ghost || _contract.IsPure || _contract.IsLemma || _cfg == null) return null; // (proofs may not throw)
+            // (in a filter, before any try of its own: the exception is swallowed, the filter false)
+            for (var q = r; q != null && q.Kind != ControlFlowRegionKind.Try; q = q.EnclosingRegion)
+                if (q.Kind == ControlFlowRegionKind.Filter) return FilterFalse(q);
             var t = TryOf(r);
             // (a try with a finally, inside the handlers' try, or with none: the finally runs, then the exception goes on)
             var f = FinallyTryOf(r);
@@ -551,14 +581,23 @@ namespace CsVerify.Verifier.Boogie
             return false;
         }
 
-        /// <summary>A try's handlers, in order: each catch tests the exception's type; none taken, it goes on outward.</summary>
+        private readonly Dictionary<ControlFlowRegion, string> _filterFalse = new Dictionary<ControlFlowRegion, string>();
+
+        /// <summary>Where a filter that's false goes: its try's next handler, or outward.</summary>
+        private string FilterFalse(ControlFlowRegion filter)
+        {
+            Dispatch(filter.EnclosingRegion.EnclosingRegion.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Try));
+            return _filterFalse[filter];
+        }
+
+        /// <summary>A try's handlers, in order: each catch tests the exception's type (and its filter); none taken, it goes on outward.</summary>
         private string Dispatch(ControlFlowRegion tryRegion)
         {
             if (_dispatch.TryGetValue(tryRegion, out var label)) return label;
             label = $"x${tryRegion.FirstBlockOrdinal}";
             _dispatch[tryRegion] = label;
             var outer = ThrowTarget(tryRegion.EnclosingRegion.EnclosingRegion ?? tryRegion.EnclosingRegion);
-            var handlers = tryRegion.EnclosingRegion.NestedRegions.Where(x => x.Kind == ControlFlowRegionKind.Catch).ToList();
+            var handlers = tryRegion.EnclosingRegion.NestedRegions.Where(x => x.Kind is ControlFlowRegionKind.Catch or ControlFlowRegionKind.FilterAndHandler).ToList();
             var ex = new KVar("ex$");
             Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
             // (handler k: taken where the type matches, else on to the next; past the last, outward)
@@ -576,6 +615,14 @@ namespace CsVerify.Verifier.Boogie
                 _p.Blocks.Add(next);
                 if (k == handlers.Count - 1) next.Jump = outer == null ? new KStop() : new KGoto(outer);
                 else { next.Jump = new KGoto($"{label}$n{k}"); _p.Blocks.Add(new KBlock { Label = $"{label}$n{k}", Ordinal = tryRegion.FirstBlockOrdinal }); }
+                // (a filter: its type matched, it runs; false, on to the next handler as if the type hadn't)
+                if (h.Kind == ControlFlowRegionKind.FilterAndHandler)
+                {
+                    var filter = h.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Filter);
+                    _filterFalse[filter] = $"{label}$f{k}";
+                    _p.Blocks.Add(new KBlock { Label = $"{label}$f{k}", Ordinal = tryRegion.FirstBlockOrdinal,
+                                               Jump = k == handlers.Count - 1 ? (outer == null ? new KStop() : new KGoto(outer)) : new KGoto($"{label}$n{k}") });
+                }
             }
             if (handlers.Count == 0) _p.Blocks.Add(new KBlock { Label = label, Ordinal = tryRegion.FirstBlockOrdinal, Jump = outer == null ? new KStop() : new KGoto(outer) });
             return label;
@@ -731,7 +778,7 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
-                        case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": case "EnsuresOnThrow": return; // (the contract; the loop heads)
+                        case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": case "EnsuresOnThrow": case "Reads": return; // (the contract; the loop heads)
                         case "Fold": case "Unfold":
                         {
                             var whole = SpecArgument(inv);
@@ -795,7 +842,7 @@ namespace CsVerify.Verifier.Boogie
                 case IFlowCaptureOperation en when _forEach.TryGetValue(en.Id, out var fe):
                 {
                     // the collection, evaluated once (a null one throws), and the index at its start
-                    var coll = Expr(Unconverted(((IInvocationOperation)en.Value).Instance ?? ((IInvocationOperation)en.Value).Arguments[0].Value));
+                    var coll = Expr(fe.Of ?? Unconverted(((IInvocationOperation)en.Value).Instance ?? ((IInvocationOperation)en.Value).Arguments[0].Value));
                     Emit(new KAssign { Var = fe.Array, Value = coll });
                     Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
                     // (its length, read once: where a null one throws)
@@ -1713,6 +1760,13 @@ namespace CsVerify.Verifier.Boogie
                 // (ghost code: mathematics, in code too)
                 case IInvocationOperation go when SpecSymbols.IsCsVerifyType(go.TargetMethod.ContainingType, "Ghost") && go.TargetMethod.Name == "Of" && go.Arguments.Length == 1:
                     return inSpec ? lower(go.Arguments[0].Value) : Spec(go.Arguments[0].Value, null);
+                // (a ghost set of objects' members, ObjSet.Empty, ==: mathematics in code too)
+                case IInvocationOperation os when !inSpec && IsObjSet(os.TargetMethod.ContainingType):
+                    return Spec(os, null);
+                case IPropertyReferenceOperation { Property.Name: "Empty", Instance: null } oe when !inSpec && IsObjSet(oe.Type):
+                    return Spec(oe, null);
+                case IBinaryOperation ob when !inSpec && ob.OperatorMethod != null && IsObjSet(ob.OperatorMethod.ContainingType):
+                    return Spec(ob, null);
                 case IPropertyReferenceOperation gv when gv.Property.Name == "Value" && IsGhost(gv.Instance?.Type) &&
                                                          !(gv.Instance is IPropertyReferenceOperation { Property.Name: "Obj" } obj && (IsView(obj.Instance?.Type) || IsShare(obj.Instance?.Type))):
                     return lower(gv.Instance);
@@ -1722,7 +1776,8 @@ namespace CsVerify.Verifier.Boogie
                 case IIsTypeOperation it when IsData(it.TypeOperand) && !it.IsNegated:
                     Data(it.TypeOperand);
                     return IsCase(Operand(it.ValueOperand, lower, inSpec), it.TypeOperand);
-                case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type):
+                case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type) ||
+                                                 (IsRef(ip.Value.Type) || IsString(ip.Value.Type)) && NullPattern(ip.Pattern):
                 {
                     var v = Operand(Unconverted(ip.Value), lower, inSpec);
                     return Pattern(ip.Pattern, v, Unconverted(ip.Value).Type, lower, bind);
@@ -1774,6 +1829,18 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A pattern, as a condition of the value; the variables it declares bound to their parts.</summary>
+        /// <summary>A pattern of a reference that tests only for null: is null, is not null, a discard, a declaration of its own type (x is { } y too).</summary>
+        private static bool NullPattern(IPatternOperation p) => p switch
+        {
+            IConstantPatternOperation cp => cp.Value.ConstantValue is { HasValue: true, Value: null },
+            INegatedPatternOperation np => NullPattern(np.Pattern),
+            IDiscardPatternOperation _ => true,
+            IDeclarationPatternOperation d => SymbolEqualityComparer.Default.Equals(d.MatchedType?.WithNullableAnnotation(NullableAnnotation.None), d.InputType.WithNullableAnnotation(NullableAnnotation.None)),
+            IRecursivePatternOperation r => r.DeconstructionSubpatterns.Length == 0 && r.PropertySubpatterns.Length == 0 &&
+                                            (r.MatchedType == null || SymbolEqualityComparer.Default.Equals(r.MatchedType.WithNullableAnnotation(NullableAnnotation.None), r.InputType.WithNullableAnnotation(NullableAnnotation.None))),
+            _ => false,
+        };
+
         private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
         {
             KExpr TypeTest(ITypeSymbol t)
@@ -1806,6 +1873,10 @@ namespace CsVerify.Verifier.Boogie
                 case INegatedPatternOperation np: return new KOp("!", Pattern(np.Pattern, v, type, lower, bind));
                 case IBinaryPatternOperation bp:
                     return new KOp(bp.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Pattern(bp.LeftPattern, v, type, lower, bind), Pattern(bp.RightPattern, v, type, lower, bind));
+                // (x is { } y of a reference: not null)
+                case IRecursivePatternOperation rn when !IsData(type) && NullPattern(rn):
+                    if (rn.DeclaredSymbol is ILocalSymbol rl) bind(rl, v);
+                    return new KOp("!=", v, new KLit("null"));
                 case IRecursivePatternOperation rp when rp.MatchedType == null || IsData(rp.MatchedType):
                 {
                     var matched = rp.MatchedType ?? type;
@@ -1861,6 +1932,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A way out of a block: through the finallies it leaves (innermost first), then to where it goes.</summary>
         private KJump Edge(BasicBlock from, ControlFlowBranch branch)
         {
+            // (a filter's false: on to the next handler)
+            if (branch != null && branch.Destination == null && branch.Semantics == ControlFlowBranchSemantics.StructuredExceptionHandling &&
+                from.EnclosingRegion.Kind == ControlFlowRegionKind.Filter)
+                return new KGoto(FilterFalse(from.EnclosingRegion));
             var target = To(from, branch?.Destination);
             if (branch == null) return target;
             var fins = branch.FinallyRegions.Where(f => !_erased.Contains(f.EnclosingRegion)).ToList();
@@ -1925,6 +2000,72 @@ namespace CsVerify.Verifier.Boogie
         private ITypeSymbol Actual(ITypeSymbol t) =>
             t is ITypeParameterSymbol tp && _contract.IsStub && IsCollection(_m.ContainingType) && tp.Ordinal < ((INamedTypeSymbol)_m.ContainingType).TypeArguments.Length
                 ? ((INamedTypeSymbol)_m.ContainingType).TypeArguments[tp.Ordinal] : t;
+
+        /// <summary>
+        /// A [Pure] body of more than one expression, as one (CsVerify's engine's PureStatementsTerm): local declarations
+        /// bound in what follows, ifs as ?:, returns; Spec statements and lemmas skipped. Null where it's anything else
+        /// (the function is then of its contract alone).
+        /// </summary>
+        private KExpr PureStatements(IReadOnlyList<IOperation> ops, int i)
+        {
+            if (i >= ops.Count) return null;
+            var op = ops[i];
+            IReadOnlyList<IOperation> Then(IOperation first) =>
+                (first is IBlockOperation b ? b.Operations : (IEnumerable<IOperation>)new[] { first }).Concat(ops.Skip(i + 1)).ToList();
+            try
+            {
+                switch (op)
+                {
+                    case IReturnOperation ret when ret.ReturnedValue != null:
+                        return Spec(ret.ReturnedValue, null);
+                    case IBlockOperation block:
+                        return PureStatements(Then(block), 0);
+                    case IVariableDeclarationGroupOperation group:
+                    {
+                        var binds = new List<(string, KExpr)>();
+                        foreach (var decl in group.Declarations)
+                            foreach (var v in decl.Declarators)
+                            {
+                                var init = v.Initializer?.Value ?? decl.Initializer?.Value;
+                                if (init == null || !InSubset(v.Symbol.Type)) return null;
+                                binds.Add((Local(v.Symbol), Spec(init, null)));
+                            }
+                        var rest = PureStatements(ops, i + 1);
+                        if (rest == null) return null;
+                        for (int k = binds.Count - 1; k >= 0; k--) rest = new KLet { Var = binds[k].Item1, Value = binds[k].Item2, Body = rest };
+                        return rest;
+                    }
+                    case IConditionalOperation cond when cond.Type == null || cond.Type.SpecialType == SpecialType.System_Void:
+                    {
+                        var c = Spec(cond.Condition, null);
+                        var yes = PureStatements(Then(cond.WhenTrue), 0);
+                        var no = cond.WhenFalse != null ? PureStatements(Then(cond.WhenFalse), 0) : PureStatements(ops, i + 1);
+                        return yes == null || no == null ? null : new KOp("ite", c, yes, no);
+                    }
+                    case IExpressionStatementOperation es when es.Operation is IInvocationOperation inv &&
+                                                              (SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract lc && lc.IsLemma):
+                        return PureStatements(ops, i + 1);
+                    default:
+                        return null;
+                }
+            }
+            catch (NotTranslated) { return null; }
+        }
+
+        /// <summary>A collection interface's Count or element: of an array, a modeled collection, or the state (unknown at each read where the program implements it).</summary>
+        private KExpr Ifc(IPropertyReferenceOperation p, KExpr index, KExpr of, bool inSpec)
+        {
+            var ifc = (INamedTypeSymbol)p.Property.ContainingType;
+            var element = ifc.TypeArguments[0];
+            // (the program's own implementations of any of these interfaces make reads through them unknown, as in CsVerify's engine)
+            bool fresh = new[] { "IList", "IReadOnlyList", "ICollection", "IReadOnlyCollection" }.Any(n =>
+                KernelTypes.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{n}`1") is INamedTypeSymbol d && ImplementedHere(d));
+            if (fresh && inSpec) throw new NotTranslated("a collection interface the program implements, in a specification");
+            var list = (INamedTypeSymbol)KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
+            foreach (var m in ModelsOf(list)) _p.Models[m.Name] = m;
+            _p.UsesState = true;
+            return new KIfc { Item = index != null, Of = of, Index = index, Element = element, Fresh = fresh, At = p.Syntax, OfAt = p.Instance.Syntax };
+        }
 
         private KExpr Model(string name, INamedTypeSymbol collection, KExpr of)
         {
@@ -2079,9 +2220,12 @@ namespace CsVerify.Verifier.Boogie
                 // (a computed property: its getter, called)
                 case IPropertyReferenceOperation cp when IsComputed(cp.Property) && cp.Property.GetMethod != null:
                     return Invoke(cp.Property.GetMethod, cp.Instance, cp.Arguments, cp.Syntax, null);
+                // (a dictionary's Keys.Count or Values.Count: its Count)
+                case IPropertyReferenceOperation { Property.Name: "Count", Instance: IPropertyReferenceOperation { Property.Name: "Keys" or "Values", Instance: { } vd } } when CollectionKind(vd.Type) == "Dictionary" && IsCollection(vd.Type):
+                    return Invoke(((INamedTypeSymbol)vd.Type).GetMembers("Count").OfType<IPropertySymbol>().First().GetMethod, vd, new IArgumentOperation[0], e.Syntax, null);
                 case IFieldReferenceOperation _:
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
-                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2"):
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e);
                     if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis)) return AtomicRead(field, instance, onThis, e.Syntax);
@@ -2124,6 +2268,17 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
                     return new KVar(t);
                 }
+                // (an array or a modeled collection as a collection interface: what it is goes with it)
+                case IConversionOperation ci when ci.IsImplicit && IsCollectionInterface(ci.Type) && (IsArray(ci.Operand.Type) || IsCollection(ci.Operand.Type)):
+                {
+                    var t = Declare("t$" + _temps++, ci.Type);
+                    Emit(new KAssign { Var = t, Value = Expr(ci.Operand) });
+                    Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")), new KOp(IsArray(ci.Operand.Type) ? "$arr" : "$coll", new KVar(t))) });
+                    return new KVar(t);
+                }
+                case IPropertyReferenceOperation ir when ir.Instance != null && IsCollectionInterface(ir.Property.ContainingType) &&
+                                                         (ir.Property.Name == "Count" && ir.Arguments.Length == 0 || ir.Property.IsIndexer && ir.Arguments.Length == 1):
+                    return Ifc(ir, ir.Property.IsIndexer ? Expr(ir.Arguments[0].Value) : null, Expr(ir.Instance), inSpec: false);
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
                 case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
@@ -2693,7 +2848,7 @@ namespace CsVerify.Verifier.Boogie
             for (int k = 0; k < ins.Count; k++)
             {
                 var ordinal = ins[k].Parameter.Ordinal;
-                args[ordinal] = list ? inValues[k] : Box(inValues[k], callee.OriginalDefinition.Parameters[ordinal].Type, ins[k].Parameter.Type);
+                args[ordinal] = list ? Keyed(inValues[k], ins[k].Parameter.Type) : Box(inValues[k], callee.OriginalDefinition.Parameters[ordinal].Type, ins[k].Parameter.Type);
             }
             if (value != null) args[ordered.Count] = list ? value : Box(value, callee.OriginalDefinition.Parameters.Last().Type, constructed.Parameters.Last().Type);
             foreach (var (ordinal, v) in refOuts) args[ordinal] ??= new KVar(v);
@@ -2813,8 +2968,8 @@ namespace CsVerify.Verifier.Boogie
                                     At = own.Syntax, SlotAt = slot.Syntax, ValueAt = args[1].Value.Syntax, ViewAt = args[2].Value.Syntax });
                     return null;
                 }
-                case "Tree" when KernelTypes.Trees:
-                    return new KOp("$tree", Expr(own.Arguments[0].Value));
+                case "Tree":
+                    return KernelTypes.Trees ? new KOp("$tree", Expr(own.Arguments[0].Value)) : new KOp("set.of", Expr(own.Arguments[0].Value));
                 // (Own.Share(ref v, out s): a read share of v's object; Own.Unshare(ref v, s) joins it back)
                 case "Share" when IsView(own.Arguments[0].Value.Type):
                     Emit(new KOwn { Kind = "share", Obj = Expr(own.Arguments[0].Value), View = RefVariable(own.Arguments[1]), Type = ViewOf(own.Arguments[0].Value.Type), At = own.Syntax });
@@ -2882,7 +3037,7 @@ namespace CsVerify.Verifier.Boogie
                     };
                 case IFieldReferenceOperation _:
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
-                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2"):
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
                     return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
@@ -2900,7 +3055,7 @@ namespace CsVerify.Verifier.Boogie
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Spec(u.Operand, result);
                 case IConditionalOperation c when c.WhenFalse != null:
                     return new KOp("ite", Spec(c.Condition, result), Spec(c.WhenTrue, result), Spec(c.WhenFalse, result));
-                case IBinaryOperation b when b.OperatorMethod == null:
+                case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.LeftOperand.Type) && IsString(b.RightOperand.Type)):
                 {
                     var l = Spec(b.LeftOperand, result);
                     var r = Spec(b.RightOperand, result);
@@ -2958,6 +3113,11 @@ namespace CsVerify.Verifier.Boogie
                     return Model(mo.TargetMethod.Name, mc, Spec(Unconverted(mo.Arguments[0].Value), result));
                 case IPropertyReferenceOperation lc when lc.Property.Name == "Count" && CollectionOf(lc.Instance?.Type) is INamedTypeSymbol cc:
                     return Model("Size", cc, Spec(lc.Instance, result));
+                case IPropertyReferenceOperation sr when sr.Instance != null && IsCollectionInterface(sr.Property.ContainingType) &&
+                                                         (sr.Property.Name == "Count" && sr.Arguments.Length == 0 || sr.Property.IsIndexer && sr.Arguments.Length == 1):
+                    return Ifc(sr, sr.Property.IsIndexer ? Spec(sr.Arguments[0].Value, result) : null, Spec(sr.Instance, result), inSpec: true);
+                case IPropertyReferenceOperation { Property.Name: "Count", Instance: IPropertyReferenceOperation { Property.Name: "Keys" or "Values", Instance: { } sd } } when CollectionOf(sd.Type) is INamedTypeSymbol sdc && CollectionKind(sdc) == "Dictionary":
+                    return Model("Size", sdc, Spec(sd, result));
                 case IPropertyReferenceOperation li when li.Property.IsIndexer && CollectionOf(li.Instance?.Type) is INamedTypeSymbol ic && li.Arguments.Length == 1 &&
                                                          CollectionKind(ic) is "List" or "Dictionary":
                 {
@@ -2966,7 +3126,7 @@ namespace CsVerify.Verifier.Boogie
                     var bound = ModelOf(dict ? "Domain" : "Size", ic);
                     _p.Models[items.Name] = items;
                     _p.Models[bound.Name] = bound;
-                    return new KElem { Model = items.Name, Domain = dict ? bound.Name : null, Array = Spec(li.Instance, result), Index = Spec(li.Arguments[0].Value, result),
+                    return new KElem { Model = items.Name, Domain = dict ? bound.Name : null, Array = Spec(li.Instance, result), Index = dict ? Keyed(Spec(li.Arguments[0].Value, result), li.Arguments[0].Value.Type) : Spec(li.Arguments[0].Value, result),
                                        InSpec = true, At = li.Syntax, ArrayAt = li.Instance.Syntax };
                 }
                 // (a dictionary's ContainsKey and a set's Contains: its model, as their stubs say)
@@ -2976,7 +3136,7 @@ namespace CsVerify.Verifier.Boogie
                     var model = ModelOf(CollectionKind(cd) == "Dictionary" ? "Domain" : "Members", cd);
                     _p.Models[model.Name] = model;
                     var of = Spec(ck.Instance, result);
-                    return new KOp("&&", new KOp("!=", of, new KLit("null")), new KOp("sel", new KVar(model.Name), of, Spec(ck.Arguments[0].Value, result)));
+                    return new KOp("&&", new KOp("!=", of, new KLit("null")), new KOp("sel", new KVar(model.Name), of, Keyed(Spec(ck.Arguments[0].Value, result), ck.Arguments[0].Value.Type)));
                 }
                 case IPropertyReferenceOperation sk when IsPair(sk.Instance?.Type) && sk.Property.Name is "Key" or "Value":
                     return Pair(Spec(sk.Instance, result), sk.Instance.Type, sk.Property.Name);
@@ -3009,11 +3169,41 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation go when SpecSymbols.IsCsVerifyType(go.TargetMethod.ContainingType, "Ghost") && go.TargetMethod.Name == "Of" && go.Arguments.Length == 1:
                     return Spec(go.Arguments[0].Value, result);
                 case IBinaryOperation gb when gb.OperatorMethod != null && gb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
-                                              (SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Seq`1") || SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Ghost`1") ||
+                                              (SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Seq`1") || SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Ghost`1") || IsObjSet(gb.OperatorMethod.ContainingType) ||
                                                SpecSymbols.IsCsVerifyType(gb.OperatorMethod.ContainingType, "Map`2")):
                     return new KOp(gb.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", Spec(gb.LeftOperand, result), Spec(gb.RightOperand, result));
                 case IConversionOperation gc when gc.OperatorMethod != null && SpecSymbols.IsCsVerifyType(gc.OperatorMethod.ContainingType, "Ghost`1"):
                     return Spec(gc.Operand, result);
+                // (multisets: Spec.Multiset of an integer array, and Bag's values, maps from value to count)
+                case IInvocationOperation ms when SpecSymbols.IsSpecClass(ms.TargetMethod.ContainingType) && ms.TargetMethod.Name == "Multiset" && ms.Arguments.Length == 2 &&
+                                                  Unconverted(ms.Arguments[0].Value).Type is IArrayTypeSymbol { ElementType: var et } && IsIntegral(et):
+                {
+                    var arr = Unconverted(ms.Arguments[0].Value);
+                    var count = ms.Arguments.First(x => x.Parameter.Ordinal == 1).Value;
+                    return new KMultiset { Array = Spec(arr, result), Count = Spec(count, result), ArrayType = arr.Type, At = ms.Syntax,
+                                           Levels = count.ConstantValue.Value is int k && k >= 0 && k <= 32 ? Math.Max(k, 1) : 1 };
+                }
+                case IPropertyReferenceOperation { Property.Name: "Empty", Instance: null } be when SpecSymbols.IsBag(be.Type):
+                    return new KLit("$bag.empty");
+                case IInvocationOperation bo when SpecSymbols.IsBag(bo.TargetMethod.ContainingType) && Scalar(Unconverted(bo.Arguments.LastOrDefault()?.Value)?.Type ?? bo.TargetMethod.ContainingType) || bo.TargetMethod.Name == "Union" && SpecSymbols.IsBag(bo.TargetMethod.ContainingType):
+                {
+                    var self = bo.Instance == null ? null : Spec(bo.Instance, result);
+                    var arg = bo.Arguments.Length == 1 ? Spec(Unconverted(bo.Arguments[0].Value), result) : null;
+                    switch (bo.TargetMethod.Name)
+                    {
+                        case "Of" when self == null && arg != null: return new KOp("$badd", new KLit("$bag.empty"), arg);
+                        case "Count" when self != null: return new KOp("sel", self, arg);
+                        case "Contains" when self != null: return new KOp("<", new KLit("0"), new KOp("sel", self, arg));
+                        case "Add" when self != null: return new KOp("$badd", self, arg);
+                        case "Union" when self != null: return new KOp("$bunion", self, arg);
+                        default: throw new NotTranslated("Bag's " + bo.TargetMethod.Name);
+                    }
+                }
+                case IBinaryOperation bb when bb.OperatorMethod != null && bb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && SpecSymbols.IsBag(bb.OperatorMethod.ContainingType):
+                    return new KOp(bb.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", Spec(bb.LeftOperand, result), Spec(bb.RightOperand, result));
+                // (an object's ownership tree: those with its root; without [Owns] fields, the object alone)
+                case IInvocationOperation ot when SpecSymbols.IsCsVerifyType(ot.TargetMethod.ContainingType, "Own") && ot.TargetMethod.Name == "Tree" && ot.Arguments.Length == 1:
+                    return KernelTypes.Trees ? new KOp("$tree", Spec(Unconverted(ot.Arguments[0].Value), result)) : new KOp("set.of", Spec(Unconverted(ot.Arguments[0].Value), result));
                 // (ghost sets of objects)
                 case IPropertyReferenceOperation { Property.Name: "Empty" } empty when IsObjSet(empty.Type) && empty.Instance == null:
                     return new KLit("(lambda r$: Ref :: false)");
@@ -3054,6 +3244,11 @@ namespace CsVerify.Verifier.Boogie
                     switch (inv.TargetMethod.Name)
                     {
                         case "Old": return new KOp("old", Spec(inv.Arguments[0].Value, result));
+                        // (Dafny's fresh: every object in the set is new since entry)
+                        case "Fresh" when inv.Arguments.Length == 1 && IsObjSet(Unconverted(inv.Arguments[0].Value).Type):
+                            // (a constructor's own object counts as new, as CsVerify's engine has it)
+                            return _p.IsCtor ? new KOp("set.freshc", Spec(Unconverted(inv.Arguments[0].Value), result), new KOp("old", new KVar("$Alloc")), new KVar("this"))
+                                             : new KOp("set.fresh", Spec(Unconverted(inv.Arguments[0].Value), result), new KOp("old", new KVar("$Alloc")));
                         case "Equal" when inv.Arguments.Length == 2: return new KOp("==", Spec(inv.Arguments[0].Value, result), Spec(inv.Arguments[1].Value, result));
                         // (what a Func or an Action accepts and gives, the same in every state; whether it changes nothing)
                         case "Pre" or "Post" or "Total" or "ChangesNothing" or "ReadsOf" when IsFunc(Unconverted(inv.Arguments[0].Value).Type):

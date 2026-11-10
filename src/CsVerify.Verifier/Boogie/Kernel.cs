@@ -80,6 +80,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Snap;
         /// <summary>Of its arguments alone (a library stub's): no layer, no memory.</summary>
         public bool Plain;
+        /// <summary>Of a snapshot of the memory (a call frame's, s<i>n</i>): its maps' names, so prefixed (null: the memory now).</summary>
+        public string MapsAt;
     }
 
     // (C#'s meaning, until Checks)
@@ -106,6 +108,35 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>An array's element (a read): checked for null and bounds in code, well-defined if so in a specification.</summary>
+    /// <summary>
+    /// A collection read through its interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection): its Count, or
+    /// its element at Index. An array's, a modeled collection's, or else a value of the state (Fresh: unknown at each read).
+    /// </summary>
+    internal sealed class KIfc : KExpr
+    {
+        public bool Item;
+        public KExpr Of, Index;
+        public ITypeSymbol Element;
+        public bool Fresh;
+        public SyntaxNode At, OfAt;
+    }
+
+    /// <summary>let Var = Value in Body: a local of a [Pure] body of statements (Checks substitutes it).</summary>
+    internal sealed class KLet : KExpr
+    {
+        public string Var;
+        public KExpr Value, Body;
+    }
+
+    /// <summary>Spec.Multiset(a, n): the multiset of an integer array's a[0..n), unfolded Levels elements where it's used.</summary>
+    internal sealed class KMultiset : KExpr
+    {
+        public KExpr Array, Count;
+        public ITypeSymbol ArrayType;
+        public int Levels;
+        public SyntaxNode At;
+    }
+
     internal sealed class KElem : KExpr
     {
         /// <summary>A string's character (s[i]), not an array's element.</summary>
@@ -546,6 +577,8 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
         public bool CallsDelegates;
+        /// <summary>It reads a collection through an interface: values of the state ($st), declared then.</summary>
+        public bool UsesState;
         /// <summary>A twin's: its preconditions free (a join's call, checked at its start).</summary>
         public bool FreeRequires;
         public KProcedure Clone() => (KProcedure)MemberwiseClone();
