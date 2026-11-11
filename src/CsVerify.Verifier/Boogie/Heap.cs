@@ -72,6 +72,17 @@ namespace CsVerify.Verifier.Boogie
                                 }
                             break;
                         }
+                        case KRow row when row.Ref == null:
+                            // (the whole map: a library call's arrays, any of them)
+                            p.Modifies.Add(row.Map);
+                            p.AnyWrites.Add(row.Map);
+                            stmts.Add(new KAssign { Var = row.Map, Value = row.Value });
+                            break;
+                        case KRow row:
+                            p.Modifies.Add(row.Map);
+                            p.AnyWrites.Add(row.Map);
+                            stmts.Add(new KMapUpdate { Map = row.Map, Ref = row.Ref, Value = row.Value });
+                            break;
                         case KFill fill:
                         {
                             p.Modifies.Add(fill.Map);

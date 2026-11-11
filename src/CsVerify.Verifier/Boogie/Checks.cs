@@ -549,6 +549,17 @@ namespace CsVerify.Verifier.Boogie
                 case KStore { Memory: true } ms:
                     Emit(new KStore { Array = new KLit("null"), Index = Code(ms.Index), Value = Code(ms.Value), ArrayType = ms.ArrayType, At = ms.At, ArrayAt = ms.ArrayAt, Checked = true });
                     return;
+                case KRow row when row.Ref == null:
+                    Emit(row);
+                    return;
+                case KRow row:
+                {
+                    var r = Code(row.Ref);
+                    var v = Spec(row.Value, out _);
+                    _facts.Clear();
+                    Emit(new KRow { Map = row.Map, Ref = r, Value = v });
+                    return;
+                }
                 case KFill fill:
                     Emit(new KFill { Map = fill.Map, Lo = Code(fill.Lo), Hi = Code(fill.Hi), Value = Code(fill.Value) });
                     return;
@@ -592,7 +603,7 @@ namespace CsVerify.Verifier.Boogie
                     try { term = Spec(ss.Spec, out wf); }
                     finally { _held = false; }
                     Facts();
-                    WellDefined(wf, ss.ArgumentAt, null);
+                    if (!ss.Free) WellDefined(wf, ss.ArgumentAt, null);
                     if (ss.Assume) Assume(term);
                     else Assert(term, At("CSV1004", ss.At, $"assertion '{ss.ArgumentAt}'"));
                     return;
@@ -1244,7 +1255,7 @@ namespace CsVerify.Verifier.Boogie
             KOp { Op: "old" } old => Before(old.Args[0], frame),
             KOp op => new KOp(op.Op, op.Args.Select(a => OldBefore(a, frame)).ToArray()),
             KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame) },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => OldBefore(a, frame)).ToArray(), Snap = f.Snap == null ? null : OldBefore(f.Snap, frame) },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => OldBefore(a, frame)).ToArray(), Snap = f.Snap == null ? null : OldBefore(f.Snap, frame) },
             _ => e,
         };
 
@@ -1259,11 +1270,11 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar($"s{frame.Id}{v.Name}");
                 case KOp op: return new KOp(op.Op, op.Args.Select(a => Before(a, frame)).ToArray());
                 case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame) };
-                case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
+                case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
                 // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
                 case KFnApp f when !f.Plain:
                     foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields)) frame.OldGlobals.Add(map);
-                    return new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Before(a, frame)).ToArray(), MapsAt = $"s{frame.Id}" };
+                    return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Before(a, frame)).ToArray(), MapsAt = $"s{frame.Id}" };
                 case KFnApp f:
                     return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = true, Args = f.Args.Select(a => Before(a, frame)).ToArray() };
                 default: return e;
@@ -2038,6 +2049,8 @@ namespace CsVerify.Verifier.Boogie
                     var bound = new Dictionary<string, KExpr> { [let.Var] = value };
                     for (int k = from; k < wf.Count; k++) wf[k] = Subst(wf[k], bound);
                     for (int k = facts; k < _facts.Count; k++) _facts[k] = Subst(_facts[k], bound);
+                    // (a fact of the local's value that now names a quantifier's variable isn't one of the state: dropped)
+                    for (int k = _facts.Count - 1; k >= facts; k--) if (Mentions(_facts[k], _bound)) _facts.RemoveAt(k);
                     return Subst(body, bound);
                 }
                 case KMultiset ms:
@@ -2194,7 +2207,7 @@ namespace CsVerify.Verifier.Boogie
             KVar v when _p.AssignedParams.TryGetValue(v.Name, out var now) => new KVar(now),
             KOp op => new KOp(op.Op, op.Args.Select(AtReturn).ToArray()),
             KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : AtReturn(q.Range), Body = AtReturn(q.Body) },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(AtReturn).ToArray(), Snap = f.Snap == null ? null : AtReturn(f.Snap) },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(AtReturn).ToArray(), Snap = f.Snap == null ? null : AtReturn(f.Snap) },
             _ => e,
         };
 
@@ -2207,7 +2220,7 @@ namespace CsVerify.Verifier.Boogie
             KVar v when given.TryGetValue(v.Name, out var x) => x,
             KOp op => new KOp(op.Op, op.Args.Select(a => Subst(a, given)).ToArray()),
             KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given) },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray(), Snap = f.Snap == null ? null : Subst(f.Snap, given) },
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray(), Snap = f.Snap == null ? null : Subst(f.Snap, given) },
             _ => e,
         };
     }

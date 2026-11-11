@@ -70,7 +70,8 @@ namespace CsVerify.Verifier.Boogie
             (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
             (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
             (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
-            c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0);
+            // (a base of the library's, IDisposable.Dispose say, with no contract: nothing inherited)
+            c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0 || b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null);
 
         /// <summary>A data type's constructor that does nothing (a closed base's private Avl() { }): nothing to verify.</summary>
         public static bool EmptyDataConstructor(IMethodSymbol m) =>
@@ -439,6 +440,7 @@ namespace CsVerify.Verifier.Boogie
                 _printer.Procedure(twin, writes[p.Method], any[p.Method], null);
             }
             _printer.Started.Clear();
+            _printer.Tuples();
             _pending.Clear();
         }
 

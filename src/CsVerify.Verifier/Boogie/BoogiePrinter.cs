@@ -41,6 +41,34 @@ namespace CsVerify.Verifier.Boogie
 
         private const string Tagged = "\u0001";
 
+        /// <summary>The tuples' element functions used ($tup.i.Kind): declared at the end.</summary>
+        private readonly HashSet<string> _tuples = new HashSet<string>();
+
+        private readonly HashSet<string> _tupleMakers = new HashSet<string>();
+
+        public void Tuples()
+        {
+            foreach (var mk in _tupleMakers.OrderBy(x => x, System.StringComparer.Ordinal))
+            {
+                var types = mk.Substring("$tupmk.".Length).Split('_').Select(t => t.StartsWith("-") ? "[" + t.Substring(1).Replace("-", "]") : t).ToList();
+                var ps = string.Join(", ", types.Select((t, i) => $"x{i}: {t}"));
+                var app = $"{mk}({string.Join(", ", types.Select((t, i) => "x" + i))})";
+                Line($"function {mk}({ps}): Ref;");
+                for (int i = 0; i < types.Count; i++)
+                {
+                    var item = $"$tup.{i}.{types[i].Replace("[", "_").Replace("]", "_")}";
+                    _tuples.Add(item);
+                    Line($"axiom (forall {ps} :: {{ {app} }} {item}({app}) == x{i});");
+                }
+            }
+            foreach (var f in _tuples.OrderBy(x => x, System.StringComparer.Ordinal))
+            {
+                var ty = f.Substring(f.IndexOf('.', 5) + 1);
+                var boogie = ty.StartsWith("_") ? "[" + ty.Substring(1).Replace("_", "]") : ty;
+                Line($"function {f}(t: Ref): {boogie};");
+            }
+        }
+
         /// <summary>A prelude line kept only where the program names this.</summary>
         private void Optional(string key, string text) => Line(Tagged + key + "\u0002" + text);
 
@@ -110,6 +138,28 @@ namespace CsVerify.Verifier.Boogie
             Optional("$arr(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
             foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
+            // (float and double as IEEE 754: Z3's floating point, rounding to nearest as .NET does)
+            foreach (var (n, t, size, bv) in new[] { ("32", "float24e8", "8 24", "bv32"), ("64", "float53e11", "11 53", "bv64") })
+            {
+                string F(string name, string builtin, string ps, string ret) { return $"function {{:builtin \"{builtin}\"}} $fp.{name}{n}({ps}): {ret};"; }
+                var x = $"x: {t}"; var xy = $"x: {t}, y: {t}";
+                foreach (var (name, op) in new[] { ("add", "fp.add RNE"), ("sub", "fp.sub RNE"), ("mul", "fp.mul RNE"), ("div", "fp.div RNE") }) Optional("$fp.", F(name, op, xy, t));
+                foreach (var (name, op) in new[] { ("eq", "fp.eq"), ("lt", "fp.lt"), ("leq", "fp.leq"), ("gt", "fp.gt"), ("geq", "fp.geq") }) Optional("$fp.", F(name, op, xy, "bool"));
+                foreach (var (name, op) in new[] { ("neg", "fp.neg"), ("abs", "fp.abs"), ("sqrt", "fp.sqrt RNE"), ("floor", "fp.roundToIntegral RTN"),
+                                                    ("ceil", "fp.roundToIntegral RTP"), ("trunc", "fp.roundToIntegral RTZ"), ("round", "fp.roundToIntegral RNE") })
+                    Optional("$fp.", F(name, op, x, t));
+                Optional("$fp.", F("fma", "fp.fma RNE", $"x: {t}, y: {t}, z: {t}", t));
+                foreach (var (name, op) in new[] { ("isNaN", "fp.isNaN"), ("isInf", "fp.isInfinite"), ("isPos", "fp.isPositive"), ("isNeg", "fp.isNegative"),
+                                                    ("isNormal", "fp.isNormal"), ("isSubnormal", "fp.isSubnormal") })
+                    Optional("$fp.", F(name, op, x, "bool"));
+                Optional("$fp.", F("real", "fp.to_real", x, "real"));
+                Optional("$fp.", F("ofReal", $"(_ to_fp {size}) RNE", "r: real", t));
+                Optional("$fp.", F("bits", $"(_ to_fp {size})", $"b: {bv}", t));
+            }
+            Optional("$toreal(", "function $toreal(i: int): real { real(i) }");
+            Optional("$toint(", "function $toint(r: real): int { int(r) }");
+            Optional("$fp.", "function {:builtin \"(_ to_fp 11 53) RNE\"} $fp.widen(x: float24e8): float53e11;");
+            Optional("$fp.", "function {:builtin \"(_ to_fp 8 24) RNE\"} $fp.narrow(x: float53e11): float24e8;");
             Optional("$mem.", "// manual memory (ATS's): a pointer's, a view's ghost properties, functions of it");
             Optional("$mem.", "function $mem.Addr(v: Ref): int;");
             Optional("$mem.", "function $mem.Length(v: Ref): int;");
@@ -128,8 +178,9 @@ namespace CsVerify.Verifier.Boogie
             Line("axiom (forall s: Ref, i: int :: { sat(s, i) } 0 <= sat(s, i) && sat(s, i) <= 65535);");
             Line("function sl(s: Ref): int { if s == null then 0 else slen(s) }");
             Line("function scat(a: Ref, b: Ref): Ref;");
-            Line("axiom (forall a: Ref, b: Ref :: { scat(a, b) } sl(a) + sl(b) <= 2147483647 ==> scat(a, b) != null && slen(scat(a, b)) == sl(a) + sl(b));");
-            Line("axiom (forall a: Ref, b: Ref, i: int :: { sat(scat(a, b), i) } sl(a) + sl(b) <= 2147483647 && 0 <= i && i < sl(a) + sl(b) ==> sat(scat(a, b), i) == (if i < sl(a) then sat(a, i) else sat(b, i - sl(a))));");
+            Line("// (a concatenation is as long as both, as CsVerify's engine has it: one too long throws OutOfMemoryException, a path not followed)");
+            Line("axiom (forall a: Ref, b: Ref :: { scat(a, b) } scat(a, b) != null && slen(scat(a, b)) == sl(a) + sl(b));");
+            Line("axiom (forall a: Ref, b: Ref, i: int :: { sat(scat(a, b), i) } 0 <= i && i < sl(a) + sl(b) ==> sat(scat(a, b), i) == (if i < sl(a) then sat(a, i) else sat(b, i - sl(a))));");
             Line("function sdiff(a: Ref, b: Ref): int;");
             Optional("$keyed(", "// a collection's string key: the string itself, marked; two marked keys of one content are one key (a string is its characters)");
             Optional("$keyed(", "function $key(s: Ref): bool;");
@@ -253,6 +304,8 @@ namespace CsVerify.Verifier.Boogie
                         case "streq": return $"({a[0]} == {a[1]})";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
+                        case var f when f.StartsWith("$tup."): _tuples.Add(f); return $"{f}({string.Join(", ", a)})";
+                        case var f when f.StartsWith("$tupmk."): _tupleMakers.Add(f); return $"{f}({string.Join(", ", a)})";
                         case var f when f.StartsWith("$") || f.StartsWith("mk."): return $"{f}({string.Join(", ", a)})";
                         default:
                             if (a.Length != 2) throw new NotTranslated("the kernel's operator " + op.Op);
@@ -382,7 +435,7 @@ namespace CsVerify.Verifier.Boogie
                 // (a collection through its interface, neither an array nor a modeled collection: values of the state)
                 Line("function $ocount(r: Ref, s: St): int;");
                 Line("axiom (forall r: Ref, s: St :: { $ocount(r, s) } 0 <= $ocount(r, s) && $ocount(r, s) <= 2147483647);");
-                foreach (var k in ElementTypes.Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)))
+                foreach (var k in ElementTypes.Where(t => !(t is SpecialType.System_Single or SpecialType.System_Double)).Select(t => t == SpecialType.System_Object ? "Ref" : t.ToString().Substring("System_".Length)))
                 {
                     Line($"function $oitem.{k}(r: Ref, i: int, s: St): {BoogieOf(k)};");
                     if (k is not ("Ref" or "Boolean"))

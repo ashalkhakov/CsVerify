@@ -37,7 +37,7 @@ public static class A
     public static void Assertion(int x) { Spec.Requires(x > 3); Spec.Assert(x > 4); }
     public static int BadInv(int n) { Spec.Requires(n >= 0 && n < 100); int i = 0; while (i < n) { Spec.Invariant(i < n); i++; } return i; }
     public static int BadPost(int x) { Spec.Ensures<int>(r => r > x); return x; }
-    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); double d = 0.5; int y = x; if (d > 1.0) y = 0; return y; }
+    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); decimal d = 0.5m; d = d + 1m; return x; }
     public static void Fill(int[] a, int v) { Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length && Spec.Forall(0, i, k => a[k] == v)); a[i] = v; } }
     public static int First(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
     public static int FirstBad(int[] a) => a[0];
@@ -557,7 +557,7 @@ public static class Fin
         public void FinallyAndUsing_BothEnginesReportTheSame()
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Finally) }, o));
-            Assert.Equal(11, Agree(c, b));
+            Assert.Equal(12, Agree(c, b));
             foreach (var bug in new[] { "Fin.Forgets", "Fin.Undoes", "Fin.Uses", "Fin.UsesBad" })
                 Assert.False(b[bug].Verified, bug);
             foreach (var good in new[] { "Fin.Digit", "Fin.Marks", "Fin.Nested", "Fin.Loop", "Fin.ResultKept", "Fin.UsingVar", "Res..ctor" })
@@ -1341,6 +1341,63 @@ public static class Il
                 Assert.True(r.Methods.Count > 0 && r.Methods.All(m => m.Engine == "boogie" && m.Verified),
                     name + ": " + string.Join(", ", r.Methods.Select(m => m.Name + "/" + m.Engine + (m.Verified ? "" : "!"))) + " " + r.BoogieFailure);
             }
+        }
+
+        // Monitor.Wait and Pulse, tasks one is given, tuples
+        private const string WaitsAndTuples = @"
+using System.Threading;
+using System.Threading.Tasks;
+public sealed class Qu
+{
+    private readonly object _lock = new object();
+    [GuardedBy(nameof(_lock))] private int _count;
+    public Qu() { _count = 0; }
+    [LockInvariant(nameof(_lock)), Pure] private bool Ok() => _count >= 0;
+    public void Put() { lock (_lock) { if (_count < 1000) _count++; Monitor.Pulse(_lock); } }
+    public int Take()
+    {
+        lock (_lock)
+        {
+            while (_count == 0) { Spec.Invariant(_count >= 0); Monitor.Wait(_lock); }
+            _count--;
+            return _count;
+        }
+    }
+    public void Bad() { lock (_lock) { _count = -1; Monitor.Wait(_lock); _count = 0; } }
+    public int Stale() { lock (_lock) { _count = 5; Monitor.Wait(_lock); Spec.Assert(_count == 5); return 0; } }
+}
+public sealed class Bx { public int V; }
+public static class Gt
+{
+    public static void W(Task t, Bx b) { int x = b.V; t.Wait(); Spec.Assert(b.V == x); }
+    public static async Task A(Task t, Bx b) { int x = b.V; await t; Spec.Assert(b.V == x); }
+    public static async Task<int> R(Task<int> t) { int v = await t; Spec.Assert(v >= 0); return v; }
+    public static int Res(Task<int> t) { return t.Result; }
+}
+public static class Tu
+{
+    public static (int lo, int hi) Order(int a, int b)
+    {
+        Spec.Ensures<(int lo, int hi)>(r => r.lo <= r.hi && (r.lo == a || r.lo == b));
+        return a <= b ? (a, b) : (b, a);
+    }
+    public static int Spread(int a, int b) { Spec.Ensures<int>(r => r >= 0); var (lo, hi) = Order(a, b); return hi - lo; }
+    public static int Swap(int a, int b) { Spec.Ensures<int>(r => r == b); int x = a, y = b; (x, y) = (y, x); return x; }
+    public static int Wrong(int a, int b) { Spec.Ensures<int>(r => r == a); var p = Order(a, b); return p.lo; }
+}
+";
+
+        [Fact]
+        public void WaitsAndTuples_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + WaitsAndTuples) }, o));
+            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
+            Assert.True(Agree(c, b) >= 14, "by Boogie: " + string.Join(", ", boogie));
+            var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
+            foreach (var bug in new[] { "Qu.Bad", "Qu.Stale", "Gt.A", "Gt.R", "Tu.Spread", "Tu.Wrong" })
+                Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
+            foreach (var good in new[] { "Qu.Put", "Qu.Take", "Gt.W", "Tu.Order", "Tu.Swap" })
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
         }
 
         [Fact]

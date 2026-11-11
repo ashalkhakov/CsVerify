@@ -403,6 +403,50 @@ but `Spec` and `Math`) takes no memory, so its value is the same before and afte
 
 Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state).
 
+**Floats.** `float` and `double` are IEEE 754 binary32 and binary64, Boogie's `float24e8` and `float53e11`, exactly
+as CsVerify's engine has them (Z3's floating point): `+ - * /` round to nearest (`$fp.add32` and the like, declared
+`{:builtin "fp.add RNE"}`), `==` is IEEE's (`fp.eq`: NaN isn't itself, -0.0 is 0.0), `<` and the rest are false at
+NaN, a literal is its bits (`$fp.bits32(1065353216bv32)`). An integer converts through the reals (`(_ to_fp 8 24) RNE`
+of `real(i)`), a float to the other float type rounds; a float cast to an integer type truncates and must fit, not
+NaN, infinite or out of range (CSV1010), its value then `int(fp.to_real(trunc(x)))`. `float.IsNaN` and the other tests
+are Z3's, `Math.Abs`, `Sqrt`, `Floor`, `Ceiling`, `Truncate`, `Round` (to even), `FusedMultiplyAdd` exact, `Min` and
+`Max` .NET's (NaN if either is; -0.0 below 0.0); `Sin`, `Exp` and the like are values not known, and `%` (C's fmod,
+not IEEE's remainder) isn't translated. Fields, records and arrays of floats hold them as they are (`$E.Single`,
+`$E.Double` where the program has float arrays), +0.0 by default.
+
+**Tuples.** A tuple of the subset's values is a value whose elements are functions of it (`$tup.0.int(t)`): `(x, y)`
+makes one (a literal at the type it's converted to too), `t.k` reads one, `var (a, b) = t` and `(a, b) = (b, a)` read
+every element before assigning any. Two tuples compared with `==` aren't translated.
+
+**Strings, as values.** `a + b` of strings is as long as both and has their characters, as CsVerify's engine has it
+(one too long throws OutOfMemoryException, a path not followed); `==` of strings in a specification gets the fact a
+comparison in code does (of one length and different, they differ somewhere).
+
+**LINQ.** LINQ to Objects is read member by member as its definitions (`Bcl/Linq.cs`) say, CsVerify's engine's way
+(Lowering.Linq): a source the verifier indexes (an array, a List, a list interface) is a sequence of a length and
+elements, read where the call is (not null, CSV1013). `Select` maps it (with an index too), `Where` and `Distinct`
+filter it (a running count `c` of the matches and each match's index `ix`, increasing), `OrderBy` and `ThenBy`
+permute it stably in their keys' order (a bijection `p` and its inverse; keys are ordered where they are integers or
+chars), `Zip` pairs two, `SelectMany` flattens (running offsets, monotone, and each element's outer index), `Join`
+filters the pairs of a flattening; `Count`, `Any`, `All`, `Contains`, `First`, `Last` (and `OrDefault`), `Max`, `Min`,
+`Sum` (every partial sum in range, CSV1001, as .NET adds them checked) and `Average` read it, their definitions'
+preconditions CSV1001 (an empty sequence has no `First`); `ToArray` and `ToList` copy it into a new object. A double
+`Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query reads it into a map where the loop
+starts; over a `GroupBy`, each group is its key's first element's index, its `Key` that element's key, and a `foreach`
+over it the source's elements of that key, as read when the groups were. Lambdas are inlined where they are pure
+expressions (anonymous objects and tuples in them are tuples, made by a function of their parts); the running counts
+and permutations are maps havocked where the call is, their definitions assumed, so a call in a loop gets new ones each
+time round. Query syntax (`from s in xs let b = ... where ... select b`) is the calls it is. Not yet: `GroupJoin`, and
+the members not named here (they fall back).
+
+**Library calls without a stub.** A library member with neither a stub nor sources is CsVerify's engine's library
+call: what it is handed decides what it may change. It may write the arrays it's handed (any of the element maps,
+then) where CsVerify's engine says it may write memory (`MayWriteHeap`), and anything where what it's handed may run
+the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. Its `ref` and `out` arguments and its
+result are values not known, not null where they're declared so; its receiver mustn't be null (CSV1013). A library
+object (`Random`, a `TextWriter`) is a reference, its `new` a new one. Not yet where it's handed a delegate, where
+exceptions are seen (a `try` with catches around it), or where cells are held.
+
 **Manual memory.** ATS's views of `Mem`'s cells, on CsVerify's engine's model: the cells are the element maps' rows at
 `null` (`$E.Int32[null][a]`), and a view holds permissions to its cells as `Spec.Acc` holds an array's (array mode).
 A `Ptr<T>`, `PointsTo<T>`, `ArrayView<T>`, `ArrayHole<T>` or `FreeGc<T>` of scalars is a value whose ghost properties
@@ -751,8 +795,19 @@ are taken, what a call may take (through every call, override and callback), del
 proves: two locks of one `OrderedBy` field or class, of two objects (a variable's, a parameter's, a readonly field's,
 or this), are taken in increasing order of their id, where both are taken (`from.Id < to.Id` before `lock (from.Lock)
 lock (to.Lock)`) and at a call that takes the second of an argument (CSV1025). A lock may be another object's lock
-field, its guarded fields forgotten at that object, or an object of a class with a level. A call under a lock that may
-take the same lock again, and array elements as locks, aren't translated yet.
+field, its guarded fields forgotten at that object, or an object of a class with a level. A call under a lock that
+takes the same object's lock again is fine (a monitor is reentrant); where the order of two objects' locks can't be
+told (a call of what takes the second of something that isn't a local, a parameter or a field), CSV1025, as CsVerify's
+engine says. Array elements as locks aren't translated yet.
+
+`Monitor.Wait(o)` gives `o`'s lock back and takes it again: its invariants are proved at the call (CSV1024), what it
+guards is forgotten, and its invariants are assumed again; with a timeout it says whether it was pulsed (unknown).
+`Pulse` and `PulseAll` change nothing here. That the lock is held, and nothing else is, are the static checks
+(CSV1023, CSV1025).
+
+**Tasks one is given.** A `Task` or `Task<T>` parameter or local not started here is a reference: `await t` lets other
+code run (what the method doesn't hold is forgotten) and gives a value nothing is known of; `t.Wait()` is a library
+call that changes nothing here, and `t.Result` a value not known, as in CsVerify's engine.
 
 **Atomic fields.** An `[Atomic(Step = nameof(S))]` field's map is what this thread last saw or wrote there. A read in
 code first lets the others take steps (a fresh value, the same or `S(last, now)`), and is then known; a plain write is
@@ -864,7 +919,9 @@ two quickly.
 
 A procedure that times out is verified once more an assertion at a time (`/vcsSplitOnEveryAssert`, for it alone), as
 CsVerify's engine proves its obligations one by one. Only if that times out too does CsVerify's engine verify it
-(CSV1900). Base64's encoder, decoder and round trip need it.
+(CSV1900). Base64's encoder, decoder and round trip need it. An assertion the split doesn't prove is no evidence of a
+bug (each is then without what the solver learned from the others): the method is then undecided too (CSV1900), and
+CsVerify's engine verifies it where it is the fallback.
 
 CsVerify's engine's checks made from the syntax and the declarations alone (`MethodVerifier.Run` with `StaticOnly`:
 locking, lock levels, atomics, flags, concurrency marks, Entity Framework contexts, a data type's invariant's
@@ -910,13 +967,19 @@ methods that fall back for it):
    lending without `[Owns]` fields, `ObjSet` fields, functions with parameters beyond the instance's, snapshots' states;
    functions over two instances aren't needed by any sample);
 7. `ArrayView`, `PointsTo` and `Mem` (done);
-8. `Monitor.Wait` and `Pulse`, locks taken again through calls, tasks one is given;
-9. tasks whose permissions overlap, without the timeout that hands them to CsVerify's engine now (CSV1900);
-10. floats;
-11. the library's stub contracts in general, then LINQ;
+8. `Monitor.Wait` and `Pulse`, locks taken again through calls, tasks one is given (done);
+9. tasks whose permissions overlap, without the timeout that hands them to CsVerify's engine now (CSV1900) (done: such
+   a method is decided now, and reports what CsVerify's engine does, though slowly: about 20 s);
+10. floats (done);
+11. the library's stub contracts in general, then LINQ (LINQ done but `GroupJoin`; the library calls without a stub
+    next: what they're handed decides what they may change, as CsVerify's engine has it);
 12. Entity Framework;
-13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, until nothing is left
-    untranslated;
+13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, and the whole test suite
+    with `CSVERIFY_ENGINE=boogie` and `CSVERIFY_TRACE_FILE`, until nothing is left untranslated (the first, of the
+    suite after step 8: 77 methods, every one in the samples; the tests' own programs all translate): tuples and
+    deconstruction, string concatenation in loops (`arithmetic on string`), `int?`, `IDisposable.Dispose`'s inherited
+    contract, library objects (`SemaphoreSlim`, `Channel`, `TextWriter`, `Random`, `Console`, `Thread.Sleep`,
+    `TryGetValue`, `Array.Fill`), static constructors, locks of array elements, `ValueTask`, async enumerables;
 14. the Boogie engine the default (CsVerify's engine a fallback for a release);
 15. CsVerify's engine's symbolic execution removed, its static checks a module of their own, the differential
     tests expected diagnostics;

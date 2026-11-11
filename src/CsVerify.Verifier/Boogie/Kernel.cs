@@ -344,6 +344,13 @@ namespace CsVerify.Verifier.Boogie
         public bool Grant;
     }
 
+    /// <summary>Map[Ref] := Value, Value a specification (a new array's row, a new list's Items or Size: LINQ's copies).</summary>
+    internal sealed class KRow : KStmt
+    {
+        public string Map;
+        public KExpr Ref, Value;
+    }
+
     /// <summary>Memory cells [Lo, Hi) of Map's row at null set to Value (AllocArray's fill).</summary>
     internal sealed class KFill : KStmt
     {
@@ -516,6 +523,8 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Spec;
         public bool Assume;
+        /// <summary>A fact assumed as it is (what a library member gives, as mathematics): no well-definedness of its own.</summary>
+        public bool Free;
         public SyntaxNode At, ArgumentAt;
     }
 

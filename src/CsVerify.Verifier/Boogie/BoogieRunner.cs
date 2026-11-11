@@ -24,7 +24,13 @@ namespace CsVerify.Verifier.Boogie
             if (undecided.Count == 0) return failures;
             var (again, _) = Run(program, z3Path, timeoutMs, undecided);
             var redone = new HashSet<MethodResult>(failures.Where(f => f.diagnostic.Id == "CSV1900").Select(f => f.method));
-            return failures.Where(f => !redone.Contains(f.method)).Concat(again.Where(f => redone.Contains(f.method))).ToList();
+            // (split, an assertion that isn't proved is no evidence of a bug: each is then without what the solver
+            // learned from the others. A redone method proved whole by its parts is verified; else it stays undecided,
+            // for CsVerify's engine to verify where it is the fallback)
+            var undecidedAgain = again.Where(f => redone.Contains(f.method)).GroupBy(f => f.method)
+                .Select(g => g.FirstOrDefault(f => f.diagnostic.Id == "CSV1900") is var u && u.method != null ? u
+                    : (g.Key, new VerificationDiagnostic("CSV1900", false, "Boogie couldn't decide it: split an assertion at a time, one wasn't proved", g.First().diagnostic.Span)));
+            return failures.Where(f => !redone.Contains(f.method)).Concat(undecidedAgain).ToList();
         }
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided) Run(

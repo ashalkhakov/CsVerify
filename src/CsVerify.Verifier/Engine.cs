@@ -646,9 +646,12 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
+            Boogie.KernelTypes.FloatArrays = Boogie.KernelTypes.NamesFloatArrays(compilation);
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.Started = engine.StartedDelegates;
             Boogie.KernelTypes.Levels = engine.Levels;
+            Boogie.KernelTypes.MayWriteHeap = engine.MayWriteHeap;
+            Boogie.KernelTypes.WritesFieldsAt = engine.Fields.WritesFieldsAt;
             Boogie.KernelTypes.Trees = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
                 .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
@@ -944,6 +947,7 @@ namespace CsVerify.Verifier
                 {
                     RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + undecided.Message, x.decl.GetLocation().GetLineSpan()));
+                    Trace($"undecided by Boogie: {x.result.Name}: {undecided.Message}");
                     continue;
                 }
                 x.result.Clear();
