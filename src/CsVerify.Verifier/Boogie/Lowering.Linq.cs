@@ -28,6 +28,37 @@ namespace CsVerify.Verifier.Boogie
             public ITypeSymbol Type;
             /// <summary>A filter's: the source index of its element i.</summary>
             public Func<KExpr, KExpr> Index;
+            /// <summary>A GroupBy's groups: the call (its source, key and counts in _groupsOf).</summary>
+            public IInvocationOperation Groups;
+        }
+
+        /// <summary>A GroupBy's: its source as read, its key, and how many of the source have each element's key.</summary>
+        private readonly Dictionary<IInvocationOperation, (LSeq src, (IOperation, IParameterSymbol, IParameterSymbol) key, KVar count)> _groupsOf =
+            new Dictionary<IInvocationOperation, (LSeq, (IOperation, IParameterSymbol, IParameterSymbol), KVar)>();
+
+        /// <summary>
+        /// A selector's parameter that is a group (q$name its value): a GroupBy's (its first element's index; its key, its
+        /// count) or a GroupJoin's matches (the outer element's index; their count).
+        /// </summary>
+        private readonly Dictionary<IParameterSymbol, (LSeq src, (IOperation, IParameterSymbol, IParameterSymbol)? key, KVar count)> _groupParams =
+            new Dictionary<IParameterSymbol, (LSeq, (IOperation, IParameterSymbol, IParameterSymbol)?, KVar)>(SymbolEqualityComparer.Default);
+
+        /// <summary>A group's Key, Count(): their values (null for anything else; another use of a group isn't translated).</summary>
+        private KExpr GroupValue(IOperation e)
+        {
+            if (_groupParams.Count == 0) return null;
+            switch (e)
+            {
+                case IPropertyReferenceOperation { Property.Name: "Key", Instance: IParameterReferenceOperation p } when _groupParams.TryGetValue(p.Parameter, out var g) && g.key is var (kb, kp1, kp2):
+                    return Apply((kb, kp1, kp2), g.src.Elem(new KVar("q$" + p.Parameter.Name)));
+                case IInvocationOperation { TargetMethod.Name: "Count" or "LongCount", Arguments.Length: 1 } c when IsEnumerableCall(c.TargetMethod) &&
+                                                                                                                      Unconverted(c.Arguments[0].Value) is IParameterReferenceOperation cp && _groupParams.TryGetValue(cp.Parameter, out var cg):
+                    return new KOp("sel", cg.count, new KVar("q$" + cp.Parameter.Name));
+                case IParameterReferenceOperation gp when _groupParams.ContainsKey(gp.Parameter):
+                    throw new NotTranslated("a group used but for its Key and Count()");
+                default:
+                    return null;
+            }
         }
 
         private static bool IsEnumerableCall(IMethodSymbol m) => m?.ContainingType?.ToDisplayString() == "System.Linq.Enumerable";
@@ -77,8 +108,15 @@ namespace CsVerify.Verifier.Boogie
                     case IAssignmentOperation _: case IIncrementOrDecrementOperation _: case IObjectCreationOperation _: case IArrayCreationOperation _:
                     case IAnonymousFunctionOperation _: case IAwaitOperation _:
                         return null;
+                    // (a group's count, of a parameter: GroupValue's)
+                    case IInvocationOperation gc when IsEnumerableCall(gc.TargetMethod) && gc.TargetMethod.Name is "Count" or "LongCount" && gc.Arguments.Length == 1 &&
+                                                      Unconverted(gc.Arguments[0].Value) is IParameterReferenceOperation gp && fn.Symbol.Parameters.Contains(gp.Parameter, SymbolEqualityComparer.Default):
+                        break;
                     case IInvocationOperation inv when !(_isFunction(inv.TargetMethod.OriginalDefinition) || inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Math" ||
-                                                        SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType)):
+                                                        SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) ||
+                                                        // (a string's [Pure] member with a stub, a list's Contains: as a specification reads them)
+                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null ||
+                                                        inv.Instance != null && CollectionKind(CollectionOf(inv.Instance.Type)) == "List" && inv.TargetMethod.Name == "Contains" && inv.Arguments.Length == 1):
                         return null;
                 }
             return (body, fn.Symbol.Parameters.ElementAtOrDefault(0), fn.Symbol.Parameters.ElementAtOrDefault(1));
@@ -191,6 +229,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var src = Sequence(args[0].Value);
                     var f = LambdaArg(q, 1);
+                    // (of groups: the selector's parameter is one)
+                    if (src.Groups != null && _groupsOf.TryGetValue(src.Groups, out var gi)) _groupParams[f.p1] = (gi.src, gi.key, gi.count);
                     return new LSeq { Length = src.Length, Elem = i => Apply(f, src.Elem(i), i), Type = resultElem };
                 }
                 // (the first n, or all but them: n clamped to [0, Count], as their definitions have it)
@@ -291,6 +331,37 @@ namespace CsVerify.Verifier.Boogie
                     if (m.Name == "Concat") return _inDatabase > 0 ? Sort(both, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : both;
                     var union = FilterAt(both, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(both.Elem(k), both.Elem(j), both.Type), forall: false).Q), q.Syntax);
                     return _inDatabase > 0 ? Sort(union, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : union;
+                }
+                // (a database's groups as values, of a selector that reads their key and count: GroupValue. Their counts are
+                // bounds, not CsVerify's engine's exact ones: LINQ to Objects' groups as values aren't translated yet)
+                case "GroupBy" when args.Count == 2 && _inDatabase > 0:
+                {
+                    var src = Sequence(args[0].Value);
+                    var key = LambdaArg(q, 1);
+                    // (a group: the index in the source of its key's first element; each key's first, in order)
+                    var firsts = FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(Apply(key, src.Elem(k)), Apply(key, src.Elem(j)), key.body.Type), forall: false).Q), q.Syntax);
+                    // (how many of the source have its key: at least the one, at most all)
+                    var count = new KVar(LinqMap("[int]int"));
+                    ShapeFact(Over(new KLit("0"), src.Length, j => new KOp("&&", new KOp("<=", new KLit("1"), new KOp("sel", count, j)), new KOp("<=", new KOp("sel", count, j), src.Length))), q.Syntax);
+                    _groupsOf[q] = (src, key, count);
+                    var groups = new LSeq { Length = firsts.Length, Elem = firsts.Index, Type = resultElem, Groups = q };
+                    if (_inDatabase == 0) return groups;
+                    var sorted = Sort(groups, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax);
+                    sorted.Groups = q;
+                    return sorted;
+                }
+                // (each outer element with its matches, as the selector reads them: their count)
+                case "GroupJoin" when args.Count == 5 && _inDatabase > 0:
+                {
+                    var o = Sequence(args[0].Value);
+                    var inner = Sequence(args[1].Value);
+                    var sel = LambdaArg(q, 4);
+                    var count = new KVar(LinqMap("[int]int"));
+                    ShapeFact(Over(new KLit("0"), o.Length, j => new KOp("&&", new KOp("<=", new KLit("0"), new KOp("sel", count, j)), new KOp("<=", new KOp("sel", count, j), inner.Length))), q.Syntax);
+                    _groupParams[sel.p2] = (inner, null, count);
+                    // (the selector's second parameter: the outer element's index, which its count is read at)
+                    var joined = new LSeq { Length = o.Length, Elem = i => Apply(sel, o.Elem(i), i), Type = resultElem };
+                    return _inDatabase > 0 ? Sort(joined, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : joined;
                 }
                 case "LeftJoin" when args.Count == 5:
                 {

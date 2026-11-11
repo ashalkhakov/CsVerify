@@ -98,7 +98,7 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType) && !IsFloating(((IArrayTypeSymbol)t).ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsOpaqueValue(t);
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) || IsOpaqueValue(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -198,9 +198,14 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsRefParameter(ITypeSymbol t)
         {
-            if (!(t is ITypeParameterSymbol tp) || tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint || tp.HasConstructorConstraint ||
+            if (!(t is ITypeParameterSymbol tp)) return false;
+            // (new() beside a library class's constraint: a reference all the same)
+            bool library = tp.ConstraintTypes.Length > 0 && tp.ConstraintTypes.All(c => c.TypeKind == TypeKind.Class && c.DeclaringSyntaxReferences.Length == 0 && IsLibraryObject(c));
+            if (!(t is ITypeParameterSymbol) || tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint || tp.HasConstructorConstraint && !library ||
                 !(tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0)) return false;
-            // (a constraint that names the parameter itself, B : Builder<B, E>: not the subset's, rather than its check going round)
+            // (a constraint that names the parameter itself, B : Builder<B, E>: a library class's, a library object; another,
+            // not the subset's, rather than its check going round)
+            if (library) return true;
             _constraintsSeen ??= new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
             if (!_constraintsSeen.Add(tp)) return false;
             try { return tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c)); }
@@ -291,7 +296,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeConst(ITypeSymbol t) => "T#" + Ident(t.OriginalDefinition.ToDisplayString());
 
         /// <summary>What may be null: a reference or a string.</summary>
-        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t) || IsNullableValue(t);
+        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t) || IsNullableValue(t) || IsEfFactory(t) || IsEfTransaction(t) || IsQueryHandle(t);
 
         /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
         public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
@@ -366,6 +371,10 @@ namespace CsVerify.Verifier.Boogie
         /// members are the library's (not translated yet, but what calls give it).
         /// </summary>
         public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() == "System.DateTime";
+
+        /// <summary>An EF context factory (IDbContextFactory&lt;C&gt;, of a context of the program's): a reference, whose CreateDbContext Lowering.EfTracker reads.</summary>
+        public static bool IsEfFactory(ITypeSymbol t) =>
+            Ef != null && t is INamedTypeSymbol { Name: "IDbContextFactory", Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore" && IsContext(n.TypeArguments[0]);
 
         /// <summary>An EF transaction (IDbContextTransaction): a reference, whose operations Lowering.EfTracker reads.</summary>
         public static bool IsEfTransaction(ITypeSymbol t) =>
@@ -594,7 +603,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" : IsFloating(t) ? FloatType(t) : IsLinqGroup(t) ? "int" :
             IsSeqValue(t) ? "[int]" + (((INamedTypeSymbol)t).TypeArguments[0].SpecialType == SpecialType.System_Boolean ? "bool" : "int") :
-            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

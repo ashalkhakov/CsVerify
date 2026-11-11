@@ -1611,10 +1611,12 @@ public static class C3 {
             Assert.True(r["A.Elsewhere"].Verified);
         }
 
-        [Fact]
-        public void Samples_BothEnginesReportTheSame()
+        // (a directory each: each a test of its own, which CI's per-test time limit applies to)
+        [Theory]
+        [InlineData("Good")]
+        [InlineData("Buggy")]
+        public void Samples_BothEnginesReportTheSame(string dir)
         {
-            foreach (var dir in new[] { "Good", "Buggy" })
             {
                 var files = Directory.GetFiles(Path.Combine(Harness.RepoRoot(), "samples", dir), "*.cs");
                 // (Boogie's methods, then those alone by CsVerify's engine)

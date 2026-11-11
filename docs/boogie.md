@@ -474,8 +474,9 @@ query filters, navigations, tokens), as its engine reads it (Lowering.Ef, Loweri
   LINQ over the table as it is when the query runs (an `...Async` operator awaited where it's called is its operator,
   read after the await): a sequence in no order the database promises, of entities (`$isa`) not null, each a different
   object, no two with the same key or the same value of a unique index, each through the entity's query filters
-  unless ignored. Its lambdas are the database's: strings compare by its collation (`$collate`, an equivalence that
-  equal strings are in) unless the only providers are ones that compare them exactly. `First` and `Last` keep a row by
+  unless ignored. Its lambdas are the database's: strings compare by its collation (as having the same `$ckey`: an
+  equivalence, which equal strings are in, with no axioms for the solver to go round) unless the only providers are
+  ones that compare them exactly. `First` and `Last` keep a row by
   its place: unless the query is ordered by a key (or a unique index), at most one row may match (CSV1031). A `Join`
   on keys the database and .NET compare alike is LINQ's, in no order.
 - Rows read without tracking are new objects (allocated where read); a reference navigation not included is null, a
@@ -1046,11 +1047,18 @@ the same lines. `BoogieEngineTests` checks that on a corpus written for it (one 
 on `samples/Good` and on `samples/Buggy`. `--engine boogie-only` verifies only what Boogie translates, to compare the
 two quickly.
 
-A procedure that times out is verified once more an assertion at a time (`/vcsSplitOnEveryAssert`, for it alone), as
-CsVerify's engine proves its obligations one by one. Only if that times out too does CsVerify's engine verify it
-(CSV1900). Base64's encoder, decoder and round trip need it. An assertion the split doesn't prove is no evidence of a
-bug (each is then without what the solver learned from the others): the method is then undecided too (CSV1900), and
-CsVerify's engine verifies it where it is the fallback.
+Boogie verifies the procedures side by side (`/vcsCores`, a solver each). Each is first tried whole in a quarter of
+the time limit (at least 10 s). One that times out is verified once more an assertion at a time
+(`/vcsSplitOnEveryAssert`, for it alone, with the whole limit), as CsVerify's engine proves its obligations one by one:
+a long one that is hard as a whole is often easy split (Base64's encoder, decoder and round trip, Utf8's decoder). An
+assertion the split doesn't prove is no evidence of a bug (each is then without what the solver learned from the
+others): such a method is tried whole once more, with the whole limit, and if that doesn't prove it either it is
+undecided (CSV1900), and CsVerify's engine verifies it where it is the fallback.
+
+A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
+the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided
+(and it reports five at most). Split, each is decided on its own; where that says other than the whole did, the method
+is undecided.
 
 CsVerify's engine's checks made from the syntax and the declarations alone (`MethodVerifier.Run` with `StaticOnly`:
 locking, lock levels, atomics, flags, concurrency marks, Entity Framework contexts, a data type's invariant's

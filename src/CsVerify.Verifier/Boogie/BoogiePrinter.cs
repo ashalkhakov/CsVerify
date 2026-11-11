@@ -168,11 +168,9 @@ namespace CsVerify.Verifier.Boogie
                         else if (!Derives(b, a) && string.CompareOrdinal(Lowering.IsaFunction(a), Lowering.IsaFunction(b)) < 0)
                             Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r), {Lowering.IsaFunction(b)}(r) }} !({Lowering.IsaFunction(a)}(r) && {Lowering.IsaFunction(b)}(r)));");
             }
-            Optional("$collate(", "// strings as a database compares them, by its collation: an equivalence that equal strings are in (CsVerify's engine's cv_collate)");
-            Optional("$collate(", "function $collate(a: Ref, b: Ref): bool;");
-            Optional("$collate(", "axiom (forall x: Ref :: { $collate(x, x) } $collate(x, x));");
-            Optional("$collate(", "axiom (forall x, y: Ref :: { $collate(x, y) } $collate(x, y) ==> $collate(y, x));");
-            Optional("$collate(", "axiom (forall x, y, z: Ref :: { $collate(x, y), $collate(y, z) } $collate(x, y) && $collate(y, z) ==> $collate(x, z));");
+            // (strings as a database compares them, by its collation: an equivalence, as the same key; equal strings have
+            // one. CsVerify's engine's cv_collate, without the axioms that make the solver go round)
+            Optional("$ckey(", "function $ckey(s: Ref): int;");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
             foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
             // (float and double as IEEE 754: Z3's floating point, rounding to nearest as .NET does)
@@ -339,6 +337,7 @@ namespace CsVerify.Verifier.Boogie
                         case "dtype": return $"dtype({a[0]})";
                         case "sub": return $"sub({a[0]}, {a[1]})";
                         case "streq": return $"({a[0]} == {a[1]})";
+                        case "$collate": return $"($ckey({a[0]}) == $ckey({a[1]}))";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
                         case var f when f.StartsWith("$tup."): _tuples.Add(f); return $"{f}({string.Join(", ", a)})";

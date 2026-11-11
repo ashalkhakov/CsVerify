@@ -169,7 +169,7 @@ namespace CsVerify.Verifier.Boogie
                 var outer = _known;
                 _known = null;
                 LinqFact(new KOp("==", new KVar(k), none), at);
-                TrackedIncludes(t, rows, len, at, new KVar(k));
+                TrackedIncludes(t, rows, len, index, at, new KVar(k));
                 _known = outer == null ? new KVar(k) : (KExpr)new KOp("&&", outer, new KVar(k));
                 TrackedRows(t.Context, isRow);
             }
@@ -185,7 +185,57 @@ namespace CsVerify.Verifier.Boogie
         private sealed class Made
         {
             public System.Func<System.Func<KExpr, KExpr>, KExpr> All, Any;
+            /// <summary>An object is one of them: quantifier-free, by inverse maps (which row, which of its list), as CsVerify's engine has it.</summary>
+            public System.Func<KExpr, KExpr> Has;
             public EfModel.Entity Entity;
+        }
+
+        /// <summary>What one navigation of each object of a level holds (where not null): a level of its own, each with its parent known.</summary>
+        private Made ChildOf(Made parent, System.Func<KExpr, KExpr> of, bool maybeNull, EfModel.Entity entity, SyntaxNode at)
+        {
+            var parentOf = new KVar(LinqMap("[Ref]Ref"));
+            KExpr Null = new KLit("null");
+            LinqFact(parent.All(x => maybeNull ? new KOp("==>", new KOp("!=", of(x), Null), new KOp("==", new KOp("sel", parentOf, of(x)), x))
+                                               : new KOp("==", new KOp("sel", parentOf, of(x)), x)), at);
+            return new Made
+            {
+                Entity = entity,
+                All = maybeNull ? body => parent.All(x => new KOp("==>", new KOp("!=", of(x), Null), body(of(x)))) : body => parent.All(x => body(of(x))),
+                Any = maybeNull ? body => parent.Any(x => new KOp("&&", new KOp("!=", of(x), Null), body(of(x)))) : body => parent.Any(x => body(of(x))),
+                Has = r => new KOp("&&", new KOp("&&", new KOp("!=", r, Null), parent.Has(new KOp("sel", parentOf, r))), new KOp("==", of(new KOp("sel", parentOf, r)), r)),
+            };
+        }
+
+        /// <summary>The elements of a list each object of a level holds: a level, each with its list's object and its index known.</summary>
+        private Made ElementsOf(Made parent, System.Func<KExpr, KExpr> size, System.Func<KExpr, KExpr, KExpr> el, EfModel.Entity entity, SyntaxNode at)
+        {
+            var parentOf = new KVar(LinqMap("[Ref]Ref"));
+            var indexOf = new KVar(LinqMap("[Ref]int"));
+            LinqFact(parent.All(x => Over(new KLit("0"), size(x), j => new KOp("&&", new KOp("==", new KOp("sel", parentOf, el(x, j)), x), new KOp("==", new KOp("sel", indexOf, el(x, j)), j)))), at);
+            KExpr P(KExpr r) => new KOp("sel", parentOf, r);
+            KExpr J(KExpr r) => new KOp("sel", indexOf, r);
+            return new Made
+            {
+                Entity = entity,
+                All = body => parent.All(x => Over(new KLit("0"), size(x), j => body(el(x, j)))),
+                Any = body => parent.Any(x => Over(new KLit("0"), size(x), j => body(el(x, j)), forall: false)),
+                Has = r => new KOp("&&", new KOp("&&", parent.Has(P(r)), Between(new KLit("0"), J(r), size(P(r)))), new KOp("==", el(P(r), J(r)), r)),
+            };
+        }
+
+        /// <summary>The members of a set each object of a level holds: a level, each with its set's object known.</summary>
+        private Made MembersOf(Made parent, System.Func<KExpr, KExpr, KExpr> member, EfModel.Entity entity, SyntaxNode at)
+        {
+            var parentOf = new KVar(LinqMap("[Ref]Ref"));
+            KExpr P(KExpr r) => new KOp("sel", parentOf, r);
+            LinqFact(parent.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("==>", member(x, new KVar("z$")), new KOp("==", P(new KVar("z$")), x)) }), at);
+            return new Made
+            {
+                Entity = entity,
+                All = body => parent.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("==>", member(x, new KVar("z$")), body(new KVar("z$"))) }),
+                Any = body => parent.Any(x => new KQuant { Forall = false, Var = "z$", Type = "Ref", Body = new KOp("&&", member(x, new KVar("z$")), body(new KVar("z$"))) }),
+                Has = r => new KOp("&&", parent.Has(P(r)), member(P(r), r)),
+            };
         }
 
         /// <summary>
@@ -204,7 +254,8 @@ namespace CsVerify.Verifier.Boogie
             KExpr Zero = new KLit("0");
             KExpr Null = new KLit("null");
             LinqFact(Over(Zero, len, i => new KOp("!", Alloc(Row(i)))), at);
-            var top = new Made { Entity = e, All = body => Over(Zero, len, i => body(Row(i))), Any = body => Over(Zero, len, i => body(Row(i)), forall: false) };
+            var top = new Made { Entity = e, All = body => Over(Zero, len, i => body(Row(i))), Any = body => Over(Zero, len, i => body(Row(i)), forall: false),
+                                 Has = r => new KOp("&&", Between(Zero, new KOp("sel", index, r), len), new KOp("==", Row(new KOp("sel", index, r)), r)) };
             var made = new List<Made> { top };
             var loadedTypes = new HashSet<ITypeSymbol>(t.IncludePaths.SelectMany(x => x).Select(nav => EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition)
                 .Where(x => x != null), SymbolEqualityComparer.Default);
@@ -231,7 +282,7 @@ namespace CsVerify.Verifier.Boogie
                             // a new list at each row, empty
                             LinqFact(top.All(x => ListMade(Column(nav, x))), at);
                             LinqFact(top.All(x => new KOp("==", new KOp("sel", new KVar(SizeMap), Column(nav, x)), Zero)), at);
-                            made.Add(new Made { All = body => top.All(x => body(Column(nav, x))), Any = body => top.Any(x => body(Column(nav, x))) });
+                            made.Add(ChildOf(top, x => Column(nav, x), false, null, at));
                             break;
                         }
                         case true when MadeAsSet(nav) is INamedTypeSymbol set:
@@ -242,7 +293,7 @@ namespace CsVerify.Verifier.Boogie
                             LinqFact(top.All(x => ListMade(Column(nav, x))), at);
                             LinqFact(top.All(x => new KOp("==", new KOp("sel", new KVar(SizeMap), Column(nav, x)), Zero)), at);
                             LinqFact(top.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("!", new KOp("sel", new KVar(members), Column(nav, x), new KVar("z$"))) }), at);
-                            made.Add(new Made { All = body => top.All(x => body(Column(nav, x))), Any = body => top.Any(x => body(Column(nav, x))) });
+                            made.Add(ChildOf(top, x => Column(nav, x), false, null, at));
                             break;
                         }
                         case true:
@@ -254,15 +305,6 @@ namespace CsVerify.Verifier.Boogie
                 }
                 Loaded(t, top, t.IncludePaths, made, at);
             }
-            // each made object a different one: of every two, at different places or levels
-            for (int k = 0; k < made.Count; k++)
-                for (int l = k; l < made.Count; l++)
-                {
-                    var (mk, ml) = (made[k], made[l]);
-                    if (k == 0 && l == 0) continue; // (the rows: a fact of every reading)
-                    // (two places of one level may hold one object only where it's the same place: said of different levels alone)
-                    if (k != l) LinqFact(mk.All(x => ml.All(y => new KOp("!=", x, y))), at);
-                }
             // (allocated now: the rows, and what was made for them; no other object)
             var before = Allocate(made, null, at);
             KExpr IsNew(KExpr x) => new KOp("&&", new KOp("sel", new KVar("$Alloc"), x), new KOp("!", new KOp("sel", new KVar(before), x)));
@@ -281,13 +323,14 @@ namespace CsVerify.Verifier.Boogie
         /// tracking (Loaded), and tracked from here on, unchanged (of an entity of those types the context didn't track,
         /// whether it does now isn't known, so that a later query doesn't take it for untracked).
         /// </summary>
-        private void TrackedIncludes(DbTable t, KVar rows, KVar len, SyntaxNode at, KExpr known)
+        private void TrackedIncludes(DbTable t, KVar rows, KVar len, KVar index, SyntaxNode at, KExpr known)
         {
             if (t.UnknownInclude || t.IncludePaths.Count == 0) return;
             var e = t.Entity;
             KExpr Row(KExpr i) => new KOp("sel", rows, i);
             KExpr Null = new KLit("null");
-            var top = new Made { Entity = e, All = body => Over(new KLit("0"), len, i => body(Row(i))), Any = body => Over(new KLit("0"), len, i => body(Row(i)), forall: false) };
+            var top = new Made { Entity = e, All = body => Over(new KLit("0"), len, i => body(Row(i))), Any = body => Over(new KLit("0"), len, i => body(Row(i)), forall: false),
+                                 Has = r => new KOp("&&", Between(new KLit("0"), new KOp("sel", index, r), len), new KOp("==", Row(new KOp("sel", index, r)), r)) };
             _known = known;
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r.OriginalDefinition) && IsField(r)))
                 if (e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 && KeyMatches(fk, p.Key[0]))
@@ -338,7 +381,8 @@ namespace CsVerify.Verifier.Boogie
             _known = null;
             var after = new KVar(LinqMap("[Ref]bool"));
             var r = new KVar("r$");
-            KExpr isMade = made.Select(m => m.Any(x => new KOp("==", x, r))).Aggregate((x, y) => new KOp("||", x, y));
+            // (what's made: by the inverse maps, no quantifier in it, so the solver finds no more objects than these)
+            KExpr isMade = made.Select(m => m.Has(r)).Aggregate((x, y) => new KOp("||", x, y));
             if (guard != null) isMade = new KOp("&&", guard, isMade);
             LinqFact(new KQuant { Forall = true, Var = "r$", Type = "Ref", Body = new KOp("==", new KOp("sel", after, r), new KOp("||", Alloc(r), new KOp("&&", new KOp("!=", r, Null), isMade))) }, at);
             Emit(new KRow { Map = "$Alloc", Ref = null, Value = after });
@@ -398,10 +442,7 @@ namespace CsVerify.Verifier.Boogie
                     KExpr Ok(KExpr x) => new KOp("&&", new KOp("&&", new KOp("!=", Column(nav, x), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), Column(nav, x)))),
                         new KOp("&&", new KOp("&&", Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))), Filtered(t, p, Column(nav, x))));
                     LinqFact(level.All(x => IsNullableValue(fk.Type) ? new KOp("||", new KOp("==", Column(nav, x), Null), Ok(x)) : Ok(x)), at);
-                    child = IsNullableValue(fk.Type)
-                        ? new Made { Entity = p, All = body => level.All(x => new KOp("==>", new KOp("!=", Column(nav, x), Null), body(Column(nav, x)))),
-                                     Any = body => level.Any(x => new KOp("&&", new KOp("!=", Column(nav, x), Null), body(Column(nav, x)))) }
-                        : new Made { Entity = p, All = body => level.All(x => body(Column(nav, x))), Any = body => level.Any(x => body(Column(nav, x))) };
+                    child = ChildOf(level, x => Column(nav, x), IsNullableValue(fk.Type), p, at);
                     made.Add(child);
                 }
                 else if (e.Collections.Contains(nav) && MadeAsList(nav) is INamedTypeSymbol list && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
@@ -415,11 +456,9 @@ namespace CsVerify.Verifier.Boogie
                     LinqFact(level.All(x => ListMade(L(x))), at);
                     LinqFact(level.All(x => Over(new KLit("0"), Size(x), j => new KOp("&&", new KOp("&&", new KOp("!=", El(x, j), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), El(x, j)))),
                         new KOp("&&", new KOp("&&", Isa(El(x, j), d), ForeignKey(cfk, El(x, j), e.Key[0], x)), Filtered(t, d, El(x, j)))))), at);
-                    // (each element a different object: at different places of a list, and of two lists)
-                    LinqFact(level.All(x => Over(new KLit("0"), Size(x), j => Over(new KLit("0"), Size(x), k => new KOp("||", new KOp("==", j, k), new KOp("!=", El(x, j), El(x, k)))))), at);
-                    made.Add(new Made { All = body => level.All(x => body(L(x))), Any = body => level.Any(x => body(L(x))) });
-                    child = new Made { Entity = d, All = body => level.All(x => Over(new KLit("0"), Size(x), j => body(El(x, j)))),
-                                       Any = body => level.Any(x => Over(new KLit("0"), Size(x), j => body(El(x, j)), forall: false)) };
+                    var lists = ChildOf(level, L, false, null, at);
+                    made.Add(lists);
+                    child = ElementsOf(lists, l => new KOp("sel", new KVar(SizeMap), l), (l, j) => new KOp("sel", new KVar(items), l, j), d, at);
                     made.Add(child);
                 }
                 else if (e.Collections.Contains(nav) && MadeAsSet(nav) is INamedTypeSymbol set && e.CollectionKeys.TryGetValue(nav, out var sfk) && e.Key.Count == 1 &&
@@ -434,9 +473,9 @@ namespace CsVerify.Verifier.Boogie
                     LinqFact(level.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("==>", In(x, new KVar("z$")),
                         new KOp("&&", new KOp("&&", new KOp("!=", new KVar("z$"), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), new KVar("z$")))),
                             new KOp("&&", new KOp("&&", Isa(new KVar("z$"), sd), ForeignKey(sfk, new KVar("z$"), e.Key[0], x)), Filtered(t, sd, new KVar("z$"))))) }), at);
-                    made.Add(new Made { All = body => level.All(x => body(S(x))), Any = body => level.Any(x => body(S(x))) });
-                    child = new Made { Entity = sd, All = body => level.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("==>", In(x, new KVar("z$")), body(new KVar("z$"))) }),
-                                       Any = body => level.Any(x => new KQuant { Forall = false, Var = "z$", Type = "Ref", Body = new KOp("&&", In(x, new KVar("z$")), body(new KVar("z$"))) }) };
+                    var sets = ChildOf(level, S, false, null, at);
+                    made.Add(sets);
+                    child = MembersOf(sets, (set, z) => new KOp("sel", new KVar(members), set, z), sd, at);
                     made.Add(child);
                 }
                 else throw new NotTranslated("EF's Include of " + nav.Name);
@@ -570,6 +609,25 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What the database query being lowered gives (its last operator's type, or its task's T), for whether it gives entities.</summary>
         private ITypeSymbol _dbResult;
 
+        /// <summary>
+        /// == or != of strings in a database query's lambda, with SQL's nulls (UseRelationalNulls): where an operand that may
+        /// be null (declared so, and not the literal null) is, unknown, for each comparison; else as it is.
+        /// </summary>
+        private KExpr RelationalStrings(IBinaryOperation b, KExpr value, KExpr l, KExpr r)
+        {
+            if (_inDatabase == 0 || KernelTypes.Ef?.RelationalNulls != true || !(b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals)) return value;
+            bool MayBeNull(IOperation op) => !(Unconverted(op).ConstantValue is { HasValue: true, Value: null }) && Unconverted(op).Type?.NullableAnnotation != NullableAnnotation.NotAnnotated;
+            if (Unconverted(b.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(b.RightOperand).ConstantValue is { HasValue: true, Value: null }) return value;
+            KExpr isNull = new KLit("false");
+            if (MayBeNull(b.LeftOperand)) isNull = new KOp("||", isNull, new KOp("==", l, new KLit("null")));
+            if (MayBeNull(b.RightOperand)) isNull = new KOp("||", isNull, new KOp("==", r, new KLit("null")));
+            if (isNull is KLit) return value;
+            var unknown = new KVar(LinqMap("[Ref][Ref]bool"));
+            var eq = b.OperatorKind == BinaryOperatorKind.Equals ? value : new KOp("!", value);
+            var result = new KOp("ite", isNull, new KOp("sel", unknown, l, r), eq);
+            return b.OperatorKind == BinaryOperatorKind.Equals ? result : new KOp("!", result);
+        }
+
         private KExpr StringEqual(KExpr l, KExpr r) =>
             _inDatabase > 0 && KernelTypes.Ef != null && !KernelTypes.Ef.ExactStrings ? new KOp("$collate", l, r) : new KOp("streq", l, r);
 
@@ -680,8 +738,10 @@ namespace CsVerify.Verifier.Boogie
                 // (a join on keys the database and .NET compare alike: LINQ's, in no order)
                 // (a join on keys the database and .NET compare alike: LINQ's, in no order; Distinct and Contains of values
                 // compared alike: LINQ's, Distinct's in no order)
-                bool alike = name is "Join" or "LeftJoin" && inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 2)?.Value is IOperation key &&
+                bool alike = name is "Join" or "LeftJoin" or "GroupJoin" && inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 2)?.Value is IOperation key &&
                              PureLambda(key) is var (kb, _, _) && ComparedAlike(Unconverted(kb).Type ?? kb.Type) && ComparedAlike(kb.Type) ||
+                             name == "GroupBy" && given == 2 && inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is IOperation gkey &&
+                             PureLambda(gkey) is var (gkb, _, _) && ComparedAlike(gkb.Type) ||
                              name is "Distinct" or "Contains" or "Union" && given <= (name == "Distinct" ? 1 : 2) && ElementOf(receiver) is ITypeSymbol el && ComparedAlike(el);
                 // (one that compares what the database and .NET don't compare alike, and RightJoin: a library call that says
                 // nothing of what it gives, as CsVerify's engine has it: Lowering.Linq's DatabaseUnknown)
@@ -880,8 +940,9 @@ namespace CsVerify.Verifier.Boogie
                 switch (op)
                 {
                     case IBinaryOperation b when !projection && KernelTypes.Ef.RelationalNulls && b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
-                                                 (Unconverted(b.LeftOperand).Type?.IsReferenceType == true || Unconverted(b.RightOperand).Type?.IsReferenceType == true):
-                        return "SQL's nulls (UseRelationalNulls) of references";
+                                                 (Unconverted(b.LeftOperand).Type?.IsReferenceType == true && !IsString(Unconverted(b.LeftOperand).Type) ||
+                                                  Unconverted(b.RightOperand).Type?.IsReferenceType == true && !IsString(Unconverted(b.RightOperand).Type)):
+                        return "SQL's nulls (UseRelationalNulls) of objects";
                 }
             return null;
         }
@@ -1013,6 +1074,7 @@ namespace CsVerify.Verifier.Boogie
                 case "Clear" when r is IPropertyReferenceOperation { Property.Name: "ChangeTracker", Instance: { } db2 } && KernelTypes.Ef.IsContextType(db2.Type) && given == 0:
                     return null;
                 case "Commit" or "Rollback" or "Dispose" when r is ILocalReferenceOperation txl && IsTransactionType(txl.Type) && given == 0 && TransactionContext(txl.Local) != null:
+                case "CreateDbContext" when IsEfFactory(receiver) && given == 0:
                     return null;
             }
             return "EF's " + m.Name;

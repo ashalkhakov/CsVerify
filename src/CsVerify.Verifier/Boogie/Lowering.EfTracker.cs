@@ -267,6 +267,19 @@ namespace CsVerify.Verifier.Boogie
                 }
                 return (false, null);
             }
+            // (a factory's new context: it tracks nothing, and has nothing open)
+            if (name == "CreateDbContext" && receiver != null && IsEfFactory(receiver.Type) && args.Count == 0)
+            {
+                var f = Expr(receiver);
+                NotNullHere(f, receiver, at);
+                var ctxType = ((INamedTypeSymbol)receiver.Type).TypeArguments[0];
+                var made = Declare("t$" + _temps++, ctxType);
+                Emit(new KHavoc { Var = made });
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(made), Null) });
+                NewContext(new KVar(made));
+                MayThrow();
+                return (true, new KVar(made));
+            }
             // (a transaction: Commit, Rollback, Dispose)
             if (receiver is ILocalReferenceOperation txl && IsTransactionType(txl.Type) && TransactionContext(txl.Local) is IOperation txc)
             {

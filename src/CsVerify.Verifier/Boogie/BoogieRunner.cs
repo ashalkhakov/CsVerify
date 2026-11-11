@@ -16,40 +16,71 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>
         /// The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown. A procedure that
         /// times out is verified once more an assertion at a time (/vcsSplitOnEveryAssert), as CsVerify's engine
-        /// proves its obligations one by one: a long one that is hard as a whole is often easy split.
+        /// proves its obligations one by one: a long one that is hard as a whole is often easy split. So is one that
+        /// fails: once Boogie has a counterexample it looks for more, and where the solver then answers unknown it stops,
+        /// the assertions it hadn't decided reported neither failed nor undecided (and it reports five at most). Split,
+        /// each is decided on its own; where that says other than the whole did, the method is undecided.
         /// </summary>
         public static List<(MethodResult method, VerificationDiagnostic diagnostic)> Verify(BoogieTranslator program, string z3Path, int timeoutMs)
         {
             // (loops' inferred facts, as CsVerify's engine has them: one that doesn't hold on entry or at a back edge is left
             // out, and the program verified again, until those assumed all held; what that run says is what's reported)
             // (again, of only the procedures whose facts failed: the others' results stand)
-            var (failures, undecided, factsIn) = Run(program, z3Path, timeoutMs, null);
+            // (first, each whole in a quarter of the time: one that is hard whole is mostly easy split, which gets all of it;
+            // only one that split doesn't decide is tried whole again, for all of it)
+            int quick = timeoutMs <= 10000 ? timeoutMs : Math.Max(10000, timeoutMs / 4);
+            var names = new Dictionary<MethodResult, string>();
+            var (failures, undecided, factsIn) = Run(program, z3Path, quick, null, null, names);
             for (int round = 1; factsIn.Count > 0; round++)
             {
                 var facts = failures.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => int.Parse(f.diagnostic.Message)).ToList();
                 var redo = new HashSet<MethodResult>(failures.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => f.method));
                 if (round > 5) { foreach (var (line, c) in program.Lines) if (c.Id == Checks.Candidate && redo.Contains(c.Method)) program.Disabled.Add(line); }
                 else foreach (var line in facts) program.Disabled.Add(line);
-                var (redone0, undecidedAgain0, factsAgain) = Run(program, z3Path, timeoutMs, null, factsIn);
+                var (redone0, undecidedAgain0, factsAgain) = Run(program, z3Path, quick, null, factsIn, names);
                 failures = failures.Where(f => !redo.Contains(f.method)).Concat(redone0).ToList();
                 undecided = undecided.Where(u => !factsIn.Contains(u)).Concat(undecidedAgain0).Distinct().ToList();
                 factsIn = round > 5 ? new List<string>() : factsAgain;
             }
             failures = failures.Where(f => f.diagnostic.Id != Checks.Candidate).ToList();
-            if (undecided.Count == 0) return failures;
-            var (again, _, _) = Run(program, z3Path, timeoutMs, undecided);
             var redone = new HashSet<MethodResult>(failures.Where(f => f.diagnostic.Id == "CSV1900").Select(f => f.method));
+            // (the methods that failed, and weren't undecided: each again, split, to see nothing went unreported)
+            var failed = failures.Select(f => f.method).Where(m => !redone.Contains(m) && names.ContainsKey(m)).Distinct().ToList();
+            var splitProcs = undecided.Concat(failed.Select(m => names[m])).Distinct().ToList();
+            if (splitProcs.Count == 0) return failures;
+            var (again, _, _) = Run(program, z3Path, timeoutMs, splitProcs);
+            object Key((MethodResult method, VerificationDiagnostic diagnostic) f) => (f.diagnostic.Id, f.diagnostic.Span.StartLinePosition, f.diagnostic.Message);
+            foreach (var m in failed)
+            {
+                var whole = new HashSet<object>(failures.Where(f => f.method == m).Select(Key));
+                var parts = again.Where(f => f.method == m).ToList();
+                if (parts.Any(f => f.diagnostic.Id == "CSV1900") || !whole.SetEquals(parts.Select(Key)))
+                {
+                    var span = failures.First(f => f.method == m).diagnostic.Span;
+                    failures = failures.Where(f => f.method != m).Append((m, new VerificationDiagnostic("CSV1900", false,
+                        "Boogie couldn't decide all of it: split an assertion at a time, it says other than whole", span))).ToList();
+                }
+            }
+            if (undecided.Count == 0) return failures;
             // (split, an assertion that isn't proved is no evidence of a bug: each is then without what the solver
             // learned from the others. A redone method proved whole by its parts is verified; else it stays undecided,
             // for CsVerify's engine to verify where it is the fallback)
             var undecidedAgain = again.Where(f => redone.Contains(f.method)).GroupBy(f => f.method)
                 .Select(g => g.FirstOrDefault(f => f.diagnostic.Id == "CSV1900") is var u && u.method != null ? u
-                    : (g.Key, new VerificationDiagnostic("CSV1900", false, "Boogie couldn't decide it: split an assertion at a time, one wasn't proved", g.First().diagnostic.Span)));
+                    : (g.Key, new VerificationDiagnostic("CSV1900", false, "Boogie couldn't decide it: split an assertion at a time, one wasn't proved", g.First().diagnostic.Span))).ToList();
+            // (whole again, with all the time, of those split didn't decide where the first try had less: proved, it's verified)
+            if (quick < timeoutMs && undecidedAgain.Count > 0)
+            {
+                var stillOpen = undecidedAgain.Select(u => u.Item1).Where(names.ContainsKey).Distinct().ToList();
+                var (whole, _, _) = Run(program, z3Path, timeoutMs, null, stillOpen.Select(m => names[m]).ToList());
+                var proved = stillOpen.Where(m => !whole.Any(f => f.method == m)).ToHashSet();
+                undecidedAgain = undecidedAgain.Where(u => !proved.Contains(u.Item1)).ToList();
+            }
             return failures.Where(f => !redone.Contains(f.method)).Concat(undecidedAgain).ToList();
         }
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
-            BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null)
+            BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null)
         {
             var output = new StringWriter();
             var options = new CommandLineOptions(output, new ConsolePrinter());
@@ -57,7 +88,9 @@ namespace CsVerify.Verifier.Boogie
             var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
             var only = split == null ? (procs ?? new List<string>()).Select(x => "/proc:" + x) : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
 
-            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000) }.Concat(only).Concat(extra).ToArray());
+            // (procedures verified side by side, a solver each: their results don't depend on each other)
+            var cores = "/vcsCores:" + Math.Max(1, Environment.ProcessorCount);
+            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores }.Concat(only).Concat(extra).ToArray());
             using var engine = ExecutionEngine.CreateWithoutSharedCache(options);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
                 throw new InvalidOperationException("the translated program doesn't parse:\n" + output);
@@ -73,12 +106,15 @@ namespace CsVerify.Verifier.Boogie
                 lock (failures)
                 {
                     failures.Add(d);
+                    if (names != null && d.Item1 != null && info.ImplementationName != null) names[d.Item1] = info.ImplementationName;
                     if (d.Item2?.Id == "CSV1900" && info.ImplementationName != null && !undecided.Contains(info.ImplementationName)) undecided.Add(info.ImplementationName);
                     if (d.Item2?.Id == Checks.Candidate && info.ImplementationName != null && !facts.Contains(info.ImplementationName)) facts.Add(info.ImplementationName);
                 }
             }, "csverify", default).GetAwaiter().GetResult();
             if (outcome != PipelineOutcome.VerificationCompleted && outcome != PipelineOutcome.Done)
                 throw new InvalidOperationException("Boogie: " + outcome + "\n" + output);
+            if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
+                Console.Error.WriteLine(output + $"\n[stats] verified {stats.VerifiedCount} errors {stats.ErrorCount} inconclusive {stats.InconclusiveCount} timeouts {stats.TimeoutCount} outOfResource {stats.OutOfResourceCount} outOfMemory {stats.OutOfMemoryCount}");
             // (one report of a check, however many paths fail it)
             return (failures.Where(f => f.Item1 != null).GroupBy(f => (f.Item1, f.Item2.Id, f.Item2.Span.StartLinePosition, f.Item2.Message)).Select(g => g.First()).ToList(), undecided, facts);
         }

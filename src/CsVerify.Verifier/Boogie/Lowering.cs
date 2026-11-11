@@ -1772,10 +1772,26 @@ namespace CsVerify.Verifier.Boogie
                         else if (a is IFlowCaptureReferenceOperation wr && _startedCaptures.TryGetValue(wr.Id, out var wst)) { JoinOf(wst); Emit(new KAssign { Var = wst.Awaited, Value = new KLit("true") }); }
                         // (a call written in it: started with the others, joined with them)
                         else if (Unconverted(a) is IInvocationOperation inline && inline.TargetMethod.IsAsync && inline.TargetMethod.DeclaringSyntaxReferences.Length > 0) inlineStarts.Add(StartInline(inline));
+                        // (a task one is given, a library's: other code runs meanwhile, as awaiting it does, and nothing is known of it)
+                        else if (Unconverted(a is IFlowCaptureReferenceOperation gc && _captured.TryGetValue(gc.Id, out var gv) ? gv : a) is var given &&
+                                 (given is ILocalReferenceOperation || given is IParameterReferenceOperation) && IsGivenTask(given.Type)) Expr(given);
                         else throw new NotTranslated("Task.WhenAll of a task not started here");
                     foreach (var t in inlineStarts) JoinOf(t);
                     break;
                 }
+                // (Task.Run(lambda) awaited where it starts: its code verified on its own, other code running meanwhile, as at
+                // any await; what it gives not known. Not where the lambda writes this method's locals or parameters)
+                case IInvocationOperation run when run.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && run.TargetMethod.Name == "Run" &&
+                                                   run.Arguments.Length == 1 && LambdaSyntax(run.Arguments[0]) is AnonymousFunctionExpressionSyntax awaitedLambda && !WritesOutside(awaitedLambda):
+                    if (op.Type is INamedTypeSymbol { Arity: 1 } rt && aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void)
+                    {
+                        if (!InSubset(aw.Type)) throw new NotTranslated("Task.Run of " + aw.Type);
+                        var r = Declare("t$" + _temps++, aw.Type);
+                        Emit(new KHavoc { Var = r });
+                        if (IsNullable(aw.Type) && NotNullable(aw.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
+                        value = new KVar(r);
+                    }
+                    break;
                 // (EF's tracker's ...Async operations: read after the others have run, as a query is)
                 case IInvocationOperation eft when _failed != null && eft.TargetMethod.Name.EndsWith("Async") &&
                                                    (IsEfMethod(eft.TargetMethod) || KernelTypes.Ef.IsContextType(eft.TargetMethod.ContainingType) || IsTransactionType(eft.TargetMethod.ContainingType) ||
@@ -2035,6 +2051,26 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>The tasks Task.WhenAll's arguments start, each as its own task.</summary>
         private readonly Dictionary<CaptureId, Task> _startedCaptures = new Dictionary<CaptureId, Task>();
+
+        /// <summary>Does the lambda assign a local or parameter declared outside it?</summary>
+        private bool WritesOutside(AnonymousFunctionExpressionSyntax lambda)
+        {
+            foreach (var n in lambda.Body.DescendantNodesAndSelf())
+            {
+                ExpressionSyntax target = n switch
+                {
+                    AssignmentExpressionSyntax a => a.Left,
+                    PrefixUnaryExpressionSyntax { RawKind: (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreIncrementExpression or (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreDecrementExpression } pu => pu.Operand,
+                    PostfixUnaryExpressionSyntax { RawKind: (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.PostIncrementExpression or (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.PostDecrementExpression } po => po.Operand,
+                    ArgumentSyntax { RefKindKeyword.RawKind: not 0 } ra => ra.Expression,
+                    _ => null,
+                };
+                if (target != null && _model.GetSymbolInfo(target).Symbol is ISymbol s && (s is ILocalSymbol || s is IParameterSymbol) &&
+                    !s.DeclaringSyntaxReferences.Any(r => lambda.Span.Contains(r.Span)))
+                    return true;
+            }
+            return false;
+        }
 
         private Task StartInline(IInvocationOperation call)
         {
@@ -3377,7 +3413,7 @@ namespace CsVerify.Verifier.Boogie
                                              sb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.Add:
                 {
                     var v = Operands(sb.LeftOperand, sb.RightOperand);
-                    return StringBinary(sb.OperatorKind, v[0], v[1]);
+                    return RelationalStrings(sb, StringBinary(sb.OperatorKind, v[0], v[1]), v[0], v[1]);
                 }
                 case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
                     return new KLen { Array = Expr(pr.Instance), At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
@@ -4309,6 +4345,8 @@ namespace CsVerify.Verifier.Boogie
             if ((e is IFieldReferenceOperation { Field.Name: "Empty", Instance: null } || e is IPropertyReferenceOperation { Property.Name: "Empty", Instance: null }) && IsObjSet(e.Type))
                 return new KLit("(lambda r$: Ref :: false)");
             if (e is ILocalReferenceOperation bl && _bound.TryGetValue(bl.Local, out var bv)) return bv;
+            // (a group a query's selector is given: its key, its count, Lowering.Linq's GroupValue)
+            if (GroupValue(e) is KExpr group) return group;
             if (DataExpr(e, x => Spec(x, result), (l, v) => _bound[l] = v, inSpec: true) is KExpr data) return data;
             switch (e)
             {
@@ -4409,7 +4447,7 @@ namespace CsVerify.Verifier.Boogie
                 case IBinaryOperation sb when IsString(sb.LeftOperand.Type) && IsString(sb.RightOperand.Type) &&
                                              (sb.OperatorMethod == null || IsString(sb.OperatorMethod.ContainingType)) &&
                                              sb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.Add:
-                    return StringBinary(sb.OperatorKind, Spec(sb.LeftOperand, result), Spec(sb.RightOperand, result));
+                    return RelationalStrings(sb, StringBinary(sb.OperatorKind, Spec(sb.LeftOperand, result), Spec(sb.RightOperand, result)), Spec(sb.LeftOperand, result), Spec(sb.RightOperand, result));
                 case IInvocationOperation sm when IntegerMath(sm):
                 {
                     var v = sm.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray();
@@ -4451,6 +4489,20 @@ namespace CsVerify.Verifier.Boogie
                     _p.Models[model.Name] = model;
                     var of = Spec(ck.Instance, result);
                     return new KOp("&&", new KOp("!=", of, new KLit("null")), new KOp("sel", new KVar(model.Name), of, Keyed(Spec(ck.Arguments[0].Value, result), ck.Arguments[0].Value.Type)));
+                }
+                // (a list's Contains: an element below its Count equal to the value, as its stub says)
+                case IInvocationOperation lcon when lcon.Instance != null && CollectionOf(lcon.Instance.Type) is INamedTypeSymbol lcl && CollectionKind(lcl) == "List" &&
+                                                    lcon.TargetMethod.Name == "Contains" && lcon.Arguments.Length == 1:
+                {
+                    var items = ModelOf("Items", lcl);
+                    _p.Models[items.Name] = items;
+                    _p.Models[SizeMap] = ModelOf("Size", lcl);
+                    var of = Spec(lcon.Instance, result);
+                    var x = Spec(lcon.Arguments[0].Value, result);
+                    var v = "q$c" + _linq++;
+                    return new KOp("&&", new KOp("!=", of, new KLit("null")), new KQuant { Forall = false, Var = v,
+                        Range = new KOp("&&", new KOp("<=", new KLit("0"), new KVar(v)), new KOp("<", new KVar(v), new KOp("sel", new KVar(SizeMap), of))),
+                        Body = SameValue(new KOp("sel", new KVar(items.Name), of, new KVar(v)), x, lcl.TypeArguments[0]) });
                 }
                 case IPropertyReferenceOperation sk when IsPair(sk.Instance?.Type) && sk.Property.Name is "Key" or "Value":
                     return Pair(Spec(sk.Instance, result), sk.Instance.Type, sk.Property.Name);
