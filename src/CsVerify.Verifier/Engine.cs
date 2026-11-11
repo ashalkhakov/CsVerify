@@ -654,6 +654,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.MayWriteHeap = engine.MayWriteHeap;
             Boogie.KernelTypes.WritesFieldsAt = engine.Fields.WritesFieldsAt;
             Boogie.KernelTypes.RunsUserCode = engine.Fields.RunsUserCode;
+            Boogie.KernelTypes.Ef = engine.Ef;
             Boogie.KernelTypes.FieldWrites = m => engine.Fields.WritesOf(m).fields;
             Boogie.KernelTypes.FieldReads = engine.Fields.ReadsOf;
             Boogie.KernelTypes.MayTouchArrays = engine.MayTouchArrays;

@@ -313,6 +313,7 @@ namespace CsVerify.Verifier.Boogie
                 if (_p.ListCtor) { _p.Modifies.Add("$Alloc"); _p.AnyWrites.Add("$Alloc"); }
                 return _p;
             }
+            EfNotYet();
             var cfg = _model.GetOperation(_decl) switch
             {
                 IMethodBodyOperation body => ControlFlowGraph.Create(body),
@@ -371,6 +372,8 @@ namespace CsVerify.Verifier.Boogie
                 if (b.Ordinal == 0)
                 {
                     foreach (var (param, local) in _assigned) Emit(new KAssign { Var = local, Value = new KVar(Local(param)) });
+                    if (_unshared != null) Emit(new KAssign { Var = _unshared, Value = new KOp("lambda", new KLit("r$: Ref"), new KLit("false")) });
+                    TrackerEntry();
                     foreach (var cl in Confined()) Emit(new KAssign { Var = Declare(Local(cl), cl.Type), Value = new KLit("null") });
                     if (_p.HasThis && HasInvariants(_m.ContainingType)) AssumeValid(new KVar("this"), _m.ContainingType);
                     foreach (var dp in _m.Parameters.Where(x => x.RefKind != RefKind.Out && HasInvariants(x.Type))) AssumeValid(new KVar(Local(dp)), dp.Type);
@@ -396,6 +399,8 @@ namespace CsVerify.Verifier.Boogie
                                       Message = "a cycle with no single entry (a goto into a loop) is not supported" });
                 foreach (var op in b.Operations)
                 {
+                    // (a tracked database query's facts, guarded where it is read: Lowering.Ef's _known, for its statement)
+                    _known = null;
                     Statement(op);
                     // (while a task it started runs alongside, what the method doesn't hold is forgotten from each statement to the next)
                     if (_tasks.Count + _startedCaptures.Count > 0 && !InSpec(op.Syntax)) Alongside();
@@ -446,6 +451,8 @@ namespace CsVerify.Verifier.Boogie
             /// variable), into the map Mat of Count elements.</summary>
             public IOperation Query;
             public ILocalSymbol GroupOf;
+            /// <summary>A GroupJoin's group of a row (the loop over row.os): the row's variable.</summary>
+            public ILocalSymbol JoinGroupOf;
             public string Mat, Count;
             public SyntaxNode At;
         }
@@ -995,6 +1002,9 @@ namespace CsVerify.Verifier.Boogie
                                                         Unconverted(lk.Value) is IObjectCreationOperation { Initializer: null } lc && lc.Arguments.All(x => Scalar(x.Value.Type) && x.Parameter.RefKind == RefKind.None):
                     foreach (var x in lc.Arguments.OrderBy(x => x.Parameter.Ordinal)) Expr(x.Value);
                     return;
+                // (EF's Entry(o).State = s, of a state known here: no value to read)
+                case ISimpleAssignmentOperation efs when efs.Value.ConstantValue.HasValue && efs.Value.ConstantValue.Value is int && TrackerAssign(efs.Target, null):
+                    return;
                 case ISimpleAssignmentOperation a:
                     Assign(a.Target, Expr(a.Value));
                     return;
@@ -1008,7 +1018,7 @@ namespace CsVerify.Verifier.Boogie
                 case IIncrementOrDecrementOperation id:
                     Assign(id.Target, Arith(id.Kind == OperationKind.Increment ? "+" : "-", Expr(id.Target), new KLit("1"), id.Type, id.Syntax, id.IsChecked));
                     return;
-                case IFlowCaptureOperation qe when _forEach.TryGetValue(qe.Id, out var qf) && (qf.Query != null || qf.GroupOf != null):
+                case IFlowCaptureOperation qe when _forEach.TryGetValue(qe.Id, out var qf) && (qf.Query != null || qf.GroupOf != null || qf.JoinGroupOf != null):
                     StartQueryLoop(qf);
                     return;
                 case IFlowCaptureOperation en when _forEach.TryGetValue(en.Id, out var fe):
@@ -1064,6 +1074,8 @@ namespace CsVerify.Verifier.Boogie
 
         private void Assign(IOperation target, KExpr value)
         {
+            // (EF's Entry(o).State = s)
+            if (TrackerAssign(target, value)) return;
             switch (target)
             {
                 // (a view moved from one variable to another: its permission is its object's, so it goes along; the
@@ -1099,6 +1111,8 @@ namespace CsVerify.Verifier.Boogie
                     if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis) && !(target.Syntax.Parent is InitializerExpressionSyntax)) value = AtomicWrite(field, instance, onThis, value, target.Syntax);
                     // (a generic class's field of T holds a box: Box<int>'s Item, written an int)
                     Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = Box(value, FieldType(field), target.Type), At = target.Syntax, InstanceAt = instanceAt });
+                    // (an entity's column written: modified, for a context tracking it unchanged)
+                    TrackerFieldWrite(field, instance);
                     return;
                 }
                 case IArrayElementReferenceOperation e when IsArray(e.ArrayReference.Type) && e.Indices.Length == 1:
@@ -1739,6 +1753,7 @@ namespace CsVerify.Verifier.Boogie
             IFieldSymbol gate = null;
             while (op is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null) op = ca.Instance;
             KExpr value = null;
+            IInvocationOperation efQuery = null, efTracker = null;
             switch (op)
             {
                 case ILocalReferenceOperation tl when _tasks.TryGetValue(tl.Local, out var task):
@@ -1761,6 +1776,18 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var t in inlineStarts) JoinOf(t);
                     break;
                 }
+                // (EF's tracker's ...Async operations: read after the others have run, as a query is)
+                case IInvocationOperation eft when _failed != null && eft.TargetMethod.Name.EndsWith("Async") &&
+                                                   (IsEfMethod(eft.TargetMethod) || KernelTypes.Ef.IsContextType(eft.TargetMethod.ContainingType) || IsTransactionType(eft.TargetMethod.ContainingType) ||
+                                                    eft.TargetMethod.Name == "DisposeAsync" && eft.Instance != null && IsTransactionType(TrackerReceiverOf(eft.Instance)?.Type)) &&
+                                                   (EfAsyncTwin(eft.TargetMethod) == null || eft.TargetMethod.Name.StartsWith("Execute")):
+                    efTracker = eft;
+                    break;
+                // (an EF query operator's ...Async form, awaited where it's called: the operator's value)
+                case IInvocationOperation efq when EfAsyncTwin(efq.TargetMethod) is string && efq.Type is INamedTypeSymbol { Arity: 1 }:
+                    // (it runs while the method awaits: what it gives is read after the others have run)
+                    efQuery = efq;
+                    break;
                 case IInvocationOperation call when IsTaskMethod(call.TargetMethod) && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
                     _awaiting = true;
                     try { value = Call(call); }
@@ -1814,12 +1841,26 @@ namespace CsVerify.Verifier.Boogie
                 }
             var keep = new KAwait();
             if (!_opaque) foreach (var l in Confined()) keep.Keep.Add(Declare(Local(l), l.Type));
+            var unshared = UnsharedBefore();
             Emit(keep);
+            UnsharedAfter(unshared);
             foreach (var (f, t) in kept)
                 Emit(new KAssume { Cond = new KOp("==", new KField { Field = f, Instance = f.IsStatic ? null : new KVar("this"), OnThis = !f.IsStatic, At = aw.Syntax, InstanceAt = aw.Syntax }, new KVar(t)) });
             ForgetCaptured();
+            if (efQuery != null)
+            {
+                _tableReads = null;
+                value = Linq(efQuery, EfAsyncTwin(efQuery.TargetMethod), ((INamedTypeSymbol)efQuery.Type).TypeArguments[0]);
+            }
+            if (efTracker != null)
+            {
+                var (handled, tv) = TrackerCall(efTracker, awaited: true);
+                if (!handled) throw new NotTranslated("an await of " + efTracker.Syntax);
+                value = tv;
+            }
             // (where exceptions are seen: a library's await may throw, a cancellation say)
-            if (!(op is IInvocationOperation awaited && IsTaskMethod(awaited.TargetMethod) && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) &&
+            // (not the tracker's operations, which say how they throw)
+            if (!(op is IInvocationOperation awaited && IsTaskMethod(awaited.TargetMethod) && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) && efTracker == null &&
                 _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
                 Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
             if (gate != null) Take(gate, aw.Syntax);
@@ -2333,6 +2374,8 @@ namespace CsVerify.Verifier.Boogie
                 // (a GroupBy group's Key: its first element's key)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: ILocalReferenceOperation gk } when IsLinqGroup(gk.Type):
                     return GroupKey(gk.Local);
+                case IPropertyReferenceOperation jrm when jrm.Instance is ILocalReferenceOperation jrl && _joinRows.ContainsKey(jrl.Local) && JoinRowMember(jrm) is KExpr jrv:
+                    return jrv;
                 // (an anonymous object, new { s, b = e }: a tuple of its members; a member read, an element)
                 case IAnonymousObjectCreationOperation ao when IsTuple(ao.Type):
                 {
@@ -2674,8 +2717,10 @@ namespace CsVerify.Verifier.Boogie
             // (a lock's object, a semaphore of a field, not null where it's declared so: a reference the kernel doesn't keep)
             bool lockObject = call.Instance is IFieldReferenceOperation { Field: var lof } && IsLockObject(lof) && NotNullable(lof.Type) && IsSemaphore(lof.Type) && m.Name == "Dispose";
             if (call.Instance != null && !lockObject && !(InSubset(call.Instance.Type) || IsLibraryObject(call.Instance.Type))) return (false, null);
+            // (a lambda quoted as an expression tree is data: EF's configuration, nothing that runs)
+            bool Quoted(IOperation v) => Unconverted(v) is IAnonymousFunctionOperation || v.Type is INamedTypeSymbol { Name: "Expression", Arity: 1 } && v.Type.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions";
             foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit))
-                if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation)) return (false, null);
+                if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation) && !Quoted(a.Value)) return (false, null);
             if (call.Instance != null && !lockObject)
             {
                 var receiver = Expr(call.Instance);
@@ -2683,7 +2728,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KCheck { Cond = new KOp("!=", receiver, new KLit("null")), Id = "CSV1013", At = call.Instance.Syntax, Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'" });
             }
             // (an argument boxed or cast up to object for it: what it is, since the library's use of it isn't modeled)
-            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && InSubset(a.Value.Type)))
+            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && InSubset(a.Value.Type) && !Quoted(a.Value)))
             {
                 var av = Expr(a.Value is IConversionOperation { IsImplicit: true, Type.SpecialType: SpecialType.System_Object } box && InSubset(box.Operand.Type) ? box.Operand : a.Value);
                 // (a parameter not nullable: the caller proves its argument isn't null, CSV1014, as CsVerify's engine does)
@@ -3121,6 +3166,24 @@ namespace CsVerify.Verifier.Boogie
         {
             if (DataExpr(e, Expr, BindInCode) is KExpr data) return data;
             if (e is IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation resultOf } && _tasks.TryGetValue(resultOf.Local, out var resultTask)) return ResultOf(resultTask, e.Syntax);
+            // (EF's tracker: Database.CurrentTransaction, Entry(o).State)
+            if (e is IPropertyReferenceOperation trackerRead && TrackerRead(trackerRead) is KExpr tracked) return tracked;
+            // (a context's table, ctx.Orders or ctx.Set<T>(): a reference that changes nothing, as CsVerify's engine has it;
+            // what reads it is Lowering.Ef's)
+            if (KernelTypes.Ef != null && DbSetEntity(e.Type) != null &&
+                (e is IPropertyReferenceOperation { Instance: { } dbi } && KernelTypes.Ef.IsContextType(dbi.Type) ||
+                 e is IInvocationOperation { TargetMethod.Name: "Set", Instance: { } dbs, Arguments.Length: 0 } && KernelTypes.Ef.IsContextType(dbs.Type)))
+            {
+                var ctx = e is IPropertyReferenceOperation pdb ? pdb.Instance : ((IInvocationOperation)e).Instance;
+                var cv = Expr(ctx);
+                Emit(new KCheck { Cond = new KOp("!=", cv, new KLit("null")), Id = "CSV1013", At = ctx.Syntax, Message = $"'{ctx.Syntax}' might be null in '{e.Syntax}'" });
+                var table = Declare("t$" + _temps++, e.Type);
+                Emit(new KHavoc { Var = table });
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(table), new KLit("null")) });
+                return new KVar(table);
+            }
+            // (a transaction as an object, compared with null: itself)
+            if (e is IConversionOperation { IsImplicit: true, Conversion.IsReference: true } txc && IsEfTransaction(txc.Operand.Type)) return Expr(txc.Operand);
             switch (e)
             {
                 case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type): return Constant(cv.Value, e.Type);
@@ -3227,6 +3290,8 @@ namespace CsVerify.Verifier.Boogie
                     var t = Declare("t$" + _temps++, oc.Type);
                     foreach (var f in InstanceFields(oc.Type)) _p.Fields.Add(f);
                     Emit(new KNewObj { Var = t, Type = oc.Type, Ctor = isImplicit ? null : ctor, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = oc.Syntax });
+                    // (a context made: it tracks nothing, and has nothing open)
+                    if (IsContext(oc.Type)) NewContext(new KVar(t));
                     return new KVar(t);
                 }
                 case IParenthesizedOperation par: return Expr(par.Operand);
@@ -3478,10 +3543,11 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>== != and + of strings: equality of values (characters), and concatenation (null counts as empty).</summary>
-        private static KExpr StringBinary(BinaryOperatorKind k, KExpr l, KExpr r) => k switch
+        /// <summary>== and != of strings (in a lambda the database evaluates, by its collation: Lowering.Ef), and +.</summary>
+        private KExpr StringBinary(BinaryOperatorKind k, KExpr l, KExpr r) => k switch
         {
-            BinaryOperatorKind.Equals => new KOp("streq", l, r),
-            BinaryOperatorKind.NotEquals => new KOp("!", new KOp("streq", l, r)),
+            BinaryOperatorKind.Equals => StringEqual(l, r),
+            BinaryOperatorKind.NotEquals => new KOp("!", StringEqual(l, r)),
             _ => new KOp("scat", l, r),
         };
 
@@ -3522,9 +3588,20 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Call(IInvocationOperation call)
         {
+            // (EF's change tracker: Lowering.EfTracker)
+            var (tracker, trackerValue) = TrackerCall(call);
+            if (tracker) return trackerValue;
+            var value = CallCore(call);
+            // (a call of the program's: what it may have done to a context, in this method's record)
+            if (call.TargetMethod.DeclaringSyntaxReferences.Length > 0) TrackerCallEffects(call.TargetMethod);
+            return value;
+        }
+
+        private KExpr CallCore(IInvocationOperation call)
+        {
             if (MemCall(call, out var memValue)) return memValue;
             // (LINQ to Objects, read here: Lowering.Linq)
-            if (IsEnumerableCall(call.TargetMethod)) return Linq(call);
+            if (IsEnumerableCall(call.TargetMethod) || IsQueryableMethod(call.TargetMethod) && call.Type is ITypeSymbol qt && !IsQueryHandle(qt)) { _tableReads = null; return Linq(call); }
             // (waiting for a task one is given: a library call that changes nothing here, as CsVerify's engine has it)
             if (call.TargetMethod.Name == "Wait" && call.Arguments.Length == 0 && call.Instance != null && IsGivenTask(call.Instance.Type)) { Expr(call.Instance); return null; }
             // (a delegate type's contract: its Invoke is a procedure of it alone, as an interface member is)

@@ -35,7 +35,16 @@ namespace CsVerify.Verifier.Boogie
         private int _linq;
 
         /// <summary>A fact of the library's, assumed as mathematics where the call is.</summary>
-        private void LinqFact(KExpr fact, SyntaxNode at) => Emit(new KSpecStmt { Spec = fact, Assume = true, Free = true, At = at, ArgumentAt = at });
+        /// <summary>
+        /// A fact of a query, assumed. Of a database query read with tracking, only where the context tracked no entity of
+        /// the type before (CsVerify's engine's Known, Lowering.Ef's <see cref="_known"/>): else the rows are instances
+        /// it tracks, as the program left them, not as the database matched them.
+        /// </summary>
+        private void LinqFact(KExpr fact, SyntaxNode at) =>
+            Emit(new KSpecStmt { Spec = _known == null ? fact : new KOp("==>", _known, fact), Assume = true, Free = true, At = at, ArgumentAt = at });
+
+        /// <summary>A fact of what a query's result is (a definition, the bounds of a count or an index), whatever the rows hold.</summary>
+        private void ShapeFact(KExpr fact, SyntaxNode at) => Emit(new KSpecStmt { Spec = fact, Assume = true, Free = true, At = at, ArgumentAt = at });
 
         private string LinqMap(string type)
         {
@@ -56,7 +65,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A pure lambda's body (one expression, writing nothing, calling only functions), and its parameters.</summary>
         private (IOperation body, IParameterSymbol p1, IParameterSymbol p2)? PureLambda(IOperation arg)
         {
-            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target) : null;
+            // (a lambda made a delegate, or quoted as an expression tree, Queryable's)
+            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target)
+                   : Unconverted(arg) is IAnonymousFunctionOperation quoted ? quoted
+                   : Unconverted(arg) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null;
             if (fn == null || fn.Body.Operations.Length != 1 || !(fn.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body })) return null;
             foreach (var op in body.DescendantsAndSelf())
                 switch (op)
@@ -98,7 +110,11 @@ namespace CsVerify.Verifier.Boogie
             // (and query syntax: the calls it is)
             while (src is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || src is ITranslatedQueryOperation)
                 src = src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation) : Unconverted(_captured[((IFlowCaptureReferenceOperation)src).Id]);
-            if (src is IInvocationOperation q && IsEnumerableCall(q.TargetMethod)) return Query(q);
+            // (a table, as the query reads it; Queryable's operators, LINQ to Objects')
+            if (TableOf(src) is DbTable table) return ReadTable(table);
+            // (a context's local view: what it tracks of a type)
+            if (KernelTypes.Ef != null && IsLocalView(src)) return LocalView((IPropertyReferenceOperation)Unconverted(src));
+            if (src is IInvocationOperation q && (IsEnumerableCall(q.TargetMethod) || IsQueryableMethod(q.TargetMethod))) return Query(q);
             var type = src.Type;
             var elem = ElementOf(type);
             if (elem == null || !InSubset(elem) || !(IsArray(type) || IsList(type) || IsCollectionInterface(type)))
@@ -128,6 +144,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A query: a member of Enumerable that gives a sequence.</summary>
         private LSeq Query(IInvocationOperation q)
         {
+            // (what is known of a tracked query's rows is known only where its context tracked none before: _known, kept
+            // from here on, for the query's facts that its consumer assumes; the statement's lowering ends it)
+            bool database = KernelTypes.Ef != null && DatabaseRoot(q, out _) != null;
+            if (database) { _inDatabase++; TranslationChecks(q); }
+            try { return QueryCore(q); }
+            finally { if (database) _inDatabase--; }
+        }
+
+        private LSeq QueryCore(IInvocationOperation q)
+        {
             var m = q.TargetMethod;
             var args = q.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var resultElem = ElementOf(q.Type);
@@ -138,6 +164,20 @@ namespace CsVerify.Verifier.Boogie
                     var src = Sequence(args[0].Value);
                     var f = LambdaArg(q, 1);
                     return new LSeq { Length = src.Length, Elem = i => Apply(f, src.Elem(i), i), Type = resultElem };
+                }
+                // (the first n, or all but them: n clamped to [0, Count], as their definitions have it)
+                case "Take" or "Skip" when args.Count == 2 && IsIntegral(args[1].Value.Type) && args[1].Value.Type.SpecialType == SpecialType.System_Int32:
+                {
+                    var src = Sequence(args[0].Value);
+                    var n = Expr(args[1].Value);
+                    var k = Declare("t$" + _temps++, args[1].Value.Type);
+                    Emit(new KAssign { Var = k, Value = new KOp("ite", new KOp("<=", n, new KLit("0")), new KLit("0"), new KOp("ite", new KOp("<", n, src.Length), n, src.Length)) });
+                    var kv = new KVar(k);
+                    // (a database's: by their place in its order, CSV1031)
+                    DatabaseOrder(q, args[0].Value, src.Length);
+                    return m.Name == "Take"
+                        ? new LSeq { Length = kv, Elem = src.Elem, Type = src.Type }
+                        : new LSeq { Length = new KOp("-", src.Length, kv), Elem = i => src.Elem(new KOp("+", i, kv)), Type = src.Type };
                 }
                 case "Where" when args.Count == 2:
                 {
@@ -199,15 +239,17 @@ namespace CsVerify.Verifier.Boogie
                     var o = Sequence(args[0].Value);
                     var inner = Sequence(args[1].Value);
                     var (okey, ikey, sel) = (LambdaArg(q, 2), LambdaArg(q, 3), LambdaArg(q, 4));
-                    var pairs = Flatten(o, j => inner, q.Syntax, out var outer, out var within);
+                    var pairs = Flatten(o, j => inner, q.Syntax, out var outer, out var within, whole: true);
                     var matched = FilterAt(pairs, i => SameValue(Apply(okey, o.Elem(outer(i))), Apply(ikey, inner.Elem(within(i))), okey.body.Type), q.Syntax);
                     var sx = (sel.body, sel.p1, (IParameterSymbol)null);
                     // (the matched pair i is pair ix[i]: its outer and inner elements)
-                    return new LSeq
+                    var joined = new LSeq
                     {
                         Length = matched.Length, Type = resultElem,
                         Elem = i => new KLet { Var = "q$" + sel.p2.Name, Value = inner.Elem(within(matched.Index(i))), Body = Apply(sx, o.Elem(outer(matched.Index(i)))) },
                     };
+                    // (the database's: in no order of its sources', SQL Server's hash join keeping no outer row's matches together)
+                    return _inDatabase > 0 ? Sort(joined, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : joined;
                 }
                 default: throw new NotTranslated("LINQ's " + m.Name);
             }
@@ -225,9 +267,23 @@ namespace CsVerify.Verifier.Boogie
             var src = collection;
             while (src is ITranslatedQueryOperation tq) src = Unconverted(tq.Operation);
             ILocalSymbol groupOf = src is ILocalReferenceOperation gl && IsGrouping(gl.Type) ? gl.Local : null;
-            if (groupOf == null && !(src is IInvocationOperation q && IsEnumerableCall(q.TargetMethod))) return false;
+            // (a GroupJoin's rows, and a row's group: row.os)
+            ILocalSymbol joinGroupOf = src is IPropertyReferenceOperation { Instance: ILocalReferenceOperation jr } jp && _joinRows.TryGetValue(jr.Local, out var jrow) &&
+                                       jrow.members.TryGetValue(jp.Property.Name, out var jm) && jm == "group" ? jr.Local : null;
+            bool joinRows = src is IInvocationOperation gjq && IsEnumerableCall(gjq.TargetMethod) && gjq.TargetMethod.Name == "GroupJoin";
+            if (groupOf == null && joinGroupOf == null && !(src is IInvocationOperation q && IsEnumerableCall(q.TargetMethod))) return false;
             var element = fo.Locals.FirstOrDefault()?.Type;
-            if (element == null || !(InSubset(element) || IsGrouping(element))) return false;
+            if (element == null || !(InSubset(element) || IsGrouping(element) || joinRows)) return false;
+            if (joinRows)
+            {
+                var members = JoinRowMembers((IInvocationOperation)src);
+                foreach (var l in fo.Locals)
+                {
+                    _joinRows[l] = ((IInvocationOperation)src, members, null);
+                    // (a row is its outer element's index)
+                    if (!_p.Locals.Any(x => x.Name == Local(l))) _p.Locals.Add(new KLocal { Name = Local(l), Raw = "int" });
+                }
+            }
             var capture = cfg.Blocks.SelectMany(b => b.Operations).OfType<IFlowCaptureOperation>()
                 .FirstOrDefault(c => c.Syntax == fs.Expression && c.Value is IInvocationOperation gi && gi.TargetMethod.Name == "GetEnumerator");
             var head = capture == null ? null : cfg.Blocks.FirstOrDefault(b => b.BranchValue is IInvocationOperation mn && mn.TargetMethod.Name == "MoveNext" &&
@@ -237,10 +293,10 @@ namespace CsVerify.Verifier.Boogie
             var fe = new ForEach
             {
                 Head = head.Ordinal, Index = Declare($"fe${n}$i", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
-                Type = collection.Type, Element = element, At = fs.Expression, Query = groupOf == null ? src : null, GroupOf = groupOf,
+                Type = collection.Type, Element = element, At = fs.Expression, Query = groupOf == null && joinGroupOf == null ? src : null, GroupOf = groupOf, JoinGroupOf = joinGroupOf,
                 Mat = "fe$" + n + "$m", Count = Declare($"fe${n}$n", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
             };
-            _p.Locals.Add(new KLocal { Name = fe.Mat, Raw = "[int]" + (IsGrouping(element) ? "int" : TypeOf(element)) });
+            _p.Locals.Add(new KLocal { Name = fe.Mat, Raw = "[int]" + (IsGrouping(element) || joinRows ? "int" : TypeOf(element)) });
             _forEach[capture.Id] = fe;
             _forEachAt[head.Ordinal] = fe;
             foreach (var l in fo.Locals) _forEachOf[l] = fe;
@@ -266,6 +322,36 @@ namespace CsVerify.Verifier.Boogie
                 var gv = new KVar(Declare(Local(fe.GroupOf), fe.GroupOf.Type));
                 seq = Filter(src, x => SameValue(Apply(g.key, x), Apply(g.key, src.Elem(gv)), g.key.Item1.Type), at);
             }
+            else if (fe.JoinGroupOf != null)
+            {
+                // (a GroupJoin row's group: the inner elements, as read where the rows were, whose key is the row's outer element's)
+                var j = _joinRows[fe.JoinGroupOf].read ?? throw new NotTranslated("a GroupJoin's group not of its rows read here");
+                var rv = new KVar(Declare(Local(fe.JoinGroupOf), fe.JoinGroupOf.Type));
+                var inner = new LSeq { Length = new KVar(j.innerCount), Elem = i => new KOp("sel", new KVar(j.innerMap), i), Type = j.innerType };
+                var outerElem = new KOp("sel", new KVar(j.outerMap), rv);
+                seq = Filter(inner, x => SameValue(Apply(j.ikey, x), Apply(j.okey, outerElem), j.okey.Item1.Type), at);
+            }
+            else if (Unconverted(fe.Query) is IInvocationOperation gj && gj.TargetMethod.Name == "GroupJoin" && gj.Arguments.Length == 5)
+            {
+                // (a GroupJoin: a row for each outer element, in order, its group the inner ones of its key; both read now)
+                var args = gj.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                var outer = Sequence(args[0].Value);
+                var innerSrc = Sequence(args[1].Value);
+                var (okey, ikey) = (LambdaArg(gj, 2), LambdaArg(gj, 3));
+                string Read(LSeq sq)
+                {
+                    var map = LinqMap("[int]" + TypeOf(sq.Type));
+                    LinqFact(Over(new KLit("0"), sq.Length, i => new KOp("==", new KOp("sel", new KVar(map), i), sq.Elem(i))), at);
+                    return map;
+                }
+                var oc = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(new KAssign { Var = oc, Value = outer.Length });
+                var ic = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(new KAssign { Var = ic, Value = innerSrc.Length });
+                var read = (outerMap: Read(outer), outerCount: oc, innerMap: Read(innerSrc), innerCount: ic, okey, ikey, outerType: outer.Type, innerType: innerSrc.Type);
+                foreach (var l in _forEachOf.Where(kv => kv.Value == fe).Select(kv => kv.Key)) _joinRows[l] = (_joinRows[l].join, _joinRows[l].members, read);
+                seq = new LSeq { Length = new KVar(oc), Elem = i => i, Type = fe.Element };
+            }
             else if (Unconverted(fe.Query) is IInvocationOperation gb && gb.TargetMethod.Name == "GroupBy" && gb.Arguments.Length == 2 && IsGrouping(fe.Element))
             {
                 var source = Sequence(gb.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
@@ -285,6 +371,38 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KHavoc { Var = fe.Mat });
             LinqFact(Over(new KLit("0"), new KVar(fe.Count), i => new KOp("==", new KOp("sel", new KVar(fe.Mat), i), seq.Elem(i))), at);
             Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
+        }
+
+        /// <summary>A GroupJoin's rows by their variable: the query, what each member of a row is (the outer element, or the group), and what was read where the loop started.</summary>
+        private readonly Dictionary<ILocalSymbol, (IInvocationOperation join, Dictionary<string, string> members,
+            (string outerMap, string outerCount, string innerMap, string innerCount, (IOperation, IParameterSymbol, IParameterSymbol) okey, (IOperation, IParameterSymbol, IParameterSymbol) ikey, ITypeSymbol outerType, ITypeSymbol innerType)? read)> _joinRows =
+            new Dictionary<ILocalSymbol, (IInvocationOperation, Dictionary<string, string>, (string, string, string, string, (IOperation, IParameterSymbol, IParameterSymbol), (IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, ITypeSymbol)?)>(SymbolEqualityComparer.Default);
+
+        /// <summary>A GroupJoin's result selector, (c, os) => new { c, os }: each member of the row, "outer" or "group".</summary>
+        private static Dictionary<string, string> JoinRowMembers(IInvocationOperation join)
+        {
+            var arg = Unconverted(join.Arguments.First(a => a.Parameter.Ordinal == 4).Value);
+            if (arg is IDelegateCreationOperation dc) arg = Unconverted(dc.Target);
+            if (!(arg is IAnonymousFunctionOperation f) || f.Symbol.Parameters.Length != 2 || f.Body.Operations.Length != 1 ||
+                !(f.Body.Operations[0] is IReturnOperation { ReturnedValue: var rv } && Unconverted(rv) is IAnonymousObjectCreationOperation ao))
+                throw new NotTranslated("a GroupJoin whose result isn't an anonymous object of its row and its group");
+            var members = new Dictionary<string, string>();
+            foreach (var init in ao.Initializers)
+            {
+                if (!(init is ISimpleAssignmentOperation { Target: IPropertyReferenceOperation tp, Value: var v } && Unconverted(v) is IParameterReferenceOperation pr))
+                    throw new NotTranslated("a GroupJoin's result member that isn't its row or its group");
+                members[tp.Property.Name] = SymbolEqualityComparer.Default.Equals(pr.Parameter, f.Symbol.Parameters[0]) ? "outer" : "group";
+            }
+            return members;
+        }
+
+        /// <summary>A GroupJoin row's outer member (row.c): the outer element at the row's index; null for anything else.</summary>
+        private KExpr JoinRowMember(IPropertyReferenceOperation p)
+        {
+            if (!(p.Instance is ILocalReferenceOperation l) || !_joinRows.TryGetValue(l.Local, out var row) || !row.members.TryGetValue(p.Property.Name, out var kind)) return null;
+            if (kind != "outer") throw new NotTranslated("a GroupJoin's group other than as a foreach's");
+            if (row.read == null) throw new NotTranslated("a GroupJoin's row not read here");
+            return new KOp("sel", new KVar(row.read.Value.outerMap), new KVar(Declare(Local(l.Local), l.Local.Type)));
         }
 
         /// <summary>A group's Key: its first element's key.</summary>
@@ -312,18 +430,20 @@ namespace CsVerify.Verifier.Boogie
         /// Sequences one after another, one for each element of src: offsets o[j] (o[0] = 0, o[j + 1] = o[j] + the
         /// length of j's, never decreasing), element i at outer index out[i] and index i - o[out[i]] within it.
         /// </summary>
-        private LSeq Flatten(LSeq src, Func<KExpr, LSeq> inner, SyntaxNode at, out Func<KExpr, KExpr> outer, out Func<KExpr, KExpr> within)
+        /// <param name="whole">each inner sequence the same, whatever the element (a join's): its offsets are what the result is</param>
+        private LSeq Flatten(LSeq src, Func<KExpr, LSeq> inner, SyntaxNode at, out Func<KExpr, KExpr> outer, out Func<KExpr, KExpr> within, bool whole = false)
         {
             var o = new KVar(LinqMap("[int]int"));
             var ov = new KVar(LinqMap("[int]int"));
             var n = src.Length;
             KExpr O(KExpr j) => new KOp("sel", o, j);
             KExpr Out(KExpr i) => new KOp("sel", ov, i);
-            LinqFact(new KOp("==", O(new KLit("0")), new KLit("0")), at);
-            LinqFact(Over(new KLit("0"), n, j => new KOp("&&", new KOp("==", O(new KOp("+", j, new KLit("1"))), new KOp("+", O(j), inner(j).Length)), new KOp("<=", new KLit("0"), inner(j).Length))), at);
+            ShapeFact(new KOp("==", O(new KLit("0")), new KLit("0")), at);
+            var offsets = Over(new KLit("0"), n, j => new KOp("&&", new KOp("==", O(new KOp("+", j, new KLit("1"))), new KOp("+", O(j), inner(j).Length)), new KOp("<=", new KLit("0"), inner(j).Length)));
+            if (whole) ShapeFact(offsets, at); else LinqFact(offsets, at);
             // (monotone: an offset is no more than any later one)
-            LinqFact(Over(new KLit("0"), new KOp("+", n, new KLit("1")), a => Over(a, new KOp("+", n, new KLit("1")), b => new KOp("<=", O(a), O(b)))), at);
-            LinqFact(Over(new KLit("0"), O(n), i => new KOp("&&", Between(new KLit("0"), Out(i), n), new KOp("&&", new KOp("<=", O(Out(i)), i), new KOp("<", i, O(new KOp("+", Out(i), new KLit("1"))))))), at);
+            ShapeFact(Over(new KLit("0"), new KOp("+", n, new KLit("1")), a => Over(a, new KOp("+", n, new KLit("1")), b => new KOp("<=", O(a), O(b)))), at);
+            ShapeFact(Over(new KLit("0"), O(n), i => new KOp("&&", Between(new KLit("0"), Out(i), n), new KOp("&&", new KOp("<=", O(Out(i)), i), new KOp("<", i, O(new KOp("+", Out(i), new KLit("1"))))))), at);
             outer = Out;
             within = i => new KOp("-", i, O(Out(i)));
             Func<KExpr, KExpr> w = within;
@@ -352,6 +472,16 @@ namespace CsVerify.Verifier.Boogie
             public KQuantOver(Lowering l, KExpr lo, KExpr hi, Func<KExpr, KExpr> body, bool forall) { Q = l.Over(lo, hi, body, forall); }
         }
 
+        /// <summary>
+        /// Of a filter, where at most one element matching is to be shown: two matches are at two indices, the first
+        /// before the second (what its facts say; said of indices 0 and 1, for the solver to find them).
+        /// </summary>
+        private void AtMostOneHint(LSeq s, SyntaxNode at)
+        {
+            if (s.Index == null) return;
+            LinqFact(new KOp("==>", new KOp(">=", s.Length, new KLit("2")), new KOp("<", s.Index(new KLit("0")), s.Index(new KLit("1")))), at);
+        }
+
         private LSeq Filter(LSeq src, Func<KExpr, KExpr> pred, SyntaxNode at) => FilterAt(src, j => pred(src.Elem(j)), at);
 
         /// <summary>
@@ -365,9 +495,9 @@ namespace CsVerify.Verifier.Boogie
             var n = src.Length;
             KExpr C(KExpr j) => new KOp("sel", c, j);
             KExpr Ix(KExpr i) => new KOp("sel", ix, i);
-            LinqFact(new KOp("==", C(new KLit("0")), new KLit("0")), at);
+            ShapeFact(new KOp("==", C(new KLit("0")), new KLit("0")), at);
             LinqFact(Over(new KLit("0"), n, j => new KOp("==", C(new KOp("+", j, new KLit("1"))), new KOp("+", C(j), new KOp("ite", keep(j), new KLit("1"), new KLit("0"))))), at);
-            LinqFact(Over(new KLit("0"), new KOp("+", n, new KLit("1")), j => new KOp("&&", new KOp("<=", new KLit("0"), C(j)), new KOp("<=", C(j), j))), at);
+            ShapeFact(Over(new KLit("0"), new KOp("+", n, new KLit("1")), j => new KOp("&&", new KOp("<=", new KLit("0"), C(j)), new KOp("<=", C(j), j))), at);
             LinqFact(Over(new KLit("0"), n, j => new KOp("==>", keep(j), new KOp("==", Ix(C(j)), j))), at);
             LinqFact(Over(new KLit("0"), C(n), i => new KOp("&&", new KOp("&&", Between(new KLit("0"), Ix(i), n), keep(Ix(i))), new KOp("==", C(Ix(i)), i))), at);
             LinqFact(Over(new KLit("0"), new KOp("-", C(n), new KLit("1")), i => new KOp("<", Ix(i), Ix(new KOp("+", i, new KLit("1"))))), at);
@@ -386,8 +516,8 @@ namespace CsVerify.Verifier.Boogie
             var n = src.Length;
             KExpr P(KExpr i) => new KOp("sel", p, i);
             KExpr Q(KExpr j) => new KOp("sel", qv, j);
-            LinqFact(Over(new KLit("0"), n, i => new KOp("&&", Between(new KLit("0"), P(i), n), new KOp("==", Q(P(i)), i))), at);
-            LinqFact(Over(new KLit("0"), n, j => new KOp("&&", Between(new KLit("0"), Q(j), n), new KOp("==", P(Q(j)), j))), at);
+            ShapeFact(Over(new KLit("0"), n, i => new KOp("&&", Between(new KLit("0"), P(i), n), new KOp("==", Q(P(i)), i))), at);
+            ShapeFact(Over(new KLit("0"), n, j => new KOp("&&", Between(new KLit("0"), Q(j), n), new KOp("==", P(Q(j)), j))), at);
             int prefix = keys.TakeWhile(k => k.type != null && (IsIntegral(k.type) || k.type.SpecialType == SpecialType.System_Char)).Count();
             KExpr Key(int k, KExpr j) => Apply(keys[k].key, src.Elem(j));
             KExpr InOrder(KExpr a, KExpr b, int level)
@@ -401,17 +531,32 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A call of Enumerable read here (in code): a query copied (ToArray, ToList), or read (Count, Sum, Max, ...).</summary>
-        private KExpr Linq(IInvocationOperation call)
+        /// <param name="name">the operator, where the call is another's form of it (EF's ...Async, awaited); its own by default</param>
+        /// <param name="resultType">what it gives, there (the awaited task's T)</param>
+        private KExpr Linq(IInvocationOperation call, string name = null, ITypeSymbol resultType = null)
+        {
+            // (of a database query: its lambdas, the database's to evaluate)
+            bool database = KernelTypes.Ef != null && DatabaseRoot(call, out _) != null;
+            var known = _known;
+            if (database) { _inDatabase++; TranslationChecks(call); }
+            try { return LinqCore(call, name, resultType); }
+            finally { if (database) _inDatabase--; _known = known; }
+        }
+
+        private KExpr LinqCore(IInvocationOperation call, string name, ITypeSymbol resultType)
         {
             var m = call.TargetMethod;
-            var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            name ??= m.Name;
+            var callType = resultType ?? call.Type;
+            // (a CancellationToken an async form takes says nothing of what it gives)
+            var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
             var at = call.Syntax;
-            void Need(KExpr cond, string text) => Emit(new KCheck { Cond = cond, Id = "CSV1001", At = at, Message = $"precondition '{text}' of '{m.Name}' might not hold" });
+            void Need(KExpr cond, string text) => Emit(new KCheck { Cond = cond, Id = "CSV1001", At = at, Message = $"precondition '{text}' of '{name}' might not hold" });
             KExpr Value(KExpr v)
             {
-                var t = Declare("t$" + _temps++, call.Type);
+                var t = Declare("t$" + _temps++, callType);
                 Emit(new KHavoc { Var = t });
-                LinqFact(new KOp("==", new KVar(t), v), at);
+                ShapeFact(new KOp("==", new KVar(t), v), at);
                 return new KVar(t);
             }
             LSeq Of(bool withPredicate)
@@ -426,27 +571,27 @@ namespace CsVerify.Verifier.Boogie
                 var src = Sequence(args[0].Value);
                 if (args.Count == 1) return src;
                 var f = LambdaArg(call, 1);
-                return new LSeq { Length = src.Length, Elem = i => Apply(f, src.Elem(i), i), Type = ElementOf(call.Type) ?? f.body.Type };
+                return new LSeq { Length = src.Length, Elem = i => Apply(f, src.Elem(i), i), Type = ElementOf(callType) ?? f.body.Type };
             }
-            switch (m.Name)
+            switch (name)
             {
-                case "ToArray" when args.Count == 1 && IsArray(call.Type):
+                case "ToArray" when args.Count == 1 && IsArray(callType):
                 {
                     var s = Sequence(args[0].Value);
-                    var t = Declare("t$" + _temps++, call.Type);
-                    Emit(new KNew { Var = t, ArrayType = call.Type, Size = s.Length });
-                    Emit(new KRow { Map = Elements(call.Type), Ref = new KVar(t),
+                    var t = Declare("t$" + _temps++, callType);
+                    Emit(new KNew { Var = t, ArrayType = callType, Size = s.Length });
+                    Emit(new KRow { Map = Elements(callType), Ref = new KVar(t),
                                     Value = new KOp("lambda", new KLit("j$: int"), new KOp("ite", Between(new KLit("0"), new KVar("j$"), s.Length), s.Elem(new KVar("j$")), new KLit(Default(s.Type) is KLit d ? d.Text : "0"))) });
                     return new KVar(t);
                 }
-                case "ToList" when args.Count == 1 && IsList(call.Type):
+                case "ToList" when args.Count == 1 && IsList(callType):
                 {
                     var s = Sequence(args[0].Value);
-                    var ctor = ((INamedTypeSymbol)call.Type).Constructors.FirstOrDefault(c => c.Parameters.Length == 0) ?? throw new NotTranslated("a List without its constructor");
+                    var ctor = ((INamedTypeSymbol)callType).Constructors.FirstOrDefault(c => c.Parameters.Length == 0) ?? throw new NotTranslated("a List without its constructor");
                     var list = Invoke(ctor, null, new IArgumentOperation[0], at, null);
-                    var t = Declare("t$" + _temps++, call.Type);
+                    var t = Declare("t$" + _temps++, callType);
                     Emit(new KAssign { Var = t, Value = list });
-                    var items = ModelOf("Items", (INamedTypeSymbol)call.Type);
+                    var items = ModelOf("Items", (INamedTypeSymbol)callType);
                     Emit(new KRow { Map = items.Name, Ref = new KVar(t), Value = new KOp("lambda", new KLit("j$: int"), s.Elem(new KVar("j$"))) });
                     Emit(new KRow { Map = SizeMap, Ref = new KVar(t), Value = s.Length });
                     return new KVar(t);
@@ -470,27 +615,44 @@ namespace CsVerify.Verifier.Boogie
                 case "First" or "Last" or "FirstOrDefault" or "LastOrDefault" when args.Count <= 2:
                 {
                     var s = Of(true);
-                    var pos = m.Name.StartsWith("First") ? new KLit("0") : (KExpr)new KOp("-", s.Length, new KLit("1"));
-                    if (!m.Name.EndsWith("OrDefault"))
+                    AtMostOneHint(s, at);
+                    DatabaseOrder(call, args[0].Value, s.Length);
+                    var pos = name.StartsWith("First") ? new KLit("0") : (KExpr)new KOp("-", s.Length, new KLit("1"));
+                    if (!name.EndsWith("OrDefault"))
                     {
                         Need(new KOp(">", s.Length, new KLit("0")), args.Count == 1 ? "Q.Count(source) > 0" : "a matching element");
                         return Value(s.Elem(pos));
                     }
-                    if (!(Default(call.Type) is KExpr dflt)) throw new NotTranslated("a default of " + call.Type);
+                    if (!(Default(callType) is KExpr dflt)) throw new NotTranslated("a default of " + callType);
                     return Value(new KOp("ite", new KOp(">", s.Length, new KLit("0")), s.Elem(pos), dflt));
                 }
-                case "Max" or "Min" when args.Count <= 2 && IsIntegral(call.Type):
+                case "Single" or "SingleOrDefault" when args.Count <= 2:
+                {
+                    // (one, or with OrDefault none, else InvalidOperationException: its precondition)
+                    var s = Of(true);
+                    AtMostOneHint(s, at);
+                    var src = args.Count == 1 ? "Q.Count(source)" : "Q.Count(Where(source, predicate))";
+                    if (name == "Single")
+                    {
+                        Need(new KOp("==", s.Length, new KLit("1")), src + " == 1");
+                        return Value(s.Elem(new KLit("0")));
+                    }
+                    Need(new KOp("<=", s.Length, new KLit("1")), src + " <= 1");
+                    if (!(Default(callType) is KExpr sd)) throw new NotTranslated("a default of " + callType);
+                    return Value(new KOp("ite", new KOp("==", s.Length, new KLit("1")), s.Elem(new KLit("0")), sd));
+                }
+                case "Max" or "Min" when args.Count <= 2 && IsIntegral(callType):
                 {
                     var s = Mapped();
                     Need(new KOp(">", s.Length, new KLit("0")), "Q.Count(source) > 0");
-                    var r = Declare("t$" + _temps++, call.Type);
+                    var r = Declare("t$" + _temps++, callType);
                     Emit(new KHavoc { Var = r });
                     var rv = new KVar(r);
                     LinqFact(Over(new KLit("0"), s.Length, i => new KOp("==", s.Elem(i), rv), forall: false), at);
-                    LinqFact(Over(new KLit("0"), s.Length, i => new KOp(m.Name == "Max" ? "<=" : ">=", s.Elem(i), rv)), at);
+                    LinqFact(Over(new KLit("0"), s.Length, i => new KOp(name == "Max" ? "<=" : ">=", s.Elem(i), rv)), at);
                     return rv;
                 }
-                case "Sum" when args.Count <= 2 && IsIntegral(call.Type):
+                case "Sum" when args.Count <= 2 && IsIntegral(callType):
                 {
                     var s = Mapped();
                     // (every partial sum in range: .NET adds them checked)
@@ -498,26 +660,26 @@ namespace CsVerify.Verifier.Boogie
                     KExpr A(KExpr j) => new KOp("sel", acc, j);
                     LinqFact(new KOp("==", A(new KLit("0")), new KLit("0")), at);
                     LinqFact(Over(new KLit("0"), s.Length, j => new KOp("==", A(new KOp("+", j, new KLit("1"))), new KOp("+", A(j), s.Elem(j)))), at);
-                    var (lo, hi) = Range(call.Type.SpecialType);
+                    var (lo, hi) = Range(callType.SpecialType);
                     Need(Over(new KLit("0"), new KOp("+", s.Length, new KLit("1")), j => new KOp("&&", new KOp("<=", Number(lo), A(j)), new KOp("<=", A(j), Number(hi)))),
                          "every partial sum in range");
                     return Value(A(s.Length));
                 }
                 // (floating point: IEEE, added in order from 0.0, rounded at each step, as .NET adds them)
-                case "Sum" or "Average" when args.Count <= 2 && call.Type.SpecialType == SpecialType.System_Double:
+                case "Sum" or "Average" when args.Count <= 2 && callType.SpecialType == SpecialType.System_Double:
                 {
                     var s = Mapped();
-                    if (m.Name == "Average") Need(new KOp(">", s.Length, new KLit("0")), "Q.Count(source) > 0");
+                    if (name == "Average") Need(new KOp(">", s.Length, new KLit("0")), "Q.Count(source) > 0");
                     var count = new KOp("$fp.ofReal64", new KOp("$toreal", s.Length));
                     if (s.Type.SpecialType == SpecialType.System_Double)
                     {
                         var acc = new KVar(LinqMap("[int]float53e11"));
                         KExpr A(KExpr j) => new KOp("sel", acc, j);
-                        LinqFact(new KOp("==", A(new KLit("0")), FloatLiteral(0.0, call.Type)), at);
+                        LinqFact(new KOp("==", A(new KLit("0")), FloatLiteral(0.0, callType)), at);
                         LinqFact(Over(new KLit("0"), s.Length, j => new KOp("==", A(new KOp("+", j, new KLit("1"))), new KOp("$fp.add64", A(j), s.Elem(j)))), at);
-                        return Value(m.Name == "Sum" ? A(s.Length) : new KOp("$fp.div64", A(s.Length), count));
+                        return Value(name == "Sum" ? A(s.Length) : new KOp("$fp.div64", A(s.Length), count));
                     }
-                    if (m.Name == "Sum" || !IsIntegral(s.Type)) throw new NotTranslated("LINQ's " + m.Name + " of " + s.Type);
+                    if (name == "Sum" || !IsIntegral(s.Type)) throw new NotTranslated("LINQ's " + name + " of " + s.Type);
                     // (an integer average: summed as long, exactly, then divided as doubles)
                     var sum = new KVar(LinqMap("[int]int"));
                     KExpr S(KExpr j) => new KOp("sel", sum, j);
@@ -526,7 +688,7 @@ namespace CsVerify.Verifier.Boogie
                     return Value(new KOp("$fp.div64", new KOp("$fp.ofReal64", new KOp("$toreal", S(s.Length))), count));
                 }
                 default:
-                    throw new NotTranslated("LINQ's " + m.Name);
+                    throw new NotTranslated("LINQ's " + name);
             }
         }
     }

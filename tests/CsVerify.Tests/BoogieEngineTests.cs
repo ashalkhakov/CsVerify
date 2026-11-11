@@ -1561,6 +1561,18 @@ static void N(Cell c, Cell other) { Spec.Requires(c != other); c.V = 7; Func<int
 }
 ";
         private const string ParityMisc = @"
+public static class L {
+    public static void OrdersOf(int[] customers, int[] owners)
+    {
+        foreach (var c in from c in customers join o in owners on c equals o into os select new { c, os })
+            foreach (var o in c.os) Spec.Assert(o == c.c);
+    }
+    public static void Bad(int[] customers, int[] owners)
+    {
+        foreach (var c in from c in customers join o in owners on c equals o into os select new { c, os })
+            foreach (var o in c.os) Spec.Assert(o == c.c + 1);
+    }
+}
 public static class C {
 static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? 0 : s.Length;
 static int N(System.Collections.Generic.List<string?> l) => l.Count > 0 ? l[0].Length : 0;
@@ -1583,10 +1595,10 @@ public static class C3 {
         [InlineData("loops", 7)]
         [InlineData("tasks", 8)]
         [InlineData("lambdas", 3)]
-        [InlineData("misc", 6)]
+        [InlineData("misc", 8)]
         public void Parity_BothEnginesReportTheSame(string which, int atLeast)
         {
-            var source = which switch { "loops" => ParityLoops, "tasks" => "using System.Threading.Tasks;\n" + ParityTasks, "lambdas" => ParityLambdas, _ => ParityMisc };
+            var source = which switch { "loops" => ParityLoops, "tasks" => "using System.Threading.Tasks;\n" + ParityTasks, "lambdas" => ParityLambdas, _ => "using System.Linq;\n" + ParityMisc };
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + "using System.Collections.Generic;\n" + source) }, o));
             Assert.True(Agree(c, b) >= atLeast, "by Boogie: " + string.Join(", ", b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name)));
         }

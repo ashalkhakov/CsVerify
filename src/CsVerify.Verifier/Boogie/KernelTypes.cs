@@ -98,7 +98,7 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType) && !IsFloating(((IArrayTypeSymbol)t).ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t);
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -196,9 +196,18 @@ namespace CsVerify.Verifier.Boogie
         /// A type parameter constrained to references (where T : class, or to interfaces and classes of the subset's): its
         /// values are references, as its instantiations must be.
         /// </summary>
-        public static bool IsRefParameter(ITypeSymbol t) =>
-            t is ITypeParameterSymbol tp && !tp.HasValueTypeConstraint && !tp.HasUnmanagedTypeConstraint && !tp.HasConstructorConstraint &&
-            (tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0) && tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c));
+        public static bool IsRefParameter(ITypeSymbol t)
+        {
+            if (!(t is ITypeParameterSymbol tp) || tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint || tp.HasConstructorConstraint ||
+                !(tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0)) return false;
+            // (a constraint that names the parameter itself, B : Builder<B, E>: not the subset's, rather than its check going round)
+            _constraintsSeen ??= new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
+            if (!_constraintsSeen.Add(tp)) return false;
+            try { return tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c)); }
+            finally { _constraintsSeen.Remove(tp); }
+        }
+
+        [System.ThreadStatic] private static HashSet<ITypeParameterSymbol> _constraintsSeen;
 
         /// <summary>A type parameter the subset has: unconstrained (boxes), or constrained to references.</summary>
         public static bool IsGenericParameter(ITypeSymbol t) => IsTypeParameter(t) || IsRefParameter(t);
@@ -342,6 +351,21 @@ namespace CsVerify.Verifier.Boogie
         [System.ThreadStatic] public static System.Func<Microsoft.CodeAnalysis.Operations.IInvocationOperation, bool> WritesFieldsAt;
         /// <summary>May a library member run the program's code (what it is handed, its receiver)? A stub's call changes what it says, and, where it may, anything.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> RunsUserCode;
+        /// <summary>The program's Entity Framework model (CsVerify's engine's), where it references EF Core.</summary>
+        [System.ThreadStatic] public static EfModel Ef;
+
+        /// <summary>A query, before it runs: a DbSet, an IQueryable (a reference, read where the query runs).</summary>
+        public static bool IsQueryHandle(ITypeSymbol t) =>
+            Ef != null && t is INamedTypeSymbol n && n.Arity == 1 &&
+            (n.Name == "DbSet" && n.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore" ||
+             n.Name is "IQueryable" or "IOrderedQueryable" && n.ContainingNamespace?.ToDisplayString() == "System.Linq");
+
+        /// <summary>An EF transaction (IDbContextTransaction): a reference, whose operations Lowering.EfTracker reads.</summary>
+        public static bool IsEfTransaction(ITypeSymbol t) =>
+            Ef != null && t is INamedTypeSymbol { Name: "IDbContextTransaction" } n && n.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore.Storage";
+
+        /// <summary>A context of the program's: a class derived from DbContext.</summary>
+        public static bool IsContext(ITypeSymbol t) => Ef != null && t?.DeclaringSyntaxReferences.Length > 0 && Ef.IsContextType(t);
         /// <summary>CsVerify's engine's effects of a library member with a stub: the fields it writes, reads, and whether it may use arrays.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, IEnumerable<ISymbol>> FieldWrites, FieldReads;
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayTouchArrays;
@@ -501,11 +525,11 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
-            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable") && !SpecSymbols.IsContractsClass(n) &&
+            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable") || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute")) &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
-            n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0
+            n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0 || IsContext(n)
                                      : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
                                      : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                                     !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
@@ -563,7 +587,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" : IsFloating(t) ? FloatType(t) : IsLinqGroup(t) ? "int" :
             IsSeqValue(t) ? "[int]" + (((INamedTypeSymbol)t).TypeArguments[0].SpecialType == SpecialType.System_Boolean ? "bool" : "int") :
-            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsNullableValue(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

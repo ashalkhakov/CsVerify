@@ -156,6 +156,23 @@ namespace CsVerify.Verifier.Boogie
             Optional("$arr(", "function $arr(r: Ref): bool;");
             Optional("$arr(", "function $coll(r: Ref): bool;");
             Optional("$arr(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
+            // (EF's entities: what type an object is, where the change tracker asks; Lowering.EfTracker)
+            if (KernelTypes.Ef != null)
+            {
+                var entities = KernelTypes.Ef.Entities.Select(e => e.Type.OriginalDefinition).Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToList();
+                bool Derives(ITypeSymbol a, ITypeSymbol b) { for (var c = a.BaseType; c != null; c = c.BaseType) if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b)) return true; return false; }
+                foreach (var a in entities) Optional("$isa.", $"function {Lowering.IsaFunction(a)}(r: Ref): bool;");
+                foreach (var a in entities)
+                    foreach (var b in entities.Where(b => !SymbolEqualityComparer.Default.Equals(a, b)))
+                        if (Derives(a, b)) Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r) }} {Lowering.IsaFunction(a)}(r) ==> {Lowering.IsaFunction(b)}(r));");
+                        else if (!Derives(b, a) && string.CompareOrdinal(Lowering.IsaFunction(a), Lowering.IsaFunction(b)) < 0)
+                            Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r), {Lowering.IsaFunction(b)}(r) }} !({Lowering.IsaFunction(a)}(r) && {Lowering.IsaFunction(b)}(r)));");
+            }
+            Optional("$collate(", "// strings as a database compares them, by its collation: an equivalence that equal strings are in (CsVerify's engine's cv_collate)");
+            Optional("$collate(", "function $collate(a: Ref, b: Ref): bool;");
+            Optional("$collate(", "axiom (forall x: Ref :: { $collate(x, x) } $collate(x, x));");
+            Optional("$collate(", "axiom (forall x, y: Ref :: { $collate(x, y) } $collate(x, y) ==> $collate(y, x));");
+            Optional("$collate(", "axiom (forall x, y, z: Ref :: { $collate(x, y), $collate(y, z) } $collate(x, y) && $collate(y, z) ==> $collate(x, z));");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
             foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
             // (float and double as IEEE 754: Z3's floating point, rounding to nearest as .NET does)

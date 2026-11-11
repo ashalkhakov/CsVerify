@@ -449,7 +449,8 @@ comparison in code does (of one length and different, they differ somewhere).
 **LINQ.** LINQ to Objects is read member by member as its definitions (`Bcl/Linq.cs`) say, CsVerify's engine's way
 (Lowering.Linq): a source the verifier indexes (an array, a List, a list interface) is a sequence of a length and
 elements, read where the call is (not null, CSV1013). `Select` maps it (with an index too), `Where` and `Distinct`
-filter it (a running count `c` of the matches and each match's index `ix`, increasing), `OrderBy` and `ThenBy`
+filter it (a running count `c` of the matches and each match's index `ix`, increasing), `Take` and `Skip` keep the
+first `n` or the rest (`n` clamped to the length), `OrderBy` and `ThenBy`
 permute it stably in their keys' order (a bijection `p` and its inverse; keys are ordered where they are integers or
 chars), `Zip` pairs two, `SelectMany` flattens (running offsets, monotone, and each element's outer index), `Join`
 filters the pairs of a flattening; `Count`, `Any`, `All`, `Contains`, `First`, `Last` (and `OrDefault`), `Max`, `Min`,
@@ -460,8 +461,48 @@ starts; over a `GroupBy`, each group is its key's first element's index, its `Ke
 over it the source's elements of that key, as read when the groups were. Lambdas are inlined where they are pure
 expressions (anonymous objects and tuples in them are tuples, made by a function of their parts); the running counts
 and permutations are maps havocked where the call is, their definitions assumed, so a call in a loop gets new ones each
-time round. Query syntax (`from s in xs let b = ... where ... select b`) is the calls it is. Not yet: `GroupJoin`, and
-the members not named here (they fall back).
+time round. Query syntax (`from s in xs let b = ... where ... select b`) is the calls it is. A `GroupJoin` looped over
+(`from c in cs join o in os on k(c) equals k'(o) into g select new { c, g }`) is a row for each outer element, its
+index, both sequences read where the loop starts; `row.c` is the outer element, and a loop over `row.g` runs over the
+inner elements whose key is the row's. The members not named here fall back.
+
+**Entity Framework.** EF Core is read with CsVerify's engine's model of it (`EfModel`: entities, keys, unique indexes,
+query filters, navigations, tokens), as its engine reads it (Lowering.Ef, Lowering.EfTracker):
+- A query on a context's `DbSet` (or `Set<T>()`, through `AsNoTracking`, `IgnoreQueryFilters`, `AsTracking`, tags) is
+  LINQ over the table as it is when the query runs (an `...Async` operator awaited where it's called is its operator,
+  read after the await): a sequence in no order the database promises, of entities (`$isa`) not null, each a different
+  object, no two with the same key or the same value of a unique index, each through the entity's query filters
+  unless ignored. Its lambdas are the database's: strings compare by its collation (`$collate`, an equivalence that
+  equal strings are in) unless the only providers are ones that compare them exactly. `First` and `Last` keep a row by
+  its place: unless the query is ordered by a key (or a unique index), at most one row may match (CSV1031). A `Join`
+  on keys the database and .NET compare alike is LINQ's, in no order.
+- Rows read without tracking are new objects (allocated where read); a reference navigation not included is null, a
+  collection one as its initializer made it (a new empty `List`, or null), but where an Include path loads its type.
+  An included reference is the row its foreign key names, an included `List` holds the rows whose foreign key is this
+  row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that comes
+  back to a type on it is CSV1032. An await leaves their columns as they were where no other code reaches them (the
+  method lets none out: `EntitiesStayHere`, as CsVerify's engine reads it).
+- Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of
+  them (a filter's predicate, an order) holds only where the context tracked no entity of the type before
+  (CsVerify's engine's `Known`), and the count's bounds and the results' definitions whatever they hold. Their
+  includes are as without tracking where the context tracked none of the types the paths load either. They are
+  tracked from here on. `DbSet.Local` is what the context tracks of a type and doesn't delete, once each.
+- The change tracker is state of the program's (`$F.$ef.State`: how each context tracks each object, `$F.$ef.Unsaved`,
+  `$F.$ef.InTx`), which a call changes where its code does, and an await doesn't (a context is this code's alone while
+  it runs, CSV1036); and the method's own record, none at entry: a failed save or rollback, a save outside a
+  transaction, rows `ExecuteUpdate` changed behind the tracker, rows read without tracking and their tokens. `Add`,
+  `Attach`, `Update`, `Remove`, `Entry(e).State =`, `SaveChanges`, `Find`, `Entry(e).Reload`, `Database.BeginTransaction`,
+  `CurrentTransaction`, a transaction's `Commit`, `Rollback` and `Dispose`, `ChangeTracker.Clear`, `ExecuteUpdate` and
+  `ExecuteDelete`, a write of an entity's column, and what a call of the program's may do (break a context, save, bulk
+  update: read from its code) are CsVerify's engine's, with its checks: CSV1033 (another tracked instance with the key,
+  an `Update` of a graph, a context done with, a stale row written), CSV1034 (a token changed since read), CSV1035 (two
+  saves outside a transaction, a transaction begun with one open, a commit with changes not saved).
+- Not yet (CsVerify's engine verifies these methods): `Distinct`, `GroupBy`, `GroupJoin`, `Union`, `Contains`,
+  `LeftJoin` and `RightJoin` on the database, joins on nullable keys or strings, `ElementAt` and `TakeLast`/`SkipLast`,
+  an Include of a `HashSet` or of a reference with a nullable foreign key, SQL's nulls (`UseRelationalNulls`), calls
+  EF translates in a database query's lambdas (string members, `Math`), a row version written (CSV1034), concurrency
+  tokens of types the kernel doesn't have (`DateTime`) where `Attach` or `Update` checks them, compiled queries, an
+  operation not awaited where it starts and a context used in a lambda (CSV1036), and `IDbContextFactory`.
 
 **Library nullness.** As CsVerify's engine trusts it: a library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
@@ -1046,9 +1087,11 @@ methods that fall back for it):
 9. tasks whose permissions overlap, without the timeout that hands them to CsVerify's engine now (CSV1900) (done: such
    a method is decided now, and reports what CsVerify's engine does, though slowly: about 20 s);
 10. floats (done);
-11. the library's stub contracts in general, then LINQ (LINQ done but `GroupJoin`; the library calls without a stub
+11. the library's stub contracts in general, then LINQ (LINQ done, `GroupJoin` looped over too; the library calls without a stub
     next: what they're handed decides what they may change, as CsVerify's engine has it);
-12. Entity Framework;
+12. Entity Framework (queries, includes, rows with and without tracking, local views, the change tracker and
+    transactions done: the EF tests pass under `CSVERIFY_ENGINE=boogie`, 45 of their methods falling back for what the
+    Entity Framework section lists as not yet);
 13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, and the whole test suite
     with `CSVERIFY_ENGINE=boogie` and `CSVERIFY_TRACE_FILE`, until nothing is left untranslated (the first, of the
     suite after step 8: 77 methods, every one in the samples; the tests' own programs all translate): tuples and
