@@ -1112,7 +1112,7 @@ namespace CsVerify.Verifier.Boogie
                     // (a generic class's field of T holds a box: Box<int>'s Item, written an int)
                     Emit(new KFieldStore { Field = field, Instance = instance, OnThis = onThis, Value = Box(value, FieldType(field), target.Type), At = target.Syntax, InstanceAt = instanceAt });
                     // (an entity's column written: modified, for a context tracking it unchanged)
-                    TrackerFieldWrite(field, instance);
+                    TrackerFieldWrite(field, instance, target.Syntax);
                     return;
                 }
                 case IArrayElementReferenceOperation e when IsArray(e.ArrayReference.Type) && e.Indices.Length == 1:
@@ -2277,6 +2277,16 @@ namespace CsVerify.Verifier.Boogie
                     KExpr Both(string op) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
                         ? new KOp("&&", new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null"))), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
                         : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
+                    // (in a database query's lambda, with SQL's nulls (UseRelationalNulls): == and != where either is null are
+                    // unknown, SQL's unknown, for each comparison; as in C# where neither is. CsVerify's engine's DatabaseEqual)
+                    if (_inDatabase > 0 && KernelTypes.Ef?.RelationalNulls == true && nb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                        nb.LeftOperand.Type != null && nb.RightOperand.Type != null && !(Unconverted(nb.LeftOperand).ConstantValue is { HasValue: true, Value: null }) &&
+                        !(Unconverted(nb.RightOperand).ConstantValue is { HasValue: true, Value: null }))
+                    {
+                        var unknown = new KVar(LinqMap("[Ref][Ref]bool"));
+                        var eq = new KOp("ite", new KOp("||", new KOp("==", l, new KLit("null")), new KOp("==", r, new KLit("null"))), new KOp("sel", unknown, l, r), new KOp("==", l, r));
+                        return nb.OperatorKind == BinaryOperatorKind.Equals ? eq : new KOp("!", eq);
+                    }
                     return nb.OperatorKind switch
                     {
                         BinaryOperatorKind.Equals => new KOp("==", l, r), BinaryOperatorKind.NotEquals => new KOp("!=", l, r),
@@ -2711,7 +2721,9 @@ namespace CsVerify.Verifier.Boogie
                 KernelTypes.MayWriteHeap == null || KernelTypes.WritesFieldsAt == null || _p.Ghost || _contract.IsPure || _contract.IsLemma) return (false, null);
             // (a member with a stub is its stub's: Array.Fill, a list's)
             if (IsStub(m.OriginalDefinition) || _contractOf?.Invoke(m) is Contract lc && (lc.IsStub || lc.IsPure)) return (false, null);
-            if (call.Arguments.Any(a => a.Value.Type?.TypeKind == TypeKind.Delegate || a.Parameter?.Type.TypeKind == TypeKind.Delegate)) return (false, null);
+            // (a delegate it's handed may run the program's code; one left at its default, null, runs nothing)
+            if (call.Arguments.Any(a => (a.Value.Type?.TypeKind == TypeKind.Delegate || a.Parameter?.Type.TypeKind == TypeKind.Delegate) &&
+                                        !(a.ArgumentKind == ArgumentKind.DefaultValue && a.Value.ConstantValue is { HasValue: true, Value: null }))) return (false, null);
             if (_p.UsesCells || _p.MemViews) return (false, null);
             if (!m.ReturnsVoid && !InSubset(m.ReturnType)) return (false, null);
             // (a lock's object, a semaphore of a field, not null where it's declared so: a reference the kernel doesn't keep)
@@ -3189,6 +3201,8 @@ namespace CsVerify.Verifier.Boogie
                 case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type): return Constant(cv.Value, e.Type);
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal): return new KVar(apLocal);
+                // (a compiled query's lambda's, where it's called: its argument)
+                case IParameterReferenceOperation cq when _compiledParams.Contains(cq.Parameter): return new KVar("q$" + cq.Parameter.Name);
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && (p.Parameter.RefKind is RefKind.None or RefKind.Ref or RefKind.Out || p.Parameter.RefKind == RefKind.In && IsMemView(p.Parameter.Type)):
                     return new KVar(Local(p.Parameter));
                 // (Math.Max, Min and Abs of integers: Abs(MinValue) throws, as checked negation does)
@@ -3599,6 +3613,8 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr CallCore(IInvocationOperation call)
         {
+            // (EF's compiled query of a value: its query)
+            if (CompiledQueryCall(call) is KExpr compiled) return compiled;
             if (MemCall(call, out var memValue)) return memValue;
             // (LINQ to Objects, read here: Lowering.Linq)
             if (IsEnumerableCall(call.TargetMethod) || IsQueryableMethod(call.TargetMethod) && call.Type is ITypeSymbol qt && !IsQueryHandle(qt)) { _tableReads = null; return Linq(call); }
@@ -4317,6 +4333,8 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(Local(_m.Parameters[p.Parameter.Ordinal - shift]));
                 }
                 case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal): return new KVar(apLocal);
+                // (a compiled query's lambda's, where it's called: its argument)
+                case IParameterReferenceOperation cq when _compiledParams.Contains(cq.Parameter): return new KVar("q$" + cq.Parameter.Name);
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type): return new KVar(Local(p.Parameter));
                 case ILocalReferenceOperation l when InSubset(l.Local.Type): return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }: return new KVar("this");

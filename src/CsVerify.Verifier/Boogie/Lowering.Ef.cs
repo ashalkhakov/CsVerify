@@ -150,7 +150,9 @@ namespace CsVerify.Verifier.Boogie
             LinqFact(Over(new KLit("0"), len, i => new KOp("==", new KOp("sel", index, Row(i)), i)), at);
             var y = new KVar("y$");
             var isRow = new KOp("&&", Between(new KLit("0"), new KOp("sel", index, y), len), new KOp("==", Row(new KOp("sel", index, y)), y));
-            if (t.NoTracking)
+            // (a query that gives no entity of the type, Count, Any, a projection of columns: the database's values, no objects)
+            if (_dbResult != null && !Mentions(_dbResult, e.Type)) { }
+            else if (t.NoTracking)
             {
                 Materialized(t, rows, len, at, index);
                 ReadRows(t.Context, e, isRow);
@@ -232,6 +234,17 @@ namespace CsVerify.Verifier.Boogie
                             made.Add(new Made { All = body => top.All(x => body(Column(nav, x))), Any = body => top.Any(x => body(Column(nav, x))) });
                             break;
                         }
+                        case true when MadeAsSet(nav) is INamedTypeSymbol set:
+                        {
+                            // a new set at each row, empty
+                            foreach (var m in ModelsOf(set)) _p.Models[m.Name] = m;
+                            var members = ModelOf("Members", set).Name;
+                            LinqFact(top.All(x => ListMade(Column(nav, x))), at);
+                            LinqFact(top.All(x => new KOp("==", new KOp("sel", new KVar(SizeMap), Column(nav, x)), Zero)), at);
+                            LinqFact(top.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("!", new KOp("sel", new KVar(members), Column(nav, x), new KVar("z$"))) }), at);
+                            made.Add(new Made { All = body => top.All(x => body(Column(nav, x))), Any = body => top.Any(x => body(Column(nav, x))) });
+                            break;
+                        }
                         case true:
                             throw new NotTranslated($"what a row's {nav.Name} is, read without tracking");
                         default:
@@ -277,11 +290,10 @@ namespace CsVerify.Verifier.Boogie
             var top = new Made { Entity = e, All = body => Over(new KLit("0"), len, i => body(Row(i))), Any = body => Over(new KLit("0"), len, i => body(Row(i)), forall: false) };
             _known = known;
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r.OriginalDefinition) && IsField(r)))
-                if (e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 && IsField(fk) && IsField(p.Key[0]) &&
-                    !IsNullableValue(fk.Type) && SymbolEqualityComparer.Default.Equals(fk.Type, p.Key[0].Type))
+                if (e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 && KeyMatches(fk, p.Key[0]))
                 {
-                    _p.Fields.Add(nav.OriginalDefinition); _p.Fields.Add(fk.OriginalDefinition); _p.Fields.Add(p.Key[0].OriginalDefinition);
-                    LinqFact(top.All(x => new KOp("||", new KOp("==", Column(nav, x), Null), new KOp("&&", Isa(Column(nav, x), p), new KOp("==", Column(fk, x), Column(p.Key[0], Column(nav, x)))))), at);
+                    _p.Fields.Add(nav.OriginalDefinition);
+                    LinqFact(top.All(x => new KOp("||", new KOp("==", Column(nav, x), Null), new KOp("&&", Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))))), at);
                 }
                 else throw new NotTranslated("EF's Include of " + nav.Name + ", tracked");
             // (none of the types the paths load tracked before either)
@@ -341,6 +353,22 @@ namespace CsVerify.Verifier.Boogie
             return before;
         }
 
+        /// <summary>A foreign key the kernel compares with its principal's key: of its type, or of its type made nullable.</summary>
+        private bool KeyMatches(IPropertySymbol fk, IPropertySymbol key)
+        {
+            if (!IsField(fk) || !IsField(key)) return false;
+            var t = IsNullableValue(fk.Type) ? Underlying(fk.Type) : fk.Type;
+            if (!SymbolEqualityComparer.Default.Equals(t, key.Type) || !(IsIntegral(t) || t.SpecialType == SpecialType.System_Boolean)) return false;
+            _p.Fields.Add(fk.OriginalDefinition); _p.Fields.Add(key.OriginalDefinition);
+            return true;
+        }
+
+        /// <summary>The dependent's foreign key is the principal's key (a nullable one: has a value, and it's that).</summary>
+        private KExpr ForeignKey(IPropertySymbol fk, KExpr dependent, IPropertySymbol key, KExpr principal) =>
+            IsNullableValue(fk.Type)
+                ? new KOp("&&", new KOp("!=", Column(fk, dependent), new KLit("null")), new KOp("==", NullableValue(Column(fk, dependent), fk.Type), Column(key, principal)))
+                : new KOp("==", Column(fk, dependent), Column(key, principal));
+
         /// <summary>A new List, not yet allocated.</summary>
         private static KExpr ListMade(KExpr l) =>
             new KOp("&&", new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!", new KOp("sel", new KVar("$Alloc"), l))), new KOp("&&", new KOp("$coll", l), new KOp("!", new KOp("$arr", l))));
@@ -364,20 +392,21 @@ namespace CsVerify.Verifier.Boogie
                 var after = PathsAfter(paths, nav);
                 Made child;
                 if (e.References.Contains(nav) && e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 &&
-                    IsField(fk) && IsField(p.Key[0]) && !IsNullableValue(fk.Type) && SymbolEqualityComparer.Default.Equals(fk.Type, p.Key[0].Type))
+                    KeyMatches(fk, p.Key[0]))
                 {
-                    _p.Fields.Add(fk.OriginalDefinition); _p.Fields.Add(p.Key[0].OriginalDefinition);
-                    // (a key that can't be null: there is one)
-                    LinqFact(level.All(x => new KOp("&&", new KOp("&&", new KOp("!=", Column(nav, x), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), Column(nav, x)))),
-                        new KOp("&&", new KOp("&&", Isa(Column(nav, x), p), new KOp("==", Column(fk, x), Column(p.Key[0], Column(nav, x)))), Filtered(t, p, Column(nav, x))))), at);
-                    child = new Made { Entity = p, All = body => level.All(x => body(Column(nav, x))), Any = body => level.Any(x => body(Column(nav, x))) };
+                    // (a key that can't be null: there is one; one that can: there is one, or it's null)
+                    KExpr Ok(KExpr x) => new KOp("&&", new KOp("&&", new KOp("!=", Column(nav, x), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), Column(nav, x)))),
+                        new KOp("&&", new KOp("&&", Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))), Filtered(t, p, Column(nav, x))));
+                    LinqFact(level.All(x => IsNullableValue(fk.Type) ? new KOp("||", new KOp("==", Column(nav, x), Null), Ok(x)) : Ok(x)), at);
+                    child = IsNullableValue(fk.Type)
+                        ? new Made { Entity = p, All = body => level.All(x => new KOp("==>", new KOp("!=", Column(nav, x), Null), body(Column(nav, x)))),
+                                     Any = body => level.Any(x => new KOp("&&", new KOp("!=", Column(nav, x), Null), body(Column(nav, x)))) }
+                        : new Made { Entity = p, All = body => level.All(x => body(Column(nav, x))), Any = body => level.Any(x => body(Column(nav, x))) };
                     made.Add(child);
                 }
                 else if (e.Collections.Contains(nav) && MadeAsList(nav) is INamedTypeSymbol list && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
-                         KernelTypes.Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity d && IsField(cfk) && IsField(e.Key[0]) && !IsNullableValue(cfk.Type) &&
-                         SymbolEqualityComparer.Default.Equals(cfk.Type, e.Key[0].Type))
+                         KernelTypes.Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity d && KeyMatches(cfk, e.Key[0]))
                 {
-                    _p.Fields.Add(cfk.OriginalDefinition); _p.Fields.Add(e.Key[0].OriginalDefinition);
                     foreach (var m in ModelsOf(list)) _p.Models[m.Name] = m;
                     var items = ModelOf("Items", list).Name;
                     KExpr L(KExpr x) => Column(nav, x);
@@ -385,12 +414,29 @@ namespace CsVerify.Verifier.Boogie
                     KExpr El(KExpr x, KExpr j) => new KOp("sel", new KVar(items), L(x), j);
                     LinqFact(level.All(x => ListMade(L(x))), at);
                     LinqFact(level.All(x => Over(new KLit("0"), Size(x), j => new KOp("&&", new KOp("&&", new KOp("!=", El(x, j), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), El(x, j)))),
-                        new KOp("&&", new KOp("&&", Isa(El(x, j), d), new KOp("==", Column(cfk, El(x, j)), Column(e.Key[0], x))), Filtered(t, d, El(x, j)))))), at);
+                        new KOp("&&", new KOp("&&", Isa(El(x, j), d), ForeignKey(cfk, El(x, j), e.Key[0], x)), Filtered(t, d, El(x, j)))))), at);
                     // (each element a different object: at different places of a list, and of two lists)
                     LinqFact(level.All(x => Over(new KLit("0"), Size(x), j => Over(new KLit("0"), Size(x), k => new KOp("||", new KOp("==", j, k), new KOp("!=", El(x, j), El(x, k)))))), at);
                     made.Add(new Made { All = body => level.All(x => body(L(x))), Any = body => level.Any(x => body(L(x))) });
                     child = new Made { Entity = d, All = body => level.All(x => Over(new KLit("0"), Size(x), j => body(El(x, j)))),
                                        Any = body => level.Any(x => Over(new KLit("0"), Size(x), j => body(El(x, j)), forall: false)) };
+                    made.Add(child);
+                }
+                else if (e.Collections.Contains(nav) && MadeAsSet(nav) is INamedTypeSymbol set && e.CollectionKeys.TryGetValue(nav, out var sfk) && e.Key.Count == 1 &&
+                         KernelTypes.Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity sd && KeyMatches(sfk, e.Key[0]))
+                {
+                    // (a new set, of rows of this key, each through its type's filters, new objects)
+                    foreach (var m in ModelsOf(set)) _p.Models[m.Name] = m;
+                    var members = ModelOf("Members", set).Name;
+                    KExpr S(KExpr x) => Column(nav, x);
+                    KExpr In(KExpr x, KExpr z) => new KOp("sel", new KVar(members), S(x), z);
+                    LinqFact(level.All(x => ListMade(S(x))), at);
+                    LinqFact(level.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("==>", In(x, new KVar("z$")),
+                        new KOp("&&", new KOp("&&", new KOp("!=", new KVar("z$"), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), new KVar("z$")))),
+                            new KOp("&&", new KOp("&&", Isa(new KVar("z$"), sd), ForeignKey(sfk, new KVar("z$"), e.Key[0], x)), Filtered(t, sd, new KVar("z$"))))) }), at);
+                    made.Add(new Made { All = body => level.All(x => body(S(x))), Any = body => level.Any(x => body(S(x))) });
+                    child = new Made { Entity = sd, All = body => level.All(x => new KQuant { Forall = true, Var = "z$", Type = "Ref", Body = new KOp("==>", In(x, new KVar("z$")), body(new KVar("z$"))) }),
+                                       Any = body => level.Any(x => new KQuant { Forall = false, Var = "z$", Type = "Ref", Body = new KOp("&&", In(x, new KVar("z$")), body(new KVar("z$"))) }) };
                     made.Add(child);
                 }
                 else throw new NotTranslated("EF's Include of " + nav.Name);
@@ -521,8 +567,16 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr _known;
 
+        /// <summary>What the database query being lowered gives (its last operator's type, or its task's T), for whether it gives entities.</summary>
+        private ITypeSymbol _dbResult;
+
         private KExpr StringEqual(KExpr l, KExpr r) =>
             _inDatabase > 0 && KernelTypes.Ef != null && !KernelTypes.Ef.ExactStrings ? new KOp("$collate", l, r) : new KOp("streq", l, r);
+
+        /// <summary>A HashSet navigation (as declared), of objects: that type, for its models.</summary>
+        private static INamedTypeSymbol MadeAsSet(IPropertySymbol nav) =>
+            nav.Type is INamedTypeSymbol { Name: "HashSet", Arity: 1 } h && h.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && IsCollection(h) &&
+            h.TypeArguments[0].IsReferenceType ? h : null;
 
         /// <summary>A collection navigation EF makes a List of: of List&lt;T&gt;, or an interface its initializer makes a List for. That List type.</summary>
         private INamedTypeSymbol MadeAsList(IPropertySymbol nav)
@@ -530,7 +584,13 @@ namespace CsVerify.Verifier.Boogie
             if (IsList(nav.Type)) return (INamedTypeSymbol)nav.Type;
             if (!(nav.Type is INamedTypeSymbol { TypeKind: TypeKind.Interface, TypeArguments.Length: 1 } n)) return null;
             var decl = nav.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax;
-            if (decl?.Initializer?.Value is not Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax init) return null;
+            var init = decl?.Initializer?.Value;
+            while (init is Microsoft.CodeAnalysis.CSharp.Syntax.PostfixUnaryExpressionSyntax bang && bang.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression)) init = bang.Operand;
+            // (none, or null: an IList EF makes a List of)
+            if (init == null || init is Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax l && (l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression) || l.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.DefaultLiteralExpression)))
+                return n.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.IList<T>"
+                    ? KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(n.TypeArguments[0]) : null;
+            if (nav.ContainingType.InstanceConstructors.Any(c => !c.IsImplicitlyDeclared)) return null;
             var made = _model.Compilation.GetSemanticModel(init.SyntaxTree).GetTypeInfo(init).Type;
             return made != null && IsList(made) ? (INamedTypeSymbol)made : null;
         }
@@ -583,10 +643,6 @@ namespace CsVerify.Verifier.Boogie
                         throw new NotTranslated(whyQ);
                     case IPropertyReferenceOperation pr when pr.Instance != null && (pr.Property.GetMethod ?? pr.Property.SetMethod) is IMethodSymbol acc && IsEfMethod(acc) && TrackerReceiver(pr.Instance.Type) && !TrackerProperty(pr):
                         throw new NotTranslated($"EF's {pr.Property.Name}");
-                    case IPropertyReferenceOperation rv when rv.Parent is IAssignmentOperation a && a.Target == rv && KernelTypes.Ef.EntityOf(rv.Property.ContainingType) is EfModel.Entity e && e.RowVersions.Contains(rv.Property.OriginalDefinition):
-                        throw new NotTranslated($"a write of {rv.Property.Name}, a row version");
-                    case IAnonymousFunctionOperation lambda when ContextFromOutside(lambda):
-                        throw new NotTranslated("a context used in a lambda");
                 }
         }
 
@@ -613,6 +669,8 @@ namespace CsVerify.Verifier.Boogie
             if (!query && !IsEnumerableCall(m)) return null;
             if (DatabaseRoot(inv, out bool noTracking) is not EfModel.Entity root) return null;
             var name = m.Name.EndsWith("Async") ? m.Name.Substring(0, m.Name.Length - "Async".Length) : m.Name;
+            var receiver = (inv.Instance ?? inv.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value) is IOperation r0 ? Unconverted(r0).Type : null;
+            int given = inv.Arguments.Count(a => !IsToken(a.Parameter.Type) && a.ArgumentKind == ArgumentKind.Explicit);
             if (query)
             {
                 // (First and Last: CSV1031's check where the order isn't by a key, DatabaseOrder; of a tracked query, only
@@ -620,8 +678,14 @@ namespace CsVerify.Verifier.Boogie
                 if (RowLimits.Contains(name) && !(name is "First" or "FirstOrDefault" or "Last" or "LastOrDefault" or "Single" or "SingleOrDefault" or "Take" or "Skip"))
                     return $"EF's {m.Name} on a database query";
                 // (a join on keys the database and .NET compare alike: LINQ's, in no order)
-                if (EqualityOperators.Contains(name) && !(name == "Join" && inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 2)?.Value is IOperation key &&
-                                                          PureLambda(key) is var (kb, _, _) && ComparedAlike(Unconverted(kb).Type ?? kb.Type) && ComparedAlike(kb.Type)))
+                // (a join on keys the database and .NET compare alike: LINQ's, in no order; Distinct and Contains of values
+                // compared alike: LINQ's, Distinct's in no order)
+                bool alike = name is "Join" or "LeftJoin" && inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 2)?.Value is IOperation key &&
+                             PureLambda(key) is var (kb, _, _) && ComparedAlike(Unconverted(kb).Type ?? kb.Type) && ComparedAlike(kb.Type) ||
+                             name is "Distinct" or "Contains" or "Union" && given <= (name == "Distinct" ? 1 : 2) && ElementOf(receiver) is ITypeSymbol el && ComparedAlike(el);
+                // (one that compares what the database and .NET don't compare alike, and RightJoin: a library call that says
+                // nothing of what it gives, as CsVerify's engine has it: Lowering.Linq's DatabaseUnknown)
+                if (EqualityOperators.Contains(name) && !alike && !DatabaseUnknown(inv))
                     return $"EF's {m.Name} on a database query";
                 foreach (var a in inv.Arguments)
                     if (Unconverted(a.Value) is IAnonymousFunctionOperation fn && DatabaseLambdaNotYet(fn, name is "Select" or "SelectMany") is string why) return why;
@@ -648,11 +712,11 @@ namespace CsVerify.Verifier.Boogie
         /// runs. A projection runs on the client when it is the query's last, so anything may be called there: Select's
         /// and SelectMany's are left out, and Include's.
         /// </summary>
-        private void TranslationChecks(IInvocationOperation inv)
+        private bool TranslationChecks(IInvocationOperation inv)
         {
             var m = inv.TargetMethod;
-            if (!(IsQueryableMethod(m) || IsEfMethod(m)) || m.Name is "Select" or "SelectMany" || m.Name.StartsWith("Include") || m.Name.StartsWith("ThenInclude")) return;
-            if (!_translationChecked.Add(inv.Syntax)) return;
+            if (!(IsQueryableMethod(m) || IsEfMethod(m)) || m.Name is "Select" or "SelectMany" || m.Name.StartsWith("Include") || m.Name.StartsWith("ThenInclude")) return false;
+            if (!_translationChecked.Add(inv.Syntax)) return _untranslatable.Contains(inv.Syntax);
             foreach (var a in inv.Arguments)
                 if (a.Parameter.Type is INamedTypeSymbol { Name: "Expression" } &&
                     (Unconverted(a.Value) is IAnonymousFunctionOperation f ? f : Unconverted(a.Value) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null) is IAnonymousFunctionOperation fn)
@@ -673,11 +737,18 @@ namespace CsVerify.Verifier.Boogie
                                 break;
                         }
                         if (why != null)
+                        {
                             Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1032", At = op.Syntax, NotAssumedAfter = true,
                                               Message = $"'{op.Syntax}' can't be translated to SQL: {why}; EF throws when the query runs. Compute it before the query, or after it (AsEnumerable)" });
+                            _untranslatable.Add(inv.Syntax);
+                        }
                     }
                 }
+            return _untranslatable.Contains(inv.Syntax);
         }
+
+        /// <summary>The database queries' operators with a lambda EF can't translate (CSV1032): what they give isn't known.</summary>
+        private readonly HashSet<SyntaxNode> _untranslatable = new HashSet<SyntaxNode>();
 
         /// <summary>A column or a navigation: an auto-property with a setter, not [NotMapped].</summary>
         private static bool Mapped(IPropertySymbol p, EfModel.Entity e) =>
@@ -740,11 +811,32 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
+        /// A database query's operator that compares values for equality as the database does (strings by its collation,
+        /// rows by every column), not as LINQ's definition says, or RightJoin (EF Core applies the left side's filters after
+        /// the join): CsVerify's engine reads it as a library call, which says nothing of what it gives.
+        /// </summary>
+        private bool DatabaseUnknown(IInvocationOperation inv)
+        {
+            var m = inv.TargetMethod;
+            if (!IsQueryableMethod(m) || DatabaseRoot(inv, out _) == null || !IsQueryHandle(inv.Type) && !inv.Type.AllInterfaces.Any(i => i.Name == "IQueryable")) return false;
+            if (m.Name == "RightJoin") return true;
+            ITypeSymbol compared = m.Name switch
+            {
+                "Join" or "LeftJoin" or "GroupJoin" or "GroupBy" => inv.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 2 || m.Name == "GroupBy" && a.Parameter.Ordinal == 1)?.Value is IOperation key &&
+                                                                   PureLambda(key) is var (kb, _, _) ? kb.Type : null,
+                "Distinct" or "Union" or "Intersect" or "Except" => ElementOf(inv.Type),
+                _ => null,
+            };
+            return compared != null && !ComparedAlike(compared);
+        }
+
+        /// <summary>
         /// Keys the database and .NET compare alike (as CsVerify's engine's ComparedAlike, but not nullable ones yet, nor
         /// tuples): integers, bool, enums, Guid; strings where it compares them exactly.
         /// </summary>
         private static bool ComparedAlike(ITypeSymbol t) =>
-            t != null && (t.SpecialType == SpecialType.System_String ? KernelTypes.Ef.ExactStrings :
+            t != null && (t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? ComparedAlike(n.TypeArguments[0]) :
+            t.SpecialType == SpecialType.System_String ? KernelTypes.Ef.ExactStrings :
             t.TypeKind == TypeKind.Enum ||
             t.SpecialType is SpecialType.System_Boolean or SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or
                 SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 ||
@@ -787,13 +879,9 @@ namespace CsVerify.Verifier.Boogie
             foreach (var op in fn.Body.DescendantsAndSelf())
                 switch (op)
                 {
-                    // (a call EF translates, the database's: not yet; one it doesn't is CSV1032's, TranslationChecks)
-                    case IInvocationOperation call when !projection && Depends(call) && Translates(call.TargetMethod):
-                        return "a call in a database query's lambda";
                     case IBinaryOperation b when !projection && KernelTypes.Ef.RelationalNulls && b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
-                                                 (IsNullableValue(Unconverted(b.LeftOperand).Type) || IsNullableValue(Unconverted(b.RightOperand).Type) ||
-                                                  Unconverted(b.LeftOperand).Type?.IsReferenceType == true || Unconverted(b.RightOperand).Type?.IsReferenceType == true):
-                        return "SQL's nulls (UseRelationalNulls)";
+                                                 (Unconverted(b.LeftOperand).Type?.IsReferenceType == true || Unconverted(b.RightOperand).Type?.IsReferenceType == true):
+                        return "SQL's nulls (UseRelationalNulls) of references";
                 }
             return null;
         }
@@ -824,6 +912,67 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>The parameters of a compiled query's lambda being read at its call: locals q$name, its arguments.</summary>
+        private readonly HashSet<IParameterSymbol> _compiledParams = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// A compiled query (a static readonly field made by EF.CompileQuery, in this file) that gives a value (First,
+        /// Single, Count, Any...) called: the query its lambda writes, on the arguments, read at the call (CsVerify's
+        /// engine's CompiledQueryCall). Null for any other call.
+        /// </summary>
+        private KExpr CompiledQueryCall(IInvocationOperation call)
+        {
+            if (KernelTypes.Ef == null || call.TargetMethod.MethodKind != MethodKind.DelegateInvoke || !(Unconverted(call.Instance) is IFieldReferenceOperation fr) ||
+                !fr.Field.IsStatic || !fr.Field.IsReadOnly) return null;
+            var declarator = fr.Field.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax;
+            if (declarator?.Initializer?.Value is not Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax init || init.SyntaxTree != _decl.SyntaxTree) return null;
+            if (!(_model.GetOperation(init) is IInvocationOperation compile) || compile.TargetMethod.Name != "CompileQuery" || compile.TargetMethod.ContainingType?.Name != "EF" ||
+                !IsEfMethod(compile.TargetMethod) || compile.Arguments.Length != 1) return null;
+            var lambda = Unconverted(compile.Arguments[0].Value) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation : Unconverted(compile.Arguments[0].Value) as IAnonymousFunctionOperation;
+            if (lambda == null || lambda.Body.Operations.Length != 1 || !(lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body }) ||
+                !(Unconverted(body) is IInvocationOperation query) || IsQueryHandle(query.Type) || query.Type.AllInterfaces.Any(i => i.Name == "IEnumerable")) return null;
+            // (what isn't translated yet, in it)
+            foreach (var op in lambda.Body.DescendantsAndSelf())
+                if (op is IInvocationOperation inv && (EfTrackerOp(inv) ?? EfQueryNotYet(inv)) is string why) throw new NotTranslated(why + ", in a compiled query");
+            var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            if (args.Count != lambda.Symbol.Parameters.Length) return null;
+            for (int k = 0; k < args.Count; k++)
+            {
+                var p = lambda.Symbol.Parameters[k];
+                var local = Declare("q$" + p.Name, p.Type);
+                Emit(new KAssign { Var = local, Value = Expr(args[k].Value) });
+                _compiledParams.Add(p);
+            }
+            try { return Linq(query); }
+            finally { foreach (var p in lambda.Symbol.Parameters) _compiledParams.Remove(p); }
+        }
+
+        /// <summary>
+        /// A compiled query of a sequence (EF.CompileQuery's lambda giving IEnumerable or IQueryable), called: CsVerify's
+        /// engine's library call, which says nothing of the rows it gives. Its arguments read; null for any other source.
+        /// </summary>
+        private LSeq CompiledSequence(IOperation src)
+        {
+            if (KernelTypes.Ef == null || !(Unconverted(src) is IInvocationOperation call) || call.TargetMethod.MethodKind != MethodKind.DelegateInvoke ||
+                !(Unconverted(call.Instance) is IFieldReferenceOperation fr) || !fr.Field.IsStatic || !fr.Field.IsReadOnly) return null;
+            var declarator = fr.Field.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax;
+            if (declarator?.Initializer?.Value is not Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax init ||
+                !(_model.Compilation.GetSemanticModel(init.SyntaxTree).GetOperation(init) is IInvocationOperation compile) ||
+                compile.TargetMethod.Name != "CompileQuery" || compile.TargetMethod.ContainingType?.Name != "EF" || !IsEfMethod(compile.TargetMethod)) return null;
+            var elem = ElementOf(call.Type);
+            if (elem == null || !InSubset(elem)) return null;
+            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal))
+            {
+                var v = Expr(a.Value);
+                if (KernelTypes.Ef.IsContextType(a.Value.Type)) Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1013", At = a.Value.Syntax, Message = $"'{a.Value.Syntax}' might be null in '{call.Syntax}'" });
+            }
+            var items = new KVar(LinqMap("[int]" + TypeOf(elem)));
+            var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+            Emit(new KHavoc { Var = n });
+            ShapeFact(new KOp("<=", new KLit("0"), new KVar(n)), call.Syntax);
+            return new LSeq { Length = new KVar(n), Elem = i => new KOp("sel", items, i), Type = elem };
+        }
+
         /// <summary>A context, or what EF's tracker hangs on one: a DbSet, its Database, ChangeTracker, an entry, a transaction, a factory.</summary>
         private static bool TrackerReceiver(ITypeSymbol t) =>
             t != null && (KernelTypes.Ef.IsContextType(t) || t is INamedTypeSymbol { Name: "DbSet" or "DatabaseFacade" or "ChangeTracker" or "EntityEntry" or "PropertyEntry" or "IDbContextTransaction" or "IDbContextFactory" } ||
@@ -837,9 +986,6 @@ namespace CsVerify.Verifier.Boogie
             var receiverOp = inv.Instance ?? (m.IsExtensionMethod || m.ReducedFrom != null ? inv.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value : null);
             var receiver = receiverOp == null ? null : Unconverted(receiverOp).Type;
             int given = inv.Arguments.Count(a => !IsToken(a.Parameter.Type) && a.ArgumentKind == ArgumentKind.Explicit);
-            // (an operation that isn't awaited where it starts: CSV1036)
-            if (m.Name.EndsWith("Async") && m.Name != "CreateDbContextAsync" && (IsEfMethod(m) || KernelTypes.Ef.IsContextType(m.ContainingType) || IsTransactionType(m.ContainingType)) && !AwaitedAtOnce(inv))
-                return $"EF's {m.Name} not awaited where it starts";
             // (the tracker's, Lowering.EfTracker)
             if (name is "ExecuteUpdate" or "ExecuteDelete" && IsEfMethod(m)) return RootTable(receiverOp) != null ? null : "EF's " + m.Name;
             if (EfAsyncTwin(m) != null) return null;
@@ -880,26 +1026,6 @@ namespace CsVerify.Verifier.Boogie
             return p is IExpressionStatementOperation;
         }
 
-        private static bool AwaitedAtOnce(IOperation op)
-        {
-            for (var p = op.Parent; p != null; op = p, p = p.Parent)
-            {
-                if (p is IAwaitOperation) return true;
-                if (p is IConversionOperation) continue;
-                if (p is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance == op) continue;
-                if (p is IReturnOperation && p.SemanticModel?.GetEnclosingSymbol(p.Syntax.SpanStart) is IMethodSymbol { IsAsync: false }) return true;
-                return false;
-            }
-            return false;
-        }
-
-        /// <summary>A lambda that uses a context it didn't make: a field, or a local or parameter from outside it.</summary>
-        private static bool ContextFromOutside(IAnonymousFunctionOperation lambda) =>
-            lambda.Body.DescendantsAndSelf().Any(o =>
-                o is IFieldReferenceOperation f && KernelTypes.Ef.IsContextType(f.Type) ||
-                o is IPropertyReferenceOperation p && p.Instance is IInstanceReferenceOperation && KernelTypes.Ef.IsContextType(p.Type) ||
-                o is ILocalReferenceOperation l && KernelTypes.Ef.IsContextType(l.Type) && !l.Local.DeclaringSyntaxReferences.Any(r => lambda.Syntax.Span.Contains(r.Span)) ||
-                o is IParameterReferenceOperation pa && KernelTypes.Ef.IsContextType(pa.Type) && !SymbolEqualityComparer.Default.Equals(pa.Parameter.ContainingSymbol, lambda.Symbol));
 
         /// <summary>Two rows' values of a column the same, as the database compares them (strings by its collation).</summary>
         private KExpr SameColumn(IPropertySymbol p, KExpr a, KExpr b)

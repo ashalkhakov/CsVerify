@@ -114,6 +114,8 @@ namespace CsVerify.Verifier.Boogie
             if (TableOf(src) is DbTable table) return ReadTable(table);
             // (a context's local view: what it tracks of a type)
             if (KernelTypes.Ef != null && IsLocalView(src)) return LocalView((IPropertyReferenceOperation)Unconverted(src));
+            // (a compiled query's rows: a library call's)
+            if (CompiledSequence(src) is LSeq compiled) return compiled;
             if (src is IInvocationOperation q && (IsEnumerableCall(q.TargetMethod) || IsQueryableMethod(q.TargetMethod))) return Query(q);
             var type = src.Type;
             var elem = ElementOf(type);
@@ -147,9 +149,25 @@ namespace CsVerify.Verifier.Boogie
             // (what is known of a tracked query's rows is known only where its context tracked none before: _known, kept
             // from here on, for the query's facts that its consumer assumes; the statement's lowering ends it)
             bool database = KernelTypes.Ef != null && DatabaseRoot(q, out _) != null;
-            if (database) { _inDatabase++; TranslationChecks(q); }
-            try { return QueryCore(q); }
-            finally { if (database) _inDatabase--; }
+            var result = _dbResult;
+            if (database && _inDatabase == 0) _dbResult = q.Type;
+            bool untranslatable = database && TranslationChecks(q);
+            if (database) _inDatabase++;
+            try
+            {
+                if (untranslatable)
+                {
+                    var elem = ElementOf(q.Type);
+                    if (elem == null || !InSubset(elem)) throw new NotTranslated("a database query's result of " + q.Type);
+                    var items = new KVar(LinqMap("[int]" + TypeOf(elem)));
+                    var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    Emit(new KHavoc { Var = n });
+                    ShapeFact(new KOp("<=", new KLit("0"), new KVar(n)), q.Syntax);
+                    return new LSeq { Length = new KVar(n), Elem = i => new KOp("sel", items, i), Type = elem };
+                }
+                return QueryCore(q);
+            }
+            finally { if (database) _inDatabase--; _dbResult = result; }
         }
 
         private LSeq QueryCore(IInvocationOperation q)
@@ -157,6 +175,16 @@ namespace CsVerify.Verifier.Boogie
             var m = q.TargetMethod;
             var args = q.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var resultElem = ElementOf(q.Type);
+            // (a database's that says nothing of what it gives: some rows, of the type)
+            if (KernelTypes.Ef != null && DatabaseUnknown(q))
+            {
+                if (resultElem == null || !InSubset(resultElem)) throw new NotTranslated("a database query's result of " + q.Type);
+                var items = new KVar(LinqMap("[int]" + TypeOf(resultElem)));
+                var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(new KHavoc { Var = n });
+                ShapeFact(new KOp("<=", new KLit("0"), new KVar(n)), q.Syntax);
+                return new LSeq { Length = new KVar(n), Elem = i => new KOp("sel", items, i), Type = resultElem };
+            }
             switch (m.Name)
             {
                 case "Select" when args.Count == 2:
@@ -189,8 +217,9 @@ namespace CsVerify.Verifier.Boogie
                 case "Distinct" when args.Count == 1:
                 {
                     var src = Sequence(args[0].Value);
-                    // (each element's first occurrence, in order: Q.Unseen)
-                    return FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(src.Elem(k), src.Elem(j), src.Type), forall: false).Q), q.Syntax);
+                    // (each element's first occurrence, in order: Q.Unseen; the database's, in no order)
+                    var distinct = FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(src.Elem(k), src.Elem(j), src.Type), forall: false).Q), q.Syntax);
+                    return _inDatabase > 0 ? Sort(distinct, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : distinct;
                 }
                 case "Zip" when args.Count == 3:
                 {
@@ -213,7 +242,8 @@ namespace CsVerify.Verifier.Boogie
                     while (at.TargetMethod.Name.StartsWith("Then"))
                     {
                         keys.Insert(0, (LambdaArg(at, 1), at.TargetMethod.TypeArguments.Last(), at.TargetMethod.Name.EndsWith("Descending")));
-                        if (!(Unconverted(SourceOf(at)) is IInvocationOperation inner && IsEnumerableCall(inner.TargetMethod) && inner.TargetMethod.Name is "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending"))
+                        if (!(Unconverted(SourceOf(at)) is IInvocationOperation inner && (IsEnumerableCall(inner.TargetMethod) || IsQueryableMethod(inner.TargetMethod)) &&
+                              inner.TargetMethod.Name is "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending"))
                             throw new NotTranslated("a ThenBy of an order not made here");
                         at = inner;
                     }
@@ -240,7 +270,7 @@ namespace CsVerify.Verifier.Boogie
                     var inner = Sequence(args[1].Value);
                     var (okey, ikey, sel) = (LambdaArg(q, 2), LambdaArg(q, 3), LambdaArg(q, 4));
                     var pairs = Flatten(o, j => inner, q.Syntax, out var outer, out var within, whole: true);
-                    var matched = FilterAt(pairs, i => SameValue(Apply(okey, o.Elem(outer(i))), Apply(ikey, inner.Elem(within(i))), okey.body.Type), q.Syntax);
+                    var matched = FilterAt(pairs, i => JoinKeysEqual(Apply(okey, o.Elem(outer(i))), Apply(ikey, inner.Elem(within(i))), okey.body.Type), q.Syntax);
                     var sx = (sel.body, sel.p1, (IParameterSymbol)null);
                     // (the matched pair i is pair ix[i]: its outer and inner elements)
                     var joined = new LSeq
@@ -249,6 +279,37 @@ namespace CsVerify.Verifier.Boogie
                         Elem = i => new KLet { Var = "q$" + sel.p2.Name, Value = inner.Elem(within(matched.Index(i))), Body = Apply(sx, o.Elem(outer(matched.Index(i)))) },
                     };
                     // (the database's: in no order of its sources', SQL Server's hash join keeping no outer row's matches together)
+                    return _inDatabase > 0 ? Sort(joined, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : joined;
+                }
+                // (one sequence, then the other; Union: their elements' first occurrences, as Distinct of that)
+                case "Concat" or "Union" when args.Count == 2:
+                {
+                    var a = Sequence(args[0].Value);
+                    var b = Sequence(args[1].Value);
+                    var both = new LSeq { Length = new KOp("+", a.Length, b.Length), Type = a.Type,
+                                          Elem = i => new KOp("ite", new KOp("<", i, a.Length), a.Elem(i), b.Elem(new KOp("-", i, a.Length))) };
+                    if (m.Name == "Concat") return _inDatabase > 0 ? Sort(both, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : both;
+                    var union = FilterAt(both, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(both.Elem(k), both.Elem(j), both.Type), forall: false).Q), q.Syntax);
+                    return _inDatabase > 0 ? Sort(union, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : union;
+                }
+                case "LeftJoin" when args.Count == 5:
+                {
+                    // (the matching pairs, as Join's; then each outer element no inner one matches, with none)
+                    var o = Sequence(args[0].Value);
+                    var inner = Sequence(args[1].Value);
+                    var (okey, ikey, sel) = (LambdaArg(q, 2), LambdaArg(q, 3), LambdaArg(q, 4));
+                    var pairs = Flatten(o, j => inner, q.Syntax, out var outer, out var within, whole: true);
+                    var matched = FilterAt(pairs, i => JoinKeysEqual(Apply(okey, o.Elem(outer(i))), Apply(ikey, inner.Elem(within(i))), okey.body.Type), q.Syntax);
+                    var alone = FilterAt(o, j => new KOp("!", new KQuantOver(this, new KLit("0"), inner.Length,
+                        k => JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type), forall: false).Q), q.Syntax);
+                    var sx = (sel.body, sel.p1, (IParameterSymbol)null);
+                    KExpr Pair(KExpr i) => new KLet { Var = "q$" + sel.p2.Name, Value = inner.Elem(within(matched.Index(i))), Body = Apply(sx, o.Elem(outer(matched.Index(i)))) };
+                    KExpr Alone(KExpr i) => new KLet { Var = "q$" + sel.p2.Name, Value = new KLit("null"), Body = Apply(sx, alone.Elem(i)) };
+                    var joined = new LSeq
+                    {
+                        Length = new KOp("+", matched.Length, alone.Length), Type = resultElem,
+                        Elem = i => new KOp("ite", new KOp("<", i, matched.Length), Pair(i), Alone(new KOp("-", i, matched.Length))),
+                    };
                     return _inDatabase > 0 ? Sort(joined, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : joined;
                 }
                 default: throw new NotTranslated("LINQ's " + m.Name);
@@ -450,6 +511,12 @@ namespace CsVerify.Verifier.Boogie
             return new LSeq { Length = O(n), Elem = i => inner(Out(i)).Elem(w(i)), Type = inner(new KLit("0")).Type };
         }
 
+        /// <summary>Two keys a join matches: equal, and a nullable one with a value (null matches nothing, in LINQ's Join and in SQL's).</summary>
+        private KExpr JoinKeysEqual(KExpr a, KExpr b, ITypeSymbol t) =>
+            IsNullableValue(t) && Scalar(Underlying(t))
+                ? new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("!=", b, new KLit("null"))), new KOp("==", NullableValue(a, t), NullableValue(b, t)))
+                : SameValue(a, b, t);
+
         /// <summary>Elements equal as EqualityComparer&lt;T&gt;.Default has them: values and references, a tuple by its parts.</summary>
         private static KExpr SameValue(KExpr a, KExpr b, ITypeSymbol t)
         {
@@ -538,9 +605,25 @@ namespace CsVerify.Verifier.Boogie
             // (of a database query: its lambdas, the database's to evaluate)
             bool database = KernelTypes.Ef != null && DatabaseRoot(call, out _) != null;
             var known = _known;
-            if (database) { _inDatabase++; TranslationChecks(call); }
-            try { return LinqCore(call, name, resultType); }
-            finally { if (database) _inDatabase--; _known = known; }
+            var result = _dbResult;
+            // (the query's last operator: what it gives, entities or not)
+            if (database && _inDatabase == 0) _dbResult = resultType ?? call.Type;
+            bool untranslatable = database && TranslationChecks(call);
+            if (database) _inDatabase++;
+            try
+            {
+                // (a query EF can't translate throws where it runs, CSV1032: what it would give isn't known)
+                if (untranslatable)
+                {
+                    var type = resultType ?? call.Type;
+                    if (!InSubset(type)) throw new NotTranslated("a query's result of " + type);
+                    var t = Declare("t$" + _temps++, type);
+                    Emit(new KHavoc { Var = t });
+                    return new KVar(t);
+                }
+                return LinqCore(call, name, resultType);
+            }
+            finally { if (database) _inDatabase--; _known = known; _dbResult = result; }
         }
 
         private KExpr LinqCore(IInvocationOperation call, string name, ITypeSymbol resultType)

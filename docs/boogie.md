@@ -450,10 +450,12 @@ comparison in code does (of one length and different, they differ somewhere).
 (Lowering.Linq): a source the verifier indexes (an array, a List, a list interface) is a sequence of a length and
 elements, read where the call is (not null, CSV1013). `Select` maps it (with an index too), `Where` and `Distinct`
 filter it (a running count `c` of the matches and each match's index `ix`, increasing), `Take` and `Skip` keep the
-first `n` or the rest (`n` clamped to the length), `OrderBy` and `ThenBy`
+first `n` or the rest (`n` clamped to the length), `Concat` puts one after the other and `Union` is the `Distinct` of
+that, `OrderBy` and `ThenBy`
 permute it stably in their keys' order (a bijection `p` and its inverse; keys are ordered where they are integers or
 chars), `Zip` pairs two, `SelectMany` flattens (running offsets, monotone, and each element's outer index), `Join`
-filters the pairs of a flattening; `Count`, `Any`, `All`, `Contains`, `First`, `Last` (and `OrDefault`), `Max`, `Min`,
+filters the pairs of a flattening (a nullable key that is null matches nothing), `LeftJoin` adds each outer element
+no inner one matches, with none; `Count`, `Any`, `All`, `Contains`, `First`, `Last` (and `OrDefault`), `Max`, `Min`,
 `Sum` (every partial sum in range, CSV1001, as .NET adds them checked) and `Average` read it, their definitions'
 preconditions CSV1001 (an empty sequence has no `First`); `ToArray` and `ToList` copy it into a new object. A double
 `Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query reads it into a map where the loop
@@ -478,8 +480,8 @@ query filters, navigations, tokens), as its engine reads it (Lowering.Ef, Loweri
   on keys the database and .NET compare alike is LINQ's, in no order.
 - Rows read without tracking are new objects (allocated where read); a reference navigation not included is null, a
   collection one as its initializer made it (a new empty `List`, or null), but where an Include path loads its type.
-  An included reference is the row its foreign key names, an included `List` holds the rows whose foreign key is this
-  row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that comes
+  An included reference is the row its foreign key names (or null, where the key can be), an included `List` (or
+  `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that comes
   back to a type on it is CSV1032. An await leaves their columns as they were where no other code reaches them (the
   method lets none out: `EntitiesStayHere`, as CsVerify's engine reads it).
 - Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of
@@ -497,12 +499,22 @@ query filters, navigations, tokens), as its engine reads it (Lowering.Ef, Loweri
   update: read from its code) are CsVerify's engine's, with its checks: CSV1033 (another tracked instance with the key,
   an `Update` of a graph, a context done with, a stale row written), CSV1034 (a token changed since read), CSV1035 (two
   saves outside a transaction, a transaction begun with one open, a commit with changes not saved).
-- Not yet (CsVerify's engine verifies these methods): `Distinct`, `GroupBy`, `GroupJoin`, `Union`, `Contains`,
-  `LeftJoin` and `RightJoin` on the database, joins on nullable keys or strings, `ElementAt` and `TakeLast`/`SkipLast`,
-  an Include of a `HashSet` or of a reference with a nullable foreign key, SQL's nulls (`UseRelationalNulls`), calls
-  EF translates in a database query's lambdas (string members, `Math`), a row version written (CSV1034), concurrency
-  tokens of types the kernel doesn't have (`DateTime`) where `Attach` or `Update` checks them, compiled queries, an
-  operation not awaited where it starts and a context used in a lambda (CSV1036), and `IDbContextFactory`.
+- A database query's lambdas are checked translatable as CsVerify's engine checks them (CSV1032: a call of the
+  program's, a property computed in C#); such a query throws where it runs, so what it gives isn't known. An operator
+  that compares what the database and .NET don't compare alike (strings by collation, rows by every column), and
+  `RightJoin`, say nothing of what they give, as CsVerify's engine's library call. `Distinct` and `Contains` of values
+  compared alike are LINQ's (`Distinct` in no order); a join on nullable keys matches none that is null. With SQL's
+  nulls (`UseRelationalNulls`), `==` and `!=` where a nullable value is null are unknown, for each comparison. A row
+  version written is CSV1034 where it's written. CSV1036 is the static check's, as for every method Boogie verifies.
+- A compiled query (`EF.CompileQuery`, a static readonly field of this file) of a value, called, is the query its
+  lambda writes, on the arguments; of a sequence, a library call that says nothing of its rows.
+- Not yet (CsVerify's engine verifies these methods): `GroupBy` and `GroupJoin` on the database (their groups as
+  values), SQL's nulls of references, calls EF translates in a database query's lambdas that aren't the kernel's
+  functions, `IDbContextFactory`, and what the kernel lacks elsewhere (`Task.Run` of a query, `Task.WhenAll` of
+  tasks one is given, a type parameter constrained by itself, `List.Contains` in a specification).
+
+**Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
+parameter takes it, a call gives it, and an EF concurrency token is compared by it; its operators and members fall back.
 
 **Library nullness.** As CsVerify's engine trusts it: a library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
@@ -513,7 +525,8 @@ parameter declared nullable, a call that may return null, a call between a check
 **Library calls without a stub.** A library member with neither a stub nor sources is CsVerify's engine's library
 call: what it is handed decides what it may change. It may write the arrays it's handed (any of the element maps,
 then) where CsVerify's engine says it may write memory (`MayWriteHeap`), and anything where what it's handed may run
-the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. Its `ref` and `out` arguments and its
+the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. One handed a delegate isn't translated,
+but for a delegate parameter left at its default, null. Its `ref` and `out` arguments and its
 result are values not known, not null where they're declared so; its receiver mustn't be null (CSV1013). A library
 object (`Random`) is a reference, its `new` a new one; an argument boxed to `object` for it is evaluated as what it is.
 Where exceptions are seen it may throw, once it has done what it does (a fork to the handlers). A collection's element
@@ -1090,8 +1103,8 @@ methods that fall back for it):
 11. the library's stub contracts in general, then LINQ (LINQ done, `GroupJoin` looped over too; the library calls without a stub
     next: what they're handed decides what they may change, as CsVerify's engine has it);
 12. Entity Framework (queries, includes, rows with and without tracking, local views, the change tracker and
-    transactions done: the EF tests pass under `CSVERIFY_ENGINE=boogie`, 45 of their methods falling back for what the
-    Entity Framework section lists as not yet);
+    transactions done: the EF tests pass under `CSVERIFY_ENGINE=boogie`, 9 of their methods falling back for what the
+    Entity Framework section lists as not yet, and 2 that Boogie doesn't decide in time);
 13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, and the whole test suite
     with `CSVERIFY_ENGINE=boogie` and `CSVERIFY_TRACE_FILE`, until nothing is left untranslated (the first, of the
     suite after step 8: 77 methods, every one in the samples; the tests' own programs all translate): tuples and

@@ -211,7 +211,18 @@ namespace CsVerify.Verifier.Boogie
         {
             if (_failed == null || KernelTypes.Ef == null) return (false, null);
             var m = inv.TargetMethod;
-            if (m.Name.EndsWith("Async") && !awaited) return (false, null);
+            // (an ...Async one not awaited where it's called: what it does, and its task, as CsVerify's engine has it; CSV1036
+            // is its static check's)
+            if (m.Name.EndsWith("Async") && !awaited)
+            {
+                var (h, _) = TrackerCall(inv, awaited: true);
+                if (!h) return (false, null);
+                var task = "t$" + _temps++;
+                _p.Locals.Add(new KLocal { Name = task, Raw = "Ref" });
+                Emit(new KHavoc { Var = task });
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(task), Null) });
+                return (true, new KVar(task));
+            }
             var name = Plain(m);
             var at = inv.Syntax;
             var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
@@ -634,9 +645,13 @@ namespace CsVerify.Verifier.Boogie
         /// A write of an entity's column: for every context tracking the entity unchanged, it is now modified, with changes
         /// to save. (A row version's write is CsVerify's engine's, CSV1034: Lowering.Ef.)
         /// </summary>
-        private void TrackerFieldWrite(ISymbol field, KExpr o)
+        private void TrackerFieldWrite(ISymbol field, KExpr o, SyntaxNode at)
         {
-            if (_failed == null || o == null || !(field is IPropertySymbol p) || KernelTypes.Ef.EntityOf(p.ContainingType) == null) return;
+            if (_failed == null || o == null || !(field is IPropertySymbol p) || KernelTypes.Ef.EntityOf(p.ContainingType) is not EfModel.Entity entity) return;
+            // (a row version is the database's to set, CSV1034)
+            if (entity.RowVersions.Contains(p.OriginalDefinition) || entity.RowVersions.Contains(p))
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1034", At = at, NotAssumedAfter = true,
+                                  Message = $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read" });
             var c = new KVar("c$");
             KExpr Was(KExpr x) => new KOp("sel", new KVar(StateMap), x, o);
             Emit(new KRow { Map = UnsavedMap, Ref = null, Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("||", new KOp("!=", Was(c), I(EfDetached)), Unsaved(c))) });

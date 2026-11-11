@@ -98,7 +98,7 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType) && !IsFloating(((IArrayTypeSymbol)t).ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t);
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsOpaqueValue(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -359,6 +359,13 @@ namespace CsVerify.Verifier.Boogie
             Ef != null && t is INamedTypeSymbol n && n.Arity == 1 &&
             (n.Name == "DbSet" && n.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore" ||
              n.Name is "IQueryable" or "IOrderedQueryable" && n.ContainingNamespace?.ToDisplayString() == "System.Linq");
+
+        /// <summary>
+        /// A value of the library's the kernel keeps but doesn't compute with (DateTime): an int, its ticks' stand-in, which a
+        /// field holds, a parameter takes, a call gives, and an EF concurrency token is compared by; its operators and
+        /// members are the library's (not translated yet, but what calls give it).
+        /// </summary>
+        public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() == "System.DateTime";
 
         /// <summary>An EF transaction (IDbContextTransaction): a reference, whose operations Lowering.EfTracker reads.</summary>
         public static bool IsEfTransaction(ITypeSymbol t) =>
