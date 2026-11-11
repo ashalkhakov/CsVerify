@@ -2178,7 +2178,7 @@ namespace CsVerify.Verifier
         /// A library out parameter <c>[MaybeNullWhen(b)] out TValue value</c>, with TValue a non-nullable type: not null
         /// when the method returns !b (null if the parameter says nothing of the kind).
         /// </summary>
-        private static bool? NotNullWhen(IParameterSymbol p) =>
+        internal static bool? NotNullWhen(IParameterSymbol p) =>
             IsNonNullableType(p.Type) && p.OriginalDefinition.GetAttributes().FirstOrDefault(x =>
                 x.AttributeClass?.ToDisplayString() == "System.Diagnostics.CodeAnalysis.MaybeNullWhenAttribute") is AttributeData mnw &&
             mnw.ConstructorArguments.Length == 1 && mnw.ConstructorArguments[0].Value is bool maybeNullWhen
@@ -2537,14 +2537,14 @@ namespace CsVerify.Verifier
             SpecSymbols.IsGhostType(t) ? IsNonNullableType(((INamedTypeSymbol)t).TypeArguments[0]) // Ghost<T>: T's
             : MayBeNullType(t) && !(t is ITypeParameterSymbol) && t.NullableAnnotation == NullableAnnotation.NotAnnotated;
 
-        private static bool IsNonNullable(IParameterSymbol p) =>
+        internal static bool IsNonNullable(IParameterSymbol p) =>
             (IsNonNullableType(p.OriginalDefinition.Type) || p.OriginalDefinition.Type is ITypeParameterSymbol { HasNotNullConstraint: true } && p.OriginalDefinition.NullableAnnotation != NullableAnnotation.Annotated && MayBeNullType(p.Type)) && !HasAttribute(p.OriginalDefinition.GetAttributes(), "AllowNullAttribute") ||
             // (query syntax's own: the object its previous clause made, or the group of group ... into g)
             p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn &&
             !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax) &&
             (p.Type.IsAnonymousType || p.Type.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
 
-        private static bool IsNonNullableReturn(IMethodSymbol m) =>
+        internal static bool IsNonNullableReturn(IMethodSymbol m) =>
             !m.ReturnsVoid && (m.IsAsync ? AsyncResultType(m.OriginalDefinition) is ITypeSymbol t && IsNonNullableType(t) // (what it returns: its task's result)
                                          : IsNonNullableType(m.OriginalDefinition.ReturnType)) &&
             !HasAttribute(m.OriginalDefinition.GetReturnTypeAttributes(), "MaybeNullAttribute");

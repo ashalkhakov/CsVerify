@@ -454,6 +454,8 @@ namespace CsVerify.Verifier.Boogie
             var args = collection.TypeArguments.Select(Kind).ToArray();
             return model switch
             {
+                // (a builder's length: a map of its own, so that no list is thought to be one)
+                "Size" when CollectionKind(collection) == "StringBuilder" => new ModelMap { Name = "$F.$M.Length", Type = "[Ref]int" },
                 "Size" => new ModelMap { Name = SizeMap, Type = "[Ref]int" },
                 "Version" => new ModelMap { Name = VersionMap, Type = "[Ref]int" },
                 "Items" => new ModelMap { Name = "$F.$M.Items." + args[0], Type = $"[Ref][int]{BoogieOf(args[0])}", Range = args[0] },

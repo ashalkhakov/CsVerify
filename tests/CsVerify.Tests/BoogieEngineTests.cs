@@ -1512,6 +1512,85 @@ public static class Fi {
             foreach (var good in new[] { "Fi.Zeroes", "Fi.Good" }) Assert.True(b[good].Verified, good);
         }
 
+        private const string ParityLoops = @"
+
+public static class P
+{
+    public static int Up(int[] a) { int s = 0; for (int i = 0; i < a.Length; i++) s = a[i]; return s; }
+    public static int Down(int[] a) { int s = 0; for (int i = a.Length - 1; i >= 0; i--) s = a[i]; return s; }
+    public static int While(int[] a, int lo)
+    {
+        if (lo < 0) return 0;
+        int i = lo;
+        while (i < a.Length) { if (a[i] == 0) break; i++; }
+        return i;
+    }
+    public static int Inclusive(int[] a, int n) { Spec.Requires(n < a.Length); int s = 0; for (int i = 0; i <= n; i++) s = a[i]; return s; }
+}
+public static class P2
+{
+    public static int Step(int[] a) { int s = 0; for (int i = 0; i < a.Length; i += 2) s = a[i]; return s; }
+    public static int StepBad(int[] a) { int s = 0; for (int i = 0; i < a.Length; i += 2) s = a[i + 1]; return s; }
+    public static int Wobble(int[] a, bool b)
+    {
+        int i = 1;
+        while (i < a.Length) { if (b) i--; else i += 2; if (i < 0) return 0; }
+        return a[i - 1];
+    }
+}
+";
+        private const string ParityTasks = @"
+public static class C {
+[RunsConcurrently] static async Task Work() { await Task.Yield(); }
+static async Task M1() { var t = Work(); try { await Work(); } finally { await t; } }
+static async Task M2(bool b, bool c) { var t = Work(); try { await t; if (b) throw new InvalidOperationException(); if (c) throw new InvalidOperationException(); } catch (InvalidOperationException) { } }
+static async Task M3() { var t = Work(); try { await t; } catch (InvalidOperationException) { } }
+static async Task M4(int n) { for (int i = 0; i < n; i++) { var t = Work(); await t; } }
+static async Task B1() { var t = Work(); try { await Work(); } catch (InvalidOperationException) { return; } await t; }
+static async Task B2() { var t = Work(); try { await Work(); await t; } catch (InvalidOperationException) { } }
+static async Task B3() { var t = Work(); try { await Work(); } finally { } }
+static async Task B4(int n) { for (int i = 0; i < n; i++) { var t = Work(); if (i == 1) continue; await t; } }
+}
+";
+        private const string ParityLambdas = @"
+public class Cell { public int V; }
+public static class C {
+static void M(Cell lim, Cell other) { Spec.Requires(lim != other); lim.V = 10; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(lim)); Spec.Requires(x < lim.V); return x; }; var a = h(3); other.V = 0; var b = h(4); }
+static void M2(int[] a, int[] b) { Spec.Requires(a.Length > 0 && b.Length > 0 && a != b); b[0] = 5; Func<int, int> h = i => { Spec.Reads(ObjSet.Of(b)); Spec.Requires(0 <= i && i < b.Length && b[i] > 0); return 10 / b[i]; }; a[0] = 1; var r = h(0); }
+static void N(Cell c, Cell other) { Spec.Requires(c != other); c.V = 7; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0 && c.V < 100); return x < 100 && x > -100 ? x + c.V : 0; }; other.V = 1; var r = h(1); Spec.Assert(r == 8); }
+}
+";
+        private const string ParityMisc = @"
+public static class C {
+static int M(System.Collections.Generic.Dictionary<int, string> d) => d.TryGetValue(1, out var s) ? 0 : s.Length;
+static int N(System.Collections.Generic.List<string?> l) => l.Count > 0 ? l[0].Length : 0;
+}
+public sealed class Box
+{
+    private int _w;
+    [Pure] public int Width { get => _w; set { Spec.Requires(value >= 0); Spec.Ensures(_w == value); _w = value; } }
+    [Pure] public int Twice => checked(2 * _w);
+}
+public static class C3 {
+    static void M(Box b) { b.Width = 3; Spec.Assert(b.Width == 3); }
+    static void Bad(Box b) { b.Width = -1; }
+    static int G(int[] a) { Spec.Ensures<int>(r => r == a.Length); return a.GetLength(0); }
+}
+";
+
+        /// <summary>Loops' inferred facts (Houdini), tasks awaited through finally and in loops, lambdas' frames, library nullness, properties, GetLength.</summary>
+        [Theory]
+        [InlineData("loops", 7)]
+        [InlineData("tasks", 8)]
+        [InlineData("lambdas", 3)]
+        [InlineData("misc", 6)]
+        public void Parity_BothEnginesReportTheSame(string which, int atLeast)
+        {
+            var source = which switch { "loops" => ParityLoops, "tasks" => "using System.Threading.Tasks;\n" + ParityTasks, "lambdas" => ParityLambdas, _ => ParityMisc };
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + "using System.Collections.Generic;\n" + source) }, o));
+            Assert.True(Agree(c, b) >= atLeast, "by Boogie: " + string.Join(", ", b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name)));
+        }
+
         [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {

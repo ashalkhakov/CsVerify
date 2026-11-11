@@ -39,11 +39,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The check each line of the program is (1-based, as Boogie reports).</summary>
         public Dictionary<int, Check> Lines => _printer.Lines;
 
+        /// <summary>The lines of loop facts left out (see BoogieRunner).</summary>
+        public HashSet<int> Disabled => _printer.Disabled;
+
         /// <summary>How many obligations each procedure has.</summary>
         public readonly Dictionary<MethodResult, int> Obligations = new Dictionary<MethodResult, int>();
 
         /// <summary>The warnings of a method's procedure (none if it isn't one).</summary>
-        public IEnumerable<VerificationDiagnostic> Warnings(MethodResult r) => _pending.Where(p => p.Result == r).SelectMany(p => p.Warnings);
+        public IEnumerable<VerificationDiagnostic> Warnings(MethodResult r) => _warnings.TryGetValue(r, out var w) ? w : Enumerable.Empty<VerificationDiagnostic>();
+
+        private readonly Dictionary<MethodResult, List<VerificationDiagnostic>> _warnings = new Dictionary<MethodResult, List<VerificationDiagnostic>>();
 
         /// <summary>A line that says what a failure is about (a requires, an ensures, a return), not a check of its own.</summary>
         internal const string Aux = "aux";
@@ -405,6 +410,11 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var keep in p.Blocks.SelectMany(b => b.Stmts).OfType<KKeep>().Where(k => !k.After))
                     foreach (var (name, type) in _printer.StateMaps)
                         p.Locals.Add(new KLocal { Name = $"k${keep.Id}{name}", Raw = type });
+            // (each confined frame's snapshot of every state map)
+            foreach (var p in _pending)
+                foreach (var cf in p.Blocks.SelectMany(b => b.Stmts).OfType<KConfinedFrame>())
+                    foreach (var (name, type) in _printer.StateMaps)
+                        p.Locals.Add(new KLocal { Name = $"c${cf.Head}{name}", Raw = type });
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KLoopFrame>())
@@ -447,6 +457,8 @@ namespace CsVerify.Verifier.Boogie
             }
             _printer.Started.Clear();
             _printer.Tuples();
+            foreach (var p in _pending.Where(p => p.Result != null && p.Warnings.Count > 0))
+                (_warnings.TryGetValue(p.Result, out var w) ? w : _warnings[p.Result] = new List<VerificationDiagnostic>()).AddRange(p.Warnings);
             _pending.Clear();
         }
 

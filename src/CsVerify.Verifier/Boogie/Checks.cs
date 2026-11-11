@@ -58,7 +58,61 @@ namespace CsVerify.Verifier.Boogie
         private Check At(string id, SyntaxNode at, string message, string reportAs = null) =>
             new Check { Id = id, Message = message, Span = at.GetLocation().GetLineSpan(), Method = _p.Result, ReportAs = reportAs };
 
+        /// <summary>A null check of what <paramref name="what"/> is, saying where the null may come from, as CsVerify's engine does.</summary>
+        private Check NullAt(SyntaxNode at, SyntaxNode what, string message) => At("CSV1013", at, message + NullReasons(what));
+
+        private static int LineOf(SyntaxNode n) => n.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        /// <summary>
+        /// Why a value might be null, from the source, as CsVerify's engine says it (MethodVerifier.NullReasons): a parameter
+        /// declared nullable, a call that may return null (or a local made of one), a call between a check of it and its use
+        /// (with the usual fix). Empty if nothing is known.
+        /// </summary>
+        internal static string NullReasons(SyntaxNode what)
+        {
+            if (what == null || KernelTypes.Compilation == null || what.SyntaxTree == null || !KernelTypes.Compilation.SyntaxTrees.Contains(what.SyntaxTree)) return "";
+            var model = KernelTypes.Compilation.GetSemanticModel(what.SyntaxTree);
+            while (what is Microsoft.CodeAnalysis.CSharp.Syntax.ParenthesizedExpressionSyntax pe) what = pe.Expression;
+            var origins = new List<string>();
+            string Note(ITypeSymbol t) => t.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat.WithMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
+            bool MayReturnNull(IMethodSymbol m) => !m.ReturnsVoid && (m.ReturnType.NullableAnnotation == NullableAnnotation.Annotated || m.ReturnType.IsReferenceType && m.ReturnType.NullableAnnotation == NullableAnnotation.None ||
+                                                                      m.GetReturnTypeAttributes().Any(a => a.AttributeClass?.Name == "MaybeNullAttribute"));
+            void FromCall(Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax inv)
+            {
+                if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && MayReturnNull(m)) origins.Add($"'{m.Name}' may return null (line {LineOf(inv)})");
+            }
+            var symbol = model.GetSymbolInfo(what).Symbol;
+            if (symbol is IParameterSymbol p && (p.Type.NullableAnnotation == NullableAnnotation.Annotated || p.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T))
+                origins.Add($"parameter '{p.Name}' is declared '{Note(p.Type)}'");
+            else if (what is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call) FromCall(call);
+            else if (symbol is ILocalSymbol l && l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax d &&
+                     d.Initializer?.Value is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax made)
+                FromCall(made);
+            // (a field or property checked before a call, and read again after it: the call may have changed it)
+            if (what is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax read && symbol is IFieldSymbol or IPropertySymbol)
+            {
+                var text = read.ToString();
+                var check = what.Ancestors().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IfStatementSyntax>()
+                    .FirstOrDefault(i => i.Condition.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax>().Any(b => b.Left.ToString() == text || b.Right.ToString() == text));
+                if (check != null)
+                {
+                    var between = check.Statement.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
+                        .Where(i => i.SpanStart < what.SpanStart && !i.Span.Contains(what.Span)).Select(i => model.GetSymbolInfo(i).Symbol as IMethodSymbol)
+                        .FirstOrDefault(m => m != null && !CsVerify.Analyzers.SpecSymbols.IsSpecClass(m.ContainingType));
+                    var at = check.Statement.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().FirstOrDefault(i => i.SpanStart < what.SpanStart && model.GetSymbolInfo(i).Symbol is IMethodSymbol bm && SymbolEqualityComparer.Default.Equals(bm, between));
+                    if (between != null && at != null) origins.Add($"the call to '{between.Name}' (line {LineOf(at)}) may change what was checked before it");
+                }
+            }
+            if (origins.Count == 0) return "";
+            var reasons = ": " + string.Join("; ", origins.Take(3));
+            if (origins.Any(o => o.Contains(" may change "))) reasons += " (a check made before a call does not hold after it: copy the value to a local, check that, and use the local)";
+            return reasons;
+        }
+
         private void Emit(KStmt s) => _out.Add(s);
+
+        /// <summary>The id of a loop's inferred fact, a candidate of Houdini's: never reported.</summary>
+        public const string Candidate = "HOUDINI";
 
         private void Assert(KExpr cond, Check check, bool notAssumedAfter = false)
         {
@@ -231,6 +285,14 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign { Var = "alloc$entry", Value = _p.IsCtor ? new KOp("store", new KVar("$Alloc"), new KVar("this"), new KLit("false")) : new KVar("$Alloc") });
                 }
                 bool head = b.Label == $"b{b.Ordinal}";
+                // (a loop's inferred facts: each an invariant, left out and verified again without where it doesn't hold)
+                if (head && _p.Candidates.TryGetValue(b.Ordinal, out var candidates))
+                    for (int k = 0; k < candidates.Count; k++)
+                    {
+                        var math = Spec(candidates[k].Expr, out _);
+                        _facts.Clear();
+                        Emit(new KAssert { Cond = math, Check = At(Candidate, candidates[k].At, "a loop's inferred fact") });
+                    }
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
                     foreach (var inv in invs)
                     {
@@ -334,7 +396,8 @@ namespace CsVerify.Verifier.Boogie
                         Assert(new KOp("!=", new KOp("sel", new KVar(FieldMap(field)), new KVar("this")), new KLit("null")),
                             At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
             if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m)))
-                Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable"));
+                Assert(new KOp("!=", new KVar("result"), new KLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable" +
+                    NullReasons(ret.At is Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax rs ? rs.Expression : ret.At is Microsoft.CodeAnalysis.CSharp.Syntax.ArrowExpressionClauseSyntax ar ? ar.Expression : ret.At)));
             // the permissions the postconditions give back are in hand
             if (_p.UsesPerm)
             {
@@ -371,7 +434,7 @@ namespace CsVerify.Verifier.Boogie
                     var value = Code(fs.Value);
                     var o = fs.Instance == null ? new KLit("null") : Code(fs.Instance);
                     if (fs.Instance != null && !fs.OnThis)
-                        Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fs.At, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
+                        Assert(new KOp("!=", o, new KLit("null")), NullAt(fs.At, fs.InstanceAt, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
                     if (fs.Instance != null && !IsOwnedField(fs.Field)) WithinFrame(o, fs.At);
                     if (IsOwnedField(fs.Field))
                         Assert(_p.UsesFields ? new KOp("||", Whole(o), FieldHeld(o, fs.Field)) : Whole(o), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
@@ -463,7 +526,7 @@ namespace CsVerify.Verifier.Boogie
                     // (a call of a delegate: not null, and it accepts the arguments; what it gives is its $post)
                     var d = Code(iv.Delegate);
                     var args = iv.Args.Select(Code).ToArray();
-                    Assert(new KOp("!=", d, new KLit("null")), At("CSV1013", iv.At, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
+                    Assert(new KOp("!=", d, new KLit("null")), NullAt(iv.At, iv.DelegateAt, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
                     Assert(new KOp("$preS." + iv.Key, new[] { d, new KOp("$state") }.Concat(args).ToArray()),
                         At("CSV1001", iv.At, $"'{iv.DelegateAt}' might not accept these arguments: say what it accepts with Spec.Requires(Spec.Pre({iv.DelegateAt}, ...))"));
                     Emit(new KInvoke { Result = iv.Result, Delegate = d, Args = args, Key = iv.Key, At = iv.At, DelegateAt = iv.DelegateAt });
@@ -484,7 +547,8 @@ namespace CsVerify.Verifier.Boogie
                     KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, r); }
                     Emit(new KLambda { Var = lam.Var, Key = lam.Key, Params = lam.Params, ResultType = lam.ResultType, NoChange = lam.NoChange, Steady = lam.Steady,
                                        Pre = lam.Pre == null ? null : M(lam.Pre), Posts = lam.Posts.Select(M).ToList(),
-                                       PreS = lam.PreS == null ? null : M(lam.PreS), Reads = lam.Reads == null ? null : M(lam.Reads), Changes = lam.Changes == null ? null : M(lam.Changes) });
+                                       PreS = lam.PreS == null ? null : M(lam.PreS), Reads = lam.Reads == null ? null : M(lam.Reads), Changes = lam.Changes == null ? null : M(lam.Changes),
+                                       PostsS = lam.PostsS.Select(M).ToList() });
                     return;
                 }
                 case KAwait aw:
@@ -633,7 +697,7 @@ namespace CsVerify.Verifier.Boogie
             if (c.Receiver != null)
             {
                 receiver = Code(c.Receiver);
-                if (!c.ReceiverIsThis) Assert(new KOp("!=", receiver, new KLit("null")), At("CSV1013", c.At, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+                if (!c.ReceiverIsThis) Assert(new KOp("!=", receiver, new KLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
             }
             var args = Arguments(callee, c.Args, c.ArgsAt);
             Termination(c, receiver, args, decreases);
@@ -1787,7 +1851,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var x = Code(ic.Of);
                     var i = ic.Index == null ? null : Code(ic.Index);
-                    Assert(new KOp("!=", x, new KLit("null")), At("CSV1013", ic.At, $"'{ic.OfAt}' might be null in '{ic.At}'"));
+                    Assert(new KOp("!=", x, new KLit("null")), NullAt(ic.At, ic.OfAt, $"'{ic.OfAt}' might be null in '{ic.At}'"));
                     KExpr count = IfcRead(x, null, ic.Element);
                     if (ic.Fresh)
                     {
@@ -1813,7 +1877,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var s = Code(sc.Array);
                     var i = Code(sc.Index);
-                    Assert(new KOp("!=", s, new KLit("null")), At("CSV1013", sc.At, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
+                    Assert(new KOp("!=", s, new KLit("null")), NullAt(sc.At, sc.ArrayAt, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
                     Assert(new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, new KOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
                     return new KOp("sat", s, i);
                 }
@@ -1822,6 +1886,10 @@ namespace CsVerify.Verifier.Boogie
                     var a = Code(el.Array);
                     var i = Code(el.Index);
                     InBounds(a, i, el.At, el.ArrayAt);
+                    // (alongside other code, under cell permissions: read only what it holds, as CsVerify's engine checks it)
+                    if (el.Alongside != null && _p.UsesCells)
+                        Assert(Implies(Code(el.Alongside), new KOp(">", Cell(a, i), new KLit("0.0"))),
+                            At("CSV1016", el.At, $"'{el.At}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it"));
                     var ev = new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
                     // (an allocated array's element is an allocated object, as a field's value is; of its class's invariant)
                     if (IsRefArray(el.ArrayType))
@@ -1834,7 +1902,7 @@ namespace CsVerify.Verifier.Boogie
                 case KDataField df:
                 {
                     var v = Code(df.Value);
-                    if (!df.Struct) Assert(new KOp("!=", v, new KLit("null")), At("CSV1013", df.At, $"'{df.ValueAt}' might be null in '{df.At}'"));
+                    if (!df.Struct) Assert(new KOp("!=", v, new KLit("null")), NullAt(df.At, df.ValueAt, $"'{df.ValueAt}' might be null in '{df.At}'"));
                     return new KOp(df.Function, v);
                 }
                 case KCast cast:
@@ -1849,7 +1917,7 @@ namespace CsVerify.Verifier.Boogie
                 case KLen len:
                 {
                     var a = Code(len.Array);
-                    Assert(new KOp("!=", a, new KLit("null")), At("CSV1013", len.At, $"'{len.ArrayAt}' might be null in '{len.At}'"));
+                    Assert(new KOp("!=", a, new KLit("null")), NullAt(len.At, len.ArrayAt, $"'{len.ArrayAt}' might be null in '{len.At}'"));
                     return new KOp(len.String ? "slen" : "len", a);
                 }
                 case KQuant q when q.Range is KOp { Op: "&&" } range:
@@ -1896,7 +1964,7 @@ namespace CsVerify.Verifier.Boogie
                     if (st.Receiver != null)
                     {
                         receiver = Code(st.Receiver);
-                        Assert(new KOp("!=", receiver, new KLit("null")), At("CSV1013", st.At, $"'{st.ReceiverAt}' might be null in '{st.At}'"));
+                        Assert(new KOp("!=", receiver, new KLit("null")), NullAt(st.At, st.ReceiverAt, $"'{st.ReceiverAt}' might be null in '{st.At}'"));
                     }
                     var args = st.Args.Select(Code).ToArray();
                     var given = StubGiven(st.Callee, receiver, args);
@@ -1915,7 +1983,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
                     var o = Code(fd.Instance);
-                    if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), At("CSV1013", fd.At, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
+                    if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), NullAt(fd.At, fd.InstanceAt, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
                     // (a function with Spec.Reads reads only objects in it, as of entry: CSV1017)
                     if (_p.ReadsFrame != null && !fd.Field.IsStatic)
                         Assert(new KOp("sel", new KVar("r$entry"), o), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
@@ -1936,7 +2004,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void InBounds(KExpr a, KExpr i, SyntaxNode at, SyntaxNode arrayAt)
         {
-            Assert(new KOp("!=", a, new KLit("null")), At("CSV1013", at, $"'{arrayAt}' might be null in '{at}'"));
+            Assert(new KOp("!=", a, new KLit("null")), NullAt(at, arrayAt, $"'{arrayAt}' might be null in '{at}'"));
             Assert(new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, new KOp("len", a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
         }
 
@@ -1952,8 +2020,10 @@ namespace CsVerify.Verifier.Boogie
                 Assert(new KOp("!=", r, new KLit("0")), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
                 if (ar.ThrowsTo != null)
                     Emit(new KFork { Overflow = new KOp("!", new KOp("&&", new KOp("==", l, Number(Range(ar.Type).lo)), new KOp("==", r, new KLit("(-1)")))), Target = ar.ThrowsTo });
-                // (MinValue / -1 throws in .NET, checked or not)
-                Assume(new KOp("!", new KOp("&&", new KOp("==", l, Number(Range(ar.Type).lo)), new KOp("==", r, new KLit("(-1)")))));
+                // (MinValue / -1 throws in .NET, checked or not: a [Pure] member or lemma may not throw, so it's reported there)
+                var minOverMinus1 = new KOp("!", new KOp("&&", new KOp("==", l, Number(Range(ar.Type).lo)), new KOp("==", r, new KLit("(-1)"))));
+                if (_program.CheckOverflow && (_p.Contract.IsPure || _p.Contract.IsLemma) && ar.Mode != KMode.Math) Assert(minOverMinus1, At("CSV1010", ar.At, $"arithmetic '{ar.At}' might overflow {ar.Type.Name}"));
+                else Assume(minOverMinus1);
                 return new KOp(ar.Op == "/" ? "div" : "rem", l, r);
             }
             var value = new KOp(ar.Op, l, r);
@@ -1978,6 +2048,8 @@ namespace CsVerify.Verifier.Boogie
                 case KMode.Unchecked: return Wrap(value, type);
                 case KMode.Math: return value;
                 case KMode.Default when _program.CheckOverflow:
+                // (checked, in a [Pure] member or a lemma: it may not throw, so the overflow is reported, as CsVerify's engine does)
+                case KMode.Checked when _program.CheckOverflow && (_p.Contract.IsPure || _p.Contract.IsLemma):
                     Assert(InRange(value, type), At("CSV1010", at, message));
                     return value;
                 default:

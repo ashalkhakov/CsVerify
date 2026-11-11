@@ -146,6 +146,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Array, Index;
         public ITypeSymbol ArrayType;
         public bool InSpec;
+        /// <summary>In code that may run alongside other code (true, or while its tasks run): under cell permissions, its cell must be held to read (CSV1016).</summary>
+        public KExpr Alongside;
         public SyntaxNode At, ArrayAt;
     }
 
@@ -441,6 +443,8 @@ namespace CsVerify.Verifier.Boogie
         public bool Steady;
         /// <summary>One that reads state (its own Spec.Reads): its precondition in the state it's made in, and what it reads there.</summary>
         public KExpr PreS, Reads;
+        /// <summary>A lambda of Spec.Reads that changes nothing: its postconditions, of the state it's made in (and of any that agrees with it on its frame).</summary>
+        public List<KExpr> PostsS = new List<KExpr>();
         /// <summary>What it may change, for its arguments (its own Spec.Modifies).</summary>
         public KExpr Changes;
         /// <summary>A method group's parameters, as its contract names them, to the bound variables.</summary>
@@ -597,6 +601,23 @@ namespace CsVerify.Verifier.Boogie
         public KLoopFrame Frame;
     }
 
+    /// <summary>
+    /// At a loop head: the objects of confined locals the loop doesn't reassign (nobody else can reach them) are as they
+    /// were on its entry, but for what the loop writes through those locals.
+    /// </summary>
+    internal sealed class KConfinedFrame : KStmt
+    {
+        public int Head;
+        /// <summary>Each local (its Boogie name), with the maps the loop writes through it ("$M." for any of a collection's models).</summary>
+        public Dictionary<string, HashSet<string>> Locals = new Dictionary<string, HashSet<string>>();
+    }
+
+    /// <summary>On the way into a loop: every state map, as it is now (for its KConfinedFrame).</summary>
+    internal sealed class KConfinedSnapshot : KStmt
+    {
+        public int Head;
+    }
+
     internal sealed class KSpec
     {
         public KExpr Expr;
@@ -681,11 +702,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The fields it reads or writes (their maps are declared).</summary>
         public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public List<KLocal> Locals = new List<KLocal>();
+        /// <summary>The confined locals (their Boogie names): only ever objects the method made, never handed on.</summary>
+        public List<string> Confined = new List<string>();
         public List<KSpec> Requires = new List<KSpec>(), Ensures = new List<KSpec>();
         /// <summary>Spec.Decreases of the method: its parameters' measure.</summary>
         public List<KExpr> Decreases;
         /// <summary>Each loop head's invariants and measure (by the head's ordinal).</summary>
         public Dictionary<int, List<KSpec>> Invariants = new Dictionary<int, List<KSpec>>();
+        /// <summary>A loop without invariants: facts Houdini may keep at its head (the ones that hold on entry and at every back edge), as CsVerify's engine infers them.</summary>
+        public Dictionary<int, List<KSpec>> Candidates = new Dictionary<int, List<KSpec>>();
         public Dictionary<int, List<KSpec>> Measures = new Dictionary<int, List<KSpec>>();
         /// <summary>Each loop head's last block (by ordinal): the loop is the blocks from the head to it.</summary>
         public Dictionary<int, int> LoopBodies = new Dictionary<int, int>();

@@ -28,6 +28,8 @@ namespace CsVerify.Verifier.Boogie
             get
             {
                 var lines = _text.ToString().Split('\n');
+                // (a loop's inferred fact that didn't hold: left out, its line kept)
+                foreach (var d in Disabled) if (d - 1 < lines.Length) lines[d - 1] = "    assert true;";
                 var used = string.Join("\n", lines.Where(l => !(l.Length > 0 && l[0] == '\u0001')));
                 return string.Join("\n", lines.Select(l =>
                 {
@@ -38,6 +40,9 @@ namespace CsVerify.Verifier.Boogie
                 }));
             }
         }
+
+        /// <summary>The lines (1-based) of loop facts left out: they didn't hold on entry or at a back edge.</summary>
+        public readonly HashSet<int> Disabled = new HashSet<int>();
 
         private const string Tagged = "\u0001";
 
@@ -50,6 +55,7 @@ namespace CsVerify.Verifier.Boogie
 
         public void Tuples()
         {
+
             foreach (var mk in _tupleMakers.OrderBy(x => x, System.StringComparer.Ordinal))
             {
                 var types = mk.Substring("$tupmk.".Length).Split('_').Select(t => t.StartsWith("-") ? "[" + t.Substring(1).Replace("-", "]") : t).ToList();
@@ -558,6 +564,10 @@ namespace CsVerify.Verifier.Boogie
 
         private int _forks;
 
+        /// <summary>The side branches of checks not assumed after.</summary>
+        private int _sides;
+        private bool _leading;
+
         /// <summary>The callees started as tasks or threads (their twins, of free preconditions, are declared once the procedures are).</summary>
         public readonly HashSet<IMethodSymbol> Started = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
 
@@ -661,7 +671,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var m in models)
             {
                 string where = "";
-                if (m.Name == SizeMap) where = $" where (forall o: Ref :: {SizeMap}[o] >= 0)";
+                if (m.Name == SizeMap || m.Name == "$F.$M.Length") where = $" where (forall o: Ref :: {m.Name}[o] >= 0)";
                 else if (m.Range != null && Bound(m.Range, "x") != null)
                 {
                     var key = m.Type.Substring("[Ref][".Length, m.Type.IndexOf(']', 5) - "[Ref][".Length);
@@ -889,7 +899,14 @@ namespace CsVerify.Verifier.Boogie
                 if (IsIntegral(x.Type)) Line($"  free ensures {E(InRange(new KVar(Local(x)), x.Type), cx)};");
                 if (IsRef(x.Type)) Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
                 if (IsData(x.Type) && x.Type.IsValueType) Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
-                if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
+                // (a library member's, as its nullability says: [MaybeNullWhen(b)] not null where it returns !b)
+                if (m.DeclaringSyntaxReferences.Length == 0 && IsNullable(x.Type))
+                {
+                    if (MethodVerifier.IsNonNullable(x)) Line($"  free ensures {Local(x)} != null;");
+                    else if (MethodVerifier.NotNullWhen(x) is bool when && m.ReturnType.SpecialType == SpecialType.System_Boolean)
+                        Line($"  free ensures {(when ? "result" : "!result")} ==> {Local(x)} != null;");
+                }
+                else if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
             }
             // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
             foreach (var r in p.Requires) Line($"  {(p.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.FreeRequires ? null : r.Check);
@@ -939,7 +956,10 @@ namespace CsVerify.Verifier.Boogie
             foreach (var b in p.Blocks)
             {
                 Line($"  {b.Label}:");
-                foreach (var s in b.Stmts) Statement(s, cx);
+                // (a block's leading assertions and assumptions are a loop's invariants where it is a head: kept whole there)
+                int lead = b.Stmts.TakeWhile(x => x is KAssert || x is KAssume || x is KLoopFrame || x is KAtomicSteps || x is KConfinedFrame).Count();
+                for (int k = 0; k < b.Stmts.Count; k++) { _leading = k < lead; Statement(b.Stmts[k], cx); }
+                _leading = false;
                 switch (b.Jump)
                 {
                     case KGoto g: Line($"    goto {string.Join(", ", g.Targets)};"); break;
@@ -1037,7 +1057,21 @@ namespace CsVerify.Verifier.Boogie
             {
                 case KAssign a: Line($"    {a.Var} := {E(a.Value, cx)};"); return;
                 case KMapUpdate u: Line($"    {u.Map}[{E(u.Ref, cx)}]{(u.Index == null ? "" : $"[{E(u.Index, cx)}]")} := {E(u.Value, cx)};"); return;
-                case KAssert a: Line($"    assert {(a.NotAssumedAfter ? "{:subsumption 0} " : "")}{E(a.Cond, cx)};", a.Check); return;
+                // (a check not assumed after: on a branch of its own that ends, so that, reported, it isn't assumed where
+                // Boogie looks for the next failure either, which would hide those after it on the same path)
+                case KAssert a when a.NotAssumedAfter && _leading: Line($"    assert {{:subsumption 0}} {E(a.Cond, cx)};", a.Check); return;
+                case KAssert a when a.NotAssumedAfter:
+                {
+                    var side = $"nc${_sides++}";
+                    Line($"    goto {side}, {side}$go;");
+                    Line($"  {side}:");
+                    Line($"    assert {E(a.Cond, cx)};", a.Check);
+                    Line("    assume false;");
+                    Line("    return;");
+                    Line($"  {side}$go:");
+                    return;
+                }
+                case KAssert a: Line($"    assert {E(a.Cond, cx)};", a.Check); return;
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
                 case KRaw raw: Line("    " + raw.Text); return;
@@ -1104,6 +1138,17 @@ namespace CsVerify.Verifier.Boogie
                     var readsS = $"$readsS.{lam.Key}({lam.Var}, {State}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
                     if (lam.PreS != null) Line($"    assume {All(new string[0], preS, $"{preS} == ({E(lam.PreS, cx)})")};");
                     if (lam.Reads != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{readsS}[o$]", $"{readsS}[o$] ==> ({E(lam.Reads, cx)})[o$]")};");
+                    // (in any state: what it accepts and what it gives are of that state's memory, which its frame says it reads)
+                    var atS = new Context { MapAt = map => $"$st.{map}(s$)" };
+                    string InS(string f) => f.Replace($"{lam.Var}, {State}", $"{lam.Var}, s$");
+                    if (lam.PreS != null)
+                        Line($"    assume (forall s$: St{string.Concat(lam.Params.Select(x => $", {x.name}: {x.type}"))} :: {{ {InS(preS)} }} {InS(preS)} == ({E(lam.PreS, atS)}));");
+                    if (lam.PostsS.Count > 0)
+                    {
+                        var postS = $"$postS.{lam.Key}({lam.Var}, s${string.Concat(lam.Params.Select(x => ", " + x.name))}{(lam.ResultType == null ? "" : ", q$r")})";
+                        foreach (var fact in lam.PostsS)
+                            Line($"    assume (forall s$: St{string.Concat(lam.Params.Select(x => $", {x.name}: {x.type}"))}{(lam.ResultType == null ? "" : $", q$r: {lam.ResultType}")} :: {{ {postS} }} {postS} && {InS(preS)} ==> ({E(fact, atS)}));");
+                    }
                     var frame = $"$frame.{lam.Key}({lam.Var}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
                     if (lam.Changes != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{frame}[o$]", $"{frame}[o$] ==> ({E(lam.Changes, cx)})[o$]")};");
                     return;
@@ -1182,6 +1227,14 @@ namespace CsVerify.Verifier.Boogie
                 case KSnapshot snap:
                     if (snap.Frame.Maps.Count == 0) return;
                     foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps)) Line($"    s${snap.Frame.Head}{map} := {map};");
+                    return;
+                case KConfinedSnapshot cs:
+                    foreach (var (name, _) in _stateMaps) Line($"    c${cs.Head}{name} := {name};");
+                    return;
+                case KConfinedFrame cf:
+                    foreach (var (local, written) in cf.Locals.OrderBy(x => x.Key, System.StringComparer.Ordinal))
+                        foreach (var (name, _) in _stateMaps.Where(m => !written.Contains(m.name) && !(written.Contains("$M.") && m.name.StartsWith("$F.$M."))))
+                            Line($"    assume {local} != null ==> {name}[{local}] == c${cf.Head}{name}[{local}];");
                     return;
                 case KLoopFrame frame:
                     // (an assume at the head: what Boogie keeps across the loop's havoc, as an invariant)

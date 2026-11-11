@@ -236,6 +236,20 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The id of a check whose failure is a warning (CSV1900, not an error), never assumed after.</summary>
         public const string Warning = "WARN";
 
+        /// <summary>What goes on running after this method (a thread never joined): a warning of what it writes, as CsVerify's engine gives it.</summary>
+        private void Detached(SyntaxNode at, Effects effects)
+        {
+            if (at == null) return;
+            string message = null;
+            var locks = KernelTypes.Locks;
+            if (effects == null) message = "this runs a delegate that can't be told, and keeps running after this method: what it does to state no lock guards isn't looked at";
+            else if (effects.Writes.Select(x => x.field).FirstOrDefault(x => locks?.GuardOf(x) == null && !Atomics.IsAtomic(x) && !(locks?.IsFlag(x) ?? false)) is ISymbol unguarded)
+                message = $"this keeps running after this method, and writes '{unguarded.Name}', which no lock guards: it could race with whatever uses it, and every method is proved as if nothing did";
+            else if (effects.WrittenArrays.Count > 0 && !effects.Covered)
+                message = "this keeps running after this method, and writes arrays: it could race with whatever uses them, and every method is proved as if nothing did";
+            if (message != null) _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, message, at.GetLocation().GetLineSpan()));
+        }
+
         /// <summary>What a task or thread started here may race on: against those started before and not yet awaited, and against this method alongside it.</summary>
         private void RacesAtStart(SyntaxNode at, Effects effects, string task, SyntaxNode except, bool alongside)
         {

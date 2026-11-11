@@ -160,6 +160,28 @@ namespace CsVerify.Verifier.Boogie
                         case KNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
                     }
                 var entry = p.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
+                // (a loop that awaits or calls what may change anything: the confined objects it doesn't reassign still
+                // hold what they held, but what it writes through them)
+                var confined = p.Confined.Where(c => !assigned.Contains(c)).ToList();
+                if (entry != null && confined.Count > 0)
+                {
+                    var cf = new KConfinedFrame { Head = head };
+                    foreach (var c in confined) cf.Locals[c] = new HashSet<string>();
+                    foreach (var st in body.SelectMany(b => b.Stmts))
+                        switch (st)
+                        {
+                            case KStore ks when ks.Array is KVar kv && cf.Locals.ContainsKey(kv.Name): cf.Locals[kv.Name].Add(Elements(ks.ArrayType)); break;
+                            case KFieldStore kf when kf.Instance is KVar fv && cf.Locals.ContainsKey(fv.Name): cf.Locals[fv.Name].Add(FieldMap(kf.Field)); break;
+                            case KCall kc when kc.Receiver is KVar rv && cf.Locals.ContainsKey(rv.Name): cf.Locals[rv.Name].Add("$M."); break;
+                            case KCall kc2: foreach (var a in kc2.Args.OfType<KVar>().Where(a => cf.Locals.ContainsKey(a.Name))) cf.Locals.Remove(a.Name); break;
+                        }
+                    if (cf.Locals.Count > 0)
+                    {
+                        entry.Stmts.Insert(0, cf);
+                        foreach (var b in p.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")))
+                            b.Stmts.Add(new KConfinedSnapshot { Head = head });
+                    }
+                }
                 // (the atomic fields at the loop's head: steps since the loop was entered, of a snapshot taken on the way in)
                 if (entry?.Stmts.OfType<KAtomicSteps>().FirstOrDefault() is KAtomicSteps steps && steps.Head < 0)
                 {

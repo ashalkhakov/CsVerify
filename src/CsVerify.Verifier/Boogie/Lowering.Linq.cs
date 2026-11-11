@@ -341,6 +341,8 @@ namespace CsVerify.Verifier.Boogie
                 return all;
             }
             if (Scalar(t) || IsClass(t) || IsInterface(t) || t.SpecialType == SpecialType.System_Object) return new KOp("==", a, b);
+            // (strings by their content, as string.Equals has them)
+            if (IsString(t)) return new KOp("streq", a, b);
             throw new NotTranslated("LINQ's equality of " + t);
         }
 

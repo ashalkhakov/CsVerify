@@ -200,13 +200,24 @@ operations, then where it goes. A conditional branch's condition is evaluated on
 blocks of its own (`b`*n*`$then`, `$else`), each assuming it or its negation, so that the blocks the graph has stay plain: a loop's head, which a later block jumps back to,
 starts with its invariants. A throw ends the path (`assume false`): a path that throws need not meet the postcondition.
 
+**Checks not assumed after.** A check CsVerify's engine reports without assuming it after (a race, an order of locks,
+a task not awaited, what isn't modeled) is an `assert` on a branch of its own that ends (`goto nc$k, nc$k$go`): Boogie,
+once it has reported a failure, assumes it where it looks for the next, which would hide the failures after it on the
+same path (a check that no task is running, assumed, makes the rest unreachable).
+
 **Specifications in bodies.** `Spec.Assert` is an `assert` (CSV1004), `Spec.Assume` an `assume`; an asserted
 conjunction is asserted a conjunct at a time, each known for the next, as Dafny splits them (so that Z3 needn't find
 what the first says while it proves the second). `Debug.Assert(c)` and `Trace.Assert(c)` are asserted too (CSV1004,
 their message evaluated, not used), and the guard clauses (`ArgumentOutOfRangeException.ThrowIfNegative(i)`,
 `ThrowIfGreaterThanOrEqual(i, n)`, ...) may throw and give, when they return, what they checked. A call with a constant
 composite format string that would throw `FormatException` (`string.Format`, `Console.WriteLine`, a `TextWriter`'s,
-`AppendFormat`) is CSV1001, as CsVerify's engine checks it (`MethodVerifier.FormatProblem`, shared). `Spec.Invariant` is an
+`AppendFormat`) is CSV1001, as CsVerify's engine checks it (`MethodVerifier.FormatProblem`, shared). In a `[Pure]`
+member or a lemma, a checked overflow, `MinValue / -1` and `Math.Abs(MinValue)` are CSV1010 (it may not throw).
+`a.GetLength(0)` of a one-dimensional array is its length (another dimension, CSV1003). `IList`'s and `ICollection`'s
+`Contains` and `IndexOf` are of the elements, as LINQ's are read (strings by content). With a check profile
+(`--checks`), the failures of the other kinds are left out, assumed, as CsVerify's engine assumes them. Warnings
+(CSV1900: races, recursion without measures, an enumerator's `Current`) are a procedure's own, reported where Boogie
+verifies it. `Spec.Invariant` is an
 `assert` at the start of its loop's head, which Boogie takes as the loop's invariant: checked on entry (CSV1005) and
 kept by each iteration (CSV1006). The graph lowers `&&`, `||` and `?:` in a specification's argument into blocks and
 captures too, but specification arguments never run: what they lower to is left out, and each of their branches is a
@@ -452,6 +463,12 @@ and permutations are maps havocked where the call is, their definitions assumed,
 time round. Query syntax (`from s in xs let b = ... where ... select b`) is the calls it is. Not yet: `GroupJoin`, and
 the members not named here (they fall back).
 
+**Library nullness.** As CsVerify's engine trusts it: a library member's non-nullable result is not null, an out
+parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
+`[NotNull]` argument is not null after the call, a `[NotNullWhen(b)]` one where it returns `b`, and an argument for a
+parameter that isn't nullable is checked (CSV1014). A null check's message says where the null may come from (a
+parameter declared nullable, a call that may return null, a call between a check of a field and its use).
+
 **Library calls without a stub.** A library member with neither a stub nor sources is CsVerify's engine's library
 call: what it is handed decides what it may change. It may write the arrays it's handed (any of the element maps,
 then) where CsVerify's engine says it may write memory (`MayWriteHeap`), and anything where what it's handed may run
@@ -602,7 +619,16 @@ a new object is none of them.
 **Loops and arrays.** Boogie forgets at a loop head every map the loop modifies. CsVerify's engine forgets only the
 arrays the loop writes through a variable it doesn't change (and all of them where it writes through anything else, or
 calls what writes arrays). So the translation snapshots the maps on the way into the loop (`s$`*h*`$E.T`) and assumes at
-its head that every array allocated then, other than those, is as it was.
+its head that every array allocated then, other than those, is as it was. A confined local's object (one the method
+made and never hands on) that the loop doesn't reassign is as it was on the way in, but for what the loop writes
+through that local, even where the loop awaits or calls what may change anything (`c$`*h* snapshots of every map).
+
+**Loop facts.** A `for`, `while` or `do` loop without invariants gets the facts CsVerify's engine infers for it
+(`MethodVerifier.LoopFacts`): from its condition (`i < n` suggests `i <= n` at the head) and, for each integer in it,
+that it never goes below, or above, its value on entry (taken on each way in). Each is an assertion at the head, an
+invariant to Boogie. One that fails (on entry, or at a back edge) is left out (its line is `assert true;`) and the
+program verified again, until every fact assumed held, as CsVerify's engine reruns without them; that run's failures
+are what's reported. (Houdini's `/contractInfer` does the same, but which failures it reports varied from run to run.)
 
 **Exceptions.** A method is verified for partial correctness on its exceptional paths too: they are checked only
 where something sees them, a `catch` or a `Spec.EnsuresOnThrow`. Exceptions are references, of a type given by
@@ -705,6 +731,11 @@ arguments), named for the collection's type: `Count`, the indexers (CSV1001 out 
 `TryGetValue`, `Remove`, `Push`, … modify only their own collection's models (their `Spec.Modifies`), and a
 constructor returns a new collection. `Spec.Old` of a list's element is well-defined where it was in the old state.
 
+**Delegates, with frames.** A lambda with `Spec.Reads` has its precondition, and, where it changes nothing and reads
+only its frame, its postconditions and the value it returns (an expression, or specifications and a return), as
+functions of any state (`$preS`, `$postS` over `$st.M(s)`), so a call after a write outside its frame still knows them.
+A lambda that reads nothing gives its value too where its body is specifications and a return.
+
 **Delegates.** A `Func` or an `Action` of the subset's values is a reference; what it accepts, gives and changes are
 functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, int>`), as Dafny's `f.requires` and
 `f.ensures` of its `->` arrows, the same in every state:
@@ -801,6 +832,14 @@ confined objects as they were (no code can reach them).
   change and that no lock guards, or an array's cell, is used only on an object a confined local has, or the one its
   constructor is building.
 
+**Tasks started here.** A task of an async method, of `Task.Run`'s code, or a thread runs alongside the method from
+its start to its await or join. Until then the method's uses of fields and arrays must be held (CSV1027, as for code
+that runs concurrently: a confined local's object, a new object's initializer, a lock), the locals its code writes are
+unknown at each statement, and what the two may race on is a warning (see the race warnings). Every task (a
+`Task.Run`'s too, but not a thread) is awaited on every path, through a `finally` too (CSV1026); one started in a loop
+is awaited before the next round starts another (checked at each way back to the head). A `Task.Run` of code that
+returns a non-nullable type, or a delegate's task, gives a value that isn't null.
+
 **Locks.** `lock (_lock) { ... }` of a lock object (a readonly `object` field of this object, or a static one) is its
 `Monitor.Enter` and its `finally`'s `Monitor.Exit`. Entering forgets what the lock guards (`[GuardedBy]`, at this
 object: others have had it) and gives its `[LockInvariant]`s; leaving proves them (CSV1024), on every way out,
@@ -858,7 +897,10 @@ what it guards is forgotten and its invariants hold, as a lock's on entering; `V
 `Interlocked.Exchange(ref f, 0)`) gives it back, proving them (CSV1024). Taken again by the thread that holds it, it
 isn't free. Whether it's taken and given back in that form (CSV1023) is the static checks'.
 
-**Tasks with permissions.** A task or thread of a callee whose contract names permissions (`Spec.Acc`) runs in two
+**Tasks with permissions.** A started task's postcondition may read only what never changes and what it gives back,
+to its left (CSV1016 at the start, as CsVerify's engine checks it: by the await, others may have changed the rest); a
+task can't be given views or its `[Owned]` receiver (CSV1901). Code that runs alongside other code reads only cells
+it holds (CSV1016). A task or thread of a callee whose contract names permissions (`Spec.Acc`) runs in two
 phases, as a fork and a join: its start (`Task.Run(() => F(...))`, `new Thread(...).Start()`, a call `Task.WhenAll`
 awaits, `var t = F(...)`) checks its preconditions there and gives it the permissions they ask for, and nothing
 returns; its join (`await t`, `Task.WhenAll`, `Join()`) calls its twin `F$started`, whose preconditions are free (they
@@ -1013,7 +1055,13 @@ methods that fall back for it):
     deconstruction, string concatenation in loops (`arithmetic on string`), `int?`, `IDisposable.Dispose`'s inherited
     contract, library objects (`SemaphoreSlim`, `Channel`, `TextWriter`, `Random`, `Console`, `Thread.Sleep`,
     `TryGetValue`, `Array.Fill`), static constructors, locks of array elements, `ValueTask`, async enumerables;
-14. the Boogie engine the default (CsVerify's engine a fallback for a release);
+14. the Boogie engine the default (CsVerify's engine a fallback for a release). Not yet: `CSVERIFY_ENGINE=boogie` (which
+    sets the default now; it used to label methods only, so the first sweep's "the tests' own programs all translate"
+    was CsVerify's engine) still fails about 80 tests, where Boogie reports what CsVerify's engine doesn't or misses
+    what it does: started tasks' postconditions read only what they give back (CSV1016), concurrent collections,
+    loops' inferred facts (counting loops), confined objects across awaits in loops, library nullness, sets read in
+    some order, coverage profiles, and the samples (491 methods of the suite fall back, mostly for constructs listed
+    in step 13);
 15. CsVerify's engine's symbolic execution removed, its static checks a module of their own, the differential
     tests expected diagnostics;
 16. the rest of the documentation revised to describe the one engine there is.

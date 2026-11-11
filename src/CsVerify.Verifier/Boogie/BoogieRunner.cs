@@ -20,7 +20,18 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static List<(MethodResult method, VerificationDiagnostic diagnostic)> Verify(BoogieTranslator program, string z3Path, int timeoutMs)
         {
-            var (failures, undecided) = Run(program, z3Path, timeoutMs, null);
+            // (loops' inferred facts, as CsVerify's engine has them: one that doesn't hold on entry or at a back edge is left
+            // out, and the program verified again, until those assumed all held; what that run says is what's reported)
+            List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
+            List<string> undecided;
+            for (int round = 0; ; round++)
+            {
+                (failures, undecided) = Run(program, z3Path, timeoutMs, null);
+                var facts = failures.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => int.Parse(f.diagnostic.Message)).ToList();
+                if (facts.Count == 0) break;
+                if (round >= 5) { foreach (var (line, c) in program.Lines) if (c.Id == Checks.Candidate) program.Disabled.Add(line); }
+                else foreach (var line in facts) program.Disabled.Add(line);
+            }
             if (undecided.Count == 0) return failures;
             var (again, _) = Run(program, z3Path, timeoutMs, undecided);
             var redone = new HashSet<MethodResult>(failures.Where(f => f.diagnostic.Id == "CSV1900").Select(f => f.method));
@@ -41,6 +52,7 @@ namespace CsVerify.Verifier.Boogie
             // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
             var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
             var only = split == null ? new string[0] : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
+
             options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000) }.Concat(only).Concat(extra).ToArray());
             using var engine = ExecutionEngine.CreateWithoutSharedCache(options);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
@@ -72,6 +84,8 @@ namespace CsVerify.Verifier.Boogie
             var about = info.Aux.Select(a => program.Lines.TryGetValue(a.Tok.line, out var c) ? c : null).FirstOrDefault(c => c != null && c.Id == BoogieTranslator.Aux);
             string kind = info.Kind.ToString();
             if (at == null) return (null, null);
+            // (a loop's inferred fact that doesn't hold: its line, for the next run to leave it out)
+            if (at.Id == Checks.Candidate) return (at.Method, new VerificationDiagnostic(Checks.Candidate, false, info.Tok.line.ToString(), at.Span));
             // (a timeout, or running out of memory or resources: nothing was decided, which isn't verified)
             if (at.Id == BoogieTranslator.Undecided) return (at.Method, new VerificationDiagnostic("CSV1900", false, info.Msg, at.Span));
             var (id, message) = kind switch

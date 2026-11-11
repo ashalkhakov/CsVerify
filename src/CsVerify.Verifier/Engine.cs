@@ -959,6 +959,10 @@ namespace CsVerify.Verifier
                 x.result.Engine = "boogie";
                 // (a failed check of a warning's: the warning, CSV1900, not an error)
                 mine = mine.Select(d => d.Id == Boogie.Lowering.Warning ? new VerificationDiagnostic("CSV1900", false, d.Message.Replace(" (boogie)", ""), d.Span) : d).ToList();
+                // (outside the check profile: assumed, not proved; Boogie assumes what it asserts, so it is as CsVerify's engine has it)
+                if (engine.Options.CheckKinds != null)
+                    x.result.AssumedObligations += translator.Lines.Values.Distinct().Count(c => c.Method == x.result && Checks.KindOf(c.Id) != null && !engine.Options.Checked(c.Id));
+                mine = mine.Where(d => !d.IsError || engine.Options.Checked(d.Id)).ToList();
                 x.result.Diagnostics.AddRange(mine);
                 // (what's checked from the syntax and the declarations, as for any method: locking, concurrency marks, ...)
                 if (x.result.Name != null)
