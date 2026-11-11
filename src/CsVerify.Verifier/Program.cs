@@ -21,8 +21,10 @@ options:
   --timeout <ms>      per-query Z3 timeout (default 10000)
   --method-budget <ms> the most one method may take (all rounds); past it, the rest is not verified (default: none)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
-  --engine boogie     verify the methods Boogie's translation covers with Boogie (docs/boogie.md)
-  --boogie-out <file> with --engine boogie: write the Boogie program it verifies
+  --engine <name>     csverify (the default; CSVERIFY_ENGINE sets it): CsVerify's own engine;
+                      boogie: each method with Boogie (docs/boogie.md), CsVerify's own engine where it
+                      isn't translated or can't be decided; boogie-only: Boogie alone
+  --boogie-out <file> write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
   --smt-log <file>    write the SMT-LIB2 conversation with Z3

@@ -349,6 +349,8 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Map;
         public KExpr Ref, Value;
+        /// <summary>Where the program writes the row (checked against Spec.Modifies, CSV1017); null for the kernel's own.</summary>
+        public SyntaxNode At;
     }
 
     /// <summary>Memory cells [Lo, Hi) of Map's row at null set to Value (AllocArray's fill).</summary>
@@ -468,7 +470,12 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>At a loop's head: every atomic field went by steps from where it was on entry (each change of it is one).</summary>
-    internal sealed class KAtomicSteps : KStmt { }
+    internal sealed class KAtomicSteps : KStmt
+    {
+        /// <summary>The loop head whose entry took a snapshot of these maps (as{Head}map, as{Head}$Alloc), the steps since then; -1: since the method's entry.</summary>
+        public int Head = -1;
+        public List<string> Maps = new List<string>();
+    }
 
     internal sealed class KAwait : KStmt
     {
@@ -628,6 +635,8 @@ namespace CsVerify.Verifier.Boogie
         public IMethodSymbol Method;
         public Contract Contract;
         public MethodResult Result;
+        /// <summary>Warnings of CsVerify's engine's that the translation gives too (CSV1900, not errors): reported if Boogie verifies the method.</summary>
+        public List<VerificationDiagnostic> Warnings = new List<VerificationDiagnostic>();
         public string Name;
         public bool Ghost;
         public List<IParameterSymbol> Params;

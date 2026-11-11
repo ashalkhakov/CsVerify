@@ -200,7 +200,13 @@ operations, then where it goes. A conditional branch's condition is evaluated on
 blocks of its own (`b`*n*`$then`, `$else`), each assuming it or its negation, so that the blocks the graph has stay plain: a loop's head, which a later block jumps back to,
 starts with its invariants. A throw ends the path (`assume false`): a path that throws need not meet the postcondition.
 
-**Specifications in bodies.** `Spec.Assert` is an `assert` (CSV1004), `Spec.Assume` an `assume`. `Spec.Invariant` is an
+**Specifications in bodies.** `Spec.Assert` is an `assert` (CSV1004), `Spec.Assume` an `assume`; an asserted
+conjunction is asserted a conjunct at a time, each known for the next, as Dafny splits them (so that Z3 needn't find
+what the first says while it proves the second). `Debug.Assert(c)` and `Trace.Assert(c)` are asserted too (CSV1004,
+their message evaluated, not used), and the guard clauses (`ArgumentOutOfRangeException.ThrowIfNegative(i)`,
+`ThrowIfGreaterThanOrEqual(i, n)`, ...) may throw and give, when they return, what they checked. A call with a constant
+composite format string that would throw `FormatException` (`string.Format`, `Console.WriteLine`, a `TextWriter`'s,
+`AppendFormat`) is CSV1001, as CsVerify's engine checks it (`MethodVerifier.FormatProblem`, shared). `Spec.Invariant` is an
 `assert` at the start of its loop's head, which Boogie takes as the loop's invariant: checked on entry (CSV1005) and
 kept by each iteration (CSV1006). The graph lowers `&&`, `||` and `?:` in a specification's argument into blocks and
 captures too, but specification arguments never run: what they lower to is left out, and each of their branches is a
@@ -418,6 +424,13 @@ not IEEE's remainder) isn't translated. Fields, records and arrays of floats hol
 makes one (a literal at the type it's converted to too), `t.k` reads one, `var (a, b) = t` and `(a, b) = (b, a)` read
 every element before assigning any. Two tuples compared with `==` aren't translated.
 
+**Nullable values.** An `int?` (a `Nullable<T>` of an integer type or `bool`) is a reference: `null` where it has no
+value, `$nmk.Int32(v)` where it has `v`, one reference per value (`$nmk` and `$nv`, its value, are each other's
+inverse, `$nv` in the type's range), so the lifted `==` is the references'. Conversions wrap (`null` and `default` are
+`null`), `(int)x` and `x.Value` unwrap (CSV1013 where it may be null), `HasValue` is `!= null`, `GetValueOrDefault` an
+`if`, the lifted comparisons false where either is null, and patterns (`x is int k`, `x is null`, `x is > 0`) test the
+value where there is one, as CsVerify's engine has them. Lifted arithmetic isn't translated.
+
 **Strings, as values.** `a + b` of strings is as long as both and has their characters, as CsVerify's engine has it
 (one too long throws OutOfMemoryException, a path not followed); `==` of strings in a specification gets the fact a
 comparison in code does (of one length and different, they differ somewhere).
@@ -444,8 +457,10 @@ call: what it is handed decides what it may change. It may write the arrays it's
 then) where CsVerify's engine says it may write memory (`MayWriteHeap`), and anything where what it's handed may run
 the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. Its `ref` and `out` arguments and its
 result are values not known, not null where they're declared so; its receiver mustn't be null (CSV1013). A library
-object (`Random`, a `TextWriter`) is a reference, its `new` a new one. Not yet where it's handed a delegate, where
-exceptions are seen (a `try` with catches around it), or where cells are held.
+object (`Random`) is a reference, its `new` a new one; an argument boxed to `object` for it is evaluated as what it is.
+Where exceptions are seen it may throw, once it has done what it does (a fork to the handlers). A collection's element
+written with a value that branches (`d[k] = c ? a : b`) is its setter's call, of its receiver and index as they are
+then. Not yet where it's handed a delegate, or where cells are held.
 
 **Manual memory.** ATS's views of `Mem`'s cells, on CsVerify's engine's model: the cells are the element maps' rows at
 `null` (`$E.Int32[null][a]`), and a view holds permissions to its cells as `Spec.Acc` holds an array's (array mode).
@@ -578,7 +593,11 @@ what the callee modifies is unknown, as CsVerify's engine forgets the arrays and
 only grows: `free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r])`. A field written only at objects allocated
 since the call began (a constructor's own object, or a new one's defaults) is unchanged at every other:
 `free ensures (forall o: Ref :: old($Alloc[o]) ==> $F.C.f[o] == old($F.C.f[o]))`, as CsVerify's engine doesn't count
-a constructor's writes to its own object as the caller's.
+a constructor's writes to its own object as the caller's. A method without `Spec.Modifies` that writes only arrays it
+makes, as CsVerify's engine infers it (`MayWriteHeap`), leaves every array allocated before as it was (a free
+postcondition), and so may be called under a caller's `Spec.Modifies`. Dafny's good heap: a reference in a field of an
+allocated object is to an allocated object (`free requires`, and `free ensures` of the fields a procedure modifies), so
+a new object is none of them.
 
 **Loops and arrays.** Boogie forgets at a loop head every map the loop modifies. CsVerify's engine forgets only the
 arrays the loop writes through a variable it doesn't change (and all of them where it writes through anything else, or
@@ -645,7 +664,10 @@ per kind of value `$F.$M.Items.`*T*`: [Ref][int]`*T* (a list's, stack's or queue
 type's values in its range, so frames, modifies clauses and delegates' states take them in as they do fields. In
 specifications the models read them, `Count` is `Size`, `l[i]` is `Items[l][i]` (well-defined where `0 <= i < Size`,
 CSV1012), `d[k]` is `Entries[d][k]` (where `Domain[d][k]`), `d.ContainsKey(k)` is `Domain[d][k]`, and `s.Contains(x)`
-is `Members[s][x]`. A `Map<K, V>` is a Boogie map (`m[k]`, `Update`, `Map.Const`, `==`), and a `Ghost<T>`'s `Value`
+is `Members[s][x]`. A `StringBuilder` is a collection of one model, its length (`Size`), and a `TextWriter` one of
+none: their members are their stubs', as a list's are, and a stub without `Spec.Modifies` changes nothing (unless it
+may run the program's code, as CsVerify's engine has it). `Array.Fill(a, v)` is its stub: `a`'s row a map that is `v`
+everywhere, the rest as it was. A list stub's `T[]` (`ToArray`'s) is an array of the list's element type. A `Map<K, V>` is a Boogie map (`m[k]`, `Update`, `Map.Const`, `==`), and a `Ghost<T>`'s `Value`
 the value.
 
 A dictionary's string keys (a set's string members) index the models by reference, as every string is: a string is
@@ -782,12 +804,23 @@ confined objects as they were (no code can reach them).
 **Locks.** `lock (_lock) { ... }` of a lock object (a readonly `object` field of this object, or a static one) is its
 `Monitor.Enter` and its `finally`'s `Monitor.Exit`. Entering forgets what the lock guards (`[GuardedBy]`, at this
 object: others have had it) and gives its `[LockInvariant]`s; leaving proves them (CSV1024), on every way out,
-exceptions included; a constructor's end proves its object's (CSV1024). Whether each use of guarded state is under its
+exceptions included; a constructor's end proves its object's, and a static constructor's its type's static ones
+(CSV1024). A lock of anything else (`lock (_forks[i])`, a `new object()` being a new reference) guards nothing the
+kernel knows of and changes no state; it mustn't be null (CSV1013), and two nested locks of one array's elements are
+taken in increasing order of index (CSV1025, as CsVerify's engine checks it: the outer index must not change under the
+lock). Whether each use of guarded state is under its
 lock (CSV1023), and the other checks made from the syntax (lock levels, concurrency marks, flags, atomics, a data
 type's invariant's dependence), are CsVerify's engine's static checks, which run for every method Boogie verifies too.
 A `SemaphoreSlim` of count 1 that guards state is a lock that can be held across awaits: `await g.WaitAsync()` (or
 `g.Wait()`) takes it as entering a lock does, an await inside its `try` keeps what it guards (nobody else can have it),
-and `g.Release()` proves its invariants (CSV1024). Taking it while it's held is reported by the static checks (CSV1025).
+and `g.Release()` proves its invariants (CSV1024); a static gate's state is kept as an instance's, and a
+`[GuardedBy(nameof(g))]` method's awaits keep it too (its caller holds the gate all along). Starting such a method's
+task without awaiting it there is CSV1023: it would run alongside its caller. A semaphore that guards nothing (of any
+count) changes nothing the kernel knows of. Taking it while it's held is reported by the static checks (CSV1025).
+A lock statement inside one of the same lock, on the same object, changes nothing (a monitor is reentrant); a call
+under a lock of what may enter it again (code of the program's not `[GuardedBy]` that lock, or a library member that
+may run the program's code) needs its invariants at the call (CSV1024), as does a call of such code from a
+`[GuardedBy]` method.
 
 **Lock levels.** Locks may be taken one inside another, and code may be called under them: in which order levels
 are taken, what a call may take (through every call, override and callback), delegates, waits under a lock, and
@@ -816,14 +849,14 @@ proved a step from what it overwrites, which the others may have moved too (CSV1
 `Add` (wrapping, as at run time) are each one step after the others'. A plain read or write of one that isn't
 `volatile` is CSV1030. Wherever the field is forgotten (a call, an await, `$havoc`, a delegate's call) it went by
 steps (free postconditions, at every object allocated before and at the statics'), and at every loop head it went
-by steps since the method's entry: each change of it is a step, and steps are transitive (proved by the static checks,
+by steps since the loop was entered (a snapshot of its maps taken on the way in): each change of it is a step, and steps are transitive (proved by the static checks,
 CSV1030). An atomic field needs no lock in concurrent code.
 
 **Try-locks.** An `int` or `bool` flag that guards state is a lock taken by `Interlocked.Exchange(ref f, 1)` (or
 `CompareExchange(ref f, 1, 0)`), which gives back what it was (unknown): on the edge of the `if` where it was free,
 what it guards is forgotten and its invariants hold, as a lock's on entering; `Volatile.Write(ref f, 0)` (or
-`Interlocked.Exchange(ref f, 0)`) gives it back, proving them (CSV1024). Whether it's taken and given back in that form
-(CSV1023) is the static checks'.
+`Interlocked.Exchange(ref f, 0)`) gives it back, proving them (CSV1024). Taken again by the thread that holds it, it
+isn't free. Whether it's taken and given back in that form (CSV1023) is the static checks'.
 
 **Tasks with permissions.** A task or thread of a callee whose contract names permissions (`Spec.Acc`) runs in two
 phases, as a fork and a join: its start (`Task.Run(() => F(...))`, `new Thread(...).Start()`, a call `Task.WhenAll`

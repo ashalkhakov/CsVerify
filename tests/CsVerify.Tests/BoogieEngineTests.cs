@@ -782,7 +782,7 @@ public static class Pw
 
         private static (VerificationResult csverify, VerificationResult boogie) Both(System.Func<VerifierOptions, VerificationResult> run)
         {
-            var c = run(new VerifierOptions());
+            var c = run(new VerifierOptions { Engine = "csverify" });
             var b = run(new VerifierOptions { Engine = "boogie" });
             return (c, b);
         }
@@ -825,7 +825,7 @@ public static class Pw
             var root = Harness.RepoRoot();
             var files = new[] { Path.Combine(root, "samples", "Good", "Exceptions.cs"), Path.Combine(root, "samples", "Buggy", "ExceptionBugs.cs") };
             var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
-            var only = new VerifierOptions();
+            var only = new VerifierOptions { Engine = "csverify" };
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
             Assert.Equal(11, Agree(c, b));
@@ -842,7 +842,7 @@ public static class Pw
             var root = Harness.RepoRoot();
             var files = new[] { Path.Combine(root, "samples", "Good", "DataTypes.cs"), Path.Combine(root, "samples", "Buggy", "DataBugs.cs") };
             var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
-            var only = new VerifierOptions();
+            var only = new VerifierOptions { Engine = "csverify" };
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
             Assert.True(Agree(c, b) >= 28, "agreeing: " + Agree(c, b));
@@ -861,7 +861,7 @@ public static class Pw
             var files = new[] { "Good/LockLevels.cs", "Buggy/LockLevelBugs.cs", "Good/AtomicFields.cs", "Buggy/AtomicBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
             var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
-            var only = new VerifierOptions();
+            var only = new VerifierOptions { Engine = "csverify" };
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
             Assert.True(Agree(c, b) >= 30, "agreeing: " + Agree(c, b));
@@ -879,7 +879,7 @@ public static class Pw
             var files = new[] { "Good/OwnedList.cs", "Good/AtsViewtypes.cs", "Buggy/TreeOwnershipBugs.cs", "Buggy/ViewtypeBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
             var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
-            var only = new VerifierOptions();
+            var only = new VerifierOptions { Engine = "csverify" };
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
             Assert.True(Agree(c, b) >= 35, "agreeing: " + Agree(c, b));
@@ -897,7 +897,7 @@ public static class Pw
             var files = new[] { "Good/Shares.cs", "Buggy/ShareBugs.cs", "Good/Packages.cs", "Buggy/PackageBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
             var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
-            var only = new VerifierOptions();
+            var only = new VerifierOptions { Engine = "csverify" };
             only.Only.AddRange(b.Methods.Select(m => m.Name));
             var c = Engine.VerifyFiles(files, only);
             Assert.True(Agree(c, b) >= 30, "agreeing: " + Agree(c, b));
@@ -1400,6 +1400,118 @@ public static class Tu
                 Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
         }
 
+        private const string ElementLocks = @"
+public sealed class Fk
+{
+    private readonly object[] _forks;
+    private int _unused;
+    public Fk() { Spec.Ensures(_forks.Length == 3); _forks = new object[3]; _forks[0] = new object(); }
+    public void Wrong(int a, int b)
+    {
+        Spec.Requires(0 <= a && a < _forks.Length && 0 <= b && b < _forks.Length && Spec.Forall(0, _forks.Length, k => _forks[k] != null));
+        lock (_forks[a]) { lock (_forks[b]) { } }
+    }
+    public void Moves(int a)
+    {
+        Spec.Requires(0 <= a && a < _forks.Length - 1 && Spec.Forall(0, _forks.Length, k => _forks[k] != null));
+        lock (_forks[a]) { a = a; lock (_forks[a + 1]) { } }
+    }
+    public void MaybeNull(int a)
+    {
+        Spec.Requires(0 <= a && a < _forks.Length);
+        lock (_forks[a]) { }
+    }
+    public void Right(int a)
+    {
+        Spec.Requires(0 <= a && a < _forks.Length - 1 && Spec.Forall(0, _forks.Length, k => _forks[k] != null));
+        lock (_forks[a]) { lock (_forks[a + 1]) { } }
+    }
+}
+";
+
+        [Fact]
+        public void ElementLocks_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + ElementLocks) }, o));
+            Assert.True(Agree(c, b) >= 5);
+            foreach (var bug in new[] { "Fk.Wrong", "Fk.Moves", "Fk.MaybeNull" }) Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Fk..ctor", "Fk.Right" }) Assert.True(b[good].Verified && b[good].Engine == "boogie", good);
+        }
+
+        private const string Nullables = @"
+public static class Nu
+{
+    public static int? Find(int[] a, int x)
+    {
+        Spec.Requires(a != null);
+        Spec.Ensures<int?>(r => r == null || 0 <= r.Value && r.Value < a.Length && a[r.Value] == x);
+        for (int i = 0; i < a.Length; i++)
+        {
+            Spec.Invariant(0 <= i && i <= a.Length);
+            if (a[i] == x) return i;
+        }
+        return null;
+    }
+    public static int Use(int? n)
+    {
+        Spec.Ensures<int>(r => r >= 0 || n.HasValue);
+        if (n is int k) return k;
+        return n.GetValueOrDefault(7);
+    }
+    public static int Bad(int? n) { return n.Value; }
+    public static int Bad2(int? n) { return (int)n; }
+    public static bool Cmp(int? a, int? b)
+    {
+        Spec.Ensures<bool>(r => r == (a != null && b != null && a.Value < b.Value));
+        return a < b;
+    }
+    public static bool Eq(int? a)
+    {
+        Spec.Ensures<bool>(r => r == (a.HasValue && a.Value == 3));
+        return a == 3;
+    }
+    public static int Wrong(int? a)
+    {
+        Spec.Ensures<int>(r => r == 0);
+        return a ?? 1;
+    }
+}
+";
+
+        [Fact]
+        public void Nullables_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Nullables) }, o));
+            Assert.True(Agree(c, b) >= 7);
+            foreach (var bug in new[] { "Nu.Bad", "Nu.Bad2", "Nu.Wrong" }) Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Nu.Find", "Nu.Use", "Nu.Cmp", "Nu.Eq" }) Assert.True(b[good].Verified && b[good].Engine == "boogie", good);
+        }
+
+        private const string Fills = @"
+public static class Fi {
+    public static int[] Zeroes(int[] keep)
+    {
+        Spec.Requires(keep.Length > 0 && keep[0] == 1);
+        Spec.Ensures<int[]>(r => r.Length == 3 && r[0] == 0 && keep[0] == 1);
+        var zeroes = new int[3];
+        System.Array.Fill(zeroes, 0);
+        return zeroes;
+    }
+    public static void Bad(int[] a) { Spec.Requires(a.Length > 1); System.Array.Fill(a, 2); Spec.Assert(a[1] == 3); }
+    public static void Good(bool[] a) { Spec.Requires(a.Length > 1); System.Array.Fill(a, true); Spec.Assert(a[1]); }
+    public static void Nul(int[]? a) { System.Array.Fill(a!, 2); }
+}
+";
+
+        [Fact]
+        public void ArrayFill_BothEnginesReportTheSame()
+        {
+            var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Fills) }, o));
+            Assert.Equal(4, Agree(c, b));
+            foreach (var bug in new[] { "Fi.Bad", "Fi.Nul" }) Assert.False(b[bug].Verified, bug);
+            foreach (var good in new[] { "Fi.Zeroes", "Fi.Good" }) Assert.True(b[good].Verified, good);
+        }
+
         [Fact]
         public void WhatIsntTranslated_IsVerifiedAsAlways()
         {
@@ -1418,7 +1530,7 @@ public static class Tu
                 // (Boogie's time limit long enough for a loaded machine, where Z3 giving up reads as a failure: this compares
                 // what the engines say, not how fast; CsVerify's engine retries a query that runs out of time)
                 var b = Engine.VerifyFiles(files, new VerifierOptions { Engine = "boogie-only", TimeoutMs = 120000 });
-                var only = new VerifierOptions();
+                var only = new VerifierOptions { Engine = "csverify" };
                 only.Only.AddRange(b.Methods.Select(m => m.Name));
                 var c = Engine.VerifyFiles(files, only);
                 Assert.True(Agree(c, b) > 0, dir + ": no method went to Boogie: " + b.BoogieFailure);

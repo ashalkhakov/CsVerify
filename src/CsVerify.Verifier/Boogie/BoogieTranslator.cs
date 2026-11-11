@@ -42,6 +42,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>How many obligations each procedure has.</summary>
         public readonly Dictionary<MethodResult, int> Obligations = new Dictionary<MethodResult, int>();
 
+        /// <summary>The warnings of a method's procedure (none if it isn't one).</summary>
+        public IEnumerable<VerificationDiagnostic> Warnings(MethodResult r) => _pending.Where(p => p.Result == r).SelectMany(p => p.Warnings);
+
         /// <summary>A line that says what a failure is about (a requires, an ensures, a return), not a check of its own.</summary>
         internal const string Aux = "aux";
 
@@ -63,7 +66,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c) => EmptyDataConstructor(m) ||
             (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
-             m.IsStatic ? m.MethodKind == MethodKind.Ordinary
+             m.IsStatic ? m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
                            IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
@@ -96,7 +99,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) && !EmptyDataConstructor(m) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
-            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) ? m.MethodKind.ToString() :
+            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) && m.MethodKind != MethodKind.StaticConstructor ? m.MethodKind.ToString() :
             !(Returns(m) == null || InSubset(Returns(m))) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In && !HoldsShare(p) && !IsMemView(p.Type) || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type) || IsShare(p.Type) && !HoldsShare(p)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
@@ -391,6 +394,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 var cw = writes.TryGetValue(a.UnlessWritesArrays, out var w) || writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out w) ? w : new HashSet<string>();
                 bool arrays = cw.Any(x => x.StartsWith("$E.")), writesFields = cw.Any(x => x.StartsWith("$F.") && !_printer.OwnedMaps.Contains(x));
+                // (a callee of the program's that writes only arrays it makes, as CsVerify's engine infers it: none of ours)
+                var uw = a.UnlessWritesArrays;
+                if (arrays && uw.DeclaringSyntaxReferences.Length > 0 && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(uw)) arrays = false;
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
                 if (!stands) a.Cond = new KLit("true");
             }
@@ -578,7 +584,9 @@ namespace CsVerify.Verifier.Boogie
                     else sets[p.Method].UnionWith(_allMaps);
                 // (as CsVerify's engine says: a call that may run an override changes what the member's Spec.Modifies
                 // allows, and without one, anything)
-                if (Engine.IsOverridable(p.Method) && p.Frame == null) sets[p.Method].UnionWith(_allMaps);
+                // (a library member's stub: what it says, unless it may run the program's code, as CsVerify's engine has it)
+                bool library = p.Method.DeclaringSyntaxReferences.Length == 0 && ContractOf(p.Method) is Contract pc && pc.IsStub;
+                if (Engine.IsOverridable(p.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Method))) sets[p.Method].UnionWith(_allMaps);
             }
             // (a delegate's call runs whichever body it was made of: anything)
             foreach (var p in _pending.Where(p => p.Method.MethodKind == MethodKind.DelegateInvoke)) sets[p.Method].UnionWith(_allMaps);

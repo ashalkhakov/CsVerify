@@ -40,9 +40,11 @@ namespace CsVerify.Verifier
         public string Z3Path;
         /// <summary>
         /// "boogie": the methods in the subset BoogieTranslator covers are translated to Boogie and verified by it
-        /// (docs/boogie.md); the rest as always.
+        /// (docs/boogie.md), the rest, and those Boogie can't decide, by CsVerify's engine; "boogie-only"; or "csverify",
+        /// CsVerify's engine alone (the default, until Boogie reports what it does everywhere: docs/boogie.md, step 14).
+        /// CSVERIFY_ENGINE sets the default.
         /// </summary>
-        public string Engine;
+        public string Engine = Environment.GetEnvironmentVariable("CSVERIFY_ENGINE") ?? "csverify";
         internal bool Boogie => string.Equals(Engine, "boogie", StringComparison.OrdinalIgnoreCase) || BoogieOnly;
         /// <summary>"boogie-only": the methods Boogie verifies, and nothing else (to compare the engines on them).</summary>
         /// <summary>Where to write the Boogie program the engine verifies (to read the translation), if anywhere.</summary>
@@ -102,8 +104,7 @@ namespace CsVerify.Verifier
         public int Unmodeled;
         public bool Verified => Diagnostics.All(d => !d.IsError);
         /// <summary>The engine that verified it: "csverify", or "boogie".</summary>
-        /// <summary>csverify, boogie (Boogie where it translates, CsVerify's engine elsewhere), boogie-only; CSVERIFY_ENGINE sets the default.</summary>
-        public string Engine = Environment.GetEnvironmentVariable("CSVERIFY_ENGINE") ?? "csverify";
+        public string Engine = "csverify";
 
         /// <summary>Starts the method's results over (for a run again: see Engine.RunMethod).</summary>
         internal void Clear()
@@ -652,6 +653,10 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Levels = engine.Levels;
             Boogie.KernelTypes.MayWriteHeap = engine.MayWriteHeap;
             Boogie.KernelTypes.WritesFieldsAt = engine.Fields.WritesFieldsAt;
+            Boogie.KernelTypes.RunsUserCode = engine.Fields.RunsUserCode;
+            Boogie.KernelTypes.FieldWrites = m => engine.Fields.WritesOf(m).fields;
+            Boogie.KernelTypes.FieldReads = engine.Fields.ReadsOf;
+            Boogie.KernelTypes.MayTouchArrays = engine.MayTouchArrays;
             Boogie.KernelTypes.Trees = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
                 .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
@@ -952,6 +957,8 @@ namespace CsVerify.Verifier
                 }
                 x.result.Clear();
                 x.result.Engine = "boogie";
+                // (a failed check of a warning's: the warning, CSV1900, not an error)
+                mine = mine.Select(d => d.Id == Boogie.Lowering.Warning ? new VerificationDiagnostic("CSV1900", false, d.Message.Replace(" (boogie)", ""), d.Span) : d).ToList();
                 x.result.Diagnostics.AddRange(mine);
                 // (what's checked from the syntax and the declarations, as for any method: locking, concurrency marks, ...)
                 if (x.result.Name != null)
@@ -962,9 +969,14 @@ namespace CsVerify.Verifier
                     catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan())); }
                     x.result.Diagnostics.AddRange(staticResult.Diagnostics);
                 }
+                x.result.Diagnostics.AddRange(translator.Warnings(x.result));
                 x.result.Obligations = translator.Obligations.TryGetValue(x.result, out var n) ? n : 0;
-                x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count);
+                x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count(d => d.IsError));
                 x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
+                // (past its time budget, as CsVerify's engine has it: not verified, never verified)
+                if (engine.Options.MethodBudgetMs > 0 && x.result.Milliseconds > engine.Options.MethodBudgetMs)
+                    x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1901", true,
+                        $"time budget ({engine.Options.MethodBudgetMs} ms) reached; the rest of '{x.result.Name}' is not verified", x.decl.GetLocation().GetLineSpan()));
             }
             return null;
         }

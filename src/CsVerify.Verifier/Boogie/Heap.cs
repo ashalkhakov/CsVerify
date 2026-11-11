@@ -160,6 +160,27 @@ namespace CsVerify.Verifier.Boogie
                         case KNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
                     }
                 var entry = p.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
+                // (the atomic fields at the loop's head: steps since the loop was entered, of a snapshot taken on the way in)
+                if (entry?.Stmts.OfType<KAtomicSteps>().FirstOrDefault() is KAtomicSteps steps && steps.Head < 0)
+                {
+                    var atomic = p.Fields.Where(f => Atomics.IsAtomic(f) && Atomics.StepOf(f) != null && IsField(f)).Select(f => (map: FieldMap(f), type: TypeOf(FieldType(f)))).Distinct().ToList();
+                    var into = p.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")).ToList();
+                    if (atomic.Count > 0 && into.Count > 0)
+                    {
+                        steps.Head = head;
+                        p.Locals.Add(new KLocal { Name = $"as{head}$Alloc", Raw = "[Ref]bool" });
+                        foreach (var (map, type) in atomic)
+                        {
+                            steps.Maps.Add(map);
+                            p.Locals.Add(new KLocal { Name = $"as{head}{map}", Raw = "[Ref]" + type });
+                        }
+                        foreach (var b in into)
+                        {
+                            b.Stmts.Add(new KAssign { Var = $"as{head}$Alloc", Value = new KVar("$Alloc") });
+                            foreach (var (map, _) in atomic) b.Stmts.Add(new KAssign { Var = $"as{head}{map}", Value = new KVar(map) });
+                        }
+                    }
+                }
                 if (!keeps || entry == null) continue;
                 entry.Stmts.Insert(0, frame);
                 foreach (var b in p.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")))

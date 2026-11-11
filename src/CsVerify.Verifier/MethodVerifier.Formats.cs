@@ -15,11 +15,17 @@ namespace CsVerify.Verifier
     {
         private void CheckFormatArguments(IInvocationOperation inv)
         {
+            if (FormatProblem(inv) is var (at, message)) Require(T.False, "CSV1001", at, message);
+        }
+
+        /// <summary>Where and why a call with a constant composite format would throw FormatException (CSV1001); null if it wouldn't, or can't be told.</summary>
+        internal static (SyntaxNode at, string message)? FormatProblem(IInvocationOperation inv)
+        {
             var m = inv.TargetMethod;
-            if (!IsFormatMethod(m)) return;
+            if (!IsFormatMethod(m)) return null;
             var format = inv.Arguments.FirstOrDefault(a => a.Parameter?.Name == "format");
             if (format == null || format.Parameter.Type.SpecialType != SpecialType.System_String ||
-                !(format.Value.ConstantValue is { HasValue: true, Value: string text })) return;
+                !(format.Value.ConstantValue is { HasValue: true, Value: string text })) return null;
             int given = 0;
             foreach (var a in inv.Arguments.Where(a => a.Parameter != null && a.Parameter.Ordinal > format.Parameter.Ordinal))
             {
@@ -29,19 +35,19 @@ namespace CsVerify.Verifier
                     {
                         case IArrayCreationOperation ac when ac.Initializer != null: given += ac.Initializer.ElementValues.Length; break;
                         case ICollectionExpressionOperation ce: given += ce.Elements.Length; break;
-                        default: return; // (an array or span of arguments: how many is not counted)
+                        default: return null; // (an array or span of arguments: how many is not counted)
                     }
                 }
-                else if (a.Parameter.IsParams) return; // (an array passed as the params array)
+                else if (a.Parameter.IsParams) return null; // (an array passed as the params array)
                 else given++;
             }
             int needed = FormatStrings.Arity(text);
             var call = $"{m.ContainingType.Name}.{m.Name}";
             if (needed < 0)
-                Require(T.False, "CSV1001", format.Value.Syntax, $"'{format.Value.Syntax}' is not a well-formed format string: {call} would throw FormatException");
-            else if (needed > given)
-                Require(T.False, "CSV1001", inv.Syntax,
-                    $"the format string names {needed} argument(s), and {given} {(given == 1 ? "is" : "are")} given: {call} would throw FormatException");
+                return (format.Value.Syntax, $"'{format.Value.Syntax}' is not a well-formed format string: {call} would throw FormatException");
+            if (needed > given)
+                return (inv.Syntax, $"the format string names {needed} argument(s), and {given} {(given == 1 ? "is" : "are")} given: {call} would throw FormatException");
+            return null;
         }
 
         private static bool IsFormatMethod(IMethodSymbol m)

@@ -80,13 +80,25 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool Scalar(ITypeSymbol t) => IsIntegral(t) || t?.SpecialType == SpecialType.System_Boolean;
 
+        /// <summary>
+        /// A nullable value of a scalar (int?, bool?): a reference, null where it has no value, $nmk.U(v) where it has v,
+        /// one reference per value (so == is the lifted operator's); $nv.U reads the value.
+        /// </summary>
+        public static bool IsNullableValue(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n && Scalar(n.TypeArguments[0]);
+
+        public static ITypeSymbol Underlying(ITypeSymbol nullable) => ((INamedTypeSymbol)nullable).TypeArguments[0];
+
+        public static KExpr NullableValue(KExpr v, ITypeSymbol nullable) => new KOp("$nv." + Underlying(nullable).SpecialType.ToString().Substring("System_".Length), v);
+
+        public static KExpr NullableOf(KExpr v, ITypeSymbol nullable) => new KOp("$nmk." + Underlying(nullable).SpecialType.ToString().Substring("System_".Length), v);
+
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && IsElement(a.ElementType);
 
         /// <summary>An array of references (Shape[], string?[]): its elements in $E.Object, null where it's made.</summary>
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType) && !IsFloating(((IArrayTypeSymbol)t).ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t);
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -112,7 +124,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A task one is given (Task, Task&lt;T&gt; of the subset's values): a reference to work running elsewhere.</summary>
         public static bool IsGivenTask(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks" && n.Name == "Task" &&
-            (n.Arity == 0 || n.Arity == 1 && (Scalar(n.TypeArguments[0]) || IsRef(n.TypeArguments[0]) || IsString(n.TypeArguments[0])));
+            (n.Arity == 0 || n.Arity == 1 && (Scalar(n.TypeArguments[0]) || IsRef(n.TypeArguments[0]) || IsString(n.TypeArguments[0]) || IsGenericParameter(n.TypeArguments[0])));
 
         /// <summary>
         /// ATS's manual memory: a pointer (Ptr&lt;T&gt;), a view (PointsTo, ArrayView, ArrayHole) or a token (FreeGc) of
@@ -242,7 +254,7 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.ContainingNamespace?.ToDisplayString() == "System" && d.Name is "Func" or "Action" &&
             d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && FuncValue(p.Type)) && (inv.ReturnsVoid || FuncValue(inv.ReturnType));
 
-        private static bool FuncValue(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsString(t);
+        private static bool FuncValue(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsString(t) || IsToken(t) || IsGivenTask(t);
 
         /// <summary>A Func's or an Action's signature, as Boogie's types: its parameters', then its result's (or void).</summary>
         public static string FuncKey(ITypeSymbol t)
@@ -270,7 +282,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeConst(ITypeSymbol t) => "T#" + Ident(t.OriginalDefinition.ToDisplayString());
 
         /// <summary>What may be null: a reference or a string.</summary>
-        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t);
+        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t) || IsNullableValue(t);
 
         /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
         public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
@@ -328,6 +340,11 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>CsVerify's engine's judgments of a library call without a stub: may it write arrays (MayWriteHeap), fields (WritesFieldsAt)?</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayWriteHeap;
         [System.ThreadStatic] public static System.Func<Microsoft.CodeAnalysis.Operations.IInvocationOperation, bool> WritesFieldsAt;
+        /// <summary>May a library member run the program's code (what it is handed, its receiver)? A stub's call changes what it says, and, where it may, anything.</summary>
+        [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> RunsUserCode;
+        /// <summary>CsVerify's engine's effects of a library member with a stub: the fields it writes, reads, and whether it may use arrays.</summary>
+        [System.ThreadStatic] public static System.Func<IMethodSymbol, IEnumerable<ISymbol>> FieldWrites, FieldReads;
+        [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayTouchArrays;
 
         /// <summary>An object of a library class the program has no model of (Random, TextWriter): a reference, whose members are library calls.</summary>
         public static bool IsLibraryObject(ITypeSymbol t) =>
@@ -394,14 +411,18 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>The collection's kind: List, Dictionary, HashSet, Stack, Queue (null: not one).</summary>
         public static string CollectionKind(ITypeSymbol t) =>
-            t is INamedTypeSymbol n && n.IsGenericType && Collections.Contains(n.OriginalDefinition.ToDisplayString()) ? n.Name : null;
+            t is INamedTypeSymbol n && n.IsGenericType && Collections.Contains(n.OriginalDefinition.ToDisplayString()) ? n.Name :
+            // (a builder, its length its model; a writer, of no model: their members' stubs as a list's are)
+            t is INamedTypeSymbol { IsGenericType: false } b && b.ToDisplayString() is "System.Text.StringBuilder" or "System.IO.TextWriter" ? b.Name : null;
 
         /// <summary>
         /// A collection of the subset's values: an object, its contents its models. The keys of a dictionary and the
         /// members of a set are compared as the verifier compares them: as values, by reference, strings by content.
         /// </summary>
         public static bool IsCollection(ITypeSymbol t) =>
-            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.All(FuncValue);
+            CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) ||
+                // (a dictionary's values may be data, which it never compares)
+                kind == "Dictionary" && i == 1 && IsData(a)).All(x => x);
 
         /// <summary>A collection's key (a dictionary's key, a set's member) as its models index it: a string marked as a key ($keyed), so that two of one content are one.</summary>
         public static KExpr Keyed(KExpr k, ITypeSymbol t) => IsString(t) ? new KOp("$keyed", k) : k;
@@ -449,6 +470,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 "Dictionary" => new[] { "Size", "Version", "Domain", "Entries" },
                 "HashSet" => new[] { "Size", "Version", "Members" },
+                "StringBuilder" => new[] { "Size" },
+                "TextWriter" => new string[0],
                 _ => new[] { "Size", "Version", "Items" },
             }).Select(x => ModelOf(x, collection));
 
@@ -538,7 +561,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" : IsFloating(t) ? FloatType(t) : IsLinqGroup(t) ? "int" :
             IsSeqValue(t) ? "[int]" + (((INamedTypeSymbol)t).TypeArguments[0].SpecialType == SpecialType.System_Boolean ? "bool" : "int") :
-            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsNullableValue(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 

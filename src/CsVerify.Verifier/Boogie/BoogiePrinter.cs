@@ -45,6 +45,8 @@ namespace CsVerify.Verifier.Boogie
         private readonly HashSet<string> _tuples = new HashSet<string>();
 
         private readonly HashSet<string> _tupleMakers = new HashSet<string>();
+        /// <summary>The scalars of the nullable values it names (int?: Int32).</summary>
+        private readonly HashSet<string> _nullables = new HashSet<string>();
 
         public void Tuples()
         {
@@ -60,6 +62,18 @@ namespace CsVerify.Verifier.Boogie
                     _tuples.Add(item);
                     Line($"axiom (forall {ps} :: {{ {app} }} {item}({app}) == x{i});");
                 }
+            }
+            // (a nullable value: null, or the one reference of its value)
+            foreach (var u in _nullables.OrderBy(x => x, System.StringComparer.Ordinal))
+            {
+                var st = System.Enum.Parse<SpecialType>("System_" + u);
+                var ty = st == SpecialType.System_Boolean ? "bool" : "int";
+                var range = st == SpecialType.System_Boolean ? "true" : $"{Range(st).lo} <= v && v <= {Range(st).hi}";
+                Line($"function $nv.{u}(x: Ref): {ty};");
+                Line($"function $nmk.{u}(v: {ty}): Ref;");
+                Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {range} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
+                Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} x != null ==> $nmk.{u}($nv.{u}(x)) == x);");
+                if (st != SpecialType.System_Boolean) Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {Range(st).lo} <= $nv.{u}(x) && $nv.{u}(x) <= {Range(st).hi});");
             }
             foreach (var f in _tuples.OrderBy(x => x, System.StringComparer.Ordinal))
             {
@@ -306,6 +320,7 @@ namespace CsVerify.Verifier.Boogie
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
                         case var f when f.StartsWith("$tup."): _tuples.Add(f); return $"{f}({string.Join(", ", a)})";
                         case var f when f.StartsWith("$tupmk."): _tupleMakers.Add(f); return $"{f}({string.Join(", ", a)})";
+                        case var f when f.StartsWith("$nv.") || f.StartsWith("$nmk."): _nullables.Add(f.Substring(f.IndexOf('.') + 1)); return $"{f}({string.Join(", ", a)})";
                         case var f when f.StartsWith("$") || f.StartsWith("mk."): return $"{f}({string.Join(", ", a)})";
                         default:
                             if (a.Length != 2) throw new NotTranslated("the kernel's operator " + op.Op);
@@ -833,6 +848,11 @@ namespace CsVerify.Verifier.Boogie
             if (modifies.Count > 0)
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+            foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f)))) Line($"  free ensures {GoodField(f)};");
+            // (a method that writes only arrays it makes, as CsVerify's engine infers it (MayWriteHeap): every other array as it was)
+            if (!p.Abstract && p.Frame == null && KernelTypes.MayWriteHeap != null && p.Method.DeclaringSyntaxReferences.Length > 0 && !KernelTypes.MayWriteHeap(p.Method))
+                foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
+                    Line($"  free ensures (forall o: Ref :: old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
             // (a field written only at this object, in its constructor, or at objects allocated since: the same at every other)
             foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !anyWrites.Contains(x) && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
                 Line($"  free ensures (forall o: Ref :: {(p.IsCtor ? "o != this && " : "")}old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
@@ -975,12 +995,22 @@ namespace CsVerify.Verifier.Boogie
             return $"{name} != null && {isCase}{string.Concat(fields)}";
         }
 
+        /// <summary>The reference-valued fields a procedure reads or writes, in order.</summary>
+        private static IEnumerable<ISymbol> RefFieldsOf(KProcedure p) =>
+            p.Fields.Where(f => IsField(f) && IsRef(FieldType(f)) && !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal);
+
+        private static string GoodField(ISymbol f) => f.IsStatic
+            ? $"({FieldMap(f)}[null] == null || $Alloc[{FieldMap(f)}[null]])"
+            : $"(forall o: Ref :: {{ {FieldMap(f)}[o] }} $Alloc[o] && {FieldMap(f)}[o] != null ==> $Alloc[{FieldMap(f)}[o]])";
+
         private void Given(KProcedure p, Context cx)
         {
             var m = p.Method;
             Line($"  free requires {InRangeOfMemory};");
             if (p.HasThis && p.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
             if (p.HasThis) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
+            // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap, as CsVerify's engine assumes where it reads one)
+            foreach (var f in RefFieldsOf(p)) Line($"  free requires {GoodField(f)};");
             // (a new object's fields are their defaults: its caller made them so)
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal))
@@ -1022,6 +1052,15 @@ namespace CsVerify.Verifier.Boogie
                     Line($"    $root := (lambda y: Ref :: (if y == {x} then {x} else (if $root[y] == $root[{c}] && y != {c}{string.Concat(roots.Siblings.Select(g => $" && y != {g}[{c}]"))} && split$[y] then {x} else $root[y])));");
                     return;
                 }
+                case KAtomicSteps st when st.Head >= 0:
+                    // (since the loop's entry: of its snapshot)
+                    foreach (var map in st.Maps.Where(AtomicSteps.ContainsKey).OrderBy(x => x, System.StringComparer.Ordinal))
+                    {
+                        string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new KLit($"as{st.Head}{map}[{o}]")), "x$now", new KLit($"{map}[{o}]")), InProcedure);
+                        Line($"    assume (forall o: Ref :: as{st.Head}$Alloc[o] ==> {At("o")});");
+                        Line($"    assume {At("null")};");
+                    }
+                    return;
                 case KAtomicSteps _:
                     foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
                     return;

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
@@ -44,6 +45,8 @@ namespace CsVerify.Verifier.Boogie
                 ListCtor = m.MethodKind == MethodKind.Constructor && IsCollection(m.ContainingType),
                 ThisIsView = !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && (m.MethodKind == MethodKind.Constructor || !contract.IsPure),
             };
+            // (a constructor knows its object's fields are their defaults: their maps are declared)
+            if (_p.IsCtor) foreach (var f in InstanceFields(m.ContainingType)) _p.Fields.Add(f);
             _p.UsesPerm = _p.ThisIsView || m.Parameters.Any(x => IsView(x.Type) || IsShare(x.Type) || IsPackage(x.Type));
         }
 
@@ -67,6 +70,9 @@ namespace CsVerify.Verifier.Boogie
         private static KExpr MinMax(string name, KExpr a, KExpr b) => new KOp("ite", new KOp(name == "Max" ? ">=" : "<=", a, b), a, b);
 
         private readonly Dictionary<IParameterSymbol, string> _assigned = new Dictionary<IParameterSymbol, string>(SymbolEqualityComparer.Default);
+
+        /// <summary>The blocks a loop is entered at other than its head (from before it).</summary>
+        private readonly HashSet<int> _secondEntries = new HashSet<int>();
 
         /// <summary>The by-value parameters the body writes (not views, shares or packages, nor one a lambda captures).</summary>
         private List<IParameterSymbol> AssignedParameters(ControlFlowGraph cfg)
@@ -337,6 +343,11 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var h in heads)
                 _p.LoopBodies[h] = cfg.Blocks.Where(x => new[] { x.FallThroughSuccessor, x.ConditionalSuccessor }.Any(s => s?.Destination?.Ordinal == h) && x.Ordinal >= h).Max(x => x.Ordinal);
+            // (a cycle with no single entry, a goto into a loop: not supported, as CsVerify's engine says, CSV1901)
+            foreach (var (h, last) in _p.LoopBodies)
+                foreach (var x in cfg.Blocks.Where(x => x.Ordinal < h))
+                    foreach (var d in new[] { x.FallThroughSuccessor, x.ConditionalSuccessor }.Select(s => s?.Destination).Where(d => d != null && d.Ordinal > h && d.Ordinal <= last))
+                        _secondEntries.Add(d.Ordinal);
             // (a parameter the body assigns is a local of it, which starts as the parameter: Boogie's parameters are
             // constants; the contract was read of the parameter already, and a postcondition is checked of the local)
             foreach (var ap in AssignedParameters(cfg)) _p.AssignedParams[Local(ap)] = Declare(_assigned[ap] = Local(ap) + "$v", ap.Type);
@@ -375,6 +386,13 @@ namespace CsVerify.Verifier.Boogie
                 if (b.EnclosingRegion.Kind == ControlFlowRegionKind.Finally && _erased.Contains(b.EnclosingRegion.EnclosingRegion)) { _block.Jump = new KStop(); continue; }
                 // (at a loop's head, every atomic field went by steps since entry)
                 if (heads.Contains(b.Ordinal) && _p.Fields.Any(Atomics.IsAtomic)) Emit(new KAtomicSteps());
+                // (a proof's loop must be shown to end: CSV1011 without Spec.Decreases, as CsVerify's engine has it)
+                if (heads.Contains(b.Ordinal) && (_p.Ghost || _contract.IsPure || _contract.IsLemma) && !_p.Measures.ContainsKey(b.Ordinal) && !_forEachAt.ContainsKey(b.Ordinal))
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1011", At = _p.LoopSyntax.TryGetValue(b.Ordinal, out var ls0) ? ls0 : b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
+                                      NotAssumedAfter = true, Message = "a loop in a lemma or [Pure] function needs Spec.Decreases" });
+                if (_secondEntries.Contains(b.Ordinal))
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1901", At = b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
+                                      Message = "a cycle with no single entry (a goto into a loop) is not supported" });
                 foreach (var op in b.Operations)
                 {
                     Statement(op);
@@ -382,6 +400,19 @@ namespace CsVerify.Verifier.Boogie
                     if (_tasks.Count + _startedCaptures.Count > 0 && !InSpec(op.Syntax)) Alongside();
                 }
                 Branch(b);
+            }
+            // (no task started in a loop is running at the method's entry)
+            // (each loop it's started in: the one of the last round was awaited on every way back, so at the head none is running)
+            foreach (var (aw, block, awAt, awName) in _awaitedAtEntry)
+            {
+                _p.Blocks[0].Stmts.Insert(0, new KAssign { Var = aw, Value = new KLit("true") });
+                foreach (var (h, last) in _p.LoopBodies.Where(lb => lb.Key <= block && block <= lb.Value))
+                {
+                    _p.Blocks.FirstOrDefault(x => x.Label == $"b{h}")?.Stmts.Insert(0, new KAssume { Cond = new KVar(aw) });
+                    foreach (var back in _p.Blocks.Where(x => x.Ordinal >= h && x.Ordinal <= last && x.Jump is KGoto g && g.Targets.Contains($"b{h}")))
+                        back.Stmts.Add(new KCheck { Cond = new KVar(aw), Id = "CSV1026", At = awAt, NotAssumedAfter = true,
+                                                    Message = $"the task of '{awName}' might not be awaited on every path: a failure in it would be lost" });
+                }
             }
             if (_exitUsed) _p.Blocks.Add(new KBlock { Label = "x$exit", Ordinal = cfg.Blocks.Length, Stmts = { new KThrowExit() }, Jump = new KStop() });
             FinallyEnds();
@@ -847,7 +878,7 @@ namespace CsVerify.Verifier.Boogie
                         default: throw new NotTranslated("Spec." + inv.TargetMethod.Name);
                     }
                 case IInvocationOperation { TargetMethod.Name: "Start", Instance: ILocalReferenceOperation sl, Arguments.Length: 0 } when _threads.TryGetValue(sl.Local, out var startedLambda):
-                    Start(sl.Local, StartedCall(startedLambda), thread: true);
+                    Start(sl.Local, StartedCall(startedLambda), thread: true, at: op.Syntax, lambda: startedLambda);
                     return;
                 case IInvocationOperation { TargetMethod.Name: "Join", Instance: ILocalReferenceOperation jl, Arguments.Length: 0 } when _tasks.TryGetValue(jl.Local, out var joined):
                     JoinOf(joined);
@@ -872,13 +903,18 @@ namespace CsVerify.Verifier.Boogie
                 case ISimpleAssignmentOperation run when run.Target is ILocalReferenceOperation { Local: var rl } && IsTaskLike(rl.Type) &&
                                                          Unconverted(run.Value) is IInvocationOperation tr && tr.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" &&
                                                          tr.TargetMethod.Name == "Run" && tr.Arguments.Length == 1 && LambdaSyntax(tr.Arguments[0]) is AnonymousFunctionExpressionSyntax runLambda:
-                    Start(rl, StartedCall(runLambda));
+                    Start(rl, StartedCall(runLambda), at: tr.Syntax, lambda: runLambda);
                     return;
                 // (new Thread(() => F(...)): started by Start, finished by Join)
                 case ISimpleAssignmentOperation th when th.Target is ILocalReferenceOperation { Local: var thl } && thl.Type.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Threading.Thread" &&
                                                         Unconverted(th.Value) is IObjectCreationOperation tc && tc.Arguments.Length == 1 && LambdaSyntax(tc.Arguments[0]) is AnonymousFunctionExpressionSyntax thLambda:
                     if (_threads.ContainsKey(thl)) throw new NotTranslated("a thread local assigned again");
                     _threads[thl] = thLambda;
+                    return;
+                // (a lock's object made in a constructor, new object() or a library semaphore: no state of the kernel's; its arguments read)
+                case ISimpleAssignmentOperation lk when lk.Target is IFieldReferenceOperation { Field: var lkf, Instance: IInstanceReferenceOperation } && IsLockObject(lkf) && _p.IsCtor &&
+                                                        Unconverted(lk.Value) is IObjectCreationOperation { Initializer: null } lc && lc.Arguments.All(x => Scalar(x.Value.Type) && x.Parameter.RefKind == RefKind.None):
+                    foreach (var x in lc.Arguments.OrderBy(x => x.Parameter.Ordinal)) Expr(x.Value);
                     return;
                 case ISimpleAssignmentOperation a:
                     Assign(a.Target, Expr(a.Value));
@@ -924,6 +960,14 @@ namespace CsVerify.Verifier.Boogie
                 // (this, captured as the receiver of a this(...) or base(...) whose arguments branch: nothing to evaluate)
                 case IFlowCaptureOperation ft when ft.Value is IInstanceReferenceOperation && _p.IsCtor:
                     _captured[ft.Id] = ft.Value;
+                    return;
+                // (a collection's element captured as what an assignment writes, d[k] = c ? a : b: written by its setter
+                // there, of its receiver and index as they are then, which the value doesn't change)
+                case IFlowCaptureOperation fx when fx.Value is IPropertyReferenceOperation { Property.IsIndexer: true } ix && IsCollection(ix.Instance?.Type) &&
+                                                   ix.Syntax.Parent is AssignmentExpressionSyntax { RawKind: (int)SyntaxKind.SimpleAssignmentExpression } xa && xa.Left == ix.Syntax &&
+                                                   Steady(ix.Instance, xa.Right) && ix.Arguments.All(a => Steady(a.Value, xa.Right)):
+                    _captured[fx.Id] = fx.Value;
+                    _lvalues[fx.Id] = ix;
                     return;
                 case IFlowCaptureOperation fc:
                     _captured[fc.Id] = fc.Value;
@@ -1057,9 +1101,10 @@ namespace CsVerify.Verifier.Boogie
             // (a return: every task it started was awaited, else a failure in it would be lost)
             if (fall?.Destination?.Kind == BasicBlockKind.Exit) TasksAwaited(_block);
             // (a constructor's end: the invariants of its object's locks hold, before anyone can take them)
-            if (fall?.Destination?.Kind == BasicBlockKind.Exit && _p.IsCtor && KernelTypes.Locks != null)
-                foreach (var (lockField, invariant) in KernelTypes.Locks.InvariantsIn(_m.ContainingType).Where(x => !x.lockField.IsStatic))
-                    Emit(new KCheck { Cond = InvariantCall(invariant, new KVar("this")), Id = "CSV1024", At = _decl,
+            // (a static constructor's: its type's static locks')
+            if (fall?.Destination?.Kind == BasicBlockKind.Exit && (_p.IsCtor || _m.MethodKind == MethodKind.StaticConstructor) && KernelTypes.Locks != null)
+                foreach (var (lockField, invariant) in KernelTypes.Locks.InvariantsIn(_m.ContainingType).Where(x => x.lockField.IsStatic == _m.IsStatic))
+                    Emit(new KCheck { Cond = InvariantCall(invariant, _m.IsStatic ? null : new KVar("this")), Id = "CSV1024", At = _decl,
                                       Message = $"the constructor might not establish the invariant of lock '{lockField.Name}'" });
             // (the end of a finally: on to where whatever ran it was going)
             if (fall?.Semantics == ControlFlowBranchSemantics.StructuredExceptionHandling && FinallyOf(b.EnclosingRegion) is ControlFlowRegion fin)
@@ -1108,7 +1153,24 @@ namespace CsVerify.Verifier.Boogie
                 owner = lf.IsStatic ? null : fr.Instance is IInstanceReferenceOperation ? new KVar("this") : Fixed(fr.Instance) ? Expr(fr.Instance) : throw new NotTranslated("a lock of an object that may change");
             }
             else if (Fixed(lockOp) && LockLevels.LeveledClass(lockOp.Type) != null) owner = Expr(lockOp);
+            else if (stmt is LockStatementSyntax && IsRef(lockOp.Type))
+            {
+                // (a lock of anything else guards nothing the kernel knows of: it changes no state; nested locks of one
+                // array's elements are taken in increasing order of index, CSV1025)
+                if (call.TargetMethod.Name != "Enter") return;
+                var o = Expr(arg);
+                if (!(lockOp is IInstanceReferenceOperation))
+                    Emit(new KCheck { Cond = new KOp("!=", o, new KLit("null")), Id = "CSV1013", At = stmt, Message = $"'{lockOp.Syntax}' might be null in '{stmt}'" });
+                ElementLockOrder((LockStatementSyntax)stmt);
+                return;
+            }
             else throw new NotTranslated("a lock of something other than a lock field or an object with a level");
+            // (taken again where an enclosing lock statement holds it, on the same object: nothing changes hands)
+            if (lockField != null && stmt is LockStatementSyntax ls && HeldAround(ls, lockField))
+            {
+                if (call.TargetMethod.Name == "Enter" && call.Arguments.Length == 2) Emit(new KAssign { Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()), Value = new KLit("true") });
+                return;
+            }
             if (call.TargetMethod.Name == "Enter")
             {
                 if (call.Arguments.Length == 2) Emit(new KAssign { Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()), Value = new KLit("true") });
@@ -1128,6 +1190,66 @@ namespace CsVerify.Verifier.Boogie
             else if (lockField != null)
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
                     Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = stmt, Message = $"the invariant of lock '{lockField.Name}' might not hold when it is released" });
+        }
+
+        /// <summary>
+        /// Is the lock held around this lock statement, on the same object? By an enclosing lock statement (not across a
+        /// lambda or local function), or by the method's own [GuardedBy] for its own object: as CsVerify's engine's Holds.
+        /// </summary>
+        private bool HeldAround(LockStatementSyntax n, IFieldSymbol guard)
+        {
+            string receiver = n.Expression is MemberAccessExpressionSyntax ma ? ma.Expression.ToString() : "this";
+            string wanted = guard.IsStatic ? null : receiver;
+            for (var p = n.Parent; p != null; p = p.Parent)
+            {
+                switch (p)
+                {
+                    case LockStatementSyntax l when l.Statement.Span.Contains(n.Span) && SymbolEqualityComparer.Default.Equals(LockGuards.LockOf(l.Expression, _model), guard):
+                        if (wanted == null) return true;
+                        var lockReceiver = l.Expression is MemberAccessExpressionSyntax lma ? lma.Expression.ToString() : "this";
+                        if (lockReceiver == wanted && (wanted == "this" || StaysTheSame(wanted, l.Statement))) return true;
+                        break;
+                    case AnonymousFunctionExpressionSyntax _:
+                    case LocalFunctionStatementSyntax _:
+                        return false;
+                }
+                if (p == _decl) break;
+            }
+            return (wanted == "this" || wanted == null) && SymbolEqualityComparer.Default.Equals(KernelTypes.Locks.GuardOf(_m), guard) &&
+                   SymbolEqualityComparer.Default.Equals(_m.ContainingType, guard.ContainingType);
+        }
+
+        /// <summary>Nested lock statements on elements of one array: the outer's index below the inner's (CSV1025).</summary>
+        private void ElementLockOrder(LockStatementSyntax inner)
+        {
+            if (!(inner.Expression is ElementAccessExpressionSyntax ia) || ia.ArgumentList.Arguments.Count != 1) return;
+            for (var p = inner.Parent; p != null && p != _decl; p = p.Parent)
+            {
+                if (p is AnonymousFunctionExpressionSyntax || p is LocalFunctionStatementSyntax) return;
+                if (!(p is LockStatementSyntax outer) || !(outer.Expression is ElementAccessExpressionSyntax oa) || oa.ArgumentList.Arguments.Count != 1) continue;
+                if (oa.Expression.ToString() != ia.Expression.ToString()) continue;
+                string index = oa.ArgumentList.Arguments[0].Expression.ToString();
+                var before = _model.GetOperation(oa.ArgumentList.Arguments[0].Expression);
+                var after = _model.GetOperation(ia.ArgumentList.Arguments[0].Expression);
+                if (before == null || after == null || !(before.ConstantValue.HasValue || StaysTheSame(index, outer.Statement)))
+                {
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1025", At = inner, NotAssumedAfter = true,
+                                      Message = $"'{outer.Expression}' and '{inner.Expression}': their order can't be told, since '{index}' may change under the lock" });
+                    continue;
+                }
+                Emit(new KCheck { Cond = new KOp("<", Spec(before, null), Spec(after, null)), Id = "CSV1025", At = inner, NotAssumedAfter = true,
+                                  Message = $"'{inner.Expression}' might not come after '{outer.Expression}': locks of one array taken in different orders can deadlock" });
+            }
+        }
+
+        /// <summary>A name the statement doesn't assign: the same value all through it.</summary>
+        private static bool StaysTheSame(string name, SyntaxNode l)
+        {
+            if (!SyntaxFacts.IsValidIdentifier(name)) return false;
+            bool Named(ExpressionSyntax e) => e.ToString() == name || e is TupleExpressionSyntax t && t.Arguments.Any(x => Named(x.Expression));
+            return !l.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => Named(a.Left)) &&
+                   !l.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => Named(fe.Variable)) &&
+                   !l.DescendantNodes().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && a.Expression.ToString() == name);
         }
 
         /// <summary>Monitor.Wait(o): o's lock given back (its invariants proved, CSV1024, at the call), then taken again.</summary>
@@ -1221,6 +1343,8 @@ namespace CsVerify.Verifier.Boogie
         {
             var now = Declare("t$" + _temps++, FieldType(field));
             Emit(new KHavoc { Var = now });
+            // (others store what may be stored there: not null, where the field is declared so)
+            if (IsNullable(FieldType(field)) && NotNullable(FieldType(field))) Emit(new KAssume { Cond = new KOp("!=", new KVar(now), new KLit("null")) });
             var last = new KField { Field = field, Instance = o, OnThis = onThis, At = at, InstanceAt = at };
             if (Step(field, last, new KVar(now)) is KExpr step) Emit(new KSpecStmt { Spec = step, Assume = true, At = at, ArgumentAt = at });
             Emit(new KFieldStore { Field = field, Instance = o, OnThis = onThis, Value = new KVar(now), At = at, InstanceAt = at });
@@ -1295,9 +1419,25 @@ namespace CsVerify.Verifier.Boogie
 
         // ------------------------------------------------------------------ gates and concurrent code
 
+        /// <summary>A guard clause's relation, after it returns: "0" for those of one value, an operator for those of two; null for others.</summary>
+        private static string GuardRelation(IMethodSymbol m) => m.Name switch
+        {
+            "ThrowIfNegative" or "ThrowIfNegativeOrZero" or "ThrowIfZero" => "0",
+            "ThrowIfGreaterThan" => "<=", "ThrowIfGreaterThanOrEqual" => "<", "ThrowIfLessThan" => ">=", "ThrowIfLessThanOrEqual" => ">",
+            "ThrowIfEqual" => "!=", "ThrowIfNotEqual" => "==",
+            _ => null,
+        };
+
+        /// <summary>A readonly semaphore field, not null where declared so, that no state is guarded by and no invariant is of.</summary>
+        private static bool GuardsNothing(IFieldSymbol f) =>
+            f.IsReadOnly && IsSemaphore(f.Type) && NotNullable(f.Type) && KernelTypes.Locks != null && !KernelTypes.Locks.IsMutexGate(f) &&
+            !KernelTypes.Locks.GuardedBy(f).Any() && KernelTypes.Locks.InvariantsOf(f).Count == 0;
+
         /// <summary>A SemaphoreSlim of count 1 that is this object's field (or a static one) and guards state: a lock that can be held across awaits.</summary>
         private IFieldSymbol GateOf(IInvocationOperation call)
         {
+            // (a semaphore that guards nothing, of any count: waiting on it changes nothing the kernel knows of)
+            if (Unconverted(call.Instance) is IFieldReferenceOperation { Field: IFieldSymbol plain } && GuardsNothing(plain)) return null;
             if (!(Unconverted(call.Instance) is IFieldReferenceOperation { Field: IFieldSymbol gate } fr) || !(gate.IsStatic || fr.Instance is IInstanceReferenceOperation) ||
                 KernelTypes.Locks == null || !KernelTypes.Locks.IsMutexGate(gate))
                 throw new NotTranslated("a semaphore other than this object's gate");
@@ -1355,7 +1495,29 @@ namespace CsVerify.Verifier.Boogie
             if (call.TargetMethod.ReturnsVoid) return null;
             var was = Declare("t$" + _temps++, call.TargetMethod.ReturnType);
             Emit(new KHavoc { Var = was });
+            // (taken again by the thread that has it: it isn't free, as CsVerify's engine has it)
+            if (!givesBack && FlagHeldAt(call.Syntax, flag, ordered[0].Value.Syntax as ExpressionSyntax))
+                Emit(new KAssume { Cond = new KOp("==", new KVar(was), new KLit(call.TargetMethod.ReturnType.SpecialType == SpecialType.System_Boolean ? "true" : "1")) });
             return new KVar(was);
+        }
+
+        /// <summary>Is the try-lock's flag held here, on the same object: in the held part of a try of its form around it.</summary>
+        private bool FlagHeldAt(SyntaxNode at, IFieldSymbol flag, ExpressionSyntax refArg)
+        {
+            var target = refArg is RefExpressionSyntax re ? re.Expression : refArg;
+            string receiver = target is MemberAccessExpressionSyntax ma ? ma.Expression.ToString() : "this";
+            for (var p = at.Parent; p != null && p != _decl; p = p.Parent)
+            {
+                if (p is AnonymousFunctionExpressionSyntax || p is LocalFunctionStatementSyntax) return false;
+                if (p is TryStatementSyntax pt && LockGuards.PrimitiveForm(pt, _model) is { } form && form.kind == "Flag" && form.held.Any(h => h.Span.Contains(at.Span)) &&
+                    SymbolEqualityComparer.Default.Equals(LockGuards.LockOf(form.lockExpr, _model), flag))
+                {
+                    if (flag.IsStatic) return true;
+                    var r = form.lockExpr is MemberAccessExpressionSyntax pma ? pma.Expression.ToString() : "this";
+                    if (r == receiver && (receiver == "this" || StaysTheSame(receiver, pt))) return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>The edge of an if where a try-lock's flag was taken: it's held there, as a lock is once taken.</summary>
@@ -1373,6 +1535,10 @@ namespace CsVerify.Verifier.Boogie
         private IEnumerable<IFieldSymbol> GatesHeld(SyntaxNode at)
         {
             if (KernelTypes.Locks == null) yield break;
+            // (a method its caller holds the gate for: held all along, but across a lambda's or local function's)
+            if (KernelTypes.Locks.GuardOf(_m) is IFieldSymbol own && KernelTypes.Locks.IsMutexGate(own) &&
+                !at.Ancestors().TakeWhile(a => a != _decl).Any(a => a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax))
+                yield return own;
             foreach (var t in at.Ancestors().OfType<TryStatementSyntax>().Where(t => _decl.Span.Contains(t.Span) && t.Block.Span.Contains(at.Span)))
                 if (KernelTypes.Locks.GateOfTry(t, _model) is IFieldSymbol g) yield return g;
         }
@@ -1413,6 +1579,32 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An object only this code has: a confined local's.</summary>
         private KExpr InHand(KExpr o) =>
             Confined().Select(l => (KExpr)new KOp("==", o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(new KLit("false")).Aggregate((a, b) => new KOp("||", a, b));
+
+        /// <summary>
+        /// A call under a lock of what may enter it again, which relies on its invariants: they hold at the call (CSV1024),
+        /// as CsVerify's engine's CallUnderLock has it. A [GuardedBy] callee of that lock is under it all along.
+        /// </summary>
+        private void ReentryUnderLock(IMethodSymbol callee, SyntaxNode at)
+        {
+            if (at == null || KernelTypes.Locks == null || !KernelTypes.Locks.Any || SpecSymbols.IsSpecClass(callee.ContainingType)) return;
+            if (_contractOf?.Invoke(callee) is Contract c && (c.IsPure || c.IsLemma)) return;
+            if (callee.DeclaringSyntaxReferences.Length == 0 && !(KernelTypes.RunsUserCode?.Invoke(callee) ?? false)) return;
+            for (var p = at.Parent; p != null && p != _decl; p = p.Parent)
+            {
+                if (p is AnonymousFunctionExpressionSyntax || p is LocalFunctionStatementSyntax) return;
+                if (!(p is LockStatementSyntax ls) || !(LockGuards.LockOf(ls.Expression, _model) is IFieldSymbol guard)) continue;
+                if (SymbolEqualityComparer.Default.Equals(KernelTypes.Locks.GuardOf(callee), guard)) continue;
+                KExpr owner = guard.IsStatic ? null : _model.GetOperation(ls.Expression) is IFieldReferenceOperation { Instance: { } li } && !(li is IInstanceReferenceOperation)
+                    ? (Fixed(li) ? Spec(li, null) : throw new NotTranslated("a lock's owner that may change, at a call under it")) : new KVar("this");
+                foreach (var inv in KernelTypes.Locks.InvariantsOf(guard))
+                    Emit(new KCheck { Cond = InvariantCall(inv, owner), Id = "CSV1024", At = at,
+                                      Message = $"the invariant of lock '{guard.Name}' might not hold at '{at}', which may enter the lock again" });
+            }
+            if (KernelTypes.Locks.GuardOf(_m) is IFieldSymbol own && !KernelTypes.Locks.IsSemaphore(own) && !SymbolEqualityComparer.Default.Equals(KernelTypes.Locks.GuardOf(callee), own))
+                foreach (var inv in KernelTypes.Locks.InvariantsOf(own))
+                    Emit(new KCheck { Cond = InvariantCall(inv, own.IsStatic ? null : new KVar("this")), Id = "CSV1024", At = at,
+                                      Message = $"the invariant of lock '{own.Name}' might not hold at '{at}', which may enter the lock again" });
+        }
 
         /// <summary>A call while a lock is held, of what may take it again (or other locks, in an order not translated yet): not yet.</summary>
         private void UnderLock(IMethodSymbol callee, SyntaxNode at, IOperation instance, IReadOnlyList<IArgumentOperation> arguments)
@@ -1497,6 +1689,16 @@ namespace CsVerify.Verifier.Boogie
                     break;
                 case IPropertyReferenceOperation { Property.Name: "CompletedTask" } done when done.Property.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task":
                     break;
+                // (a task a delegate gives: its call, then as a task one is given)
+                case IInvocationOperation dt when dt.TargetMethod.MethodKind == MethodKind.DelegateInvoke && IsGivenTask(dt.Type):
+                    Expr(dt);
+                    if (dt.Type is INamedTypeSymbol { Arity: 1 } dtt)
+                    {
+                        var r = Declare("t$" + _temps++, dtt.TypeArguments[0]);
+                        Emit(new KHavoc { Var = r });
+                        value = new KVar(r);
+                    }
+                    break;
                 // (a task one is given: other code runs meanwhile; what it gives isn't known, as in CsVerify's engine)
                 case IParameterReferenceOperation or ILocalReferenceOperation when IsGivenTask(op.Type) && !(op is ILocalReferenceOperation gl && _tasks.ContainsKey(gl.Local)):
                     Expr(op);
@@ -1513,19 +1715,19 @@ namespace CsVerify.Verifier.Boogie
             _p.CallsDelegates = true;
             // (what a gate held here guards stays, as nobody else can have it)
             var kept = new List<(ISymbol field, string var)>();
-            foreach (var g in GatesHeld(aw.Syntax))
-                foreach (var f in KernelTypes.Locks.GuardedBy(g).Where(f => !f.IsStatic && IsField(f)))
+            foreach (var g in GatesHeld(aw.Syntax).Distinct<IFieldSymbol>(SymbolEqualityComparer.Default))
+                foreach (var f in KernelTypes.Locks.GuardedBy(g).Where(f => f.IsStatic == g.IsStatic && IsField(f)))
                 {
                     var t = Declare("t$" + _temps++, FieldType(f));
                     _p.Fields.Add(f.OriginalDefinition);
-                    Emit(new KAssign { Var = t, Value = new KField { Field = f.OriginalDefinition, Instance = new KVar("this"), OnThis = true, At = aw.Syntax, InstanceAt = aw.Syntax } });
+                    Emit(new KAssign { Var = t, Value = new KField { Field = f.OriginalDefinition, Instance = f.IsStatic ? null : new KVar("this"), OnThis = !f.IsStatic, At = aw.Syntax, InstanceAt = aw.Syntax } });
                     kept.Add((f.OriginalDefinition, t));
                 }
             var keep = new KAwait();
             if (!_opaque) foreach (var l in Confined()) keep.Keep.Add(Declare(Local(l), l.Type));
             Emit(keep);
             foreach (var (f, t) in kept)
-                Emit(new KAssume { Cond = new KOp("==", new KField { Field = f, Instance = new KVar("this"), OnThis = true, At = aw.Syntax, InstanceAt = aw.Syntax }, new KVar(t)) });
+                Emit(new KAssume { Cond = new KOp("==", new KField { Field = f, Instance = f.IsStatic ? null : new KVar("this"), OnThis = !f.IsStatic, At = aw.Syntax, InstanceAt = aw.Syntax }, new KVar(t)) });
             ForgetCaptured();
             // (where exceptions are seen: a library's await may throw, a cancellation say)
             if (!(op is IInvocationOperation awaited && IsTaskMethod(awaited.TargetMethod) && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) &&
@@ -1545,6 +1747,13 @@ namespace CsVerify.Verifier.Boogie
             public bool Thread;
             /// <summary>Its call's start, where it's in two phases (a callee of permissions); and whether its join has been.</summary>
             public KCall StartCall;
+            /// <summary>What it may race on, with what runs alongside it (null: not told).</summary>
+            public Effects Effects;
+            /// <summary>A thread's (not a Task.Run's), and where a Task.Run or a thread was started.</summary>
+            public bool RealThread;
+            public SyntaxNode RunAt;
+            /// <summary>The locals of this method its code writes, while it runs.</summary>
+            public HashSet<ILocalSymbol> Shared = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
         }
 
         private readonly Dictionary<ILocalSymbol, Task> _tasks = new Dictionary<ILocalSymbol, Task>(SymbolEqualityComparer.Default);
@@ -1553,9 +1762,31 @@ namespace CsVerify.Verifier.Boogie
         /// var t = F(...): F's precondition is checked here, and what it gives is the task's result, known once it's
         /// awaited; t is used only by await t, Task.WhenAll and t.Result, and never assigned again.
         /// </summary>
-        private void Start(ILocalSymbol local, IInvocationOperation call, bool thread = false)
+        /// <summary>A started method that relies on its caller holding a gate: it would run alongside this code (CSV1023), as CsVerify's engine reports it.</summary>
+        private void StartedUnderGate(IInvocationOperation call)
+        {
+            if (call?.TargetMethod != null && call.TargetMethod.IsAsync && KernelTypes.Locks?.GuardOf(call.TargetMethod) is IFieldSymbol held && KernelTypes.Locks.IsSemaphore(held))
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1023", At = call.Syntax, NotAssumedAfter = true,
+                                  Message = $"'{call.TargetMethod.Name}' relies on holding '{held.Name}', but its task isn't awaited here: it would run alongside this code" });
+        }
+
+        private void Start(ILocalSymbol local, IInvocationOperation call, bool thread = false, SyntaxNode at = null, AnonymousFunctionExpressionSyntax lambda = null)
         {
             if (_tasks.ContainsKey(local)) throw new NotTranslated("a task local assigned again");
+            if (!thread) StartedUnderGate(call);
+            // (what it may race on, as CsVerify's engine warns of it: a Task.Run's or a thread's code, with this method's
+            // alongside; an async method's, with the others')
+            Effects effects = null;
+            if (lambda != null)
+            {
+                effects = call != null ? EffectsOfCall(call, capturing: true) : EffectsOfDelegate(lambda);
+                if (effects != null) RacesAtStart(at, effects, local.Name, call != null ? null : lambda, alongside: true);
+            }
+            else if (call != null && call.TargetMethod.IsAsync && call.TargetMethod.DeclaringSyntaxReferences.Length > 0)
+            {
+                effects = EffectsOfCall(call);
+                RacesAtStart(call.Syntax, effects, local.Name, null, alongside: false);
+            }
             foreach (var id in _decl.DescendantNodes().OfType<IdentifierNameSyntax>().Where(i => i.Identifier.Text == local.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(i).Symbol, local)))
             {
                 SyntaxNode e = id;
@@ -1582,13 +1813,24 @@ namespace CsVerify.Verifier.Boogie
             {
                 var unknown = Declare("t$" + _temps++, tt.TypeArguments[0]);
                 Emit(new KHavoc { Var = unknown });
+                // (not null, where the code it runs doesn't return that, as CsVerify's engine has it)
+                if (IsNullable(tt.TypeArguments[0]) && NotNullable(tt.TypeArguments[0])) Emit(new KAssume { Cond = new KOp("!=", new KVar(unknown), new KLit("null")) });
                 result = new KVar(unknown);
             }
             if (call == null) _opaque = true;
-            var task = new Task { Method = call?.TargetMethod, At = call?.Syntax, Result = (result as KVar)?.Name, Thread = thread || call == null, StartCall = started,
+            var task = new Task { Method = call?.TargetMethod, At = call?.Syntax, Result = (result as KVar)?.Name, Thread = thread || call == null, StartCall = started, Effects = effects, RealThread = thread, RunAt = at,
                                   Awaited = Declare($"aw${_tasks.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)) };
             if (result != null && task.Result == null) { task.Result = Declare("t$" + _temps++, Returns(call.TargetMethod)); Emit(new KAssign { Var = task.Result, Value = result }); }
+            // (started in a loop: the one it started last time round must have been awaited, CSV1026; none was before the first)
+            if (!thread && _cfgBlock != null && _p.LoopBodies.Any(lb => lb.Key <= _cfgBlock.Ordinal && _cfgBlock.Ordinal <= lb.Value))
+                _awaitedAtEntry.Add((task.Awaited, _cfgBlock.Ordinal, at ?? call.Syntax, call?.TargetMethod.Name ?? "Run"));
             Emit(new KAssign { Var = task.Awaited, Value = new KLit("false") });
+            // (the locals its code writes, which it captured: changed by it, whenever, while it runs)
+            if (lambda != null && call == null)
+                foreach (var w in lambda.DescendantNodes().OfType<AssignmentExpressionSyntax>().Select(x => x.Left).Concat(lambda.DescendantNodes().OfType<PostfixUnaryExpressionSyntax>().Select(x => x.Operand))
+                             .Concat(lambda.DescendantNodes().OfType<PrefixUnaryExpressionSyntax>().Select(x => x.Operand)))
+                    if (_model.GetSymbolInfo(w).Symbol is ILocalSymbol cl && !lambda.Span.Contains(cl.DeclaringSyntaxReferences.FirstOrDefault()?.Span ?? default) && InSubset(cl.Type))
+                        task.Shared.Add(cl);
             _tasks[local] = task;
         }
 
@@ -1627,6 +1869,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void StartCaptured(CaptureId id, IInvocationOperation call)
         {
+            StartedUnderGate(call);
             bool twoPhase = Permissions(call.TargetMethod);
             _awaiting = true;
             _phase = twoPhase ? 1 : 0;
@@ -1656,12 +1899,16 @@ namespace CsVerify.Verifier.Boogie
 
         private void TasksAwaited(KBlock at)
         {
-            foreach (var t in _tasks.Values.Concat(_startedCaptures.Values).Where(t => !t.Thread))
-                at.Stmts.Add(new KCheck { Cond = new KVar(t.Awaited), Id = "CSV1026", At = t.At, NotAssumedAfter = true,
-                                          Message = $"the task of '{t.Method.Name}' might not be awaited on every path: a failure in it would be lost" });
+            // (a thread needn't be joined: nothing is lost if it isn't; a task, a Task.Run's too, must be awaited)
+            foreach (var t in _tasks.Values.Concat(_startedCaptures.Values).Where(t => !t.RealThread))
+                at.Stmts.Add(new KCheck { Cond = new KVar(t.Awaited), Id = "CSV1026", At = t.RunAt ?? t.At, NotAssumedAfter = true,
+                                          Message = $"the task of '{t.Method?.Name ?? "Run"}' might not be awaited on every path: a failure in it would be lost" });
         }
 
         private int _keeps;
+
+        /// <summary>The awaited flags of tasks started in loops: true at the method's entry.</summary>
+        private readonly List<(string flag, int block, SyntaxNode at, string name)> _awaitedAtEntry = new List<(string, int, SyntaxNode, string)>();
 
         /// <summary>Between two statements, while a task started here may still be running: other code may change what the method doesn't hold.</summary>
         private void Alongside()
@@ -1672,13 +1919,22 @@ namespace CsVerify.Verifier.Boogie
             var k = new KAwait { When = running };
             if (!_opaque) foreach (var l in Confined()) k.Keep.Add(Declare(Local(l), l.Type));
             Emit(k);
+            // (a local a running task's code writes: what it is now isn't known, unless the task is done)
+            foreach (var t in _tasks.Values.Where(t => t.Shared.Count > 0))
+                foreach (var l in t.Shared)
+                {
+                    var v = Declare(Local(l), l.Type);
+                    var h = Declare("t$" + _temps++, l.Type);
+                    Emit(new KHavoc { Var = h });
+                    Emit(new KAssign { Var = v, Value = new KOp("ite", new KVar(t.Awaited), new KVar(v), new KVar(h)) });
+                }
         }
 
         /// <summary>t.Result: of a task that has finished (else it blocks, CSV1026).</summary>
         private KExpr ResultOf(Task task, SyntaxNode at)
         {
             Emit(new KCheck { Cond = new KVar(task.Awaited), Id = "CSV1026", At = at, NotAssumedAfter = true,
-                              Message = $"the task of '{task.Method.Name}' might not have finished: reading Result blocks until it does, and that can deadlock (await it first)" });
+                              Message = $"the task of '{task.Method?.Name ?? "Run"}' might not have finished: reading Result blocks until it does, and that can deadlock (await it first)" });
             return task.Result == null ? throw new NotTranslated("the Result of a task of nothing") : new KVar(task.Result);
         }
 
@@ -1795,6 +2051,55 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
+                // (a nullable value, int?: null, or the reference of its value)
+                case IConversionOperation nc when IsNullableValue(nc.Type) && !IsNullableValue(nc.Operand.Type) && nc.OperatorMethod == null:
+                {
+                    if (nc.Operand.Type == null || nc.Operand.ConstantValue is { HasValue: true, Value: null } || nc.Operand is IDefaultValueOperation) return new KLit("null");
+                    var u = Underlying(nc.Type);
+                    if (!(SymbolEqualityComparer.Default.Equals(nc.Operand.Type, u) || IsIntegral(u) && IsIntegral(nc.Operand.Type) && nc.Conversion.IsImplicit))
+                        throw new NotTranslated("a conversion of " + nc.Operand.Type + " to " + nc.Type);
+                    return NullableOf(lower(nc.Operand), nc.Type);
+                }
+                case IConversionOperation nu when IsNullableValue(nu.Operand.Type) && !IsNullableValue(nu.Type) && nu.OperatorMethod == null:
+                {
+                    if (!SymbolEqualityComparer.Default.Equals(nu.Type, Underlying(nu.Operand.Type))) throw new NotTranslated("a conversion of " + nu.Operand.Type + " to " + nu.Type);
+                    var v = lower(nu.Operand);
+                    if (!inSpec) Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1013", At = nu.Syntax, Message = $"'{nu.Operand.Syntax}' might be null where '{nu.Syntax}' unwraps it" });
+                    return NullableValue(v, nu.Operand.Type);
+                }
+                case IPropertyReferenceOperation np when np.Instance != null && IsNullableValue(np.Instance.Type) && np.Property.Name is "HasValue" or "Value":
+                {
+                    var v = lower(np.Instance);
+                    if (np.Property.Name == "HasValue") return new KOp("!=", v, new KLit("null"));
+                    if (!inSpec) Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1013", At = np.Syntax, Message = $"'{np.Syntax}' might be read when '{np.Instance.Syntax}' is null" });
+                    return NullableValue(v, np.Instance.Type);
+                }
+                case IInvocationOperation ng when ng.Instance != null && IsNullableValue(ng.Instance.Type) && ng.TargetMethod.Name == "GetValueOrDefault":
+                {
+                    var v = lower(ng.Instance);
+                    var otherwise = ng.Arguments.Length == 1 ? lower(ng.Arguments[0].Value) : Default(Underlying(ng.Instance.Type));
+                    return new KOp("ite", new KOp("!=", v, new KLit("null")), NullableValue(v, ng.Instance.Type), otherwise);
+                }
+                // (lifted: == on the values, or both null; the comparisons false where either is null)
+                case IBinaryOperation nb when nb.OperatorMethod == null && (IsNullableValue(nb.LeftOperand.Type) || nb.LeftOperand.Type == null) && (IsNullableValue(nb.RightOperand.Type) || nb.RightOperand.Type == null) &&
+                                              (IsNullableValue(nb.LeftOperand.Type) || IsNullableValue(nb.RightOperand.Type)):
+                {
+                    KExpr Side(IOperation x) => x.Type == null ? new KLit("null") : lower(x);
+                    var (l, r) = (Side(nb.LeftOperand), Side(nb.RightOperand));
+                    var t = nb.LeftOperand.Type;
+                    KExpr Both(string op) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
+                        ? new KOp("&&", new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null"))), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
+                        : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
+                    return nb.OperatorKind switch
+                    {
+                        BinaryOperatorKind.Equals => new KOp("==", l, r), BinaryOperatorKind.NotEquals => new KOp("!=", l, r),
+                        BinaryOperatorKind.LessThan => Both("<"), BinaryOperatorKind.LessThanOrEqual => Both("<="),
+                        BinaryOperatorKind.GreaterThan => Both(">"), BinaryOperatorKind.GreaterThanOrEqual => Both(">="),
+                        _ => throw new NotTranslated("the lifted operator " + nb.OperatorKind),
+                    };
+                }
+                case IIsPatternOperation nip when IsNullableValue(Unconverted(nip.Value).Type):
+                    return NullablePattern(nip.Pattern, Operand(Unconverted(nip.Value), lower, inSpec), Unconverted(nip.Value).Type, lower, bind);
                 case IObjectCreationOperation oc when IsData(oc.Type) && oc.Initializer == null && oc.Constructor != null:
                 {
                     Data(oc.Type);
@@ -1838,7 +2143,7 @@ namespace CsVerify.Verifier.Boogie
                     var prop = dp.Property.OriginalDefinition;
                     var read = Unbox(new KDataField { Function = FieldFunction(prop), Value = v, At = dp.Syntax, ValueAt = dp.Instance.Syntax, Struct = dp.Instance.Type.IsValueType }, prop.Type, dp.Type);
                     // (a non-nullable field isn't null: each construction checked it)
-                    if (!inSpec && IsRef(dp.Type) && NotNullable(prop.Type))
+                    if (!inSpec && IsNullable(dp.Type) && NotNullable(prop.Type))
                     {
                         var nn = Declare("t$" + _temps++, dp.Type);
                         Emit(new KAssign { Var = nn, Value = read });
@@ -1959,7 +2264,11 @@ namespace CsVerify.Verifier.Boogie
                     }).ToList();
                     // (where no arm matches, the definition throws: its check says so; the value is the last arm's)
                     for (int k = arms.Count - 1; k >= 0; k--) acc = acc == null ? arms[k].value : new KOp("ite", arms[k].cond, arms[k].value, acc);
-                    return acc ?? throw new NotTranslated("a switch with no arms");
+                    if (acc == null) throw new NotTranslated("a switch with no arms");
+                    // (well-defined only where some arm matches, CSV1012, unless the last arm matches everything)
+                    var last = sw.Arms.Last();
+                    if (last.Guard == null && last.Pattern is IDiscardPatternOperation or IDeclarationPatternOperation { MatchesNull: true }) return acc;
+                    return new KCast { Value = acc, Test = arms.Select(a => a.cond).Aggregate((a, b) => new KOp("||", a, b)), At = sw.Syntax };
                 }
                 case IConversionOperation up when up.IsImplicit && IsData(up.Type) && IsData(up.Operand.Type):
                     return lower(up.Operand);
@@ -1974,7 +2283,9 @@ namespace CsVerify.Verifier.Boogie
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
                 {
-                    if (!KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType)) throw new NotTranslated("== of a record whose fields don't compare as values");
+                    // (with null: whether it is null, whatever its fields are)
+                    bool withNull = Unconverted(eq.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(eq.RightOperand).ConstantValue is { HasValue: true, Value: null };
+                    if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType)) throw new NotTranslated("== of a record whose fields don't compare as values");
                     var l = lower(eq.LeftOperand);
                     var r = lower(eq.RightOperand);
                     return new KOp(eq.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", l, r);
@@ -2005,6 +2316,29 @@ namespace CsVerify.Verifier.Boogie
                                             (r.MatchedType == null || SymbolEqualityComparer.Default.Equals(r.MatchedType.WithNullableAnnotation(NullableAnnotation.None), r.InputType.WithNullableAnnotation(NullableAnnotation.None))),
             _ => false,
         };
+
+        /// <summary>A pattern of a nullable value: null, or a pattern of its value where it has one.</summary>
+        private KExpr NullablePattern(IPatternOperation p, KExpr v, ITypeSymbol nullable, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
+        {
+            var has = new KOp("!=", v, new KLit("null"));
+            var u = Underlying(nullable);
+            KExpr Sub(IPatternOperation q) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, lower, bind) : Pattern(q, NullableValue(v, nullable), u, lower, bind);
+            switch (p)
+            {
+                case IDiscardPatternOperation _: return new KLit("true");
+                case IConstantPatternOperation c when c.Value.ConstantValue is { HasValue: true, Value: null }: return new KOp("==", v, new KLit("null"));
+                case INegatedPatternOperation n: return new KOp("!", Sub(n.Pattern));
+                case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Sub(b.LeftPattern), Sub(b.RightPattern));
+                case IDeclarationPatternOperation d when d.MatchesNull:
+                    if (d.DeclaredSymbol is ILocalSymbol dl) bind(dl, v);
+                    return new KLit("true");
+                case IDeclarationPatternOperation d:
+                    if (d.DeclaredSymbol is ILocalSymbol dv) bind(dv, NullableValue(v, nullable));
+                    return has;
+                case ITypePatternOperation _: return has;
+                default: return new KOp("&&", has, Pattern(p, NullableValue(v, nullable), u, lower, bind));
+            }
+        }
 
         private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
         {
@@ -2162,6 +2496,11 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A type as it is here: in a collection member's stub, its type parameters are the collection's arguments.</summary>
+        /// <summary>A type as it is here, an array of a stub's T too (List&lt;int&gt;'s ToArray gives an int[]).</summary>
+        private ITypeSymbol ActualArray(ITypeSymbol t) =>
+            t is IArrayTypeSymbol { ElementType: ITypeParameterSymbol e, Rank: 1 } && !SymbolEqualityComparer.Default.Equals(Actual(e), e)
+                ? KernelTypes.Compilation.CreateArrayTypeSymbol(Actual(e)) : t;
+
         private ITypeSymbol Actual(ITypeSymbol t) =>
             t is ITypeParameterSymbol tp && _contract.IsStub && IsCollection(_m.ContainingType) && tp.Ordinal < ((INamedTypeSymbol)_m.ContainingType).TypeArguments.Length
                 ? ((INamedTypeSymbol)_m.ContainingType).TypeArguments[tp.Ordinal] : t;
@@ -2181,20 +2520,23 @@ namespace CsVerify.Verifier.Boogie
             // (a member with a stub is its stub's: Array.Fill, a list's)
             if (IsStub(m.OriginalDefinition) || _contractOf?.Invoke(m) is Contract lc && (lc.IsStub || lc.IsPure)) return (false, null);
             if (call.Arguments.Any(a => a.Value.Type?.TypeKind == TypeKind.Delegate || a.Parameter?.Type.TypeKind == TypeKind.Delegate)) return (false, null);
-            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) return (false, null);
             if (_p.UsesCells || _p.MemViews) return (false, null);
             if (!m.ReturnsVoid && !InSubset(m.ReturnType)) return (false, null);
-            if (call.Instance != null && !(InSubset(call.Instance.Type) || IsLibraryObject(call.Instance.Type))) return (false, null);
+            // (a lock's object, a semaphore of a field, not null where it's declared so: a reference the kernel doesn't keep)
+            bool lockObject = call.Instance is IFieldReferenceOperation { Field: var lof } && IsLockObject(lof) && NotNullable(lof.Type) && IsSemaphore(lof.Type) && m.Name == "Dispose";
+            if (call.Instance != null && !lockObject && !(InSubset(call.Instance.Type) || IsLibraryObject(call.Instance.Type))) return (false, null);
             foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit))
                 if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation)) return (false, null);
-            if (call.Instance != null)
+            if (call.Instance != null && !lockObject)
             {
                 var receiver = Expr(call.Instance);
                 if (!m.IsStatic && !call.Instance.Type.IsValueType)
                     Emit(new KCheck { Cond = new KOp("!=", receiver, new KLit("null")), Id = "CSV1013", At = call.Instance.Syntax, Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'" });
             }
+            // (an argument boxed or cast up to object for it: what it is, since the library's use of it isn't modeled)
             foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && InSubset(a.Value.Type)))
-                Expr(a.Value);
+                Expr(a.Value is IConversionOperation { IsImplicit: true, Type.SpecialType: SpecialType.System_Object } box && InSubset(box.Operand.Type) ? box.Operand : a.Value);
+            ReentryUnderLock(m, call.Syntax);
             bool arrays = KernelTypes.MayWriteHeap(m), fields = KernelTypes.WritesFieldsAt(call);
             if (fields) { _p.HavocsAll = true; _p.CallsDelegates = true; Emit(new KHavocAll()); }
             else if (arrays)
@@ -2213,6 +2555,8 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KHavoc { Var = v });
                 if (NotNullable(a.Parameter.OriginalDefinition.Type) && !a.Parameter.OriginalDefinition.Type.IsValueType) Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
             }
+            // (where exceptions are seen: it may throw, anything, once it has done what it does)
+            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string throwsTo) Emit(new KFork { Overflow = new KLit("false"), Target = throwsTo, Exception = null });
             if (m.ReturnsVoid) return (true, null);
             var r = Declare("t$" + _temps++, call.Type);
             Emit(new KHavoc { Var = r });
@@ -2493,7 +2837,32 @@ namespace CsVerify.Verifier.Boogie
             return new KOp("sel", new KVar(model.Name), of);
         }
 
-        private readonly Dictionary<CaptureId, IFieldReferenceOperation> _lvalues = new Dictionary<CaptureId, IFieldReferenceOperation>();
+        private readonly Dictionary<CaptureId, IOperation> _lvalues = new Dictionary<CaptureId, IOperation>();
+
+        /// <summary>A value of locals, parameters, constants and array elements, whose locals and parameters the expression doesn't write.</summary>
+        private static bool Steady(IOperation op, ExpressionSyntax during)
+        {
+            var names = new HashSet<string>();
+            bool Simple(IOperation o)
+            {
+                switch (o)
+                {
+                    case IConversionOperation { IsImplicit: true } c: return Simple(c.Operand);
+                    case ILocalReferenceOperation l: names.Add(l.Local.Name); return true;
+                    case IParameterReferenceOperation pr: names.Add(pr.Parameter.Name); return true;
+                    case IInstanceReferenceOperation _: return true;
+                    case IFieldReferenceOperation { Field.IsReadOnly: true } f: return f.Instance == null || Simple(f.Instance);
+                    case IArrayElementReferenceOperation ae: return Simple(ae.ArrayReference) && ae.Indices.All(Simple);
+                    default: return o.ConstantValue.HasValue;
+                }
+            }
+            if (!Simple(op)) return false;
+            bool Names(ExpressionSyntax e) => e is IdentifierNameSyntax n && names.Contains(n.Identifier.Text);
+            return !during.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>().Any(a => Names(a.Left)) &&
+                   !during.DescendantNodesAndSelf().OfType<PostfixUnaryExpressionSyntax>().Any(u => Names(u.Operand)) &&
+                   !during.DescendantNodesAndSelf().OfType<PrefixUnaryExpressionSyntax>().Any(u => Names(u.Operand)) &&
+                   !during.DescendantNodesAndSelf().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && Names(a.Expression));
+        }
 
         private string Capture(CaptureId id, ITypeSymbol type)
         {
@@ -2650,7 +3019,7 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation { Property.Name: "Count", Instance: IPropertyReferenceOperation { Property.Name: "Keys" or "Values", Instance: { } vd } } when CollectionKind(vd.Type) == "Dictionary" && IsCollection(vd.Type):
                     return Invoke(((INamedTypeSymbol)vd.Type).GetMembers("Count").OfType<IPropertySymbol>().First().GetMethod, vd, new IArgumentOperation[0], e.Syntax, null);
                 case IFieldReferenceOperation _:
-                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
+                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
                                                       !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e);
@@ -2668,7 +3037,7 @@ namespace CsVerify.Verifier.Boogie
                     return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
                 }
                 // (a library object: a new reference, of no fields of the program's; its constructor's arguments read)
-                case IObjectCreationOperation lob when IsLibraryObject(lob.Type) && lob.Initializer == null && lob.Constructor != null &&
+                case IObjectCreationOperation lob when (IsLibraryObject(lob.Type) || lob.Type.SpecialType == SpecialType.System_Object) && lob.Initializer == null && lob.Constructor != null &&
                                                        lob.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None && x.Value.Type?.TypeKind != TypeKind.Delegate):
                 {
                     foreach (var x in lob.Arguments.OrderBy(x => x.Parameter.Ordinal)) Expr(x.Value);
@@ -2761,7 +3130,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Operands(sb.LeftOperand, sb.RightOperand);
                     return StringBinary(sb.OperatorKind, v[0], v[1]);
                 }
-                case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(pr.Instance?.Type):
+                case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
                     return new KLen { Array = Expr(pr.Instance), At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
                 case IArrayCreationOperation ac when IsArray(ac.Type) && ac.DimensionSizes.Length == 1:
                 {
@@ -3019,7 +3388,10 @@ namespace CsVerify.Verifier.Boogie
                 call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Parameter.RefKind != RefKind.None)
                 return AtomicCall(call);
             // (a gate: taken by Wait, given back by Release)
-            if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Wait" && call.Arguments.Length == 0) { Take(GateOf(call), call.Syntax); return null; }
+            if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Wait" && call.Arguments.Length == 0) { if (GateOf(call) is IFieldSymbol wg) Take(wg, call.Syntax); return null; }
+            if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Release" && call.Arguments.Length == 0 &&
+                Unconverted(call.Instance) is IFieldReferenceOperation { Field: IFieldSymbol plain } && GuardsNothing(plain))
+                return null;
             if (IsSemaphore(call.TargetMethod.ContainingType) && call.TargetMethod.Name == "Release" && call.Arguments.Length == 0)
             {
                 if (!(Unconverted(call.Instance) is IFieldReferenceOperation { Field: IFieldSymbol released } rf) || !(released.IsStatic || rf.Instance is IInstanceReferenceOperation))
@@ -3053,7 +3425,62 @@ namespace CsVerify.Verifier.Boogie
                 var deref = new KLen { String = true, Array = v[0], At = call.Syntax, ArrayAt = call.Instance.Syntax };
                 return new KOp("&&", new KOp(">=", deref, new KLit("0")), new KOp("streq", v[0], v[1]));
             }
+            // (a constant format string that would throw: CSV1001, as CsVerify's engine checks it)
+            if (!_p.Ghost && !_contract.IsPure && !_contract.IsLemma && MethodVerifier.FormatProblem(call) is var (fat, fmessage))
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1001", At = fat, Message = fmessage });
+            // (Debug.Assert(c), Trace.Assert(c): c proved here, CSV1004, and known after; the message evaluated, not used)
+            if (call.TargetMethod.Name == "Assert" && call.TargetMethod.IsStatic && call.TargetMethod.Parameters.Length >= 1 &&
+                call.TargetMethod.Parameters[0].Type.SpecialType == SpecialType.System_Boolean &&
+                call.TargetMethod.ContainingType?.ToDisplayString() is "System.Diagnostics.Debug" or "System.Diagnostics.Trace" && !_p.Ghost && !_contract.IsPure && !_contract.IsLemma)
+            {
+                var cond = call.Arguments.First(a => a.Parameter.Ordinal == 0).Value;
+                var c = Expr(cond);
+                foreach (var a in call.Arguments.Where(a => a.Parameter.Ordinal > 0 && a.ArgumentKind == ArgumentKind.Explicit).OrderBy(a => a.Parameter.Ordinal))
+                    if (InSubset(a.Value.Type)) Expr(a.Value);
+                Emit(new KCheck { Cond = c, Id = "CSV1004", At = call.Syntax, Message = $"'{call.TargetMethod.ContainingType.Name}.Assert({cond.Syntax})' might not hold" });
+                return null;
+            }
+            // (a guard clause, ArgumentOutOfRangeException.ThrowIfNegative(i) and the rest: it may throw, and when it returns, what it checked holds)
+            if (call.TargetMethod.ContainingType?.ToDisplayString() == "System.ArgumentOutOfRangeException" && call.TargetMethod.IsStatic &&
+                call.TargetMethod.TypeArguments.Length == 1 && IsIntegral(call.TargetMethod.TypeArguments[0]) && GuardRelation(call.TargetMethod) is string rel)
+            {
+                var gm = call.TargetMethod;
+                var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                bool other = gm.Parameters.Length > 1 && SymbolEqualityComparer.Default.Equals(gm.Parameters[1].Type, gm.TypeArguments[0]);
+                if (rel != "0" && !other) goto notGuard;
+                var v = Expr(ordered[0].Value);
+                var o = other ? Expr(ordered[1].Value) : null;
+                foreach (var a in ordered.Skip(other ? 2 : 1).Where(a => a.ArgumentKind == ArgumentKind.Explicit && InSubset(a.Value.Type))) Expr(a.Value);
+                if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string gt) Emit(new KFork { Overflow = new KLit("false"), Target = gt, Exception = null });
+                KExpr fact = gm.Name switch
+                {
+                    "ThrowIfNegative" => new KOp(">=", v, new KLit("0")),
+                    "ThrowIfNegativeOrZero" => new KOp(">", v, new KLit("0")),
+                    "ThrowIfZero" => new KOp("!=", v, new KLit("0")),
+                    _ => new KOp(rel, v, o),
+                };
+                Emit(new KAssume { Cond = fact });
+                return null;
+            }
+            notGuard:
             if (!_isProcedure(callee) && IsStub(callee)) return StubCall(call, null);
+            // (Array.Fill(a, v), as its stub has it: a's elements all v, and nothing else changed)
+            if (callee.ContainingType?.ToDisplayString() == "System.Array" && callee.Name == "Fill" && call.Arguments.Length == 2 &&
+                call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value is var fa && IsArray(fa.Type) && !_p.UsesCells && !_p.MemViews)
+            {
+                var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                var v = Operands(ordered[0].Value, ordered[1].Value);
+                if (NotNullable(ordered[0].Parameter.OriginalDefinition.Type))
+                    Emit(new KCheck { Cond = new KOp("!=", v[0], new KLit("null")), Id = "CSV1014", At = ordered[0].Syntax,
+                                      Message = (ordered[0].Value.ConstantValue is { HasValue: true, Value: null } ? "null is passed" : $"'{ordered[0].Value.Syntax}' might be null,") +
+                                                $" but parameter '{ordered[0].Parameter.Name}' of 'Fill' is not nullable" });
+                var map = Elements(fa.Type);
+                var elem = ((IArrayTypeSymbol)fa.Type).ElementType;
+                var row = LinqMap("[int]" + (IsRefArray(fa.Type) ? "Ref" : TypeOf(elem)));
+                Emit(new KRow { Map = map, Ref = v[0], Value = new KVar(row), At = call.Syntax });
+                Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$f", Body = new KOp("==", new KOp("sel", new KVar(row), new KVar("i$f")), v[1]) }, Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
+                return null;
+            }
             if (!_isProcedure(callee) && LibraryCall(call) is var (handled, lib) && handled) return lib;
             // (as called: a generic one's instantiation boxes its arguments and unboxes its result)
             return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
@@ -3377,6 +3804,7 @@ namespace CsVerify.Verifier.Boogie
             else callee = callee.OriginalDefinition;
             if (!list && !_isProcedure(callee)) throw new NotTranslated("a call of " + callee.Name);
             UnderLock(callee, at, instance, arguments);
+            ReentryUnderLock(callee, at);
             _p.Calls.Add(callee);
             var ordered = arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             if (!callee.IsStatic && instance == null && !listCtor) throw new NotTranslated("a call of " + callee.Name + " without its receiver");
@@ -3587,7 +4015,7 @@ namespace CsVerify.Verifier.Boogie
                         Args = cp.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = cp.Syntax,
                     };
                 case IFieldReferenceOperation _:
-                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(pf.Instance?.Type)) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
+                case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
                                                       !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
@@ -3637,8 +4065,8 @@ namespace CsVerify.Verifier.Boogie
                         _ => throw new NotTranslated("the operator " + b.OperatorKind),
                     };
                 }
-                case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
-                    return new KElem { Array = Spec(el.ArrayReference, result), Index = Spec(el.Indices[0], result), ArrayType = el.ArrayReference.Type, InSpec = true, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax };
+                case IArrayElementReferenceOperation el when IsArray(ActualArray(el.ArrayReference.Type)) && el.Indices.Length == 1:
+                    return new KElem { Array = Spec(el.ArrayReference, result), Index = Spec(el.Indices[0], result), ArrayType = ActualArray(el.ArrayReference.Type), InSpec = true, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax };
                 case IPropertyReferenceOperation sl when sl.Property.Name == "Length" && IsString(sl.Instance?.Type):
                     return new KLen { String = true, Array = Spec(sl.Instance, result), InSpec = true, At = sl.Syntax, ArrayAt = sl.Instance.Syntax };
                 case IPropertyReferenceOperation sc when sc.Property.IsIndexer && IsString(sc.Instance?.Type) && sc.Arguments.Length == 1:
@@ -3656,13 +4084,13 @@ namespace CsVerify.Verifier.Boogie
                     return new KOp("streq", Spec(ea, result), Spec(eb, result));
                 case IInvocationOperation st when !_isFunction(st.TargetMethod) && IsStub(st.TargetMethod.OriginalDefinition):
                     return StubCall(st, x => Spec(x, result));
-                case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(pr.Instance?.Type):
+                case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
                     return new KLen { Array = Spec(pr.Instance, result), InSpec = true, At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
                 // (a list's model: its size, its version, its elements; Count and the indexer as their contracts say)
                 case IInvocationOperation mo when SpecSymbols.IsModel(mo.TargetMethod.OriginalDefinition) && mo.Arguments.Length == 1 &&
                                                   CollectionOf(Unconverted(mo.Arguments[0].Value).Type) is INamedTypeSymbol mc:
                     return Model(mo.TargetMethod.Name, mc, Spec(Unconverted(mo.Arguments[0].Value), result));
-                case IPropertyReferenceOperation lc when lc.Property.Name == "Count" && CollectionOf(lc.Instance?.Type) is INamedTypeSymbol cc:
+                case IPropertyReferenceOperation lc when (lc.Property.Name == "Count" || lc.Property.Name == "Length" && CollectionKind(lc.Instance?.Type) == "StringBuilder") && CollectionOf(lc.Instance?.Type) is INamedTypeSymbol cc:
                     return Model("Size", cc, Spec(lc.Instance, result));
                 case IPropertyReferenceOperation sr when sr.Instance != null && IsCollectionInterface(sr.Property.ContainingType) &&
                                                          (sr.Property.Name == "Count" && sr.Arguments.Length == 0 || sr.Property.IsIndexer && sr.Arguments.Length == 1):
@@ -3850,7 +4278,8 @@ namespace CsVerify.Verifier.Boogie
                         case "Index" when Unconverted(inv.Arguments[0].Value) is ILocalReferenceOperation ix && _forEachOf.TryGetValue(ix.Local, out var fx):
                             return new KVar(fx.Index);
                         // (allocated during the call)
-                        case "Fresh" when IsRef(Unconverted(inv.Arguments[0].Value).Type):
+                        case "Fresh" when IsRef(Unconverted(inv.Arguments[0].Value).Type) ||
+                                          IsRef(ActualArray(Unconverted(inv.Arguments[0].Value).Type)):
                             // (its argument read now: only the allocated set is as it was)
                             return new KOp("&&", new KOp("!=", Spec(Unconverted(inv.Arguments[0].Value), result), new KLit("null")),
                                 new KOp("!", new KOp("sel", new KOp("old", new KVar("$Alloc")), Spec(Unconverted(inv.Arguments[0].Value), result))));

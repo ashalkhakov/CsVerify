@@ -60,8 +60,18 @@ namespace CsVerify.Verifier.Boogie
 
         private void Emit(KStmt s) => _out.Add(s);
 
-        private void Assert(KExpr cond, Check check, bool notAssumedAfter = false) =>
+        private void Assert(KExpr cond, Check check, bool notAssumedAfter = false)
+        {
+            // (an assertion of a conjunction, one conjunct at a time, each known for the next: as Dafny splits them, so
+            // that Z3 needn't find what the first says while it proves the second)
+            if (!notAssumedAfter && check?.Id == "CSV1004" && cond is KOp { Op: "&&", Args: { Length: 2 } and_ })
+            {
+                Assert(and_[0], check);
+                Assert(and_[1], check);
+                return;
+            }
             Emit(new KAssert { Cond = cond, Check = check, NotAssumedAfter = notAssumedAfter });
+        }
 
         private void Assume(KExpr cond) => Emit(new KAssume { Cond = cond });
 
@@ -555,6 +565,7 @@ namespace CsVerify.Verifier.Boogie
                 case KRow row:
                 {
                     var r = Code(row.Ref);
+                    if (row.At != null) WithinFrame(r, row.At);
                     var v = Spec(row.Value, out _);
                     _facts.Clear();
                     Emit(new KRow { Map = row.Map, Ref = r, Value = v });
@@ -1692,7 +1703,28 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!_program.Recursive(_p.Method, c.Callee)) return;
             var theirs = _program.ContractOf(c.Callee);
-            if (mine != null && theirs?.Decreases != null)
+            bool self = SymbolEqualityComparer.Default.Equals(c.Callee.OriginalDefinition, _p.Method.OriginalDefinition);
+            // (as CsVerify's engine says it: without measures on both, a proof doesn't terminate, other code isn't checked to;
+            // measures of different shapes can't be compared)
+            if ((mine == null || theirs?.Decreases == null) && (_p.Contract.IsPure || _p.Contract.IsLemma || _p.Ghost))
+            {
+                Assert(new KLit("false"), At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
+                                                                   : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' needs Spec.Decreases on both"));
+                return;
+            }
+            if (mine == null || theirs?.Decreases == null)
+            {
+                if (c.At != null)
+                    _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, self
+                        ? $"recursive call without Spec.Decreases in '{_p.Method.Name}'; termination is not checked"
+                        : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' without Spec.Decreases on both; termination is not checked", c.At.GetLocation().GetLineSpan()));
+                return;
+            }
+            if (theirs.Decreases.Count != mine.Count)
+            {
+                Assert(new KLit("false"), At("CSV1008", c.At, $"cannot prove termination: '{c.Callee.Name}' and '{_p.Method.Name}' call each other but their measures have different numbers of components"));
+                return;
+            }
             {
                 var sig = _program.Signature(c.Callee);
                 var given = Given(c.Callee, receiver, args);
@@ -1700,8 +1732,6 @@ namespace CsVerify.Verifier.Boogie
                 Assert(Lexicographic(next, mine), At("CSV1008", c.At,
                     $"cannot prove termination: measure '{string.Join(", ", theirs.Decreases.Select(d => d.Syntax))}' of '{c.Callee.Name}' might not decrease or might be negative"));
             }
-            else if (_p.Contract.IsPure || _p.Contract.IsLemma)
-                Assert(new KLit("false"), At("CSV1011", c.At, $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"));
         }
 
         private static Dictionary<string, KExpr> Given(IMethodSymbol callee, KExpr receiver, KExpr[] args)
