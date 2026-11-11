@@ -445,6 +445,16 @@ namespace CsVerify.Verifier.Boogie
                     child = ChildOf(level, x => Column(nav, x), IsNullableValue(fk.Type), p, at);
                     made.Add(child);
                 }
+                // (a reference whose foreign key is EF's own, a shadow property: a row of its type, through its filters, a
+                // new object; or null, where nothing says there is one)
+                else if (e.References.Contains(nav) && !e.ForeignKeys.ContainsKey(nav) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity sp)
+                {
+                    KExpr Ok(KExpr x) => new KOp("&&", new KOp("&&", new KOp("!=", Column(nav, x), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), Column(nav, x)))),
+                        new KOp("&&", Isa(Column(nav, x), sp), Filtered(t, sp, Column(nav, x))));
+                    LinqFact(level.All(x => new KOp("||", new KOp("==", Column(nav, x), Null), Ok(x))), at);
+                    child = ChildOf(level, x => Column(nav, x), true, sp, at);
+                    made.Add(child);
+                }
                 else if (e.Collections.Contains(nav) && MadeAsList(nav) is INamedTypeSymbol list && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
                          KernelTypes.Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _)) is EfModel.Entity d && KeyMatches(cfk, e.Key[0]))
                 {
@@ -1053,6 +1063,8 @@ namespace CsVerify.Verifier.Boogie
             if (!TrackerReceiver(receiver) || !(IsEfMethod(m) || KernelTypes.Ef.IsContextType(m.ContainingType) || IsTransactionType(m.ContainingType))) return null;
             if (m.Name == "Set" && inv.Arguments.Length == 0 && KernelTypes.Ef.IsContextType(receiver)) return null;
             if (m.Name is "Dispose" or "DisposeAsync" && KernelTypes.Ef.IsContextType(receiver)) return null;
+            // (a context's constructor calling DbContext's)
+            if (m.MethodKind == MethodKind.Constructor && inv.Instance is IInstanceReferenceOperation && m.ContainingType?.ToDisplayString() == "Microsoft.EntityFrameworkCore.DbContext") return null;
             // (a query's operators on a DbSet: AsNoTracking, Include, Where... are the query's)
             if (receiver is INamedTypeSymbol { Name: "DbSet" } && (m.ReducedFrom ?? m).IsExtensionMethod &&
                 (IsQueryHandle(inv.Type) || inv.Type.AllInterfaces.Any(i => i.Name == "IQueryable" && i.ContainingNamespace?.ToDisplayString() == "System.Linq"))) return null;

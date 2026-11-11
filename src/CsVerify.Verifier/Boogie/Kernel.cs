@@ -146,6 +146,10 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Array, Index;
         public ITypeSymbol ArrayType;
         public bool InSpec;
+        /// <summary>A rectangular array's cell ($cell of its indices): each index checked against its dimension already, not against the length.</summary>
+        public bool Unchecked;
+        /// <summary>A span's cell: of its base, which a span within bounds has (no null check).</summary>
+        public bool NoNull;
         /// <summary>In code that may run alongside other code (true, or while its tasks run): under cell permissions, its cell must be held to read (CSV1016).</summary>
         public KExpr Alongside;
         public SyntaxNode At, ArrayAt;
@@ -369,6 +373,10 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Array, Index, Value;
         public ITypeSymbol ArrayType;
         public SyntaxNode At, ArrayAt;
+        /// <summary>A rectangular array's cell: each index checked against its dimension already, not against the length.</summary>
+        public bool Unchecked;
+        /// <summary>A span's cell: of its base, which a span within bounds has (no null check).</summary>
+        public bool NoNull;
         /// <summary>After Checks: checked.</summary>
         public bool Checked;
     }
@@ -628,6 +636,13 @@ namespace CsVerify.Verifier.Boogie
 
     internal sealed class KProcedure
     {
+        /// <summary>For the library report: each variable's causes (Lowering.Causes), and the variables its values were made from.</summary>
+        public readonly Dictionary<string, HashSet<string>> Causes = new Dictionary<string, HashSet<string>>();
+        public readonly Dictionary<string, HashSet<string>> Deps = new Dictionary<string, HashSet<string>>();
+        /// <summary>The roots of the trees it borrows through Spec.Modifies(Own.Tree(x)), over its parameters as on entry.</summary>
+        public readonly List<KExpr> LentRoots = new List<KExpr>();
+        /// <summary>A query of an [Owned] class without Spec.Reads: it reads only its object's tree (CSV1017).</summary>
+        public bool TreeReads;
         /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
         public bool CallsDelegates;
         /// <summary>It reads a collection through an interface: values of the state ($st), declared then.</summary>
@@ -652,6 +667,8 @@ namespace CsVerify.Verifier.Boogie
         public HashSet<(string key, string value)> Pairs = new HashSet<(string, string)>();
         /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
         public bool ListCtor;
+        /// <summary>A struct's constructor: it gives the value it makes (this, a value it writes, its default to begin with).</summary>
+        public bool StructThis;
         public HashSet<string> DelegateKeys = new HashSet<string>();
         public IMethodSymbol Method;
         public Contract Contract;
@@ -682,6 +699,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr ReadsFrame;
         /// <summary>An abstract member: a procedure with no body, which calls go to.</summary>
         public bool Abstract;
+        /// <summary>A method whose body doesn't translate: its contract alone, for its callers (it may write what CsVerify's effects analysis says).</summary>
+        public bool Opaque;
         /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>
         public List<KExpr> OwnRequires = new List<KExpr>();
         public List<(IMethodSymbol method, List<KExpr> requires)> BaseRequires = new List<(IMethodSymbol, List<KExpr>)>();

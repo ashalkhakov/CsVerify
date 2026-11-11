@@ -157,6 +157,20 @@ namespace CsVerify.Verifier.Boogie
             if (src is IInvocationOperation q && (IsEnumerableCall(q.TargetMethod) || IsQueryableMethod(q.TargetMethod))) return Query(q);
             var type = src.Type;
             var elem = ElementOf(type);
+            // (a set's members, in some order: as many as its Size, each a member, no two the same)
+            if (elem != null && InSubset(elem) && CollectionKind(type) == "HashSet" && IsCollection(type))
+            {
+                var hs = Declare("t$" + _temps++, type);
+                Emit(new KAssign { Var = hs, Value = Expr(src) });
+                Emit(new KCheck { Cond = new KOp("!=", new KVar(hs), new KLit("null")), Id = "CSV1013", At = src.Syntax, Message = $"'{src.Syntax}' might be null: LINQ would throw ArgumentNullException" });
+                foreach (var m in ModelsOf((INamedTypeSymbol)type)) _p.Models[m.Name] = m;
+                var n = new KOp("sel", new KVar(SizeMap), new KVar(hs));
+                var order = new KVar(LinqMap("[int]" + TypeOf(elem)));
+                KExpr E(KExpr i) => new KOp("sel", order, i);
+                ShapeFact(Over(new KLit("0"), n, i => new KOp("sel", new KVar(ModelOf("Members", (INamedTypeSymbol)type).Name), new KVar(hs), Keyed(E(i), elem))), src.Syntax);
+                ShapeFact(Over(new KLit("0"), n, i => Over(new KLit("0"), i, j => new KOp("!=", E(j), E(i)))), src.Syntax);
+                return new LSeq { Length = n, Elem = E, Type = elem };
+            }
             if (elem == null || !InSubset(elem) || !(IsArray(type) || IsList(type) || IsCollectionInterface(type)))
                 throw new NotTranslated("a LINQ source of " + type + " (" + src.Kind + ")");
             var t = Declare("t$" + _temps++, type);
@@ -332,9 +346,9 @@ namespace CsVerify.Verifier.Boogie
                     var union = FilterAt(both, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(both.Elem(k), both.Elem(j), both.Type), forall: false).Q), q.Syntax);
                     return _inDatabase > 0 ? Sort(union, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : union;
                 }
-                // (a database's groups as values, of a selector that reads their key and count: GroupValue. Their counts are
-                // bounds, not CsVerify's engine's exact ones: LINQ to Objects' groups as values aren't translated yet)
-                case "GroupBy" when args.Count == 2 && _inDatabase > 0:
+                // (groups as values, of a selector that reads their key and count: GroupValue. A database's counts are
+                // bounds; LINQ to Objects' are exact, as CsVerify's engine has them: how many of the source have the key)
+                case "GroupBy" when args.Count == 2 || args.Count == 3 && _inDatabase == 0 && LambdaArg(q, 2).p2 != null:
                 {
                     var src = Sequence(args[0].Value);
                     var key = LambdaArg(q, 1);
@@ -343,8 +357,25 @@ namespace CsVerify.Verifier.Boogie
                     // (how many of the source have its key: at least the one, at most all)
                     var count = new KVar(LinqMap("[int]int"));
                     ShapeFact(Over(new KLit("0"), src.Length, j => new KOp("&&", new KOp("<=", new KLit("1"), new KOp("sel", count, j)), new KOp("<=", new KOp("sel", count, j), src.Length))), q.Syntax);
+                    if (_inDatabase == 0)
+                    {
+                        // (exactly: a running count of those with j's key, over the source)
+                        var rc = new KVar(LinqMap("[int][int]int"));
+                        KExpr R(KExpr j, KExpr k) => new KOp("sel", rc, j, k);
+                        LinqFact(Over(new KLit("0"), src.Length, j => new KOp("==", R(j, new KLit("0")), new KLit("0"))), q.Syntax);
+                        LinqFact(Over(new KLit("0"), src.Length, j => Over(new KLit("0"), src.Length, k =>
+                            new KOp("==", R(j, new KOp("+", k, new KLit("1"))), new KOp("+", R(j, k), new KOp("ite", SameValue(Apply(key, src.Elem(k)), Apply(key, src.Elem(j)), key.body.Type), new KLit("1"), new KLit("0")))))), q.Syntax);
+                        LinqFact(Over(new KLit("0"), src.Length, j => new KOp("==", new KOp("sel", count, j), R(j, src.Length))), q.Syntax);
+                    }
                     _groupsOf[q] = (src, key, count);
                     var groups = new LSeq { Length = firsts.Length, Elem = firsts.Index, Type = resultElem, Groups = q };
+                    // (GroupBy(key, (k, g) => ...): each group's key and itself, to the selector)
+                    if (args.Count == 3)
+                    {
+                        var sel = LambdaArg(q, 2);
+                        _groupParams[sel.p2] = (src, key, count);
+                        return new LSeq { Length = firsts.Length, Type = resultElem, Elem = i => Apply(sel, Apply(key, src.Elem(firsts.Index(i))), firsts.Index(i)) };
+                    }
                     if (_inDatabase == 0) return groups;
                     var sorted = Sort(groups, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax);
                     sorted.Groups = q;
@@ -820,6 +851,26 @@ namespace CsVerify.Verifier.Boogie
                     return Value(A(s.Length));
                 }
                 // (floating point: IEEE, added in order from 0.0, rounded at each step, as .NET adds them)
+                // (a fold, as its definition is: Q.Fold(Skip(source, 1), Q.At(source, 0), func) without a seed, which
+                // needs an element (CSV1001); a running accumulator, func of the one before and the element)
+                case "Aggregate" when (args.Count == 2 || args.Count == 3) && Scalar(callType):
+                {
+                    var s = Sequence(args[0].Value);
+                    var f = LambdaArg(call, args.Count - 1);
+                    if (f.p2 == null) throw new NotTranslated("LINQ's Aggregate of a function of one parameter");
+                    KExpr seed, from;
+                    if (args.Count == 2)
+                    {
+                        Need(new KOp(">", s.Length, new KLit("0")), "Q.Count(source) > 0");
+                        (seed, from) = (s.Elem(new KLit("0")), new KLit("1"));
+                    }
+                    else (seed, from) = (Expr(args[1].Value), new KLit("0"));
+                    var acc = new KVar(LinqMap("[int]" + TypeOf(callType)));
+                    KExpr A(KExpr j) => new KOp("sel", acc, j);
+                    LinqFact(new KOp("==", A(from), seed), at);
+                    LinqFact(Over(from, s.Length, j => new KOp("==", A(new KOp("+", j, new KLit("1"))), Apply(f, A(j), s.Elem(j)))), at);
+                    return Value(A(s.Length));
+                }
                 case "Sum" or "Average" when args.Count <= 2 && callType.SpecialType == SpecialType.System_Double:
                 {
                     var s = Mapped();

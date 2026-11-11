@@ -30,7 +30,7 @@ namespace CsVerify.Verifier.Boogie
             return BigInteger.TryParse(s, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var v) ? v : (BigInteger?)null;
         }
 
-        private static (int width, bool signed) WidthOf(ITypeSymbol type) => (Widths[type.SpecialType].bits, Widths[type.SpecialType].signed);
+        private static (int width, bool signed) WidthOf(ITypeSymbol type) => (Widths[Sp(type)].bits, Widths[Sp(type)].signed);
 
         private static BigInteger Unsigned(BigInteger v, int width)
         {

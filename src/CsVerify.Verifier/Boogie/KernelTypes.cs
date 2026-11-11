@@ -74,9 +74,12 @@ namespace CsVerify.Verifier.Boogie
         public static string ElementValue(string map) => ElementValue(ElementTypes.First(t => ElementMap(t) == map));
 
         /// <summary>An array's element type: a scalar, or a reference (an object, an interface's, a string, object).</summary>
-        public static bool IsElement(ITypeSymbol t) => Scalar(t) || FloatArrays && IsFloating(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || t?.SpecialType == SpecialType.System_Object);
+        public static bool IsElement(ITypeSymbol t) => Scalar(t) || FloatArrays && IsFloating(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || IsStruct(t) || t?.SpecialType == SpecialType.System_Object);
 
-        public static bool IsIntegral(ITypeSymbol t) => t != null && Widths.ContainsKey(t.SpecialType);
+        public static bool IsIntegral(ITypeSymbol t) => t != null && Widths.ContainsKey(Sp(t));
+
+        /// <summary>A type's kind of scalar: an enum's is its underlying type's (an enum is an integer of it, any value of it).</summary>
+        public static SpecialType Sp(ITypeSymbol t) => t is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } u } ? u.SpecialType : t?.SpecialType ?? SpecialType.None;
 
         public static bool Scalar(ITypeSymbol t) => IsIntegral(t) || t?.SpecialType == SpecialType.System_Boolean;
 
@@ -88,17 +91,34 @@ namespace CsVerify.Verifier.Boogie
 
         public static ITypeSymbol Underlying(ITypeSymbol nullable) => ((INamedTypeSymbol)nullable).TypeArguments[0];
 
-        public static KExpr NullableValue(KExpr v, ITypeSymbol nullable) => new KOp("$nv." + Underlying(nullable).SpecialType.ToString().Substring("System_".Length), v);
+        public static KExpr NullableValue(KExpr v, ITypeSymbol nullable) => new KOp("$nv." + Sp(Underlying(nullable)).ToString().Substring("System_".Length), v);
 
-        public static KExpr NullableOf(KExpr v, ITypeSymbol nullable) => new KOp("$nmk." + Underlying(nullable).SpecialType.ToString().Substring("System_".Length), v);
+        public static KExpr NullableOf(KExpr v, ITypeSymbol nullable) => new KOp("$nmk." + Sp(Underlying(nullable)).ToString().Substring("System_".Length), v);
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && IsElement(a.ElementType);
+
+        /// <summary>A span of scalars (Span&lt;T&gt;, ReadOnlySpan&lt;T&gt;): a value of a base array, an offset and a length (Lowering.Spans).</summary>
+        public static bool IsSpan(ITypeSymbol t) => t is INamedTypeSymbol { Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System" &&
+            n.Name is "Span" or "ReadOnlySpan" && Scalar(n.TypeArguments[0]);
+
+        public static ITypeSymbol SpanElement(ITypeSymbol span) => ((INamedTypeSymbol)span).TypeArguments[0];
+
+        /// <summary>A rectangular array of scalars (int[,]): a reference, a length per dimension ($dim), its cells in its element type's map at $cell of their indices.</summary>
+        public static bool IsMultiArray(ITypeSymbol t) => t is IArrayTypeSymbol { IsSZArray: false, Rank: > 1 } a && Scalar(a.ElementType);
+
+        /// <summary>The cell of a rectangular array's indices: $cell(i, j), $cell($cell(i, j), k), an injective pairing (as CsVerify's engine's cv_cell).</summary>
+        public static KExpr CellOf(IReadOnlyList<KExpr> indices)
+        {
+            var cell = indices[0];
+            for (int d = 1; d < indices.Count; d++) cell = new KOp("$cell", cell, indices[d]);
+            return cell;
+        }
 
         /// <summary>An array of references (Shape[], string?[]): its elements in $E.Object, null where it's made.</summary>
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType) && !IsFloating(((IArrayTypeSymbol)t).ElementType);
 
         public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) || IsOpaqueValue(t);
+                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) || IsOpaqueValue(t) || IsStruct(t) || IsMultiArray(t) || IsSpan(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -106,9 +126,38 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A tuple of the subset's values: a value whose elements are functions of it ($tup.i.Kind).</summary>
         public static bool IsTuple(ITypeSymbol t) => t is INamedTypeSymbol n && (n.IsTupleType || n.IsAnonymousType) && PartsOf(t).All(e => InSubset(e) && !IsTuple(e));
 
+        /// <summary>
+        /// A struct of the program's, of the subset's values (no struct or tuple among them): a value, as a tuple is, its
+        /// instance fields (an auto-property's backing field too) its elements, in declaration order. A member written
+        /// makes a new value of the others and it.
+        /// </summary>
+        public static bool IsStruct(ITypeSymbol t)
+        {
+            if (!(t is INamedTypeSymbol { TypeKind: TypeKind.Struct, IsGenericType: false, IsRefLikeType: false } n) || n.DeclaringSyntaxReferences.Length == 0 ||
+                n.IsTupleType || n.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || IsData(n) ||
+                n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace)) return false;
+            if (!_structGuard.Add(n)) return false;
+            try { var fs = StructFields(n); return fs.Count > 0 && fs.All(f => InSubset(f.Type) && !IsTuple(f.Type) && !IsStruct(f.Type) && !IsView(f.Type) && !IsShare(f.Type) && !IsGhost(f.Type)); }
+            finally { _structGuard.Remove(n); }
+        }
+
+        [System.ThreadStatic] private static HashSet<ITypeSymbol> _structGuardSet;
+        private static HashSet<ITypeSymbol> _structGuard => _structGuardSet ??= new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>A struct's instance fields, an auto-property's backing field for it, in declaration order.</summary>
+        public static List<IFieldSymbol> StructFields(ITypeSymbol t) => t.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic && !f.IsConst).ToList();
+
+        /// <summary>A struct's element of a member (a field, or an auto-property): its position, or -1.</summary>
+        public static int StructIndex(ITypeSymbol t, ISymbol member) =>
+            StructFields(t).FindIndex(f => SymbolEqualityComparer.Default.Equals(f, member.OriginalDefinition) || SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, member.OriginalDefinition));
+
+        /// <summary>A struct's default value: each element its type's.</summary>
+        public static KExpr StructDefault(ITypeSymbol t) => new KOp(TupleMaker(t), StructFields(t).Select(f => Default(f.Type)).ToArray());
+
         /// <summary>A tuple's elements' types, or an anonymous object's members', in order (an anonymous object is a tuple of its members).</summary>
         public static List<ITypeSymbol> PartsOf(ITypeSymbol t) =>
             ((INamedTypeSymbol)t).IsTupleType ? ((INamedTypeSymbol)t).TupleElements.Select(e => e.Type).ToList()
+            : t.TypeKind == TypeKind.Struct && !t.IsAnonymousType ? StructFields(t).Select(f => f.Type).ToList()
             : t.GetMembers().OfType<IPropertySymbol>().Select(p => p.Type).ToList();
 
         /// <summary>An anonymous object's member's position.</summary>
@@ -274,7 +323,7 @@ namespace CsVerify.Verifier.Boogie
         public static string FuncKey(ITypeSymbol t)
         {
             var inv = ((INamedTypeSymbol)t).DelegateInvokeMethod;
-            string Of(ITypeSymbol x) => Scalar(x) ? x.SpecialType.ToString().Substring("System_".Length) : "Ref";
+            string Of(ITypeSymbol x) => Scalar(x) ? Sp(x).ToString().Substring("System_".Length) : "Ref";
             return string.Join(".", inv.Parameters.Select(p => Of(p.Type)).Append(inv.ReturnsVoid ? "void" : Of(inv.ReturnType)));
         }
 
@@ -385,6 +434,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>CsVerify's engine's effects of a library member with a stub: the fields it writes, reads, and whether it may use arrays.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, IEnumerable<ISymbol>> FieldWrites, FieldReads;
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayTouchArrays;
+        /// <summary>CsVerify's effects analysis of a method: the fields it (or what it calls) writes, and whether it may write any.</summary>
+        [System.ThreadStatic] public static System.Func<IMethodSymbol, (IEnumerable<ISymbol> fields, bool all)> FieldEffectsOf;
 
         /// <summary>An object of a library class the program has no model of (Random, TextWriter): a reference, whose members are library calls.</summary>
         public static bool IsLibraryObject(ITypeSymbol t) =>
@@ -399,7 +450,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || t?.SpecialType == SpecialType.System_Object;
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || t?.SpecialType == SpecialType.System_Object;
 
         /// <summary>A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values.</summary>
         public static bool IsCollectionInterface(ITypeSymbol t) =>
@@ -475,7 +526,7 @@ namespace CsVerify.Verifier.Boogie
             n.TypeArguments.All(FuncValue);
 
         /// <summary>A value's kind, as Boogie keeps it: an integer type's name, Boolean, or Ref.</summary>
-        public static string Kind(ITypeSymbol t) => Scalar(t) ? t.SpecialType.ToString().Substring("System_".Length) : "Ref";
+        public static string Kind(ITypeSymbol t) => Scalar(t) ? Sp(t).ToString().Substring("System_".Length) : "Ref";
 
         /// <summary>A kind's Boogie type.</summary>
         public static string BoogieOf(string kind) => kind == "Ref" ? "Ref" : kind == "Boolean" ? "bool" : "int";
@@ -549,8 +600,8 @@ namespace CsVerify.Verifier.Boogie
                                      : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
                                      : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                                     !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
-                                    // (a property may be [Pure]: a function)
-                                    !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute")))) &&
+                                    // (a property may be [Pure]: a function; or run concurrently, as a method may)
+                                    !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute")))) &&
             // (an invariant of an [Owned] class travels with its view; any other's is an immutable object's, assumed of every one)
             (SpecSymbols.IsOwned(n) || !HasInvariantMethods(n) || Immutable(n));
 
@@ -594,7 +645,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m))) yield return m.OriginalDefinition;
         }
 
-        public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : IsObjSet(t) ? new KLit("(lambda r$: Ref :: false)") : IsFloating(t) ? FloatLiteral(0.0, t) : new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+        public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : IsStruct(t) ? StructDefault(t) : IsObjSet(t) ? new KLit("(lambda r$: Ref :: false)") : IsFloating(t) ? FloatLiteral(0.0, t) : new KLit(IsNullable(t) ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         /// (Not a type parameter's: where T : class may be instantiated with K?, as CsVerify's engine has it.)
@@ -603,12 +654,12 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" : IsFloating(t) ? FloatType(t) : IsLinqGroup(t) ? "int" :
             IsSeqValue(t) ? "[int]" + (((INamedTypeSymbol)t).TypeArguments[0].SpecialType == SpecialType.System_Boolean ? "bool" : "int") :
-            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
+            IsRef(t) || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsPair(t) || IsData(t) || IsToken(t) || IsGivenTask(t) || IsTuple(t) || IsStruct(t) || IsSpan(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) ? "Ref" : t.SpecialType == SpecialType.System_Boolean ? "bool" : "int";
 
         public static string ElementMap(SpecialType t) => "$E." + t.ToString().Substring("System_".Length);
 
         /// <summary>The map of an array type's elements.</summary>
-        public static string Elements(ITypeSymbol array) => ElementMap(IsRefArray(array) ? SpecialType.System_Object : ((IArrayTypeSymbol)array).ElementType.SpecialType);
+        public static string Elements(ITypeSymbol array) => ElementMap(IsRefArray(array) ? SpecialType.System_Object : Sp(((IArrayTypeSymbol)array).ElementType));
 
         public static (BigInteger lo, BigInteger hi) Range(SpecialType t)
         {
@@ -617,7 +668,7 @@ namespace CsVerify.Verifier.Boogie
             return signed ? (-(size / 2), size / 2 - 1) : (0, size - 1);
         }
 
-        public static (BigInteger lo, BigInteger hi) Range(ITypeSymbol t) => Range(t.SpecialType);
+        public static (BigInteger lo, BigInteger hi) Range(ITypeSymbol t) => Range(Sp(t));
 
         public static KExpr Number(BigInteger n) => new KLit(n < 0 ? $"({n.ToString(CultureInfo.InvariantCulture)})" : n.ToString(CultureInfo.InvariantCulture));
 
@@ -632,7 +683,7 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr Wrap(KExpr e, ITypeSymbol t)
         {
             var (lo, _) = Range(t);
-            return new KOp("wrap", e, Number(lo), Number(BigInteger.Pow(2, Widths[t.SpecialType].bits)));
+            return new KOp("wrap", e, Number(lo), Number(BigInteger.Pow(2, Widths[Sp(t)].bits)));
         }
 
         public static string Name(IMethodSymbol m) =>

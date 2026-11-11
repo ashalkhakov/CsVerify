@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
 
@@ -132,6 +133,17 @@ namespace CsVerify.Verifier.Boogie
             Line("type LayerType;");
             Line("const $LZ: LayerType;");
             Line("function $LS(ly: LayerType): LayerType;");
+            Optional("$cell(", "// a rectangular array's cell: an injective pairing of its indices, as CsVerify's engine's cv_cell");
+            Optional("$cell(", "function $cell(i: int, j: int): int;");
+            Optional("$cell(", "function $crow(c: int): int;");
+            Optional("$cell(", "function $ccol(c: int): int;");
+            Optional("$cell(", "axiom (forall i: int, j: int :: { $cell(i, j) } $crow($cell(i, j)) == i && $ccol($cell(i, j)) == j);");
+            Optional("$sbase(", "// a span's base array and offset (its length is len)");
+            Optional("$sbase(", "function $sbase(s: Ref): Ref;");
+            Optional("$sbase(", "function $soff(s: Ref): int;");
+            Optional("$dim(", "// a rectangular array's length of a dimension");
+            Optional("$dim(", "function $dim(a: Ref, d: int): int;");
+            Optional("$dim(", "axiom (forall a: Ref, d: int :: { $dim(a, d) } 0 <= $dim(a, d) && $dim(a, d) <= 2147483647);");
             Optional("$bag", "// multisets (Bag): maps from value to count, as CsVerify's engine has them. $bag(ly, r, n) is the multiset of");
             Optional("$bag", "// r[0..n), unfolded once per $LS; writing r[i] inside the prefix trades the old element for the new one, outside");
             Optional("$bag", "// it changes nothing. The write axioms are triggered only by the multiset of a written array, so they can't loop.");
@@ -819,9 +831,17 @@ namespace CsVerify.Verifier.Boogie
             _ => false,
         };
 
+        /// <summary>The queries of [Owned] classes (no parameters, no arrays read): each reads only its object's tree.</summary>
+        private readonly List<(IMethodSymbol method, List<string> fields)> _ownedQueries = new List<(IMethodSymbol, List<string>)>();
+
+        private static bool ReadsArrays(KExpr e) => e is KElem || e is KLen ||
+            e != null && e.GetType().GetFields().Any(f => f.GetValue(e) is KExpr k && ReadsArrays(k) || f.GetValue(e) is IEnumerable<KExpr> ks && ks.Any(ReadsArrays));
+
         public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols)
         {
             var m = p.Method;
+            if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null && !ReadsArrays(p.FunctionBody))
+                _ownedQueries.Add((m, fields));
             var name = FunctionName(m);
             var self = m.IsStatic ? "" : ", this: Ref";
             var ps = FieldParams(fields, symbols) + self + string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
@@ -866,7 +886,7 @@ namespace CsVerify.Verifier.Boogie
             // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out)
             var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
-            var outs = (p.ListCtor ? new[] { "result: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
+            var outs = (p.ListCtor ? new[] { "result: Ref" } : p.StructThis ? new[] { "this: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
             // (an abstract member's: a declaration, its specifications after it, no body)
@@ -875,8 +895,9 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f)))) Line($"  free ensures {GoodField(f)};");
+            foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees && (modifies.Contains(FieldMap(f)) || modifies.Contains("$root")))) Line($"  free ensures {TreeField(f)};");
             // (a method that writes only arrays it makes, as CsVerify's engine infers it (MayWriteHeap): every other array as it was)
-            if (!p.Abstract && p.Frame == null && KernelTypes.MayWriteHeap != null && p.Method.DeclaringSyntaxReferences.Length > 0 && !KernelTypes.MayWriteHeap(p.Method))
+            if ((!p.Abstract || p.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && p.Method.DeclaringSyntaxReferences.Length > 0 && !KernelTypes.MayWriteHeap(p.Method))
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
             // (a field written only at this object, in its constructor, or at objects allocated since: the same at every other)
@@ -973,7 +994,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"  {b.Label}:");
                 // (a block's leading assertions and assumptions are a loop's invariants where it is a head: kept whole there)
-                int lead = b.Stmts.TakeWhile(x => x is KAssert || x is KAssume || x is KLoopFrame || x is KAtomicSteps || x is KConfinedFrame).Count();
+                // (elsewhere a check not assumed after is on a side branch: inline, a failing one would make what follows vacuous)
+                int lead = !p.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is KAssert || x is KAssume || x is KLoopFrame || x is KAtomicSteps || x is KConfinedFrame).Count();
                 for (int k = 0; k < b.Stmts.Count; k++) { _leading = k < lead; Statement(b.Stmts[k], cx); }
                 _leading = false;
                 switch (b.Jump)
@@ -1035,6 +1057,10 @@ namespace CsVerify.Verifier.Boogie
         private static IEnumerable<ISymbol> RefFieldsOf(KProcedure p) =>
             p.Fields.Where(f => IsField(f) && IsRef(FieldType(f)) && !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal);
 
+        /// <summary>What an [Owns] field holds is in its container's tree, and isn't its root (Own.Give and Own.Take keep it so).</summary>
+        private static string TreeField(ISymbol f) =>
+            $"(forall o: Ref :: {{ {FieldMap(f)}[o] }} $Alloc[o] && {FieldMap(f)}[o] != null ==> $root[{FieldMap(f)}[o]] == $root[o] && $root[{FieldMap(f)}[o]] != {FieldMap(f)}[o])";
+
         private static string GoodField(ISymbol f) => f.IsStatic
             ? $"({FieldMap(f)}[null] == null || $Alloc[{FieldMap(f)}[null]])"
             : $"(forall o: Ref :: {{ {FieldMap(f)}[o] }} $Alloc[o] && {FieldMap(f)}[o] != null ==> $Alloc[{FieldMap(f)}[o]])";
@@ -1044,9 +1070,10 @@ namespace CsVerify.Verifier.Boogie
             var m = p.Method;
             Line($"  free requires {InRangeOfMemory};");
             if (p.HasThis && p.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
-            if (p.HasThis) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
+            if (p.HasThis && !IsStruct(m.ContainingType)) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
             // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap, as CsVerify's engine assumes where it reads one)
             foreach (var f in RefFieldsOf(p)) Line($"  free requires {GoodField(f)};");
+            foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees)) Line($"  free requires {TreeField(f)};");
             // (a new object's fields are their defaults: its caller made them so)
             if (p.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal))
@@ -1055,6 +1082,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 var name = E(new KVar(Local(x)), cx);
                 if (IsIntegral(x.Type)) Line($"  free requires {E(InRange(new KVar(Local(x)), x.Type), cx)};");
+                // (a span from elsewhere: its cells some array's, within its length)
+                if (IsSpan(x.Type)) Line($"  free requires $sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}));");
                 if (IsRef(x.Type) || IsView(x.Type) || IsShare(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
                 // (not null: checked at each call's argument)
                 if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
@@ -1196,7 +1225,7 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 }
                 case KCallFrame { After: false } frame:
-                    foreach (var x in new[] { "perm", "pinst", "owner", "psnap", "$Alloc" }.Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
+                    foreach (var x in new[] { "perm", "pinst", "owner", "psnap", "$Alloc" }.Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
                                  .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]).Concat(frame.OldGlobals).Distinct())
                         Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
                     return;
@@ -1212,9 +1241,22 @@ namespace CsVerify.Verifier.Boogie
                         // (a field: also kept where the caller holds that field alone, or has it folded into an instance it holds)
                         var k = frame.FieldIds.TryGetValue(map, out var id) ? id : 0;
                         var field = frame.Fields ? $" || {sn}$fperm[y][{k}] || {sn}$pinst[{sn}$fowner[y][{k}]] >= 1" : "";
-                        var keptHere = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}){field} || {sn}$pinst[{sn}$owner[y]] >= 1)";
+                        // (and, in a tree, where the caller holds its root's view: what the root owns goes with it)
+                        var tree = KernelTypes.Trees ? $" || ({sn}$perm[{sn}$root[y]] && {sn}$root[y] != y{(frame.Receiver == null ? "" : $" && {sn}$root[y] != {E(frame.Receiver, cx)}")})" : "";
+                        var keptHere = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}){field}{tree} || {sn}$pinst[{sn}$owner[y]] >= 1)";
                         Line($"    assume (forall y: Ref :: {keptHere} ==> {map}[y] == {sn}{map}[y]);");
                     }
+                    // (a query of an [Owned] object reads only its tree: of one the caller keeps, what it was)
+                    if (KernelTypes.Trees)
+                        foreach (var (qm, qfields) in _ownedQueries.Where(q => q.fields.Any(frame.Maps.Contains)))
+                        {
+                            var x = new KVar("x$q");
+                            var now = E(new KFnApp { Callee = qm, Function = FunctionName(qm), Layer = "$LS($LZ)", Fields = qfields, Args = new KExpr[] { x } }, cx);
+                            var maps = OwnArrays(qm) == null ? Maps(cx) : "";
+                            var then = $"{FunctionName(qm)}($LS($LZ){(maps.Length == 0 ? "" : ", " + maps)}{string.Join("", qfields.Select(f => ", " + (frame.Maps.Contains(f) ? sn + f : Map(f, cx))))}, x$q)";
+                            var recv = frame.Receiver == null ? "" : $" && x$q != {E(frame.Receiver, cx)} && {sn}$root[x$q] != {E(frame.Receiver, cx)}";
+                            Line($"    assume (forall x$q: Ref :: {{ {now} }} {sn}$Alloc[x$q] && ({sn}$perm[x$q] || {sn}$perm[{sn}$root[x$q]]){recv} ==> {now} == {then});");
+                        }
                     if (frame.Fields)
                     {
                         var keptField = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}) || {sn}$fperm[y][k] || {sn}$pinst[{sn}$owner[y]] >= 1 || {sn}$pinst[{sn}$fowner[y][k]] >= 1)";

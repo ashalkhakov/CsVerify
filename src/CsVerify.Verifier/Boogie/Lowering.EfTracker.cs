@@ -228,6 +228,12 @@ namespace CsVerify.Verifier.Boogie
             var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
             if (name is "ExecuteUpdate" or "ExecuteDelete" && IsEfMethod(m)) return (true, BulkUpdate(inv, args));
             var receiver = TrackerReceiverOf(inv.Instance);
+            // (a context disposed, by using or await using: nothing the kernel keeps of it changes)
+            if (name == "Dispose" && args.Count == 0 && receiver != null && KernelTypes.Ef.IsContextType(receiver.Type))
+            {
+                Expr(receiver);
+                return (true, null);
+            }
             // (an entry: Entry(o).Reload())
             if (receiver is IInvocationOperation { TargetMethod.Name: "Entry" } entry && name == "Reload" && EntryOf(entry) is var (ec, eo, ee))
             {

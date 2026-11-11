@@ -657,6 +657,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Ef = engine.Ef;
             Boogie.KernelTypes.FieldWrites = m => engine.Fields.WritesOf(m).fields;
             Boogie.KernelTypes.FieldReads = engine.Fields.ReadsOf;
+            Boogie.KernelTypes.FieldEffectsOf = m => { var (f, all) = engine.Fields.WritesOf(m); return (f, all); };
             Boogie.KernelTypes.MayTouchArrays = engine.MayTouchArrays;
             Boogie.KernelTypes.Trees = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
                 .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
@@ -691,7 +692,7 @@ namespace CsVerify.Verifier
                     if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract) && Sequential(engine, method, decl, model)) forBoogie.Add((method, contract, decl, mr));
                     else
                     {
-                        if (options.Boogie) Trace($"not translated to Boogie: {mr.Name}: {Boogie.BoogieTranslator.WhyNot(method, contract)}");
+                        if (options.Boogie) Trace($"not translated to Boogie: {mr.Name}: {(Boogie.BoogieTranslator.Candidate(method, contract) ? "a field guarded by a semaphore or a flag" : Boogie.BoogieTranslator.WhyNot(method, contract))}");
                         RunMethod(engine, contract, mr, decl.GetLocation());
                     }
                     // its lambdas and local functions, each a unit of its own
@@ -703,6 +704,7 @@ namespace CsVerify.Verifier
                         if (!options.Selects(nmr.Name)) continue;
                         result.Methods.Add(nmr);
                         declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
+                        if (options.Boogie) Trace($"not translated to Boogie: {nmr.Name}: a lambda or a local function, a unit of its own");
                         RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
                     }
                 }
@@ -728,7 +730,7 @@ namespace CsVerify.Verifier
                     var contract = engine.ContractOf(accessor);
                     if (!Boogie.BoogieTranslator.Candidate(accessor, contract) || !Sequential(engine, accessor, node, model))
                     {
-                        Trace($"not translated to Boogie: {accessor.ContainingType.Name}.{accessor.Name}: {Boogie.BoogieTranslator.WhyNot(accessor, contract)}");
+                        Trace($"not translated to Boogie: {accessor.ContainingType.Name}.{accessor.Name}: {(Boogie.BoogieTranslator.Candidate(accessor, contract) ? "a field guarded by a semaphore or a flag" : Boogie.BoogieTranslator.WhyNot(accessor, contract))}");
                         continue;
                     }
                     var span = node.GetLocation().GetLineSpan();
@@ -832,6 +834,7 @@ namespace CsVerify.Verifier
                 if (!options.Selects(nmr.Name)) continue;
                 result.Methods.Add(nmr);
                 declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
+                if (options.Boogie) Trace($"not translated to Boogie: {nmr.Name}: a lambda or a local function, a unit of its own");
                 RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
             }
         }
@@ -893,6 +896,9 @@ namespace CsVerify.Verifier
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var included = held.ToList();
+            // (those whose bodies don't translate but whose contracts do: procedures of their contracts alone, which
+            // their callers call; their bodies are verified as always)
+            var opaque = new HashSet<MethodResult>();
             Boogie.BoogieTranslator translator;
             // (a method that doesn't translate leaves out those that call it: until none is left out)
             while (true)
@@ -911,11 +917,21 @@ namespace CsVerify.Verifier
                 var refused = new List<(IMethodSymbol, Contract, SyntaxNode, MethodResult)>();
                 foreach (var x in included)
                 {
-                    try { translator.Procedure(x.method, x.contract, x.decl, compilation.GetSemanticModel(x.decl.SyntaxTree), x.result); }
+                    var model = compilation.GetSemanticModel(x.decl.SyntaxTree);
+                    if (!opaque.Contains(x.result))
+                        try { translator.Procedure(x.method, x.contract, x.decl, model, x.result); continue; }
+                        catch (Boogie.NotTranslated why)
+                        {
+                            Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {why.Message}");
+                            if (x.result.Name == null) { refused.Add(x); continue; }
+                            opaque.Add(x.result);
+                        }
+                    try { translator.ContractOnly(x.method, x.contract, x.decl, model, x.result); }
                     catch (Boogie.NotTranslated why)
                     {
                         refused.Add(x);
-                        Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {why.Message}");
+                        opaque.Remove(x.result);
+                        Trace($"not translated to Boogie, nor its contract: {x.result.Name}: {why.Message}");
                     }
                 }
                 if (refused.Count == 0) break;
@@ -923,7 +939,8 @@ namespace CsVerify.Verifier
             }
             translator.Finish();
             if (engine.Options.BoogieOut != null) System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
-            foreach (var x in held.Except(included).Where(x => x.result.Name != null)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+            foreach (var x in held.Except(included).Concat(included.Where(x => opaque.Contains(x.result))).Where(x => x.result.Name != null)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+            included = included.Where(x => !opaque.Contains(x.result)).ToList();
             if (included.Count == 0) return null;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
             try
@@ -956,7 +973,10 @@ namespace CsVerify.Verifier
                     Trace($"undecided by Boogie: {x.result.Name}: {undecided.Message}");
                     continue;
                 }
+                // (the library's members its code calls, as its translation listed them: kept)
+                var libraryCalls = x.result.LibraryCalls.ToList();
                 x.result.Clear();
+                x.result.LibraryCalls.UnionWith(libraryCalls);
                 x.result.Engine = "boogie";
                 // (a failed check of a warning's: the warning, CSV1900, not an error)
                 mine = mine.Select(d => d.Id == Boogie.Lowering.Warning ? new VerificationDiagnostic("CSV1900", false, d.Message.Replace(" (boogie)", ""), d.Span) : d).ToList();

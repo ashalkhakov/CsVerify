@@ -17,6 +17,8 @@ namespace CsVerify.Verifier.Boogie
         public MethodResult Method;
         /// <summary>For a requires or an ensures (Id Aux): the diagnostic a failure of it is (CSV1001 or CSV1014; CSV1002 or CSV1014).</summary>
         public string ReportAs;
+        /// <summary>What the unknown values its conditions read come from (the library report's causes).</summary>
+        public readonly HashSet<string> Causes = new HashSet<string>();
     }
 
     /// <summary>A construct outside the subset the Boogie translation covers: the method is verified the other way.</summary>
@@ -74,7 +76,10 @@ namespace CsVerify.Verifier.Boogie
              m.IsStatic ? m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
                            IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-                          (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType))) &&
+                          (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType)) ||
+                          m.MethodKind == MethodKind.Constructor && IsStruct(m.ContainingType) ||
+                          // (a struct's member that reads it: this, a value; one that writes it is CsVerify's engine's to refuse)
+                          IsStruct(m.ContainingType) && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsOverride) &&
             (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
             (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
             (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
@@ -296,6 +301,20 @@ namespace CsVerify.Verifier.Boogie
 
         private readonly HashSet<IMethodSymbol> _libraries = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
 
+        /// <summary>
+        /// A method whose body doesn't translate, as its callers see it: a procedure of its contract alone (nothing of it
+        /// verified here). It may write what CsVerify's effects analysis says it may: the fields it and its callees write
+        /// (any, where that says so), every array unless it writes none. Throws <see cref="NotTranslated"/> where the
+        /// contract doesn't translate either.
+        /// </summary>
+        public void ContractOnly(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result)
+        {
+            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, contractOnly: true);
+            Checks.Run(p, this);
+            Heap.Run(p);
+            _pending.Add(p);
+        }
+
         /// <summary>Writes the functions and the procedures: each modifies what it writes, and what what it calls does.</summary>
         public void Finish()
         {
@@ -370,6 +389,7 @@ namespace CsVerify.Verifier.Boogie
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$owner", Raw = "[Ref]Inst" });
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$psnap", Raw = "[Inst]int" });
                     p.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
+                    if (KernelTypes.Trees) p.Locals.Add(new KLocal { Name = $"s{frame.Id}$root", Raw = "[Ref]Ref" });
                     foreach (var map in frame.Maps)
                         p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
                     foreach (var map in frame.Maps) frame.FieldIds[map] = FieldId(fields.First(f => FieldMap(f) == map));
@@ -599,6 +619,14 @@ namespace CsVerify.Verifier.Boogie
                 // (a library member's stub: what it says, unless it may run the program's code, as CsVerify's engine has it)
                 bool library = p.Method.DeclaringSyntaxReferences.Length == 0 && ContractOf(p.Method) is Contract pc && pc.IsStub;
                 if (Engine.IsOverridable(p.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Method))) sets[p.Method].UnionWith(_allMaps);
+            }
+            // (a body not translated: what CsVerify's effects analysis says it writes, which is anything but the fields it doesn't)
+            foreach (var p in _pending.Where(p => p.Opaque))
+            {
+                var (written, all) = KernelTypes.FieldEffectsOf?.Invoke(p.Method) ?? (null, true);
+                var kept = all ? new HashSet<string>() : new HashSet<string>(_allMaps.Where(x => x.StartsWith("$F.")));
+                if (!all) foreach (var f in written) kept.Remove(FieldMap(f));
+                sets[p.Method].UnionWith(_allMaps.Where(x => !kept.Contains(x)));
             }
             // (a delegate's call runs whichever body it was made of: anything)
             foreach (var p in _pending.Where(p => p.Method.MethodKind == MethodKind.DelegateInvoke)) sets[p.Method].UnionWith(_allMaps);

@@ -124,7 +124,24 @@ namespace CsVerify.Verifier.Boogie
                 Assert(and_[1], check);
                 return;
             }
+            if (check != null) check.Causes.UnionWith(CausesOf(cond));
             Emit(new KAssert { Cond = cond, Check = check, NotAssumedAfter = notAssumedAfter });
+        }
+
+        /// <summary>The causes of a condition's unknown values: its variables', and those they were made from.</summary>
+        private HashSet<string> CausesOf(KExpr cond)
+        {
+            var seen = new HashSet<string>();
+            var causes = new HashSet<string>();
+            var todo = new Stack<string>(Lowering.VarsIn(cond));
+            while (todo.Count > 0)
+            {
+                var v = todo.Pop();
+                if (!seen.Add(v)) continue;
+                if (_p.Causes.TryGetValue(v, out var c)) causes.UnionWith(c);
+                if (_p.Deps.TryGetValue(v, out var d)) foreach (var x in d) todo.Push(x);
+            }
+            return causes;
         }
 
         private void Assume(KExpr cond) => Emit(new KAssume { Cond = cond });
@@ -210,7 +227,7 @@ namespace CsVerify.Verifier.Boogie
             _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
             // the contract as mathematics (each with what makes it well-defined)
             var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
-            var ensures = _p.Ensures.Select(e => (spec: e, math: OldAtEntry(Spec(e.Expr, out var wf)), wf, facts: Take())).ToList();
+            var ensures = _p.Ensures.Select(e => (spec: e, math: OldAtEntry(Spec(e.Expr, out var wf)), wf: wf.Select(OldAtEntry).ToList(), facts: Take().Select(OldAtEntry).ToList())).ToList();
             foreach (var r in requires)
             {
                 r.spec.Expr = r.math;
@@ -224,7 +241,7 @@ namespace CsVerify.Verifier.Boogie
             if (_p.FunctionBody != null && _program.OverPredicate(m) == null &&
                 new[] { _p.FunctionBody }.Concat(requires.Select(r => r.math)).Concat(ensures.Select(e => e.math)).Any(x => Mentions(x, Snaps)))
                 throw new NotTranslated("a function that reads a function over a predicate");
-            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: OldAtEntry(Spec(i.Expr, out var wf)), wf, facts: Take())).ToList());
+            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: OldAtEntry(Spec(i.Expr, out var wf)), wf: wf.Select(OldAtEntry).ToList(), facts: Take().Select(OldAtEntry).ToList())).ToList());
             var measures = _p.Measures.ToDictionary(kv => kv.Key, kv => kv.Value.Select(x => Spec(x.Expr, out _)).ToList());
             _facts.Clear();
 
@@ -437,7 +454,7 @@ namespace CsVerify.Verifier.Boogie
                         Assert(new KOp("!=", o, new KLit("null")), NullAt(fs.At, fs.InstanceAt, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
                     if (fs.Instance != null && !IsOwnedField(fs.Field)) WithinFrame(o, fs.At);
                     if (IsOwnedField(fs.Field))
-                        Assert(_p.UsesFields ? new KOp("||", Whole(o), FieldHeld(o, fs.Field)) : Whole(o), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                        Assert(new KOp("||", _p.UsesFields ? new KOp("||", Whole(o), FieldHeld(o, fs.Field)) : Whole(o), Lent(o)), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                     if (NonNullField(fs.Field))
                         Assert(new KOp("!=", value, new KLit("null")), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
                     Emit(new KFieldStore { Field = fs.Field, Instance = o, Value = value, OnThis = fs.OnThis, At = fs.At, InstanceAt = fs.InstanceAt });
@@ -652,7 +669,8 @@ namespace CsVerify.Verifier.Boogie
                     var value = Code(st.Value);
                     var a = Code(st.Array);
                     var i = Code(st.Index);
-                    InBounds(a, i, st.At, st.ArrayAt);
+                    if (st.Unchecked) { if (!st.NoNull) Assert(new KOp("!=", a, new KLit("null")), NullAt(st.At, st.ArrayAt, $"'{st.ArrayAt}' might be null in '{st.At}'")); }
+                    else InBounds(a, i, st.At, st.ArrayAt);
                     WithinFrame(a, st.At);
                     if (_p.UsesCells) Assert(new KOp(">=", Cell(a, i), new KLit("1.0")), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
                     Emit(new KStore { Array = a, Index = i, Value = value, ArrayType = st.ArrayType, At = st.At, ArrayAt = st.ArrayAt, Checked = true });
@@ -697,7 +715,8 @@ namespace CsVerify.Verifier.Boogie
             if (c.Receiver != null)
             {
                 receiver = Code(c.Receiver);
-                if (!c.ReceiverIsThis) Assert(new KOp("!=", receiver, new KLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+                // (a struct's member: its receiver is a value, never null)
+                if (!c.ReceiverIsThis && !IsStruct(callee.ContainingType)) Assert(new KOp("!=", receiver, new KLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
             }
             var args = Arguments(callee, c.Args, c.ArgsAt);
             Termination(c, receiver, args, decreases);
@@ -705,7 +724,7 @@ namespace CsVerify.Verifier.Boogie
             bool ownedReceiver = receiver != null && IsOwnedClass(callee.ContainingType) && !_program.ContractOf(callee).IsPure;
             if (ownedReceiver)
             {
-                Assert(Whole(receiver), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                Assert(new KOp("||", Whole(receiver), Lent(receiver)), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                 ProveInvariant(callee.ContainingType, receiver, c.At, $"when '{callee.Name}' is called on it");
             }
             // (a share, or a view lent read-only: whoever gets it relies on the invariant; a share by value goes with it)
@@ -737,6 +756,13 @@ namespace CsVerify.Verifier.Boogie
                 Subst(Spec(r.Expr, out _), given);
                 foreach (var f in _facts.ToList()) Assume(Subst(f, given));
                 _facts.Clear();
+            }
+            // (a tree it borrows through Spec.Modifies: its root's view in hand here, or a tree this method borrows)
+            foreach (var root in sig.LentRoots)
+            {
+                var x = Subst(Spec(root, out _), given);
+                _facts.Clear();
+                Assert(new KOp("||", Whole(x), Lent(x)), At("CSV1016", c.At, $"'{callee.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here"));
             }
             // (a frame of ours: the callee's within it, or it changes nothing a frame would tell)
             if (_p.Frame != null && !pure)
@@ -958,6 +984,8 @@ namespace CsVerify.Verifier.Boogie
                     var held = Hold(g);
                     if (!_atLoopHead) Refresh(Instance(inst.Pred, inst.Args), held);
                     SnapFacts(inst.Pred, inst.Args, held);
+                    // (one that holds an object's Spec.Acc can't be held twice: the object's permission is one)
+                    if (PredicateExclusive(inst.Pred)) Assume(Implies(g, new KOp("==", new KOp("sel", new KVar("pinst"), Instance(inst.Pred, inst.Args)), new KLit("0"))));
                     AddInst(Instance(inst.Pred, inst.Args), g, +1);
                 }
             }, null);
@@ -1088,6 +1116,7 @@ namespace CsVerify.Verifier.Boogie
                     var held = Hold(g);
                     Refresh(q, held);
                     SnapFacts(inst.Pred, inst.Args, held);
+                    if (PredicateExclusive(inst.Pred)) Assume(Implies(g, new KOp("==", new KOp("sel", new KVar("pinst"), q), new KLit("0"))));
                     AddInst(q, g, +1);
                     nested.Add((g, q));
                 }
@@ -1321,6 +1350,8 @@ namespace CsVerify.Verifier.Boogie
             KOp { Op: "old" } old => new KOp("old", Subst(old.Args[0], new Dictionary<string, KExpr> { ["psnap"] = new KVar("psnap$entry") })),
             KOp op => new KOp(op.Op, op.Args.Select(OldAtEntry).ToArray()),
             KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body) },
+            // (an old(...) in a function's argument: Key(t, Spec.Old(Count(t))))
+            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(OldAtEntry).ToArray(), Snap = f.Snap == null ? null : OldAtEntry(f.Snap) },
             _ => e,
         };
 
@@ -1453,6 +1484,14 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Does a predicate's body (or one it names) hold cells?</summary>
+        /// <summary>Does a predicate hold an object's Spec.Acc unconditionally (a conjunct of its body's)?</summary>
+        private bool PredicateExclusive(IMethodSymbol pred)
+        {
+            var body = _program.Signature(pred).FunctionBody;
+            IEnumerable<KExpr> Conjuncts(KExpr e) => e is KOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
+            return body != null && Conjuncts(body).Any(c => c is KAcc);
+        }
+
         private bool PredicateHasCells(IMethodSymbol pred, HashSet<IMethodSymbol> seen = null)
         {
             seen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
@@ -1563,7 +1602,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = CWalk(el.Array, guard);
                     var i = CWalk(el.Index, guard);
-                    var v = Guarded(guard, () => Code(new KElem { String = el.String, Array = a, Index = i, ArrayType = el.ArrayType, At = el.At, ArrayAt = el.ArrayAt }));
+                    var v = Guarded(guard, () => Code(new KElem { String = el.String, Array = a, Index = i, ArrayType = el.ArrayType, At = el.At, ArrayAt = el.ArrayAt, Unchecked = el.Unchecked, NoNull = el.NoNull }));
                     if (_p.UsesCells && !el.String)
                         Assert(Implies(guard, new KOp(">", Cell(a, i), new KLit("0.0"))), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     return v;
@@ -1629,6 +1668,19 @@ namespace CsVerify.Verifier.Boogie
         /// Is the object's view in hand whole (write permission)? pk counts read shares as CsVerify's engine's
         /// fractions do, each one ε: those in hand, less those given away for good; the view is whole with none missing.
         /// </summary>
+        /// <summary>An object in a tree this method borrows (Spec.Modifies(Own.Tree(x))): writable without its view.</summary>
+        private KExpr Lent(KExpr o)
+        {
+            KExpr any = new KLit("false");
+            foreach (var root in _p.LentRoots)
+            {
+                var x = Code(root);
+                any = new KOp("||", any, KernelTypes.Trees ? new KOp("&&", new KOp("!=", x, new KLit("null")), new KOp("==", new KOp("sel", new KVar("$root"), o), new KOp("sel", new KVar("$root"), x)))
+                                                           : new KOp("==", o, x));
+            }
+            return any;
+        }
+
         private static KExpr Whole(KExpr o) => new KOp("&&", Held(o), new KOp(">=", new KOp("sel", new KVar("pk"), o), new KLit("0")));
 
         private void Shares(KExpr o, int by) =>
@@ -1885,7 +1937,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = Code(el.Array);
                     var i = Code(el.Index);
-                    InBounds(a, i, el.At, el.ArrayAt);
+                    if (el.Unchecked) { if (!el.NoNull) Assert(new KOp("!=", a, new KLit("null")), NullAt(el.At, el.ArrayAt, $"'{el.ArrayAt}' might be null in '{el.At}'")); }
+                    else InBounds(a, i, el.At, el.ArrayAt);
                     // (alongside other code, under cell permissions: read only what it holds, as CsVerify's engine checks it)
                     if (el.Alongside != null && _p.UsesCells)
                         Assert(Implies(Code(el.Alongside), new KOp(">", Cell(a, i), new KLit("0.0"))),
@@ -1987,6 +2040,9 @@ namespace CsVerify.Verifier.Boogie
                     // (a function with Spec.Reads reads only objects in it, as of entry: CSV1017)
                     if (_p.ReadsFrame != null && !fd.Field.IsStatic)
                         Assert(new KOp("sel", new KVar("r$entry"), o), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
+                    // (a query of an [Owned] class reads only its own tree)
+                    else if (_p.TreeReads && !fd.Field.IsStatic)
+                        Assert(new KOp("==", new KOp("sel", new KVar("$root"), o), new KOp("sel", new KVar("$root"), new KVar("this"))), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
                     // (in a predicate's body: read only what a Spec.Acc to its left holds, so it can't change while folded)
                     if (_p.IsPredicate)
                         Assert(CanWrite(o, fd.Field), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
@@ -2115,6 +2171,12 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var c in inner) Need(new KOp("old", c));
                     return new KOp("old", v);
                 }
+                // (a value defined only where its condition holds: a float cast to an integer, which must fit)
+                case KOp { Op: "$need" } nd:
+                {
+                    Need(Spec(nd.Args[0], wf, guard));
+                    return Spec(nd.Args[1], wf, guard);
+                }
                 case KOp { Op: "streq" } eq:
                 {
                     var (l, r) = (Spec(eq.Args[0], wf, guard), Spec(eq.Args[1], wf, guard));
@@ -2179,7 +2241,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = Spec(el.Array, wf, guard);
                     var i = Spec(el.Index, wf, guard);
-                    Need(new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp(el.String ? "slen" : "len", a))));
+                    Need(el.Unchecked ? (el.NoNull ? new KLit("true") : new KOp("!=", a, new KLit("null"))) : new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("<=", new KLit("0"), i)), new KOp("<", i, new KOp(el.String ? "slen" : "len", a))));
                     return el.String ? new KOp("sat", a, i) : new KOp("sel", new KVar(Elements(el.ArrayType)), a, i);
                 }
                 case KDataField df:
@@ -2283,7 +2345,7 @@ namespace CsVerify.Verifier.Boogie
                     if (fn.Receiver != null)
                     {
                         receiver = Spec(fn.Receiver, wf, guard);
-                        if (!fn.ReceiverIsThis) Need(new KOp("!=", receiver, new KLit("null")));
+                        if (!fn.ReceiverIsThis && !IsStruct(fn.Callee.ContainingType)) Need(new KOp("!=", receiver, new KLit("null")));
                     }
                     var args = fn.Args.Select(a => Spec(a, wf, guard)).ToArray();
                     // (well-defined where its precondition holds, at the arguments)
