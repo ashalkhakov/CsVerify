@@ -1159,9 +1159,12 @@ fields, classes with an `Equals` of their own (an unknown equivalence), collecti
 `[Model]`s as functions of the models, `Zip`, `GroupJoin`, `RightJoin`, lazy queries kept in a local, explicit
 enumerators, the Spec library's trusted lemmas.
 
-Not yet (such a method is not verified, CSV1902, with why): classes derived from the library's (a `Collection<T>`
-whose virtual members they override), a program's own implementations of the collection interfaces' members, and
-the constructs the sweep (below) lists.
+Also classes of the program that derive from a library class (`Collection<T>`, its virtual members overridden: a call
+of the library's members on such an object may run them, so it forgets everything) or implement the library's
+collection interfaces (read through them, they're unknown at each read).
+
+Not yet (such a method is not verified, CSV1902, with why): iterators (`yield`), explicit interface implementations,
+and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
 
 ## How it's checked
 
@@ -1169,7 +1172,8 @@ On every method, the Boogie engine reports what CsVerify's first engine reported
 lines. Until that engine was removed, `BoogieEngineTests` ran both and compared them, on a corpus written for it (one of
 each construct, a bug of each kind), on `samples/Good` and on `samples/Buggy`; now each of those tests checks a
 snapshot of what every method reports (`tests/CsVerify.Tests/Expected/BoogieEngine.json`, written with
-`CSVERIFY_RECORD=1`), taken where the two agreed. A method that wasn't translated then is recorded with CSV1902.
+`CSVERIFY_RECORD=1`): what the old engine reported, recorded from it (at commit 8d5feca) for every method of each
+test's program.
 
 Boogie verifies the procedures side by side (`/vcsCores`, a solver each). Each is first tried whole in a quarter of
 the time limit (at least 10 s). One that times out is verified once more an assertion at a time
@@ -1203,9 +1207,9 @@ for every method, verified by Boogie or not, and their diagnostics are its. They
 module of their own when its symbolic execution went; an [Atomic] field's step is proved transitive in Boogie
 (CSV1030, an assertion in the step's procedure).
 
-## What comes next
+## How it came to be, and what comes next
 
-The subset grows a construct at a time, each under the same comparison, until CsVerify's engine is no longer needed:
+The subset grew a construct at a time, each under the same comparison, until CsVerify's engine was no longer needed:
 1. the heap: objects, fields, constructors and allocation, instance methods, non-nullable references, as Dafny encodes
    them (done for plain classes, base classes, virtual methods, interfaces, properties, data records and their
    invariants, generic data and methods; object initializers, `this(...)`, parameters the body assigns, generic
@@ -1227,8 +1231,8 @@ The subset grows a construct at a time, each under the same comparison, until Cs
 8. LINQ and Entity Framework, their definitions and models as Boogie;
 9. smoke tests (Boogie's `/smoke`), so that a contradiction in what a translation assumes is found as it is made.
 
-The steps still to take, in order (each is one construct or two, under the same comparison, and unblocks the
-methods that fall back for it):
+The steps, in order (each was one construct or two, under the same comparison, and unblocked the methods that fell
+back for it):
 1. assigning a parameter, `this(...)`, object initializers (done);
 2. `Math.Max`, `Min` and `Abs`, bitwise operators (done);
 3. invariants that call functions, records compared as `object`, records' invariants that read mutable state,
@@ -1251,33 +1255,18 @@ methods that fall back for it):
 12. Entity Framework (queries, includes, rows with and without tracking, local views, the change tracker and
     transactions done: the EF tests pass under `CSVERIFY_ENGINE=boogie` and, but for one sample, under
     `boogie-only`; the samples' methods all translate, and so do most of their lambdas, as units of their own);
-13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, and the whole test suite
-    with `CSVERIFY_ENGINE=boogie` and `CSVERIFY_TRACE_FILE`, until nothing is left untranslated (the first, of the
-    suite after step 8: 77 methods, every one in the samples; the tests' own programs all translate): tuples and
-    deconstruction, string concatenation in loops (`arithmetic on string`), `int?`, `IDisposable.Dispose`'s inherited
-    contract, library objects (`SemaphoreSlim`, `Channel`, `TextWriter`, `Random`, `Console`, `Thread.Sleep`,
-    `TryGetValue`, `Array.Fill`), static constructors, locks of array elements, `ValueTask`, async enumerables. Since:
-    structs, enums, rectangular arrays, spans, array cells and struct members by reference, methods whose bodies don't
-    translate as contracts for their callers, in-memory `GroupBy`, `Aggregate`, sets as LINQ sources, float casts in
-    specifications. Not yet: the sweep still lists 335 methods (and reasons) of the suite, most for library calls
-    without stubs, LINQ operators, members of library types (streams, tokens), semaphores and flags as guards, and
-    custom equality. Lambdas and local functions are Boogie's units now (see "Lambdas and local functions" below): those
-    left to CsVerify's engine, in the lambda tests, have query clauses over `IEnumerable` (`from ... from`, `join ...
-    into`, `group ... into`), or call a delegate of a type without a contract. Since: list and property patterns,
-    dynamic types (type tests, `as`, casts, dispatch of `[Pure]` overrides), non-nullable static fields, calls of
-    local functions, library members with stubs that write nothing, `in` parameters of values, more of LINQ
-    (`Reverse`, `Append`, `Prepend`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`, `DefaultIfEmpty`,
-    `Intersect`, `Except`, `DistinctBy`, `MinBy`, `MaxBy`, `SequenceEqual`, an indexed `Where`) and List's predicate
-    methods, `Index`, `ToDictionary`, lifted `+ - *`, static properties, `??` and `?.` in specifications, a constructor's escaping
-    `this`, deconstruction into cells and fields;
-14. the Boogie engine the default (CsVerify's engine a fallback for a release). Not yet: `CSVERIFY_ENGINE=boogie` (which
-    sets the default now; it used to label methods only, so the first sweep's "the tests' own programs all translate"
-    was CsVerify's engine) failed 2 tests of 1435 at the last sweep (the Good samples verified together, a lambda in an
-    `await foreach`), fixed since; what Boogie can't decide in time (LinqBugs.Groups when the whole file is verified,
-    Base64's round trip when every sample is, TreeBugs' three hardest methods on a loaded machine) is CsVerify's
-    engine's still. Z3 doesn't always keep to the time limit Boogie gives it: once, on a loaded machine, a query of the
-    Good samples ran on for 25 minutes. Stopping the solver doesn't help (Boogie then waits for it forever), so a hard
-    limit needs Boogie's cancellation, which is of the whole run;
-15. CsVerify's engine's symbolic execution removed, its static checks a module of their own, the differential
-    tests expected diagnostics;
-16. the rest of the documentation revised to describe the one engine there is.
+13. a sweep: every sample and corpus, and the whole test suite with `CSVERIFY_TRACE_FILE`, until nothing is left
+    untranslated (done, with the old engine still there as the fallback, and since, without it, for what the suite
+    needs: delegates handed to library members, ref locals, `await foreach`, library awaits, tasks started inline
+    and in batches, task and library-object fields, custom `Equals`, collections' `[Pure]` members and stubs'
+    models as functions, `Zip`, `GroupJoin`, `RightJoin`, lazy queries, explicit enumerators, the Spec library's
+    lemmas, classes deriving from library classes, and the rest the commits list);
+14. the Boogie engine the only engine (done: there is no other; `--engine` and `CSVERIFY_ENGINE` are gone). What it
+    doesn't translate, or Boogie can't decide in its time limit, is not verified, CSV1902, an error that says why.
+    Only the element maps of the scalar types a program's code names are declared, which keeps every frame, await
+    and havoc small: the permission-split tasks that timed out decide in seconds since. On a loaded machine Z3 may
+    still not decide a hard method in the default 10 s per query; the sample tests use 120 s;
+15. CsVerify's engine's symbolic execution removed, its static checks a module of their own (done: `StaticChecks`).
+    The differential tests check snapshots (`Expected/BoogieEngine.json`): the diagnostics the old engine reported,
+    recorded from it (commit 8d5feca) for every method of each test's program before it was removed;
+16. the rest of the documentation revised to describe the one engine there is (done).

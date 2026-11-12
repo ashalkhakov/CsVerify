@@ -658,6 +658,33 @@ namespace CsVerify.Verifier.Boogie
                 _ => new[] { "Size", "Version", "Items" },
             }).Select(x => ModelOf(x, collection));
 
+        /// <summary>
+        /// A class of the library's a class of the program's may derive from (Collection&lt;T&gt;, say): its state is the
+        /// library's; a call of its members on the object may run the program's overrides of them (Lowering's library calls
+        /// forget everything where it does). Not the collections the kernel models, an exception, a task, a context.
+        /// </summary>
+        public static bool IsLibraryBase(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: false, IsStatic: false } b && b.DeclaringSyntaxReferences.Length == 0 && b.SpecialType == SpecialType.None &&
+            b.ContainingNamespace?.ToDisplayString() is string ns && ns.StartsWith("System") && !IsCollection(b) && CollectionKind(b) == null && !IsException(b) &&
+            !IsTaskLike(b) && !IsContext(b) && !IsSemaphore(b) && !IsDelegate(b);
+
+        /// <summary>Does this class of the program's derive from one of the library's?</summary>
+        public static bool DerivesFromLibrary(ITypeSymbol t)
+        {
+            for (var s = t; s != null && s.SpecialType != SpecialType.System_Object; s = s.BaseType)
+                if (IsLibraryBase(s)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// A library's collection interface a class of the program's may implement (IEnumerable, IReadOnlyList, ...): read
+        /// through, it is unknown at each read (Lowering's Ifc), and its members are the class's own methods. Not those
+        /// that change what equality or order is (IEquatable, IComparer, ...), which collections would call.
+        /// </summary>
+        public static bool IsLibraryCollectionInterface(INamedTypeSymbol i) =>
+            i.DeclaringSyntaxReferences.Length == 0 && i.ContainingNamespace?.ToDisplayString() is "System.Collections" or "System.Collections.Generic" &&
+            i.Name is "IEnumerable" or "IReadOnlyList" or "IReadOnlyCollection" or "IList" or "ICollection";
+
         /// <summary>An interface of the program's, not generic, of abstract members only (their contracts from a contract class).</summary>
         public static bool IsInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Interface && n.Arity == 0 && n.DeclaringSyntaxReferences.Length > 0 &&
@@ -685,12 +712,14 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && !n.IsAnonymousType && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
-            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable") || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
+            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType)) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || IsLibraryCollectionInterface(i)) || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute")) &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
             // (ToString may be overridden: what the library makes of an object's text, it doesn't know anyway)
+            // (an override of a library base's member: the library may call it, whenever it is handed the object)
             n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0 || IsContext(n) ||
+                                                             IsLibraryBase(mm.OverriddenMethod?.ContainingType) ||
                                                              mm.OverriddenMethod?.ContainingType.SpecialType == SpecialType.System_Object &&
                                                              (mm.Name == "ToString" && mm.Parameters.Length == 0 || mm.Name == "GetHashCode" && mm.Parameters.Length == 0 ||
                                                               mm.Name == "Equals" && mm.Parameters.Length == 1)
