@@ -128,9 +128,6 @@ namespace CsVerify.Verifier.Boogie
             // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
             var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
             var only = split == null ? (procs ?? new List<string>()).Select(x => "/proc:" + x) : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
-            // (a run again, of the procedures not decided: a solver of its own for each, not one that has run others, whose
-            // state can keep it from deciding what it decides fresh)
-            if (split != null || procs != null) only = only.Append("/restartProver");
 
             // (procedures verified side by side, a solver each: their results don't depend on each other)
             var cores = "/vcsCores:" + Math.Max(1, Environment.ProcessorCount);

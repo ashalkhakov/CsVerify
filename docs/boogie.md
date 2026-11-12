@@ -1166,7 +1166,12 @@ of the library's members on such an object may run them, so it forgets everythin
 collection interfaces (read through them, they're unknown at each read).
 
 Not yet (such a method is not verified, CSV1902, with why): iterators (`yield`), explicit interface implementations,
-and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
+and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`). And a group query's counts (`GroupBy`,
+`Distinct`, a filter's: `c[i + 1] == c[i] + ...`, with an `exists` for the keys seen before) carry the solver's own
+triggers: where a method's assertion fails, the solver may never saturate them, and the method is undecided (CSV1902)
+where CsVerify's engine reported the failure (`LambdaTests`' `WrongGroup`, in some program texts). A trigger on the
+count alone decides that failure but loses the proof of a correct count up from `c[0]`, and one on the elements too
+brings the loop back: the counts want an encoding of their own.
 
 ## How it's checked
 
@@ -1185,9 +1190,9 @@ method split proves all of is verified. A failure split finds is not yet one: Bo
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
 finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
-A run again, of the procedures not decided, has a solver of its own for each (`/restartProver`): one that has run
-other procedures can be kept by its state from deciding what it decides fresh. A run that ends in Boogie's fatal
-error (a solver's process that couldn't start, on a loaded machine) is run once more.
+(Boogie's `/restartProver`, a solver of its own for each procedure run again, decides more of the group queries, but
+deadlocks Boogie's scheduler: every worker waits on work that needs one. It isn't used.) A run that ends in Boogie's
+fatal error (a solver's process that couldn't start, on a loaded machine) is run once more.
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
 either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on one pool of
 large-stack threads for every run, never disposed (disposing one interrupts threads the solver's processes may still
