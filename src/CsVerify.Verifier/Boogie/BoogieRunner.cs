@@ -13,9 +13,15 @@ namespace CsVerify.Verifier.Boogie
     /// </summary>
     internal static class BoogieRunner
     {
-        /// <summary>The threads Boogie verifies on (as ExecutionEngine makes them: a large stack each), shared by every run.</summary>
-        private static readonly System.Threading.Tasks.TaskScheduler Scheduler =
-            CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
+        /// <summary>
+        /// The threads Boogie verifies on (as ExecutionEngine makes them: a large stack each): a pool of them for each run at
+        /// a time, never disposed (disposing one interrupts its threads, which the solver's processes may still be
+        /// finishing on, and an interrupt there is unhandled and ends the process), taken by a run and given back after.
+        /// Not one for every run: a run's work waits on work it queued on the same threads, so runs side by side (tests
+        /// in parallel) can take them all, each waiting on work queued behind the others', and none goes on.
+        /// </summary>
+        private static readonly System.Collections.Concurrent.ConcurrentBag<System.Threading.Tasks.TaskScheduler> Schedulers =
+            new System.Collections.Concurrent.ConcurrentBag<System.Threading.Tasks.TaskScheduler>();
 
         /// <summary>
         /// The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown. A procedure that
@@ -108,6 +114,16 @@ namespace CsVerify.Verifier.Boogie
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
             BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null)
         {
+            if (!Schedulers.TryTake(out var scheduler))
+                scheduler = CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
+            try { return Run(scheduler, program, z3Path, timeoutMs, split, procs, names); }
+            finally { Schedulers.Add(scheduler); }
+        }
+
+        private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
+            System.Threading.Tasks.TaskScheduler scheduler, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split,
+            List<string> procs, Dictionary<MethodResult, string> names)
+        {
             var output = new StringWriter();
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                 Console.Error.WriteLine($"[run] {(split == null ? "whole" : "split")} {timeoutMs} ms, {(split ?? procs)?.Count.ToString() ?? "all"} procedures, {program.Disabled.Count} facts left out");
@@ -119,9 +135,7 @@ namespace CsVerify.Verifier.Boogie
             // (procedures verified side by side, a solver each: their results don't depend on each other)
             var cores = "/vcsCores:" + Math.Max(1, Environment.ProcessorCount);
             options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores }.Concat(only).Concat(extra).ToArray());
-            // (one scheduler for every run, never disposed: disposing one interrupts its threads, which the solver's
-            // processes may still be finishing on, and an interrupt there is unhandled and ends the process)
-            using var engine = new ExecutionEngine(options, new EmptyVerificationResultCache(), Scheduler, false);
+            using var engine = new ExecutionEngine(options, new EmptyVerificationResultCache(), scheduler, false);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
                 throw new InvalidOperationException("the translated program doesn't parse:\n" + output);
             if (engine.ResolveAndTypecheck(parsed, "csverify.bpl", out _) != PipelineOutcome.ResolvedAndTypeChecked)

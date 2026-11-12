@@ -1190,13 +1190,12 @@ method split proves all of is verified. A failure split finds is not yet one: Bo
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
 finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
-Neither Boogie's `/restartProver` (a solver of its own for each procedure run again, which decides more of the group
-queries) nor a run again after Boogie's fatal error is used: both deadlock Boogie's shared scheduler, every worker
-waiting on work that needs one.
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
-either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on one pool of
-large-stack threads for every run, never disposed (disposing one interrupts threads the solver's processes may still
-be finishing on). `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
+either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on pools of
+large-stack threads, never disposed (disposing one interrupts threads the solver's processes may still be finishing
+on): one for each run at a time, taken by a run and given back after. One for every run deadlocked tests running side
+by side: a run's work waits on work it queued on the same threads, so runs together could take them all, each waiting
+on work queued behind the others'. `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
 
 A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
 the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided
