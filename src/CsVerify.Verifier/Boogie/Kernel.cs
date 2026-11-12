@@ -472,7 +472,11 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
-    internal sealed class KHavocAll : KStmt { }
+    internal sealed class KHavocAll : KStmt
+    {
+        /// <summary>Unless this holds (a delegate's $nochange): then nothing changes.</summary>
+        public KExpr Unless;
+    }
 
     /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
     /// <summary>Around a call of an async method: the objects of these (confined) locals, which no code can reach, are as they were.</summary>
@@ -532,6 +536,13 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KAssume : KStmt
     {
         public KExpr Cond;
+    }
+
+    /// <summary>An immutable object of a class with invariants, where a condition holds: its invariants hold (Checks' ObjectInvariant).</summary>
+    internal sealed class KAssumeInvariant : KStmt
+    {
+        public KExpr Obj, When;
+        public ITypeSymbol Type;
     }
 
     internal sealed class KHavoc : KStmt

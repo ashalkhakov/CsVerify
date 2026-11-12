@@ -450,14 +450,14 @@ namespace CsVerify.Verifier
         public bool ReadsOnlyParameterArrays(IMethodSymbol m) =>
             Reachable(m).All(r => !(_engine.ContractOf(r) is Contract c && c.HasSource) ||
                 c.Declaration.DescendantNodes().OfType<ElementAccessExpressionSyntax>()
-                    .Where(e => MethodVerifier.IsSequence(c.Model.GetTypeInfo(e.Expression).Type))
+                    .Where(e => StaticChecks.IsSequence(c.Model.GetTypeInfo(e.Expression).Type))
                     .All(e => c.Model.GetSymbolInfo(e.Expression).Symbol is IParameterSymbol p && SymbolEqualityComparer.Default.Equals(p.ContainingSymbol, r)));
 
         public bool ReadsArrays(IMethodSymbol m) =>
             Reachable(m).Any(r => _engine.ContractOf(r) is Contract c && c.HasSource &&
-                (r.Parameters.Any(p => MethodVerifier.IsSequence(p.Type)) ||
+                (r.Parameters.Any(p => StaticChecks.IsSequence(p.Type)) ||
                  c.Declaration.DescendantNodes().OfType<ElementAccessExpressionSyntax>()
-                     .Any(e => MethodVerifier.IsSequence(c.Model.GetTypeInfo(e.Expression).Type))));
+                     .Any(e => StaticChecks.IsSequence(c.Model.GetTypeInfo(e.Expression).Type))));
 
         /// <summary>The heap fields a [Pure] function's value may depend on (all it, or its callees, read), in a fixed order.</summary>
         public IReadOnlyList<ISymbol> ReadsOf(IMethodSymbol m) =>

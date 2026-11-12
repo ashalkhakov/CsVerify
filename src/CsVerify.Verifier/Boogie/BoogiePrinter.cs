@@ -133,6 +133,10 @@ namespace CsVerify.Verifier.Boogie
             Line("type LayerType;");
             Line("const $LZ: LayerType;");
             Line("function $LS(ly: LayerType): LayerType;");
+            Optional("$canBeCanceled(", "function $canBeCanceled(t: Ref): bool; // a cancellation token's, which never changes");
+            Optional("$eqc(", "function $eqc(o: Ref): Ref; // a class's own Equals: its class of equals, not known");
+            Optional("$eqc(", "axiom (forall o: Ref :: { $eqc(o) } o != null ==> $eqc(o) != null);");
+            Optional("$dataEq(", "function $dataEq(a: Ref, b: Ref): bool; // records' ==, of fields that don't compare as values (strings'): not known");
             Optional("$cell(", "// a rectangular array's cell: an injective pairing of its indices, as CsVerify's engine's cv_cell");
             Optional("$cell(", "function $cell(i: int, j: int): int;");
             Optional("$cell(", "function $crow(c: int): int;");
@@ -382,7 +386,17 @@ namespace CsVerify.Verifier.Boogie
         public void Stub(IMethodSymbol m, Contract contract, List<KExpr> requires, List<KExpr> ensures)
         {
             var name = Checks.StubName(m);
-            var ps = contract.Stub.Parameters.Select(x => (name: Local(x), type: TypeOf(x.Type))).ToList();
+            // (a collection's: of its models first, its parameters of its type here)
+            var models = Checks.StubModels(m);
+            var given = models.Select((x, k) => (name: "m$" + k, type: x.Type)).ToList();
+            var ps = given.Concat(contract.Stub.Parameters.Select((x, k) => (name: Local(x), type: TypeOf(models.Count == 0 ? x.Type : k == 0 ? m.ContainingType : m.Parameters[k - 1].Type)))).ToList();
+            if (models.Count > 0)
+            {
+                var at = models.Select((x, k) => (x.Name, k)).ToDictionary(x => x.Name, x => (KExpr)new KVar("m$" + x.k));
+                at["this"] = new KVar(Local(contract.Stub.Parameters[0]));
+                requires = requires.Select(r => Checks.Rename(r, at)).ToList();
+                ensures = ensures.Select(e => Checks.Rename(e, at)).ToList();
+            }
             var bound = string.Join(", ", ps.Select(x => $"{x.name}: {x.type}"));
             var app = $"{name}({string.Join(", ", ps.Select(x => x.name))})";
             Line($"function {name}({bound}): {TypeOf(m.ReturnType)};");
@@ -933,7 +947,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f)))) Line($"  free ensures {GoodField(f)};");
             foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees && (modifies.Contains(FieldMap(f)) || modifies.Contains("$root")))) Line($"  free ensures {TreeField(f)};");
             // (a method that writes only arrays it makes, as CsVerify's engine infers it (MayWriteHeap): every other array as it was)
-            if ((!p.Abstract || p.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && p.Method.DeclaringSyntaxReferences.Length > 0 && !KernelTypes.MayWriteHeap(p.Method))
+            if ((!p.Abstract || p.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(p.Method))
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
             // (a field written only at this object, in its constructor, or at objects allocated since: the same at every other)
@@ -975,8 +989,8 @@ namespace CsVerify.Verifier.Boogie
                 // (a library member's, as its nullability says: [MaybeNullWhen(b)] not null where it returns !b)
                 if (m.DeclaringSyntaxReferences.Length == 0 && IsNullable(x.Type))
                 {
-                    if (MethodVerifier.IsNonNullable(x)) Line($"  free ensures {Local(x)} != null;");
-                    else if (MethodVerifier.NotNullWhen(x) is bool when && m.ReturnType.SpecialType == SpecialType.System_Boolean)
+                    if (StaticChecks.IsNonNullable(x)) Line($"  free ensures {Local(x)} != null;");
+                    else if (StaticChecks.NotNullWhen(x) is bool when && m.ReturnType.SpecialType == SpecialType.System_Boolean)
                         Line($"  free ensures {(when ? "result" : "!result")} ==> {Local(x)} != null;");
                 }
                 else if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
@@ -1189,8 +1203,8 @@ namespace CsVerify.Verifier.Boogie
                 case KAtomicSteps _:
                     foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
                     return;
-                case KHavocAll _:
-                    Line("    call $havoc();");
+                case KHavocAll ha:
+                    Line(ha.Unless == null ? "    call $havoc();" : $"    if (!({E(ha.Unless, cx)})) {{ call $havoc(); }}");
                     return;
                 case KKeep keep when !keep.After:
                     foreach (var m in _stateMaps) Line($"    k${keep.Id}{m.name} := {m.name};");

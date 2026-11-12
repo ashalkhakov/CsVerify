@@ -64,7 +64,7 @@ namespace CsVerify.Verifier.Boogie
         private static int LineOf(SyntaxNode n) => n.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
         /// <summary>
-        /// Why a value might be null, from the source, as CsVerify's engine says it (MethodVerifier.NullReasons): a parameter
+        /// Why a value might be null, from the source, as CsVerify's engine says it (StaticChecks.NullReasons): a parameter
         /// declared nullable, a call that may return null (or a local made of one), a call between a check of it and its use
         /// (with the usual fix). Empty if nothing is known.
         /// </summary>
@@ -549,10 +549,14 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KInvoke { Result = iv.Result, Delegate = d, Args = args, Key = iv.Key, At = iv.At, DelegateAt = iv.DelegateAt });
                     return;
                 }
+                case KHavocAll ha when ha.Unless != null:
+                    Emit(new KHavocAll { Unless = Code(ha.Unless) });
+                    return;
                 case KCheck ck:
                 {
                     var cond = Spec(ck.Cond, out _);
-                    _facts.Clear();
+                    // (what its reads give, free: a field not nullable isn't null)
+                    Facts();
                     Assert(cond, At(ck.Id, ck.At, ck.Message), ck.NotAssumedAfter);
                     return;
                 }
@@ -684,6 +688,12 @@ namespace CsVerify.Verifier.Boogie
                 case KCall c:
                     Call(c, decreases);
                     return;
+                case KAssumeInvariant ai:
+                {
+                    var o = Code(ai.Obj);
+                    if (HasObjectInvariant(ai.Type) && Invariant(ai.Type, o) is KExpr inv) Assume(new KOp("==>", Code(ai.When), new KOp("||", new KOp("==", o, new KLit("null")), inv)));
+                    return;
+                }
                 case KAssume a:
                     Emit(new KAssume { Cond = Code(a.Cond) });
                     return;
@@ -1232,11 +1242,19 @@ namespace CsVerify.Verifier.Boogie
         {
             var stub = _program.ContractOf(callee).Stub;
             var values = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray();
-            return stub.Parameters.Select((x, k) => (x, k)).Where(x => x.k < values.Length).ToDictionary(x => Local(x.x), x => values[x.k]);
+            var given = stub.Parameters.Select((x, k) => (x, k)).Where(x => x.k < values.Length).ToDictionary(x => Local(x.x), x => values[x.k]);
+            // (an instance member's stub, @this: this, as its contract reads it)
+            if (receiver != null && !callee.IsStatic) given["this"] = receiver;
+            return given;
         }
 
         private static KExpr StubApp(IMethodSymbol callee, KExpr receiver, KExpr[] args) =>
-            new KFnApp { Callee = callee, Function = StubName(callee), Plain = true, Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
+            new KFnApp { Callee = callee, Function = StubName(callee), Plain = true,
+                         Args = StubModels(callee).Select(m => (KExpr)new KVar(m.Name)).Concat(receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
+
+        /// <summary>The models a collection's [Pure] member is a function of (its version aside); none for another stub's.</summary>
+        public static List<ModelMap> StubModels(IMethodSymbol callee) =>
+            IsCollection(callee.ContainingType) ? ModelsOf((INamedTypeSymbol)callee.ContainingType).Where(m => m.Name != VersionMap).ToList() : new List<ModelMap>();
 
         public static string StubName(IMethodSymbol m) => "lib$" + Name(m);
 
@@ -2393,6 +2411,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A variable given a value (mathematics).</summary>
         internal static KExpr Rename(KExpr e, string name, KExpr value) => Subst(e, new Dictionary<string, KExpr> { [name] = value });
+        internal static KExpr Rename(KExpr e, Dictionary<string, KExpr> given) => Subst(e, given);
 
         /// <summary>Parameters given values (mathematics in, mathematics out).</summary>
         private static KExpr Subst(KExpr e, Dictionary<string, KExpr> given) => e switch

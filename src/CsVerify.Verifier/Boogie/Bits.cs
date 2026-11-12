@@ -9,7 +9,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Bitwise operators and shifts, as CsVerify's engine has them (MethodVerifier.Bits): integer arithmetic over a
+    /// Bitwise operators and shifts, as CsVerify's engine has them (StaticChecks.Bits): integer arithmetic over a
     /// value's two's complement bits, which Boogie's Euclidean <c>div</c> and <c>mod</c> by a power of two read for a
     /// negative value too. With one operand constant each is exact and linear (<c>x &gt;&gt; k</c> is <c>x div 2^k</c>, a mask a
     /// sum of runs of bits, <c>x | C</c> is <c>(x &amp; ~C) + C</c>). With neither constant, the result is a function of the

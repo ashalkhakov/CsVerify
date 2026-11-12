@@ -50,7 +50,7 @@ namespace CsVerify.Verifier
         public IOperation PureBody;
         /// <summary>
         /// For other [Pure] methods: the body's statements (contract calls removed), from which a definition is read if
-        /// they are local declarations, ifs and returns (MethodVerifier.PureStatementsTerm).
+        /// they are local declarations, ifs and returns (StaticChecks.PureStatementsTerm).
         /// </summary>
         public IReadOnlyList<IOperation> PureStatements;
         public bool HasSource => Declaration != null;

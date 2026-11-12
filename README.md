@@ -15,7 +15,7 @@ It adds **no syntax**. There is no preprocessor, desugaring step or compiler for
 
 - a small specification library (`CsVerify.Spec`). Its statements are erased from normal builds.
 - Roslyn analyzers that check linearity and ghost hygiene as you type.
-- a verifier that turns specifications into verification conditions and proves them with Z3.
+- a verifier that translates each method and its specifications to Boogie, which proves them with Z3.
 - an optional proof-erasure pass (`dotnet csverify erase`, or `-p:CsVerifyErase=true`). It builds the program with every proof removed and checks that what is left compiles. This is not a language layer: the sources stay plain C#, and a normal build of them is the reference meaning, which erasure must and does preserve.
 
 CsVerify is the proving counterpart of [Tarp](https://github.com/ashalkhakov/Tarp). Tarp measures, by running your tests, which conditions and decisions were exercised (MC/DC). CsVerify proves statically that index bounds, contracts, invariants and termination hold on *every* path. Both work on the same plain C# sources.
@@ -47,7 +47,7 @@ public static int BinarySearch(int[] a, int key)
 
 - **Proves your C# correct, with no new syntax.** Preconditions, postconditions, loop invariants, termination
   measures, lemmas and ghost values are calls to `Spec.*` that a normal build compiles away. The verifier turns them
-  into verification conditions and proves them with Z3, method by method.
+  into Boogie procedures, which Boogie proves with Z3, method by method.
 - **Rules out run-time errors.** Array and string indexes are in bounds, nothing null is dereferenced (C#'s nullable
   annotations become contracts, `null!` included), nothing divides by zero, and integer arithmetic does not overflow
   silently (it is bounded, as at run time).
@@ -134,7 +134,7 @@ bash bench/linters.sh        # the linter benchmark: which bugs CsVerify, C# lin
 ```
 src/CsVerify.Spec        Spec, Ghost<T>, attributes, Ptr<T>/PointsTo<T>/Mem    (net10.0, package "CsVerify")
 src/CsVerify.Analyzers   LinearityAnalyzer, GhostAnalyzer, PurityAnalyzer      (netstandard2.0)
-src/CsVerify.Verifier    the verifier: contracts, CFG symbolic execution, SMT-LIB/Z3, erasure, MSBuild targets
+src/CsVerify.Verifier    the verifier: contracts, CFG to Boogie (Boogie/), static checks, erasure, MSBuild targets
                          (net10.0, tool "dotnet-csverify")
 tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted per feature, samples
 samples/Good, samples/Buggy, samples/Shop

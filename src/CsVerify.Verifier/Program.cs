@@ -21,13 +21,9 @@ options:
   --timeout <ms>      per-query Z3 timeout (default 10000)
   --method-budget <ms> the most one method may take (all rounds); past it, the rest is not verified (default: none)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
-  --engine <name>     csverify (the default; CSVERIFY_ENGINE sets it): CsVerify's own engine;
-                      boogie: each method with Boogie (docs/boogie.md), CsVerify's own engine where it
-                      isn't translated or can't be decided; boogie-only: Boogie alone
   --boogie-out <file> write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
-  --smt-log <file>    write the SMT-LIB2 conversation with Z3
   --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
@@ -54,7 +50,6 @@ options:
             bool verbose = false;
             bool libraryReport = false;
             bool each = false;
-            string smtLog = null;
             try
             {
                 for (int i = 0; i < args.Length; i++)
@@ -69,11 +64,9 @@ options:
                         case "--timeout": options.TimeoutMs = int.Parse(args[++i]); break;
                         case "--method-budget": options.MethodBudgetMs = int.Parse(args[++i]); break;
                         case "--z3": options.Z3Path = args[++i]; break;
-                        case "--engine": options.Engine = args[++i]; break;
                         case "--boogie-out": options.BoogieOut = args[++i]; break;
                         case "-d": options.Defines.Add(args[++i]); break;
                         case "-r": options.References.Add(args[++i]); break;
-                        case "--smt-log": smtLog = args[++i]; options.SmtLog = new System.Text.StringBuilder(); break;
                         case "--only": options.Only.Add(args[++i]); break;
                         case "-v": verbose = true; break;
                         case "--library-report": libraryReport = true; break;
@@ -92,7 +85,6 @@ options:
                     ? inputs.Select(i => i.Split(',', StringSplitOptions.RemoveEmptyEntries)).ToList()
                     : new List<string[]> { inputs.ToArray() };
                 var result = VerificationResult.Combine(programs.Select(p => Engine.VerifyFiles(p.SelectMany(Expand).Distinct().ToList(), options)).ToList());
-                if (smtLog != null) File.WriteAllText(smtLog, options.SmtLog.ToString());
 
                 foreach (var d in result.Diagnostics) Console.WriteLine(d);
                 if (verbose)
@@ -107,7 +99,7 @@ options:
                     : $"csverify: {result.Methods.Count - failed} of {result.Methods.Count} methods verified, " +
                       $"{result.Methods.Sum(m => m.Proved)}/{result.Methods.Sum(m => m.Obligations)} obligations proved" +
                       (result.Assumptions.Count > 0 ? $", {result.Assumptions.Count} library contract(s) assumed" : "") +
-                      (options.Boogie ? $"; {result.Methods.Count(m => m.Engine == "boogie")} by Boogie" : "") +
+                      "" +
                       (options.CheckKinds != null ? $"; checks: {string.Join(",", Checks.All.Where(options.CheckKinds.Contains))}" +
                                                     $", {result.Methods.Sum(m => m.AssumedObligations)} obligation(s) outside them assumed" +
                                                     $", {result.Methods.Sum(m => m.Unmodeled)} construct(s) not modeled" : ""));

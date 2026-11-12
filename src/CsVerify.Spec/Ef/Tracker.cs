@@ -5,7 +5,7 @@ namespace CsVerify.Ef
 
     /// <summary>
     /// What a DbContext keeps between calls, as ghost state the verifier reads and updates at each Entity Framework
-    /// call (MethodVerifier.EntityFramework): which entities it tracks and how, whether it has changes not yet saved,
+    /// call (Lowering.Ef): which entities it tracks and how, whether it has changes not yet saved,
     /// an open transaction, or a failed save behind it. Compiled in only for programs that reference EF Core.
     /// </summary>
     public static class Tracker
@@ -52,7 +52,7 @@ namespace CsVerify.Ef
 
         /// <summary>
         /// The concurrency tokens of entities as the context read them (where <see cref="Read"/>): each at a key of its
-        /// own for the entity and the token (MethodVerifier.TokenKey).
+        /// own for the entity and the token (Lowering.EfTracker).
         /// </summary>
         [Model] public static object? TokenRead(this DbContext context, object tokenKey) => throw null!;
 

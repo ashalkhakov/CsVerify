@@ -14,7 +14,7 @@ namespace CsVerify.Verifier
     /// calls, including what a library calls back. A thread that takes locks only in increasing order of level, and waits
     /// for nothing that might need a lock it holds, can't be part of a cycle of threads waiting on each other. So a lock
     /// taken, a call made, or a task waited for while a lock is held must take only higher locks (CSV1025; see
-    /// MethodVerifier.LockLevels).
+    /// StaticChecks.LockLevels).
     /// </summary>
     internal sealed class LockLevels
     {

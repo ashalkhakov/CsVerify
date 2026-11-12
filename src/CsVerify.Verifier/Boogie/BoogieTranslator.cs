@@ -100,6 +100,8 @@ namespace CsVerify.Verifier.Boogie
         {
             "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
             "RunsConcurrentlyAttribute", "TakesNoLocksAttribute",
+            // (a lock wrapper's: what it holds is the static checks' to follow, LockGuards; its body is code as any other)
+            "AcquiresAttribute", "ReleasesAttribute",
         };
 
         private static bool KnownAttributes(IMethodSymbol m) =>
@@ -510,7 +512,7 @@ namespace CsVerify.Verifier.Boogie
             for (var work = new Stack<INamedTypeSymbol>(defs); work.Count > 0;)
             {
                 var d = work.Pop();
-                foreach (var c in Data.Cases(Verifier.DataTypes.Def(d)) ?? new INamedTypeSymbol[0])
+                foreach (var c in Data.KnownCases(Verifier.DataTypes.Def(d)) ?? new INamedTypeSymbol[0])
                     if (cases.Add(c))
                         foreach (var f in Data.Fields(c).Where(f => IsData(f.Type)))
                             work.Push(Verifier.DataTypes.Def(f.Type));
@@ -547,7 +549,7 @@ namespace CsVerify.Verifier.Boogie
             // (valid values: their invariants hold, and their parts with invariants are valid, case by case)
             var valid = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Valid).Concat(_signatures.Values.SelectMany(s => s.Valid)), SymbolEqualityComparer.Default);
             for (var work = new Stack<INamedTypeSymbol>(valid); work.Count > 0;)
-                foreach (var c in Data.Cases(work.Pop()) ?? new INamedTypeSymbol[0])
+                foreach (var c in Data.KnownCases(work.Pop()) ?? new INamedTypeSymbol[0])
                 {
                     // (a base's value is valid as the case it is)
                     if (HasInvariants(c) && valid.Add(c)) work.Push(c);
@@ -560,9 +562,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.Rename(Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition), "this", dv)).ToList();
                 var parts = new List<(string, KExpr)>();
-                foreach (var c in Data.Cases(t).Where(c => !SymbolEqualityComparer.Default.Equals(c, t) && HasInvariants(c)))
+                foreach (var c in Data.KnownCases(t).Where(c => !SymbolEqualityComparer.Default.Equals(c, t) && HasInvariants(c)))
                     parts.Add(("$is." + CaseName(c).Substring(3), new KOp(ValidName(c), dv)));
-                foreach (var c in Data.Cases(t))
+                foreach (var c in Data.KnownCases(t))
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
                         parts.Add(("$is." + CaseName(c).Substring(3), new KOp("||", new KOp("==", new KOp(FieldFunction(f), dv), new KLit("null")), new KOp(ValidName(f.Type), new KOp(FieldFunction(f), dv)))));
                 validity.Add((ValidName(t), invs.Count == 0 ? new KLit("true") : invs.Aggregate((a, b) => new KOp("&&", a, b)), parts));

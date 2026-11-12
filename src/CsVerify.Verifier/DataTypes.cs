@@ -123,6 +123,13 @@ namespace CsVerify.Verifier
             return _tags.Keys.Where(c => !c.IsAbstract && Derives(c, t)).ToList();
         }
 
+        /// <summary>A type's cases as far as the program has them: a closed type's all, an open one's (an abstract root others may derive from) those here.</summary>
+        public IReadOnlyList<INamedTypeSymbol> KnownCases(INamedTypeSymbol t) =>
+            Cases(t) ?? (IsData(t) ? _tags.Keys.Where(c => !c.IsAbstract && Derives(c, Def(t))).ToList() : null);
+
+        /// <summary>An abstract data root that isn't closed: its values may be of cases the program doesn't have.</summary>
+        public bool IsOpen(INamedTypeSymbol t) => IsData(t) && Cases(t) == null;
+
         private bool IsClosed(INamedTypeSymbol t)
         {
             // (the record's synthesized copy constructor is protected; deriving through it from another assembly is

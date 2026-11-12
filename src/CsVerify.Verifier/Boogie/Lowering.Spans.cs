@@ -6,7 +6,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Spans (Span&lt;T&gt;, ReadOnlySpan&lt;T&gt;) of scalars, as CsVerify's engine has them (MethodVerifier.Spans): a value
+    /// Spans (Span&lt;T&gt;, ReadOnlySpan&lt;T&gt;) of scalars, as CsVerify's engine has them (StaticChecks.Spans): a value
     /// viewing memory, a base array ($sbase), an offset into it ($soff) and a length (len). s[i] is the base's cell at
     /// offset + i, in its element type's map, so what one span (or the array) writes, another over the same cells sees.
     /// A span made from an array (a conversion, new Span&lt;T&gt;(a, start, length), a.AsSpan(...)) has the array as its
@@ -63,7 +63,7 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
-                case IPropertyReferenceOperation { Property.Name: "Length", Instance: { } si } when IsSpan(si.Type):
+                case IPropertyReferenceOperation { Property.Name: "Length" or "Count", Instance: { } si } when IsSpan(si.Type):
                     return Len(lower(si));
                 case IPropertyReferenceOperation { Property.Name: "IsEmpty", Instance: { } se } when IsSpan(se.Type):
                     return new KOp("==", Len(lower(se)), new KLit("0"));

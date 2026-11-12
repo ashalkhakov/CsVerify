@@ -1,0 +1,1625 @@
+{
+  "ArrayFill_BothEnginesReportTheSame": {
+    "Fi.Bad@Test.cs:12": [
+      "CSV1004@12"
+    ],
+    "Fi.Good@Test.cs:13": [],
+    "Fi.Nul@Test.cs:14": [
+      "CSV1014@14"
+    ],
+    "Fi.Zeroes@Test.cs:4": []
+  },
+  "AsyncAndLocks_BothEnginesReportTheSame": {
+    "Account..ctor@Test.cs:9": [],
+    "Account.Balance@Test.cs:10": [],
+    "Account.Breaks@Test.cs:12": [
+      "CSV1024@12"
+    ],
+    "Account.Deposit@Test.cs:11": [],
+    "Account.Forgets@Test.cs:14": [],
+    "Account.Reset@Test.cs:13": [
+      "CSV1023@13"
+    ],
+    "Account.Twice@Test.cs:15": [],
+    "Account.TwiceBad@Test.cs:16": [
+      "CSV1004@16"
+    ],
+    "Account.Valid@Test.cs:8": [],
+    "As.Arrays@Test.cs:26": [
+      "CSV1004@26"
+    ],
+    "As.Config@Test.cs:28": [],
+    "As.Double@Test.cs:20": [],
+    "As.Keeps@Test.cs:24": [],
+    "As.Loop@Test.cs:27": [],
+    "As.Loses@Test.cs:25": [
+      "CSV1004@25"
+    ],
+    "As.Overflow@Test.cs:29": [
+      "CSV1010@29"
+    ],
+    "As.Pre@Test.cs:23": [
+      "CSV1001@23"
+    ],
+    "As.Use@Test.cs:21": [],
+    "As.UseBad@Test.cs:22": [
+      "CSV1002@22"
+    ]
+  },
+  "Bits_BothEnginesReportTheSame": {
+    "Bi.Big@Test.cs:31": [],
+    "Bi.ByCount@Test.cs:30": [],
+    "Bi.Clamp@Test.cs:32": [],
+    "Bi.Compound@Test.cs:25": [],
+    "Bi.Holds0@Test.cs:4": [],
+    "Bi.Holds1@Test.cs:5": [],
+    "Bi.Holds2@Test.cs:6": [],
+    "Bi.Holds3@Test.cs:7": [],
+    "Bi.Holds4@Test.cs:8": [],
+    "Bi.Holds5@Test.cs:9": [],
+    "Bi.Holds6@Test.cs:10": [],
+    "Bi.Holds7@Test.cs:11": [],
+    "Bi.Holds8@Test.cs:12": [],
+    "Bi.Holds9@Test.cs:13": [],
+    "Bi.Long@Test.cs:19": [],
+    "Bi.Masks@Test.cs:24": [],
+    "Bi.Narrow@Test.cs:26": [],
+    "Bi.NotAnything@Test.cs:29": [
+      "CSV1004@29"
+    ],
+    "Bi.Packing@Test.cs:22": [],
+    "Bi.Shifts@Test.cs:21": [],
+    "Bi.Size@Test.cs:33": [],
+    "Bi.TooWide@Test.cs:27": [
+      "CSV1010@27"
+    ],
+    "Bi.TwoUnknowns@Test.cs:28": [],
+    "Bi.Unsigned@Test.cs:20": [],
+    "Bi.Wrong0@Test.cs:14": [
+      "CSV1004@14"
+    ],
+    "Bi.Wrong1@Test.cs:15": [
+      "CSV1004@15"
+    ],
+    "Bi.Wrong2@Test.cs:16": [
+      "CSV1004@16"
+    ],
+    "Bi.Wrong3@Test.cs:17": [
+      "CSV1004@17"
+    ],
+    "Bi.Wrong4@Test.cs:18": [
+      "CSV1004@18"
+    ],
+    "Bi.WrongHalf@Test.cs:23": [
+      "CSV1004@23"
+    ],
+    "Bi.Wrongly@Test.cs:34": [
+      "CSV1002@34"
+    ]
+  },
+  "Collections_BothEnginesReportTheSame": {
+    "Fl.A@Test.cs:8": [],
+    "Fl.B@Test.cs:9": [
+      "CSV1002@9"
+    ],
+    "Fl.C@Test.cs:10": [
+      "CSV1003@10"
+    ],
+    "Fl.D@Test.cs:11": [],
+    "Fl.Thr@Test.cs:7": [],
+    "Il.Aliased@Test.cs:53": [
+      "CSV1003@53"
+    ],
+    "Il.Array@Test.cs:47": [],
+    "Il.Empty@Test.cs:51": [
+      "CSV1001@51"
+    ],
+    "Il.Kept@Test.cs:48": [],
+    "Il.List@Test.cs:46": [],
+    "Il.Mutable@Test.cs:50": [],
+    "Il.Stable@Test.cs:49": [],
+    "Il.Unchecked@Test.cs:52": [
+      "CSV1003@52"
+    ],
+    "Kv.Count@Test.cs:37": [],
+    "Kv.Has@Test.cs:38": [],
+    "Kv.KeysAdd@Test.cs:34": [
+      "CSV1001@34",
+      "CSV1010@34"
+    ],
+    "Kv.KeysAssign@Test.cs:35": [],
+    "Kv.KeysRemove@Test.cs:36": [],
+    "Ms.Bad@Test.cs:16": [
+      "CSV1002@16"
+    ],
+    "Ms.Conc@Test.cs:18": [],
+    "Ms.Out@Test.cs:17": [],
+    "Ms.Sw@Test.cs:15": [],
+    "Ms.Un@Test.cs:20": [],
+    "Ms.Wd@Test.cs:19": [
+      "CSV1012@19"
+    ],
+    "Qi.First@Test.cs:42": [],
+    "Sk.Cnt@Test.cs:30": [],
+    "Sk.Lookup@Test.cs:24": [
+      "CSV1001@24"
+    ],
+    "Sk.Other@Test.cs:28": [
+      "CSV1004@28",
+      "CSV1012@28"
+    ],
+    "Sk.Put@Test.cs:26": [],
+    "Sk.Safe@Test.cs:25": [],
+    "Sk.Set@Test.cs:29": [
+      "CSV1004@29"
+    ],
+    "Sk.Two@Test.cs:27": []
+  },
+  "Corpus_BothEnginesReportTheSame": {
+    "A.Abs@Test.cs:5": [],
+    "A.Assertion@Test.cs:24": [
+      "CSV1004@24"
+    ],
+    "A.BadInv@Test.cs:25": [
+      "CSV1005@25",
+      "CSV1006@25"
+    ],
+    "A.BadPost@Test.cs:26": [
+      "CSV1002@26"
+    ],
+    "A.Between@Test.cs:18": [],
+    "A.CallNull@Test.cs:35": [
+      "CSV1014@35"
+    ],
+    "A.Checked@Test.cs:19": [],
+    "A.CountDown@Test.cs:50": [],
+    "A.Digit@Test.cs:37": [],
+    "A.Div@Test.cs:23": [
+      "CSV1009@23"
+    ],
+    "A.Elsewhere@Test.cs:27": [
+      "CSV1902@27"
+    ],
+    "A.Fact@Test.cs:44": [],
+    "A.Fill@Test.cs:28": [],
+    "A.First@Test.cs:29": [],
+    "A.FirstBad@Test.cs:30": [
+      "CSV1003@30"
+    ],
+    "A.Has@Test.cs:52": [],
+    "A.KeepsOwn@Test.cs:31": [
+      "CSV1004@31"
+    ],
+    "A.Low@Test.cs:38": [
+      "CSV1010@38"
+    ],
+    "A.LowChecked@Test.cs:39": [],
+    "A.LowWraps@Test.cs:40": [],
+    "A.Make@Test.cs:36": [],
+    "A.Max@Test.cs:43": [],
+    "A.Neg@Test.cs:42": [
+      "CSV1010@42"
+    ],
+    "A.NoMeasure@Test.cs:49": [
+      "CSV1011@49"
+    ],
+    "A.OutsideTheDomain@Test.cs:47": [
+      "CSV1004@47",
+      "CSV1012@47"
+    ],
+    "A.Overflows@Test.cs:22": [
+      "CSV1010@22"
+    ],
+    "A.Read@Test.cs:34": [],
+    "A.Remainder@Test.cs:21": [],
+    "A.Stuck@Test.cs:51": [
+      "CSV1007@51"
+    ],
+    "A.Sum@Test.cs:6": [],
+    "A.Truncates@Test.cs:20": [],
+    "A.Twice@Test.cs:15": [],
+    "A.TwiceU@Test.cs:41": [
+      "CSV1010@41"
+    ],
+    "A.UnfoldsOnce@Test.cs:46": [
+      "CSV1004@46"
+    ],
+    "A.Up@Test.cs:48": [
+      "CSV1008@48"
+    ],
+    "A.UseAbs@Test.cs:16": [
+      "CSV1001@16"
+    ],
+    "A.UseAbsSafely@Test.cs:17": [],
+    "A.UseMax@Test.cs:45": [],
+    "A.WfBad@Test.cs:32": [
+      "CSV1012@32"
+    ],
+    "A.Wide@Test.cs:14": [],
+    "A.Wraps@Test.cs:33": []
+  },
+  "DataTypesAndGenerics_AreBoogies": {
+    "DataBugs.Backwards@DataBugs.cs:91": [
+      "CSV1015@91"
+    ],
+    "DataBugs.Eval@DataBugs.cs:54": [],
+    "DataBugs.Factorial@DataBugs.cs:74": [
+      "CSV1006@82"
+    ],
+    "DataBugs.Fold@DataBugs.cs:62": [],
+    "DataBugs.FoldPreservesEval@DataBugs.cs:66": [
+      "CSV1002@66"
+    ],
+    "DataBugs.Key@DataBugs.cs:43": [
+      "CSV1011@44"
+    ],
+    "DataBugs.SameObject@DataBugs.cs:94": [
+      "CSV1004@98"
+    ],
+    "DataBugs.Size@DataBugs.cs:47": [
+      "CSV1008@51"
+    ],
+    "DataTypes.Append@DataTypes.cs:70": [],
+    "DataTypes.AppendLength@DataTypes.cs:85": [],
+    "DataTypes.Count@DataTypes.cs:136": [],
+    "DataTypes.Countdown@DataTypes.cs:109": [],
+    "DataTypes.Demo@DataTypes.cs:228": [],
+    "DataTypes.Eval@DataTypes.cs:146": [],
+    "DataTypes.Evaluate@DataTypes.cs:159": [],
+    "DataTypes.FactIsFunctional@DataTypes.cs:193": [],
+    "DataTypes.Factorial@DataTypes.cs:203": [],
+    "DataTypes.Fold@DataTypes.cs:173": [],
+    "DataTypes.FoldPreservesEval@DataTypes.cs:182": [],
+    "DataTypes.Length@DataTypes.cs:62": [],
+    "DataTypes.Reverse@DataTypes.cs:77": [],
+    "DataTypes.ReversedCount@DataTypes.cs:126": [],
+    "DataTypes.ReverseLength@DataTypes.cs:94": [],
+    "DataTypes.Widen@DataTypes.cs:221": [],
+    "Exp..ctor@DataBugs.cs:15": [],
+    "Exp..ctor@DataTypes.cs:23": [],
+    "Fact.Natural@DataBugs.cs:22": [],
+    "Fact.Natural@DataTypes.cs:37": [],
+    "Interval.Valid@DataBugs.cs:29": [],
+    "Interval.Valid@DataTypes.cs:46": [],
+    "Interval.Width@DataTypes.cs:49": [],
+    "List..ctor@DataTypes.cs:13": [],
+    "Reading.Positive@DataBugs.cs:37": [
+      "CSV1015@37"
+    ],
+    "Tree..ctor@DataBugs.cs:8": []
+  },
+  "DelegatesThatReadState_BothEnginesReportTheSame": {
+    "Mg.Apply@Test.cs:7": [],
+    "Mg.Inc@Test.cs:8": [],
+    "Mg.MakeAndQuote.\u003Clambda:16\u003E@Test.cs:16:52": [],
+    "Mg.MakeAndQuote@Test.cs:16": [],
+    "Mg.Quote@Test.cs:13": [],
+    "Mg.QuoteBad@Test.cs:14": [
+      "CSV1001@14"
+    ],
+    "Mg.QuoteWrong@Test.cs:15": [
+      "CSV1002@15"
+    ],
+    "Mg.Twice@Test.cs:9": [],
+    "Mg.UseInc@Test.cs:10": [],
+    "Mg.UseIncBad@Test.cs:11": [
+      "CSV1001@11"
+    ],
+    "Mg.UseTwice@Test.cs:12": [],
+    "Rd.Apply@Test.cs:63": [],
+    "Rd.Ask@Test.cs:21": [],
+    "Rd.AskBad@Test.cs:27": [
+      "CSV1001@31"
+    ],
+    "Rd.NoFrame.\u003Clambda:55\u003E@Test.cs:55:30": [],
+    "Rd.NoFrame@Test.cs:51": [
+      "CSV1001@55",
+      "CSV1029@55"
+    ],
+    "Rd.OutOfFrame.\u003Clambda:61\u003E@Test.cs:61:30": [],
+    "Rd.OutOfFrame@Test.cs:57": [
+      "CSV1029@61"
+    ],
+    "Rd.PassReading@Test.cs:64": [
+      "CSV1001@67"
+    ],
+    "Rd.Probe@Test.cs:33": [],
+    "Rd.ProbeBad@Test.cs:39": [
+      "CSV1001@43"
+    ],
+    "Rd.Run@Test.cs:81": [],
+    "Rd.Sums.\u003Clambda:85\u003E@Test.cs:85:27": [],
+    "Rd.Sums@Test.cs:82": [
+      "CSV1004@88"
+    ],
+    "Rd.Touch@Test.cs:69": [],
+    "Rd.TouchBad@Test.cs:75": [
+      "CSV1004@79"
+    ],
+    "Rd.UseAsk.\u003Clambda:49\u003E@Test.cs:49:30": [],
+    "Rd.UseAsk@Test.cs:45": []
+  },
+  "DictionariesAndSets_BothEnginesReportTheSame": {
+    "Dc.Adds@Test.cs:10": [],
+    "Dc.AddsBad@Test.cs:11": [
+      "CSV1001@11"
+    ],
+    "Dc.Fresh@Test.cs:12": [],
+    "Dc.Get@Test.cs:6": [],
+    "Dc.GetBad@Test.cs:7": [
+      "CSV1001@7"
+    ],
+    "Dc.Keeps@Test.cs:15": [],
+    "Dc.Put@Test.cs:8": [],
+    "Dc.PutBad@Test.cs:9": [
+      "CSV1004@9"
+    ],
+    "Dc.Removes@Test.cs:14": [],
+    "Dc.SetBad@Test.cs:27": [
+      "CSV1004@27"
+    ],
+    "Dc.SetCount@Test.cs:28": [],
+    "Dc.SetHas@Test.cs:26": [],
+    "Dc.SetLoop@Test.cs:29": [],
+    "Dc.SetLoopBad@Test.cs:30": [
+      "CSV1001@30",
+      "CSV1010@30"
+    ],
+    "Dc.Stacks@Test.cs:31": [],
+    "Dc.Sum@Test.cs:16": [],
+    "Dc.Tries@Test.cs:13": [],
+    "Dc.Writes@Test.cs:22": [
+      "CSV1001@24",
+      "CSV1010@24"
+    ]
+  },
+  "ElementLocks_BothEnginesReportTheSame": {
+    "Fk..ctor@Test.cs:7": [],
+    "Fk.MaybeNull@Test.cs:18": [
+      "CSV1013@21"
+    ],
+    "Fk.Moves@Test.cs:13": [
+      "CSV1025@16"
+    ],
+    "Fk.Right@Test.cs:23": [],
+    "Fk.Wrong@Test.cs:8": [
+      "CSV1025@11"
+    ]
+  },
+  "Exceptions_AreBoogies": {
+    "ExceptionBugs.AtLeastOne@ExceptionBugs.cs:17": [
+      "CSV1002@21"
+    ],
+    "ExceptionBugs.NoRollback@ExceptionBugs.cs:25": [
+      "CSV1002@28"
+    ],
+    "ExceptionBugs.PositiveOnly@ExceptionBugs.cs:8": [],
+    "ExceptionBugs.ThrowsNull@ExceptionBugs.cs:41": [
+      "CSV1013@43"
+    ],
+    "ExceptionBugs.WrongKind@ExceptionBugs.cs:34": [
+      "CSV1002@36"
+    ],
+    "ExceptionSamples.Digit@Exceptions.cs:11": [],
+    "ExceptionSamples.DigitOrMinusOne@Exceptions.cs:20": [],
+    "ExceptionSamples.Guarded@Exceptions.cs:70": [],
+    "ExceptionSamples.SaturatingSum@Exceptions.cs:28": [],
+    "ExceptionSamples.Sum@Exceptions.cs:46": [],
+    "ExceptionSamples.Update@Exceptions.cs:58": []
+  },
+  "FinallyAndUsing_BothEnginesReportTheSame": {
+    "Fin.Digit@Test.cs:10": [],
+    "Fin.Forgets@Test.cs:26": [
+      "CSV1002@29"
+    ],
+    "Fin.Loop@Test.cs:53": [],
+    "Fin.Marks@Test.cs:17": [],
+    "Fin.Nested@Test.cs:41": [],
+    "Fin.ResultKept@Test.cs:67": [],
+    "Fin.Undoes@Test.cs:34": [
+      "CSV1002@38"
+    ],
+    "Fin.Uses@Test.cs:74": [
+      "CSV1002@80"
+    ],
+    "Fin.UsesBad@Test.cs:82": [
+      "CSV1002@87"
+    ],
+    "Fin.UsingVar@Test.cs:89": [],
+    "Res..ctor@Test.cs:5": [],
+    "Res.Dispose@Test.cs:6": []
+  },
+  "ForEachAndDelegates_BothEnginesReportTheSame": {
+    "D.Act@Test.cs:31": [],
+    "D.Apply@Test.cs:21": [],
+    "D.ApplyAll@Test.cs:23": [],
+    "D.Captured.\u003Clambda:28\u003E@Test.cs:28:90": [
+      "CSV1010@28"
+    ],
+    "D.Captured@Test.cs:28": [],
+    "D.Keeps@Test.cs:29": [],
+    "D.Loses@Test.cs:30": [
+      "CSV1004@30"
+    ],
+    "D.Needs.\u003Clambda:26\u003E@Test.cs:26:48": [],
+    "D.Needs@Test.cs:26": [
+      "CSV1001@26"
+    ],
+    "D.NeedsOk.\u003Clambda:27\u003E@Test.cs:27:50": [],
+    "D.NeedsOk@Test.cs:27": [],
+    "D.NoPre@Test.cs:22": [
+      "CSV1001@22"
+    ],
+    "D.TotalBad.\u003Clambda:33\u003E@Test.cs:33:54": [],
+    "D.TotalBad@Test.cs:33": [
+      "CSV1001@33"
+    ],
+    "D.UseAct.\u003Clambda:32\u003E@Test.cs:32:39": [],
+    "D.UseAct@Test.cs:32": [],
+    "D.UseValue.\u003Clambda:24\u003E@Test.cs:24:51": [
+      "CSV1010@24"
+    ],
+    "D.UseValue@Test.cs:24": [],
+    "D.UseValueBad.\u003Clambda:25\u003E@Test.cs:25:54": [
+      "CSV1010@25"
+    ],
+    "D.UseValueBad@Test.cs:25": [
+      "CSV1004@25"
+    ],
+    "F.BadInv@Test.cs:13": [
+      "CSV1005@13"
+    ],
+    "F.Count@Test.cs:12": [],
+    "F.Overflow@Test.cs:15": [
+      "CSV1010@15"
+    ],
+    "F.Skip@Test.cs:16": [],
+    "F.Sum@Test.cs:5": [],
+    "F.Upto@Test.cs:17": [],
+    "F.Widen@Test.cs:14": []
+  },
+  "Inheritance_BothEnginesReportTheSame": {
+    "Account.Deposit@Test.cs:29": [],
+    "Account.Fee@Test.cs:30": [],
+    "Greedy.Deposit@Test.cs:41": [
+      "CSV1002@41"
+    ],
+    "Greedy.Fee@Test.cs:42": [
+      "CSV1002@42"
+    ],
+    "Hole..ctor@Test.cs:23": [],
+    "Hole.Area@Test.cs:24": [
+      "CSV1002@24"
+    ],
+    "I.Ask@Test.cs:55": [],
+    "I.Build@Test.cs:60": [],
+    "I.Charge@Test.cs:57": [],
+    "I.Forgets@Test.cs:59": [
+      "CSV1004@59"
+    ],
+    "I.Measure@Test.cs:58": [],
+    "I.Use@Test.cs:56": [],
+    "One.Next@Test.cs:51": [],
+    "Picky.Deposit@Test.cs:46": [
+      "CSV1010@46",
+      "CSV1018@46"
+    ],
+    "Savings..ctor@Test.cs:35": [],
+    "Savings.Deposit@Test.cs:36": [],
+    "Savings.Fee@Test.cs:37": [],
+    "Shape..ctor@Test.cs:6": [],
+    "Square..ctor@Test.cs:18": [],
+    "Square.Area@Test.cs:19": [],
+    "Zero.Next@Test.cs:52": [
+      "CSV1002@52"
+    ]
+  },
+  "Invariants_BothEnginesReportTheSame": {
+    "Av..ctor@Test.cs:5": [],
+    "Iv.Bad@Test.cs:39": [
+      "CSV1015@39"
+    ],
+    "Iv.Ht@Test.cs:32": [],
+    "Iv.Kids@Test.cs:40": [],
+    "Iv.Node@Test.cs:33": [],
+    "Iv.Same@Test.cs:47": [
+      "CSV1004@51"
+    ],
+    "Iv.Uses@Test.cs:53": [],
+    "N.Bal@Test.cs:9": [],
+    "Rd.Positive@Test.cs:15": [
+      "CSV1015@15"
+    ],
+    "Sq..ctor@Test.cs:21": [],
+    "Sq.Area@Test.cs:22": [],
+    "Sq.Valid@Test.cs:20": [],
+    "Tl..ctor@Test.cs:28": [
+      "CSV1015@28"
+    ],
+    "Tl.Valid@Test.cs:27": []
+  },
+  "Lists_BothEnginesReportTheSame": {
+    "Ls.First@Test.cs:20": [],
+    "Ls.FirstBad@Test.cs:21": [
+      "CSV1001@21"
+    ],
+    "Ls.Fresh@Test.cs:24": [],
+    "Ls.Grow@Test.cs:22": [],
+    "Ls.GrowBad@Test.cs:23": [
+      "CSV1002@23"
+    ],
+    "Ls.Has@Test.cs:27": [],
+    "Ls.Items@Test.cs:29": [],
+    "Ls.Keeps@Test.cs:25": [],
+    "Ls.Loses@Test.cs:26": [
+      "CSV1004@26"
+    ],
+    "Ls.Mutates@Test.cs:32": [
+      "CSV1001@32"
+    ],
+    "Ls.Objs@Test.cs:30": [],
+    "Ls.Set@Test.cs:28": [],
+    "Ls.Sum@Test.cs:6": [],
+    "Ls.SumBad@Test.cs:14": [
+      "CSV1010@17"
+    ],
+    "Ls.WfBad@Test.cs:31": [
+      "CSV1012@31"
+    ]
+  },
+  "Nullables_BothEnginesReportTheSame": {
+    "Nu.Bad@Test.cs:22": [
+      "CSV1013@22"
+    ],
+    "Nu.Bad2@Test.cs:23": [
+      "CSV1013@23"
+    ],
+    "Nu.Cmp@Test.cs:24": [],
+    "Nu.Eq@Test.cs:29": [],
+    "Nu.Find@Test.cs:5": [],
+    "Nu.Use@Test.cs:16": [],
+    "Nu.Wrong@Test.cs:34": [
+      "CSV1002@37"
+    ]
+  },
+  "ObjectArrays_BothEnginesReportTheSame": {
+    "Ar.A@Test.cs:14": [],
+    "Ar.B@Test.cs:15": [],
+    "Ar.C@Test.cs:16": [],
+    "Ar.Count@Test.cs:35": [],
+    "Ar.D@Test.cs:17": [],
+    "Ar.E@Test.cs:18": [
+      "CSV1013@18"
+    ],
+    "Ar.F@Test.cs:19": [],
+    "Ar.G@Test.cs:20": [
+      "CSV1013@20"
+    ],
+    "Ar.H@Test.cs:21": [
+      "CSV1004@21"
+    ],
+    "Ar.Made@Test.cs:41": [],
+    "Ar.Mk@Test.cs:22": [],
+    "Ar.Total@Test.cs:23": [
+      "CSV1006@29"
+    ],
+    "Ar.Unchecked@Test.cs:34": [
+      "CSV1013@34"
+    ],
+    "Sq..ctor@Test.cs:9": [],
+    "Sq.Area@Test.cs:10": [],
+    "Sq.Valid@Test.cs:8": []
+  },
+  "Objects_BothEnginesReportTheSame": {
+    "Box..ctor@Test.cs:23": [],
+    "Counter..ctor@Test.cs:7": [],
+    "Counter.First@Test.cs:11": [
+      "CSV1003@11"
+    ],
+    "Counter.Get@Test.cs:9": [],
+    "Counter.Inc@Test.cs:8": [],
+    "Counter.Overflow@Test.cs:10": [
+      "CSV1010@10"
+    ],
+    "Node..ctor@Test.cs:17": [],
+    "O.Add@Test.cs:46": [],
+    "O.Alias@Test.cs:35": [
+      "CSV1004@35"
+    ],
+    "O.AliasBad@Test.cs:36": [
+      "CSV1004@36"
+    ],
+    "O.Cons@Test.cs:41": [],
+    "O.Defaults@Test.cs:48": [],
+    "O.FieldsSpec@Test.cs:49": [],
+    "O.Forgets@Test.cs:38": [
+      "CSV1004@38"
+    ],
+    "O.Fresh@Test.cs:37": [],
+    "O.Length@Test.cs:42": [],
+    "O.LocalNull@Test.cs:47": [
+      "CSV1014@47"
+    ],
+    "O.NextVal@Test.cs:39": [
+      "CSV1013@39"
+    ],
+    "O.NextValSafe@Test.cs:40": [],
+    "O.NullReceiver@Test.cs:45": [
+      "CSV1013@45"
+    ],
+    "O.SetNull@Test.cs:44": [
+      "CSV1014@44"
+    ],
+    "O.SizeOf@Test.cs:43": [],
+    "O.UseCounter@Test.cs:34": [],
+    "Unset..ctor@Test.cs:28": [
+      "CSV1014@28"
+    ]
+  },
+  "Ownership_BothEnginesReportTheSame": {
+    "Acct..ctor@Test.cs:8": [],
+    "Acct.Deposit@Test.cs:9": [],
+    "Acct.Get@Test.cs:12": [],
+    "Acct.Overdraw@Test.cs:11": [
+      "CSV1015@11"
+    ],
+    "Acct.Valid@Test.cs:7": [],
+    "Acct.Withdraw@Test.cs:10": [],
+    "W.AfterConsume@Test.cs:43": [
+      "CSV1016@47"
+    ],
+    "W.BadMake@Test.cs:51": [],
+    "W.Broken@Test.cs:41": [
+      "CSV1015@41"
+    ],
+    "W.Consume@Test.cs:42": [],
+    "W.KeepsOther@Test.cs:33": [],
+    "W.Make@Test.cs:24": [],
+    "W.NonNegative@Test.cs:52": [],
+    "W.NoView@Test.cs:40": [
+      "CSV1016@40"
+    ],
+    "W.Open@Test.cs:49": [],
+    "W.Transfer@Test.cs:16": [],
+    "W.Twice@Test.cs:53": [],
+    "W.Unlinked@Test.cs:50": [
+      "CSV1016@50"
+    ]
+  },
+  "OwnershipTrees_AreBoogies": {
+    "AtsViewtypes.BufferDemo@AtsViewtypes.cs:315": [],
+    "AtsViewtypes.Demo@AtsViewtypes.cs:340": [],
+    "AtsViewtypes.Digits@AtsViewtypes.cs:271": [],
+    "AtsViewtypes.InsertionSort@AtsViewtypes.cs:238": [],
+    "AtsViewtypes.Insord@AtsViewtypes.cs:202": [],
+    "AtsViewtypes.SortDemo@AtsViewtypes.cs:284": [],
+    "AtsViewtypes.TimerDemo@AtsViewtypes.cs:328": [],
+    "AtsViewtypes.TreeDemo@AtsViewtypes.cs:303": [],
+    "BNode..ctor@AtsViewtypes.cs:76": [],
+    "BNode.Insert@AtsViewtypes.cs:84": [],
+    "BNode.Valid@AtsViewtypes.cs:70": [],
+    "CircularBuffer..ctor@AtsViewtypes.cs:127": [],
+    "CircularBuffer.Capacity@AtsViewtypes.cs:134": [],
+    "CircularBuffer.Insert@AtsViewtypes.cs:138": [],
+    "CircularBuffer.Remove@AtsViewtypes.cs:149": [],
+    "CircularBuffer.Size@AtsViewtypes.cs:135": [],
+    "CircularBuffer.Valid@AtsViewtypes.cs:124": [],
+    "Link.AppendSmaller@TreeOwnershipBugs.cs:14": [
+      "CSV1015@14"
+    ],
+    "Link.Sorted@TreeOwnershipBugs.cs:11": [],
+    "Link.TrimAfterSecond@TreeOwnershipBugs.cs:23": [],
+    "LList..ctor@AtsViewtypes.cs:44": [],
+    "LList.Push@AtsViewtypes.cs:46": [],
+    "LList.Valid@AtsViewtypes.cs:41": [],
+    "LNode..ctor@AtsViewtypes.cs:25": [],
+    "LNode.Valid@AtsViewtypes.cs:20": [],
+    "OwnedList.Demo@OwnedList.cs:87": [],
+    "OwnedList.Independent@OwnedList.cs:76": [],
+    "Ring..ctor@ViewtypeBugs.cs:14": [],
+    "Ring.Clear1@ViewtypeBugs.cs:25": [
+      "CSV1015@25"
+    ],
+    "Ring.Insert@ViewtypeBugs.cs:17": [
+      "CSV1003@20"
+    ],
+    "Ring.Valid@ViewtypeBugs.cs:11": [],
+    "SizedTree..ctor@ViewtypeBugs.cs:41": [],
+    "SizedTree.AddLeft@ViewtypeBugs.cs:44": [
+      "CSV1015@44"
+    ],
+    "SizedTree.Valid@ViewtypeBugs.cs:38": [],
+    "SortedNode..ctor@OwnedList.cs:22": [],
+    "SortedNode.Digits@OwnedList.cs:61": [],
+    "SortedNode.get_First@OwnedList.cs:30": [],
+    "SortedNode.InsertAfter@OwnedList.cs:33": [],
+    "SortedNode.Valid@OwnedList.cs:18": [],
+    "Timer.Pause@AtsViewtypes.cs:175": [],
+    "Timer.Resume@AtsViewtypes.cs:182": [],
+    "Timer.Start@AtsViewtypes.cs:173": [],
+    "Timer.Ticks@AtsViewtypes.cs:191": [],
+    "Timer.Valid@AtsViewtypes.cs:171": [],
+    "TreeOwnershipBugs.Bypass@TreeOwnershipBugs.cs:46": [
+      "CSV1016@49"
+    ],
+    "TreeOwnershipBugs.Cycle@TreeOwnershipBugs.cs:53": [
+      "CSV1016@56"
+    ],
+    "TreeOwnershipBugs.Reach@TreeOwnershipBugs.cs:39": [
+      "CSV1016@42"
+    ],
+    "TreeOwnershipBugs.Stale@TreeOwnershipBugs.cs:60": [
+      "CSV1004@66"
+    ]
+  },
+  "Parameters_BothEnginesReportTheSame": {
+    "Ch..ctor@Test.cs:13": [],
+    "Ch..ctor@Test.cs:14": [],
+    "Ch..ctor@Test.cs:15": [
+      "CSV1002@15"
+    ],
+    "Mk.Bad@Test.cs:20": [
+      "CSV1002@20"
+    ],
+    "Mk.Make@Test.cs:19": [],
+    "Mk.Seven@Test.cs:21": [],
+    "Pa.Caller@Test.cs:8": [],
+    "Pa.Entry@Test.cs:4": [
+      "CSV1002@4"
+    ],
+    "Pa.Loop@Test.cs:7": [],
+    "Pa.Now@Test.cs:5": [],
+    "Pa.Was@Test.cs:6": []
+  },
+  "Parity_BothEnginesReportTheSame": {
+    "P.Down@Test.cs:8": [],
+    "P.Inclusive@Test.cs:16": [],
+    "P.Up@Test.cs:7": [],
+    "P.While@Test.cs:9": [],
+    "P2.Step@Test.cs:20": [
+      "CSV1010@20"
+    ],
+    "P2.StepBad@Test.cs:21": [
+      "CSV1003@21"
+    ],
+    "P2.Wobble@Test.cs:22": [
+      "CSV1003@26",
+      "CSV1010@25",
+      "CSV1010@25"
+    ]
+  },
+  "Polymorphism_BothEnginesReportTheSame": {
+    "Cell..ctor@Test.cs:43": [],
+    "Cell.Bad@Test.cs:46": [
+      "CSV1010@46"
+    ],
+    "Cell.Set@Test.cs:45": [],
+    "Cell.Take@Test.cs:44": [],
+    "Ci.Area@Test.cs:93": [],
+    "Ci.Grow@Test.cs:94": [],
+    "Ct.Bump@Test.cs:8": [
+      "CSV1010@8"
+    ],
+    "Ct.Get@Test.cs:7": [
+      "CSV1002@7"
+    ],
+    "Dv.Again@Test.cs:101": [],
+    "Dv.Four@Test.cs:100": [
+      "CSV1002@100"
+    ],
+    "Dv.Nine@Test.cs:98": [],
+    "Dv.Seven@Test.cs:102": [],
+    "Dv.Ten@Test.cs:99": [
+      "CSV1002@99"
+    ],
+    "Gn.Counts@Test.cs:74": [],
+    "Gn.Ints@Test.cs:66": [
+      "CSV1004@71"
+    ],
+    "Gn.Keyed@Test.cs:56": [
+      "CSV1013@56"
+    ],
+    "Gn.KeyedSafe@Test.cs:57": [],
+    "Gn.Use@Test.cs:58": [
+      "CSV1004@62"
+    ],
+    "Holder.Peek@Test.cs:51": [
+      "CSV1013@51"
+    ],
+    "Holder.Safe@Test.cs:52": [],
+    "If.Keep@Test.cs:21": [
+      "CSV1004@25"
+    ],
+    "If.Mine@Test.cs:28": [
+      "CSV1004@33"
+    ],
+    "If.Twice@Test.cs:14": [
+      "CSV1004@18"
+    ],
+    "K.Key@Test.cs:38": [],
+    "Sq..ctor@Test.cs:87": [],
+    "Sq.Area@Test.cs:88": [],
+    "Sq.Grow@Test.cs:89": [],
+    "Sq.Valid@Test.cs:86": []
+  },
+  "Predicates_BothEnginesReportTheSame": {
+    "P.Folded@Test.cs:14": [
+      "CSV1016@14"
+    ],
+    "P.Given@Test.cs:15": [],
+    "P.Keep@Test.cs:10": [],
+    "P.Lost@Test.cs:16": [],
+    "P.NoAcc@Test.cs:13": [
+      "CSV1016@13"
+    ],
+    "P.One@Test.cs:6": [],
+    "P.Peeks@Test.cs:7": [
+      "CSV1016@7"
+    ],
+    "P.Read@Test.cs:12": [],
+    "P.Set@Test.cs:8": [],
+    "P.SetBad@Test.cs:9": [
+      "CSV1019@9"
+    ],
+    "P.Twice@Test.cs:11": [
+      "CSV1016@11"
+    ]
+  },
+  "Samples_BothEnginesReportTheSame/Buggy": {
+    "Account..ctor@LockLevelBugs.cs:15": [],
+    "AcslBugs.CopyOverlapping@AcslBugs.cs:46": [
+      "CSV1006@52"
+    ],
+    "AcslBugs.FindLast@AcslBugs.cs:32": [
+      "CSV1002@42"
+    ],
+    "AcslBugs.Increasing@AcslBugs.cs:7": [],
+    "AcslBugs.LowerBoundWrong@AcslBugs.cs:15": [
+      "CSV1006@23"
+    ],
+    "AcslBugs.SelectionSortCopies@AcslBugs.cs:58": [
+      "CSV1006@64"
+    ],
+    "ArrayPermissionBugs.CallsUnframed@ArrayPermissionBugs.cs:37": [
+      "CSV1016@41"
+    ],
+    "ArrayPermissionBugs.Exchange@ArrayPermissionBugs.cs:7": [],
+    "ArrayPermissionBugs.ExchangeSame@ArrayPermissionBugs.cs:17": [
+      "CSV1016@20"
+    ],
+    "ArrayPermissionBugs.PastTheEnd@ArrayPermissionBugs.cs:24": [
+      "CSV1016@27"
+    ],
+    "ArrayPermissionBugs.Unframed@ArrayPermissionBugs.cs:30": [],
+    "ArrayViewBugs.ForgetToJoin@ArrayViewBugs.cs:18": [
+      "CSV0001@18",
+      "CSV0001@21",
+      "CSV0001@21"
+    ],
+    "ArrayViewBugs.OnePastEnd@ArrayViewBugs.cs:26": [
+      "CSV1001@29"
+    ],
+    "ArrayViewBugs.WrongOffset@ArrayViewBugs.cs:8": [
+      "CSV1001@12"
+    ],
+    "AtsPortBugs.Circ@AtsPortBugs.cs:72": [],
+    "AtsPortBugs.ConcatOneWay@AtsPortBugs.cs:78": [
+      "CSV1019@83"
+    ],
+    "AtsPortBugs.Cstr@AtsPortBugs.cs:185": [],
+    "AtsPortBugs.DanglingTwin@AtsPortBugs.cs:175": [
+      "CSV1019@181"
+    ],
+    "AtsPortBugs.DistinctKeys@AtsPortBugs.cs:262": [],
+    "AtsPortBugs.Dl@AtsPortBugs.cs:62": [],
+    "AtsPortBugs.Fs@AtsPortBugs.cs:229": [],
+    "AtsPortBugs.Grows@AtsPortBugs.cs:145": [],
+    "AtsPortBugs.GrowWithoutCopy@AtsPortBugs.cs:159": [
+      "CSV1002@159"
+    ],
+    "AtsPortBugs.Heap@AtsPortBugs.cs:110": [],
+    "AtsPortBugs.InsertAfter@AtsPortBugs.cs:99": [],
+    "AtsPortBugs.InsertDropsRest@AtsPortBugs.cs:202": [
+      "CSV1016@210"
+    ],
+    "AtsPortBugs.InsertTwice@AtsPortBugs.cs:278": [
+      "CSV1016@282"
+    ],
+    "AtsPortBugs.InsertWithoutFind@AtsPortBugs.cs:268": [
+      "CSV1019@274"
+    ],
+    "AtsPortBugs.Items@AtsPortBugs.cs:149": [],
+    "AtsPortBugs.Lemma3AsStated@AtsPortBugs.cs:236": [
+      "CSV1002@236"
+    ],
+    "AtsPortBugs.PopSmallerChild@AtsPortBugs.cs:118": [
+      "CSV1006@130"
+    ],
+    "AtsPortBugs.PqHeld@AtsPortBugs.cs:214": [],
+    "AtsPortBugs.Region@AtsPortBugs.cs:169": [],
+    "AtsPortBugs.SetAnyChar@AtsPortBugs.cs:191": [
+      "CSV1019@197"
+    ],
+    "AtsPortBugs.ShrinkBelowCount@AtsPortBugs.cs:219": [
+      "CSV1019@225"
+    ],
+    "AtsPortBugs.Sl@AtsPortBugs.cs:67": [],
+    "AtsPortBugs.SplitWithoutFallback@AtsPortBugs.cs:246": [
+      "CSV1008@257"
+    ],
+    "AtsPortBugs.Uncons@AtsPortBugs.cs:86": [],
+    "AtsPortBugs.UnconsEmpty@AtsPortBugs.cs:92": [
+      "CSV1001@96"
+    ],
+    "Avl..ctor@TreeBugs.cs:9": [],
+    "AvlTree.Ht@TreeBugs.cs:20": [],
+    "AvlTree.Node@TreeBugs.cs:22": [],
+    "Bugs.Average@Bugs.cs:35": [
+      "CSV1001@35"
+    ],
+    "Bugs.CountUp@Bugs.cs:38": [
+      "CSV1005@44",
+      "CSV1006@44"
+    ],
+    "Bugs.Div@Bugs.cs:28": [],
+    "Bugs.First@Bugs.cs:22": [
+      "CSV1002@25",
+      "CSV1012@24"
+    ],
+    "Bugs.Loop@Bugs.cs:51": [
+      "CSV1008@56"
+    ],
+    "Bugs.SumOffByOne@Bugs.cs:9": [
+      "CSV1003@15"
+    ],
+    "Bugs.TriWithoutLemma@Bugs.cs:60": [
+      "CSV1004@63"
+    ],
+    "Bugs.WrongPointer@Bugs.cs:68": [
+      "CSV1001@72"
+    ],
+    "CellPredicateBugs.FirstPositive@CellPredicateBugs.cs:17": [
+      "CSV1016@18"
+    ],
+    "CellPredicateBugs.Held@CellPredicateBugs.cs:13": [],
+    "CellPredicateBugs.WriteFoldedCell@CellPredicateBugs.cs:21": [
+      "CSV1016@27"
+    ],
+    "Counter.Grows@AtomicBugs.cs:11": [],
+    "Counter.Grows64@AtomicBugs.cs:12": [],
+    "Counter.LostUpdate@AtomicBugs.cs:15": [
+      "CSV1030@18"
+    ],
+    "Counter.Torn@AtomicBugs.cs:33": [
+      "CSV1030@33"
+    ],
+    "Counter.TwoReads@AtomicBugs.cs:25": [
+      "CSV1004@29"
+    ],
+    "Counter.Wraps@AtomicBugs.cs:22": [
+      "CSV1030@22"
+    ],
+    "CounterBuggy.Bump@StaticFieldsBuggy.cs:10": [],
+    "CounterBuggy.Demo@StaticFieldsBuggy.cs:16": [
+      "CSV1004@20"
+    ],
+    "DataBugs.Backwards@DataBugs.cs:91": [
+      "CSV1015@91"
+    ],
+    "DataBugs.Eval@DataBugs.cs:54": [],
+    "DataBugs.Factorial@DataBugs.cs:74": [
+      "CSV1006@82"
+    ],
+    "DataBugs.Fold@DataBugs.cs:62": [],
+    "DataBugs.FoldPreservesEval@DataBugs.cs:66": [
+      "CSV1002@66"
+    ],
+    "DataBugs.Key@DataBugs.cs:43": [
+      "CSV1011@44"
+    ],
+    "DataBugs.SameObject@DataBugs.cs:94": [
+      "CSV1004@98"
+    ],
+    "DataBugs.Size@DataBugs.cs:47": [
+      "CSV1008@51"
+    ],
+    "Dial..ctor@ShareBugs.cs:12": [],
+    "Dial.Valid@ShareBugs.cs:10": [],
+    "Dimmer.Valid@FieldPermissionBugs.cs:16": [],
+    "ExceptionBugs.AtLeastOne@ExceptionBugs.cs:17": [
+      "CSV1002@21"
+    ],
+    "ExceptionBugs.NoRollback@ExceptionBugs.cs:25": [
+      "CSV1002@28"
+    ],
+    "ExceptionBugs.PositiveOnly@ExceptionBugs.cs:8": [],
+    "ExceptionBugs.ThrowsNull@ExceptionBugs.cs:41": [
+      "CSV1013@43"
+    ],
+    "ExceptionBugs.WrongKind@ExceptionBugs.cs:34": [
+      "CSV1002@36"
+    ],
+    "Exp..ctor@DataBugs.cs:15": [],
+    "Fact.Natural@DataBugs.cs:22": [],
+    "FieldPermissionBugs.Incomplete@FieldPermissionBugs.cs:35": [
+      "CSV1016@39"
+    ],
+    "FieldPermissionBugs.Invariant@FieldPermissionBugs.cs:52": [
+      "CSV1902@52"
+    ],
+    "FieldPermissionBugs.Keep@FieldPermissionBugs.cs:42": [],
+    "FieldPermissionBugs.MaybeSame@FieldPermissionBugs.cs:45": [
+      "CSV1004@48"
+    ],
+    "FieldPermissionBugs.TakeTurn@FieldPermissionBugs.cs:29": [],
+    "FieldPermissionBugs.WrongField@FieldPermissionBugs.cs:22": [
+      "CSV1016@26"
+    ],
+    "FloatBugs.Length@FloatBugs.cs:9": [
+      "CSV1002@13"
+    ],
+    "FloatBugs.Reflexive@FloatBugs.cs:29": [
+      "CSV1004@31"
+    ],
+    "FloatBugs.Successor@FloatBugs.cs:17": [
+      "CSV1004@19"
+    ],
+    "FloatBugs.Truncated@FloatBugs.cs:23": [
+      "CSV1010@25"
+    ],
+    "FrameBugs.Independent@FrameBugs.cs:59": [
+      "CSV1004@65"
+    ],
+    "FrameBugs.Sneaky@FrameBugs.cs:51": [
+      "CSV1017@55"
+    ],
+    "Gate.GetOrCompute@LockBugs.cs:48": [
+      "CSV1025@55"
+    ],
+    "Gate.Twice@LockBugs.cs:33": [
+      "CSV1025@38"
+    ],
+    "Gate.Unreleased@LockBugs.cs:63": [
+      "CSV1023@65",
+      "CSV1023@66",
+      "CSV1023@67"
+    ],
+    "Gem..ctor@PackageBugs.cs:12": [],
+    "Gem.Valid@PackageBugs.cs:10": [],
+    "GemBox.Valid@PackageBugs.cs:22": [],
+    "Holder..ctor@FrameBugs.cs:32": [],
+    "Holder.Bump@FrameBugs.cs:39": [],
+    "Holder.Positive@FrameBugs.cs:24": [
+      "CSV1017@28"
+    ],
+    "Holder.Valid@FrameBugs.cs:16": [],
+    "Ins..ctor@TreeBugs.cs:43": [],
+    "Interval.Valid@DataBugs.cs:29": [],
+    "Jobs.Early@LockBugs.cs:90": [
+      "CSV1026@93"
+    ],
+    "Jobs.Finish@LockBugs.cs:99": [
+      "CSV1027@100"
+    ],
+    "Jobs.Lost@LockBugs.cs:83": [
+      "CSV1026@85"
+    ],
+    "Jobs.Work@LockBugs.cs:75": [],
+    "LeakyPurse..ctor@OopBugs.cs:74": [],
+    "LeakyPurse.Add@OopBugs.cs:76": [
+      "CSV1002@76",
+      "CSV1017@80"
+    ],
+    "LevelBugs.Blocking@LockLevelBugs.cs:68": [
+      "CSV1025@71",
+      "CSV1026@71"
+    ],
+    "LevelBugs.Callback@LockLevelBugs.cs:39": [
+      "CSV1025@42"
+    ],
+    "LevelBugs.Fetch@LockLevelBugs.cs:57": [],
+    "LevelBugs.LowUnderHigh@LockLevelBugs.cs:33": [
+      "CSV1025@35"
+    ],
+    "LevelBugs.TakeLow@LockLevelBugs.cs:30": [],
+    "LevelBugs.Transfer@LockLevelBugs.cs:25": [
+      "CSV1025@27"
+    ],
+    "LevelBugs.WaitHolding@LockLevelBugs.cs:52": [
+      "CSV1025@54"
+    ],
+    "LevelBugs.WaitUnder@LockLevelBugs.cs:46": [
+      "CSV1025@48"
+    ],
+    "LibraryContractBugs.AddOutsideFrame@LibraryContractBugs.cs:23": [
+      "CSV1017@26"
+    ],
+    "LibraryContractBugs.AddTwice@LibraryContractBugs.cs:15": [
+      "CSV1002@15"
+    ],
+    "LibraryContractBugs.FirstOrZero@LibraryContractBugs.cs:9": [
+      "CSV1001@9"
+    ],
+    "LibraryContractBugs.Lookup@LibraryContractBugs.cs:12": [
+      "CSV1001@12"
+    ],
+    "LibraryContractBugs.Tail@LibraryContractBugs.cs:30": [
+      "CSV1001@30"
+    ],
+    "Linearity.DoubleFree@Linearity.cs:16": [
+      "CSV0002@20"
+    ],
+    "Linearity.Forge@Linearity.cs:32": [
+      "CSV0006@34",
+      "CSV1902@32"
+    ],
+    "Linearity.Leak@Linearity.cs:9": [
+      "CSV0001@11"
+    ],
+    "Linearity.Leaky@Linearity.cs:39": [
+      "CSV0010@39"
+    ],
+    "Linearity.UseAfterFree@Linearity.cs:24": [
+      "CSV0002@28"
+    ],
+    "Link.AppendSmaller@TreeOwnershipBugs.cs:14": [
+      "CSV1015@14"
+    ],
+    "Link.Sorted@TreeOwnershipBugs.cs:11": [],
+    "Link.TrimAfterSecond@TreeOwnershipBugs.cs:23": [],
+    "LinqBugs.Best@LinqBugs.cs:20": [
+      "CSV1001@20"
+    ],
+    "LinqBugs.Curved.\u003Clambda:81\u003E@LinqBugs.cs:81:46": [],
+    "LinqBugs.Curved.\u003Clambda:81\u003E@LinqBugs.cs:81:63": [],
+    "LinqBugs.Curved.\u003Clambda:81\u003E@LinqBugs.cs:81:78": [],
+    "LinqBugs.Curved@LinqBugs.cs:77": [
+      "CSV1002@81"
+    ],
+    "LinqBugs.Distinct@LinqBugs.cs:34": [
+      "CSV1002@37"
+    ],
+    "LinqBugs.FirstFailing.\u003Clambda:23\u003E@LinqBugs.cs:23:70": [],
+    "LinqBugs.FirstFailing@LinqBugs.cs:23": [
+      "CSV1001@23"
+    ],
+    "LinqBugs.FirstItem.\u003Clambda:52\u003E@LinqBugs.cs:52:39": [
+      "CSV1902@52"
+    ],
+    "LinqBugs.FirstItem@LinqBugs.cs:49": [
+      "CSV1001@52"
+    ],
+    "LinqBugs.FirstMatch.\u003Clambda:63\u003E@LinqBugs.cs:63:103": [],
+    "LinqBugs.FirstMatch.\u003Clambda:63\u003E@LinqBugs.cs:63:111": [],
+    "LinqBugs.FirstMatch.\u003Clambda:63\u003E@LinqBugs.cs:63:95": [],
+    "LinqBugs.FirstMatch@LinqBugs.cs:63": [
+      "CSV1001@63"
+    ],
+    "LinqBugs.Groups.\u003Clambda:43\u003E@LinqBugs.cs:43:46": [],
+    "LinqBugs.Groups@LinqBugs.cs:41": [
+      "CSV1004@45"
+    ],
+    "LinqBugs.Lowest.\u003Clambda:30\u003E@LinqBugs.cs:30:45": [],
+    "LinqBugs.Lowest@LinqBugs.cs:26": [
+      "CSV1002@30"
+    ],
+    "LinqBugs.Mean@LinqBugs.cs:74": [
+      "CSV1001@74"
+    ],
+    "LinqBugs.Pairs.\u003Clambda:59\u003E@LinqBugs.cs:59:29": [],
+    "LinqBugs.Pairs@LinqBugs.cs:56": [
+      "CSV1002@59"
+    ],
+    "LinqBugs.Same@LinqBugs.cs:85": [
+      "CSV1902@85"
+    ],
+    "LinqBugs.Smallest.\u003Clambda:70\u003E@LinqBugs.cs:70:30": [],
+    "LinqBugs.Smallest.\u003Clambda:70\u003E@LinqBugs.cs:70:60": [],
+    "LinqBugs.Smallest@LinqBugs.cs:66": [
+      "CSV1002@70"
+    ],
+    "LinqBugs.Total@LinqBugs.cs:17": [
+      "CSV1001@17"
+    ],
+    "LyingPurse..ctor@OopBugs.cs:66": [],
+    "LyingPurse.Add@OopBugs.cs:67": [
+      "CSV1002@67"
+    ],
+    "Math.Tri@Bugs.cs:81": [],
+    "MemoryModelBugs.EmptyViewsApart@MemoryModelBugs.cs:8": [
+      "CSV1004@10"
+    ],
+    "MemoryModelBugs.Poke@MemoryModelBugs.cs:13": [],
+    "MemoryModelBugs.Stale@MemoryModelBugs.cs:21": [
+      "CSV1004@26"
+    ],
+    "N.Balanced@TreeBugs.cs:13": [],
+    "NullBugs.Broken@NullBugs.cs:15": [
+      "CSV1014@18"
+    ],
+    "NullBugs.Count@NullBugs.cs:12": [],
+    "NullBugs.Forgiven@NullBugs.cs:11": [
+      "CSV1014@11"
+    ],
+    "NullBugs.FreshArray@NullBugs.cs:22": [
+      "CSV1013@25"
+    ],
+    "NullBugs.SpecTooEarly@NullBugs.cs:29": [
+      "CSV1012@31"
+    ],
+    "NullBugs.Unchecked@NullBugs.cs:8": [
+      "CSV1013@8"
+    ],
+    "Overdrawn..ctor@OopBugs.cs:87": [
+      "CSV1001@87"
+    ],
+    "OwnedBugs.AfterDrop@OwnedBugs.cs:40": [
+      "CSV1016@44"
+    ],
+    "OwnedBugs.Forge@OwnedBugs.cs:26": [
+      "CSV1902@26"
+    ],
+    "OwnedBugs.Peek@OwnedBugs.cs:33": [
+      "CSV1002@36"
+    ],
+    "OwnedBugs.Steal@OwnedBugs.cs:23": [
+      "CSV1016@23"
+    ],
+    "PackageBugs.Mismatch@PackageBugs.cs:62": [
+      "CSV1015@65"
+    ],
+    "PackageBugs.PackBroken@PackageBugs.cs:45": [
+      "CSV1015@49"
+    ],
+    "PackageBugs.Polish@PackageBugs.cs:27": [],
+    "PackageBugs.StaleRead@PackageBugs.cs:35": [
+      "CSV1004@41"
+    ],
+    "PackageBugs.WriteThroughBox@PackageBugs.cs:56": [
+      "CSV1016@58"
+    ],
+    "PickyPurse..ctor@OopBugs.cs:53": [],
+    "PickyPurse.TrySpend@OopBugs.cs:55": [
+      "CSV1018@55"
+    ],
+    "PlainPurse..ctor@OopBugs.cs:36": [],
+    "PlainPurse.Add@OopBugs.cs:39": [],
+    "PlainPurse.get_Cash@OopBugs.cs:37": [],
+    "PlainPurse.TrySpend@OopBugs.cs:41": [],
+    "PortBugs.AckermannSingleMeasure@PortBugs.cs:97": [
+      "CSV1008@104"
+    ],
+    "PortBugs.DutchFlagStuck@PortBugs.cs:79": [
+      "CSV1006@85",
+      "CSV1007@86"
+    ],
+    "PortBugs.Even@PortBugs.cs:108": [],
+    "PortBugs.FastPowWithoutLemma@PortBugs.cs:57": [
+      "CSV1002@64",
+      "CSV1002@65"
+    ],
+    "PortBugs.Fib@PortBugs.cs:8": [],
+    "PortBugs.FibWrongStart@PortBugs.cs:17": [
+      "CSV1005@25"
+    ],
+    "PortBugs.McCarthyWrongMeasure@PortBugs.cs:69": [
+      "CSV1008@74"
+    ],
+    "PortBugs.Odd@PortBugs.cs:116": [
+      "CSV1008@120"
+    ],
+    "PortBugs.Pow@PortBugs.cs:48": [],
+    "PortBugs.ReverseOffByOne@PortBugs.cs:35": [
+      "CSV1003@43"
+    ],
+    "PortBugs2.CubesWrongStep@PortBugs2.cs:55": [
+      "CSV1006@61"
+    ],
+    "PortBugs2.Gauss@PortBugs2.cs:73": [],
+    "PortBugs2.IncrementWrongCell@PortBugs2.cs:10": [
+      "CSV1001@15"
+    ],
+    "PortBugs2.KadaneForgetsRestart@PortBugs2.cs:36": [
+      "CSV1006@43"
+    ],
+    "PortBugs2.MatGetWrongStride@PortBugs2.cs:20": [
+      "CSV1003@24"
+    ],
+    "PortBugs2.Sum@PortBugs2.cs:27": [],
+    "PortBugs2.SumCubes@PortBugs2.cs:81": [],
+    "PortBugs2.SumOfCubesWithoutLemma@PortBugs2.cs:90": [
+      "CSV1002@101"
+    ],
+    "Pq..ctor@AtsPortBugs.cs:53": [],
+    "PredicateBugs.Chain@PredicateBugs.cs:14": [],
+    "PredicateBugs.Consume@PredicateBugs.cs:42": [],
+    "PredicateBugs.FoldWrong@PredicateBugs.cs:30": [
+      "CSV1019@32"
+    ],
+    "PredicateBugs.KeepLent@PredicateBugs.cs:59": [
+      "CSV1016@63"
+    ],
+    "PredicateBugs.UnfoldMissing@PredicateBugs.cs:36": [
+      "CSV1016@39"
+    ],
+    "PredicateBugs.Unframed@PredicateBugs.cs:19": [
+      "CSV1016@20"
+    ],
+    "PredicateBugs.UseUp@PredicateBugs.cs:48": [
+      "CSV1016@51"
+    ],
+    "PredicateBugs.WriteFolded@PredicateBugs.cs:23": [
+      "CSV1016@26"
+    ],
+    "ProofBugs.Aliased@ProofBugs.cs:39": [
+      "CSV0007@42",
+      "CSV1902@39"
+    ],
+    "ProofBugs.Circular@ProofBugs.cs:10": [
+      "CSV1011@14"
+    ],
+    "ProofBugs.Inconsistent@ProofBugs.cs:18": [
+      "CSV1011@19"
+    ],
+    "ProofBugs.IncrementBoth@ProofBugs.cs:29": [],
+    "ProofBugs.Meddling@ProofBugs.cs:22": [
+      "CSV0013@26"
+    ],
+    "Rb..ctor@TreeBugs.cs:32": [],
+    "RbTree.Bh@TreeBugs.cs:53": [],
+    "RbTree.BhI@TreeBugs.cs:59": [],
+    "RbTree.Black@TreeBugs.cs:61": [],
+    "RbTree.IsRed@TreeBugs.cs:58": [],
+    "RbTree.Red@TreeBugs.cs:68": [],
+    "Reading.Positive@DataBugs.cs:37": [
+      "CSV1015@37"
+    ],
+    "Registered..ctor@OopBugs.cs:105": [
+      "CSV1015@108"
+    ],
+    "Registered.Valid@OopBugs.cs:102": [],
+    "Registry.FundsOf@OopBugs.cs:118": [
+      "CSV1011@119"
+    ],
+    "Registry.Remember@OopBugs.cs:115": [],
+    "Resource..ctor@TryLockBugs.cs:14": [],
+    "Resource.AsPublished@TryLockBugs.cs:17": [
+      "CSV1023@19",
+      "CSV1023@21"
+    ],
+    "Resource.BrokenInvariant@TryLockBugs.cs:41": [
+      "CSV1024@45"
+    ],
+    "Resource.Denied@TryLockBugs.cs:28": [
+      "CSV1023@36"
+    ],
+    "Resource.Valid@TryLockBugs.cs:12": [],
+    "Rgn..ctor@AtsPortBugs.cs:40": [],
+    "Ring..ctor@ViewtypeBugs.cs:14": [],
+    "Ring.Clear1@ViewtypeBugs.cs:25": [
+      "CSV1015@25"
+    ],
+    "Ring.Insert@ViewtypeBugs.cs:17": [
+      "CSV1003@20"
+    ],
+    "Ring.Valid@ViewtypeBugs.cs:11": [],
+    "ShareBugs.Distinct@ShareBugs.cs:80": [
+      "CSV1004@82"
+    ],
+    "ShareBugs.LendBroken@ShareBugs.cs:71": [
+      "CSV1015@75"
+    ],
+    "ShareBugs.LendWhileShared@ShareBugs.cs:41": [
+      "CSV1016@46"
+    ],
+    "ShareBugs.Look@ShareBugs.cs:17": [],
+    "ShareBugs.Peek@ShareBugs.cs:63": [],
+    "ShareBugs.Turn@ShareBugs.cs:25": [],
+    "ShareBugs.WriteThroughShare@ShareBugs.cs:50": [
+      "CSV1016@53"
+    ],
+    "ShareBugs.WriteWhileShared@ShareBugs.cs:32": [
+      "CSV1016@37"
+    ],
+    "ShareBugs.WrongJoin@ShareBugs.cs:58": [
+      "CSV1016@60"
+    ],
+    "SizedTree..ctor@ViewtypeBugs.cs:41": [],
+    "SizedTree.AddLeft@ViewtypeBugs.cs:44": [
+      "CSV1015@44"
+    ],
+    "SizedTree.Valid@ViewtypeBugs.cs:38": [],
+    "Slot..ctor@FrameBugs.cs:8": [],
+    "T.Valid@TreeBugs.cs:36": [],
+    "Tally..ctor@LockBugs.cs:15": [],
+    "Tally.Peek@LockBugs.cs:18": [
+      "CSV1023@18"
+    ],
+    "Tally.Undo@LockBugs.cs:21": [
+      "CSV1024@23"
+    ],
+    "Tally.Valid@LockBugs.cs:13": [],
+    "Ticket.Next@AtomicBugs.cs:41": [
+      "CSV1030@41"
+    ],
+    "Tile..ctor@OopBugs.cs:96": [
+      "CSV1015@96"
+    ],
+    "Tile.Valid@OopBugs.cs:93": [],
+    "Tray..ctor@": [
+      "CSV1014@8"
+    ],
+    "Tree..ctor@DataBugs.cs:8": [],
+    "TreeBugs.BalanceLRecolorWrong@TreeBugs.cs:99": [
+      "CSV1902@99"
+    ],
+    "TreeBugs.InsertNoRotation@TreeBugs.cs:79": [
+      "CSV1902@79"
+    ],
+    "TreeBugs.RotRSingleOnly@TreeBugs.cs:90": [
+      "CSV1902@90"
+    ],
+    "TreeOwnershipBugs.Bypass@TreeOwnershipBugs.cs:46": [
+      "CSV1016@49"
+    ],
+    "TreeOwnershipBugs.Cycle@TreeOwnershipBugs.cs:53": [
+      "CSV1016@56"
+    ],
+    "TreeOwnershipBugs.Reach@TreeOwnershipBugs.cs:39": [
+      "CSV1016@42"
+    ],
+    "TreeOwnershipBugs.Stale@TreeOwnershipBugs.cs:60": [
+      "CSV1004@66"
+    ],
+    "Vec..ctor@AtsPortBugs.cs:28": [],
+    "Viol.SameHeight@TreeBugs.cs:47": [],
+    "Wallet.Spend@OwnedBugs.cs:13": [
+      "CSV1015@13"
+    ],
+    "Wallet.Valid@OwnedBugs.cs:10": []
+  },
+  "SharesAndPackages_AreBoogies": {
+    "Dial..ctor@ShareBugs.cs:12": [],
+    "Dial.Valid@ShareBugs.cs:10": [],
+    "Gauge..ctor@Shares.cs:17": [],
+    "Gauge.Valid@Shares.cs:15": [],
+    "Gauge.Widen@Shares.cs:25": [],
+    "Gem..ctor@PackageBugs.cs:12": [],
+    "Gem.Valid@PackageBugs.cs:10": [],
+    "GemBox.Valid@PackageBugs.cs:22": [],
+    "OwnedTally.Valid@Packages.cs:29": [],
+    "PackageBugs.Mismatch@PackageBugs.cs:62": [
+      "CSV1015@65"
+    ],
+    "PackageBugs.PackBroken@PackageBugs.cs:45": [
+      "CSV1015@49"
+    ],
+    "PackageBugs.Polish@PackageBugs.cs:27": [],
+    "PackageBugs.StaleRead@PackageBugs.cs:35": [
+      "CSV1004@41"
+    ],
+    "PackageBugs.WriteThroughBox@PackageBugs.cs:56": [
+      "CSV1016@58"
+    ],
+    "Packages.Demo@Packages.cs:53": [],
+    "Packages.Make@Packages.cs:35": [],
+    "Packages.Tick@Packages.cs:43": [],
+    "ShareBugs.Distinct@ShareBugs.cs:80": [
+      "CSV1004@82"
+    ],
+    "ShareBugs.LendBroken@ShareBugs.cs:71": [
+      "CSV1015@75"
+    ],
+    "ShareBugs.LendWhileShared@ShareBugs.cs:41": [
+      "CSV1016@46"
+    ],
+    "ShareBugs.Look@ShareBugs.cs:17": [],
+    "ShareBugs.Peek@ShareBugs.cs:63": [],
+    "ShareBugs.Turn@ShareBugs.cs:25": [],
+    "ShareBugs.WriteThroughShare@ShareBugs.cs:50": [
+      "CSV1016@53"
+    ],
+    "ShareBugs.WriteWhileShared@ShareBugs.cs:32": [
+      "CSV1016@37"
+    ],
+    "ShareBugs.WrongJoin@ShareBugs.cs:58": [
+      "CSV1016@60"
+    ],
+    "Shares.Contains@Shares.cs:36": [],
+    "Shares.Contains2@Shares.cs:69": [],
+    "Shares.Demo@Shares.cs:52": [],
+    "Shares.Within@Shares.cs:44": [],
+    "Tally..ctor@Packages.cs:17": [],
+    "Tally.Valid@Packages.cs:15": []
+  },
+  "TasksAndThreads_BothEnginesReportTheSame": {
+    "Th.Lambda.\u003Clambda:22\u003E@Test.cs:22:58": [],
+    "Th.Lambda@Test.cs:22": [],
+    "Th.Mine.\u003Clambda:26\u003E@Test.cs:26:85": [],
+    "Th.Mine@Test.cs:26": [
+      "CSV1004@26"
+    ],
+    "Th.Run.\u003Clambda:20\u003E@Test.cs:20:92": [],
+    "Th.Run@Test.cs:20": [
+      "CSV1002@20"
+    ],
+    "Th.RunBad.\u003Clambda:21\u003E@Test.cs:21:63": [
+      "CSV1001@21"
+    ],
+    "Th.RunBad@Test.cs:21": [],
+    "Th.Shared.\u003Clambda:25\u003E@Test.cs:25:73": [],
+    "Th.Shared@Test.cs:25": [
+      "CSV1004@25"
+    ],
+    "Th.Threads.\u003Clambda:23\u003E@Test.cs:23:56": [],
+    "Th.Threads@Test.cs:23": [],
+    "Th.ThreadsBad.\u003Clambda:24\u003E@Test.cs:24:59": [
+      "CSV1001@24"
+    ],
+    "Th.ThreadsBad@Test.cs:24": [],
+    "Th.Work@Test.cs:19": [],
+    "Tk.Both@Test.cs:7": [
+      "CSV1028@7"
+    ],
+    "Tk.Early@Test.cs:11": [
+      "CSV1025@11",
+      "CSV1026@11"
+    ],
+    "Tk.Later@Test.cs:8": [],
+    "Tk.LaterBad@Test.cs:9": [
+      "CSV1002@9"
+    ],
+    "Tk.Lost@Test.cs:10": [
+      "CSV1026@10",
+      "CSV1028@10"
+    ],
+    "Tk.Mine@Test.cs:13": [],
+    "Tk.PreBad@Test.cs:14": [
+      "CSV1001@14"
+    ],
+    "Tk.Shared@Test.cs:12": [
+      "CSV1004@12"
+    ],
+    "Tk.Twice@Test.cs:6": []
+  },
+  "TasksWithPermissions_BothEnginesReportTheSame": {
+    "Pw.Bad@Test.cs:28": [
+      "CSV1001@31",
+      "CSV1010@31"
+    ],
+    "Pw.Early@Test.cs:21": [
+      "CSV1016@25"
+    ],
+    "Pw.Halves@Test.cs:12": [],
+    "Pw.Part@Test.cs:5": [],
+    "Pw.Threads@Test.cs:34": []
+  },
+  "WaitsAndTuples_BothEnginesReportTheSame": {
+    "Gt.A@Test.cs:28": [
+      "CSV1004@28"
+    ],
+    "Gt.R@Test.cs:29": [
+      "CSV1004@29"
+    ],
+    "Gt.Res@Test.cs:30": [],
+    "Gt.W@Test.cs:27": [],
+    "Qu..ctor@Test.cs:9": [],
+    "Qu.Bad@Test.cs:21": [
+      "CSV1024@21"
+    ],
+    "Qu.Ok@Test.cs:10": [],
+    "Qu.Put@Test.cs:11": [],
+    "Qu.Stale@Test.cs:22": [
+      "CSV1004@22"
+    ],
+    "Qu.Take@Test.cs:12": [],
+    "Tu.Order@Test.cs:34": [],
+    "Tu.Spread@Test.cs:39": [
+      "CSV1010@39"
+    ],
+    "Tu.Swap@Test.cs:40": [],
+    "Tu.Wrong@Test.cs:41": [
+      "CSV1002@41"
+    ]
+  }
+}

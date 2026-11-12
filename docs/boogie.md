@@ -1,35 +1,38 @@
 # The Boogie engine
 
-CsVerify's own engine reads a method's operations and writes SMT directly: every C# construct and every library model
-(LINQ, Entity Framework, locks, async) is a case in one interpreter, so its soundness is argued across all of it. The
-Boogie engine splits that the way Dafny and Spec# do: C# is lowered to [Boogie](https://github.com/boogie-org/boogie),
+CsVerify's first engine read a method's operations and wrote SMT directly: every C# construct and every library model
+(LINQ, Entity Framework, locks, async) was a case in one interpreter, so its soundness was argued across all of it.
+That engine is retired; the Boogie engine, the one there is now, splits that the way Dafny and Spec# do: C# is lowered to [Boogie](https://github.com/boogie-org/boogie),
 an intermediate verification language with a small, documented semantics (formalized in Isabelle, with its
 verification-condition generation validated per run: Parthasarathy, Müller and Summers, CAV 2021), and Boogie does the
 rest. What CsVerify has to get right is the lowering, one construct at a time, and the models, written as Boogie.
 
 Neither side is designed here: the source is Roslyn's own lowering of C#, its control-flow graph (`foreach`, `using`,
-`lock`, `?.`, `&&`, patterns and compound assignments already turned into blocks), and the target is Boogie. The goal
-is that it covers everything, and CsVerify's engine is retired.
+`lock`, `?.`, `&&`, patterns and compound assignments already turned into blocks), and the target is Boogie. Where this
+document says "as CsVerify's engine has it", it names the semantics the translation kept from the first engine, which
+the tests' expectations recorded before it was removed.
 
 ```bash
-dotnet csverify --engine boogie src/                          # what it translates, by Boogie; the rest as always
-dotnet csverify --engine boogie --boogie-out out.bpl src/     # and the Boogie program it verified
-CSVERIFY_TRACE=1 dotnet csverify --engine boogie src/         # and why each method left out was
+dotnet csverify src/                          # every method, by Boogie
+dotnet csverify --boogie-out out.bpl src/     # and the Boogie program it verified
+CSVERIFY_TRACE=1 dotnet csverify src/         # and why each method left out was
 ```
 
 ## The pipeline
 
 1. **Which methods.** Every method whose signature and contract are in [the subset](#the-subset) is held back; the rest
-   is verified by CsVerify's engine as always. Those held back are translated together; one whose body has something
-   outside the subset is left out, and so is each method that calls it, until none is (a call needs its callee's
-   procedure). They go to CsVerify's engine too.
+   is not verified (CSV1902, an error, saying why), with the checks made from the syntax and the declarations alone
+   (`StaticChecks`: locking, lock levels, atomics, concurrency marks) still reported. Those held back are translated
+   together; one whose body has something outside the subset is a procedure of its contract alone, which its callers
+   call, and is not verified itself (CSV1902); one whose contract doesn't translate either is left out, and so is each
+   method that calls it, until none is.
 2. **One program.** Each method goes through [the passes](#the-passes), and the methods translated are one Boogie
    program: [the prelude](#the-prelude), a function for each `[Pure]` or `[GhostFunction]` method, and a procedure
    for each method.
 3. **Boogie verifies it,** in the same process (the `Boogie.ExecutionEngine` package), with the Z3 CsVerify uses.
 4. **Back to C#.** Every check is an `assert` on a line of its own, and the translator keeps a table from line to the C#
    location and the CsVerify diagnostic it is; each failure Boogie reports is found there, so the diagnostics are the
-   ones CsVerify's engine gives, at the same places (BoogieEngineTests checks that they are).
+   ones CsVerify's first engine gave, at the same places (BoogieEngineTests checks them against what was recorded).
 
 ## The passes
 
@@ -211,7 +214,7 @@ what the first says while it proves the second). `Debug.Assert(c)` and `Trace.As
 their message evaluated, not used), and the guard clauses (`ArgumentOutOfRangeException.ThrowIfNegative(i)`,
 `ThrowIfGreaterThanOrEqual(i, n)`, ...) may throw and give, when they return, what they checked. A call with a constant
 composite format string that would throw `FormatException` (`string.Format`, `Console.WriteLine`, a `TextWriter`'s,
-`AppendFormat`) is CSV1001, as CsVerify's engine checks it (`MethodVerifier.FormatProblem`, shared). In a `[Pure]`
+`AppendFormat`) is CSV1001, as CsVerify's engine checks it (`StaticChecks.FormatProblem`). In a `[Pure]`
 member or a lemma, a checked overflow, `MinValue / -1` and `Math.Abs(MinValue)` are CSV1010 (it may not throw).
 `a.GetLength(0)` of a one-dimensional array is its length (another dimension, CSV1003). `IList`'s and `ICollection`'s
 `Contains` and `IndexOf` are of the elements, as LINQ's are read (strings by content). Their `Add`, `Insert`,
@@ -240,7 +243,7 @@ narrowing conversions are:
 `Math.Max` and `Math.Min` of integers are `if`s; `Math.Abs(x)` is `x >= 0 ? x : checked(0 - x)`: `Abs(MinValue)`
 throws, as checked negation does.
 
-**Bitwise operators.** As CsVerify's engine has them (`MethodVerifier.Bits`): integer arithmetic over the two's
+**Bitwise operators.** As CsVerify's engine has them (Boogie/Bits.cs): integer arithmetic over the two's
 complement bits, which Boogie's Euclidean `div` and `mod` by a power of two read for negative values too
 (bitvectors would make the solver convert between them and integers, which timed out on Base64's round trip).
 - With one operand constant, each is exact and linear: `x >> k` is `x div 2^k`, `x << k` is `x * 2^k` wrapped into
@@ -496,7 +499,9 @@ no inner one matches, with none; `Count`, `Any`, `All`, `Contains`, `First`, `La
 `Sum` (every partial sum in range, CSV1001, as .NET adds them checked), `Average`, `MinBy` and `MaxBy` (the first
 element whose integer key is least, or greatest) and `SequenceEqual` read it, their definitions' preconditions
 CSV1001 (an empty sequence has no `First`); a List's `Find`, `FindIndex`, `Exists` and `TrueForAll` of a pure lambda
-are its first match (or the default), the first match's index (or -1), `Any` and `All`; `ToArray` and `ToList` copy it into a new object. A double
+are its first match (or the default), the first match's index (or -1), `Any` and `All`; `Index` pairs each element with its
+index; `ToDictionary` is a dictionary of the library's (what's in it unknown), its definition's precondition checked
+(no key null or an earlier one's, CSV1001); `ToArray` and `ToList` copy it into a new object. A double
 `Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query reads it into a map where the loop
 starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
 selector reading its `Key` and `Count()` (exact: a running count of the source's elements of that key; a database's
@@ -747,7 +752,7 @@ made and never hands on) that the loop doesn't reassign is as it was on the way 
 through that local, even where the loop awaits or calls what may change anything (`c$`*h* snapshots of every map).
 
 **Loop facts.** A `for`, `while` or `do` loop without invariants gets the facts CsVerify's engine infers for it
-(`MethodVerifier.LoopFacts`): from its condition (`i < n` suggests `i <= n` at the head) and, for each integer in it,
+(Lowering.LoopFacts): from its condition (`i < n` suggests `i <= n` at the head) and, for each integer in it,
 that it never goes below, or above, its value on entry (taken on each way in). Each is an assertion at the head, an
 invariant to Boogie. One that fails (on entry, or at a back edge) is left out (its line is `assert true;`) and the
 program verified again, until every fact assumed held, as CsVerify's engine reruns without them; that run's failures
@@ -1124,6 +1129,11 @@ nullable one).
 either is, else the operation of their values, checked as code's arithmetic is (the values 0 where either is null,
 which can't overflow). Static properties' getters and setters are methods, as instance ones are.
 
+**Constructors' `this` as a value** (passed, stored) escapes before the object is built: where its class has an
+object invariant or non-nullable fields, CSV1015, as CsVerify's engine has it; the object goes on as it is.
+**Deconstruction** into array cells, fields and variables, `(a[i], a[j]) = (a[j], a[i])`, reads every value first,
+then writes each target. In `Spec.Old`, a parameter the body assigns is the parameter as it came in.
+
 **`in` parameters of values** (`in int x`) are by value: the callee can't change them. As CsVerify's engine has them,
 an argument must be a local, a parameter or an array's cell (whose callee writes no array: else CSV1901, "the cell
 and the parameter would disagree"); anything else is CSV1901 ("not supported"), and a struct's member isn't
@@ -1142,16 +1152,17 @@ Also arrays of objects and strings, and null patterns of references.
 Also exception filters, `Spec.Multiset` and `Bag`, collections keyed by strings, a dictionary's `Keys` and `Values`,
 and reading collections through their interfaces.
 
-Not yet (such a method is verified by CsVerify's engine): string members without stubs, writes and other members of
+Not yet (such a method is not verified, CSV1902): string members without stubs, writes and other members of
 collections through their interfaces, ghost types (`Map`, `Ghost<T>` fields), async, locks
 and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
 
 ## How it's checked
 
-On every method the Boogie engine verifies, it must report what CsVerify's engine reports: the same diagnostics, at
-the same lines. `BoogieEngineTests` checks that on a corpus written for it (one of each construct, a bug of each kind),
-on `samples/Good` and on `samples/Buggy`. `--engine boogie-only` verifies only what Boogie translates, to compare the
-two quickly.
+On every method, the Boogie engine reports what CsVerify's first engine reported: the same diagnostics, at the same
+lines. Until that engine was removed, `BoogieEngineTests` ran both and compared them, on a corpus written for it (one of
+each construct, a bug of each kind), on `samples/Good` and on `samples/Buggy`; now each of those tests checks a
+snapshot of what every method reports (`tests/CsVerify.Tests/Expected/BoogieEngine.json`, written with
+`CSVERIFY_RECORD=1`), taken where the two agreed. A method that wasn't translated then is recorded with CSV1902.
 
 Boogie verifies the procedures side by side (`/vcsCores`, a solver each). Each is first tried whole in a quarter of
 the time limit (at least 10 s). One that times out is verified once more an assertion at a time
@@ -1162,7 +1173,7 @@ where it gives up, as a failure, and split, without what it learned from the oth
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
 finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
-either it is undecided, and CsVerify's engine verifies it where it is the fallback. The procedures run on one pool of
+either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on one pool of
 large-stack threads for every run, never disposed (disposing one interrupts threads the solver's processes may still
 be finishing on). `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
 
@@ -1179,10 +1190,11 @@ the failing check reads, and those of the loops whose inferred facts it uses, as
 check that something isn't assumed after a statement (`NotAssumedAfter`) is a side branch that ends there,
 except in the leading statements of a loop head's block, where it would cut the loop.
 
-CsVerify's engine's checks made from the syntax and the declarations alone (`MethodVerifier.Run` with `StaticOnly`:
-locking, lock levels, atomics, flags, concurrency marks, Entity Framework contexts, a data type's invariant's
-dependence, and the warnings they give) run for each method Boogie verifies as well, and their diagnostics are its.
-They are not CsVerify's engine's symbolic execution, and stay when it goes, as a pass of their own.
+The checks made from the syntax and the declarations alone (`StaticChecks`: locking, lock levels, atomics, flags,
+concurrency marks, Entity Framework contexts, a data type's invariant's dependence, and the warnings they give) run
+for every method, verified by Boogie or not, and their diagnostics are its. They were the first engine's, kept as a
+module of their own when its symbolic execution went; an [Atomic] field's step is proved transitive in Boogie
+(CSV1030, an assertion in the step's procedure).
 
 ## What comes next
 
@@ -1249,7 +1261,8 @@ methods that fall back for it):
     local functions, library members with stubs that write nothing, `in` parameters of values, more of LINQ
     (`Reverse`, `Append`, `Prepend`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`, `DefaultIfEmpty`,
     `Intersect`, `Except`, `DistinctBy`, `MinBy`, `MaxBy`, `SequenceEqual`, an indexed `Where`) and List's predicate
-    methods, `Index`, lifted `+ - *`, static properties, `??` and `?.` in specifications;
+    methods, `Index`, `ToDictionary`, lifted `+ - *`, static properties, `??` and `?.` in specifications, a constructor's escaping
+    `this`, deconstruction into cells and fields;
 14. the Boogie engine the default (CsVerify's engine a fallback for a release). Not yet: `CSVERIFY_ENGINE=boogie` (which
     sets the default now; it used to label methods only, so the first sweep's "the tests' own programs all translate"
     was CsVerify's engine) failed 2 tests of 1435 at the last sweep (the Good samples verified together, a lambda in an

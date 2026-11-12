@@ -171,6 +171,20 @@ namespace CsVerify.Verifier.Boogie
                 ShapeFact(Over(new KLit("0"), n, i => Over(new KLit("0"), i, j => new KOp("!=", E(j), E(i)))), src.Syntax);
                 return new LSeq { Length = n, Elem = E, Type = elem };
             }
+            // (a sequence one is given, a lambda's group of a GroupJoin say: some elements, not known)
+            if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type)) && src is IParameterReferenceOperation or ILocalReferenceOperation)
+            {
+                var given = Expr(src);
+                if (IsSequence(type))
+                    Emit(new KCheck { Cond = new KOp("!=", given, new KLit("null")), Id = "CSV1013", At = src.Syntax, Message = $"'{src.Syntax}' might be null: LINQ would throw ArgumentNullException" });
+                var items = new KVar(LinqMap("[int]" + TypeOf(elem)));
+                var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(new KHavoc { Var = n });
+                ShapeFact(new KOp("<=", new KLit("0"), new KVar(n)), src.Syntax);
+                // (a group has one at least)
+                if (IsLinqGroup(type)) ShapeFact(new KOp("<", new KLit("0"), new KVar(n)), src.Syntax);
+                return new LSeq { Length = new KVar(n), Elem = i => new KOp("sel", items, i), Type = elem };
+            }
             if (elem == null || !InSubset(elem) || !(IsArray(type) || IsList(type) || IsCollectionInterface(type)))
                 throw new NotTranslated("a LINQ source of " + type + " (" + src.Kind + ")");
             var t = Declare("t$" + _temps++, type);
@@ -235,6 +249,31 @@ namespace CsVerify.Verifier.Boogie
                 var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
                 Emit(new KHavoc { Var = n });
                 ShapeFact(new KOp("<=", new KLit("0"), new KVar(n)), q.Syntax);
+                return new LSeq { Length = new KVar(n), Elem = i => new KOp("sel", items, i), Type = resultElem };
+            }
+            // (a lazy operator whose lambda isn't pure, of LINQ to Objects: the lambda must accept anything (it may change
+            // what it is called with), what it may change changes, and what it gives isn't known)
+            if (IsEnumerableCall(m) && args.Count == 2 && IsFunc(args[1].Parameter.Type) && PureLambda(args[1].Value) == null &&
+                m.Name is "Where" or "Select" or "TakeWhile" or "SkipWhile" or "OrderBy" or "OrderByDescending" && resultElem != null && InSubset(resultElem))
+            {
+                var src = Sequence(args[0].Value);
+                DelegatesHere("a library call of a delegate");
+                var d = Expr(args[1].Value);
+                var key = FuncKey(args[1].Parameter.Type);
+                _p.DelegateKeys.Add(key);
+                _p.CallsDelegates = true;
+                var (lambda, quiet, free) = Handed(args[1]);
+                if (!free)
+                    Emit(new KCheck { Cond = new KOp("$total." + key, d), Id = "CSV1029", At = args[1].Syntax,
+                                      Message = $"'{m.Name}' may call this with anything (its query runs later), but its precondition might not hold for them all" });
+                if (!quiet) { _p.HavocsAll = true; Emit(new KHavocAll { Unless = new KOp("$nochange", d) }); }
+                ForgetCaptured();
+                var items = new KVar(LinqMap("[int]" + TypeOf(resultElem)));
+                var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                Emit(new KHavoc { Var = n });
+                ShapeFact(new KOp("<=", new KLit("0"), new KVar(n)), q.Syntax);
+                if (m.Name is "Where" or "TakeWhile" or "SkipWhile") ShapeFact(new KOp("<=", new KVar(n), src.Length), q.Syntax);
+                if (m.Name is "Select" or "OrderBy" or "OrderByDescending") ShapeFact(new KOp("==", new KVar(n), src.Length), q.Syntax);
                 return new LSeq { Length = new KVar(n), Elem = i => new KOp("sel", items, i), Type = resultElem };
             }
             switch (m.Name)
@@ -486,7 +525,7 @@ namespace CsVerify.Verifier.Boogie
                         k => JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type), forall: false).Q), q.Syntax);
                     var sx = (sel.body, sel.p1, (IParameterSymbol)null);
                     KExpr Pair(KExpr i) => new KLet { Var = "q$" + sel.p2.Name, Value = inner.Elem(within(matched.Index(i))), Body = Apply(sx, o.Elem(outer(matched.Index(i)))) };
-                    KExpr Alone(KExpr i) => new KLet { Var = "q$" + sel.p2.Name, Value = new KLit("null"), Body = Apply(sx, alone.Elem(i)) };
+                    KExpr Alone(KExpr i) => new KLet { Var = "q$" + sel.p2.Name, Value = IsNullable(sel.p2.Type) ? new KLit("null") : Default(sel.p2.Type) ?? throw new NotTranslated("a LeftJoin's default of " + sel.p2.Type), Body = Apply(sx, alone.Elem(i)) };
                     var joined = new LSeq
                     {
                         Length = new KOp("+", matched.Length, alone.Length), Type = resultElem,
@@ -816,6 +855,7 @@ namespace CsVerify.Verifier.Boogie
         {
             // (of a database query: its lambdas, the database's to evaluate)
             bool database = KernelTypes.Ef != null && DatabaseRoot(call, out _) != null;
+            if (!database && name == null && ElementwiseKind(call) == "each") return Elementwise(call);
             var known = _known;
             var result = _dbResult;
             // (the query's last operator: what it gives, entities or not)
@@ -900,6 +940,20 @@ namespace CsVerify.Verifier.Boogie
                     var s = Sequence(args[0].Value);
                     var f = LambdaArg(call, 1);
                     return Value(Over(new KLit("0"), s.Length, i => Apply(f, s.Elem(i))));
+                }
+                // (a dictionary, of the library's: only where it throws, a key that's null or an earlier one's, as its definition says)
+                case "ToDictionary" when args.Count is 2 or 3 && _inDatabase == 0 && IsCollection(callType) && LambdaArg(call, 1) is var kf && kf.p2 == null:
+                {
+                    var s = Sequence(args[0].Value);
+                    KExpr K(KExpr i) => Apply(kf, s.Elem(i));
+                    var keyType = kf.body.Type;
+                    Need(Over(new KLit("0"), s.Length, i => new KOp("&&", IsNullable(keyType) ? new KOp("!=", K(i), new KLit("null")) : new KLit("true"),
+                                                                    new KOp("!", new KQuantOver(this, new KLit("0"), i, j => SameValue(K(j), K(i), keyType), forall: false).Q))),
+                         "Spec.Forall(0, Q.Count(source), i => keySelector(Q.At(source, i)) != null && Q.Unseen(Select(source, keySelector), i))");
+                    var d = Declare("t$" + _temps++, callType);
+                    Emit(new KHavoc { Var = d });
+                    ShapeFact(new KOp("!=", new KVar(d), new KLit("null")), at);
+                    return new KVar(d);
                 }
                 // (two sequences of the same length, element by element the same)
                 case "SequenceEqual" when args.Count == 2 && _inDatabase == 0:

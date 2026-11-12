@@ -8,7 +8,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Entity Framework Core's queries, as CsVerify's engine reads them (MethodVerifier.EntityFramework, its model
+    /// Entity Framework Core's queries, as CsVerify's engine reads them (StaticChecks.EntityFramework, its model
     /// EfModel): a query on a context's DbSet is LINQ over the table as it is when the query runs, a sequence in no order
     /// the database promises, whose rows are not null, have distinct keys (and distinct values of each unique index),
     /// and pass the entity's query filters unless the query ignores them. Queryable's operators and EF's ...Async forms
@@ -239,7 +239,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// Rows read without tracking, as CsVerify's engine has them (MethodVerifier.EntityFramework's Navigations): new
+        /// Rows read without tracking, as CsVerify's engine has them (StaticChecks.EntityFramework's Navigations): new
         /// objects, each a different one; a reference navigation not included null, a collection one as its initializer
         /// made it (a new empty List, or null), but where a path loads its type (EF may fix it up then); an included
         /// reference the row its foreign key names, an included List the rows whose foreign key is this row's key, each

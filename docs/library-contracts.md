@@ -213,7 +213,7 @@ public static T First<T>(IEnumerable<T> source, Func<T, bool> predicate)
 nothing otherwise, and `Q.Yield(v)` is v alone; `Q.Count`, `Q.At`, `Q.Range`, `Q.Fold`, `Q.Scan`, `Q.Sort`/`Q.ThenSort`
 (stable) and `Q.Group` are the rest. A definition's Spec.Requires is where the member throws (proved at each call), and
 its Spec.Ensures are facts of its result (Min and Max are no larger, and no smaller, than every element: induction the
-solver would not do). The verifier runs a definition symbolically on what the call is given: it puts the comprehension
+solver would not do). The verifier reads a definition at what the call is given (Lowering.Linq): it puts the comprehension
 into the normal form of Cheney, Lindley and Wadler's "A Practical Theory of Language-Integrated Query" (ICFP 2013),
 whose sources are never comprehensions and whose conditions in a row are one (their union rule, which reorders, is not
 used, so LINQ to Objects' order is kept), and compiles that into its encodings: a filter for each condition, sequences

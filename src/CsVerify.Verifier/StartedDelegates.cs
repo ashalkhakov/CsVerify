@@ -48,7 +48,7 @@ namespace CsVerify.Verifier
             if (call == null || !(model.GetSymbolInfo(call).Symbol is IMethodSymbol m)) return null;
             if (thread && m.IsAsync) return null; // (it would be over at its first await)
             var contract = _engine.ContractOf(m.OriginalDefinition);
-            if (!contract.HasSource || !contract.Requires.Concat(contract.Ensures.Select(e => e.Expr)).Any(e => e != null && e.DescendantsAndSelf().Any(o => MethodVerifier.IsAccCall(o, out _)))) return null;
+            if (!contract.HasSource || !contract.Requires.Concat(contract.Ensures.Select(e => e.Expr)).Any(e => e != null && e.DescendantsAndSelf().Any(o => StaticChecks.IsAccCall(o, out _)))) return null;
             var member = lambda.Ancestors().First(a => a is BaseMethodDeclarationSyntax || a is AccessorDeclarationSyntax);
             if (call.Expression is MemberAccessExpressionSyntax ma && !IsFixed(ma.Expression, model, member) && m.IsStatic == false) return null;
             return call.ArgumentList.Arguments.All(a => a.RefKindKeyword.IsKind(SyntaxKind.None) && IsFixed(a.Expression, model, member)) ? call : null;

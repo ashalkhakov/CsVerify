@@ -9,7 +9,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Entity Framework Core's change tracker and transactions, as CsVerify's engine has them (MethodVerifier.EfTracker,
+    /// Entity Framework Core's change tracker and transactions, as CsVerify's engine has them (StaticChecks.EfTracker,
     /// over the ghost state CsVerify.Ef.Tracker declares):
     /// - what a context tracks and how ($ef.State), its changes not saved ($ef.Unsaved), its open transaction ($ef.InTx):
     ///   maps of the program's state, which a call changes where its code does, and an await doesn't (CSV1036 has each
