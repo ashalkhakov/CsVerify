@@ -297,7 +297,9 @@ namespace CsVerify.Verifier.Boogie
         {
             var recv = Expr(Unconverted(instance));
             Emit(new KCheck { Cond = new KOp("!=", recv, new KLit("null")), Id = "CSV1013", At = instance.Syntax, Message = $"'{instance.Syntax}' might be null in '{at}'" });
-            foreach (var a in arguments.OrderBy(a => a.Parameter.Ordinal)) Expr(a.Value);
+            // (an argument boxed for it, to object: what it is, as the library's use of it isn't modeled)
+            foreach (var a in arguments.OrderBy(a => a.Parameter.Ordinal))
+                Expr(a.Value is IConversionOperation { IsImplicit: true, Type.SpecialType: SpecialType.System_Object } box && InSubset(box.Operand.Type) ? box.Operand : a.Value);
             foreach (var model in ModelsOf((INamedTypeSymbol)callee.ContainingType))
             {
                 _p.Models[model.Name] = model;
@@ -395,6 +397,32 @@ namespace CsVerify.Verifier.Boogie
             var keyed = callee.OriginalDefinition.Parameters.Any(p => p.Type is ITypeParameterSymbol { Ordinal: 0 });
             return kind is "Dictionary" or "HashSet" ? keyed : callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch";
         }
+
+        /// <summary>
+        /// A cast where exceptions are seen: where it fails, an InvalidCastException, which the handlers may catch; past
+        /// it, it succeeded.
+        /// </summary>
+        private void CastThrows(KExpr ok, bool inSpec)
+        {
+            if (inSpec || _cfgBlock == null || !(ThrowTarget(_cfgBlock.EnclosingRegion) is string to)) return;
+            Emit(new KFork { Overflow = ok, Target = to, Exception = null });
+            Emit(new KAssume { Cond = ok });
+        }
+
+        /// <summary>A static readonly field of the program's that the kernel doesn't have as a field: its value, a constant of the run's ($sf).</summary>
+        private static KExpr StaticReadonly(IFieldSymbol f)
+        {
+            if (f.DeclaringSyntaxReferences.Length == 0 || f.IsConst || IsField(f) || IsLockObject(f) || !InSubset(f.Type)) return null;
+            var kind = TypeOf(f.Type) switch { "Ref" => "Ref", "int" => "Int", "bool" => "Bool", _ => null };
+            if (kind == null) return null;
+            var ids = KernelTypes.StaticReadonlyIds ??= new Dictionary<string, int>();
+            var key = f.OriginalDefinition.ToDisplayString();
+            if (!ids.TryGetValue(key, out var k)) ids[key] = k = ids.Count;
+            return new KOp("$sf" + kind, new KLit(k.ToString()));
+        }
+
+        private static bool AnonymousAsObject(IOperation o) =>
+            o is IConversionOperation { Conversion.IsReference: true } c && c.Operand.Type is INamedTypeSymbol { IsAnonymousType: true } && !c.Type.IsAnonymousType;
 
         /// <summary>A delegate handed to a library member: the lambda it is, if it is one; whether it writes nothing; whether it accepts anything.</summary>
         private (IAnonymousFunctionOperation lambda, bool quiet, bool free) Handed(IArgumentOperation da)
@@ -1819,6 +1847,9 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation sp when IsComputed(sp.Property) && sp.Property.SetMethod != null:
                     Invoke(sp.Property.SetMethod, sp.Instance, sp.Arguments, sp.Syntax, value);
                     return;
+                // (a static readonly field the kernel doesn't have, set where it's initialized: its value, not kept)
+                case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srw } when StaticReadonly(srw) != null:
+                    return;
                 case IFieldReferenceOperation _: case IPropertyReferenceOperation _:
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(target);
@@ -2982,6 +3013,19 @@ namespace CsVerify.Verifier.Boogie
                 ? call.Arguments.FirstOrDefault(a => a.Parameter?.Ordinal == p.Parameter.Ordinal)?.Value : null;
             foreach (var r in reads)
             {
+                // (a static field: forgotten itself)
+                if (r is IFieldReferenceOperation { Field: { IsStatic: true } sf } && IsField(sf))
+                {
+                    var field = sf.OriginalDefinition;
+                    _p.Fields.Add(field);
+                    forget.Add(() =>
+                    {
+                        var v = Declare("t$" + _temps++, sf.Type);
+                        Emit(new KHavoc { Var = v });
+                        Emit(new KFieldStore { Field = field, Instance = null, Value = new KVar(v), At = call.Syntax, InstanceAt = call.Syntax });
+                    });
+                    continue;
+                }
                 var root = r is IArrayElementReferenceOperation ae ? ae.ArrayReference : (r as IFieldReferenceOperation)?.Instance;
                 var arg = root == null ? null : Arg(root);
                 if (!(Unconverted(arg) is ILocalReferenceOperation || Unconverted(arg) is IParameterReferenceOperation))
@@ -3174,6 +3218,8 @@ namespace CsVerify.Verifier.Boogie
             var call = StartedCall(lambda);
             var effects = call != null ? EffectsOfCall(call, capturing: true) : EffectsOfDelegate(lambda);
             if (call == null && WritesOutside(lambda)) throw new NotTranslated("a Task.Run whose lambda writes this method's variables");
+            // (code of its own: Task.Run calls it with no arguments, so what it requires must hold here, CSV1029)
+            if (call == null) RunsWithNoArguments(run);
             Task t;
             if (call != null) t = StartInline(call);
             else
@@ -3271,6 +3317,19 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign { Var = t.Awaited, Value = new KLit("false") });
             _batches[local] = t;
             _detached.Add(t);
+        }
+
+        /// <summary>Task.Run(lambda), of a lambda with a precondition: Task.Run calls it with no arguments, so its precondition must hold where it starts (CSV1029).</summary>
+        private void RunsWithNoArguments(IInvocationOperation run)
+        {
+            var arg = run.Arguments[0];
+            if (!(Unconverted(arg.Value) is IDelegateCreationOperation dc) || !(LambdaOf(dc.Target) is IAnonymousFunctionOperation af) ||
+                !(_contractOf?.Invoke(af.Symbol) is Contract lc) || lc.OwnRequires.Count == 0 || !IsFunc(dc.Type)) return;
+            var d = Expr(arg.Value);
+            var key = FuncKey(dc.Type);
+            _p.DelegateKeys.Add(key);
+            Emit(new KCheck { Cond = new KOp("$pre." + key, d), Id = "CSV1029", At = arg.Syntax,
+                              Message = "Task.Run calls this with no arguments, but its precondition might not hold here" });
         }
 
         private Task StartInline(IInvocationOperation call)
@@ -3591,6 +3650,23 @@ namespace CsVerify.Verifier.Boogie
                         }
                         return new KOp("ite", both, NullableOf(sum, nb.Type), new KLit("null"));
                     }
+                    // (&, |, ^ of two values of one integral type: null where either is, else the values' bits')
+                    if (nb.OperatorKind is BinaryOperatorKind.And or BinaryOperatorKind.Or or BinaryOperatorKind.ExclusiveOr &&
+                        IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
+                    {
+                        if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
+                        var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
+                        var u = Underlying(nb.Type);
+                        KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
+                        var bits = Bitwise(nb.OperatorKind, V(l), V(r), u, inSpec);
+                        if (!inSpec)
+                        {
+                            var tv = Declare("t$" + _temps++, u);
+                            Emit(new KAssign { Var = tv, Value = bits });
+                            bits = new KVar(tv);
+                        }
+                        return new KOp("ite", both, NullableOf(bits, nb.Type), new KLit("null"));
+                    }
                     return nb.OperatorKind switch
                     {
                         BinaryOperatorKind.Equals => new KOp("==", l, r), BinaryOperatorKind.NotEquals => new KOp("!=", l, r),
@@ -3812,8 +3888,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Operand(dc.Operand, lower, inSpec);
                     StaticType(v, dc.Operand.Type, inSpec);
-                    if (!inSpec && _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a cast where exceptions are seen");
-                    return new KCast { Value = v, Test = new KOp("||", new KOp("==", v, new KLit("null")), ClassTest(v, dc.Type)), At = dc.Syntax };
+                    var castOk = new KOp("||", new KOp("==", v, new KLit("null")), ClassTest(v, dc.Type));
+                    CastThrows(castOk, inSpec);
+                    return new KCast { Value = v, Test = castOk, At = dc.Syntax };
                 }
                 // ((object)o, an upcast written as a cast: o)
                 // (a string as an object, in code: a reference of its own, which another equal string's may or may not be)
@@ -3832,8 +3909,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Data(down.Type);
                     var v = Operand(down.Operand, lower, inSpec);
-                    if (!inSpec && _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) != null) throw new NotTranslated("a cast where exceptions are seen");
-                    return new KCast { Value = v, Test = new KOp("||", new KOp("==", v, new KLit("null")), IsCase(v, down.Type)), At = down.Syntax };
+                    var downOk = new KOp("||", new KOp("==", v, new KLit("null")), IsCase(v, down.Type));
+                    CastThrows(downOk, inSpec);
+                    return new KCast { Value = v, Test = downOk, At = down.Syntax };
                 }
                 // (a record's == and !=: its values' equality, which is its references', a value being its constructor's)
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
@@ -4830,6 +4908,14 @@ namespace CsVerify.Verifier.Boogie
                     if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lv), new KLit("null")) });
                     return new KVar(lv);
                 }
+                // (a static readonly field the kernel doesn't have: a value that never changes, not known which; not null
+                // where its type says so)
+                case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srr } when StaticReadonly(srr) is KExpr srv:
+                {
+                    if (IsNullable(srr.Type) && NotNullable(srr.Type)) Emit(new KAssume { Cond = new KOp("!=", srv, new KLit("null")) });
+                    if (IsIntegral(srr.Type)) Emit(new KAssume { Cond = InRange(srv, srr.Type) });
+                    return srv;
+                }
                 case IFieldReferenceOperation _:
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
                                                       !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
@@ -5057,6 +5143,32 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssume { Cond = new KOp("!=", new KVar(str), new KLit("null")) });
                     return new KVar(str);
                 }
+                // (anonymous objects compared as objects: their references, not known (the kernel's values are one per contents))
+                case IBinaryOperation ac when ac.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && AnonymousAsObject(ac.LeftOperand) && AnonymousAsObject(ac.RightOperand):
+                {
+                    Expr(Unconverted(ac.LeftOperand));
+                    Expr(Unconverted(ac.RightOperand));
+                    var same = Declare("t$" + _temps++, ac.Type);
+                    Emit(new KHavoc { Var = same });
+                    return new KVar(same);
+                }
+                // (a library value the kernel doesn't look into, new TimeSpan(...), new DateTime(...): its arguments read, its value not known)
+                case IObjectCreationOperation ov when IsOpaqueValue(ov.Type) && ov.Initializer == null && ov.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type)):
+                {
+                    foreach (var a in ov.Arguments.OrderBy(a => a.Parameter.Ordinal)) Emit(new KAssign { Var = Declare("t$" + _temps++, a.Value.Type), Value = Expr(a.Value) });
+                    var made = Declare("t$" + _temps++, ov.Type);
+                    Emit(new KHavoc { Var = made });
+                    return new KVar(made);
+                }
+                // (a value boxed, as object or an interface it has: an object of its own, not null, which no other is known to be)
+                case IConversionOperation bx when bx.IsImplicit && bx.Operand.Type?.IsValueType == true && !bx.Type.IsValueType && InSubset(bx.Operand.Type) && TypeOf(bx.Type) == "Ref":
+                {
+                    Emit(new KAssign { Var = Declare("t$" + _temps++, bx.Operand.Type), Value = Expr(bx.Operand) });
+                    var boxed = Declare("t$" + _temps++, bx.Type);
+                    Emit(new KHavoc { Var = boxed });
+                    Emit(new KAssume { Cond = new KOp("!=", new KVar(boxed), new KLit("null")) });
+                    return new KVar(boxed);
+                }
                 // (a task, or a library's object, as object or an interface it has: the same reference)
                 case IConversionOperation tr when tr.IsImplicit && tr.Conversion.IsReference && (IsGivenTask(tr.Operand.Type) || IsLibraryObject(tr.Operand.Type) ||
                                                   IsSequence(tr.Type) && (IsCollection(tr.Operand.Type) || IsArray(tr.Operand.Type))) && TypeOf(tr.Type) == "Ref":
@@ -5156,7 +5268,18 @@ namespace CsVerify.Verifier.Boogie
             // (where it doesn't, a value of the type all the same, which nothing is then concluded from)
             if (inSpec) return new KOp("$need", fits, new KOp("ite", new KOp("&&", fits, new KOp("&&", new KOp("<=", Number(lo), value), new KOp("<=", value, Number(hi)))), value, Number(lo)));
             var mode = Mode(c.Syntax, c.IsChecked);
-            if (mode == KMode.Checked) throw new NotTranslated("a checked float cast");
+            // (checked: where it doesn't fit, it throws an OverflowException, which the handlers may catch; in a proof, it may not)
+            if (mode == KMode.Checked)
+            {
+                if (_contract.IsPure || _contract.IsLemma)
+                    Emit(new KCheck { Cond = fits, Id = "CSV1010", At = c.Syntax, Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)" });
+                else
+                {
+                    if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string overflowTo) Emit(new KFork { Overflow = fits, Target = overflowTo, Exception = null });
+                    Emit(new KAssume { Cond = fits });
+                }
+                return value;
+            }
             if (mode == KMode.Default)
                 Emit(new KCheck { Cond = fits, Id = "CSV1010", At = c.Syntax, Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)" });
             if (mode == KMode.Default) return value;
@@ -5671,13 +5794,17 @@ namespace CsVerify.Verifier.Boogie
         private KExpr DelegateCall(IInvocationOperation call)
         {
             if (!IsFunc(call.Instance?.Type)) throw new NotTranslated("a call of a delegate of " + call.Instance?.Type);
-            DelegatesHere("a call of a delegate");
+            if (_p.UsesPerm) throw new NotTranslated("a call of a delegate with permissions");
             var throwsTo = _cfgBlock != null ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
             var values = Operands(new[] { call.Instance }.Concat(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToArray());
             var key = FuncKey(call.Instance.Type);
             _p.DelegateKeys.Add(key);
             _p.CallsDelegates = true;
             var result = call.TargetMethod.ReturnsVoid ? null : Declare("t$" + _temps++, call.TargetMethod.ReturnType);
+            // (under Spec.Modifies: what it may change must be in the frame; one that changes nothing is, any other may not be, CSV1017)
+            if (_contract.Modifies != null)
+                Emit(new KCheck { Cond = new KOp("$nochange", values[0]), Id = "CSV1017", At = call.Syntax,
+                                  Message = $"'{call.Syntax}' calls a delegate that may write anything, which Spec.Modifies doesn't allow (say what it may change with Spec.ChangesNothing)" });
             Emit(new KInvoke { Result = result, Delegate = values[0], Args = values.Skip(1).ToArray(), Key = key, At = call.Syntax, DelegateAt = call.Instance.Syntax });
             // (where exceptions are seen: it may throw, anything)
             if (throwsTo != null) Emit(new KFork { Overflow = new KLit("false"), Target = throwsTo, Exception = null });
@@ -5692,7 +5819,8 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr Lambda(IDelegateCreationOperation dc, IAnonymousFunctionOperation af)
         {
-            DelegatesHere("a lambda");
+            // (made, it changes nothing: under Spec.Modifies too)
+            if (_p.UsesPerm) throw new NotTranslated("a lambda with permissions");
             var fn = af.Symbol;
             var c = _contractOf?.Invoke(fn) ?? throw new NotTranslated("a lambda without its contract");
             var own = new HashSet<ISymbol>(fn.Parameters, SymbolEqualityComparer.Default);
@@ -6270,7 +6398,8 @@ namespace CsVerify.Verifier.Boogie
                                       Message = $"Own.New makes a view only of an object made where it is called, new {own.Arguments[0].Value.Type.Name}(...): '{own.Arguments[0].Value.Syntax}' may be anyone's" });
                     var obj = Expr(own.Arguments[0].Value);
                     var view = RefVariable(own.Arguments[1]);
-                    Emit(new KOwn { Kind = "new", Obj = obj, View = view, Type = own.Arguments[0].Value.Type, At = own.Syntax });
+                    // (the error stands for it: the view, as a new object's would be, nothing else said of it)
+                    Emit(new KOwn { Kind = "new", Obj = obj, View = view, Type = own.Arguments[0].Value.Type, At = own.Syntax, Unchecked = true });
                     return obj;
                 }
                 case "New" when own.Arguments[0].Value is IObjectCreationOperation:
@@ -6338,6 +6467,13 @@ namespace CsVerify.Verifier.Boogie
             if (e is ILocalReferenceOperation bl && _bound.TryGetValue(bl.Local, out var bv)) return bv;
             // (a group a query's selector is given: its key, its count, Lowering.Linq's GroupValue)
             if (GroupValue(e) is KExpr group) return group;
+            // (anonymous objects compared as objects, ==: their references, which the kernel's values (one per contents)
+            // don't have: some relation, not known; != its negation)
+            if (e is IBinaryOperation ao && ao.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && AnonymousAsObject(ao.LeftOperand) && AnonymousAsObject(ao.RightOperand))
+            {
+                var eqv = new KOp("$refEq", Spec(Unconverted(ao.LeftOperand), result), Spec(Unconverted(ao.RightOperand), result));
+                return ao.OperatorKind == BinaryOperatorKind.Equals ? eqv : new KOp("!", eqv);
+            }
             if (DataExpr(e, x => Spec(x, result), (l, v) => _bound[l] = v, inSpec: true) is KExpr data) return data;
             switch (e)
             {
@@ -6495,6 +6631,9 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IPropertyReferenceOperation lc when (lc.Property.Name == "Count" || lc.Property.Name == "Length" && CollectionKind(lc.Instance?.Type) == "StringBuilder") && CollectionOf(lc.Instance?.Type) is INamedTypeSymbol cc:
                     return Model("Size", cc, Spec(lc.Instance, result));
+                // (a started task's Result, in a specification: what it gave (its join, and that it has finished, are code's))
+                case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation srl } when _tasks.TryGetValue(srl.Local, out var srt) && srt.Result != null:
+                    return new KVar(srt.Result);
                 case IPropertyReferenceOperation sr when sr.Instance != null && IsCollectionInterface(sr.Property.ContainingType) &&
                                                          (sr.Property.Name == "Count" && sr.Arguments.Length == 0 || sr.Property.IsIndexer && sr.Arguments.Length == 1):
                     return Ifc(sr, sr.Property.IsIndexer ? Spec(sr.Arguments[0].Value, result) : null, Spec(sr.Instance, result), inSpec: true);
@@ -6628,7 +6767,18 @@ namespace CsVerify.Verifier.Boogie
                     // (only of a sealed class without an [Invariant], and not an [Owns] field: CsVerify's engine reports the rest)
                     if (!(fa.Arguments[1].Value.ConstantValue is { HasValue: true, Value: string name }) || !(target.Type is INamedTypeSymbol { IsSealed: true } t) ||
                         DataTypes.Invariants(t).Any() || !(WholeFields(t).FirstOrDefault(x => x.Name == name) is ISymbol field))
-                        throw new NotTranslated("a Spec.Acc of a field CsVerify's engine rejects");
+                    {
+                        // (CSV1016, as CsVerify's engine reports it, in the method's own contract; a permission of nothing)
+                        var type = target.Type;
+                        var fname = fa.Arguments[1].Value.ConstantValue.Value as string;
+                        var why = fname == null || WholeFields(type).All(x => x.Name != fname) ? $"{type.Name} has no field '{fname}'"
+                                : !(type is INamedTypeSymbol { IsSealed: true }) ? $"{type.Name} is not sealed (a subclass would have fields this cannot account for)"
+                                : $"{type.Name} has an [Invariant], which is about the whole object";
+                        var span = fa.Syntax.GetLocation().GetLineSpan();
+                        if (_p.Result != null && !_p.Warnings.Any(w => w.Span.Equals(span) && w.Id == "CSV1016"))
+                            _p.Warnings.Add(new VerificationDiagnostic("CSV1016", true, $"Spec.Acc of a single field: {why}", span));
+                        return new KLit("true");
+                    }
                     _p.UsesPerm = true;
                     return new KFieldAcc { Obj = Spec(target, result), Field = field, Type = target.Type, At = fa.Syntax };
                 }

@@ -114,7 +114,9 @@ namespace CsVerify.Verifier.Boogie
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;
-                            stmts.Add(new KMapUpdate { Map = map, Ref = t, Value = IsStruct(element) ? new KOp("lambda", new KLit("j: int"), StructDefault(element)) : new KLit($"(lambda j: int :: {zero})") });
+                            stmts.Add(new KMapUpdate { Map = map, Ref = t, Value = IsStruct(element) ? new KOp("lambda", new KLit("j: int"), StructDefault(element))
+                                                                                 : IsFloating(element) ? new KOp("lambda", new KLit("j: int"), FloatLiteral(0.0, element))
+                                                                                 : new KLit($"(lambda j: int :: {zero})") });
                             if (n.Elements != null)
                                 for (int k = 0; k < n.Elements.Length; k++)
                                     stmts.Add(new KMapUpdate { Map = map, Ref = t, Index = new KLit(k.ToString()), Value = n.Elements[k] });

@@ -635,6 +635,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
             Boogie.KernelTypes.FloatArrays = Boogie.KernelTypes.NamesFloatArrays(compilation);
             Boogie.KernelTypes.ScalarArrays = Boogie.KernelTypes.NamesScalarArrays(compilation, userTrees);
+            Boogie.KernelTypes.StaticReadonlyIds = new Dictionary<string, int>();
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.SteppedBy = m => engine.Atomics.SteppedBy(m).Where(f => Atomics.StepOf(f) != null);
             Boogie.KernelTypes.Started = engine.StartedDelegates;
@@ -653,6 +654,17 @@ namespace CsVerify.Verifier
                 .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
+            // (the Spec library's trusted lemmas the program calls, Ieee's: procedures of their contracts, as a trusted method of its own is)
+            var libraryLemmas = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                    if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol lm && lm.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && SpecSymbols.IsTrusted(lm) &&
+                        lm.DeclaringSyntaxReferences.Length == 1 && !userTrees.Contains(lm.DeclaringSyntaxReferences[0].SyntaxTree) && libraryLemmas.Add(lm.OriginalDefinition) &&
+                        Boogie.BoogieTranslator.Candidate(lm.OriginalDefinition, engine.ContractOf(lm.OriginalDefinition), asContract: true))
+                        forBoogie.Add((lm.OriginalDefinition, engine.ContractOf(lm.OriginalDefinition), lm.DeclaringSyntaxReferences[0].GetSyntax(), new MethodResult { Name = null }));
+            }
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
@@ -993,6 +1005,14 @@ namespace CsVerify.Verifier
                 // (outside the check profile: assumed, not proved; Boogie assumes what it asserts, so it is as CsVerify's engine has it)
                 if (engine.Options.CheckKinds != null)
                     x.result.AssumedObligations += translator.Lines.Values.Distinct().Count(c => c.Method == x.result && Checks.KindOf(c.Id) != null && !engine.Options.Checked(c.Id));
+                // (within a check profile, a construct not modeled is a warning, its value unknown, as CsVerify's engine has it)
+                if (engine.Options.CheckKinds != null)
+                    mine = mine.Select(d =>
+                    {
+                        if (d.Id != "CSV1901" || !d.IsError) return d;
+                        x.result.Unmodeled++;
+                        return new VerificationDiagnostic("CSV1901", false, d.Message.Replace(" (boogie)", "") + " (not modeled: treated as unknown)", d.Span);
+                    }).ToList();
                 mine = mine.Where(d => !d.IsError || engine.Options.Checked(d.Id)).ToList();
                 x.result.Diagnostics.AddRange(mine);
                 if (undecided != null)

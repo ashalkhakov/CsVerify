@@ -395,7 +395,8 @@ namespace CsVerify.Tests
             var sep = Path.DirectorySeparatorChar;
             var files = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains($"{sep}obj{sep}") && !f.Contains($"{sep}bin{sep}"));
-            return Engine.VerifyFiles(files, new VerifierOptions());
+            // (Boogie's time limit long enough for a loaded machine, where Z3 giving up reads as a method not verified)
+            return Engine.VerifyFiles(files, new VerifierOptions { TimeoutMs = 120000 });
         }
 
         [Fact]

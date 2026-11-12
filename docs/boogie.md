@@ -512,7 +512,7 @@ and permutations are maps havocked where the call is, their definitions assumed,
 time round. Query syntax (`from s in xs let b = ... where ... select b`) is the calls it is. A `GroupJoin` looped over
 (`from c in cs join o in os on k(c) equals k'(o) into g select new { c, g }`) is a row for each outer element, its
 index, both sequences read where the loop starts; `row.c` is the outer element, and a loop over `row.g` runs over the
-inner elements whose key is the row's. The members not named here fall back.
+inner elements whose key is the row's. The members not named here are not translated (CSV1902).
 
 **Entity Framework.** EF Core is read with CsVerify's engine's model of it (`EfModel`: entities, keys, unique indexes,
 query filters, navigations, tokens), as its engine reads it (Lowering.Ef, Lowering.EfTracker):
@@ -561,7 +561,7 @@ query filters, navigations, tokens), as its engine reads it (Lowering.Ef, Loweri
   tasks one is given, a type parameter constrained by itself, `List.Contains` in a specification).
 
 **Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
-parameter takes it, a call gives it, and an EF concurrency token is compared by it; its operators and members fall back.
+parameter takes it, a call gives it, and an EF concurrency token is compared by it; its operators and members are not translated (CSV1902).
 
 **Library nullness.** As CsVerify's engine trusts it: a library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
@@ -662,7 +662,7 @@ a new object. `object` is a reference type of the subset.
 (`Shape s = new Square(3); s.Area()`: its declaration, assignments, `ref` and `out` too, each a `new Square(...)`) is
 that class's implementation, whose body answers, as CsVerify's engine has it. A procedure called so is called by the
 contract of the member as bound (CsVerify's engine's way too, though the override's contract would prove more); a local
-given objects of different classes, or one made elsewhere too, falls back.
+given objects of different classes, or one made elsewhere too, is not translated (CSV1902).
 
 **Generic classes.** A class with type parameters (`Cell<T>`) is one class: its procedures and field maps are the
 definition's, and a field of `T` holds a `Box`, as generic data's do. Where it's used at a type (`Cell<int>`), a read
@@ -673,7 +673,7 @@ default of a `T` the class doesn't know: a box nothing is known of, so a caller 
 **Constrained type parameters.** A type parameter constrained to references (`where T : class`, or to interfaces and
 classes of the program's: `where T : IKeyed`) has references for values: `Ref`, not boxes; its members are its
 constraints' (`a.Key()` calls `IKeyed.Key`). Its instantiations must be references (a call of a generic method with
-others falls back). As in CsVerify's engine, a value of a type parameter may be null even under `where T : class`
+others is not translated). As in CsVerify's engine, a value of a type parameter may be null even under `where T : class`
 (`K?` instantiates it), so dereferencing one is checked (CSV1013). Generic instance methods, not virtual, are
 procedures as generic static ones are.
 

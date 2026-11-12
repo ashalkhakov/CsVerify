@@ -129,6 +129,37 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KRow { Map = map, Ref = SBase(d), Value = new KOp("lambda", new KLit("y$: int"), row), At = cp.Syntax });
                     return cp.TargetMethod.Name == "CopyTo" ? new KLit("true") : fits;
                 }
+                // (MemoryExtensions' IndexOf(span, v) and StartsWith(span, prefix) of a scalar span, in code: as their stubs say)
+                case IInvocationOperation se when !inSpec && se.TargetMethod.IsStatic && se.TargetMethod.ContainingType?.ToDisplayString() == "System.MemoryExtensions" &&
+                                                  se.TargetMethod.Name is "IndexOf" or "StartsWith" && se.Arguments.Length == 2 &&
+                                                  IsSpan(Unconverted(se.Arguments.First(a => a.Parameter.Ordinal == 0).Value).Type):
+                {
+                    var ordered = se.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var st = Unconverted(ordered[0].Value).Type;
+                    var sp = lower(Unconverted(ordered[0].Value));
+                    var map = Elements(CellsOf(st));
+                    KExpr At(KExpr span, KExpr i) => new KOp("sel", new KVar(map), SBase(span), new KOp("+", SOff(span), i));
+                    var i = new KVar("i$m");
+                    KExpr Within(KExpr lo, KExpr hi, KExpr body) => new KQuant { Forall = true, Var = "i$m", Range = null, Body = new KOp("==>", new KOp("&&", new KOp("<=", lo, i), new KOp("<", i, hi)), body) };
+                    var r = Declare("t$" + _temps++, se.Type);
+                    Emit(new KHavoc { Var = r });
+                    var rv = new KVar(r);
+                    if (se.TargetMethod.Name == "IndexOf")
+                    {
+                        if (!IsSpan(st) || IsSpan(Unconverted(ordered[1].Value).Type)) return null;
+                        var v = lower(ordered[1].Value);
+                        Emit(new KAssume { Cond = new KOp("&&", new KOp("<=", new KLit("-1"), rv), new KOp("<", rv, Len(sp))) });
+                        Emit(new KAssume { Cond = new KOp("==>", new KOp(">=", rv, new KLit("0")), new KOp("==", At(sp, rv), v)) });
+                        Emit(new KSpecStmt { Spec = Within(new KLit("0"), new KOp("ite", new KOp("<", rv, new KLit("0")), Len(sp), rv), new KOp("!=", At(sp, i), v)), Assume = true, Free = true, At = se.Syntax, ArgumentAt = se.Syntax });
+                    }
+                    else
+                    {
+                        if (!IsSpan(Unconverted(ordered[1].Value).Type)) return null;
+                        var pre = lower(Unconverted(ordered[1].Value));
+                        Emit(new KSpecStmt { Spec = new KOp("==", rv, new KOp("&&", new KOp("<=", Len(pre), Len(sp)), Within(new KLit("0"), Len(pre), new KOp("==", At(sp, i), At(pre, i))))), Assume = true, Free = true, At = se.Syntax, ArgumentAt = se.Syntax });
+                    }
+                    return rv;
+                }
                 case IInvocationOperation fl when fl.Instance != null && IsSpan(fl.Instance.Type) && (fl.TargetMethod.Name == "Fill" && fl.Arguments.Length == 1 || fl.TargetMethod.Name == "Clear" && fl.Arguments.Length == 0):
                 {
                     var s = lower(fl.Instance);

@@ -464,7 +464,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     // a view is made of a new object: its invariant holds, and nobody else has its view
                     var o = Code(own.Obj);
-                    ProveInvariant(own.Type, o, own.At, "when its view is made");
+                    if (!own.Unchecked) ProveInvariant(own.Type, o, own.At, "when its view is made");
                     Emit(new KAssign { Var = own.View, Value = o });
                     // (a new tree of its own)
                     if (KernelTypes.Trees) { _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root"); Emit(new KMapUpdate { Map = "$root", Ref = o, Value = o }); }

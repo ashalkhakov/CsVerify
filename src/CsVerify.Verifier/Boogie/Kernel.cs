@@ -316,6 +316,8 @@ namespace CsVerify.Verifier.Boogie
         public string View;
         public ITypeSymbol Type;
         public SyntaxNode At;
+        /// <summary>Own.New of an object not made there: reported already (CSV1016), its invariant not proved again.</summary>
+        public bool Unchecked;
         /// <summary>Own.Take and Own.Give: the [Owns] field, the object given and its view, as written.</summary>
         public ISymbol Field;
         public KExpr Value, ViewValue;

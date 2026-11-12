@@ -33,6 +33,9 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         [System.ThreadStatic] public static HashSet<SpecialType> ScalarArrays;
 
+        /// <summary>The program's static readonly fields the kernel reads as constants ($sf), numbered, for the run this thread is in.</summary>
+        [System.ThreadStatic] public static Dictionary<string, int> StaticReadonlyIds;
+
         /// <summary>The scalar types the user's code has arrays, spans or memory of: of any type an expression or a declaration of it has.</summary>
         public static HashSet<SpecialType> NamesScalarArrays(Compilation c, IEnumerable<SyntaxTree> userTrees)
         {

@@ -567,6 +567,66 @@
       "CSV1012@31"
     ]
   },
+  "LockLevelsAndAtomics_AreBoogies": {
+    "Account..ctor@LockLevelBugs.cs:15": [],
+    "Account..ctor@LockLevels.cs:38": [],
+    "AuditLog.WriteAsync@LockLevels.cs:110": [],
+    "Bank.Deposit@LockLevels.cs:93": [],
+    "Bank.Sweep@LockLevels.cs:81": [],
+    "Bank.Transfer@LockLevels.cs:44": [],
+    "Config..ctor@AtomicFields.cs:14": [],
+    "Counter.Grows@AtomicBugs.cs:11": [],
+    "Counter.Grows64@AtomicBugs.cs:12": [],
+    "Counter.LostUpdate@AtomicBugs.cs:15": [
+      "CSV1030@18"
+    ],
+    "Counter.Torn@AtomicBugs.cs:33": [
+      "CSV1030@33"
+    ],
+    "Counter.TwoReads@AtomicBugs.cs:25": [
+      "CSV1004@29"
+    ],
+    "Counter.Wraps@AtomicBugs.cs:22": [
+      "CSV1030@22"
+    ],
+    "Ledger.Record@LockLevels.cs:26": [],
+    "LevelBugs.Blocking@LockLevelBugs.cs:68": [
+      "CSV1025@71",
+      "CSV1026@71"
+    ],
+    "LevelBugs.Callback@LockLevelBugs.cs:39": [
+      "CSV1025@42"
+    ],
+    "LevelBugs.Fetch@LockLevelBugs.cs:57": [],
+    "LevelBugs.LowUnderHigh@LockLevelBugs.cs:33": [
+      "CSV1025@35"
+    ],
+    "LevelBugs.TakeLow@LockLevelBugs.cs:30": [],
+    "LevelBugs.Transfer@LockLevelBugs.cs:25": [
+      "CSV1025@27"
+    ],
+    "LevelBugs.WaitHolding@LockLevelBugs.cs:52": [
+      "CSV1025@54"
+    ],
+    "LevelBugs.WaitUnder@LockLevelBugs.cs:46": [
+      "CSV1025@48"
+    ],
+    "Stats.Close@AtomicFields.cs:60": [],
+    "Stats.Configuration@AtomicFields.cs:74": [],
+    "Stats.Grows@AtomicFields.cs:26": [],
+    "Stats.Hit@AtomicFields.cs:31": [],
+    "Stats.Hits@AtomicFields.cs:54": [],
+    "Stats.NextGeneration@AtomicFields.cs:85": [],
+    "Stats.Observe@AtomicFields.cs:43": [],
+    "Stats.Open@AtomicFields.cs:67": [],
+    "Stats.SetOnce@AtomicFields.cs:28": [],
+    "Stats.StaysClosed@AtomicFields.cs:27": [],
+    "Stats.Use.<lambda:89>@AtomicFields.cs:89:35": [],
+    "Stats.Use@AtomicFields.cs:87": [],
+    "Ticket.Next@AtomicBugs.cs:41": [
+      "CSV1030@41"
+    ]
+  },
   "Nullables_BothEnginesReportTheSame": {
     "Nu.Bad@Test.cs:22": [
       "CSV1013@22"
@@ -771,6 +831,14 @@
     "Pa.Now@Test.cs:5": [],
     "Pa.Was@Test.cs:6": []
   },
+  "Parity_BothEnginesReportTheSame/lambdas": {
+    "C.M.<lambda:6>@Test.cs:6:99": [],
+    "C.M@Test.cs:6": [],
+    "C.M2.<lambda:7>@Test.cs:7:120": [],
+    "C.M2@Test.cs:7": [],
+    "C.N.<lambda:8>@Test.cs:8:92": [],
+    "C.N@Test.cs:8": []
+  },
   "Parity_BothEnginesReportTheSame/loops": {
     "P.Down@Test.cs:8": [],
     "P.Inclusive@Test.cs:16": [],
@@ -787,6 +855,53 @@
       "CSV1010@25",
       "CSV1010@25"
     ]
+  },
+  "Parity_BothEnginesReportTheSame/misc": {
+    "Box.get_Twice@Test.cs:25": [
+      "CSV1010@25"
+    ],
+    "Box.get_Width@Test.cs:24": [],
+    "Box.set_Width@Test.cs:24": [],
+    "C.M@Test.cs:18": [
+      "CSV1013@18"
+    ],
+    "C.N@Test.cs:19": [
+      "CSV1013@19"
+    ],
+    "C3.Bad@Test.cs:29": [
+      "CSV1001@29"
+    ],
+    "C3.G@Test.cs:30": [],
+    "C3.M@Test.cs:28": [],
+    "L.Bad.<lambda:13>@Test.cs:13:67": [],
+    "L.Bad.<lambda:13>@Test.cs:13:76": [],
+    "L.Bad.<lambda:13>@Test.cs:13:93": [],
+    "L.Bad@Test.cs:11": [
+      "CSV1004@14"
+    ],
+    "L.OrdersOf.<lambda:8>@Test.cs:8:67": [],
+    "L.OrdersOf.<lambda:8>@Test.cs:8:76": [],
+    "L.OrdersOf.<lambda:8>@Test.cs:8:93": [],
+    "L.OrdersOf@Test.cs:6": []
+  },
+  "Parity_BothEnginesReportTheSame/tasks": {
+    "C.B1@Test.cs:11": [
+      "CSV1026@11"
+    ],
+    "C.B2@Test.cs:12": [
+      "CSV1026@12"
+    ],
+    "C.B3@Test.cs:13": [
+      "CSV1026@13"
+    ],
+    "C.B4@Test.cs:14": [
+      "CSV1026@14"
+    ],
+    "C.M1@Test.cs:7": [],
+    "C.M2@Test.cs:8": [],
+    "C.M3@Test.cs:9": [],
+    "C.M4@Test.cs:10": [],
+    "C.Work@Test.cs:6": []
   },
   "Polymorphism_BothEnginesReportTheSame": {
     "Cell..ctor@Test.cs:43": [],
@@ -1183,9 +1298,7 @@
     "LinqBugs.FirstFailing@LinqBugs.cs:23": [
       "CSV1001@23"
     ],
-    "LinqBugs.FirstItem.<lambda:52>@LinqBugs.cs:52:39": [
-      "CSV1902@52"
-    ],
+    "LinqBugs.FirstItem.<lambda:52>@LinqBugs.cs:52:39": [],
     "LinqBugs.FirstItem@LinqBugs.cs:49": [
       "CSV1001@52"
     ],

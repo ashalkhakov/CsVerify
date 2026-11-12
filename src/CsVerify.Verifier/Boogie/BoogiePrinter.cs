@@ -138,6 +138,10 @@ namespace CsVerify.Verifier.Boogie
             Line("function $LS(ly: LayerType): LayerType;");
             Optional("$canBeCanceled(", "function $canBeCanceled(t: Ref): bool; // a cancellation token's, which never changes");
             Optional("$eqc(", "function $eqc(o: Ref): Ref; // a class's own Equals: its class of equals, not known");
+            Optional("$refEq(", "function $refEq(a: Ref, b: Ref): bool; // anonymous objects' references compared: not known");
+            Optional("$sfRef(", "function $sfRef(k: int): Ref; // a static readonly field's value, which never changes");
+            Optional("$sfInt(", "function $sfInt(k: int): int;");
+            Optional("$sfBool(", "function $sfBool(k: int): bool;");
             Optional("$eqc(", "axiom (forall o: Ref :: { $eqc(o) } o != null ==> $eqc(o) != null);");
             Optional("$dataEq(", "function $dataEq(a: Ref, b: Ref): bool; // records' ==, of fields that don't compare as values (strings'): not known");
             Optional("$cell(", "// a rectangular array's cell: an injective pairing of its indices, as CsVerify's engine's cv_cell");
