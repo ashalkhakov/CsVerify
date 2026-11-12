@@ -1336,7 +1336,7 @@ namespace CsVerify.Verifier.Boogie
                     if (frame.Cells)
                     {
                         // (a call that takes cells changes only those it got, and those folded into the instances it got, but
-                        // for those still in hand; and arrays it allocates)
+                        // for those of which a share is still in hand, which nobody else can write; and arrays it allocates)
                         var (xv, iv) = (new KVar("x$"), new KVar("i$"));
                         var parts = frame.Given.Select(g => g.atom switch
                         {
@@ -1344,7 +1344,7 @@ namespace CsVerify.Verifier.Boogie
                             KInst q => $"({E(g.guard, cx)} && {sn}$cowner[x$][i$] == {E(Checks.Instance(q.Pred, q.Args), cx)})",
                             _ => null,
                         }).Where(x => x != null).ToList();
-                        var changed = parts.Count == 0 ? "false" : $"(({string.Join(" || ", parts)}) && {sn}$cells[x$][i$] < 1.0)";
+                        var changed = parts.Count == 0 ? "false" : $"(({string.Join(" || ", parts)}) && {sn}$cells[x$][i$] <= 0.0)";
                         var unchanged = $"{sn}$Alloc[x$] && !{changed}";
                         foreach (var map in frame.ElementMaps) Line($"    assume (forall x$: Ref, i$: int :: {unchanged} ==> {map}[x$][i$] == {sn}{map}[x$][i$]);");
                         Line("    havoc cowner;");

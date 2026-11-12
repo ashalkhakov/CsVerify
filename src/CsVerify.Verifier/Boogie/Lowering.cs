@@ -3174,9 +3174,41 @@ namespace CsVerify.Verifier.Boogie
         {
             if (t.StartCall == null) return;
             var st = t.StartCall;
-            Emit(new KCall { Callee = st.Callee, Started = st, Result = st.Result, At = st.At, ArgsAt = st.ArgsAt, RefOuts = st.RefOuts, Phase = 2 });
-            t.StartCall = null;
-            if (t.Forget != null) foreach (var f in t.Forget) f();
+            void Join()
+            {
+                Emit(new KCall { Callee = st.Callee, Started = st, Result = st.Result, At = st.At, ArgsAt = st.ArgsAt, RefOuts = st.RefOuts, Phase = 2 });
+                if (t.Forget != null) foreach (var f in t.Forget) f();
+            }
+            // (a task awaited in one place only: joined there; one awaited in more, joined where it wasn't yet)
+            if (t.Awaited == null || _cfgBlock == null || !AwaitedInPlaces(t)) { Join(); t.StartCall = null; return; }
+            // (once, on each path: where an earlier await joined it already (its awaited flag), nothing is given back again)
+            var n = _joins++;
+            var (join, skip, after) = (new KBlock { Label = $"b{_cfgBlock.Ordinal}$j{n}", Ordinal = _cfgBlock.Ordinal },
+                                       new KBlock { Label = $"b{_cfgBlock.Ordinal}$j{n}$no", Ordinal = _cfgBlock.Ordinal },
+                                       new KBlock { Label = $"b{_cfgBlock.Ordinal}$j{n}$after", Ordinal = _cfgBlock.Ordinal });
+            _block.Jump = new KGoto(join.Label, skip.Label);
+            _p.Blocks.Add(join);
+            _p.Blocks.Add(skip);
+            _p.Blocks.Add(after);
+            _block = join;
+            Emit(new KAssume { Cond = new KOp("!", new KVar(t.Awaited)) });
+            Join();
+            join.Jump = new KGoto(after.Label);
+            _block = skip;
+            Emit(new KAssume { Cond = new KVar(t.Awaited) });
+            skip.Jump = new KGoto(after.Label);
+            _block = after;
+        }
+
+        private int _joins;
+
+        /// <summary>Whether a task's variable is used in more than one place (each of which may await it).</summary>
+        private bool AwaitedInPlaces(Task t)
+        {
+            var local = _tasks.FirstOrDefault(e => e.Value == t).Key;
+            var member = t.At?.AncestorsAndSelf().FirstOrDefault(a => a is MemberDeclarationSyntax);
+            return local == null || member == null ||
+                   member.DescendantNodes().OfType<IdentifierNameSyntax>().Count(i => i.Identifier.ValueText == local.Name) > 1;
         }
 
         /// <summary>The tasks Task.WhenAll's arguments start, each as its own task.</summary>
@@ -6847,7 +6879,13 @@ namespace CsVerify.Verifier.Boogie
                         }
                         // (a foreach's index: of its element in the body, the number gone through at its head)
                         case "Index" when Unconverted(inv.Arguments[0].Value) is ILocalReferenceOperation ix && _forEachOf.TryGetValue(ix.Local, out var fx) && fx.Version != null:
-                            throw new NotTranslated("Spec.Index of a foreach through an enumerator");
+                        {
+                            // (no index to go by: an unknown value, which warns, as CsVerify's engine has it)
+                            var span = inv.Syntax.GetLocation().GetLineSpan();
+                            if (!_p.Warnings.Any(w => w.Span.Equals(span)))
+                                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, "the foreach goes through an enumerator; Spec.Index of its element is unknown", span));
+                            return new KVar(Declare("t$" + _temps++, inv.Type));
+                        }
                         case "Index" when Unconverted(inv.Arguments[0].Value) is ILocalReferenceOperation ix && _forEachOf.TryGetValue(ix.Local, out var fx):
                             return new KVar(fx.Index);
                         // (allocated during the call)
