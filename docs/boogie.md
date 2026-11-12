@@ -1195,7 +1195,10 @@ either it is undecided: not verified (CSV1902), with the failures it did decide.
 large-stack threads, never disposed (disposing one interrupts threads the solver's processes may still be finishing
 on): one for each run at a time, taken by a run and given back after. One for every run deadlocked tests running side
 by side: a run's work waits on work it queued on the same threads, so runs together could take them all, each waiting
-on work queued behind the others'. `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
+on work queued behind the others'. A run that goes on with nothing done for a long while (ten times the time limit,
+five minutes at least) has lost a solver's answer: Boogie waits for it, its solvers idle, and would wait for ever (it
+happens, on a loaded machine, in the fuzz test). It is ended, and its methods are not verified (CSV1902, "no answer
+from its solvers"); its threads aren't given to another run. `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
 
 A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
 the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided

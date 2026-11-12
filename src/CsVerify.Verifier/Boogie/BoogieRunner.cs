@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -116,8 +117,10 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!Schedulers.TryTake(out var scheduler))
                 scheduler = CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
-            try { return Run(scheduler, program, z3Path, timeoutMs, split, procs, names); }
-            finally { Schedulers.Add(scheduler); }
+            var result = Run(scheduler, program, z3Path, timeoutMs, split, procs, names);
+            // (given back after a run that ended: one that didn't may still hold its threads)
+            Schedulers.Add(scheduler);
+            return result;
         }
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
@@ -145,11 +148,13 @@ namespace CsVerify.Verifier.Boogie
             var undecided = new List<string>();
             var facts = new List<string>();
             var stats = new PipelineStatistics();
-            var outcome = engine.InferAndVerify(output, parsed, stats, "csverify", info =>
+            var progress = 0;
+            var running = engine.InferAndVerify(output, parsed, stats, "csverify", info =>
             {
                 var d = Diagnostic(program, info);
                 if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                     Console.Error.WriteLine($"[boogie] {info.ImplementationName} {(split == null ? "whole" : "split")} {info.Kind} line {info.Tok.line}: {d.Item2?.Id} {d.Item2?.Message}");
+                Interlocked.Increment(ref progress);
                 lock (failures)
                 {
                     failures.Add(d);
@@ -158,7 +163,17 @@ namespace CsVerify.Verifier.Boogie
                     if (d.Item2?.Id == "CSV1900" && info.ImplementationName != null && !undecided.Contains(info.ImplementationName)) undecided.Add(info.ImplementationName);
                     if (d.Item2?.Id == Checks.Candidate && info.ImplementationName != null && !facts.Contains(info.ImplementationName)) facts.Add(info.ImplementationName);
                 }
-            }, "csverify", default).GetAwaiter().GetResult();
+            }, "csverify", default);
+            // (a run that goes on with nothing done for a long while has lost a solver's answer: Boogie waits for it, its
+            // solvers idle, and would wait for ever. Not verified, then: what it was verifying is undecided)
+            var idle = TimeSpan.FromSeconds(Math.Max(300, 10 * Math.Max(1, timeoutMs / 1000)));
+            for (var seen = -1; !running.Wait(idle);)
+            {
+                var now = stats.VerifiedCount + stats.ErrorCount + stats.InconclusiveCount + stats.TimeoutCount + stats.OutOfResourceCount + stats.OutOfMemoryCount + Volatile.Read(ref progress);
+                if (now == seen) throw new InvalidOperationException($"Boogie: no answer from its solvers in {idle.TotalSeconds:0} s");
+                seen = now;
+            }
+            var outcome = running.Result;
             if (outcome != PipelineOutcome.VerificationCompleted && outcome != PipelineOutcome.Done)
             {
                 // (its reason first, on the line a diagnostic keeps: what Boogie wrote of the error)
