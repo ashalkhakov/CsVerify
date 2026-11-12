@@ -108,6 +108,19 @@ namespace CsVerify.Verifier.Boogie
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
             BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null)
         {
+            // (a run that ends in Boogie's fatal error, where a solver's process couldn't start on a loaded machine: once more)
+            try { return RunOnce(program, z3Path, timeoutMs, split, procs, names); }
+            catch (InvalidOperationException e) when (e.Message.StartsWith("Boogie: FatalError"))
+            {
+                if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine("[run] again, after: " + e.Message);
+                System.Threading.Thread.Sleep(1000);
+                return RunOnce(program, z3Path, timeoutMs, split, procs, names);
+            }
+        }
+
+        private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) RunOnce(
+            BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs, Dictionary<MethodResult, string> names)
+        {
             var output = new StringWriter();
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                 Console.Error.WriteLine($"[run] {(split == null ? "whole" : "split")} {timeoutMs} ms, {(split ?? procs)?.Count.ToString() ?? "all"} procedures, {program.Disabled.Count} facts left out");
@@ -115,6 +128,9 @@ namespace CsVerify.Verifier.Boogie
             // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
             var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
             var only = split == null ? (procs ?? new List<string>()).Select(x => "/proc:" + x) : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
+            // (a run again, of the procedures not decided: a solver of its own for each, not one that has run others, whose
+            // state can keep it from deciding what it decides fresh)
+            if (split != null || procs != null) only = only.Append("/restartProver");
 
             // (procedures verified side by side, a solver each: their results don't depend on each other)
             var cores = "/vcsCores:" + Math.Max(1, Environment.ProcessorCount);

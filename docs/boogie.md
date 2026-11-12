@@ -182,7 +182,7 @@ procedure Example.Max$int__(p$a: Ref) returns (result: int)
 
 | Declaration | What it is |
 |---|---|
-| `cs#div`, `cs#rem` | C#'s `/` and `%`, which truncate toward zero (Boogie's `div` and `mod` are Euclidean) |
+| `cs#div`, `cs#divI`, `cs#remI` | C#'s `/` and `%`, which truncate toward zero (Boogie's `div` and `mod` are Euclidean): a quotient of index arithmetic (variables and literals: a heap's parent `(j - 1) / 2`) the function `cs#div` (declared where it's used), which keeps the triggers of quantifiers over indices simple; other quotients and every remainder `cs#divI`, `cs#remI`, inlined, so the solver reasons on `div` and `mod` themselves (`i % 4 == o % 4` gives `(i - o) % 4 == 0`) |
 | `$bit.and32`, `$bit.or64`, …, `$pow32`, `$pow64` | bitwise operators of two variables; a shift count's power of two |
 | `LayerType`, `$LZ`, `$LS` | fuel, as Dafny's: how many times a function's definition may unfold |
 | `Ref`, `null`, `$Alloc` | references, and the allocated ones |
@@ -913,8 +913,10 @@ tag (`$tag`, tested by `$is.`*C*) the case's, each field (a function `$d.`*R.f*,
 record header gives it, as `Ind(Fact Prev) : Fact(Prev.N + 1, ...)`) what was given, and its rank (`$rank`, never
 negative) above its data parts'. A value of a case is that case's constructor of its fields (triggered on `$is.`*C*),
 so equal fields mean equal values, and a record's `==` (where its fields compare as values) is the references' `==`.
-- A field of a data type is one of its cases, and not null where its type says so (each construction checks its
-  arguments, CSV1014); an integer one is in its type's range. A parameter, `this` and a result are of their type's
+- A field of a data type is one of its cases (said by its tag, `$tag(f) == 3`: a test `$is.`*C*`(f)` would trigger
+  the case's constructor of `f`'s fields, whose fields' cases would trigger more without end, a matching loop that a
+  failing proof never saturates), and not null where its type says so (each construction checks its arguments,
+  CSV1014); an integer one is in its type's range. A parameter, `this` and a result are of their type's
   cases.
 - Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,
   `var`, discard, `not`, `and`, `or`, positional and property patterns) test tags and fields and bind their variables;
@@ -1183,6 +1185,9 @@ method split proves all of is verified. A failure split finds is not yet one: Bo
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
 finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
+A run again, of the procedures not decided, has a solver of its own for each (`/restartProver`): one that has run
+other procedures can be kept by its state from deciding what it decides fresh. A run that ends in Boogie's fatal
+error (a solver's process that couldn't start, on a loaded machine) is run once more.
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
 either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on one pool of
 large-stack threads for every run, never disposed (disposing one interrupts threads the solver's processes may still
