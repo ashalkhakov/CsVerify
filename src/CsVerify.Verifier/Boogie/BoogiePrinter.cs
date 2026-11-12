@@ -16,6 +16,8 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>How many quantifiers the expression being printed is in.</summary>
         private int _quantified;
+        /// <summary>Where a case's test is printed as its tag, the cases' tags.</summary>
+        private Dictionary<string, int> _tags;
 
         private readonly StringBuilder _text = new StringBuilder();
         private int _line = 1;
@@ -336,6 +338,7 @@ namespace CsVerify.Verifier.Boogie
                 case KOp op:
                 {
                     var a = op.Args.Select(x => E(x, cx)).ToArray();
+                    if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag)) return $"($tag({a[0]}) == {tag})";
                     switch (op.Op)
                     {
                         case "!": return $"!({a[0]})";
@@ -451,11 +454,15 @@ namespace CsVerify.Verifier.Boogie
             Line("function $rank(d: Ref): int;");
             Line("axiom (forall d: Ref :: { $rank(d) } $rank(d) >= 0);");
             var cx = InProcedure;
+            // (a field's case, by its tag: a test of the case ($is.C) would be a term that makes the case's value its
+            // constructor of its fields, whose fields' cases would make more, without end)
+            _tags = cases.ToDictionary(c => "$is." + c.Name.Substring(3), c => c.Tag);
             foreach (var (function, type, fact) in fields)
             {
                 Line($"function {function}(d: Ref): {type};");
                 if (fact != null) Line($"axiom (forall d: Ref :: {{ {function}(d) }} {E(fact, cx)});");
             }
+            _tags = null;
             foreach (var c in cases)
             {
                 Line($"function $is.{c.Name.Substring(3)}(d: Ref): bool {{ $tag(d) == {c.Tag} }}");
