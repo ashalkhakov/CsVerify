@@ -3603,6 +3603,15 @@ namespace CsVerify.Verifier.Boogie
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
                     return TupleItem(lower(si), si.Type, sk);
+                // (a memory value made by default, a forged one (CSV0006): its address, length and index 0, nothing else known)
+                case IDefaultValueOperation md when IsMemValue(md.Type) && !inSpec:
+                {
+                    var t = Declare("t$" + _temps++, md.Type);
+                    Emit(new KHavoc { Var = t });
+                    foreach (var prop in SpecSymbols.IsCsVerifyType(md.Type, "PointsTo`1") || SpecSymbols.IsCsVerifyType(md.Type, "Ptr`1") ? new[] { "Addr" } : new[] { "Addr", "Length" })
+                        Emit(new KAssume { Cond = new KOp("==", MemProp(prop, new KVar(t), md.Type), new KLit("0")) });
+                    return new KVar(t);
+                }
                 // (a struct made without a constructor of its own, default(S): its default value)
                 case IDefaultValueOperation sd when IsStruct(sd.Type):
                     return StructDefault(sd.Type);

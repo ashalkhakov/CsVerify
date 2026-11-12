@@ -14,6 +14,9 @@ namespace CsVerify.Verifier.Boogie
     /// </summary>
     internal sealed class BoogiePrinter
     {
+        /// <summary>How many quantifiers the expression being printed is in.</summary>
+        private int _quantified;
+
         private readonly StringBuilder _text = new StringBuilder();
         private int _line = 1;
 
@@ -122,8 +125,11 @@ namespace CsVerify.Verifier.Boogie
             }
 
             Line("// C#'s / and % truncate toward zero; Boogie's div and mod are Euclidean");
-            Line("function {:inline} cs#div(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
-            Line("function {:inline} cs#rem(a: int, b: int): int { a - b * cs#div(a, b) }");
+            Line("function cs#div(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
+            Line("function cs#rem(a: int, b: int): int { a - b * cs#div(a, b) }");
+            // (outside a quantifier, what they are, which the solver reasons on; inside one, functions, which keep its triggers simple)
+            Line("function {:inline} cs#divI(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
+            Line("function {:inline} cs#remI(a: int, b: int): int { a - b * cs#divI(a, b) }");
             Line("// bitwise operators of two variables (as CsVerify's engine has them), and a shift count's power of two");
             foreach (var w in new[] { 32, 64 })
             {
@@ -319,8 +325,14 @@ namespace CsVerify.Verifier.Boogie
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
-                case KQuant q when q.Range == null: return $"(forall {q.Var}: {q.Type} :: {E(q.Body, cx)})";
-                case KQuant q: return q.Forall ? $"(forall {q.Var}: {q.Type} :: {E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {E(q.Range, cx)} && {E(q.Body, cx)})";
+                case KQuant q:
+                    _quantified++;
+                    try
+                    {
+                        if (q.Range == null) return $"(forall {q.Var}: {q.Type} :: {E(q.Body, cx)})";
+                        return q.Forall ? $"(forall {q.Var}: {q.Type} :: {E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {E(q.Range, cx)} && {E(q.Body, cx)})";
+                    }
+                    finally { _quantified--; }
                 case KOp op:
                 {
                     var a = op.Args.Select(x => E(x, cx)).ToArray();
@@ -328,8 +340,8 @@ namespace CsVerify.Verifier.Boogie
                     {
                         case "!": return $"!({a[0]})";
                         case "ite": return $"(if {a[0]} then {a[1]} else {a[2]})";
-                        case "div": return $"cs#div({a[0]}, {a[1]})";
-                        case "rem": return $"cs#rem({a[0]}, {a[1]})";
+                        case "div": return $"cs#div{(_quantified > 0 ? "" : "I")}({a[0]}, {a[1]})";
+                        case "rem": return $"cs#rem{(_quantified > 0 ? "" : "I")}({a[0]}, {a[1]})";
                         case "ediv": return $"({a[0]} div {a[1]})";
                         case "emod": return $"({a[0]} mod {a[1]})";
                         case "len": return $"len({a[0]})";
