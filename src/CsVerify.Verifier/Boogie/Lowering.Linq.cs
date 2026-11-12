@@ -265,8 +265,88 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var src = Sequence(args[0].Value);
                     var f = LambdaArg(q, 1);
-                    if (f.p2 != null) throw new NotTranslated("Where with an index");
+                    // (with an index: each element's place in the source)
+                    if (f.p2 != null) return _inDatabase > 0 ? throw new NotTranslated("Where with an index, in a database") : FilterAt(src, j => Apply(f, src.Elem(j), j), q.Syntax);
                     return Filter(src, x => Apply(f, x), q.Syntax);
+                }
+                // (each first occurrence of the first source's elements that the second has, or hasn't)
+                case "Intersect" or "Except" when args.Count == 2 && _inDatabase == 0:
+                {
+                    var a = Sequence(args[0].Value);
+                    var b = Sequence(args[1].Value);
+                    bool keep = m.Name == "Intersect";
+                    return FilterAt(a, j => new KOp("&&", new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(a.Elem(k), a.Elem(j), a.Type), forall: false).Q),
+                                                    keep ? (KExpr)new KQuantOver(this, new KLit("0"), b.Length, k => SameValue(b.Elem(k), a.Elem(j), a.Type), forall: false).Q
+                                                         : new KOp("!", new KQuantOver(this, new KLit("0"), b.Length, k => SameValue(b.Elem(k), a.Elem(j), a.Type), forall: false).Q)), q.Syntax);
+                }
+                // (each element whose key no element before it has)
+                case "DistinctBy" when args.Count == 2 && _inDatabase == 0:
+                {
+                    var src = Sequence(args[0].Value);
+                    var f = LambdaArg(q, 1);
+                    if (f.p2 != null) throw new NotTranslated("DistinctBy with an index");
+                    var keyType = f.body.Type;
+                    return FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(Apply(f, src.Elem(k)), Apply(f, src.Elem(j)), keyType), forall: false).Q), q.Syntax);
+                }
+                // (each element with its index: a tuple (Index, Item))
+                case "Index" when args.Count == 1 && _inDatabase == 0 && resultElem != null && IsTuple(resultElem):
+                {
+                    var src = Sequence(args[0].Value);
+                    return new LSeq { Length = src.Length, Elem = i => new KOp(TupleMaker(resultElem), i, src.Elem(i)), Type = resultElem };
+                }
+                // (the source backwards)
+                case "Reverse" when args.Count == 1 && _inDatabase == 0:
+                {
+                    var src = Sequence(args[0].Value);
+                    return new LSeq { Length = src.Length, Elem = i => src.Elem(new KOp("-", new KOp("-", src.Length, new KLit("1")), i)), Type = src.Type };
+                }
+                // (one more element, at the end or the start)
+                case "Append" or "Prepend" when args.Count == 2 && _inDatabase == 0:
+                {
+                    var src = Sequence(args[0].Value);
+                    var x = Operand(args[1].Value, Expr, inSpec: false);
+                    bool end = m.Name == "Append";
+                    return new LSeq
+                    {
+                        Length = new KOp("+", src.Length, new KLit("1")), Type = src.Type,
+                        Elem = i => end ? new KOp("ite", new KOp("<", i, src.Length), src.Elem(i), x)
+                                        : new KOp("ite", new KOp("==", i, new KLit("0")), x, src.Elem(new KOp("-", i, new KLit("1")))),
+                    };
+                }
+                // (the last n, or all but them: n clamped to [0, Count])
+                case "TakeLast" or "SkipLast" when args.Count == 2 && args[1].Value.Type.SpecialType == SpecialType.System_Int32 && _inDatabase == 0:
+                {
+                    var src = Sequence(args[0].Value);
+                    var n = Expr(args[1].Value);
+                    var k = Declare("t$" + _temps++, args[1].Value.Type);
+                    Emit(new KAssign { Var = k, Value = new KOp("ite", new KOp("<=", n, new KLit("0")), new KLit("0"), new KOp("ite", new KOp("<", n, src.Length), n, src.Length)) });
+                    var kv = new KVar(k);
+                    return m.Name == "TakeLast"
+                        ? new LSeq { Length = kv, Elem = i => src.Elem(new KOp("+", new KOp("-", src.Length, kv), i)), Type = src.Type }
+                        : new LSeq { Length = new KOp("-", src.Length, kv), Elem = src.Elem, Type = src.Type };
+                }
+                // (up to the first element the predicate rejects, or from it on)
+                case "TakeWhile" or "SkipWhile" when args.Count == 2 && _inDatabase == 0:
+                {
+                    var src = Sequence(args[0].Value);
+                    var f = LambdaArg(q, 1);
+                    if (f.p2 != null) throw new NotTranslated(m.Name + " with an index");
+                    var k = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    Emit(new KHavoc { Var = k });
+                    var kv = new KVar(k);
+                    ShapeFact(new KOp("&&", new KOp("<=", new KLit("0"), kv), new KOp("<=", kv, src.Length)), q.Syntax);
+                    ShapeFact(Over(new KLit("0"), kv, i => Apply(f, src.Elem(i))), q.Syntax);
+                    ShapeFact(new KOp("==>", new KOp("<", kv, src.Length), new KOp("!", Apply(f, src.Elem(kv)))), q.Syntax);
+                    return m.Name == "TakeWhile"
+                        ? new LSeq { Length = kv, Elem = src.Elem, Type = src.Type }
+                        : new LSeq { Length = new KOp("-", src.Length, kv), Elem = i => src.Elem(new KOp("+", i, kv)), Type = src.Type };
+                }
+                // (the source, or one default if it's empty)
+                case "DefaultIfEmpty" when args.Count == 1 && _inDatabase == 0 && Default(resultElem) is KExpr de:
+                {
+                    var src = Sequence(args[0].Value);
+                    var empty = new KOp("==", src.Length, new KLit("0"));
+                    return new LSeq { Length = new KOp("ite", empty, new KLit("1"), src.Length), Elem = i => new KOp("ite", empty, de, src.Elem(i)), Type = src.Type };
                 }
                 case "Distinct" when args.Count == 1:
                 {
@@ -702,6 +782,36 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A call of Enumerable read here (in code): a query copied (ToArray, ToList), or read (Count, Sum, Max, ...).</summary>
         /// <param name="name">the operator, where the call is another's form of it (EF's ...Async, awaited); its own by default</param>
         /// <param name="resultType">what it gives, there (the awaited task's T)</param>
+        /// <summary>List's Find, FindIndex, Exists and TrueForAll of a pure lambda: the first match, its index (-1 if none), Any, All.</summary>
+        private KExpr ListPredicate(IInvocationOperation call)
+        {
+            var at = call.Syntax;
+            var s = Sequence(call.Instance);
+            var f = LambdaArg(call, 0);
+            var t = Declare("t$" + _temps++, call.Type);
+            Emit(new KHavoc { Var = t });
+            var v = new KVar(t);
+            KExpr P(KExpr x) => Apply(f, x);
+            switch (call.TargetMethod.Name)
+            {
+                case "Exists": ShapeFact(new KOp("==", v, Over(new KLit("0"), s.Length, i => P(s.Elem(i)), forall: false)), at); break;
+                case "TrueForAll": ShapeFact(new KOp("==", v, Over(new KLit("0"), s.Length, i => P(s.Elem(i)))), at); break;
+                case "Find":
+                {
+                    if (!(Default(call.Type) is KExpr dflt)) throw new NotTranslated("a default of " + call.Type);
+                    var m = Filter(s, P, at);
+                    ShapeFact(new KOp("==", v, new KOp("ite", new KOp(">", m.Length, new KLit("0")), m.Elem(new KLit("0")), dflt)), at);
+                    break;
+                }
+                default: // FindIndex
+                    ShapeFact(new KOp("&&", new KOp("<=", new KLit("-1"), v), new KOp("<", v, s.Length)), at);
+                    ShapeFact(new KOp("ite", new KOp("==", v, new KLit("-1")), Over(new KLit("0"), s.Length, i => new KOp("!", P(s.Elem(i)))),
+                                      new KOp("&&", P(s.Elem(v)), Over(new KLit("0"), v, i => new KOp("!", P(s.Elem(i)))))), at);
+                    break;
+            }
+            return v;
+        }
+
         private KExpr Linq(IInvocationOperation call, string name = null, ITypeSymbol resultType = null)
         {
             // (of a database query: its lambdas, the database's to evaluate)
@@ -791,6 +901,13 @@ namespace CsVerify.Verifier.Boogie
                     var f = LambdaArg(call, 1);
                     return Value(Over(new KLit("0"), s.Length, i => Apply(f, s.Elem(i))));
                 }
+                // (two sequences of the same length, element by element the same)
+                case "SequenceEqual" when args.Count == 2 && _inDatabase == 0:
+                {
+                    var a = Sequence(args[0].Value);
+                    var b = Sequence(args[1].Value);
+                    return Value(new KOp("&&", new KOp("==", a.Length, b.Length), Over(new KLit("0"), a.Length, i => SameValue(a.Elem(i), b.Elem(i), a.Type))));
+                }
                 case "Contains" when args.Count == 2:
                 {
                     var s = Sequence(args[0].Value);
@@ -825,6 +942,21 @@ namespace CsVerify.Verifier.Boogie
                     Need(new KOp("<=", s.Length, new KLit("1")), src + " <= 1");
                     if (!(Default(callType) is KExpr sd)) throw new NotTranslated("a default of " + callType);
                     return Value(new KOp("ite", new KOp("==", s.Length, new KLit("1")), s.Elem(new KLit("0")), sd));
+                }
+                // (the first element whose key is least, or greatest: an integer key)
+                case "MinBy" or "MaxBy" when args.Count == 2 && _inDatabase == 0 && LambdaArg(call, 1) is var by && by.p2 == null && IsIntegral(by.body.Type):
+                {
+                    var s = Sequence(args[0].Value);
+                    Need(new KOp(">", s.Length, new KLit("0")), "Q.Count(source) > 0");
+                    var ix = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    Emit(new KHavoc { Var = ix });
+                    var iv = new KVar(ix);
+                    KExpr Key(KExpr e) => Apply(by, e);
+                    var better = name == "MinBy" ? "<" : ">";
+                    LinqFact(new KOp("&&", new KOp("<=", new KLit("0"), iv), new KOp("<", iv, s.Length)), at);
+                    LinqFact(Over(new KLit("0"), s.Length, i => new KOp("!", new KOp(better, Key(s.Elem(i)), Key(s.Elem(iv))))), at);
+                    LinqFact(Over(new KLit("0"), iv, i => new KOp(better == "<" ? ">" : "<", Key(s.Elem(i)), Key(s.Elem(iv)))), at);
+                    return Value(s.Elem(iv));
                 }
                 case "Max" or "Min" when args.Count <= 2 && IsIntegral(callType):
                 {

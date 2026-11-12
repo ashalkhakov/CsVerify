@@ -76,7 +76,7 @@ namespace CsVerify.Verifier.Boogie
             (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
              // (a lambda or a local function: a unit of its own, in a class's member or a static one)
              IsNested(m) ? StaticContext(m) || IsClass(m.ContainingType) :
-             m.IsStatic ? m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor
+             m.IsStatic ? m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
                            IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType)) ||
@@ -84,7 +84,7 @@ namespace CsVerify.Verifier.Boogie
                           // (a struct's member that reads it: this, a value; one that writes it is CsVerify's engine's to refuse)
                           IsStruct(m.ContainingType) && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsOverride) &&
             (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
-            (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
+            (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type) || InValue(p)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
             (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet || IsNested(m)) && !c.IsTrusted &&
             // (a base of the library's, IDisposable.Dispose say, with no contract: nothing inherited)
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0 || b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null);
@@ -112,9 +112,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
             !StaticContext(m) && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) && !EmptyDataConstructor(m) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
-            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !IsNested(m) && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) && m.MethodKind != MethodKind.StaticConstructor ? m.MethodKind.ToString() :
+            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !IsNested(m) && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) && m.MethodKind != MethodKind.StaticConstructor && !(m.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet) ? m.MethodKind.ToString() :
             !(Returns(m) == null || InSubset(Returns(m))) ? "returns " + m.ReturnType :
-            m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In && !HoldsShare(p) && !IsMemView(p.Type) || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type) || IsShare(p.Type) && !HoldsShare(p)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
+            m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In && !HoldsShare(p) && !IsMemView(p.Type) && !InValue(p) || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type) || IsShare(p.Type) && !HoldsShare(p)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
             c.IsTrusted ? "[Trusted]" : "an inherited contract";
 

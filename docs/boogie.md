@@ -481,16 +481,22 @@ comparison in code does (of one length and different, they differ somewhere).
 
 **LINQ.** LINQ to Objects is read member by member as its definitions (`Bcl/Linq.cs`) say, CsVerify's engine's way
 (Lowering.Linq): a source the verifier indexes (an array, a List, a list interface) is a sequence of a length and
-elements, read where the call is (not null, CSV1013). `Select` maps it (with an index too), `Where` and `Distinct`
-filter it (a running count `c` of the matches and each match's index `ix`, increasing), `Take` and `Skip` keep the
-first `n` or the rest (`n` clamped to the length), `Concat` puts one after the other and `Union` is the `Distinct` of
-that, `OrderBy` and `ThenBy`
+elements, read where the call is (not null, CSV1013). `Select` maps it (with an index too), `Where` (with an index
+too) and `Distinct` filter it (a running count `c` of the matches and each match's index `ix`, increasing), `Take` and
+`Skip` keep the first `n` or the rest (`n` clamped to the length), `TakeLast` and `SkipLast` the last `n` or all
+but them, `TakeWhile` and `SkipWhile` up to the first element the predicate rejects or from it on (its index a
+fresh variable, of its definition), `Reverse` reads it backwards, `Append` and `Prepend` add one, `DefaultIfEmpty`
+gives one default for an empty source, `Concat` puts one after the other and `Union` is the `Distinct` of that,
+`Intersect` and `Except` keep the first source's first occurrences that the second has, or hasn't, `DistinctBy` the
+elements whose key no earlier one has, `OrderBy` and `ThenBy`
 permute it stably in their keys' order (a bijection `p` and its inverse; keys are ordered where they are integers or
 chars), `Zip` pairs two, `SelectMany` flattens (running offsets, monotone, and each element's outer index), `Join`
 filters the pairs of a flattening (a nullable key that is null matches nothing), `LeftJoin` adds each outer element
 no inner one matches, with none; `Count`, `Any`, `All`, `Contains`, `First`, `Last` (and `OrDefault`), `Max`, `Min`,
-`Sum` (every partial sum in range, CSV1001, as .NET adds them checked) and `Average` read it, their definitions'
-preconditions CSV1001 (an empty sequence has no `First`); `ToArray` and `ToList` copy it into a new object. A double
+`Sum` (every partial sum in range, CSV1001, as .NET adds them checked), `Average`, `MinBy` and `MaxBy` (the first
+element whose integer key is least, or greatest) and `SequenceEqual` read it, their definitions' preconditions
+CSV1001 (an empty sequence has no `First`); a List's `Find`, `FindIndex`, `Exists` and `TrueForAll` of a pure lambda
+are its first match (or the default), the first match's index (or -1), `Any` and `All`; `ToArray` and `ToList` copy it into a new object. A double
 `Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query reads it into a map where the loop
 starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
 selector reading its `Key` and `Count()` (exact: a running count of the source's elements of that key; a database's
@@ -1099,13 +1105,29 @@ knows what its method requires of what never changes: that a delegate it capture
 exception in a lambda leaves it: the method's `try` and `finally` around it are not the lambda's. `this` is the
 method's, where it has one. A local function is called as a procedure is: its captured inputs passed after its
 arguments, as they are where it's called (the method's variables, or what a lambda calling it captures in turn); a
-local it writes is forgotten after the call, as after any call that may run it.
+local it writes is forgotten after the call, as after any call that may run it. A variable passed by `ref` that
+the flow graph captured before an argument after it branches (`Add(ref x, c ? 2 : 3)`, `Add(ref x, (x = 10) > 5 ?
+...)`) is the variable itself, as it is at the call; an assignment as an expression is written, then its value.
 
 **Library members with stubs.** A library member (not a collection's) whose stub contract the library gives, that
 writes nothing and runs none of the program's code (no `Spec.Modifies`, nothing CsVerify's effects analysis says it
 may write), not generic, of the subset's types (static, or a string's: `s.Trim()`, `s.ToUpperInvariant()`), is a
 procedure of its contract, which its calls call: its preconditions checked, its postconditions assumed. A `[Pure]`
-one is a function (as before). Each stub a proof assumes is listed with the method, as CsVerify's engine lists it.
+one is a function (as before), and so is any static one of the library's with a `[Pure]` stub (`Math.Clamp`,
+`Math.Sign`): its precondition checked where it's called. A call in a body's assertion of what isn't `[Pure]` is
+unknown there, with CsVerify's engine's warning (CSV1900), and so is a computed property's that isn't `[Pure]`. Each
+stub a proof assumes is listed with the method, as CsVerify's engine lists it. In a specification, `a ?? b` is `a`
+where it isn't null (a nullable value's value), and `a?.m` null where `a` is, else `m` of it (a value made a
+nullable one).
+
+**Lifted arithmetic.** `+`, `-` and `*` of two nullable values of one integral type (`int? + int?`) are null where
+either is, else the operation of their values, checked as code's arithmetic is (the values 0 where either is null,
+which can't overflow). Static properties' getters and setters are methods, as instance ones are.
+
+**`in` parameters of values** (`in int x`) are by value: the callee can't change them. As CsVerify's engine has them,
+an argument must be a local, a parameter or an array's cell (whose callee writes no array: else CSV1901, "the cell
+and the parameter would disagree"); anything else is CSV1901 ("not supported"), and a struct's member isn't
+translated.
 
 Also the collections (`List`, `Dictionary`, `HashSet`, `Stack`, `Queue`) with their models and stub contracts, `Seq`
 and `Map`, `foreach` over arrays, strings and collections, `Spec.Index`, and delegates: `Func` and `Action` values with `Spec.Pre`,
@@ -1224,7 +1246,10 @@ methods that fall back for it):
     left to CsVerify's engine, in the lambda tests, have query clauses over `IEnumerable` (`from ... from`, `join ...
     into`, `group ... into`), or call a delegate of a type without a contract. Since: list and property patterns,
     dynamic types (type tests, `as`, casts, dispatch of `[Pure]` overrides), non-nullable static fields, calls of
-    local functions, library members with stubs that write nothing;
+    local functions, library members with stubs that write nothing, `in` parameters of values, more of LINQ
+    (`Reverse`, `Append`, `Prepend`, `TakeLast`, `SkipLast`, `TakeWhile`, `SkipWhile`, `DefaultIfEmpty`,
+    `Intersect`, `Except`, `DistinctBy`, `MinBy`, `MaxBy`, `SequenceEqual`, an indexed `Where`) and List's predicate
+    methods, `Index`, lifted `+ - *`, static properties, `??` and `?.` in specifications;
 14. the Boogie engine the default (CsVerify's engine a fallback for a release). Not yet: `CSVERIFY_ENGINE=boogie` (which
     sets the default now; it used to label methods only, so the first sweep's "the tests' own programs all translate"
     was CsVerify's engine) failed 2 tests of 1435 at the last sweep (the Good samples verified together, a lambda in an

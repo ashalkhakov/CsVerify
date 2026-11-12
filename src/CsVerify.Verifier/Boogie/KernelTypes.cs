@@ -359,6 +359,10 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsShare(ITypeSymbol t) => t != null && SpecSymbols.IsSharedType(t) && t is INamedTypeSymbol n && n.TypeArguments.Length == 1 && IsOwnedClass(n.TypeArguments[0]);
 
         /// <summary>A parameter that holds a read share: a Shared&lt;C&gt;, or a view lent read-only (in).</summary>
+        /// <summary>An in parameter of a value (in int x): its value, which the callee can't change (a cell lent to a callee that may write it isn't translated).</summary>
+        public static bool InValue(IParameterSymbol p) =>
+            p.RefKind == RefKind.In && InSubset(p.Type) && !IsView(p.Type) && !IsShare(p.Type) && !IsPackage(p.Type) && !IsMemView(p.Type);
+
         public static bool HoldsShare(IParameterSymbol p) => IsShare(p.Type) && p.RefKind is RefKind.None or RefKind.In || IsView(p.Type) && p.RefKind == RefKind.In;
 
         /// <summary>A package: a [Linear] positional readonly record struct, which holds views (and anything else) together.</summary>
