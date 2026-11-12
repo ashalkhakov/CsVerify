@@ -438,8 +438,11 @@ namespace CsVerify.Verifier.Boogie
         private List<IParameterSymbol> AssignedParameters(ControlFlowGraph cfg)
         {
             var found = new List<IParameterSymbol>();
+            // (a target the flow graph captured, as x = new C { ... }'s: the variable it is)
+            var captures = cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()).OfType<IFlowCaptureOperation>().GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().Value);
             void Target(IOperation t)
             {
+                if (Unconverted(t) is IFlowCaptureReferenceOperation fc && captures.TryGetValue(fc.Id, out var captured)) t = captured;
                 if (Unconverted(t) is IParameterReferenceOperation { Parameter: var p } && p.RefKind == RefKind.None && !found.Contains(p, SymbolEqualityComparer.Default))
                 {
                     if (!InSubset(p.Type) || IsView(p.Type) || IsShare(p.Type) || IsPackage(p.Type)) throw new NotTranslated("an assignment to a parameter of " + p.Type);
@@ -987,6 +990,9 @@ namespace CsVerify.Verifier.Boogie
                     }
             }
         }
+
+        /// <summary>Explicit enumerators of collections, by their locals: the collection, its version where it was made.</summary>
+        private readonly Dictionary<ILocalSymbol, (string Of, string Version, INamedTypeSymbol Type)> _enumerators = new Dictionary<ILocalSymbol, (string, string, INamedTypeSymbol)>(SymbolEqualityComparer.Default);
 
         /// <summary>await foreach's enumerators, by their captures: the element type, and where the loop's collection is.</summary>
         private readonly Dictionary<CaptureId, (ITypeSymbol Element, SyntaxNode At)> _asyncEach = new Dictionary<CaptureId, (ITypeSymbol, SyntaxNode)>();
@@ -1568,6 +1574,20 @@ namespace CsVerify.Verifier.Boogie
                     else Expr(oc);
                     Start(ol, null, at: oc.Syntax);
                     return;
+                // (an enumerator of a collection, var e = l.GetEnumerator(): its collection and version, as a foreach's)
+                case ISimpleAssignmentOperation en when en.Target is ILocalReferenceOperation { Local: var enl } && Unconverted(en.Value) is IInvocationOperation { TargetMethod.Name: "GetEnumerator", Instance: { } ec } &&
+                                                        IsCollection(ec.Type) && ((INamedTypeSymbol)ec.Type).TypeArguments.Length >= 1 && !_enumerators.ContainsKey(enl):
+                {
+                    var coll = Expr(Unconverted(ec));
+                    Emit(new KCheck { Cond = new KOp("!=", coll, new KLit("null")), Id = "CSV1013", At = ec.Syntax, Message = $"'{ec.Syntax}' might be null in '{en.Value.Syntax}'" });
+                    foreach (var model in ModelsOf((INamedTypeSymbol)ec.Type)) _p.Models[model.Name] = model;
+                    var held = Declare("en$" + _enumerators.Count + "$c", ec.Type);
+                    var version = Declare("en$" + _enumerators.Count + "$v", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    Emit(new KAssign { Var = held, Value = coll });
+                    Emit(new KAssign { Var = version, Value = new KOp("sel", new KVar(VersionMap), coll) });
+                    _enumerators[enl] = (held, version, (INamedTypeSymbol)ec.Type);
+                    return;
+                }
                 // (a query kept in a local: read where it's enumerated)
                 case ISimpleAssignmentOperation lq when lq.Target is ILocalReferenceOperation { Local: var lql } && LazyQuery(lql, lq.Value):
                     return;
@@ -1679,6 +1699,10 @@ namespace CsVerify.Verifier.Boogie
                         _lvalues[fc.Id] = cf;
                     var value = Expr(fc.Value);
                     Emit(new KAssign { Var = Capture(fc.Id, fc.Value.Type), Value = value });
+                    return;
+                // (new C(...); as a statement: made, its constructor run, the object not kept)
+                case IObjectCreationOperation made when InSubset(made.Type):
+                    Expr(made);
                     return;
                 default:
                     throw new NotTranslated(op.Kind.ToString());
@@ -2687,6 +2711,22 @@ namespace CsVerify.Verifier.Boogie
                     try { value = Call(las); }
                     finally { _awaiting = false; }
                     break;
+                // (a method of the program's that isn't async but gives a task, awaited: its call, a procedure's, then the
+                // task it gave awaited as one is given: what it gives not known)
+                case IInvocationOperation pt when pt.TargetMethod.DeclaringSyntaxReferences.Length > 0 && !pt.TargetMethod.IsAsync && !pt.TargetMethod.IsAbstract &&
+                                                  IsTaskLike(pt.TargetMethod.ReturnType) && _isProcedure(pt.TargetMethod):
+                {
+                    Expr(pt);
+                    if (pt.Type is INamedTypeSymbol { Arity: 1 } ptt && aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void)
+                    {
+                        if (!InSubset(ptt.TypeArguments[0])) throw new NotTranslated("an await of a task of " + ptt.TypeArguments[0]);
+                        var r = Declare("t$" + _temps++, ptt.TypeArguments[0]);
+                        Emit(new KHavoc { Var = r });
+                        if (IsNullable(ptt.TypeArguments[0]) && NotNullable(ptt.TypeArguments[0])) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
+                        value = new KVar(r);
+                    }
+                    break;
+                }
                 // (Task.Run(() => F(...)) awaited where it starts: the call, as if awaited itself)
                 case IInvocationOperation run1 when run1.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && run1.TargetMethod.Name == "Run" &&
                                                     run1.Arguments.Length == 1 && LambdaSyntax(run1.Arguments[0]) is AnonymousFunctionExpressionSyntax oneCall && StartedCall(oneCall) is IInvocationOperation theCall:
@@ -4710,6 +4750,13 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr2 } when _forEach.TryGetValue(cr2.Id, out var fcur2):
                     return Current(fcur2);
+                // (an enumerator's Current: an element, not known which)
+                case IPropertyReferenceOperation { Property.Name: "Current", Instance: ILocalReferenceOperation { Local: var ecl } } ecur when _enumerators.ContainsKey(ecl) && InSubset(ecur.Type):
+                {
+                    var v = Declare("t$" + _temps++, ecur.Type);
+                    Emit(new KHavoc { Var = v });
+                    return new KVar(v);
+                }
                 case IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation ac } when _asyncEach.TryGetValue(ac.Id, out var acur):
                 {
                     var v = Declare("t$" + _temps++, acur.Element);
@@ -4773,7 +4820,9 @@ namespace CsVerify.Verifier.Boogie
                     var ns = prop.ContainingType.ContainingNamespace?.ToDisplayString();
                     bool shared = prop.ContainingType.IsValueType && ns is "System.Threading" or "System.Threading.Tasks" or "System.Runtime.CompilerServices";
                     var span = lp.Syntax.GetLocation().GetLineSpan();
-                    if (!shared && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator") && !_p.Warnings.Any(w => w.Span.Equals(span)))
+                    // (nor of one with a stub, a [Pure] one that says nothing more: Channel.Writer, a token source's Token)
+                    bool stubbed = _contractOf?.Invoke(prop.GetMethod.OriginalDefinition) is Contract sc && sc.IsStub;
+                    if (!shared && !stubbed && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator") && !_p.Warnings.Any(w => w.Span.Equals(span)))
                         _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown", span));
                     if (_p.Result != null) lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
                     var lv = Declare("t$" + _temps++, lp.Type);
@@ -4967,6 +5016,18 @@ namespace CsVerify.Verifier.Boogie
                     return Await(aw) ?? throw new NotTranslated("an await of nothing, as a value");
                 case IIsNullOperation isNull:
                     return new KOp("==", Expr(Unconverted(isNull.Operand)), new KLit("null"));
+                // (a method group made a delegate of a contract: its contract isn't compared with the type's, CSV1029, as
+                // CsVerify's engine has it; the delegate a new reference, its code not known)
+                case IDelegateCreationOperation cg when Contracted(cg.Type) && cg.Target is IMethodReferenceOperation cgm:
+                {
+                    if (cgm.Instance != null && !(cgm.Instance is IInstanceReferenceOperation)) Expr(cgm.Instance);
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                      Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': a method group's contract isn't compared with the delegate type's, so it isn't known to keep it (use a lambda)" });
+                    var t = Declare("t$" + _temps++, cg.Type);
+                    Emit(new KHavoc { Var = t });
+                    Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+                    return new KVar(t);
+                }
                 case IDelegateCreationOperation cd when Contracted(cd.Type) && LambdaOf(cd.Target) != null:
                 {
                     // (a lambda made a delegate with a contract: proved against it on its own; here, a new reference)
@@ -5257,6 +5318,16 @@ namespace CsVerify.Verifier.Boogie
             if (call.Instance != null && IsList(call.Instance.Type) && call.Arguments.Length == 1 && call.TargetMethod.Name is "Find" or "FindIndex" or "Exists" or "TrueForAll" &&
                 PureLambda(call.Arguments[0].Value) != null)
                 return ListPredicate(call);
+            // (an enumerator's MoveNext: the collection mustn't have changed since (its version), CSV1001; whether there's another, not known)
+            if (call.TargetMethod.Name == "MoveNext" && call.Arguments.Length == 0 && call.Instance is ILocalReferenceOperation { Local: var el } && _enumerators.TryGetValue(el, out var ev))
+            {
+                var what = CollectionKind(ev.Type) switch { "Dictionary" => "dictionary", "HashSet" => "set", "Stack" => "stack", "Queue" => "queue", _ => "list" };
+                Emit(new KCheck { Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(ev.Of)), new KVar(ev.Version)), Id = "CSV1001", At = call.Syntax,
+                                  Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
+                var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
+                Emit(new KHavoc { Var = more });
+                return new KVar(more);
+            }
             // (waiting for a task started here: blocking, but not known to have finished it, as CsVerify's engine has it)
             if (call.TargetMethod.Name == "Wait" && call.Arguments.Length == 0 && call.Instance is ILocalReferenceOperation { Local: var wl } && _tasks.ContainsKey(wl)) return null;
             // (waiting for a task one is given: a library call that changes nothing here, as CsVerify's engine has it)
@@ -6711,13 +6782,16 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(Declare("t$" + _temps++, np.Type));
                 }
                 // (a library property that may change, in an assertion of the body's: not supported, CSV1901, as CsVerify's engine has it)
-                case IPropertyReferenceOperation slp when _p.Result != null && LibraryProperty(slp) && !(slp.Instance != null && IsToken(slp.Instance.Type) && slp.Property.Name == "CanBeCanceled") &&
-                                                         slp.Syntax.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault(i => i.Expression.ToString() is "Spec.Assert" or "Spec.Assume") != null:
+                // (in any of the method's own specifications: as CsVerify's engine has it, not supported, CSV1901)
+                case IPropertyReferenceOperation slp when _p.Result != null && LibraryProperty(slp) && !(slp.Instance != null && IsToken(slp.Instance.Type) && slp.Property.Name == "CanBeCanceled"):
                 {
                     var span = slp.Syntax.GetLocation().GetLineSpan();
                     if (!_p.Warnings.Any(w => w.Span.Equals(span)))
                         _p.Warnings.Add(new VerificationDiagnostic("CSV1901", true, $"property '{slp.Property.Name}' is not supported: only auto-properties, properties with code, and properties of immutable types are", span));
-                    return new KVar(Declare("t$" + _temps++, slp.Type));
+                    // (in an assertion, a value of its own; in a contract, which is outside the body, its type's default: the error stands either way)
+                    if (slp.Syntax.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault(i => i.Expression.ToString() is "Spec.Assert" or "Spec.Assume") != null)
+                        return new KVar(Declare("t$" + _temps++, slp.Type));
+                    return Default(slp.Type) ?? throw new NotTranslated("a default of " + slp.Type);
                 }
                 // (a computed property that isn't [Pure], read in an assertion of the body's: unknown, CsVerify's engine's warning)
                 case IPropertyReferenceOperation npr when _p.Result != null && IsComputed(npr.Property) && npr.Property.GetMethod is IMethodSymbol ng && !_isFunction(ng) &&

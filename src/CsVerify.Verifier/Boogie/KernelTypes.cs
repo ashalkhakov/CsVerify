@@ -23,7 +23,42 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>The element types of arrays: each integer type, bool, and references (object's map, of every reference element type).</summary>
-        public static SpecialType[] ElementTypes => (RefArrays ? WithReferences : Scalars).Concat(FloatArrays ? Floats : new SpecialType[0]).ToArray();
+        public static SpecialType[] ElementTypes => (RefArrays ? WithReferences : Scalars).Where(t => ScalarArrays == null || ScalarArrays.Contains(t) || t == SpecialType.System_Object)
+                                                    .Concat(FloatArrays ? Floats : new SpecialType[0]).ToArray();
+
+        /// <summary>
+        /// The scalar element types the program's code may have arrays (or spans, or memory) of, for the run this thread
+        /// is in: only their maps are declared, so that every frame, await and havoc speaks of fewer (null: all of them).
+        /// int is always one.
+        /// </summary>
+        [System.ThreadStatic] public static HashSet<SpecialType> ScalarArrays;
+
+        /// <summary>The scalar types the user's code has arrays, spans or memory of: of any type an expression or a declaration of it has.</summary>
+        public static HashSet<SpecialType> NamesScalarArrays(Compilation c, IEnumerable<SyntaxTree> userTrees)
+        {
+            var found = new HashSet<SpecialType> { SpecialType.System_Int32 };
+            void Of(ITypeSymbol t, int depth)
+            {
+                if (t == null || depth > 4) return;
+                if (t is IArrayTypeSymbol a) { found.Add(Sp(a.ElementType)); Of(a.ElementType, depth + 1); }
+                if (t is INamedTypeSymbol n) foreach (var x in n.TypeArguments) { found.Add(Sp(x)); Of(x, depth + 1); }
+                if (t is IPointerTypeSymbol p) found.Add(Sp(p.PointedAtType));
+            }
+            foreach (var t in userTrees)
+            {
+                var model = c.GetSemanticModel(t);
+                foreach (var n in t.GetRoot().DescendantNodes())
+                    if (n is Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.TypeSyntax)
+                    {
+                        var info = model.GetTypeInfo(n);
+                        Of(info.Type, 0);
+                        Of(info.ConvertedType, 0);
+                    }
+                    else if (model.GetDeclaredSymbol(n) is ISymbol d)
+                        Of(d switch { IMethodSymbol m => m.ReturnType, IPropertySymbol pr => pr.Type, IFieldSymbol f => f.Type, ILocalSymbol l => l.Type, IParameterSymbol ps => ps.Type, _ => null }, 0);
+            }
+            return found;
+        }
         private static readonly SpecialType[] Floats = { SpecialType.System_Single, SpecialType.System_Double };
 
         /// <summary>The program has arrays of floats (their maps declared), for the run this thread is in.</summary>
@@ -539,7 +574,7 @@ namespace CsVerify.Verifier.Boogie
             CollectionKind(t) is string kind && ((INamedTypeSymbol)t).TypeArguments.Select((a, i) => FuncValue(a) ||
                 // (a dictionary's values may be data, which it never compares; a list's elements too, where it doesn't
                 // compare them: Lowering refuses Contains, IndexOf and Remove of them)
-                kind == "Dictionary" && i == 1 && IsData(a) || kind == "List" && IsData(a)).All(x => x);
+                kind == "Dictionary" && i == 1 && IsData(a) || kind == "List" && (IsData(a) || IsTuple(a))).All(x => x);
 
         /// <summary>A collection's key (a dictionary's key, a set's member) as its models index it: a string marked as a key ($keyed), so that two of one content are one.</summary>
         public static KExpr Keyed(KExpr k, ITypeSymbol t) => IsString(t) ? new KOp("$keyed", k) : CustomEquality(t) ? new KOp("$eqc", k) : k;

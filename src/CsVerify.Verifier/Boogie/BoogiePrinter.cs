@@ -102,7 +102,10 @@ namespace CsVerify.Verifier.Boogie
 
         private static string Param(SpecialType t) => "m" + t.ToString().Substring("System_".Length);
 
-        private static readonly string InRangeOfMemory = "$InRange(" + string.Join(", ", Widths.Keys.Select(ElementMap)) + ")";
+        private static string InRangeOfMemory => "$InRange(" + string.Join(", ", IntegerMaps.Select(ElementMap)) + ")";
+
+        /// <summary>The integer element types whose maps the program has.</summary>
+        private static IEnumerable<SpecialType> IntegerMaps => Widths.Keys.Where(t => ElementTypes.Contains(t));
 
         private static string MapParams => string.Join(", ", ElementTypes.Select(t => $"h{ElementMap(t)}: [Ref][int]{ElementValue(t)}"));
 
@@ -239,8 +242,8 @@ namespace CsVerify.Verifier.Boogie
             Optional("$keyed(", "axiom (forall s: Ref :: { $keyed(s) } $keyed(s) == s && $key(s));");
             Optional("$keyed(", "axiom (forall a: Ref, b: Ref :: { $key(a), $key(b) } a != null && b != null && a != b && slen(a) == slen(b) ==> 0 <= sdiff(a, b) && sdiff(a, b) < slen(a) && sat(a, sdiff(a, b)) != sat(b, sdiff(a, b)));");
             Line("// what is read from memory is in its type's range");
-            Line("function $InRange(" + string.Join(", ", Widths.Keys.Select(t => $"{Param(t)}: [Ref][int]int")) + "): bool { " +
-                 string.Join(" && ", Widths.Keys.Select(t => { var (lo, hi) = Range(t); return $"(forall r: Ref, j: int :: {lo} <= {Param(t)}[r][j] && {Param(t)}[r][j] <= {hi})"; })) + " }");
+            Line("function $InRange(" + string.Join(", ", IntegerMaps.Select(t => $"{Param(t)}: [Ref][int]int")) + "): bool { " +
+                 string.Join(" && ", IntegerMaps.Select(t => { var (lo, hi) = Range(t); return $"(forall r: Ref, j: int :: {lo} <= {Param(t)}[r][j] && {Param(t)}[r][j] <= {hi})"; })) + " }");
         }
 
         // ------------------------------------------------------------------ expressions

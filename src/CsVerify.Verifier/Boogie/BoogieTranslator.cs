@@ -72,7 +72,7 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ the subset
 
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
-        public static bool Candidate(IMethodSymbol m, Contract c) => EmptyDataConstructor(m) ||
+        public static bool Candidate(IMethodSymbol m, Contract c, bool asContract = false) => EmptyDataConstructor(m) ||
             (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
              // (a lambda or a local function: a unit of its own, in a class's member or a static one)
              IsNested(m) ? StaticContext(m) || IsClass(m.ContainingType) :
@@ -85,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
                           IsStruct(m.ContainingType) && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsOverride) &&
             (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
             (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type) || InValue(p)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
-            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet || IsNested(m)) && !c.IsTrusted &&
+            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet || IsNested(m)) && (asContract || !c.IsTrusted) &&
             // (a base of the library's, IDisposable.Dispose say, with no contract: nothing inherited)
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0 || b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null);
 
@@ -101,7 +101,7 @@ namespace CsVerify.Verifier.Boogie
             "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
             "RunsConcurrentlyAttribute", "TakesNoLocksAttribute",
             // (a lock wrapper's: what it holds is the static checks' to follow, LockGuards; its body is code as any other)
-            "AcquiresAttribute", "ReleasesAttribute",
+            "AcquiresAttribute", "ReleasesAttribute", "TrustedAttribute",
         };
 
         private static bool KnownAttributes(IMethodSymbol m) =>

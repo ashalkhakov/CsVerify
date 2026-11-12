@@ -634,6 +634,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
             Boogie.KernelTypes.FloatArrays = Boogie.KernelTypes.NamesFloatArrays(compilation);
+            Boogie.KernelTypes.ScalarArrays = Boogie.KernelTypes.NamesScalarArrays(compilation, userTrees);
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.SteppedBy = m => engine.Atomics.SteppedBy(m).Where(f => Atomics.StepOf(f) != null);
             Boogie.KernelTypes.Started = engine.StartedDelegates;
@@ -670,7 +671,13 @@ namespace CsVerify.Verifier
                             forBoogie.Add((am, engine.ContractOf(am), decl, new MethodResult { Name = null }));
                         continue;
                     }
-                    if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method) || SpecSymbols.IsTrusted(method)) continue;
+                    if (!(model.GetDeclaredSymbol(decl) is IMethodSymbol method)) continue;
+                    // (a trusted method: its body skipped, its contract its callers' procedure, nothing of it verified)
+                    if (SpecSymbols.IsTrusted(method))
+                    {
+                        if (Boogie.BoogieTranslator.Candidate(method, engine.ContractOf(method), asContract: true)) forBoogie.Add((method, engine.ContractOf(method), decl, new MethodResult { Name = null }));
+                        continue;
+                    }
                     if (SpecSymbols.IsContractsClass(method.ContainingType) || SpecSymbols.IsModel(method)) continue; // contracts, not code
                     var contract = engine.ContractOf(method);
                     var span = decl.GetLocation().GetLineSpan();
@@ -896,7 +903,7 @@ namespace CsVerify.Verifier
             var included = held.ToList();
             // (those whose bodies don't translate but whose contracts do: procedures of their contracts alone, which
             // their callers call; their bodies are verified as always)
-            var opaque = new HashSet<MethodResult>();
+            var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method)).Select(x => x.result));
             var why = new Dictionary<MethodResult, string>();
             Boogie.BoogieTranslator translator;
             // (a method that doesn't translate leaves out those that call it: until none is left out)
@@ -1036,7 +1043,12 @@ namespace CsVerify.Verifier
             {
                 var vd = new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan());
                 var owner = declarations.FirstOrDefault(x => x.decl.SyntaxTree == d.Location.SourceTree && x.decl.FullSpan.Contains(d.Location.SourceSpan));
-                if (owner.result != null) owner.result.Diagnostics.Add(vd);
+                if (owner.result != null)
+                {
+                    // (a method with an analyzer error isn't verified: that it isn't translated isn't news, CSV1902 goes)
+                    owner.result.Diagnostics.RemoveAll(x => x.Id == "CSV1902");
+                    owner.result.Diagnostics.Add(vd);
+                }
                 else result.AnalyzerErrors.Add(vd);
             }
         }
