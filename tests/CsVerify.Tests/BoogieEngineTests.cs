@@ -1586,7 +1586,7 @@ public static class C3 {
         {
             var source = which switch { "loops" => ParityLoops, "tasks" => "using System.Threading.Tasks;\n" + ParityTasks, "lambdas" => ParityLambdas, _ => "using System.Linq;\n" + ParityMisc };
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + "using System.Collections.Generic;\n" + source) }, o));
-            Assert.True(Agree(c, b) >= atLeast, "by Boogie: " + string.Join(", ", b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name)));
+            Assert.True(Agree(c, b, which) >= atLeast, "by Boogie: " + string.Join(", ", b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name)));
         }
 
         [Fact]

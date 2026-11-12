@@ -291,7 +291,7 @@
   "DelegatesThatReadState_BothEnginesReportTheSame": {
     "Mg.Apply@Test.cs:7": [],
     "Mg.Inc@Test.cs:8": [],
-    "Mg.MakeAndQuote.\u003Clambda:16\u003E@Test.cs:16:52": [],
+    "Mg.MakeAndQuote.<lambda:16>@Test.cs:16:52": [],
     "Mg.MakeAndQuote@Test.cs:16": [],
     "Mg.Quote@Test.cs:13": [],
     "Mg.QuoteBad@Test.cs:14": [
@@ -311,12 +311,12 @@
     "Rd.AskBad@Test.cs:27": [
       "CSV1001@31"
     ],
-    "Rd.NoFrame.\u003Clambda:55\u003E@Test.cs:55:30": [],
+    "Rd.NoFrame.<lambda:55>@Test.cs:55:30": [],
     "Rd.NoFrame@Test.cs:51": [
       "CSV1001@55",
       "CSV1029@55"
     ],
-    "Rd.OutOfFrame.\u003Clambda:61\u003E@Test.cs:61:30": [],
+    "Rd.OutOfFrame.<lambda:61>@Test.cs:61:30": [],
     "Rd.OutOfFrame@Test.cs:57": [
       "CSV1029@61"
     ],
@@ -328,7 +328,7 @@
       "CSV1001@43"
     ],
     "Rd.Run@Test.cs:81": [],
-    "Rd.Sums.\u003Clambda:85\u003E@Test.cs:85:27": [],
+    "Rd.Sums.<lambda:85>@Test.cs:85:27": [],
     "Rd.Sums@Test.cs:82": [
       "CSV1004@88"
     ],
@@ -336,7 +336,7 @@
     "Rd.TouchBad@Test.cs:75": [
       "CSV1004@79"
     ],
-    "Rd.UseAsk.\u003Clambda:49\u003E@Test.cs:49:30": [],
+    "Rd.UseAsk.<lambda:49>@Test.cs:49:30": [],
     "Rd.UseAsk@Test.cs:45": []
   },
   "DictionariesAndSets_BothEnginesReportTheSame": {
@@ -433,7 +433,7 @@
     "D.Act@Test.cs:31": [],
     "D.Apply@Test.cs:21": [],
     "D.ApplyAll@Test.cs:23": [],
-    "D.Captured.\u003Clambda:28\u003E@Test.cs:28:90": [
+    "D.Captured.<lambda:28>@Test.cs:28:90": [
       "CSV1010@28"
     ],
     "D.Captured@Test.cs:28": [],
@@ -441,26 +441,26 @@
     "D.Loses@Test.cs:30": [
       "CSV1004@30"
     ],
-    "D.Needs.\u003Clambda:26\u003E@Test.cs:26:48": [],
+    "D.Needs.<lambda:26>@Test.cs:26:48": [],
     "D.Needs@Test.cs:26": [
       "CSV1001@26"
     ],
-    "D.NeedsOk.\u003Clambda:27\u003E@Test.cs:27:50": [],
+    "D.NeedsOk.<lambda:27>@Test.cs:27:50": [],
     "D.NeedsOk@Test.cs:27": [],
     "D.NoPre@Test.cs:22": [
       "CSV1001@22"
     ],
-    "D.TotalBad.\u003Clambda:33\u003E@Test.cs:33:54": [],
+    "D.TotalBad.<lambda:33>@Test.cs:33:54": [],
     "D.TotalBad@Test.cs:33": [
       "CSV1001@33"
     ],
-    "D.UseAct.\u003Clambda:32\u003E@Test.cs:32:39": [],
+    "D.UseAct.<lambda:32>@Test.cs:32:39": [],
     "D.UseAct@Test.cs:32": [],
-    "D.UseValue.\u003Clambda:24\u003E@Test.cs:24:51": [
+    "D.UseValue.<lambda:24>@Test.cs:24:51": [
       "CSV1010@24"
     ],
     "D.UseValue@Test.cs:24": [],
-    "D.UseValueBad.\u003Clambda:25\u003E@Test.cs:25:54": [
+    "D.UseValueBad.<lambda:25>@Test.cs:25:54": [
       "CSV1010@25"
     ],
     "D.UseValueBad@Test.cs:25": [
@@ -656,36 +656,6 @@
       "CSV1014@28"
     ]
   },
-  "Ownership_BothEnginesReportTheSame": {
-    "Acct..ctor@Test.cs:8": [],
-    "Acct.Deposit@Test.cs:9": [],
-    "Acct.Get@Test.cs:12": [],
-    "Acct.Overdraw@Test.cs:11": [
-      "CSV1015@11"
-    ],
-    "Acct.Valid@Test.cs:7": [],
-    "Acct.Withdraw@Test.cs:10": [],
-    "W.AfterConsume@Test.cs:43": [
-      "CSV1016@47"
-    ],
-    "W.BadMake@Test.cs:51": [],
-    "W.Broken@Test.cs:41": [
-      "CSV1015@41"
-    ],
-    "W.Consume@Test.cs:42": [],
-    "W.KeepsOther@Test.cs:33": [],
-    "W.Make@Test.cs:24": [],
-    "W.NonNegative@Test.cs:52": [],
-    "W.NoView@Test.cs:40": [
-      "CSV1016@40"
-    ],
-    "W.Open@Test.cs:49": [],
-    "W.Transfer@Test.cs:16": [],
-    "W.Twice@Test.cs:53": [],
-    "W.Unlinked@Test.cs:50": [
-      "CSV1016@50"
-    ]
-  },
   "OwnershipTrees_AreBoogies": {
     "AtsViewtypes.BufferDemo@AtsViewtypes.cs:315": [],
     "AtsViewtypes.Demo@AtsViewtypes.cs:340": [],
@@ -752,6 +722,36 @@
       "CSV1004@66"
     ]
   },
+  "Ownership_BothEnginesReportTheSame": {
+    "Acct..ctor@Test.cs:8": [],
+    "Acct.Deposit@Test.cs:9": [],
+    "Acct.Get@Test.cs:12": [],
+    "Acct.Overdraw@Test.cs:11": [
+      "CSV1015@11"
+    ],
+    "Acct.Valid@Test.cs:7": [],
+    "Acct.Withdraw@Test.cs:10": [],
+    "W.AfterConsume@Test.cs:43": [
+      "CSV1016@47"
+    ],
+    "W.BadMake@Test.cs:51": [],
+    "W.Broken@Test.cs:41": [
+      "CSV1015@41"
+    ],
+    "W.Consume@Test.cs:42": [],
+    "W.KeepsOther@Test.cs:33": [],
+    "W.Make@Test.cs:24": [],
+    "W.NonNegative@Test.cs:52": [],
+    "W.NoView@Test.cs:40": [
+      "CSV1016@40"
+    ],
+    "W.Open@Test.cs:49": [],
+    "W.Transfer@Test.cs:16": [],
+    "W.Twice@Test.cs:53": [],
+    "W.Unlinked@Test.cs:50": [
+      "CSV1016@50"
+    ]
+  },
   "Parameters_BothEnginesReportTheSame": {
     "Ch..ctor@Test.cs:13": [],
     "Ch..ctor@Test.cs:14": [],
@@ -771,7 +771,7 @@
     "Pa.Now@Test.cs:5": [],
     "Pa.Was@Test.cs:6": []
   },
-  "Parity_BothEnginesReportTheSame": {
+  "Parity_BothEnginesReportTheSame/loops": {
     "P.Down@Test.cs:8": [],
     "P.Inclusive@Test.cs:16": [],
     "P.Up@Test.cs:7": [],
@@ -1170,51 +1170,51 @@
     "LinqBugs.Best@LinqBugs.cs:20": [
       "CSV1001@20"
     ],
-    "LinqBugs.Curved.\u003Clambda:81\u003E@LinqBugs.cs:81:46": [],
-    "LinqBugs.Curved.\u003Clambda:81\u003E@LinqBugs.cs:81:63": [],
-    "LinqBugs.Curved.\u003Clambda:81\u003E@LinqBugs.cs:81:78": [],
+    "LinqBugs.Curved.<lambda:81>@LinqBugs.cs:81:46": [],
+    "LinqBugs.Curved.<lambda:81>@LinqBugs.cs:81:63": [],
+    "LinqBugs.Curved.<lambda:81>@LinqBugs.cs:81:78": [],
     "LinqBugs.Curved@LinqBugs.cs:77": [
       "CSV1002@81"
     ],
     "LinqBugs.Distinct@LinqBugs.cs:34": [
       "CSV1002@37"
     ],
-    "LinqBugs.FirstFailing.\u003Clambda:23\u003E@LinqBugs.cs:23:70": [],
+    "LinqBugs.FirstFailing.<lambda:23>@LinqBugs.cs:23:70": [],
     "LinqBugs.FirstFailing@LinqBugs.cs:23": [
       "CSV1001@23"
     ],
-    "LinqBugs.FirstItem.\u003Clambda:52\u003E@LinqBugs.cs:52:39": [
+    "LinqBugs.FirstItem.<lambda:52>@LinqBugs.cs:52:39": [
       "CSV1902@52"
     ],
     "LinqBugs.FirstItem@LinqBugs.cs:49": [
       "CSV1001@52"
     ],
-    "LinqBugs.FirstMatch.\u003Clambda:63\u003E@LinqBugs.cs:63:103": [],
-    "LinqBugs.FirstMatch.\u003Clambda:63\u003E@LinqBugs.cs:63:111": [],
-    "LinqBugs.FirstMatch.\u003Clambda:63\u003E@LinqBugs.cs:63:95": [],
+    "LinqBugs.FirstMatch.<lambda:63>@LinqBugs.cs:63:103": [],
+    "LinqBugs.FirstMatch.<lambda:63>@LinqBugs.cs:63:111": [],
+    "LinqBugs.FirstMatch.<lambda:63>@LinqBugs.cs:63:95": [],
     "LinqBugs.FirstMatch@LinqBugs.cs:63": [
       "CSV1001@63"
     ],
-    "LinqBugs.Groups.\u003Clambda:43\u003E@LinqBugs.cs:43:46": [],
+    "LinqBugs.Groups.<lambda:43>@LinqBugs.cs:43:46": [],
     "LinqBugs.Groups@LinqBugs.cs:41": [
       "CSV1004@45"
     ],
-    "LinqBugs.Lowest.\u003Clambda:30\u003E@LinqBugs.cs:30:45": [],
+    "LinqBugs.Lowest.<lambda:30>@LinqBugs.cs:30:45": [],
     "LinqBugs.Lowest@LinqBugs.cs:26": [
       "CSV1002@30"
     ],
     "LinqBugs.Mean@LinqBugs.cs:74": [
       "CSV1001@74"
     ],
-    "LinqBugs.Pairs.\u003Clambda:59\u003E@LinqBugs.cs:59:29": [],
+    "LinqBugs.Pairs.<lambda:59>@LinqBugs.cs:59:29": [],
     "LinqBugs.Pairs@LinqBugs.cs:56": [
       "CSV1002@59"
     ],
     "LinqBugs.Same@LinqBugs.cs:85": [
       "CSV1902@85"
     ],
-    "LinqBugs.Smallest.\u003Clambda:70\u003E@LinqBugs.cs:70:30": [],
-    "LinqBugs.Smallest.\u003Clambda:70\u003E@LinqBugs.cs:70:60": [],
+    "LinqBugs.Smallest.<lambda:70>@LinqBugs.cs:70:30": [],
+    "LinqBugs.Smallest.<lambda:70>@LinqBugs.cs:70:60": [],
     "LinqBugs.Smallest@LinqBugs.cs:66": [
       "CSV1002@70"
     ],
@@ -1533,27 +1533,27 @@
     "Tally.Valid@Packages.cs:15": []
   },
   "TasksAndThreads_BothEnginesReportTheSame": {
-    "Th.Lambda.\u003Clambda:22\u003E@Test.cs:22:58": [],
+    "Th.Lambda.<lambda:22>@Test.cs:22:58": [],
     "Th.Lambda@Test.cs:22": [],
-    "Th.Mine.\u003Clambda:26\u003E@Test.cs:26:85": [],
+    "Th.Mine.<lambda:26>@Test.cs:26:85": [],
     "Th.Mine@Test.cs:26": [
       "CSV1004@26"
     ],
-    "Th.Run.\u003Clambda:20\u003E@Test.cs:20:92": [],
+    "Th.Run.<lambda:20>@Test.cs:20:92": [],
     "Th.Run@Test.cs:20": [
       "CSV1002@20"
     ],
-    "Th.RunBad.\u003Clambda:21\u003E@Test.cs:21:63": [
+    "Th.RunBad.<lambda:21>@Test.cs:21:63": [
       "CSV1001@21"
     ],
     "Th.RunBad@Test.cs:21": [],
-    "Th.Shared.\u003Clambda:25\u003E@Test.cs:25:73": [],
+    "Th.Shared.<lambda:25>@Test.cs:25:73": [],
     "Th.Shared@Test.cs:25": [
       "CSV1004@25"
     ],
-    "Th.Threads.\u003Clambda:23\u003E@Test.cs:23:56": [],
+    "Th.Threads.<lambda:23>@Test.cs:23:56": [],
     "Th.Threads@Test.cs:23": [],
-    "Th.ThreadsBad.\u003Clambda:24\u003E@Test.cs:24:59": [
+    "Th.ThreadsBad.<lambda:24>@Test.cs:24:59": [
       "CSV1001@24"
     ],
     "Th.ThreadsBad@Test.cs:24": [],

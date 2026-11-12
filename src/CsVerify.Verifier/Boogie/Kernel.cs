@@ -476,6 +476,8 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>Unless this holds (a delegate's $nochange): then nothing changes.</summary>
         public KExpr Unless;
+        /// <summary>The program's fields and arrays only: not the collections' models (code an Equals runs, not the collection's).</summary>
+        public bool ProgramState;
     }
 
     /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>

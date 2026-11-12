@@ -119,8 +119,8 @@ namespace CsVerify.Verifier.Boogie
             }
 
             Line("// C#'s / and % truncate toward zero; Boogie's div and mod are Euclidean");
-            Line("function cs#div(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
-            Line("function cs#rem(a: int, b: int): int { a - b * cs#div(a, b) }");
+            Line("function {:inline} cs#div(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
+            Line("function {:inline} cs#rem(a: int, b: int): int { a - b * cs#div(a, b) }");
             Line("// bitwise operators of two variables (as CsVerify's engine has them), and a shift count's power of two");
             foreach (var w in new[] { 32, 64 })
             {
@@ -387,7 +387,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var name = Checks.StubName(m);
             // (a collection's: of its models first, its parameters of its type here)
-            var models = Checks.StubModels(m);
+            var models = Checks.StubModels(m, contract);
             var given = models.Select((x, k) => (name: "m$" + k, type: x.Type)).ToList();
             var ps = given.Concat(contract.Stub.Parameters.Select((x, k) => (name: Local(x), type: TypeOf(models.Count == 0 ? x.Type : k == 0 ? m.ContainingType : m.Parameters[k - 1].Type)))).ToList();
             if (models.Count > 0)
@@ -563,11 +563,14 @@ namespace CsVerify.Verifier.Boogie
         public void Havoc(ISet<string> maps)
         {
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
-            Line("procedure $havoc();");
-            if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
-            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
-            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
-            Line($"  free ensures {InRangeOfMemory};");
+            foreach (var (name, these) in new[] { ("$havoc", modifies), ("$havocProgram", modifies.Where(x => !x.StartsWith("$F.$M.")).ToList()) })
+            {
+                Line($"procedure {name}();");
+                if (these.Count > 0) Line($"  modifies {string.Join(", ", these)};");
+                foreach (var l in StepsKept(these, true)) Line("  " + l);
+                if (these.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                Line($"  free ensures {InRangeOfMemory};");
+            }
         }
 
         /// <summary>What the method's permissions cover stays: the cells it holds, the fields of the [Owned] objects whose views it holds.</summary>
@@ -1204,7 +1207,8 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
                     return;
                 case KHavocAll ha:
-                    Line(ha.Unless == null ? "    call $havoc();" : $"    if (!({E(ha.Unless, cx)})) {{ call $havoc(); }}");
+                    var havoc = ha.ProgramState ? "$havocProgram" : "$havoc";
+                    Line(ha.Unless == null ? $"    call {havoc}();" : $"    if (!({E(ha.Unless, cx)})) {{ call {havoc}(); }}");
                     return;
                 case KKeep keep when !keep.After:
                     foreach (var m in _stateMaps) Line($"    k${keep.Id}{m.name} := {m.name};");

@@ -74,7 +74,7 @@ namespace CsVerify.Verifier.Boogie
         public static string ElementValue(string map) => ElementValue(ElementTypes.First(t => ElementMap(t) == map));
 
         /// <summary>An array's element type: a scalar, or a reference (an object, an interface's, a string, object).</summary>
-        public static bool IsElement(ITypeSymbol t) => Scalar(t) || FloatArrays && IsFloating(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || IsStruct(t) || IsData(t) || t?.SpecialType == SpecialType.System_Object);
+        public static bool IsElement(ITypeSymbol t) => Scalar(t) || FloatArrays && IsFloating(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || IsStruct(t) || IsData(t) || IsNullableValue(t) || t?.SpecialType == SpecialType.System_Object);
 
         public static bool IsIntegral(ITypeSymbol t) => t != null && Widths.ContainsKey(Sp(t));
 
@@ -601,6 +601,15 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>All of a collection's models (what a member that changes it may change).</summary>
+        /// <summary>A model a stub declares ([Model] static R M(T o, int i, ...)): a map of objects (and its other arguments) to its values.</summary>
+        public static ModelMap UserModel(IMethodSymbol m)
+        {
+            var keys = string.Concat(m.Parameters.Skip(1).Select(p => "[" + TypeOf(p.Type) + "]"));
+            var kind = Scalar(m.ReturnType) ? Sp(m.ReturnType).ToString().Substring("System_".Length) : null;
+            return new ModelMap { Name = "$F.$M.User." + Ident(m.ContainingType.ToDisplayString() + "." + m.Name), Type = "[Ref]" + keys + TypeOf(m.ReturnType),
+                                  Range = keys.Length == 0 ? null : kind };
+        }
+
         public static IEnumerable<ModelMap> ModelsOf(INamedTypeSymbol collection) =>
             (CollectionKind(collection) switch
             {
@@ -619,7 +628,7 @@ namespace CsVerify.Verifier.Boogie
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("RunsConcurrentlyAttribute" or "TakesNoLocksAttribute")) &&
             // (a member [RunsConcurrently]: its task runs alongside its caller, which the concurrency checks see)
             n.GetMembers().All(m => m.IsAbstract && !m.IsStatic && !m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace &&
-                                                                                                  a.AttributeClass.Name != "RunsConcurrentlyAttribute")) && n.AllInterfaces.All(IsInterface);
+                                                                                                  a.AttributeClass.Name is not ("RunsConcurrentlyAttribute" or "PureAttribute"))) && n.AllInterfaces.All(IsInterface);
 
         /// <summary>
         /// A property computed by code (or an abstract or an interface one, specified by its contract): its getter and

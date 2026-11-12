@@ -289,6 +289,113 @@ namespace CsVerify.Verifier.Boogie
                                    Message = $"'{ctor.ContainingType.Name}' may call '{x.Value.Syntax}' with anything, but it isn't known to accept them all" });
         }
 
+        /// <summary>
+        /// A collection's member without a stub (List.TrimExcess): it may change the collection it is called on, as any
+        /// library member handed it may (against the caller's frame, CSV1017), and nothing else; what it gives isn't known.
+        /// </summary>
+        private KExpr CollectionUnstubbed(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at)
+        {
+            var recv = Expr(Unconverted(instance));
+            Emit(new KCheck { Cond = new KOp("!=", recv, new KLit("null")), Id = "CSV1013", At = instance.Syntax, Message = $"'{instance.Syntax}' might be null in '{at}'" });
+            foreach (var a in arguments.OrderBy(a => a.Parameter.Ordinal)) Expr(a.Value);
+            foreach (var model in ModelsOf((INamedTypeSymbol)callee.ContainingType))
+            {
+                _p.Models[model.Name] = model;
+                var row = model.Type.Substring("[Ref]".Length);
+                Emit(new KRow { Map = model.Name, Ref = recv, Value = new KVar(LinqMap(row)), At = at });
+            }
+            if (model0Size(callee) is string size) Emit(new KAssume { Cond = new KOp(">=", new KOp("sel", new KVar(size), recv), new KLit("0")) });
+            if (callee.ReturnsVoid) return null;
+            var r = Declare("t$" + _temps++, callee.ReturnType);
+            Emit(new KHavoc { Var = r });
+            return new KVar(r);
+            static string model0Size(IMethodSymbol m) => ModelsOf((INamedTypeSymbol)m.ContainingType).Any(x => x.Name == SizeMap) ? SizeMap : null;
+        }
+
+        /// <summary>
+        /// Array.Reverse(a), Array.Copy(src, dst, n) and (src, i, dst, j, n), Array.Resize(ref a, n), as their stubs have
+        /// them: the array's elements now (Reverse's, the old ones the other way round; Copy's, those it doesn't copy as
+        /// they were, the copied ones not known, as Copy converts); a new array of the size, nothing known of its
+        /// elements, for Resize. Their preconditions, CSV1001; a null array, CSV1014.
+        /// </summary>
+        private (bool, KExpr) ArrayHelper(IInvocationOperation call)
+        {
+            var m = call.TargetMethod;
+            var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            void NotNull(IArgumentOperation a, KExpr v) =>
+                Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1014", At = a.Syntax, Message = $"'{a.Value.Syntax}' might be null, but parameter '{a.Parameter.Name}' of '{m.Name}' is not nullable" });
+            void Pre(KExpr c, string text) => Emit(new KCheck { Cond = c, Id = "CSV1001", At = call.Syntax, Message = $"precondition '{text}' of '{m.Name}' might not hold" });
+            KExpr Len(KExpr a) => new KOp("len", a);
+            if (m.Name == "Reverse" && ordered.Count == 1 && IsArray(Unconverted(ordered[0].Value).Type))
+            {
+                var at = Unconverted(ordered[0].Value).Type;
+                var a = Expr(Unconverted(ordered[0].Value));
+                NotNull(ordered[0], a);
+                var map = Elements(at);
+                var was = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                var old = new KVar(LinqMap("[int]" + ElementValue(map)));
+                Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$r", Body = new KOp("==", new KOp("sel", old, new KVar("i$r")), new KOp("sel", new KVar(map), a, new KVar("i$r"))) }, Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
+                var row = new KVar(LinqMap("[int]" + ElementValue(map)));
+                Emit(new KRow { Map = map, Ref = a, Value = row, At = call.Syntax });
+                var i = new KVar("i$r");
+                Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$r", Body = new KOp("==>", new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(a))),
+                                                                                                   new KOp("==", new KOp("sel", row, i), new KOp("sel", old, new KOp("-", new KOp("-", Len(a), new KLit("1")), i)))) },
+                                     Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
+                return (true, null);
+            }
+            if (m.Name == "Copy" && ordered.Count is 3 or 5 && ordered.All(a => a.Parameter.RefKind == RefKind.None) &&
+                IsArray(Unconverted(ordered[0].Value).Type) && IsArray(Unconverted(ordered[ordered.Count == 3 ? 1 : 2].Value).Type))
+            {
+                var src = Expr(Unconverted(ordered[0].Value));
+                NotNull(ordered[0], src);
+                KExpr si = ordered.Count == 5 ? Expr(ordered[1].Value) : new KLit("0");
+                var dstArg = ordered[ordered.Count == 3 ? 1 : 2];
+                var dst = Expr(Unconverted(dstArg.Value));
+                NotNull(dstArg, dst);
+                KExpr di = ordered.Count == 5 ? Expr(ordered[3].Value) : new KLit("0");
+                var n = Expr(ordered[ordered.Count - 1].Value);
+                Pre(new KOp("&&", new KOp("&&", new KOp("<=", new KLit("0"), si), new KOp("<=", new KLit("0"), di)),
+                            new KOp("&&", new KOp("<=", new KLit("0"), n), new KOp("&&", new KOp("<=", si, new KOp("-", Len(src), n)), new KOp("<=", di, new KOp("-", Len(dst), n))))),
+                    "0 <= sourceIndex && 0 <= destinationIndex && 0 <= length && sourceIndex <= sourceArray.Length - length && destinationIndex <= destinationArray.Length - length");
+                var dt = Unconverted(dstArg.Value).Type;
+                var map = Elements(dt);
+                var old = new KVar(LinqMap("[int]" + ElementValue(map)));
+                var i = new KVar("i$c");
+                Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$c", Body = new KOp("==", new KOp("sel", old, i), new KOp("sel", new KVar(map), dst, i)) }, Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
+                var row = new KVar(LinqMap("[int]" + ElementValue(map)));
+                Emit(new KRow { Map = map, Ref = dst, Value = row, At = call.Syntax });
+                Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$c", Body = new KOp("==>", new KOp("||", new KOp("<", i, di), new KOp("<=", new KOp("+", di, n), i)),
+                                                                                                   new KOp("==", new KOp("sel", row, i), new KOp("sel", old, i))) },
+                                     Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
+                return (true, null);
+            }
+            if (m.Name == "Resize" && ordered.Count == 2 && ordered[0].Parameter.RefKind == RefKind.Ref && m.IsGenericMethod && IsArray(ordered[0].Value.Type))
+            {
+                var n = Expr(ordered[1].Value);
+                Pre(new KOp(">=", n, new KLit("0")), "newSize >= 0");
+                var target = RefVariable(ordered[0]);
+                var t = Declare("t$" + _temps++, ordered[0].Value.Type);
+                Emit(new KNew { Var = t, ArrayType = ordered[0].Value.Type, Size = n });
+                var map = Elements(ordered[0].Value.Type);
+                Emit(new KRow { Map = map, Ref = new KVar(t), Value = new KVar(LinqMap("[int]" + ElementValue(map))) });
+                Emit(new KAssign { Var = target, Value = new KVar(t) });
+                var writeBacks = _writeBacks.ToList();
+                _writeBacks.Clear();
+                foreach (var (wt, wv) in writeBacks) Assign(wt, new KVar(wv));
+                return (true, null);
+            }
+            return (false, null);
+        }
+
+        /// <summary>Does this collection member call its elements' Equals or GetHashCode, of a class of the program's that has its own?</summary>
+        private static bool RunsEquals(IMethodSymbol callee)
+        {
+            if (!(callee.ContainingType is INamedTypeSymbol ct) || ct.TypeArguments.Length == 0 || !CustomEquality(ct.TypeArguments[0])) return false;
+            var kind = CollectionKind(ct);
+            var keyed = callee.OriginalDefinition.Parameters.Any(p => p.Type is ITypeParameterSymbol { Ordinal: 0 });
+            return kind is "Dictionary" or "HashSet" ? keyed : callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch";
+        }
+
         /// <summary>A delegate handed to a library member: the lambda it is, if it is one; whether it writes nothing; whether it accepts anything.</summary>
         private (IAnonymousFunctionOperation lambda, bool quiet, bool free) Handed(IArgumentOperation da)
         {
@@ -982,7 +1089,7 @@ namespace CsVerify.Verifier.Boogie
             new KElem { String = fe.String, Array = new KVar(fe.Array), Index = new KVar(fe.Index), ArrayType = fe.String ? null : fe.Type, At = fe.At, ArrayAt = fe.At };
 
         /// <summary>A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs.</summary>
-        private bool ChangesNoList(SyntaxNode body) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null).All(o => o switch
+        private bool ChangesNoList(SyntaxNode body) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
         {
             IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma),
             IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure),
@@ -1460,6 +1567,9 @@ namespace CsVerify.Verifier.Boogie
                     if (IsTaskMethod(oc.TargetMethod)) StartedTaskCall(oc);
                     else Expr(oc);
                     Start(ol, null, at: oc.Syntax);
+                    return;
+                // (a query kept in a local: read where it's enumerated)
+                case ISimpleAssignmentOperation lq when lq.Target is ILocalReferenceOperation { Local: var lql } && LazyQuery(lql, lq.Value):
                     return;
                 // (tasks started in a batch, ts = xs.Select(x => F(x)).ToArray(): they run alongside until Task.WhenAll(ts))
                 case ISimpleAssignmentOperation bt when bt.Target is ILocalReferenceOperation { Local: var btl } && TaskBatch(bt.Value) is (IInvocationOperation bsel, IOperation bsrc, AnonymousFunctionExpressionSyntax blam):
@@ -2902,7 +3012,8 @@ namespace CsVerify.Verifier.Boogie
                 while (e.Parent is ParenthesizedExpressionSyntax) e = e.Parent;
                 bool ok = thread ? e.Parent is MemberAccessExpressionSyntax tm && (tm.Name.Identifier.Text is "Start" or "Join" || tm.Name.Identifier.Text == "IsBackground" && tm.Parent is AssignmentExpressionSyntax tma && tma.Left == tm) ||
                                    e.Parent is VariableDeclaratorSyntax || e is VariableDeclaratorSyntax
-                        : e.Parent is AwaitExpressionSyntax || e.Parent is MemberAccessExpressionSyntax ma && (ma.Name.Identifier.Text == "Result" || ma.Name.Identifier.Text == "Wait" && call == null) ||
+                        : e.Parent is AwaitExpressionSyntax || e.Parent is MemberAccessExpressionSyntax ma && (ma.Name.Identifier.Text == "Result" || ma.Name.Identifier.Text == "Wait" && call == null ||
+                                                                                                                 ma.Name.Identifier.Text == "ConfigureAwait" && ma.Parent?.Parent is AwaitExpressionSyntax) ||
                           // (a Task.Run's kept in a field: whoever has it awaits it)
                           lambda != null && e.Parent is AssignmentExpressionSyntax kasg && kasg.Right == e && _model.GetSymbolInfo(kasg.Left).Symbol is IFieldSymbol ||
                           e.Parent is ArgumentSyntax arg && arg.Parent?.Parent is InvocationExpressionSyntax wa && wa.Expression.ToString().EndsWith("WhenAll");
@@ -3537,6 +3648,18 @@ namespace CsVerify.Verifier.Boogie
                 // (a GroupBy group's Key: its first element's key)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: ILocalReferenceOperation gk } when IsLinqGroup(gk.Type):
                     return GroupKey(gk.Local);
+                // (the first group's key: its first element's; no group, it throws)
+                case IPropertyReferenceOperation { Property.Name: "Key", Instance: IInvocationOperation { TargetMethod.Name: "First", Arguments.Length: 1 } fg } when IsLinqGroup(fg.Type) &&
+                        Unconverted(fg.Arguments[0].Value) is IInvocationOperation gb && IsEnumerableCall(gb.TargetMethod) && gb.TargetMethod.Name == "GroupBy" && gb.Arguments.Length == 2 && !inSpec:
+                {
+                    var gsrc = Sequence(gb.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
+                    var gkey = LambdaArg(gb, 1);
+                    Emit(new KCheck { Cond = new KOp(">", gsrc.Length, new KLit("0")), Id = "CSV1001", At = fg.Syntax, Message = "precondition 'Q.Count(source) > 0' of 'First' might not hold" });
+                    var kv = Declare("t$" + _temps++, gkey.body.Type);
+                    Emit(new KHavoc { Var = kv });
+                    ShapeFact(new KOp("==", new KVar(kv), Apply(gkey, gsrc.Elem(new KLit("0")))), fg.Syntax);
+                    return new KVar(kv);
+                }
                 case IPropertyReferenceOperation jrm when jrm.Instance is ILocalReferenceOperation jrl && _joinRows.ContainsKey(jrl.Local) && JoinRowMember(jrm) is KExpr jrv:
                     return jrv;
                 // (an anonymous object, new { s, b = e }: a tuple of its members; a member read, an element)
@@ -3981,6 +4104,11 @@ namespace CsVerify.Verifier.Boogie
             t is IArrayTypeSymbol { ElementType: ITypeParameterSymbol e, Rank: 1 } && !SymbolEqualityComparer.Default.Equals(Actual(e), e)
                 ? KernelTypes.Compilation.CreateArrayTypeSymbol(Actual(e)) : t;
 
+        /// <summary>A generic type of a stub's type parameters (List&lt;T&gt; in a list's stub), as this collection's are.</summary>
+        private ITypeSymbol Constructed(ITypeSymbol t) =>
+            t is INamedTypeSymbol { IsGenericType: true } n && n.TypeArguments.Any(a => a is ITypeParameterSymbol) && n.TypeArguments.Select(Actual).ToArray() is var args && !args.Any(a => a is ITypeParameterSymbol)
+                ? n.OriginalDefinition.Construct(args) : t;
+
         private ITypeSymbol Actual(ITypeSymbol t) =>
             t is ITypeParameterSymbol tp && _contract.IsStub && IsCollection(_m.ContainingType) && tp.Ordinal < ((INamedTypeSymbol)_m.ContainingType).TypeArguments.Length
                 ? ((INamedTypeSymbol)_m.ContainingType).TypeArguments[tp.Ordinal] : t;
@@ -4025,7 +4153,8 @@ namespace CsVerify.Verifier.Boogie
             // (a lambda quoted as an expression tree is data: EF's configuration, nothing that runs)
             bool Quoted(IOperation v) => Unconverted(v) is IAnonymousFunctionOperation || v.Type is INamedTypeSymbol { Name: "Expression", Arity: 1 } && v.Type.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions";
             foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit))
-                if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation) && !Quoted(a.Value)) return (false, null);
+                if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IConversionOperation { IsImplicit: true } ac && IsArray(ac.Operand.Type)) &&
+                    !(a.Value is IInterpolatedStringOperation) && !Quoted(a.Value)) return (false, null);
             if (call.Instance != null && !lockObject)
             {
                 var receiver = Expr(call.Instance);
@@ -4034,9 +4163,11 @@ namespace CsVerify.Verifier.Boogie
             }
             // (an argument boxed or cast up to object for it: what it is, since the library's use of it isn't modeled)
             var delegates = new List<(IArgumentOperation arg, KExpr value)>();
-            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && InSubset(a.Value.Type) && !Quoted(a.Value)))
+            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && !Quoted(a.Value) &&
+                                                                                       (InSubset(a.Value.Type) || a.Value is IConversionOperation { IsImplicit: true } ac && IsArray(ac.Operand.Type))))
             {
-                var av = Expr(a.Value is IConversionOperation { IsImplicit: true, Type.SpecialType: SpecialType.System_Object } box && InSubset(box.Operand.Type) ? box.Operand : a.Value);
+                // (an array as System.Array: the array)
+                var av = Expr(a.Value is IConversionOperation { IsImplicit: true } box && (box.Type.SpecialType == SpecialType.System_Object && InSubset(box.Operand.Type) || IsArray(box.Operand.Type) && !InSubset(box.Type)) ? box.Operand : a.Value);
                 if (handed.Contains(a)) delegates.Add((a, av));
                 // (a parameter not nullable: the caller proves its argument isn't null, CSV1014, as CsVerify's engine does)
                 if (a.Parameter.RefKind == RefKind.None && IsNullable(a.Value.Type) && StaticChecks.IsNonNullable(a.Parameter))
@@ -4365,7 +4496,8 @@ namespace CsVerify.Verifier.Boogie
             // (the program's own implementations of any of these interfaces make reads through them unknown, as in CsVerify's engine)
             bool fresh = new[] { "IList", "IReadOnlyList", "ICollection", "IReadOnlyCollection" }.Any(n =>
                 KernelTypes.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{n}`1") is INamedTypeSymbol d && ImplementedHere(d));
-            if (fresh && inSpec) throw new NotTranslated("a collection interface the program implements, in a specification");
+            // (in a specification, a read of the state's model: some value, which code's reads, each unknown, needn't agree with)
+            if (inSpec) fresh = false;
             var list = (INamedTypeSymbol)KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
             foreach (var m in ModelsOf(list)) _p.Models[m.Name] = m;
             _p.UsesState = true;
@@ -5209,12 +5341,27 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             // (an async method's task is awaited at once, or it runs alongside: not yet)
+            // (Task.Run(...) returned, or given on: it runs on, alongside the rest of this method, kept by whoever has it)
+            if (!_awaiting && IsTaskRun(call, out var keptRun, out var keptLambda))
+            {
+                Detach(keptRun, keptLambda, kept: true);
+                var kt = Declare("t$" + _temps++, call.Type);
+                Emit(new KHavoc { Var = kt });
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(kt), new KLit("null")) });
+                return new KVar(kt);
+            }
             // (a task returned as it is made, return F(...) or a lambda's () => F(...): whoever has it awaits it)
             if (IsTaskMethod(call.TargetMethod) && !_awaiting &&
                 (call.Syntax.Parent is ReturnStatementSyntax or ArrowExpressionClauseSyntax || call.Syntax.Parent is AnonymousFunctionExpressionSyntax af && af.ExpressionBody == call.Syntax))
                 return StartedTaskCall(call);
             if (IsTaskMethod(call.TargetMethod) && !_awaiting) throw new NotTranslated("a task that isn't awaited at once: " + call.TargetMethod.Name);
-            if (IsCollection(call.TargetMethod.ContainingType)) return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
+            if (IsCollection(call.TargetMethod.ContainingType))
+            {
+                // (a builder's AppendFormat: its format checked, CSV1001, as CsVerify's engine checks it)
+                if (!_p.Ghost && !_contract.IsPure && !_contract.IsLemma && StaticChecks.FormatProblem(call) is var (cfat, cfmessage))
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1001", At = cfat, Message = cfmessage });
+                return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
+            }
             // (IDisposable.Dispose of a class's object, as using calls it: that class's Dispose runs, its contract a
             // library interface's, so what it does isn't known: anything, as for a delegate)
             // (a library object's Dispose, as using calls it: the library's, which writes nothing of the program's)
@@ -5330,6 +5477,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$f", Body = new KOp("==", new KOp("sel", new KVar(row), new KVar("i$f")), v[1]) }, Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
                 return null;
             }
+            if (callee.ContainingType?.ToDisplayString() == "System.Array" && !_p.UsesCells && !_p.MemViews && ArrayHelper(call) is var (helped, hv) && helped) return hv;
             if (!_isProcedure(callee) && LibraryCall(call) is var (handled, lib) && handled) return lib;
             // (as called: a generic one's instantiation boxes its arguments and unboxes its result)
             return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
@@ -5726,7 +5874,12 @@ namespace CsVerify.Verifier.Boogie
             bool listCtor = list && callee.MethodKind == MethodKind.Constructor || callee.MethodKind == MethodKind.Constructor && IsStruct(callee.ContainingType);
             if (list)
             {
-                if (!(_contractOf?.Invoke(callee) is Contract lc && lc.IsStub)) throw new NotTranslated("a call of List's " + callee.Name + ", which has no stub contract");
+                if (!(_contractOf?.Invoke(callee) is Contract lc && lc.IsStub))
+                {
+                    if (instance != null && !listCtor && callee.Parameters.All(p => p.RefKind == RefKind.None && InSubset(p.Type) && !IsDelegate(p.Type)) && (callee.ReturnsVoid || InSubset(callee.ReturnType)))
+                        return CollectionUnstubbed(callee, instance, arguments, at);
+                    throw new NotTranslated("a call of List's " + callee.Name + ", which has no stub contract");
+                }
                 // (a list of data values: its stubs compare elements as references, which data values aren't)
                 if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(IsData) && callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
                     throw new NotTranslated("a list of data values' " + callee.Name);
@@ -5834,6 +5987,9 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = _phase == 1 ? null : throwsTo, Phase = _phase,
                              Args = args, ArgsAt = argsAt,
                              Result = result, At = call.Syntax, RefOuts = refOuts });
+            // (a collection that compares its elements with an Equals of the program's, or hashes them: that code runs, and
+            // may change anything, as CsVerify's engine has it)
+            if (list && RunsEquals(callee)) { _p.HavocsAll = true; _p.CallsDelegates = true; Emit(new KHavocAll { ProgramState = true }); }
             // (the cells and struct members lent: what the callee gave back, written where they are)
             var writeBacks = _writeBacks.ToList();
             _writeBacks.Clear();
@@ -6036,6 +6192,16 @@ namespace CsVerify.Verifier.Boogie
             _p.UsesPerm = true;
             switch (own.TargetMethod.Name)
             {
+                // (of an object not made here: its fields may be anyone's, so no view of it, CSV1016, as CsVerify's engine has it)
+                case "New" when !(own.Arguments[0].Value is IObjectCreationOperation) && own.Arguments.Length == 2 && IsOwnedClass(own.Arguments[0].Value.Type):
+                {
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1016", At = own.Syntax, NotAssumedAfter = true,
+                                      Message = $"Own.New makes a view only of an object made where it is called, new {own.Arguments[0].Value.Type.Name}(...): '{own.Arguments[0].Value.Syntax}' may be anyone's" });
+                    var obj = Expr(own.Arguments[0].Value);
+                    var view = RefVariable(own.Arguments[1]);
+                    Emit(new KOwn { Kind = "new", Obj = obj, View = view, Type = own.Arguments[0].Value.Type, At = own.Syntax });
+                    return obj;
+                }
                 case "New" when own.Arguments[0].Value is IObjectCreationOperation:
                 {
                     var obj = Expr(own.Arguments[0].Value);
@@ -6221,11 +6387,20 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation cm when cm.Instance != null && CollectionFunction(cm.TargetMethod) is IMethodSymbol fm:
                 {
                     var ct = (INamedTypeSymbol)fm.ContainingType;
-                    foreach (var model in ModelsOf(ct)) _p.Models[model.Name] = model;
+                    foreach (var model in ModelsOf(ct).Concat(Checks.StubModels(fm, _contractOf?.Invoke(fm)))) _p.Models[model.Name] = model;
                     _p.Stubs.Add(fm);
                     var ordered = cm.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
                     var args = ordered.Select(a => (KExpr)(CustomEquality(fm.Parameters[a.Parameter.Ordinal].Type) ? Spec(a.Value, result) : Keyed(Spec(a.Value, result), fm.Parameters[a.Parameter.Ordinal].Type))).ToArray();
                     return new KFnCall { Callee = fm, Receiver = Spec(cm.Instance, result), ReceiverAt = cm.Instance.Syntax, Args = args, At = cm.Syntax, Stub = true };
+                }
+                // (a [Pure] indexer of a collection the models don't index, a StringBuilder's: its getter, as above)
+                case IPropertyReferenceOperation pi when pi.Property.IsIndexer && pi.Instance != null && pi.Property.GetMethod != null && !(CollectionKind(pi.Instance.Type) is "List" or "Dictionary") &&
+                                                         CollectionFunction(pi.Property.GetMethod) is IMethodSymbol gm:
+                {
+                    foreach (var model in Checks.StubModels(gm, _contractOf?.Invoke(gm))) _p.Models[model.Name] = model;
+                    _p.Stubs.Add(gm);
+                    var args = pi.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray();
+                    return new KFnCall { Callee = gm, Receiver = Spec(pi.Instance, result), ReceiverAt = pi.Instance.Syntax, Args = args, At = pi.Syntax, Stub = true };
                 }
                 case IInvocationOperation st when !_isFunction(st.TargetMethod) && IsStub(st.TargetMethod.OriginalDefinition):
                     // (in an assertion of the body's, as CsVerify's engine lists it: the proof assumes the stub)
@@ -6235,8 +6410,18 @@ namespace CsVerify.Verifier.Boogie
                     return new KLen { Array = Spec(pr.Instance, result), InSpec = true, At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
                 // (a list's model: its size, its version, its elements; Count and the indexer as their contracts say)
                 case IInvocationOperation mo when SpecSymbols.IsModel(mo.TargetMethod.OriginalDefinition) && mo.Arguments.Length == 1 &&
-                                                  CollectionOf(Unconverted(mo.Arguments[0].Value).Type) is INamedTypeSymbol mc:
+                                                  CollectionOf(Unconverted(mo.Arguments[0].Value).Type) is INamedTypeSymbol mc && ModelOf(mo.TargetMethod.Name, mc) != null:
                     return Model(mo.TargetMethod.Name, mc, Spec(Unconverted(mo.Arguments[0].Value), result));
+                // (a model a stub declares of its own, [Model] Len(b), At(b, i): a map of the objects, and of its other arguments)
+                case IInvocationOperation um when SpecSymbols.IsModel(um.TargetMethod.OriginalDefinition) && um.TargetMethod.IsStatic && um.Arguments.Length >= 1 &&
+                                                  um.TargetMethod.Parameters.Skip(1).All(x => Scalar(x.Type)) && InSubset(um.TargetMethod.ReturnType) && !um.TargetMethod.IsGenericMethod:
+                {
+                    var ordered = um.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var model = UserModel(um.TargetMethod.OriginalDefinition);
+                    _p.Models[model.Name] = model;
+                    var args = new[] { new KVar(model.Name), Spec(Unconverted(ordered[0].Value), result) }.Concat(ordered.Skip(1).Select(a => Spec(a.Value, result))).ToArray();
+                    return new KOp("sel", args);
+                }
                 case IPropertyReferenceOperation lc when (lc.Property.Name == "Count" || lc.Property.Name == "Length" && CollectionKind(lc.Instance?.Type) == "StringBuilder") && CollectionOf(lc.Instance?.Type) is INamedTypeSymbol cc:
                     return Model("Size", cc, Spec(lc.Instance, result));
                 case IPropertyReferenceOperation sr when sr.Instance != null && IsCollectionInterface(sr.Property.ContainingType) &&
@@ -6446,7 +6631,7 @@ namespace CsVerify.Verifier.Boogie
                             return new KVar(fx.Index);
                         // (allocated during the call)
                         case "Fresh" when IsRef(Unconverted(inv.Arguments[0].Value).Type) ||
-                                          IsRef(ActualArray(Unconverted(inv.Arguments[0].Value).Type)):
+                                          IsRef(ActualArray(Unconverted(inv.Arguments[0].Value).Type)) || IsRef(Constructed(Unconverted(inv.Arguments[0].Value).Type)):
                             // (its argument read now: only the allocated set is as it was)
                             return new KOp("&&", new KOp("!=", Spec(Unconverted(inv.Arguments[0].Value), result), new KLit("null")),
                                 new KOp("!", new KOp("sel", new KOp("old", new KVar("$Alloc")), Spec(Unconverted(inv.Arguments[0].Value), result))));

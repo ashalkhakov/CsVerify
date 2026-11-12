@@ -550,7 +550,7 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 }
                 case KHavocAll ha when ha.Unless != null:
-                    Emit(new KHavocAll { Unless = Code(ha.Unless) });
+                    Emit(new KHavocAll { Unless = Code(ha.Unless), ProgramState = ha.ProgramState });
                     return;
                 case KCheck ck:
                 {
@@ -1248,13 +1248,22 @@ namespace CsVerify.Verifier.Boogie
             return given;
         }
 
-        private static KExpr StubApp(IMethodSymbol callee, KExpr receiver, KExpr[] args) =>
+        private KExpr StubApp(IMethodSymbol callee, KExpr receiver, KExpr[] args) =>
             new KFnApp { Callee = callee, Function = StubName(callee), Plain = true,
-                         Args = StubModels(callee).Select(m => (KExpr)new KVar(m.Name)).Concat(receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
+                         Args = StubModels(callee, _program.ContractOf(callee)).Select(m => (KExpr)new KVar(m.Name)).Concat(receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
 
         /// <summary>The models a collection's [Pure] member is a function of (its version aside); none for another stub's.</summary>
-        public static List<ModelMap> StubModels(IMethodSymbol callee) =>
-            IsCollection(callee.ContainingType) ? ModelsOf((INamedTypeSymbol)callee.ContainingType).Where(m => m.Name != VersionMap).ToList() : new List<ModelMap>();
+        public static List<ModelMap> StubModels(IMethodSymbol callee, Contract contract)
+        {
+            var models = IsCollection(callee.ContainingType) ? ModelsOf((INamedTypeSymbol)callee.ContainingType).Where(m => m.Name != VersionMap).ToList() : new List<ModelMap>();
+            // (and the models its stub declares, that its contract reads)
+            if (contract != null)
+                foreach (var m in contract.Requires.Concat(contract.Ensures.Select(e => e.Expr)).Where(x => x != null).SelectMany(x => Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(x)).OfType<Microsoft.CodeAnalysis.Operations.IInvocationOperation>()
+                             .Where(i => SpecSymbols.IsModel(i.TargetMethod.OriginalDefinition) && i.TargetMethod.IsStatic && i.Arguments.Length >= 1 && (!IsCollection(callee.ContainingType) || ModelOf(i.TargetMethod.Name, (INamedTypeSymbol)callee.ContainingType) == null))
+                             .Select(i => UserModel(i.TargetMethod.OriginalDefinition)).OrderBy(x => x.Name, System.StringComparer.Ordinal))
+                    if (!models.Any(x => x.Name == m.Name)) models.Add(m);
+            return models;
+        }
 
         public static string StubName(IMethodSymbol m) => "lib$" + Name(m);
 
