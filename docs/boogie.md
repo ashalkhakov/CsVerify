@@ -1152,9 +1152,16 @@ Also arrays of objects and strings, and null patterns of references.
 Also exception filters, `Spec.Multiset` and `Bag`, collections keyed by strings, a dictionary's `Keys` and `Values`,
 and reading collections through their interfaces.
 
-Not yet (such a method is not verified, CSV1902): string members without stubs, writes and other members of
-collections through their interfaces, ghost types (`Map`, `Ghost<T>` fields), async, locks
-and threads beyond awaits and simple locks, LINQ, and library calls with stub contracts other than strings' and lists'.
+Also: delegates handed to library members (each element's precondition where the member calls it with the
+elements, Parallel.For's indices, totality otherwise), ref locals, `await foreach` over library streams, library
+awaits with and without stubs, tasks started inline in `Task.WhenAll` and in batches, library objects and tasks in
+fields, classes with an `Equals` of their own (an unknown equivalence), collections' `[Pure]` members and stubs'
+`[Model]`s as functions of the models, `Zip`, `GroupJoin`, `RightJoin`, lazy queries kept in a local, explicit
+enumerators, the Spec library's trusted lemmas.
+
+Not yet (such a method is not verified, CSV1902, with why): classes derived from the library's (a `Collection<T>`
+whose virtual members they override), a program's own implementations of the collection interfaces' members, and
+the constructs the sweep (below) lists.
 
 ## How it's checked
 

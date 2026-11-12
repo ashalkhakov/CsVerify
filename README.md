@@ -178,7 +178,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 
 - [Writing specifications](docs/specifications.md): ATS concepts in C#, the specification library, the rules.
 - [How it works](docs/how-it-works.md): the analyzers, and how the verifier turns code into verification conditions.
-- [The Boogie engine](docs/boogie.md): C# lowered to Boogie, Dafny's and Spec#'s intermediate language, for a growing subset.
+- [The Boogie engine](docs/boogie.md): C# lowered to Boogie, Dafny's and Spec#'s intermediate language, construct by construct.
 - [Data types and objects](docs/objects.md): data types and invariants, mutable and owned objects, predicates,
   dynamic frames, object-oriented code.
 - [Integers, exceptions, async, floating point and null](docs/semantics.md).

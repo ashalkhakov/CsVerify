@@ -5,11 +5,8 @@ using Microsoft.CodeAnalysis.Operations;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// What applications check their arguments with. The generic guard clauses of ArgumentOutOfRangeException
-    /// (<c>ThrowIfNegative(i)</c>, <c>ThrowIfGreaterThanOrEqual(i, n)</c>, ...) throw unless the relation holds, so a
-    /// call that returns gives it, for integer types (a stub could not compare a T). <c>Debug.Assert(c)</c> and
-    /// <c>Trace.Assert(c)</c> are proved like <c>Spec.Assert</c> (CSV1004), and assumed after; at run time they are
-    /// unchanged.
+    /// What an await of a call gives: an async method's result, or an async stub's (Stream.ReadAsync's), for the
+    /// lock checks of a method's result.
     /// </summary>
     internal sealed partial class StaticChecks
     {

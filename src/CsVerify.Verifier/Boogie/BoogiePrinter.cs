@@ -1189,7 +1189,6 @@ namespace CsVerify.Verifier.Boogie
                 case KAssert a: Line($"    assert {E(a.Cond, cx)};", a.Check); return;
                 case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
                 case KHavoc h: Line($"    havoc {h.Var};"); return;
-                case KRaw raw: Line("    " + raw.Text); return;
                 case KRoots roots when roots.Join:
                     Line($"    $root := (lambda y: Ref :: (if $root[y] == {E(roots.Child, cx)} then $root[{E(roots.Container, cx)}] else $root[y]));");
                     return;

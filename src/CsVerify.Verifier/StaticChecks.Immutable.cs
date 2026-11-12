@@ -6,11 +6,9 @@ using Microsoft.CodeAnalysis.Operations;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Invariants of immutable classes: an ordinary class whose instance fields (its own and its source bases') are
-    /// all readonly, or get-only auto-properties. Its fields never change once a constructor has returned, so an
-    /// [Invariant] is proved where each constructor returns (CSV1015) and assumed of every object of the type whose
-    /// fields are read. Inside a constructor the object is not finished: it is not assumed of <c>this</c> there, and
-    /// <c>this</c> may not escape (to a call, as a receiver, into a field or variable) before the constructor ends.
+    /// Immutable classes: an ordinary class whose instance fields (its own and its source bases') are all readonly, or
+    /// get-only auto-properties. An [Invariant] of one, as of a data type or an [Owned] class, is checked not to depend
+    /// on what can change behind its back (CSV1015); of any other class it isn't used (a warning).
     /// </summary>
     internal sealed partial class StaticChecks
     {

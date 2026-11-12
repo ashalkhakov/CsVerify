@@ -13,10 +13,10 @@ using Microsoft.CodeAnalysis.Text;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Verifies one method: symbolic execution over its Roslyn control flow graph, a forward computation of the
-    /// weakest-precondition verification conditions. Every proof obligation (callee precondition, array bound,
-    /// assertion, invariant, termination measure, postcondition) becomes the query "path condition and not goal",
-    /// which Z3 must find unsatisfiable. Loops are cut at their head with Spec.Invariant; calls are modular.
+    /// The checks made from a method's syntax and declarations alone, for every method, Boogie's or not: locking and
+    /// lock levels, atomics and try-lock flags, concurrency marks, Entity Framework's contexts, the dependence of a data
+    /// type's invariant, and the warnings they give (docs/boogie.md, "How it's checked"). What needs a proof is the
+    /// Boogie engine's.
     /// </summary>
     internal sealed partial class StaticChecks
     {
@@ -28,7 +28,6 @@ namespace CsVerify.Verifier
         private readonly MethodResult _result;
         private readonly HashSet<SyntaxNode> _contractStatements = new HashSet<SyntaxNode>();
         private readonly HashSet<(string, TextSpan)> _reported = new HashSet<(string, TextSpan)>();
-        private int _paths, _unfoldDepth, _quantDepth;
 
         /// <summary>
         /// Lemmas and [Pure]/[GhostFunction] methods are proofs and definitions: they must terminate on every path,
@@ -36,9 +35,8 @@ namespace CsVerify.Verifier
         /// </summary>
         private bool ProofCode => (_contract.IsLemma || _contract.IsPure) && !_contract.IsTrusted;
 
-        public StaticChecks(Engine engine, Contract contract, MethodResult result, ISet<string> excludedLoopFacts = null)
+        public StaticChecks(Engine engine, Contract contract, MethodResult result)
         {
-            _excludedFacts = excludedLoopFacts;
             _engine = engine;
             _contract = contract;
             _method = contract.Method;
@@ -50,12 +48,6 @@ namespace CsVerify.Verifier
 
         /// <summary>A lambda's or local function's flow graph, from its enclosing method's (Engine's nested functions).</summary>
         public ControlFlowGraph NestedGraph;
-
-        /// <summary>
-        /// Only the checks made from the method's syntax and the program's declarations (locking, lock levels, atomics,
-        /// flags, concurrency marks, a data type's invariant's dependence): for a method another engine verifies.
-        /// </summary>
-        public bool StaticOnly;
 
         public void Run()
         {
@@ -76,7 +68,6 @@ namespace CsVerify.Verifier
             CheckFlagUses();
             CheckContextConcurrency();
             CheckConcurrentMarks();
-            CheckDelegateContract();
             if (SpecSymbols.IsPredicate(_method)) return;
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");

@@ -943,9 +943,6 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Why a lambda the database runs isn't translated yet: CSV1032's check, strings, SQL's nulls.</summary>
         private string DatabaseLambdaNotYet(IAnonymousFunctionOperation fn, bool projection)
         {
-            var parameters = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
-            foreach (var l in fn.DescendantsAndSelf().OfType<IAnonymousFunctionOperation>()) parameters.UnionWith(l.Symbol.Parameters);
-            bool Depends(IOperation op) => op.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(p => parameters.Contains(p.Parameter));
             foreach (var op in fn.Body.DescendantsAndSelf())
                 switch (op)
                 {

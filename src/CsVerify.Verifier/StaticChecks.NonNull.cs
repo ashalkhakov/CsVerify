@@ -8,12 +8,9 @@ using Microsoft.CodeAnalysis.Operations;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Fields of non-nullable reference type (<c>Rule rp</c>, not <c>Rule? rp</c>) are never null once their object
-    /// is built: every write proves it (CSV1014), so every read may assume it. An object is built when its
-    /// constructor returns, which must have set all such fields but the <c>required</c> ones, which the compiler
-    /// makes every object initializer set (and a <c>[SetsRequiredMembers]</c> constructor must set too); until then
-    /// <c>this</c> may not escape (CSV1015). A static field is never null when it starts with an object (an initializer
-    /// creating one); every write keeps it so. Array elements promise nothing (<c>new Rule[n]</c> holds nulls).
+    /// Fields of non-nullable reference type (<c>Rule rp</c>, not <c>Rule? rp</c>) are never null once their object is
+    /// built: a class whose constructor has no body of its own must start them so (an initializer of an object, or
+    /// <c>required</c>), else CSV1014 here; the rest (every write, every constructor) is the Boogie engine's.
     /// </summary>
     internal sealed partial class StaticChecks
     {

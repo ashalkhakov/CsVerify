@@ -282,12 +282,6 @@ namespace CsVerify.Verifier.Boogie
         public string Exception = "T#System.OverflowException";
     }
 
-    /// <summary>A Boogie statement, as text (what Checks builds of the permission locals).</summary>
-    internal sealed class KRaw : KStmt
-    {
-        public string Text;
-    }
-
     internal abstract class KStmt { }
 
     internal sealed class KAssign : KStmt

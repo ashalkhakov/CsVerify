@@ -1021,7 +1021,7 @@ namespace CsVerify.Verifier
                 if (x.result.Name != null)
                 {
                     var staticResult = new MethodResult();
-                    try { new StaticChecks(engine, x.contract, staticResult, null) { StaticOnly = true, NestedGraph = x.result.Graph }.Run(); }
+                    try { new StaticChecks(engine, x.contract, staticResult) { NestedGraph = x.result.Graph }.Run(); }
                     catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan())); }
                     x.result.Diagnostics.AddRange(staticResult.Diagnostics);
                 }
@@ -1046,7 +1046,7 @@ namespace CsVerify.Verifier
             mr.Clear();
             mr.Engine = "boogie";
             var staticResult = new MethodResult();
-            try { new StaticChecks(engine, contract, staticResult, null) { StaticOnly = true, NestedGraph = nested }.Run(); }
+            try { new StaticChecks(engine, contract, staticResult) { NestedGraph = nested }.Run(); }
             catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan())); }
             mr.Diagnostics.AddRange(staticResult.Diagnostics);
             mr.Diagnostics.Add(new VerificationDiagnostic("CSV1902", true, $"'{mr.Name}' is not verified: {reason}", at.GetLineSpan()));
