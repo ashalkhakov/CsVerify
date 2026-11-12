@@ -160,7 +160,11 @@ namespace CsVerify.Verifier.Boogie
                 }
             }, "csverify", default).GetAwaiter().GetResult();
             if (outcome != PipelineOutcome.VerificationCompleted && outcome != PipelineOutcome.Done)
-                throw new InvalidOperationException("Boogie: " + outcome + "\n" + output);
+            {
+                // (its reason first, on the line a diagnostic keeps: what Boogie wrote of the error)
+                var why = output.ToString().Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).LastOrDefault(l => l.Contains("rror") || l.Contains("xception"));
+                throw new InvalidOperationException("Boogie: " + outcome + (why == null ? "" : ": " + why) + "\n" + output);
+            }
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                 Console.Error.WriteLine(output + $"\n[stats] verified {stats.VerifiedCount} errors {stats.ErrorCount} inconclusive {stats.InconclusiveCount} timeouts {stats.TimeoutCount} outOfResource {stats.OutOfResourceCount} outOfMemory {stats.OutOfMemoryCount}");
             // (one report of a check, however many paths fail it; and, as CsVerify's engine reports them, one of a kind at a
