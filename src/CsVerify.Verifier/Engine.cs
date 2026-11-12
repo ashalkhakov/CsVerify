@@ -105,6 +105,8 @@ namespace CsVerify.Verifier
         public bool Verified => Diagnostics.All(d => !d.IsError);
         /// <summary>The engine that verified it: "csverify", or "boogie".</summary>
         public string Engine = "csverify";
+        /// <summary>A lambda's or a local function's flow graph (its enclosing method's gives it).</summary>
+        internal Microsoft.CodeAnalysis.FlowAnalysis.ControlFlowGraph Graph;
 
         /// <summary>Starts the method's results over (for a run again: see Engine.RunMethod).</summary>
         internal void Clear()
@@ -652,6 +654,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Started = engine.StartedDelegates;
             Boogie.KernelTypes.Levels = engine.Levels;
             Boogie.KernelTypes.MayWriteHeap = engine.MayWriteHeap;
+            Boogie.KernelTypes.NestedGraphs = new Dictionary<IMethodSymbol, ControlFlowGraph>(SymbolEqualityComparer.Default);
             Boogie.KernelTypes.WritesFieldsAt = engine.Fields.WritesFieldsAt;
             Boogie.KernelTypes.RunsUserCode = engine.Fields.RunsUserCode;
             Boogie.KernelTypes.Ef = engine.Ef;
@@ -686,7 +689,8 @@ namespace CsVerify.Verifier
                     var contract = engine.ContractOf(method);
                     var span = decl.GetLocation().GetLineSpan();
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name, Declared = span.Path + ":" + (span.StartLinePosition.Line + 1) };
-                    if (!options.Selects(mr.Name)) continue;
+                    // (its lambdas and local functions, each a unit of its own: selected or not, as it is)
+                    if (!options.Selects(mr.Name)) { RunNested(engine, decl, model, mr.Name, result, declarations, options, forBoogie); continue; }
                     result.Methods.Add(mr);
                     declarations.Add((decl, mr));
                     if (options.Boogie && Boogie.BoogieTranslator.Candidate(method, contract) && Sequential(engine, method, decl, model)) forBoogie.Add((method, contract, decl, mr));
@@ -696,17 +700,7 @@ namespace CsVerify.Verifier
                         RunMethod(engine, contract, mr, decl.GetLocation());
                     }
                     // its lambdas and local functions, each a unit of its own
-                    foreach (var (nested, graph) in NestedFunctions(decl, model))
-                    {
-                        // (nothing but a call with permissions: it is proved where it starts)
-                        if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
-                        var nmr = new MethodResult { Name = mr.Name + "." + NestedName(nested) };
-                        if (!options.Selects(nmr.Name)) continue;
-                        result.Methods.Add(nmr);
-                        declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
-                        if (options.Boogie) Trace($"not translated to Boogie: {nmr.Name}: a lambda or a local function, a unit of its own");
-                        RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
-                    }
+                    RunNested(engine, decl, model, mr.Name, result, declarations, options, forBoogie);
                 }
             }
             // accessors with code: properties are methods too (Boogie's, where they are in its subset; an abstract or an
@@ -740,6 +734,36 @@ namespace CsVerify.Verifier
                     forBoogie.Add((accessor, contract, node, mr));
                 }
             }
+            // the lambdas and local functions in properties' code
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var node in tree.GetRoot().DescendantNodes())
+                {
+                    IMethodSymbol accessor = node switch
+                    {
+                        AccessorDeclarationSyntax acc when acc.Body != null || acc.ExpressionBody != null => model.GetDeclaredSymbol(acc) as IMethodSymbol,
+                        ArrowExpressionClauseSyntax arrow when arrow.Parent is BasePropertyDeclarationSyntax prop => (model.GetDeclaredSymbol(prop) as IPropertySymbol)?.GetMethod,
+                        _ => null,
+                    };
+                    if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.IsContractsClass(accessor.ContainingType) ||
+                        accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
+                    RunNested(engine, node, model, accessor.ContainingType.Name + "." + accessor.Name, result, declarations, options, forBoogie);
+                }
+            }
+            // the lambdas in field and property initializers (static readonly Pricing Flat = q => 100 * q): no method has them
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var init in tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>())
+                {
+                    if (!(init.Parent is VariableDeclaratorSyntax && init.Parent.Parent?.Parent is FieldDeclarationSyntax || init.Parent is PropertyDeclarationSyntax)) continue;
+                    if (!init.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Any()) continue;
+                    var member = init.Parent is VariableDeclaratorSyntax vd ? model.GetDeclaredSymbol(vd) : model.GetDeclaredSymbol(init.Parent);
+                    if (member?.ContainingType == null || SpecSymbols.IsContractsClass(member.ContainingType)) continue;
+                    RunNested(engine, init, model, member.ContainingType.Name + "." + member.Name, result, declarations, options, forBoogie);
+                }
+            }
             if (forBoogie.Count > 0) result.BoogieFailure = RunBoogie(engine, compilation, forBoogie);
             // accessors with code: properties are methods too
             foreach (var tree in userTrees)
@@ -756,27 +780,13 @@ namespace CsVerify.Verifier
                     if (accessor == null || SpecSymbols.IsTrusted(accessor) || SpecSymbols.IsContractsClass(accessor.ContainingType) ||
                         accessor.ContainingType?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace) continue;
                     // (Boogie's: verified there, or as always if it couldn't; its lambdas, as always)
-                    if (boogieAccessors.Contains(node)) { RunNested(engine, node, model, accessor.ContainingType.Name + "." + accessor.Name, result, declarations, options); continue; }
+                    if (boogieAccessors.Contains(node)) continue;
                     var where = node.GetLocation().GetLineSpan();
                     var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name, Declared = where.Path + ":" + (where.StartLinePosition.Line + 1) };
                     if (!options.Selects(mr.Name)) continue;
                     result.Methods.Add(mr);
                     declarations.Add((node, mr));
                     RunMethod(engine, engine.ContractOf(accessor), mr, node.GetLocation());
-                    RunNested(engine, node, model, mr.Name, result, declarations, options);
-                }
-            }
-            // the lambdas in field and property initializers (static readonly Pricing Flat = q => 100 * q): no method has them
-            foreach (var tree in userTrees)
-            {
-                var model = compilation.GetSemanticModel(tree);
-                foreach (var init in tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>())
-                {
-                    if (!(init.Parent is VariableDeclaratorSyntax && init.Parent.Parent?.Parent is FieldDeclarationSyntax || init.Parent is PropertyDeclarationSyntax)) continue;
-                    if (!init.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Any()) continue;
-                    var member = init.Parent is VariableDeclaratorSyntax vd ? model.GetDeclaredSymbol(vd) : model.GetDeclaredSymbol(init.Parent);
-                    if (member?.ContainingType == null || SpecSymbols.IsContractsClass(member.ContainingType)) continue;
-                    RunNested(engine, init, model, member.ContainingType.Name + "." + member.Name, result, declarations, options);
                 }
             }
             // classes with no constructor body of their own: their fields' initializers, which no method verifies
@@ -825,17 +835,28 @@ namespace CsVerify.Verifier
         /// </summary>
         /// <summary>The lambdas and local functions in a property's code or an initializer, each verified as a unit of its own.</summary>
         private static void RunNested(Engine engine, SyntaxNode code, SemanticModel model, string owner, VerificationResult result,
-                                      List<(SyntaxNode decl, MethodResult result)> declarations, VerifierOptions options)
+                                      List<(SyntaxNode decl, MethodResult result)> declarations, VerifierOptions options,
+                                      List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> forBoogie)
         {
             foreach (var (nested, graph) in NestedFunctions(code, model))
             {
-                if (nested.DeclaringSyntaxReferences[0].GetSyntax() is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
-                var nmr = new MethodResult { Name = owner + "." + NestedName(nested) };
+                // (nothing but a call with permissions: it is proved where it starts)
+                var syntax = nested.DeclaringSyntaxReferences[0].GetSyntax();
+                if (syntax is AnonymousFunctionExpressionSyntax started && engine.StartedDelegates.CallOf(started) != null) continue;
+                var where = nested.Locations[0].GetLineSpan();
+                if (Boogie.KernelTypes.NestedGraphs != null) Boogie.KernelTypes.NestedGraphs[nested.OriginalDefinition] = graph;
+                var nmr = new MethodResult { Name = owner + "." + NestedName(nested), Graph = graph,
+                                             Declared = where.Path + ":" + (where.StartLinePosition.Line + 1) + ":" + (where.StartLinePosition.Character + 1) };
                 if (!options.Selects(nmr.Name)) continue;
                 result.Methods.Add(nmr);
-                declarations.Add((nested.DeclaringSyntaxReferences[0].GetSyntax(), nmr));
-                if (options.Boogie) Trace($"not translated to Boogie: {nmr.Name}: a lambda or a local function, a unit of its own");
-                RunMethod(engine, engine.ContractOf(nested), nmr, nested.Locations[0], graph);
+                declarations.Add((syntax, nmr));
+                var contract = engine.ContractOf(nested);
+                if (options.Boogie && Boogie.BoogieTranslator.Candidate(nested, contract) && Sequential(engine, nested, syntax, model)) forBoogie.Add((nested, contract, syntax, nmr));
+                else
+                {
+                    if (options.Boogie) Trace($"not translated to Boogie: {nmr.Name}: {(Boogie.BoogieTranslator.Candidate(nested, contract) ? "a field guarded by a semaphore or a flag" : Boogie.BoogieTranslator.WhyNot(nested, contract))}");
+                    RunMethod(engine, contract, nmr, nested.Locations[0], graph);
+                }
             }
         }
 
@@ -919,14 +940,16 @@ namespace CsVerify.Verifier
                 {
                     var model = compilation.GetSemanticModel(x.decl.SyntaxTree);
                     if (!opaque.Contains(x.result))
-                        try { translator.Procedure(x.method, x.contract, x.decl, model, x.result); continue; }
+                        try { translator.Procedure(x.method, x.contract, x.decl, model, x.result, x.result.Graph); continue; }
                         catch (Boogie.NotTranslated why)
                         {
                             Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {why.Message}");
                             if (x.result.Name == null) { refused.Add(x); continue; }
                             opaque.Add(x.result);
+                            // (a lambda: nothing calls it, so no contract of it is needed; a local function's calls do)
+                            if (x.method.MethodKind == MethodKind.AnonymousFunction) continue;
                         }
-                    try { translator.ContractOnly(x.method, x.contract, x.decl, model, x.result); }
+                    try { translator.ContractOnly(x.method, x.contract, x.decl, model, x.result, x.result.Graph); }
                     catch (Boogie.NotTranslated why)
                     {
                         refused.Add(x);
@@ -939,7 +962,7 @@ namespace CsVerify.Verifier
             }
             translator.Finish();
             if (engine.Options.BoogieOut != null) System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
-            foreach (var x in held.Except(included).Concat(included.Where(x => opaque.Contains(x.result))).Where(x => x.result.Name != null)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+            foreach (var x in held.Except(included).Concat(included.Where(x => opaque.Contains(x.result))).Where(x => x.result.Name != null)) RunMethod(engine, x.contract, x.result, x.decl.GetLocation(), x.result.Graph);
             included = included.Where(x => !opaque.Contains(x.result)).ToList();
             if (included.Count == 0) return null;
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
@@ -957,7 +980,7 @@ namespace CsVerify.Verifier
                 if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine("Boogie failed: " + e);
                 foreach (var x in included.Where(x => x.result.Name != null))
                 {
-                    RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+                    RunMethod(engine, x.contract, x.result, x.decl.GetLocation(), x.result.Graph);
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + e.Message.Split('\n')[0], x.decl.GetLocation().GetLineSpan()));
                 }
                 return e.GetType().Name + ": " + e.Message + "\n" + string.Join("\n", (e.StackTrace ?? "").Split('\n').Take(6));
@@ -968,15 +991,17 @@ namespace CsVerify.Verifier
                 // (Boogie couldn't decide it, in the time it had: CsVerify's engine verifies it, and says so)
                 if (mine.FirstOrDefault(d => d.Id == "CSV1900") is VerificationDiagnostic undecided)
                 {
-                    RunMethod(engine, x.contract, x.result, x.decl.GetLocation());
+                    RunMethod(engine, x.contract, x.result, x.decl.GetLocation(), x.result.Graph);
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1900", false, "Boogie couldn't verify it, so CsVerify's engine did: " + undecided.Message, x.decl.GetLocation().GetLineSpan()));
                     Trace($"undecided by Boogie: {x.result.Name}: {undecided.Message}");
                     continue;
                 }
                 // (the library's members its code calls, as its translation listed them: kept)
                 var libraryCalls = x.result.LibraryCalls.ToList();
+                var assumed = x.result.Assumptions.ToList();
                 x.result.Clear();
                 x.result.LibraryCalls.UnionWith(libraryCalls);
+                x.result.Assumptions.UnionWith(assumed);
                 x.result.Engine = "boogie";
                 // (a failed check of a warning's: the warning, CSV1900, not an error)
                 mine = mine.Select(d => d.Id == Boogie.Lowering.Warning ? new VerificationDiagnostic("CSV1900", false, d.Message.Replace(" (boogie)", ""), d.Span) : d).ToList();
@@ -990,7 +1015,7 @@ namespace CsVerify.Verifier
                 {
                     var staticResult = new MethodResult();
                     engine.Solver.Reset();
-                    try { new MethodVerifier(engine, x.contract, staticResult, null) { StaticOnly = true }.Run(); }
+                    try { new MethodVerifier(engine, x.contract, staticResult, null) { StaticOnly = true, NestedGraph = x.result.Graph }.Run(); }
                     catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan())); }
                     x.result.Diagnostics.AddRange(staticResult.Diagnostics);
                 }

@@ -405,7 +405,7 @@ public static class Rd
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Delegates) }, o));
             var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
-            Assert.Equal(23, Agree(c, b));
+            Assert.Equal(28, Agree(c, b));
             foreach (var bug in new[] { "Mg.UseIncBad", "Mg.QuoteBad", "Mg.QuoteWrong", "Rd.AskBad", "Rd.ProbeBad", "Rd.NoFrame", "Rd.OutOfFrame", "Rd.PassReading", "Rd.TouchBad", "Rd.Sums" })
                 Assert.False(b[bug].Verified, bug);
             foreach (var good in new[] { "Mg.UseInc", "Mg.UseTwice", "Mg.Quote", "Mg.MakeAndQuote", "Rd.Ask", "Rd.Probe", "Rd.UseAsk", "Rd.Touch", "Rd.Run" })
@@ -682,7 +682,7 @@ public static class Th
         public void TasksAndThreads_BothEnginesReportTheSame()
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Tasks) }, o));
-            Assert.Equal(17, Agree(c, b));
+            Assert.Equal(24, Agree(c, b));
             foreach (var bug in new[] { "Tk.LaterBad", "Tk.Lost", "Tk.Early", "Tk.Shared", "Tk.PreBad", "Tk.Both", "Th.Run", "Th.Shared", "Th.Mine" })
                 Assert.False(b[bug].Verified, bug);
             foreach (var good in new[] { "Tk.Twice", "Tk.Later", "Tk.Mine", "Th.Work", "Th.Lambda", "Th.Threads" })
@@ -748,7 +748,7 @@ public static class Pw
         {
             var (c, b) = Both(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Higher) }, o));
             var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
-            Assert.Equal(20, Agree(c, b));
+            Assert.Equal(27, Agree(c, b));
             foreach (var bug in new[] { "F.BadInv", "F.Overflow", "D.NoPre", "D.UseValueBad", "D.Needs", "D.Loses", "D.TotalBad" })
                 Assert.False(b[bug].Verified, bug);
             foreach (var good in new[] { "F.Sum", "F.Count", "F.Widen", "F.Skip", "F.Upto", "D.Apply", "D.ApplyAll", "D.UseValue", "D.NeedsOk", "D.Captured", "D.Keeps", "D.Act", "D.UseAct" })

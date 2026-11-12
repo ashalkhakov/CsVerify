@@ -184,6 +184,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The object; null for a static field.</summary>
         public KExpr Instance;
         public bool OnThis;
+        /// <summary>Of an object known not null where it's read (a property pattern's, after its null test): not checked.</summary>
+        public bool NoNull;
         public SyntaxNode At, InstanceAt;
     }
 
@@ -636,6 +638,10 @@ namespace CsVerify.Verifier.Boogie
 
     internal sealed class KProcedure
     {
+        /// <summary>A lambda's or a local function's: the variables it captures, each some value of its type at entry.</summary>
+        public readonly List<(string input, ITypeSymbol type, bool notNull)> Captured = new List<(string, ITypeSymbol, bool)>();
+        /// <summary>Their symbols, in the same order (a call of a local function passes their values).</summary>
+        public readonly List<ISymbol> CapturedSymbols = new List<ISymbol>();
         /// <summary>For the library report: each variable's causes (Lowering.Causes), and the variables its values were made from.</summary>
         public readonly Dictionary<string, HashSet<string>> Causes = new Dictionary<string, HashSet<string>>();
         public readonly Dictionary<string, HashSet<string>> Deps = new Dictionary<string, HashSet<string>>();
@@ -710,6 +716,8 @@ namespace CsVerify.Verifier.Boogie
         public List<(ITypeSymbol type, KExpr cond, SyntaxNode at)> ThrowEnsures = new List<(ITypeSymbol, KExpr, SyntaxNode)>();
         /// <summary>The exception types it names (catches, throws, clauses): the program declares them, and how they derive.</summary>
         public HashSet<ITypeSymbol> ExceptionTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The classes and interfaces whose dynamic types it tests or makes (KernelTypes.IsModeledClass).</summary>
+        public HashSet<ITypeSymbol> ClassTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
         /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
         public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
         /// <summary>The parameters the body assigns (by value): each a local of the body, its value at entry the parameter's.</summary>

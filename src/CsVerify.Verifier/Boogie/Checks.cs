@@ -174,7 +174,7 @@ namespace CsVerify.Verifier.Boogie
             new KOp("==>", new KOp("&&", new KOp("sel", new KVar("$Alloc"), o), new KOp("!=", v, new KLit("null"))), new KOp("sel", new KVar("$Alloc"), v));
 
         /// <summary>A field whose value, once its object is built, is never null.</summary>
-        private static bool NonNullField(ISymbol field) => !field.IsStatic && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
+        private static bool NonNullField(ISymbol field) => (!field.IsStatic || StaticStartsWithObject(field)) && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
 
         private static bool Mentions(KExpr e, HashSet<string> vars) => e switch
         {
@@ -1610,7 +1610,7 @@ namespace CsVerify.Verifier.Boogie
                 case KOp op:
                     return new KOp(op.Op, op.Args.Select(a => CWalk(a, guard)).ToArray());
                 case KLit _: case KVar _: return e;
-                case KField fd: return Guarded(guard, () => Code(new KField { Field = fd.Field, Instance = fd.Instance == null ? null : CWalk(fd.Instance, guard), OnThis = fd.OnThis, At = fd.At, InstanceAt = fd.InstanceAt }));
+                case KField fd: return Guarded(guard, () => Code(new KField { Field = fd.Field, Instance = fd.Instance == null ? null : CWalk(fd.Instance, guard), OnThis = fd.OnThis, NoNull = fd.NoNull, At = fd.At, InstanceAt = fd.InstanceAt }));
                 case KQuant q: return Guarded(guard, () => Code(q));
                 case KFnCall fn: return Guarded(guard, () => Code(fn));
                 case KLen len: return Guarded(guard, () => Code(new KLen { String = len.String, Array = CWalk(len.Array, guard), At = len.At, ArrayAt = len.ArrayAt }));
@@ -1803,7 +1803,7 @@ namespace CsVerify.Verifier.Boogie
             for (int k = 0; k < args.Length; k++)
             {
                 args[k] = Code(given[k]);
-                var param = callee?.Parameters[k];
+                var param = callee != null && k < callee.Parameters.Length ? callee.Parameters[k] : null;
                 if (param != null && param.RefKind != RefKind.Out && IsNullable(param.Type) && NotNullable(param.Type))
                     Assert(new KOp("!=", args[k], new KLit("null")), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
             }
@@ -1850,10 +1850,16 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private static Dictionary<string, KExpr> Given(IMethodSymbol callee, KExpr receiver, KExpr[] args)
+        private Dictionary<string, KExpr> Given(IMethodSymbol callee, KExpr receiver, KExpr[] args)
         {
-            var given = callee.Parameters.Select((p, k) => (p, k)).ToDictionary(x => Local(x.p), x => args[x.k]);
+            var given = callee.Parameters.Select((p, k) => (p, k)).Where(x => x.k < args.Length).ToDictionary(x => Local(x.p), x => args[x.k]);
             if (receiver != null) given["this"] = receiver;
+            // (a local function's captured inputs: after its arguments)
+            if (callee.MethodKind == MethodKind.LocalFunction)
+            {
+                var captured = _program.Signature(callee).Captured;
+                for (int k = 0; k < captured.Count && callee.Parameters.Length + k < args.Length; k++) given[captured[k].input] = args[callee.Parameters.Length + k];
+            }
             return given;
         }
 
@@ -2034,9 +2040,14 @@ namespace CsVerify.Verifier.Boogie
                 case KConv cv: return Convert(cv, Code(cv.Value));
                 case KField fd:
                 {
-                    if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
+                    if (fd.Instance == null)
+                    {
+                        var sv = new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
+                        if (NonNullField(fd.Field)) Assume(new KOp("!=", sv, new KLit("null")));
+                        return sv;
+                    }
                     var o = Code(fd.Instance);
-                    if (!fd.OnThis) Assert(new KOp("!=", o, new KLit("null")), NullAt(fd.At, fd.InstanceAt, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
+                    if (!fd.OnThis && !fd.NoNull) Assert(new KOp("!=", o, new KLit("null")), NullAt(fd.At, fd.InstanceAt, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
                     // (a function with Spec.Reads reads only objects in it, as of entry: CSV1017)
                     if (_p.ReadsFrame != null && !fd.Field.IsStatic)
                         Assert(new KOp("sel", new KVar("r$entry"), o), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
@@ -2307,9 +2318,14 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case KField fd:
                 {
-                    if (fd.Instance == null) return new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
+                    if (fd.Instance == null)
+                    {
+                        var sv = new KOp("sel", new KVar(FieldMap(fd.Field)), new KLit("null"));
+                        if (NonNullField(fd.Field)) _facts.Add(new KOp("!=", sv, new KLit("null")));
+                        return sv;
+                    }
                     var o = Spec(fd.Instance, wf, guard);
-                    if (!fd.OnThis) Need(new KOp("!=", o, new KLit("null")));
+                    if (!fd.OnThis && !fd.NoNull) Need(new KOp("!=", o, new KLit("null")));
                     var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !Mentions(o, _bound))
                         _facts.Add(new KOp("==>", new KOp("!=", o, new KLit("null")), new KOp("!=", v, new KLit("null"))));

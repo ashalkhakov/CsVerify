@@ -397,6 +397,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What runs concurrently (CsVerify's engine's: marked, or started alongside), for the run this thread is in.</summary>
         [System.ThreadStatic] public static StartedDelegates Started;
 
+        /// <summary>The flow graphs of the lambdas and local functions (their methods' give them), for the run this thread is in.</summary>
+        [System.ThreadStatic] public static Dictionary<IMethodSymbol, Microsoft.CodeAnalysis.FlowAnalysis.ControlFlowGraph> NestedGraphs;
+
         /// <summary>The locks' levels and what code takes (CsVerify's engine's static analysis), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockLevels Levels;
 
@@ -589,7 +592,8 @@ namespace CsVerify.Verifier.Boogie
         /// see), and none of CsVerify's attributes on it or its fields ([Owned], [Invariant], locks, atomics, models).
         /// </summary>
         public static bool IsClass(ITypeSymbol t) =>
-            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && GenericClassArguments(n) &&
+            // (an anonymous type's values are tuples)
+            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && !n.IsAnonymousType && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
             (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && IsClass(n.BaseType) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
@@ -687,18 +691,57 @@ namespace CsVerify.Verifier.Boogie
         }
 
         public static string Name(IMethodSymbol m) =>
-            Ident(m.ContainingType.ToDisplayString() + "." + m.Name + "$" + string.Join("$", m.Parameters.Select(p => p.Type.ToDisplayString())));
+            Ident(m.ContainingType.ToDisplayString() + "." + (IsNested(m) ? "nested$" + m.Locations.FirstOrDefault()?.SourceSpan.Start : m.Name) + "$" + string.Join("$", m.Parameters.Select(p => p.Type.ToDisplayString())));
+
+        /// <summary>A query clause's own parameter: the object its previous clause made, or the group of group ... into g (never null).</summary>
+        public static bool IsQueryParameter(IParameterSymbol p) =>
+            p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn && !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax) &&
+            (p.Type.IsAnonymousType || p.Type.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
+
+        /// <summary>
+        /// A static field whose initializer makes an object, is a string literal, or calls a method whose return type
+        /// isn't nullable: never null, as CsVerify's engine has it (every write keeps it so, CSV1014).
+        /// </summary>
+        public static bool StaticStartsWithObject(ISymbol field) =>
+            field.IsStatic && field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().Any(v =>
+                v.Initializer?.Value is BaseObjectCreationExpressionSyntax || v.Initializer?.Value is ArrayCreationExpressionSyntax ||
+                v.Initializer?.Value is ImplicitArrayCreationExpressionSyntax || v.Initializer?.Value is CollectionExpressionSyntax ||
+                v.Initializer?.Value is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.StringLiteralExpression) ||
+                v.Initializer?.Value is InvocationExpressionSyntax call && Compilation != null &&
+                Compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol m && MethodVerifier.IsNonNullableReturn(m));
+
+        /// <summary>
+        /// A class or interface whose objects have dynamic types (dtype, sub): not generic (its instantiations would share
+        /// one), nor object, a data type (tags), an exception (typed already) or a delegate. As CsVerify's engine has them.
+        /// </summary>
+        public static bool IsModeledClass(ITypeSymbol t) =>
+            t is INamedTypeSymbol n && n.IsReferenceType && n.TypeKind is TypeKind.Class or TypeKind.Interface && !n.IsGenericType && n.ContainingType?.IsGenericType != true &&
+            n.SpecialType != SpecialType.System_Object && !IsData(n) && !IsException(n) && !IsDelegate(n);
+
+        /// <summary>A lambda or a local function: a unit of its own, which nothing calls as a procedure.</summary>
+        public static bool IsNested(IMethodSymbol m) => m.MethodKind is MethodKind.AnonymousFunction or MethodKind.LocalFunction;
+
+        /// <summary>The member a lambda or a local function is in (through those it is nested in): a method, a field, a property.</summary>
+        public static ISymbol Enclosing(IMethodSymbol m)
+        {
+            ISymbol s = m;
+            while (s is IMethodSymbol x && IsNested(x)) s = x.ContainingSymbol;
+            return s;
+        }
+
+        /// <summary>Is there no this where the method runs (a static member's lambda, or a static lambda)?</summary>
+        public static bool StaticContext(IMethodSymbol m) => m.IsStatic || IsNested(m) && Enclosing(m) is ISymbol e && (e.IsStatic || e is INamedTypeSymbol);
 
         public static string FunctionName(IMethodSymbol m) => "f$" + Name(m);
 
         public static string Ident(string s)
         {
             var b = new StringBuilder();
-            foreach (var ch in s) b.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == '$' ? ch : '_');
+            foreach (var ch in s ?? "") b.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == '$' ? ch : '_');
             return b.ToString();
         }
 
-        public static string Local(ISymbol s) => s is IParameterSymbol p ? "p$" + p.Name : "l$" + s.Name + "$" + s.Locations.FirstOrDefault()?.SourceSpan.Start;
+        public static string Local(ISymbol s) => s is IParameterSymbol p ? "p$" + Ident(p.Name) : "l$" + Ident(s.Name) + "$" + s.Locations.FirstOrDefault()?.SourceSpan.Start;
 
         /// <summary>Is this syntax in an unchecked context (the innermost checked or unchecked around it)?</summary>
         public static bool InUnchecked(SyntaxNode at) =>

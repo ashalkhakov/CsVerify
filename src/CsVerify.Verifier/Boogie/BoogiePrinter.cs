@@ -602,25 +602,46 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The callees a call of throws (their twins are declared once the procedures are).</summary>
         public readonly HashSet<IMethodSymbol> Throwing = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
 
-        /// <summary>Exception types: a constant each, how they derive (sub, as C# does), every one an Exception.</summary>
-        public void ExceptionTypes(IEnumerable<ITypeSymbol> types, ITypeSymbol exception)
+        /// <summary>
+        /// Dynamic types: a constant each of the exception types and the classes and interfaces named, how they derive
+        /// (sub, as C# does). Every exception type is an Exception (with no class named, every type is). Classes form a
+        /// tree, so unrelated ones have no instance in common, nor have a sealed type and one not above it; a sealed
+        /// type's instances are of it exactly. As CsVerify's engine has them.
+        /// </summary>
+        public void ExceptionTypes(IEnumerable<ITypeSymbol> types, ITypeSymbol exception, IEnumerable<ITypeSymbol> classes)
         {
-            var all = types.Append(exception).Distinct(SymbolEqualityComparer.Default).Cast<ITypeSymbol>().OrderBy(TypeConst, System.StringComparer.Ordinal).ToList();
+            var classList = classes.ToList();
+            var all = types.Concat(exception == null ? new ITypeSymbol[0] : new[] { exception }).Concat(classList).Select(t => t.OriginalDefinition)
+                .Distinct(SymbolEqualityComparer.Default).Cast<ITypeSymbol>().OrderBy(TypeConst, System.StringComparer.Ordinal).ToList();
             Line("type Ty;");
             Line("function dtype(r: Ref): Ty;");
             Line("function sub(a: Ty, b: Ty): bool;");
             Line("axiom (forall a: Ty :: sub(a, a));");
             Line("axiom (forall a: Ty, b: Ty, c: Ty :: { sub(a, b), sub(b, c) } sub(a, b) && sub(b, c) ==> sub(a, c));");
             foreach (var t in all) Line($"const unique {TypeConst(t)}: Ty;");
-            Line($"axiom (forall a: Ty :: sub(a, {TypeConst(exception)}));");
+            if (exception != null && classList.Count == 0) Line($"axiom (forall a: Ty :: sub(a, {TypeConst(exception)}));");
+            bool Derives(ITypeSymbol a, ITypeSymbol b)
+            {
+                for (var c = (a as INamedTypeSymbol)?.BaseType; c != null; c = c.BaseType)
+                    if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b.OriginalDefinition)) return true;
+                return a.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, b.OriginalDefinition));
+            }
             foreach (var a in all)
                 foreach (var b in all.Where(b => !SymbolEqualityComparer.Default.Equals(a, b)))
+                    Line($"axiom {(Derives(a, b) ? "" : "!")}sub({TypeConst(a)}, {TypeConst(b)});");
+            if (classList.Count == 0) return;
+            for (int i = 0; i < all.Count; i++)
+            {
+                var a = all[i];
+                if (a.IsSealed) Line($"axiom (forall t: Ty :: {{ sub(t, {TypeConst(a)}) }} sub(t, {TypeConst(a)}) ==> t == {TypeConst(a)});");
+                for (int j = i + 1; j < all.Count; j++)
                 {
-                    bool derives = false;
-                    for (var c = (a as INamedTypeSymbol)?.BaseType; c != null; c = c.BaseType)
-                        if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b.OriginalDefinition)) derives = true;
-                    Line($"axiom {(derives ? "" : "!")}sub({TypeConst(a)}, {TypeConst(b)});");
+                    var b = all[j];
+                    if (Derives(a, b) || Derives(b, a)) continue;
+                    if (a.TypeKind == TypeKind.Class && b.TypeKind == TypeKind.Class || a.IsSealed || b.IsSealed)
+                        Line($"axiom (forall t: Ty :: {{ sub(t, {TypeConst(a)}), sub(t, {TypeConst(b)}) }} !(sub(t, {TypeConst(a)}) && sub(t, {TypeConst(b)})));");
                 }
+            }
         }
 
         /// <summary>
@@ -837,6 +858,19 @@ namespace CsVerify.Verifier.Boogie
         private static bool ReadsArrays(KExpr e) => e is KElem || e is KLen ||
             e != null && e.GetType().GetFields().Any(f => f.GetValue(e) is KExpr k && ReadsArrays(k) || f.GetValue(e) is IEnumerable<KExpr> ks && ks.Any(ReadsArrays));
 
+        /// <summary>An override's dispatch: of an object exactly of its class, the base member's function is the override's.</summary>
+        public void Dispatch(IMethodSymbol b, List<string> bFields, IMethodSymbol o, List<string> oFields, IEnumerable<ISymbol> symbols)
+        {
+            // (each reads all the arrays, or none of them)
+            if (OwnArrays(b) is { Count: > 0 } || OwnArrays(o) is { Count: > 0 }) return;
+            var all = bFields.Union(oFields).ToList();
+            var ps = FieldParams(all, symbols) + ", this: Ref" + string.Join("", o.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
+            string Sep(string x) => x.Length == 0 ? "" : ", " + x;
+            string Memory(IMethodSymbol m) => OwnArrays(m) == null ? string.Join(", ", ElementTypes.Select(t => "h" + ElementMap(t))) : "";
+            string App(IMethodSymbol m, List<string> fs) => $"{FunctionName(m)}(ly{Sep(Memory(m))}{string.Join("", fs.Select(x => ", h" + x))}, this{string.Join("", o.Parameters.Select(x => ", " + Local(x)))})";
+            Line($"axiom (forall ly: LayerType{Sep(MapParams)}{ps} :: {{ {App(b, bFields)} }} dtype(this) == {TypeConst(o.ContainingType)} ==> {App(b, bFields)} == {App(o, oFields)});");
+        }
+
         public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols)
         {
             var m = p.Method;
@@ -885,7 +919,9 @@ namespace CsVerify.Verifier.Boogie
             var atEntry = new Context { Ins = ins, AtEntry = true };
             // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out)
             var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0])
-                .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
+                .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}"))
+                // (what a lambda or a local function captures: inputs of its own)
+                .Concat(p.Captured.Select(c => $"{c.input}: {TypeOf(c.type)}")));
             var outs = (p.ListCtor ? new[] { "result: Ref" } : p.StructThis ? new[] { "this: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
@@ -1079,21 +1115,31 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal))
                     Line($"  free requires {FieldMap(f)}[this] == {E(Default(FieldType(f)), cx)};");
             foreach (var x in m.Parameters.Where(x => x.RefKind != RefKind.Out))
+                foreach (var fact in ValueFacts(Local(x), x.Type, x, cx)) Line($"  free requires {fact};");
+            // (what a lambda or a local function captures: some value of its type)
+            foreach (var (input, type, notNull) in p.Captured)
             {
-                var name = E(new KVar(Local(x)), cx);
-                if (IsIntegral(x.Type)) Line($"  free requires {E(InRange(new KVar(Local(x)), x.Type), cx)};");
-                // (a span from elsewhere: its cells some array's, within its length)
-                if (IsSpan(x.Type)) Line($"  free requires $sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}));");
-                if (IsRef(x.Type) || IsView(x.Type) || IsShare(x.Type)) Line($"  free requires {name} == null || $Alloc[{name}];");
-                // (not null: checked at each call's argument)
-                if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free requires {name} != null;");
-                // (a view's object is its tree's root)
-                if (KernelTypes.Trees && HoldsView(x)) Line($"  free requires $root[{name}] == {name};");
-                if (KernelTypes.Trees && IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref)
-                    foreach (var f in PackageViews(x.Type)) Line($"  free requires $root[{FieldFunction(f)}({name})] == {FieldFunction(f)}({name});");
-                // (a data value is one of its type's cases)
-                if (IsData(x.Type)) Line($"  free requires {DataFacts(Local(x), x.Type, cx)};");
+                foreach (var fact in ValueFacts(input, type, null, cx)) Line($"  free requires {fact};");
+                if (notNull && !(IsNullable(type) && NotNullable(type))) Line($"  free requires {input} != null;");
             }
+        }
+
+        /// <summary>What a value from elsewhere is, of its type: a parameter's, a variable a lambda captures.</summary>
+        private IEnumerable<string> ValueFacts(string local, ITypeSymbol type, IParameterSymbol x, Context cx)
+        {
+            var name = E(new KVar(local), cx);
+            if (IsIntegral(type)) yield return E(InRange(new KVar(local), type), cx);
+            // (a span from elsewhere: its cells some array's, within its length)
+            if (IsSpan(type)) yield return $"$sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}))";
+            if (IsRef(type) || IsView(type) || IsShare(type)) yield return $"{name} == null || $Alloc[{name}]";
+            // (not null: checked at each call's argument)
+            if (IsNullable(type) && (NotNullable(type) || x != null && IsQueryParameter(x))) yield return $"{name} != null";
+            // (a view's object is its tree's root)
+            if (KernelTypes.Trees && x != null && HoldsView(x)) yield return $"$root[{name}] == {name}";
+            if (KernelTypes.Trees && IsPackage(type) && (x == null || x.RefKind is RefKind.None or RefKind.Ref))
+                foreach (var f in PackageViews(type)) yield return $"$root[{FieldFunction(f)}({name})] == {FieldFunction(f)}({name})";
+            // (a data value is one of its type's cases)
+            if (IsData(type)) yield return DataFacts(local, type, cx);
         }
 
         private void Statement(KStmt s, Context cx)
@@ -1210,7 +1256,7 @@ namespace CsVerify.Verifier.Boogie
                     Line($"  f${n}$x:");
                     if (fork.Call != null)
                     {
-                        var given = fork.Call.Args.Where((a, k) => fork.Call.Callee.Parameters[k].RefKind != RefKind.Out);
+                        var given = fork.Call.Args.Where((a, k) => k >= fork.Call.Callee.Parameters.Length || fork.Call.Callee.Parameters[k].RefKind != RefKind.Out);
                         Line($"    call ex$ := {Name(fork.Call.Callee)}$throws({string.Join(", ", (fork.Call.Receiver == null ? given : new[] { fork.Call.Receiver }.Concat(given)).Select(a => E(a, cx)))});");
                         Throwing.Add(fork.Call.Callee);
                     }
@@ -1305,7 +1351,7 @@ namespace CsVerify.Verifier.Boogie
                 case KCall c:
                 {
                     var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();
-                    var given = c.Args.Where((a, k) => c.Callee.Parameters[k].RefKind != RefKind.Out);
+                    var given = c.Args.Where((a, k) => k >= c.Callee.Parameters.Length || c.Callee.Parameters[k].RefKind != RefKind.Out);
                     if (c.Phase == 2) Started.Add(c.Callee);
                     Line($"    call {(targets.Count == 0 ? "" : string.Join(", ", targets) + " := ")}{Name(c.Callee)}{(c.Phase == 2 ? "$started" : "")}({string.Join(", ", (c.Receiver == null ? given : new[] { c.Receiver }.Concat(given)).Select(a => E(a, cx)))});", c.Check);
                     return;

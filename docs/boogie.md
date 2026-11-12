@@ -282,6 +282,8 @@ field's map has a `where` clause keeping every value in range.
 - `o.f` reads `$F.C.f[o]`, and `o.f = v` writes it, each asserting `o != null` first (CSV1013; `this` needs none).
 - A field of non-nullable type is never null once its object is built: each write asserts it (CSV1014), each read
   assumes it (but `this`'s, in its constructor), and a constructor asserts at each return that it set it (CSV1014),
+  as is a static one whose initializer makes an object, is a string literal or calls a method whose return type isn't
+  nullable (CsVerify's engine's rule; a static one that starts null, `= null!`, promises nothing),
   unless it is `required`. A specification that reads one assumes it where it is evaluated, as CsVerify's engine does.
 - A local of non-nullable reference type has each write asserted not null (CSV1014).
 - An instance method is a procedure with `this` (not null, allocated) first; `o.M(...)` asserts `o != null`.
@@ -677,7 +679,21 @@ a null test.
 
 A `[Pure]` member whose every override is `[Pure]` writes nothing when called, whichever override runs.
 
-Not yet: type tests and casts, dispatch by an object's dynamic type beyond a local made here.
+**Dynamic types.** Objects of the program's classes and interfaces (not generic, not `object`, a record, an exception
+or a delegate) have the exceptions' `dtype` and `sub`, as CsVerify's engine's `isa`: `o is C` is `o != null &&
+sub(dtype(o), T#C)`; `new C(...)` is exactly a C (`dtype(o) == T#C`); in code, a value of a static type is an instance
+of it where it's tested (a fact assumed there; in a specification none is needed). `sub` is C#'s derivation, base
+types and interfaces; unrelated classes have no instance in common, nor have a sealed type and one not above it, and a
+sealed type's instances are of it exactly. Type tests (`is C`, `is C x`, `is not C`, `switch` on them), `as` (`o`
+where it's an instance, else null) and casts (`(C)o`: in code it throws unless `o` is null or an instance, as
+CsVerify's engine has it; an upcast written as a cast, `(object)o`, is `o`). A `[Pure]` virtual or abstract member
+called on another object is its function, which each `[Pure]` override defines for objects of exactly its class
+(`dtype(this) == T#D ==> f$B(..) == f$D(..)`).
+
+**Patterns.** Besides the null patterns: a class's property pattern (`p is { Age: >= 18 }`: not null, each field
+read unchecked); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`, `[>= 9, ..]`: not null, of the length,
+each element as its pattern says, those after a slice counted from the end; a slice with a pattern of its own, or a
+list pattern that declares its value, isn't translated); a string's constant pattern (`s is "a"`, a string's value).
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
@@ -734,7 +750,8 @@ are what's reported. (Houdini's `/contractInfer` does the same, but which failur
 **Exceptions.** A method is verified for partial correctness on its exceptional paths too: they are checked only
 where something sees them, a `catch` or a `Spec.EnsuresOnThrow`. Exceptions are references, of a type given by
 `dtype(r): Ty`; each exception type named is a `const unique T#…: Ty`, `sub` is C#'s derivation between them (axioms
-from Roslyn's base types, reflexive and transitive), and every type derives from `System.Exception`.
+from Roslyn's base types, reflexive and transitive), and every type derives from `System.Exception` (every
+exception type, where classes have dynamic types too: see "Dynamic types").
 - `throw e` checks `e` isn't null (CSV1013), puts it in `ex$`, and jumps to the innermost handler; `new E(...)` of an
   exception type is a fresh reference with `dtype` `T#E` (its arguments evaluated, nothing else of it known).
 - A `try` with catches is a dispatch: for each `catch (E)` in order, a block that assumes `sub(dtype(ex$), T#E)` and
@@ -1070,6 +1087,26 @@ Also inheritance: base classes, virtual, abstract and override methods, interfac
 
 Also exceptions: `throw`, `try`/`catch` by type, rethrow, `finally`, `using`, caught checked overflow, `Spec.EnsuresOnThrow`.
 
+**Lambdas and local functions** are units of their own, as CsVerify's engine has them: a procedure each
+(`C.nested$<position>$<parameter types>`), which nothing calls; a call of the delegate is of its contract. What one
+captures of the methods it's in, parameters and locals, comes in as an input of its own (`p$x$c`, `l$y$<n>$c`), so
+its contract (`Spec.Requires`, `Spec.Ensures`, `Spec.Reads`) can name it. Each is some value of its type, since it
+may run at any time: in range, allocated, not null where its type says so; a local with one value all along (a
+`foreach`'s, or one assigned only where it's declared) that the compiler's flow analysis has as not null is not
+null. A query clause's own parameter (the object its previous clause made, a group) is never null. The lambda
+knows what its method requires of what never changes: that a delegate it captures is steady, and `Spec.Pre` and
+`Spec.Total` of it. A specification of a captured variable the lambda writes isn't translated (of which value?). An
+exception in a lambda leaves it: the method's `try` and `finally` around it are not the lambda's. `this` is the
+method's, where it has one. A local function is called as a procedure is: its captured inputs passed after its
+arguments, as they are where it's called (the method's variables, or what a lambda calling it captures in turn); a
+local it writes is forgotten after the call, as after any call that may run it.
+
+**Library members with stubs.** A library member (not a collection's) whose stub contract the library gives, that
+writes nothing and runs none of the program's code (no `Spec.Modifies`, nothing CsVerify's effects analysis says it
+may write), not generic, of the subset's types (static, or a string's: `s.Trim()`, `s.ToUpperInvariant()`), is a
+procedure of its contract, which its calls call: its preconditions checked, its postconditions assumed. A `[Pure]`
+one is a function (as before). Each stub a proof assumes is listed with the method, as CsVerify's engine lists it.
+
 Also the collections (`List`, `Dictionary`, `HashSet`, `Stack`, `Queue`) with their models and stub contracts, `Seq`
 and `Map`, `foreach` over arrays, strings and collections, `Spec.Index`, and delegates: `Func` and `Action` values with `Spec.Pre`,
 `Spec.Post`, `Spec.Total`, `Spec.ChangesNothing`, `Spec.Reads`, `Spec.ReadsOf`, `Spec.Changes`, calls of them,
@@ -1172,7 +1209,7 @@ methods that fall back for it):
     next: what they're handed decides what they may change, as CsVerify's engine has it);
 12. Entity Framework (queries, includes, rows with and without tracking, local views, the change tracker and
     transactions done: the EF tests pass under `CSVERIFY_ENGINE=boogie` and, but for one sample, under
-    `boogie-only`; the samples' methods all translate, their lambdas still CsVerify's engine's units);
+    `boogie-only`; the samples' methods all translate, and so do most of their lambdas, as units of their own);
 13. a sweep: every sample and corpus with `--engine boogie-only` and `CSVERIFY_TRACE=1`, and the whole test suite
     with `CSVERIFY_ENGINE=boogie` and `CSVERIFY_TRACE_FILE`, until nothing is left untranslated (the first, of the
     suite after step 8: 77 methods, every one in the samples; the tests' own programs all translate): tuples and
@@ -1183,12 +1220,19 @@ methods that fall back for it):
     translate as contracts for their callers, in-memory `GroupBy`, `Aggregate`, sets as LINQ sources, float casts in
     specifications. Not yet: the sweep still lists 335 methods (and reasons) of the suite, most for library calls
     without stubs, LINQ operators, members of library types (streams, tokens), semaphores and flags as guards, and
-    custom equality; and every lambda and local function is a unit of CsVerify's engine's, which the trace now names;
+    custom equality. Lambdas and local functions are Boogie's units now (see "Lambdas and local functions" below): those
+    left to CsVerify's engine, in the lambda tests, have query clauses over `IEnumerable` (`from ... from`, `join ...
+    into`, `group ... into`), or call a delegate of a type without a contract. Since: list and property patterns,
+    dynamic types (type tests, `as`, casts, dispatch of `[Pure]` overrides), non-nullable static fields, calls of
+    local functions, library members with stubs that write nothing;
 14. the Boogie engine the default (CsVerify's engine a fallback for a release). Not yet: `CSVERIFY_ENGINE=boogie` (which
     sets the default now; it used to label methods only, so the first sweep's "the tests' own programs all translate"
-    was CsVerify's engine) failed 6 tests of 1435 at the last sweep, each fixed since but not yet swept again; what
-    Boogie can't decide in time (LinqBugs.Groups when the whole file is verified, Base64's round trip when every sample
-    is) is CsVerify's engine's still;
+    was CsVerify's engine) failed 2 tests of 1435 at the last sweep (the Good samples verified together, a lambda in an
+    `await foreach`), fixed since; what Boogie can't decide in time (LinqBugs.Groups when the whole file is verified,
+    Base64's round trip when every sample is, TreeBugs' three hardest methods on a loaded machine) is CsVerify's
+    engine's still. Z3 doesn't always keep to the time limit Boogie gives it: once, on a loaded machine, a query of the
+    Good samples ran on for 25 minutes. Stopping the solver doesn't help (Boogie then waits for it forever), so a hard
+    limit needs Boogie's cancellation, which is of the whole run;
 15. CsVerify's engine's symbolic execution removed, its static checks a module of their own, the differential
     tests expected diagnostics;
 16. the rest of the documentation revised to describe the one engine there is.

@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.FlowAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
 
 namespace CsVerify.Verifier.Boogie
@@ -73,6 +74,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
         public static bool Candidate(IMethodSymbol m, Contract c) => EmptyDataConstructor(m) ||
             (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
+             // (a lambda or a local function: a unit of its own, in a class's member or a static one)
+             IsNested(m) ? StaticContext(m) || IsClass(m.ContainingType) :
              m.IsStatic ? m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor
                         : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
                            IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
@@ -82,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
                           IsStruct(m.ContainingType) && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsOverride) &&
             (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
             (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
-            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet) && !c.IsTrusted &&
+            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet || IsNested(m)) && !c.IsTrusted &&
             // (a base of the library's, IDisposable.Dispose say, with no contract: nothing inherited)
             c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0 || b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null);
 
@@ -108,8 +111,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
         public static string WhyNot(IMethodSymbol m, Contract c) =>
-            !m.IsStatic && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) && !EmptyDataConstructor(m) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
-            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) && m.MethodKind != MethodKind.StaticConstructor ? m.MethodKind.ToString() :
+            !StaticContext(m) && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) && !EmptyDataConstructor(m) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
+            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !IsNested(m) && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) && m.MethodKind != MethodKind.StaticConstructor ? m.MethodKind.ToString() :
             !(Returns(m) == null || InSubset(Returns(m))) ? "returns " + m.ReturnType :
             m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In && !HoldsShare(p) && !IsMemView(p.Type) || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type) || IsShare(p.Type) && !HoldsShare(p)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
             c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
@@ -125,12 +128,16 @@ namespace CsVerify.Verifier.Boogie
         public void Declare(IEnumerable<(IMethodSymbol method, SyntaxNode decl, SemanticModel model)> procedures)
         {
             var list = procedures.ToList();
-            foreach (var p in list) _procedures.Add(p.method.OriginalDefinition);
+            // (a lambda: nothing calls it as a procedure; a local function's calls do)
+            foreach (var p in list.Where(x => x.method.MethodKind != MethodKind.AnonymousFunction)) _procedures.Add(p.method.OriginalDefinition);
             var calls = new Dictionary<IMethodSymbol, HashSet<IMethodSymbol>>(SymbolEqualityComparer.Default);
             foreach (var (m, decl, model) in list)
             {
                 calls[m.OriginalDefinition] = new HashSet<IMethodSymbol>(decl.DescendantNodes().Where(n => n is InvocationExpressionSyntax || n is BaseObjectCreationExpressionSyntax)
-                    .Select(i => (model.GetSymbolInfo(i).Symbol as IMethodSymbol)?.OriginalDefinition).Where(x => x != null && _procedures.Contains(x)), SymbolEqualityComparer.Default);
+                    .Select(i => (model.GetSymbolInfo(i).Symbol as IMethodSymbol)?.OriginalDefinition)
+                    // (and the getters of the properties it reads)
+                    .Concat(decl.DescendantNodes().OfType<SimpleNameSyntax>().Select(n => (model.GetSymbolInfo(n).Symbol as IPropertySymbol)?.GetMethod?.OriginalDefinition))
+                    .Where(x => x != null && _procedures.Contains(x)), SymbolEqualityComparer.Default);
                 _fieldsRead[m.OriginalDefinition] = new HashSet<ISymbol>(decl.DescendantNodes().OfType<SimpleNameSyntax>()
                     .Select(n => model.GetSymbolInfo(n).Symbol).Where(IsField).Select(x => x.OriginalDefinition), SymbolEqualityComparer.Default);
             }
@@ -277,9 +284,9 @@ namespace CsVerify.Verifier.Boogie
         public void Prelude() => _printer.Prelude();
 
         /// <summary>The method as a procedure; throws <see cref="NotTranslated"/> for one outside the subset (then nothing is kept).</summary>
-        public void Procedure(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result)
+        public void Procedure(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result, ControlFlowGraph graph = null)
         {
-            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
+            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, graph: graph);
             Checks.Run(p, this);
             Heap.Run(p);
             // (the library members it calls: each a procedure of its stub's contract, once; one that doesn't translate refuses this)
@@ -307,9 +314,9 @@ namespace CsVerify.Verifier.Boogie
         /// (any, where that says so), every array unless it writes none. Throws <see cref="NotTranslated"/> where the
         /// contract doesn't translate either.
         /// </summary>
-        public void ContractOnly(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result)
+        public void ContractOnly(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result, ControlFlowGraph graph = null)
         {
-            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, contractOnly: true);
+            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, contractOnly: true, graph: graph);
             Checks.Run(p, this);
             Heap.Run(p);
             _pending.Add(p);
@@ -362,6 +369,11 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields);
+            // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
+            foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && p.Method.IsOverride))
+                for (var b = p.Method.OverriddenMethod?.OriginalDefinition; b != null; b = b.OverriddenMethod?.OriginalDefinition)
+                    if (IsFunction(b) && OverPredicate(b) == null && IsModeledClass(p.Method.ContainingType))
+                        _printer.Dispatch(b, FunctionFields(b), p.Method, FunctionFields(p.Method), fields);
             // (the atomic fields' steps, kept wherever the fields are forgotten)
             foreach (var f in fields.Where(f => Atomics.IsAtomic(f) && Atomics.StepOf(f) != null && IsFunction(Atomics.StepOf(f).OriginalDefinition)))
             {
@@ -449,7 +461,11 @@ namespace CsVerify.Verifier.Boogie
             // the exception types named, and how they derive
             var exceptions = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.ExceptionTypes).Concat(_signatures.Values.SelectMany(s => s.ExceptionTypes)), SymbolEqualityComparer.Default);
             bool throws = _pending.Any(p => p.Blocks.SelectMany(b => b.Stmts).Any(s => s is KFork || s is KThrow || s is KNewExc || s is KThrowExit));
-            if (_compilationException != null && (exceptions.Count > 0 || throws)) _printer.ExceptionTypes(exceptions, _compilationException);
+            var classes = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.ClassTypes).Concat(_signatures.Values.SelectMany(s => s.ClassTypes)), SymbolEqualityComparer.Default);
+            foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && p.Method.IsOverride && IsModeledClass(p.Method.ContainingType)))
+                if (p.Method.OverriddenMethod is IMethodSymbol ob && IsFunction(ob.OriginalDefinition)) classes.Add(p.Method.ContainingType.OriginalDefinition);
+            if (_compilationException != null && (exceptions.Count > 0 || throws) || classes.Count > 0)
+                _printer.ExceptionTypes(exceptions, _compilationException != null && (exceptions.Count > 0 || throws) ? _compilationException : null, classes);
             foreach (var p in _pending)
             {
                 // (the function's value is its body's: not where an override may answer the call)
