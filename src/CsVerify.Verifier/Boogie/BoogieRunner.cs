@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.Boogie;
 using VCGeneration;
+using VcOutcome = VC.VcOutcome;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -151,6 +152,19 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>Boogie's printer, keeping each procedure's outcome as Boogie decides it (its name, its line, the outcome).</summary>
+        private sealed class OutcomePrinter : ConsolePrinter
+        {
+            public readonly System.Collections.Concurrent.ConcurrentBag<(string impl, int line, VcOutcome outcome)> Outcomes =
+                new System.Collections.Concurrent.ConcurrentBag<(string, int, VcOutcome)>();
+
+            public override void ReportEndVerifyImplementation(Implementation implementation, ImplementationRunResult result)
+            {
+                Outcomes.Add((implementation.Name, implementation.tok.line, result.VcOutcome));
+                base.ReportEndVerifyImplementation(implementation, result);
+            }
+        }
+
         /// <summary>A run ended by the solver, not by the program: Boogie's wait for a late answer, or a solver that died.</summary>
         private static bool SolverMishap(Exception e) =>
             e is TimeoutException || e is AggregateException a && a.Flatten().InnerExceptions.Any(SolverMishap) ||
@@ -164,7 +178,8 @@ namespace CsVerify.Verifier.Boogie
             var output = new StringWriter();
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                 Console.Error.WriteLine($"[run] {(split == null ? "whole" : "split")} {timeoutMs} ms, {(split ?? procs)?.Count.ToString() ?? "all"} procedures, {program.Disabled.Count} facts left out");
-            var options = new CommandLineOptions(output, new ConsolePrinter());
+            var outcomes = new OutcomePrinter();
+            var options = new CommandLineOptions(output, outcomes);
             // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
             var extra = Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS")?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
             var only = split == null ? (procs ?? new List<string>()).Select(x => "/proc:" + x) : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
@@ -213,6 +228,19 @@ namespace CsVerify.Verifier.Boogie
                 // (its reason first, on the line a diagnostic keeps: what Boogie wrote of the error)
                 var why = output.ToString().Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).LastOrDefault(l => l.Contains("rror") || l.Contains("xception"));
                 throw new InvalidOperationException("Boogie: " + outcome + (why == null ? "" : ": " + why) + "\n" + output);
+            }
+            // (a procedure Boogie didn't find correct, but for which no failure came that maps to a check: undecided, never
+            // verified. A method is verified only where Boogie said so)
+            var reported = new HashSet<string>(failures.Where(f => f.Item1 != null).Select(f => names != null && names.TryGetValue(f.Item1, out var n) ? n : null).Where(n => n != null));
+            foreach (var (impl, line, vc) in outcomes.Outcomes)
+            {
+                if (vc == VcOutcome.Correct || reported.Contains(impl) || !program.Lines.TryGetValue(line, out var head) || head.Id != BoogieTranslator.Undecided || head.Method == null) continue;
+                if (failures.Any(f => f.Item1 == head.Method && f.Item2 != null)) continue;
+                var silent = new VerificationDiagnostic("CSV1900", false, $"Boogie's outcome for '{impl}' was {vc}, with nothing reported", head.Span);
+                failures.Add((head.Method, silent));
+                lines[silent] = line;
+                if (names != null) names[head.Method] = impl;
+                if (!undecided.Contains(impl)) undecided.Add(impl);
             }
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                 Console.Error.WriteLine(output + $"\n[stats] verified {stats.VerifiedCount} errors {stats.ErrorCount} inconclusive {stats.InconclusiveCount} timeouts {stats.TimeoutCount} outOfResource {stats.OutOfResourceCount} outOfMemory {stats.OutOfMemoryCount}");

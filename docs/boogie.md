@@ -1209,7 +1209,10 @@ happens, on a loaded machine, in the fuzz test). It is ended; its threads aren't
 threads of its own: that one, Boogie's fatal error (a solver killed for memory: "Prover died with no further output"),
 and Boogie's own TimeoutException: Boogie waits for a check as long as the time limit it gives the solver, so a solver
 that answers just late (its process slow to start, on Windows) ends the run. Where the second run ends so too, its
-methods are not verified (CSV1902, with Boogie's reason). `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
+methods are not verified (CSV1902, with Boogie's reason). And a method is verified only where Boogie said its
+procedure was correct: one whose outcome was anything else, with no failure that maps to one of its checks, is
+undecided ("Boogie's outcome ... was TimedOut, with nothing reported") and goes down the same ladder (the fuzz test
+caught a method reported verified on a loaded CI machine whose precondition of a callee didn't hold). `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
 
 A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
 the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided
