@@ -122,6 +122,20 @@ public static class P
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
         }
 
+        // (a is [1, ..] b: b is the array matched)
+        [Fact]
+        public void Patterns_ListThatDeclaresItsValue()
+        {
+            var r = Harness.Verify(@"
+public static class P
+{
+    public static int Whole(int[] a) { Spec.Requires(a != null); if (a is [1, ..] b) { Spec.Assert(b == a && b[0] == 1); return b.Length; } return 0; }
+    public static int Wrong(int[] a) { Spec.Requires(a != null); if (a is [1, ..] b) { Spec.Assert(b[0] == 2); return b.Length; } return 0; }
+}");
+            Assert.Empty(r.Errors("Whole"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
         [Fact]
         public void With_OnAStruct_CopiesIt()
         {

@@ -4314,7 +4314,9 @@ namespace CsVerify.Verifier.Boogie
                 // the slice counted from the end)
                 case IListPatternOperation lp when IsArray(type) && type is IArrayTypeSymbol { Rank: 1 } at:
                 {
-                    if (lp.DeclaredSymbol != null) throw new NotTranslated("a list pattern that declares its value");
+                    // (a is [1, ..] b: b is the array matched)
+                    if (lp.DeclaredSymbol is ILocalSymbol whole) bind(whole, v);
+                    else if (lp.DeclaredSymbol != null) throw new NotTranslated("a list pattern that declares its value");
                     int slice = lp.Patterns.IndexOf(lp.Patterns.FirstOrDefault(x => x is ISlicePatternOperation));
                     var slicePattern = slice >= 0 ? ((ISlicePatternOperation)lp.Patterns[slice]).Pattern : null;
                     // (in a specification a pattern makes nothing: a slice's own pattern, of a new array, is code's)
