@@ -5298,9 +5298,10 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IDelegateCreationOperation dc when IsFunc(dc.Type) && LambdaOf(dc.Target) is IAnonymousFunctionOperation af:
                     return Lambda(dc, af);
-                case IDelegateCreationOperation mg when IsFunc(mg.Type) && mg.Target is IMethodReferenceOperation mr && mr.Method.IsStatic && !mr.Method.IsGenericMethod &&
+                case IDelegateCreationOperation mg when IsFunc(mg.Type) && mg.Target is IMethodReferenceOperation mr && !mr.Method.IsGenericMethod &&
+                                                       (mr.Method.IsStatic || mr.Instance != null && IsRef(mr.Instance.Type)) &&
                                                        !SymbolEqualityComparer.Default.Equals(mr.Method.OriginalDefinition, _m.OriginalDefinition):
-                    return MethodGroup(mg, mr.Method);
+                    return MethodGroup(mg, mr.Method, mr.Method.IsStatic ? null : mr.Instance);
                 // ($"...{x}...": its holes evaluated, in order, as they'd throw; a string, not null, of contents not known)
                 case IInterpolatedStringOperation istr:
                 {
@@ -6095,7 +6096,7 @@ namespace CsVerify.Verifier.Boogie
         /// A static method made a Func or an Action: what it accepts is its precondition, what it gives its
         /// postconditions, as far as they're steady; it changes nothing if it's [Pure].
         /// </summary>
-        private KExpr MethodGroup(IDelegateCreationOperation dc, IMethodSymbol fn)
+        private KExpr MethodGroup(IDelegateCreationOperation dc, IMethodSymbol fn, IOperation instance)
         {
             DelegatesHere("a method group");
             var c = _contractOf?.Invoke(fn) ?? throw new NotTranslated("a method group without its contract");
@@ -6104,10 +6105,19 @@ namespace CsVerify.Verifier.Boogie
             if (c.Modifies != null || c.Reads != null) throw new NotTranslated("a method group with Spec.Modifies or Spec.Reads");
             var own = new HashSet<ISymbol>(fn.Parameters, SymbolEqualityComparer.Default);
             if (!c.Requires.All(r => Steady(r, own))) throw new NotTranslated("a method group whose precondition depends on state");
+            // (o.M: o evaluated once, where the delegate is made (null throws), the method's this)
+            string receiver = null;
+            if (instance != null)
+            {
+                receiver = Declare("t$" + _temps++, instance.Type);
+                Emit(new KAssign { Var = receiver, Value = Expr(instance) });
+                Emit(new KCheck { Cond = new KOp("!=", new KVar(receiver), new KLit("null")), Id = "CSV1013", At = instance.Syntax, Message = $"'{instance.Syntax}' might be null in '{dc.Syntax}'" });
+            }
             var key = FuncKey(dc.Type);
             _p.DelegateKeys.Add(key);
             var t = Declare("t$" + _temps++, dc.Type);
             var lam = new KLambda { Var = t, Key = key, ResultType = invoke.ReturnsVoid ? null : TypeOf(invoke.ReturnType), NoChange = c.IsPure, Steady = true };
+            if (receiver != null) lam.Rename["this"] = new KVar(receiver);
             foreach (var p in fn.Parameters)
             {
                 lam.Params.Add(("q$" + p.Name, TypeOf(p.Type)));

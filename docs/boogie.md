@@ -908,9 +908,12 @@ functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, i
 - A local a lambda (or a local function) writes is forgotten after every call that may run it: any but a `[Pure]`
   function's or a lemma's.
 
-Not yet: `Spec.Total` of a delegate that may read state, a method group of an instance or generic method or one made
-a delegate type with a contract, delegates with permissions or method `Spec.Modifies`, and a delegate's call where
-exceptions are seen.
+A method group of an instance method (`a.Twice`) evaluates `a` where the delegate is made (CSV1013 if it may be null)
+and is the method's contract with `this` that object; as for a static one, a precondition that reads state isn't
+translated. A delegate called inside a `try` may throw, to its handlers.
+
+Not yet: `Spec.Total` of a delegate that may read state, a method group of a generic method or one made a delegate
+type with a contract, and delegates with permissions or method `Spec.Modifies`.
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
 datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its
