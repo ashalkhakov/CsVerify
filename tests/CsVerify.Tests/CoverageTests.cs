@@ -122,6 +122,24 @@ public static class P
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
         }
 
+        // (in a specification, .. var rest is the slice itself: its Length, and rest[i] a[start + i] where 0 <= i < Length)
+        [Fact]
+        public void Patterns_SliceInASpecification()
+        {
+            var r = Harness.Verify(@"
+public static class P
+{
+    public static int Mid(int[] a) { Spec.Requires(a is [1, .. var rest, 9] && rest.Length > 0 && rest[0] == 5); return a[1]; }
+    public static void Use() { Mid(new int[] { 1, 5, 9 }); }
+    public static void UseBad() { Mid(new int[] { 1, 6, 9 }); }
+    public static void OutOf(int[] a) { Spec.Requires(a is [1, .. var rest] && rest[3] == 0); }
+}");
+            Assert.Empty(r.Errors("Mid"));
+            Assert.Empty(r.Errors("Use"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("UseBad"));
+            Assert.Equal(new[] { "CSV1012" }, r.Errors("OutOf"));
+        }
+
         // (a is [1, ..] b: b is the array matched)
         [Fact]
         public void Patterns_ListThatDeclaresItsValue()

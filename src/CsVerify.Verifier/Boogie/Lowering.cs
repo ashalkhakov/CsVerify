@@ -4354,14 +4354,20 @@ namespace CsVerify.Verifier.Boogie
                     else if (lp.DeclaredSymbol != null) throw new NotTranslated("a list pattern that declares its value");
                     int slice = lp.Patterns.IndexOf(lp.Patterns.FirstOrDefault(x => x is ISlicePatternOperation));
                     var slicePattern = slice >= 0 ? ((ISlicePatternOperation)lp.Patterns[slice]).Pattern : null;
-                    // (in a specification a pattern makes nothing: a slice's own pattern, of a new array, is code's)
-                    if (slicePattern != null && (_cfgBlock == null || _p.UsesCells || _p.MemViews)) throw new NotTranslated("a slice pattern with a pattern of its own, in a specification");
+                    // (in a specification a pattern makes nothing: there a slice's own pattern binds the slice itself, of
+                    // which Spec reads its Length and elements; only a variable's, .. var rest)
+                    bool sliceInSpec = slicePattern != null && _cfgBlock == null;
+                    if (sliceInSpec && !(slicePattern is IDeclarationPatternOperation { DeclaredSymbol: ILocalSymbol }))
+                        throw new NotTranslated("a slice pattern with a pattern of its own, in a specification");
                     int fixedCount = lp.Patterns.Length - (slice >= 0 ? 1 : 0);
                     var len = new KOp("len", v);
                     KExpr cond = new KOp("&&", new KOp("!=", v, new KLit("null")), new KOp(slice >= 0 ? ">=" : "==", len, new KLit(fixedCount.ToString())));
                     // (.. var rest: a new array of the elements between, as C#'s GetSubArray makes; where v doesn't match
                     // the length, an empty one nothing reads)
-                    if (slicePattern != null)
+                    if (sliceInSpec)
+                        bind(((IDeclarationPatternOperation)slicePattern).DeclaredSymbol as ILocalSymbol,
+                             new KOp("$slice", v, new KLit(slice.ToString()), new KOp("-", len, new KLit(fixedCount.ToString()))));
+                    else if (slicePattern != null)
                     {
                         var between = new KOp("ite", cond, new KOp("-", len, new KLit(fixedCount.ToString())), new KLit("0"));
                         var rest = CopyOf(v, new KLit(slice.ToString()), between, type, lp.Syntax);
@@ -6890,7 +6896,18 @@ namespace CsVerify.Verifier.Boogie
             // (ObjSet.Empty: no objects)
             if ((e is IFieldReferenceOperation { Field.Name: "Empty", Instance: null } || e is IPropertyReferenceOperation { Property.Name: "Empty", Instance: null }) && IsObjSet(e.Type))
                 return new KLit("(lambda r$: Ref :: false)");
-            if (e is ILocalReferenceOperation bl && _bound.TryGetValue(bl.Local, out var bv)) return bv;
+            // (a slice a list pattern binds in a specification, .. var rest: its Length, and its elements, rest[i] a[start + i],
+            // where 0 <= i < Length; nothing else of it)
+            if (e is IPropertyReferenceOperation { Property.Name: "Length", Instance: ILocalReferenceOperation sll } && _bound.TryGetValue(sll.Local, out var slv) && slv is KOp { Op: "$slice" } slo)
+                return slo.Args[2];
+            if (e is IArrayElementReferenceOperation { ArrayReference: ILocalReferenceOperation sle, Indices.Length: 1 } sae && _bound.TryGetValue(sle.Local, out var sev) && sev is KOp { Op: "$slice" } seo)
+            {
+                var i = Spec(sae.Indices[0], result);
+                var elem = new KElem { Array = seo.Args[0], Index = new KOp("+", seo.Args[1], i), ArrayType = sle.Local.Type, InSpec = true, At = sae.Syntax, ArrayAt = sae.Syntax };
+                return new KOp("$need", new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, seo.Args[2])), elem);
+            }
+            if (e is ILocalReferenceOperation bl && _bound.TryGetValue(bl.Local, out var bv))
+                return bv is KOp { Op: "$slice" } ? throw new NotTranslated("a slice in a specification, other than its Length and elements") : bv;
             // (a group a query's selector is given: its key, its count, Lowering.Linq's GroupValue)
             if (GroupValue(e) is KExpr group) return group;
             // (anonymous objects compared as objects, ==: their references, which the kernel's values (one per contents)
