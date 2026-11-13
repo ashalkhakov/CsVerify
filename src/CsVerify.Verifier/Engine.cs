@@ -567,7 +567,13 @@ namespace CsVerify.Verifier
         {
             if (!(m.IsAbstract || m.ContainingType?.TypeKind == TypeKind.Interface) || !(ContractClassOf(m.ContainingType) is INamedTypeSymbol cc)) return null;
             if (m.ContainingType.TypeKind == TypeKind.Interface)
-                return cc.FindImplementationForInterfaceMember(m) as IMethodSymbol;
+            {
+                // (a generic interface's member, of the instantiation the contract class implements: IKey<T> of KeyContract<T>)
+                var def = m.OriginalDefinition;
+                var im = cc.AllInterfaces.Where(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, def.ContainingType))
+                    .SelectMany(i => i.GetMembers(def.Name)).OfType<IMethodSymbol>().FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.OriginalDefinition, def));
+                return cc.FindImplementationForInterfaceMember(im ?? m) as IMethodSymbol;
+            }
             return cc.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(o => SymbolEqualityComparer.Default.Equals(o.OverriddenMethod?.OriginalDefinition, m));
         }
 

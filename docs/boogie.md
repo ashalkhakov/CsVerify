@@ -553,8 +553,7 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   lambda writes, on the arguments; of a sequence, a library call that says nothing of its rows.
 - Not yet (such a method is not verified, CSV1902): `GroupBy` and `GroupJoin` on the database (their groups as
   values), SQL's nulls of references, calls EF translates in a database query's lambdas that aren't the kernel's
-  functions, `IDbContextFactory`, and what the kernel lacks elsewhere (`Task.Run` of a query, `Task.WhenAll` of
-  tasks one is given, a type parameter constrained by itself, `List.Contains` in a specification).
+  functions, `IDbContextFactory`, and `Task.Run` of a query.
 
 **Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
 parameter takes it, a call gives it, and an EF concurrency token is compared by it; its operators and members are not translated (CSV1902).
@@ -671,7 +670,10 @@ classes of the program's: `where T : IKeyed`) has references for values: `Ref`, 
 constraints' (`a.Key()` calls `IKeyed.Key`). Its instantiations must be references (a call of a generic method with
 others is not translated). A value of a type parameter may be null even under `where T : class`
 (`K?` instantiates it), so dereferencing one is checked (CSV1013). Generic instance methods, not virtual, are
-procedures as generic static ones are.
+procedures as generic static ones are. A generic interface (`IKey<T>`) is one interface, as a generic class is one
+class, its contract class `[ContractClassFor(typeof(IKey<>))]`. Well-formedness is coinductive: a constraint that
+names its own parameter (`where T : IKey<T>`), or a class that instantiates an interface with itself
+(`Kk : IKey<Kk>`), is checked assuming the type it is checking.
 
 **Arrays of objects.** An array of references (`Shape[]`, `string[]`, `string?[]`, `object[]`, an interface's) has its
 elements in one map, `$E.Object: [Ref][int]Ref`, beside the scalars' maps; a new one's elements are null. An element

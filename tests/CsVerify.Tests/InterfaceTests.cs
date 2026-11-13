@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -128,6 +129,29 @@ public static class P { public static int Ask(ICounter c) { Spec.Ensures<int>(r 
             Assert.Empty(r.Errors("One.ICounter.Next"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Zero.ICounter.Next"));
             Assert.Empty(r.Errors("P.Ask"));
+        }
+
+        [Fact]
+        public void GenericInterfaces_AndSelfConstrainedTypeParameters()
+        {
+            var r = Harness.Verify(@"
+using System.Threading.Tasks;
+public interface IKey<T> where T : IKey<T> { int K(); }
+[ContractClassFor(typeof(IKey<>))]
+internal abstract class KeyContract<T> : IKey<T> where T : IKey<T> { public int K() { Spec.Ensures<int>(r => r > 0); return default; } }
+public sealed class Kk : IKey<Kk> { public Kk() { } public int K() => 1; }
+public sealed class Kz : IKey<Kz> { public Kz() { } public int K() => 0; }
+public static class G
+{
+    public static int Gen<T>(T x) where T : IKey<T> { Spec.Requires(x != null); Spec.Ensures<int>(r => r > 0); return x.K(); }
+    public static int GenBad<T>(T x) where T : IKey<T> { Spec.Requires(x != null); Spec.Ensures<int>(r => r > 1); return x.K(); }
+    public static int Use() { Spec.Ensures<int>(r => r > 0); return Gen(new Kk()); }
+    public static async Task Both(Task a, Task b) { Spec.Requires(a != null && b != null); await Task.WhenAll(a, b); }
+}");
+            foreach (var good in new[] { "Kk.K", "G.Gen", "G.Use", "G.Both" })
+                Assert.True(r[good].Verified, good + ": " + string.Join("; ", r[good].Diagnostics.Select(d => d.Message)));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Kz.K"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("G.GenBad"));
         }
 
         [Fact]

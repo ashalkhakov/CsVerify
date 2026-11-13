@@ -5317,7 +5317,10 @@ namespace CsVerify.Verifier.Boogie
         /// objects is reference equality.
         /// </summary>
         private static bool Upcast(IConversionOperation conv) =>
-            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && (IsException(conv.Type) || conv.Type.SpecialType == SpecialType.System_Object) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
+            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && (IsException(conv.Type) || conv.Type.SpecialType == SpecialType.System_Object) ||
+                                                               IsGivenTask(conv.Operand.Type) && conv.Type.SpecialType == SpecialType.System_Object || conv.Operand.ConstantValue is { HasValue: true, Value: null }) ||
+            // (a type parameter whose values are references, to object: C# calls it boxing, as T might be a struct; here it can't)
+            conv.IsImplicit && conv.OperatorMethod == null && IsRefParameter(conv.Operand.Type) && conv.Type.SpecialType == SpecialType.System_Object;
 
         private static IOperation Unconverted(IOperation op)
         {

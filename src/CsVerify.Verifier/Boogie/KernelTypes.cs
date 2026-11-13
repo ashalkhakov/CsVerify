@@ -294,11 +294,10 @@ namespace CsVerify.Verifier.Boogie
             bool library = tp.ConstraintTypes.Length > 0 && tp.ConstraintTypes.All(c => c.TypeKind == TypeKind.Class && c.DeclaringSyntaxReferences.Length == 0 && IsLibraryObject(c));
             if (!(t is ITypeParameterSymbol) || tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint || tp.HasConstructorConstraint && !library ||
                 !(tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0)) return false;
-            // (a constraint that names the parameter itself, B : Builder<B, E>: a library class's, a library object; another,
-            // not the subset's, rather than its check going round)
+            // (a constraint that names the parameter itself, T : IKey<T>: coinductive, met again while checked, it holds)
             if (library) return true;
             _constraintsSeen ??= new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
-            if (!_constraintsSeen.Add(tp)) return false;
+            if (!_constraintsSeen.Add(tp)) return true;
             try { return tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c)); }
             finally { _constraintsSeen.Remove(tp); }
         }
@@ -352,9 +351,21 @@ namespace CsVerify.Verifier.Boogie
         /// A class's type arguments: none, or a generic class's (Box&lt;T&gt;) whose type parameters are unconstrained (its
         /// values of T are boxes, as generic data's are), given values that box: scalars, references, its own parameters.
         /// </summary>
-        private static bool GenericClassArguments(INamedTypeSymbol n) =>
-            n.Arity == 0 || n.OriginalDefinition.TypeParameters.All(IsGenericParameter) &&
-            n.OriginalDefinition.TypeParameters.Zip(n.TypeArguments).All(x => !(x.Second is INamedTypeSymbol an && SymbolEqualityComparer.Default.Equals(an.OriginalDefinition, n.OriginalDefinition)) && Instantiates(x.First, x.Second));
+        private static bool GenericClassArguments(INamedTypeSymbol n)
+        {
+            if (n.Arity == 0) return true;
+            // (coinductive: a type met again while it's checked, Kk : IKey<Kk>, is taken to be well formed)
+            _argumentsSeen ??= new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+            if (!_argumentsSeen.Add(n)) return true;
+            try
+            {
+                return n.OriginalDefinition.TypeParameters.All(IsGenericParameter) &&
+                       n.OriginalDefinition.TypeParameters.Zip(n.TypeArguments).All(x => !(x.Second is INamedTypeSymbol an && SymbolEqualityComparer.Default.Equals(an.OriginalDefinition, n.OriginalDefinition)) && Instantiates(x.First, x.Second));
+            }
+            finally { _argumentsSeen.Remove(n); }
+        }
+
+        [System.ThreadStatic] private static HashSet<ITypeSymbol> _argumentsSeen;
 
         /// <summary>A Func or an Action of the subset's values: a reference, which Spec.Pre and Spec.Post speak of.</summary>
         public static bool IsFunc(ITypeSymbol t) =>
@@ -694,7 +705,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>An interface of the program's, not generic, of abstract members only (their contracts from a contract class).</summary>
         public static bool IsInterface(ITypeSymbol t) =>
-            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Interface && n.Arity == 0 && n.DeclaringSyntaxReferences.Length > 0 &&
+            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Interface && GenericClassArguments(n) && n.DeclaringSyntaxReferences.Length > 0 &&
             n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
             // (its implementations may run concurrently: [RunsConcurrently], as a class may be)
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("RunsConcurrentlyAttribute" or "TakesNoLocksAttribute")) &&
@@ -720,7 +731,7 @@ namespace CsVerify.Verifier.Boogie
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
             (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() is "System.IDisposable" or "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i)) || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
+            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i)) || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute")) &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
             // (ToString may be overridden: what the library makes of an object's text, it doesn't know anyway)
