@@ -337,6 +337,27 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1014", At = a.Syntax, Message = $"'{a.Value.Syntax}' might be null, but parameter '{a.Parameter.Name}' of '{m.Name}' is not nullable" });
             void Pre(KExpr c, string text) => Emit(new KCheck { Cond = c, Id = "CSV1001", At = call.Syntax, Message = $"precondition '{text}' of '{m.Name}' might not hold" });
             KExpr Len(KExpr a) => new KOp("len", a);
+            // (Sort(a): a written, its order the comparer's, as its stub has it)
+            if (m.Name == "Sort" && ordered.Count == 1 && IsArray(Unconverted(ordered[0].Value).Type))
+            {
+                var at = Unconverted(ordered[0].Value).Type;
+                var a = Expr(Unconverted(ordered[0].Value));
+                NotNull(ordered[0], a);
+                var map = Elements(at);
+                Emit(new KRow { Map = map, Ref = a, Value = new KVar(LinqMap("[int]" + ElementValue(map))), At = call.Syntax });
+                return (true, null);
+            }
+            // (IndexOf(a, v): -1, or an index of a, as its stub has it)
+            if (m.Name == "IndexOf" && ordered.Count == 2 && IsArray(Unconverted(ordered[0].Value).Type) && m.ReturnType.SpecialType == SpecialType.System_Int32)
+            {
+                var a = Expr(Unconverted(ordered[0].Value));
+                NotNull(ordered[0], a);
+                Expr(ordered[1].Value);
+                var r = Declare("t$" + _temps++, m.ReturnType);
+                Emit(new KHavoc { Var = r });
+                Emit(new KAssume { Cond = new KOp("&&", new KOp("<=", new KLit("-1"), new KVar(r)), new KOp("<", new KVar(r), Len(a))) });
+                return (true, new KVar(r));
+            }
             if (m.Name == "Reverse" && ordered.Count == 1 && IsArray(Unconverted(ordered[0].Value).Type))
             {
                 var at = Unconverted(ordered[0].Value).Type;

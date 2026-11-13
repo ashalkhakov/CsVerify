@@ -832,7 +832,8 @@ CSV1012), `d[k]` is `Entries[d][k]` (where `Domain[d][k]`), `d.ContainsKey(k)` i
 is `Members[s][x]`. A `StringBuilder` is a collection of one model, its length (`Size`), and a `TextWriter` one of
 none: their members are their stubs', as a list's are, and a stub without `Spec.Modifies` changes nothing (unless it
 may run the program's code). `Array.Fill(a, v)` is its stub: `a`'s row a map that is `v`
-everywhere, the rest as it was. A list stub's `T[]` (`ToArray`'s) is an array of the list's element type. A `Map<K, V>` is a Boogie map (`m[k]`, `Update`, `Map.Const`, `==`), and a `Ghost<T>`'s `Value`
+everywhere, the rest as it was; `Array.Sort(a)` a new row of `a` (its order the comparer's), and `Array.IndexOf(a, v)`
+`-1` or an index of `a`. Under cell permissions, a write of `a`'s whole row needs all its cells (CSV1016). A list stub's `T[]` (`ToArray`'s) is an array of the list's element type. A `Map<K, V>` is a Boogie map (`m[k]`, `Update`, `Map.Const`, `==`), and a `Ghost<T>`'s `Value`
 the value.
 
 A dictionary's string keys (a set's string members) index the models by reference, as every string is: a string is

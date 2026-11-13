@@ -782,6 +782,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var r = Code(row.Ref);
                     if (row.At != null) WithinFrame(r, row.At);
+                    // (the program's write of a whole row, Array.Fill's say, under cell permissions: all its cells held)
+                    if (row.At != null && _p.UsesCells)
+                    {
+                        var i = new KVar("i$");
+                        Assert(new KOp("||", new KOp("==", r, new KLit("null")), new KQuant { Forall = true, Var = "i$",
+                                   Body = Implies(new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, new KOp("len", r))), new KOp(">=", Cell(r, i), new KLit("1.0"))) }),
+                               At("CSV1016", row.At, $"'{row.At}' writes the whole array: this method needs Spec.Acc of all its cells"));
+                    }
                     var v = Spec(row.Value, out _);
                     _facts.Clear();
                     Emit(new KRow { Map = row.Map, Ref = r, Value = v });

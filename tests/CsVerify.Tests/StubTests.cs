@@ -240,5 +240,22 @@ public static class BuilderContracts
             Assert.Empty(r.Errors("C.Keeps"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("C.NotHeld"));
         }
+
+        // (Array.Sort and Array.IndexOf, as their stubs have them; Fill and Sort, under cell permissions, need all the cells)
+        [Fact]
+        public void ArraySortAndIndexOf()
+        {
+            var r = Verify(@"public static class C
+{
+    static int Find(int[] a) { Spec.Requires(a != null); var i = System.Array.IndexOf(a, 3); return i >= 0 ? a[i] : 0; }
+    static void Sorts(int[] a, int[] b) { Spec.Requires(a != null && b != null && a != b && b.Length > 0); b[0] = 1; System.Array.Sort(a); Spec.Assert(b[0] == 1); }
+    static void FillNotHeld(int[] a, int[] b) { Spec.Requires(Spec.Acc(b)); Spec.Ensures(Spec.Acc(b)); System.Array.Fill(a, 7); }
+    static void SortNotHeld(int[] a, int[] b) { Spec.Requires(Spec.Acc(b)); Spec.Ensures(Spec.Acc(b)); System.Array.Sort(a); }
+}");
+            Assert.Empty(r.Errors("C.Find"));
+            Assert.Empty(r.Errors("C.Sorts"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("C.FillNotHeld"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("C.SortNotHeld"));
+        }
     }
 }
