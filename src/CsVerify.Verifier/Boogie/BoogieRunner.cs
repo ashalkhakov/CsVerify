@@ -219,7 +219,7 @@ namespace CsVerify.Verifier.Boogie
             }, "csverify", default);
             // (a run that goes on with nothing done for a long while has lost a solver's answer: Boogie waits for it, its
             // solvers idle, and would wait for ever. Not verified, then: what it was verifying is undecided)
-            var idle = TimeSpan.FromSeconds(Math.Max(300, 10 * Math.Max(1, timeoutMs / 1000)));
+            var idle = TimeSpan.FromSeconds(Math.Max(300, 5 * Math.Max(1, timeoutMs / 1000)));
             for (var seen = -1; !running.Wait(idle);)
             {
                 var now = stats.VerifiedCount + stats.ErrorCount + stats.InconclusiveCount + stats.TimeoutCount + stats.OutOfResourceCount + stats.OutOfMemoryCount + Volatile.Read(ref progress);

@@ -1206,7 +1206,7 @@ on): one for each run at a time, taken by a run and given back after. One for ev
 by side: a run's work waits on work it queued on the same threads, so runs together could take them all, each waiting
 on work queued behind the others'. Two runs go at a time, at most: one alone has a solver for each core, two half of
 them each. With a solver for each core in every run, tests side by side ran dozens of solvers at once, a gigabyte each
-on a hard query, and the machine killed them (Boogie's "Prover died with no further output") or they starved. A run that goes on with nothing done for a long while (ten times the time limit,
+on a hard query, and the machine killed them (Boogie's "Prover died with no further output") or they starved. A run that goes on with nothing done for a long while (five times the time limit,
 five minutes at least) has lost a solver's answer: Boogie waits for it, its solvers idle, and would wait for ever (it
 happens, on a loaded machine, in the fuzz test). It is ended; its threads aren't given to another run. A run a mishap of the solver's ended is run once more, on
 threads of its own: that one, Boogie's fatal error (a solver killed for memory: "Prover died with no further output"),
