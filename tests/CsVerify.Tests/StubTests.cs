@@ -225,5 +225,20 @@ public static class BuilderContracts
             // and the runtime keeps no stubs either
             Assert.DoesNotContain(erased.Files.Where(f => f.OutputName.StartsWith(Erasure.RuntimeFolder)), f => f.Text.Contains("public static class ListContracts"));
         }
+
+        // (a library call without a stub, under cell permissions: it may write the arrays it's handed, all of whose cells
+        // must be held; only those change)
+        [Fact]
+        public void ALibraryCall_UnderCellPermissions()
+        {
+            var r = Verify(@"public static class C
+{
+    static void Keeps(int[] a, int[] b) { Spec.Requires(Spec.Acc(a) && Spec.Acc(b) && a != b && b.Length > 0); Spec.Ensures(Spec.Acc(a) && Spec.Acc(b));
+        b[0] = 3; System.Array.Clear(a, 0, a.Length); Spec.Assert(b[0] == 3); }
+    static void NotHeld(int[] a, int[] b) { Spec.Requires(Spec.Acc(b) && b.Length > 0); Spec.Ensures(Spec.Acc(b)); System.Array.Clear(a, 0, a.Length); }
+}");
+            Assert.Empty(r.Errors("C.Keeps"));
+            Assert.Equal(new[] { "CSV1016" }, r.Errors("C.NotHeld"));
+        }
     }
 }

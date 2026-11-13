@@ -579,7 +579,9 @@ result are values not known, not null where they're declared so; its receiver mu
 object (`Random`) is a reference, its `new` a new one; an argument boxed to `object` for it is evaluated as what it is.
 Where exceptions are seen it may throw, once it has done what it does (a fork to the handlers). A collection's element
 written with a value that branches (`d[k] = c ? a : b`) is its setter's call, of its receiver and index as they are
-then. Not yet where cells are held (array mode, `Mem`'s views).
+then. Under cell permissions (`Spec.Acc`), where it's handed only arrays, scalars and strings, all the cells of each
+array it's handed must be held (wholly where it may write, CSV1016), and only those arrays' cells change; handed any
+other object there, or under `Mem`'s views, it isn't translated.
 
 **Manual memory.** ATS's views of `Mem`'s cells: the cells are the element maps' rows at
 `null` (`$E.Int32[null][a]`), and a view holds permissions to its cells as `Spec.Acc` holds an array's (array mode).

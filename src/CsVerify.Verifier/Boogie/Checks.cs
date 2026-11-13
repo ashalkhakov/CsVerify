@@ -811,6 +811,31 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KStore { Array = a, Index = i, Value = value, ArrayType = st.ArrayType, At = st.At, ArrayAt = st.ArrayAt, Checked = true });
                     return;
                 }
+                // (a library call's arrays: without cell permissions, where it may write, any; with them, those it's handed,
+                // all of whose cells it may read or write, so all must be held, and only those change)
+                case KLibraryArrays la:
+                {
+                    if (!_p.UsesCells)
+                    {
+                        if (la.Write) foreach (var (map, fresh) in la.Fresh) Emit(new KRow { Map = map, Ref = null, Value = new KVar(fresh) });
+                        return;
+                    }
+                    if (!la.Plain) throw new NotTranslated("a library call handed objects other than arrays, under cell permissions");
+                    foreach (var (array, map, row) in la.Arrays)
+                    {
+                        var a = Code(array);
+                        var i = new KVar("i$");
+                        var inRange = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, new KOp("len", a)));
+                        Assert(new KOp("||", new KOp("==", a, new KLit("null")),
+                                       new KQuant { Forall = true, Var = "i$", Body = Implies(inRange, la.Write ? new KOp(">=", Cell(a, i), new KLit("1.0")) : new KOp(">", Cell(a, i), new KLit("0.0"))) }),
+                               At("CSV1016", la.At, la.Write ? $"'{la.At}' may write the array it's handed: this method needs Spec.Acc of all its cells"
+                                                             : $"'{la.At}' reads the array it's handed: this method needs Spec.Acc or Spec.AccRead of all its cells"));
+                        if (!la.Write) continue;
+                        Emit(new KHavoc { Var = row });
+                        Emit(new KRow { Map = map, Ref = a, Value = new KVar(row) });
+                    }
+                    return;
+                }
                 case KNew n:
                     Emit(new KNew { Var = n.Var, ArrayType = n.ArrayType, Size = Code(n.Size), Elements = n.Elements?.Select(Code).ToArray() });
                     // (a new array's cells are all in hand)

@@ -351,6 +351,20 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>Map[Ref] := Value, Value a specification (a new array's row, a new list's Items or Size: LINQ's copies).</summary>
+    /// <summary>
+    /// The arrays a library call may read or write (Checks, which knows whether the method holds cell permissions): without
+    /// them, where it may write, every element map unknown (Fresh, a map each); with them, all the cells of each array
+    /// it's handed held (to write, wholly; to read, some), and those it may write unknown (Rows, a row each), where it's
+    /// handed nothing else (Plain).
+    /// </summary>
+    internal sealed class KLibraryArrays : KStmt
+    {
+        public List<(KExpr array, string map, string row)> Arrays = new List<(KExpr, string, string)>();
+        public List<(string map, string fresh)> Fresh = new List<(string, string)>();
+        public bool Write, Plain;
+        public SyntaxNode At;
+    }
+
     internal sealed class KRow : KStmt
     {
         public string Map;

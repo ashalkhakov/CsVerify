@@ -4499,8 +4499,11 @@ namespace CsVerify.Verifier.Boogie
             if (handed.Any(a => !IsFunc(a.Parameter.Type) || a.Parameter.RefKind != RefKind.None)) return (false, null);
             // (not one that runs it alongside: Task.Run's, a thread pool's, a timer's, a task's continuation)
             if (handed.Count > 0 && (IsTaskLike(m.ReturnType) || m.ContainingNamespace?.ToDisplayString() is "System.Threading" or "System.Threading.Tasks" || m.ContainingType?.Name == "Timer")) return (false, null);
-            if (handed.Count > 0 && (_p.UsesPerm || _contract.Modifies != null)) return (false, null);
-            if (_p.UsesCells || _p.MemViews) return (false, null);
+            if (handed.Count > 0 && _p.UsesPerm) return (false, null);
+            if (_p.MemViews) return (false, null);
+            // (all it can reach is the arrays it's handed: no object of another kind, which under cell permissions it must be)
+            bool Plain(IOperation v) => v == null || v.ConstantValue.HasValue || Scalar(v.Type) || IsString(v.Type) || IsArray(Unconverted(v).Type);
+            bool plain = handed.Count == 0 && Plain(call.Instance) && call.Arguments.All(a => a.ArgumentKind != ArgumentKind.Explicit || Plain(a.Value));
             if (!m.ReturnsVoid && !InSubset(m.ReturnType)) return (false, null);
             // (a lock's object, a semaphore of a field, not null where it's declared so: a reference the kernel doesn't keep)
             bool lockObject = call.Instance is IFieldReferenceOperation { Field: var lof } && IsLockObject(lof) && NotNullable(lof.Type) && IsSemaphore(lof.Type) && m.Name == "Dispose";
@@ -4510,11 +4513,14 @@ namespace CsVerify.Verifier.Boogie
             foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit))
                 if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IConversionOperation { IsImplicit: true } ac && IsArray(ac.Operand.Type)) &&
                     !(a.Value is IInterpolatedStringOperation) && !Quoted(a.Value)) return (false, null);
+            // (the arrays it's handed, under cell permissions)
+            var cellArrays = new List<(KExpr array, ITypeSymbol type)>();
             if (call.Instance != null && !lockObject)
             {
                 var receiver = Expr(call.Instance);
                 if (!m.IsStatic && !call.Instance.Type.IsValueType)
                     Emit(new KCheck { Cond = new KOp("!=", receiver, new KLit("null")), Id = "CSV1013", At = call.Instance.Syntax, Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'" });
+                if (IsArray(call.Instance.Type)) cellArrays.Add((receiver, call.Instance.Type));
             }
             // (an argument boxed or cast up to object for it: what it is, since the library's use of it isn't modeled)
             var delegates = new List<(IArgumentOperation arg, KExpr value)>();
@@ -4524,6 +4530,7 @@ namespace CsVerify.Verifier.Boogie
                 // (an array as System.Array: the array)
                 var av = Expr(a.Value is IConversionOperation { IsImplicit: true } box && (box.Type.SpecialType == SpecialType.System_Object && InSubset(box.Operand.Type) || IsArray(box.Operand.Type) && !InSubset(box.Type)) ? box.Operand : a.Value);
                 if (handed.Contains(a)) delegates.Add((a, av));
+                if (IsArray(Unconverted(a.Value).Type)) cellArrays.Add((av, Unconverted(a.Value).Type));
                 // (a parameter not nullable: the caller proves its argument isn't null, CSV1014)
                 if (a.Parameter.RefKind == RefKind.None && IsNullable(a.Value.Type) && StaticChecks.IsNonNullable(a.Parameter))
                     Emit(new KCheck { Cond = new KOp("!=", av, new KLit("null")), Id = "CSV1014", At = a.Syntax,
@@ -4547,15 +4554,13 @@ namespace CsVerify.Verifier.Boogie
             ReentryUnderLock(m, call.Syntax);
             bool arrays = KernelTypes.MayWriteHeap(m), fields = KernelTypes.WritesFieldsAt(call);
             if (fields) { _p.HavocsAll = true; _p.CallsDelegates = true; Emit(new KHavocAll()); }
-            else if (arrays)
+            else if (arrays || cellArrays.Count > 0)
             {
-                // (the arrays it may write: every element map)
-                foreach (var t in ElementTypes)
-                {
-                    var map = ElementMap(t);
-                    var fresh = LinqMap("[Ref][int]" + ElementValue(t));
-                    Emit(new KRow { Map = map, Ref = null, Value = new KVar(fresh) });
-                }
+                // (the arrays it may read or write: Checks's, which knows whether cells are held)
+                var la = new KLibraryArrays { Write = arrays, Plain = plain, At = call.Syntax };
+                if (arrays) foreach (var t in ElementTypes) la.Fresh.Add((ElementMap(t), LinqMap("[Ref][int]" + ElementValue(t))));
+                foreach (var (array, type) in cellArrays) la.Arrays.Add((array, Elements(type), arrays ? LinqMap("[int]" + ElementValue(Elements(type))) : null));
+                Emit(la);
             }
             // (the library's nullability: a non-nullable out is not null, a [MaybeNullWhen(b)]
             // one not where it returns !b; a [NotNull] argument is not null after, a [NotNullWhen(b)] one where it returns b)
