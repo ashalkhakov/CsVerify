@@ -73,12 +73,16 @@ namespace CsVerify.Verifier.Boogie
             // (a failure split finds that the whole didn't: Boogie reports the solver's unknown, where it gives up, as a
             // failure, and split, without what it learned from the others, it gives up more. So the method is verified
             // whole again, with four times the time: what that finds too is a failure, what it proves is proved; where the
-            // time runs out again, the method is undecided)
+            // time runs out again, the method is undecided. Of a method the whole found failing, split's are kept)
             var wholeKeys = failures.Select(f => (f.method, Key(f))).ToHashSet();
             var fresh = again.Where(f => f.diagnostic.Id != "CSV1900" && !wholeKeys.Contains((f.method, Key(f)))).ToList();
             if (fresh.Count > 0)
             {
-                var recheck = fresh.Select(f => f.method).Distinct().Where(names.ContainsKey).ToHashSet();
+                // (of a method the whole found failing, a failure split finds is one more counterexample, the others'
+                // assertions assumed, as the whole's are: Boogie stops looking after a few, or at an unknown, so the
+                // whole may not find it again. Only a method the whole didn't find failing, a correct one maybe, is checked)
+                var failing = new HashSet<MethodResult>(failed);
+                var recheck = fresh.Select(f => f.method).Distinct().Where(names.ContainsKey).Where(m => !failing.Contains(m)).ToHashSet();
                 var (confirm, _, _) = Run(program, z3Path, timeoutMs * 4, null, recheck.Select(m => names[m]).ToList());
                 var kept = confirm.Where(f => f.diagnostic.Id != "CSV1900").Select(f => (f.method, Key(f))).ToHashSet();
                 var timedOut = confirm.Where(f => f.diagnostic.Id == "CSV1900" && recheck.Contains(f.method)).ToList();

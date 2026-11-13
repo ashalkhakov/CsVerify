@@ -1194,7 +1194,10 @@ method split proves all of is verified. A failure split finds is not yet one: Bo
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
 finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900);
-what that whole run finds of its own (a counterexample split didn't get to) is reported too. (Dropping it once let a
+what that whole run finds of its own (a counterexample split didn't get to) is reported too. Only a method the whole
+didn't find failing (a correct one, maybe) is checked so: of one it did, split's failures are counterexamples as the
+whole's are (the others' assertions assumed), and the whole, which stops looking after a few or at an unknown, may not
+find them again. (Dropping it once let a
 method whose split failures the whole didn't confirm, but whose own failure it found, through as verified: the fuzz test
 caught it.)
 (Reporting what split found there instead was tried: on a loaded machine, it reported Base64's correct invariant over
