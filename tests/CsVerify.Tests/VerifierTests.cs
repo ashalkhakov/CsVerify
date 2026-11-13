@@ -860,6 +860,14 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void DatesAndSpans_CompareByTheirTicks()
+        {
+            Assert.Empty(Errors("M", "static System.DateTime M(System.DateTime a, System.DateTime b) { Spec.Ensures((System.DateTime r) => r >= a && r >= b); return a > b ? a : b; }"));
+            Assert.Empty(Errors("M", "static bool M(System.TimeSpan a, System.TimeSpan b) { Spec.Requires(a < b); Spec.Ensures((bool r) => r); return a != b && a.Ticks < b.Ticks; }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static System.DateTime M(System.DateTime a, System.DateTime b) { Spec.Ensures((System.DateTime r) => r >= a && r >= b); return a < b ? a : b; }"));
+        }
+
+        [Fact]
         public void LiftedArithmetic_IsNullWhereAnOperandIs()
         {
             Assert.Empty(Errors("M", "static int? M(int? x) { Spec.Requires(x == null || x.Value < 100 && x.Value > -100); Spec.Ensures((int? r) => (r == null) == (x == null)); return x + 1; }"));

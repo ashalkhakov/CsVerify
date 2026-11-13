@@ -558,7 +558,9 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   functions, `IDbContextFactory`, and `Task.Run` of a query.
 
 **Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
-parameter takes it, a call gives it, and an EF concurrency token is compared by it; its operators and members are not translated (CSV1902).
+parameter takes it, a call gives it, and an EF concurrency token is compared by it. That int is its `Ticks`, so
+`==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do, and `.Ticks` is it;
+their other operators and members are not translated (CSV1902).
 
 **Library nullness.** A library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a

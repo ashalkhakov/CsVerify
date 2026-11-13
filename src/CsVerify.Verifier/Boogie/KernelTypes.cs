@@ -537,6 +537,9 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.Threading.Tasks.ValueTask";
 
+        /// <summary>A DateTime or a TimeSpan: the int the kernel keeps is its Ticks, which its ==, &lt; and the rest compare.</summary>
+        public static bool IsOpaqueTicks(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan";
+
         /// <summary>An EF context factory (IDbContextFactory&lt;C&gt;, of a context of the program's): a reference, whose CreateDbContext Lowering.EfTracker reads.</summary>
         public static bool IsEfFactory(ITypeSymbol t) =>
             Ef != null && t is INamedTypeSymbol { Name: "IDbContextFactory", Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore" && IsContext(n.TypeArguments[0]);

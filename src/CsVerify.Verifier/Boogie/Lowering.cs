@@ -3908,6 +3908,21 @@ namespace CsVerify.Verifier.Boogie
                     AssumeValid(new KVar(t), dp.Type);
                     return new KVar(t);
                 }
+                // (DateTime and TimeSpan compared: their ticks, the int the kernel keeps for them, are what C# compares)
+                case IBinaryOperation dt when IsOpaqueTicks(dt.LeftOperand.Type) && SymbolEqualityComparer.Default.Equals(dt.LeftOperand.Type, dt.RightOperand.Type) &&
+                                              dt.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.LessThan or BinaryOperatorKind.LessThanOrEqual
+                                                  or BinaryOperatorKind.GreaterThan or BinaryOperatorKind.GreaterThanOrEqual:
+                {
+                    var (l, r) = (lower(dt.LeftOperand), lower(dt.RightOperand));
+                    var op = dt.OperatorKind switch
+                    {
+                        BinaryOperatorKind.Equals => "==", BinaryOperatorKind.NotEquals => "!=", BinaryOperatorKind.LessThan => "<",
+                        BinaryOperatorKind.LessThanOrEqual => "<=", BinaryOperatorKind.GreaterThan => ">", _ => ">=",
+                    };
+                    return new KOp(op, l, r);
+                }
+                case IPropertyReferenceOperation tk when tk.Property.Name == "Ticks" && tk.Instance != null && IsOpaqueTicks(tk.Instance.Type):
+                    return lower(tk.Instance);
                 // (float and double, as IEEE 754: operations round to nearest; == is IEEE's, < and the rest false at NaN)
                 case IBinaryOperation fb when fb.OperatorMethod == null && IsFloating(fb.LeftOperand.Type) && IsFloating(fb.RightOperand.Type):
                 {
