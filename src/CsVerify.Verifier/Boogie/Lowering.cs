@@ -3622,6 +3622,9 @@ namespace CsVerify.Verifier.Boogie
                 // (a struct made without a constructor of its own, default(S): its default value)
                 case IDefaultValueOperation sd when IsStruct(sd.Type):
                     return StructDefault(sd.Type);
+                // (default(T) of another type of the kernel's, int? or a reference: null, 0, false; ?. makes one)
+                case IDefaultValueOperation dd when dd.Type != null && (IsNullableValue(dd.Type) || Scalar(dd.Type) || IsNullable(dd.Type)) && !IsMemValue(dd.Type):
+                    return Default(dd.Type);
                 case IObjectCreationOperation so when IsStruct(so.Type) && so.Initializer == null && (so.Constructor == null || so.Constructor.IsImplicitlyDeclared) && so.Arguments.Length == 0:
                     return StructDefault(so.Type);
                 // (a nullable value, int?: null, or the reference of its value)
@@ -5076,7 +5079,7 @@ namespace CsVerify.Verifier.Boogie
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
                     return Arith("-", new KLit("0"), Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
-                case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.LeftOperand.Type) && IsString(b.RightOperand.Type) && b.OperatorKind == BinaryOperatorKind.Add) && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
+                case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.Type) && b.OperatorKind == BinaryOperatorKind.Add) && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
                                              b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):
                     return Binary(b);
                 case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
@@ -5107,6 +5110,46 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Operands(sc.Instance, sc.Arguments[0].Value);
                     return new KElem { String = true, Array = v[0], Index = v[1], At = sc.Syntax, ArrayAt = sc.Instance.Syntax };
+                }
+                // ((T[])a.Clone(): a new array of a's length, its elements a's)
+                case IConversionOperation { Operand: IInvocationOperation { TargetMethod.Name: "Clone", Arguments.Length: 0, Instance: { } ci } } cc
+                    when IsArray(cc.Type) && IsArray(ci.Type) && SymbolEqualityComparer.Default.Equals(cc.Type, ci.Type) && !_p.UsesCells && !_p.MemViews:
+                {
+                    var src = Expr(ci);
+                    Emit(new KCheck { Cond = new KOp("!=", src, new KLit("null")), Id = "CSV1013", At = ci.Syntax, Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'" });
+                    var copy = Declare("t$" + _temps++, cc.Type);
+                    Emit(new KNew { Var = copy, ArrayType = cc.Type, Size = new KOp("len", src) });
+                    var map = Elements(cc.Type);
+                    var row = new KVar(LinqMap("[int]" + ElementValue(map)));
+                    Emit(new KRow { Map = map, Ref = new KVar(copy), Value = row });
+                    var i = new KVar("i$k");
+                    Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$k", Body = new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, i)) },
+                                         Assume = true, Free = true, At = cc.Syntax, ArgumentAt = cc.Syntax });
+                    return new KVar(copy);
+                }
+                // (n++ and ++n as values: stored, as a statement stores it; the value before, or after)
+                case IIncrementOrDecrementOperation iv when IsIntegral(iv.Type):
+                {
+                    var before = Declare("t$" + _temps++, iv.Type);
+                    Emit(new KAssign { Var = before, Value = Expr(iv.Target) });
+                    var after = Declare("t$" + _temps++, iv.Type);
+                    Emit(new KAssign { Var = after, Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), new KLit("1"), iv.Type, iv.Syntax, iv.IsChecked) });
+                    Assign(iv.Target, new KVar(after));
+                    return new KVar(iv.IsPostfix ? before : after);
+                }
+                // (a string + something else, "line " + n: the other's text, ToString's, is a string not known)
+                case IBinaryOperation so when so.OperatorKind == BinaryOperatorKind.Add && IsString(so.Type) &&
+                                              IsString(Unconverted(so.LeftOperand).Type) != IsString(Unconverted(so.RightOperand).Type):
+                {
+                    var stringLeft = IsString(Unconverted(so.LeftOperand).Type);
+                    var str = Expr(stringLeft ? so.LeftOperand : so.RightOperand);
+                    var other = Unconverted(stringLeft ? so.RightOperand : so.LeftOperand);
+                    if (!InSubset(other.Type)) throw new NotTranslated("a string + " + other.Type);
+                    Expr(other);
+                    var text = Declare("t$" + _temps++, so.Type);
+                    Emit(new KHavoc { Var = text });
+                    Emit(new KAssume { Cond = new KOp("!=", new KVar(text), new KLit("null")) });
+                    return stringLeft ? StringBinary(BinaryOperatorKind.Add, str, new KVar(text)) : StringBinary(BinaryOperatorKind.Add, new KVar(text), str);
                 }
                 case IBinaryOperation sb when IsString(sb.LeftOperand.Type) && IsString(sb.RightOperand.Type) &&
                                              (sb.OperatorMethod == null || IsString(sb.OperatorMethod.ContainingType)) &&

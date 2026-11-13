@@ -346,6 +346,13 @@ namespace CsVerify.Verifier.Boogie
                     try { foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(b.Ordinal) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null); }
                     finally { _atLoopHead = false; }
                 }
+                // (a loop's head: its invariants end here. Boogie takes the assumes at a head's start for free invariants,
+                // assumed only after its havoc; what the code there assumes (a field read not null) holds on the way in too)
+                if (head && _p.Blocks.Any(x => x.Ordinal >= b.Ordinal && x.Jump is KGoto lg && lg.Targets.Contains(b.Label)))
+                {
+                    if (!_p.Locals.Any(l => l.Name == "head$")) _p.Locals.Add(new KLocal { Name = "head$", Raw = "bool" });
+                    Emit(new KAssign { Var = "head$", Value = new KLit("true") });
+                }
                 foreach (var s in stmts) Statement(s, decreases);
                 switch (b.Jump)
                 {

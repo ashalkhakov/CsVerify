@@ -387,7 +387,7 @@ namespace CsVerify.Verifier.Boogie
         public static string TypeConst(ITypeSymbol t) => "T#" + Ident(t.OriginalDefinition.ToDisplayString());
 
         /// <summary>What may be null: a reference or a string.</summary>
-        public static bool IsNullable(ITypeSymbol t) => IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t) || IsNullableValue(t) || IsEfFactory(t) || IsEfTransaction(t) || IsQueryHandle(t);
+        public static bool IsNullable(ITypeSymbol t) => IsGhost(t) ? IsNullable(GhostOf(t)) : IsRef(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsData(t) || IsNullableValue(t) || IsEfFactory(t) || IsEfTransaction(t) || IsQueryHandle(t);
 
         /// <summary>An [Owned] class of the subset: its objects are written only by whoever holds their view.</summary>
         public static bool IsOwnedClass(ITypeSymbol t) => IsClass(t) && SpecSymbols.IsOwned(t);
@@ -776,7 +776,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         /// (Not a type parameter's: where T : class may be instantiated with K?, as CsVerify's engine has it.)
-        public static bool NotNullable(ITypeSymbol t) => t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
+        public static bool NotNullable(ITypeSymbol t) => IsGhost(t) ? NotNullable(GhostOf(t)) : t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
 
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" : IsFloating(t) ? FloatType(t) : IsLinqGroup(t) ? "int" :
