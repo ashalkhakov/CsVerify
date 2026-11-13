@@ -6096,7 +6096,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     SyntaxNode e = id;
                     while (e.Parent is ParenthesizedExpressionSyntax) e = e.Parent;
-                    bool written = e.Parent is AssignmentExpressionSyntax a && a.Left == e || e.Parent is PrefixUnaryExpressionSyntax ||
+                    // (++x, --x, x++, x--: not -x, !x, x!)
+                    bool written = e.Parent is AssignmentExpressionSyntax a && a.Left == e ||
+                                   e.Parent is PrefixUnaryExpressionSyntax pre && pre.Kind() is Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreIncrementExpression or Microsoft.CodeAnalysis.CSharp.SyntaxKind.PreDecrementExpression ||
                                    e.Parent is PostfixUnaryExpressionSyntax pu && !pu.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression) ||
                                    e.Parent is ArgumentSyntax arg && !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None);
                     if (written && _model.GetSymbolInfo(id).Symbol is ISymbol s && s is ILocalSymbol or IParameterSymbol { RefKind: RefKind.None } &&
@@ -6508,9 +6510,10 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KCheck { Cond = new KOp("||", new KOp("!=", cx.array, cy.array), new KOp("!=", cx.index, cy.index)), Id = "CSV1020", At = at, Message = string.Format(message, "array cell") });
                     else if (refOuts[i].Item2 == refOuts[j].Item2)
                     {
-                        Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1020", At = at, Message = string.Format(message, "variable"), NotAssumedAfter = true });
-                        // (a view, or a package of them, given twice: its permissions twice, nothing to go on with)
+                        // (a view, or a package of them, given twice: the analyzer's linearity error (CSV0007); its permissions
+                        // twice, nothing to go on with)
                         if (IsView(x.Parameter.Type) || IsMemView(x.Parameter.Type) || IsPackage(x.Parameter.Type)) Emit(new KAssume { Cond = new KLit("false") });
+                        else Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1020", At = at, Message = string.Format(message, "variable"), NotAssumedAfter = true });
                         // (a copy for the second, as Boogie can't give one variable twice)
                         var copy = Declare("t$" + _temps++, y.Parameter.Type);
                         Emit(new KAssign { Var = copy, Value = new KVar(refOuts[j].Item2) });

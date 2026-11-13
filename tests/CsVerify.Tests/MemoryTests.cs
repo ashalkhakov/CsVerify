@@ -57,7 +57,7 @@ public static class C
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Same"));
         }
 
-        // (one view given by ref twice: CSV1020, as for any variable)
+        // (one view given by ref twice: the analyzer's linearity error, and translated (not CSV1902))
         [Fact]
         public void AViewGivenTwice_IsReported()
         {
@@ -67,7 +67,9 @@ public static class C
     static void Two(ref ArrayView<int> a, ref ArrayView<int> b) { }
     static void M(ref ArrayView<int> v) { Two(ref v, ref v); }
 }");
-            Assert.Contains("CSV1020", r.Errors("M"));
+            Assert.NotEmpty(r.Errors("M"));
+            Assert.DoesNotContain("CSV1902", r.Errors("M"));
+            Assert.DoesNotContain("CSV1020", r.Errors("M"));
         }
     }
 }

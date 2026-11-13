@@ -151,6 +151,19 @@ public static class U
             Assert.Equal(new[] { "CSV1004" }, r.Errors("U.Local"));
         }
 
+        // (-x in a postcondition's lambda reads x: its callers still assume the postcondition)
+        [Fact]
+        public void ANegationInAPostcondition_IsNoWrite()
+        {
+            var r = Harness.Verify(@"
+public static class U
+{
+    public static int Abs(int x) { Spec.Requires(x > int.MinValue); Spec.Ensures<int>(r => r >= 0 && (r == x || r == -x)); return x < 0 ? -x : x; }
+    public static int Use(int y) { Spec.Ensures<int>(r => r >= 0); return y == int.MinValue ? 0 : Abs(y); }
+}");
+            Assert.Empty(r.Errors("U.Use"));
+        }
+
         // (a lambda's postcondition of a captured variable it writes: its value at the lambda's return)
         [Fact]
         public void ALambdasPostcondition_OfAVariableItWrites()
