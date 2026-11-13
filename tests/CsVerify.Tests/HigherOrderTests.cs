@@ -180,6 +180,17 @@ namespace CsVerify.Tests
         public void Total_OfADelegateThatReadsState_WithAPrecondition() => Assert.Contains("CSV1004", Ids(C + "static int M(Cell c) { Spec.Requires(c != null && c.V > 0); " +
             "Func<int, int> f = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(x < c.V); return c.V; }; Spec.Assert(Spec.Total(f)); return 0; } }"));
 
+        // (a generic method's group, Twice<int>: its contract, its T's values boxed)
+        private const string Generic = "public static class G { public static int Twice<T>(T x, int n) { Spec.Requires(n >= 0 && n < 100); Spec.Ensures<int>(r => r == 2 * n); return 2 * n; } } ";
+
+        [Fact]
+        public void GenericMethodGroup_HasItsContract() => Assert.Empty(Ids(Generic + C + "static int M() { Spec.Ensures<int>(r => r == 6); Func<int, int, int> f = G.Twice<int>; return f(7, 3); } }"));
+
+        [Theory]
+        [InlineData("CSV1002", C + "static int M() { Spec.Ensures<int>(r => r == 7); Func<int, int, int> f = G.Twice<int>; return f(7, 3); } }")]
+        [InlineData("CSV1001", C + "static int M() { Func<string, int, int> f = G.Twice<string>; return f(\"a\", 300); } }")]
+        public void GenericMethodGroup_Reported(string id, string code) => Assert.Contains(id, Ids(Generic + code));
+
         // (o.M as a delegate: o evaluated where it's made, M's contract the delegate's)
         private const string Doubler = "public sealed class Dbl { public Dbl() { } public int Twice(int x) { Spec.Requires(x >= 0 && x < 100); Spec.Ensures<int>(r => r == 2 * x); return 2 * x; } } ";
 

@@ -5431,7 +5431,9 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IDelegateCreationOperation dc when IsFunc(dc.Type) && LambdaOf(dc.Target) is IAnonymousFunctionOperation af:
                     return Lambda(dc, af);
-                case IDelegateCreationOperation mg when IsFunc(mg.Type) && mg.Target is IMethodReferenceOperation mr && !mr.Method.IsGenericMethod &&
+                case IDelegateCreationOperation mg when IsFunc(mg.Type) && mg.Target is IMethodReferenceOperation mr &&
+                                                       (!mr.Method.IsGenericMethod || mr.Method.IsStatic && mr.Method.OriginalDefinition.TypeParameters.All(IsGenericParameter) &&
+                                                        mr.Method.OriginalDefinition.TypeParameters.Zip(mr.Method.TypeArguments).All(x => Instantiates(x.First, x.Second))) &&
                                                        (mr.Method.IsStatic || mr.Instance != null && IsRef(mr.Instance.Type)) &&
                                                        !SymbolEqualityComparer.Default.Equals(mr.Method.OriginalDefinition, _m.OriginalDefinition):
                     return MethodGroup(mg, mr.Method, mr.Method.IsStatic ? null : mr.Instance);
@@ -6239,7 +6241,9 @@ namespace CsVerify.Verifier.Boogie
             var invoke = ((INamedTypeSymbol)dc.Type).DelegateInvokeMethod;
             if (invoke.Parameters.Length != fn.Parameters.Length || fn.Parameters.Any(p => p.RefKind != RefKind.None)) throw new NotTranslated("a method group of another shape");
             if (c.Modifies != null || c.Reads != null) throw new NotTranslated("a method group with Spec.Modifies or Spec.Reads");
-            var own = new HashSet<ISymbol>(fn.Parameters, SymbolEqualityComparer.Default);
+            // (a generic method's, Id<int>: its contract is of the definition's parameters, boxes where they're of a T)
+            var def = fn.OriginalDefinition;
+            var own = new HashSet<ISymbol>(def.Parameters, SymbolEqualityComparer.Default);
             if (!c.Requires.All(r => Steady(r, own))) throw new NotTranslated("a method group whose precondition depends on state");
             // (o.M: o evaluated once, where the delegate is made (null throws), the method's this)
             string receiver = null;
@@ -6257,8 +6261,9 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in fn.Parameters)
             {
                 lam.Params.Add(("q$" + p.Name, TypeOf(p.Type)));
-                lam.Rename[Local(p)] = new KVar("q$" + p.Name);
+                lam.Rename[Local(p)] = Box(new KVar("q$" + p.Name), def.Parameters[p.Ordinal].Type, p.Type);
             }
+            if (!fn.ReturnsVoid) lam.Rename["result"] = Box(new KVar("q$r"), def.ReturnType, fn.ReturnType);
             if (c.Requires.Count > 0) lam.Pre = c.Requires.Select(r => Spec(r, null)).Aggregate((a, b) => new KOp("&&", a, b));
             foreach (var post in c.Ensures.Where(e => e.Guard == null))
             {

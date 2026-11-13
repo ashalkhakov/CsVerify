@@ -925,7 +925,10 @@ the type's (CSV1029 where either might not); where either contract depends on st
 `Spec.Total` of a delegate that may read state is that it accepts every argument in this state:
 `forall x :: $preS.K(d, now, x)`.
 
-Not yet: a method group of a generic method, and delegates with permissions or method `Spec.Modifies`.
+A method group of a static generic method (`Twice<int>`) is its definition's contract with each argument and the
+result boxed where the definition's type is a `T`, as a call of it has them.
+
+Not yet: delegates with permissions or method `Spec.Modifies`.
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
 datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its
