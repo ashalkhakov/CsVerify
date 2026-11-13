@@ -237,7 +237,8 @@ namespace CsVerify.Verifier.Boogie
                         var used = map.Where(j => j >= 0).ToList();
                         if (used.Distinct().Count() == used.Count && used.Count == names.Count && names.Distinct().Count() == names.Count) over = (q.Pred, map);
                     }
-                    if (over == null) throw new NotTranslated("a function over a predicate, of other than one instance of its parameters");
+                    // (over more than one instance, or one not of its parameters: an ordinary function of the memory, framed
+                    // by what it reads, as Dafny's are, defined in every state)
                 }
             }
             catch (NotTranslated) { _over[f] = null; throw; }
@@ -373,7 +374,8 @@ namespace CsVerify.Verifier.Boogie
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
-                else _printer.Function(p, FunctionFields(p.Method), fields);
+                else _printer.Function(p, FunctionFields(p.Method), fields,
+                                       ((IProgramFacts)this).Signature(p.Method).Requires.SelectMany(r => AtomsOf(r.Expr)).Any(a => a is KInst));
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && p.Method.IsOverride))
                 for (var b = p.Method.OverriddenMethod?.OriginalDefinition; b != null; b = b.OverriddenMethod?.OriginalDefinition)

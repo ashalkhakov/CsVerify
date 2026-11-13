@@ -436,7 +436,11 @@ definition; a body of anything else leaves it a function of its contract alone (
 and gives the function's value). One that reads nothing of the memory (scalar parameters, no field, no array, no call
 but `Spec` and `Math`) takes no memory, so its value is the same before and after a write.
 
-Not yet: a function over more than one instance, or over one not of its parameters; an ordinary function that calls one (its axioms are about every state).
+A function whose precondition holds more than one instance, or one not of its parameters, is an ordinary function of
+the memory (Dafny's), defined by its body; its axioms are about every memory, where the instances' facts needn't
+hold, so they're only its definition: its postconditions and range come from its calls, where its precondition is
+checked. One whose body reads a snapshot (`Get(p.L)`, of an instance not of its parameters) is a function of its
+contract alone. An ordinary function may call one over a predicate.
 
 **Floats.** `float` and `double` are IEEE 754 binary32 and binary64, Boogie's `float24e8` and `float53e11`
 (Z3's floating point): `+ - * /` round to nearest (`$fp.add32` and the like, declared

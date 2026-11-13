@@ -952,7 +952,7 @@ namespace CsVerify.Verifier.Boogie
             Line($"axiom (forall ly: LayerType{Sep(MapParams)}{ps} :: {{ {App(b, bFields)} }} dtype(this) == {TypeConst(o.ContainingType)} ==> {App(b, bFields)} == {App(o, oFields)});");
         }
 
-        public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols)
+        public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols, bool overInstances = false)
         {
             var m = p.Method;
             if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null && !ReadsArrays(p.FunctionBody))
@@ -986,6 +986,10 @@ namespace CsVerify.Verifier.Boogie
             }
             // (its definition, where it has one: an abstract or virtual one is of its contract alone)
             if (p.FunctionBody != null) Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {guard} ==> {At("$LS(ly)")} == {E(p.FunctionBody, cx)});");
+            // (one whose precondition holds predicate instances, over several or of other than its parameters: its guard
+            // here has no meaning of them, so facts that hold by them (its postconditions, its range) aren't axioms of
+            // every memory; its calls give them, where its precondition is checked)
+            if (overInstances) return;
             foreach (var e in p.Ensures) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {guard} ==> {E(e.Expr, cx)});");
             if (!p.Ghost && IsIntegral(m.ReturnType)) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {E(InRange(new KLit(At("ly")), m.ReturnType), cx)});");
         }

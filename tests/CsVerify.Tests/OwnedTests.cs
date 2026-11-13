@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -308,6 +309,32 @@ public static class C
             Assert.Empty(r.Errors("Other"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Peeks"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("Folded"));
+        }
+
+        // (a function over two instances, or one not of its parameters: an ordinary function of the memory, defined by its
+        // body; what holds by the instances, its postconditions, its calls give; no axiom says them of every memory)
+        [Fact]
+        public void FunctionsOverSeveralInstances()
+        {
+            var r = Harness.Verify(@"
+[Owned] public sealed class Cell { public int V; }
+public sealed class Pair { public Cell L = new Cell(); public Pair() { } }
+public static class P
+{
+    [Predicate] public static bool One(Cell c) => c != null && Spec.Acc(c) && c.V >= 0 && c.V < 1000;
+    [Pure] public static int Get(Cell c) { Spec.Requires(One(c)); Spec.Ensures((int r) => r >= 0); Spec.Unfold(One(c)); return c.V; }
+    [Pure] public static int Sum(Cell a, Cell b) { Spec.Requires(One(a) && One(b)); Spec.Ensures((int r) => r >= 0); Spec.Unfold(One(a)); Spec.Unfold(One(b)); return a.V + b.V; }
+    public static int Use(Cell a, Cell b) { Spec.Requires(One(a) && One(b)); Spec.Ensures(One(a) && One(b)); Spec.Ensures((int r) => r >= 0); return Sum(a, b); }
+    public static int Bad(Cell a, Cell b) { Spec.Requires(One(a) && One(b)); Spec.Ensures(One(a) && One(b)); Spec.Ensures((int r) => r > 0); return Sum(a, b); }
+    [Pure] public static int Left(Pair p) { Spec.Requires(p != null && One(p.L)); Spec.Ensures((int r) => r >= 0); return Get(p.L); }
+    public static int UseLeft(Pair p) { Spec.Requires(p != null && One(p.L)); Spec.Ensures(One(p.L)); Spec.Ensures((int r) => r >= 0); return Left(p); }
+    // (the axioms are consistent: a cell below 0, which the predicate's facts rule out, contradicts none)
+    public static void NoFalse(Cell a) { Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a)); a.V = -5; Spec.Assert(false); }
+}");
+            foreach (var good in new[] { "P.Sum", "P.Use", "P.Left", "P.UseLeft" })
+                Assert.True(r[good].Verified, good + ": " + string.Join("; ", r[good].Diagnostics.Select(d => d.Message)));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("P.Bad"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.NoFalse"));
         }
 }
 }

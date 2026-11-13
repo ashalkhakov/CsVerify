@@ -345,10 +345,12 @@ namespace CsVerify.Verifier.Boogie
             var decreases = _p.Decreases?.Select(d => (KExpr)new KOp("old", Spec(d, out _))).ToList();
             if (_p.FunctionBody != null) _p.FunctionBody = Spec(_p.FunctionBody, out _);
             if (_p.FunctionBody != null && _p.ReadsFrame == null) _p.InferredReads = InferReads(_p.FunctionBody);
-            // (a function's axioms are about every state: what they say can't be of a procedure's snapshots)
-            if (_p.FunctionBody != null && _program.OverPredicate(m) == null &&
-                new[] { _p.FunctionBody }.Concat(requires.Select(r => r.math)).Concat(ensures.Select(e => e.math)).Any(x => Mentions(x, Snaps)))
-                throw new NotTranslated("a function that reads a function over a predicate");
+            // (a function's axioms are about every state: what they say can't be of a procedure's snapshots. One whose body
+            // reads them is a function of its contract alone: its procedure proves the contract, its calls give it)
+            if (_p.FunctionBody != null && _program.OverPredicate(m) == null && Mentions(_p.FunctionBody, Snaps)) { _p.FunctionBody = null; _p.InferredReads = null; }
+            if (_program.OverPredicate(m) == null && _program.IsFunction(m) &&
+                requires.Select(r => r.math).Concat(ensures.Select(e => e.math)).Any(x => Mentions(x, Snaps)))
+                throw new NotTranslated("a function whose contract reads a function over a predicate");
             var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (spec: i, math: OldAtEntry(Spec(i.Expr, out var wf)), wf: wf.Select(OldAtEntry).ToList(), facts: Take().Select(OldAtEntry).ToList())).ToList());
             var measures = _p.Measures.ToDictionary(kv => kv.Key, kv => kv.Value.Select(x => Spec(x.Expr, out _)).ToList());
             _facts.Clear();
