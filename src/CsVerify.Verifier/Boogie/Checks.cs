@@ -18,6 +18,8 @@ namespace CsVerify.Verifier.Boogie
         KProcedure Signature(IMethodSymbol m);
         /// <summary>The field maps a function reads (it, or the functions it calls).</summary>
         List<string> FunctionFields(IMethodSymbol m);
+        /// <summary>The fields a function reads (its own and its callees'), as symbols.</summary>
+        IEnumerable<ISymbol> FunctionFieldSymbols(IMethodSymbol m);
         /// <summary>Is the method a function too (so its value can be named)?</summary>
         bool IsFunction(IMethodSymbol m);
         /// <summary>Does the program use permissions (Spec.Acc, Spec.AccRead) at all? Then array writes are checked against cells.</summary>
@@ -123,8 +125,66 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The id of a loop's inferred fact, a candidate of Houdini's: never reported.</summary>
         public const string Candidate = "HOUDINI";
 
+        private int _unfoldingAssert;
+        private readonly List<KExpr> _unfoldedFacts = new List<KExpr>();
+
+        private static IEnumerable<KExpr> Conjuncts(KExpr e) =>
+            e is KOp { Op: "&&", Args: { Length: 2 } a } ? Conjuncts(a[0]).Concat(Conjuncts(a[1])) : new[] { e };
+
+        /// <summary>
+        /// A condition with each function application among its conjuncts (a static function of the program's with a body
+        /// that applies no function, and no precondition, of the memory now) replaced by its body; the same object where
+        /// there is none.
+        /// </summary>
+        private KExpr UnfoldOnce(KExpr e)
+        {
+            switch (e)
+            {
+                case KOp { Op: "&&", Args: { Length: 2 } a }:
+                {
+                    var l = UnfoldOnce(a[0]);
+                    var r = UnfoldOnce(a[1]);
+                    return ReferenceEquals(l, a[0]) && ReferenceEquals(r, a[1]) ? e : new KOp("&&", l, r);
+                }
+                case KFnApp app when app.Snap == null && !app.Plain && app.MapsAt == null && app.Callee.IsStatic:
+                {
+                    var sig = _program.Signature(app.Callee);
+                    if (sig.FunctionBody == null || sig.Requires.Count > 0 || app.Args.Length != app.Callee.Parameters.Length || Apps(sig.FunctionBody).Any()) return e;
+                    var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
+                    var saved = _facts.ToList();
+                    _facts.Clear();
+                    try
+                    {
+                        var body = Subst(Spec(sig.FunctionBody, out _), given);
+                        // (what reading the body lets one assume, a field's array allocated: known where it's asserted)
+                        _unfoldedFacts.AddRange(_facts.Select(f => Subst(f, given)));
+                        return body;
+                    }
+                    catch (NotTranslated) { return e; }
+                    finally { _facts.Clear(); _facts.AddRange(saved); }
+                }
+                default: return e;
+            }
+        }
+
         private void Assert(KExpr cond, Check check, bool notAssumedAfter = false)
         {
+            // (a postcondition or a loop invariant that is a function, Wf(p), of one that calls no other: its body asserted
+            // first, unfolded once, a conjunct at a time, as Dafny does. The function's definition, an equation, holds its
+            // quantifiers where the solver can't use them to prove it; its body proved, the equation gives it)
+            if (!notAssumedAfter && check?.Id is "CSV1002" or "CSV1005" or "CSV1006" && _unfoldingAssert == 0)
+            {
+                _unfoldedFacts.Clear();
+                var unfolded = UnfoldOnce(cond);
+                if (!ReferenceEquals(unfolded, cond))
+                {
+                    foreach (var f in _unfoldedFacts) Assume(f);
+                    _unfoldedFacts.Clear();
+                    _unfoldingAssert++;
+                    try { foreach (var c in Conjuncts(unfolded)) Assert(c, check); }
+                    finally { _unfoldingAssert--; }
+                }
+            }
             // (an assertion of a conjunction, one conjunct at a time, each known for the next: as Dafny splits them, so
             // that Z3 needn't find what the first says while it proves the second)
             if (!notAssumedAfter && check?.Id == "CSV1004" && cond is KOp { Op: "&&", Args: { Length: 2 } and_ })
@@ -337,6 +397,19 @@ namespace CsVerify.Verifier.Boogie
                 if (b == _p.Blocks[0] && _p.ReadsFrame != null) Emit(new KAssign { Var = "r$entry", Value = _p.ReadsFrame });
                 if (b == _p.Blocks[0])
                 {
+                    // (a precondition that is a function, Wf(p), of one that calls no other: its body too, unfolded once, so
+                    // that its quantifiers are facts the solver uses as they are, not inside the function's equation)
+                    foreach (var r in requires)
+                    {
+                        _unfoldedFacts.Clear();
+                        var unfolded = UnfoldOnce(r.math);
+                        if (!ReferenceEquals(unfolded, r.math))
+                        {
+                            foreach (var f in _unfoldedFacts) Assume(f);
+                            foreach (var c in Conjuncts(unfolded)) Assume(c);
+                        }
+                        _unfoldedFacts.Clear();
+                    }
                     // (immutable objects received hold their invariants: not this, in its constructor or its invariant)
                     foreach (var param in _p.Method.Parameters.Where(x => x.RefKind != RefKind.Out))
                         ObjectInvariant(new KVar(Local(param)), param.Type);
@@ -2471,6 +2544,8 @@ namespace CsVerify.Verifier.Boogie
                     // (over a predicate: its value is of the instance's snapshot)
                     if (_program.OverPredicate(fn.Callee) is (IMethodSymbol pred, int[] map))
                         return new KFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Args = args, Snap = Snap(pred, map, args) };
+                    // (the fields it reads are the procedure's too: what's known of them, a reference field's object allocated, holds)
+                    foreach (var ff in _program.FunctionFieldSymbols(fn.Callee)) _p.Fields.Add(ff);
                     return new KFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Fields = _program.FunctionFields(fn.Callee),
                                         Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
                 }

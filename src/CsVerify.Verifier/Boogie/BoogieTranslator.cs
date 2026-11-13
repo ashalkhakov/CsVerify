@@ -192,6 +192,8 @@ namespace CsVerify.Verifier.Boogie
 
         public List<string> FunctionFields(IMethodSymbol m) => FieldsOf(m).Select(FieldMap).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
 
+        public IEnumerable<ISymbol> FunctionFieldSymbols(IMethodSymbol m) => FieldsOf(m);
+
         bool IProgramFacts.CheckOverflow => _checkOverflow;
 
         bool IProgramFacts.IsFunction(IMethodSymbol m) => IsFunction(m);
