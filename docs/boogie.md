@@ -1175,8 +1175,7 @@ without end. A first occurrence (no element before it the same) is a map of its 
 the same; where it isn't, `seen[j]`, one before, is. Not the `exists` itself inside the count's facts: each instance
 of that made an element the solver hadn't, whose own instances made more, and a failing group query was undecided.
 (A trigger on the count, `c[j + 1]`, was tried: it doesn't match `c[len(a)]`, so a count of a known length isn't
-proved.) A failing proof of a group query can still be too hard for the solver whole; split finds the failure, and
-that is reported (see below).
+proved.) The group queries' failing assertions are decided whole, in seconds.
 
 ## How it's checked
 
@@ -1194,9 +1193,9 @@ a long one that is hard as a whole is often easy split (Base64's encoder, decode
 method split proves all of is verified. A failure split finds is not yet one: Boogie reports the solver's unknown,
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
-finds too is reported, one it proves is proved, and where the time runs out again what split found is reported: a
-failure the whole couldn't rule out, never a proof (CsVerify's engine reported an obligation it couldn't prove on its
-own; a group query's failing assertion is one the whole can't decide).
+finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
+(Reporting what split found there instead was tried: on a loaded machine, it reported Base64's correct invariant over
+`3 * k` as failing.)
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
 either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on pools of
 large-stack threads, never disposed (disposing one interrupts threads the solver's processes may still be finishing
