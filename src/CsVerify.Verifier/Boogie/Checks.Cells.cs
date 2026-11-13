@@ -11,46 +11,46 @@ namespace CsVerify.Verifier.Boogie
     internal sealed partial class Checks
     {
         /// <summary>Is cell (x, i) among c's, where g holds?</summary>
-        internal static KExpr InCells(KExpr g, KCells c, KExpr x, KExpr i) =>
-            Conj(g, new KOp("&&", new KOp("&&", new KOp("==", x, c.Arr), new KOp("<=", c.Lo, i)), new KOp("<", i, c.Hi)));
+        internal static MExpr InCells(MExpr g, MCells c, MExpr x, MExpr i) =>
+            Conj(g, new MOp("&&", new MOp("&&", new MOp("==", x, c.Arr), new MOp("<=", c.Lo, i)), new MOp("<", i, c.Hi)));
 
-        private static KExpr Cell(KExpr x, KExpr i) => new KOp("sel", new KVar("cells"), x, i);
+        private static MExpr Cell(MExpr x, MExpr i) => new MOp("sel", new MVar("cells"), x, i);
 
-        private void ChangeCells(KExpr g, KCells c, string op)
+        private void ChangeCells(MExpr g, MCells c, string op)
         {
-            var (x, i) = (new KVar("x$"), new KVar("i$"));
-            Emit(new KAssign { Var = "cells", Value = new KOp("lambda", new KLit("x$: Ref"), new KOp("lambda", new KLit("i$: int"),
-                Ite(InCells(g, c, x, i), new KOp(op, Cell(x, i), Amount(c)), Cell(x, i)))) });
+            var (x, i) = (new MVar("x$"), new MVar("i$"));
+            Emit(new MAssign { Var = "cells", Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
+                Ite(InCells(g, c, x, i), new MOp(op, Cell(x, i), Amount(c.Read)), Cell(x, i)))) });
         }
 
         /// <summary>The first cells of the memory views granted so far: where a new one's room is said too.</summary>
-        private readonly List<KExpr> _memLos = new List<KExpr>();
+        private readonly List<MExpr> _memLos = new List<MExpr>();
 
-        private void InhaleCells(KExpr g, KCells c)
+        private void InhaleCells(MExpr g, MCells c)
         {
             // two whole permissions to one cell can't both be in hand (a method that holds every cell learns nothing)
             if (_p.ArrayMode)
             {
-                var i = new KVar("i$");
-                var room = c.Read ? new KOp("<=", Cell(c.Arr, i), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, i), new KLit("1.0"));
-                Assume(new KQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), room) });
-                var lo = c.Read ? new KOp("<=", Cell(c.Arr, c.Lo), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, c.Lo), new KLit("1.0"));
+                var i = new MVar("i$");
+                var room = c.Read ? new MOp("<=", Cell(c.Arr, i), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, i), new MLit("1.0"));
+                Assume(new MQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), room) });
+                var lo = c.Read ? new MOp("<=", Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, c.Lo), new MLit("1.0"));
                 Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
                 // (memory: two intervals overlap only where one starts inside the other, so at the other views' first cells too)
-                if (c.Arr is KLit { Text: "null" })
+                if (c.Arr is MLit { Text: "null" })
                 {
                     foreach (var other in _memLos)
-                        Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new KOp("<=", Cell(c.Arr, other), new KLit("1.0 - " + Share)) : new KOp("<", Cell(c.Arr, other), new KLit("1.0"))));
+                        Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new MOp("<=", Cell(c.Arr, other), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, other), new MLit("1.0"))));
                     _memLos.Add(c.Lo);
                 }
             }
             ChangeCells(g, c, "+");
         }
 
-        private void ExhaleCells(KExpr g, KCells c, SyntaxNode at, string message)
+        private void ExhaleCells(MExpr g, MCells c, SyntaxNode at, string message)
         {
-            var i = new KVar("i$");
-            Assert(new KQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), new KOp(">=", Cell(c.Arr, i), Amount(c))) }, At("CSV1016", at, message));
+            var i = new MVar("i$");
+            Assert(new MQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), new MOp(">=", Cell(c.Arr, i), Amount(c.Read))) }, At("CSV1016", at, message));
             ChangeCells(g, c, "-");
         }
 

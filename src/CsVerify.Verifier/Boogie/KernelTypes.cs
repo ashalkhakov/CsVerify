@@ -75,12 +75,7 @@ namespace CsVerify.Verifier.Boogie
         public static string FloatSize(ITypeSymbol t) => t.SpecialType == SpecialType.System_Single ? "32" : "64";
 
         /// <summary>A float's value, exactly: its bits.</summary>
-        public static KExpr FloatLiteral(object v, ITypeSymbol t)
-        {
-            if (t.SpecialType == SpecialType.System_Single)
-                return new KOp("$fp.bits32", new KLit(((uint)System.BitConverter.SingleToInt32Bits(System.Convert.ToSingle(v))).ToString() + "bv32"));
-            return new KOp("$fp.bits64", new KLit(((ulong)System.BitConverter.DoubleToInt64Bits(System.Convert.ToDouble(v))).ToString() + "bv64"));
-        }
+        public static KExpr FloatLiteral(object v, ITypeSymbol t) => KernelTerms.Of(MathTypes.FloatLiteral(v, t));
         private static readonly SpecialType[] Scalars = Widths.Keys.Append(SpecialType.System_Boolean).ToArray();
         private static readonly SpecialType[] WithReferences = Scalars.Append(SpecialType.System_Object).ToArray();
 
@@ -239,7 +234,7 @@ namespace CsVerify.Verifier.Boogie
             StructFields(t).FindIndex(f => SymbolEqualityComparer.Default.Equals(f, member.OriginalDefinition) || SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, member.OriginalDefinition));
 
         /// <summary>A struct's default value: each element its type's.</summary>
-        public static KExpr StructDefault(ITypeSymbol t) => new KOp(TupleMaker(t), StructFields(t).Select(f => Default(f.Type)).ToArray());
+        public static KExpr StructDefault(ITypeSymbol t) => KernelTerms.Of(MathTypes.StructDefault(t));
 
         /// <summary>A tuple's elements' types, or an anonymous object's members', in order (an anonymous object is a tuple of its members).</summary>
         public static List<ITypeSymbol> PartsOf(ITypeSymbol t) =>
@@ -836,7 +831,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m))) yield return m.OriginalDefinition;
         }
 
-        public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : IsStruct(t) ? StructDefault(t) : IsObjSet(t) ? new KLit("(lambda r$: Ref :: false)") : IsFloating(t) ? FloatLiteral(0.0, t) : new KLit(IsNullable(t) || TypeOf(t) == "Ref" ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+        public static KExpr Default(ITypeSymbol t) => KernelTerms.Of(MathTypes.Default(t));
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         /// (Not a type parameter's: where T : class may be instantiated with K?.)
@@ -861,7 +856,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static (BigInteger lo, BigInteger hi) Range(ITypeSymbol t) => Range(Sp(t));
 
-        public static KExpr Number(BigInteger n) => new KLit(n < 0 ? $"({n.ToString(CultureInfo.InvariantCulture)})" : n.ToString(CultureInfo.InvariantCulture));
+        public static KExpr Number(BigInteger n) => KernelTerms.Of(MathTypes.Number(n));
 
         /// <summary>lo &lt;= e &lt;= hi of t.</summary>
         public static KExpr InRange(KExpr e, ITypeSymbol t)

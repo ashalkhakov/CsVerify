@@ -15,7 +15,7 @@ namespace CsVerify.Verifier.Boogie
         /// lexicographically (CSV1008). A [Pure] function or lemma that recurses without one doesn't terminate
         /// (CSV1011); an ordinary method needn't (partial correctness).
         /// </summary>
-        private void Termination(KCall c, KExpr receiver, KExpr[] args, List<KExpr> mine)
+        private void Termination(KCall c, MExpr receiver, MExpr[] args, List<MExpr> mine)
         {
             if (!_program.Recursive(_p.Method, c.Callee)) return;
             var theirs = _program.ContractOf(c.Callee);
@@ -24,7 +24,7 @@ namespace CsVerify.Verifier.Boogie
             // measures of different shapes can't be compared)
             if ((mine == null || theirs?.Decreases == null) && (_p.Contract.IsPure || _p.Contract.IsLemma || _p.Ghost))
             {
-                Assert(new KLit("false"), At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
+                Assert(new MLit("false"), At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
                                                                    : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' needs Spec.Decreases on both"));
                 return;
             }
@@ -38,7 +38,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (theirs.Decreases.Count != mine.Count)
             {
-                Assert(new KLit("false"), At("CSV1008", c.At, $"cannot prove termination: '{c.Callee.Name}' and '{_p.Method.Name}' call each other but their measures have different numbers of components"));
+                Assert(new MLit("false"), At("CSV1008", c.At, $"cannot prove termination: '{c.Callee.Name}' and '{_p.Method.Name}' call each other but their measures have different numbers of components"));
                 return;
             }
             {
@@ -50,7 +50,7 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private Dictionary<string, KExpr> Given(IMethodSymbol callee, KExpr receiver, KExpr[] args)
+        private Dictionary<string, MExpr> Given(IMethodSymbol callee, MExpr receiver, MExpr[] args)
         {
             var given = callee.Parameters.Select((p, k) => (p, k)).Where(x => x.k < args.Length).ToDictionary(x => Local(x.p), x => args[x.k]);
             if (receiver != null) given["this"] = receiver;
@@ -71,15 +71,15 @@ namespace CsVerify.Verifier.Boogie
         /// next below before, lexicographically, each part bounded below by 0 where it goes down (Dafny's rule: the
         /// part before isn't negative, the next is less, which is well-founded; the next may be negative).
         /// </summary>
-        private static KExpr Lexicographic(List<KExpr> next, List<KExpr> before)
+        private static MExpr Lexicographic(List<MExpr> next, List<MExpr> before)
         {
             int n = Math.Min(next.Count, before.Count);
-            KExpr Below(int k)
+            MExpr Below(int k)
             {
-                var down = new KOp("&&", new KOp("<=", new KLit("0"), before[k]), new KOp("<", next[k], before[k]));
-                return k == n - 1 ? down : new KOp("||", down, new KOp("&&", new KOp("==", next[k], before[k]), Below(k + 1)));
+                var down = new MOp("&&", new MOp("<=", new MLit("0"), before[k]), new MOp("<", next[k], before[k]));
+                return k == n - 1 ? down : new MOp("||", down, new MOp("&&", new MOp("==", next[k], before[k]), Below(k + 1)));
             }
-            return n == 0 ? new KLit("false") : Below(0);
+            return n == 0 ? new MLit("false") : Below(0);
         }
     }
 }

@@ -272,7 +272,7 @@ namespace CsVerify.Verifier.Boogie
                 if (receiver != null) given["this"] = receiver;
                 // (a contract of code's reads, an element or a call, isn't compared: its well-definedness is Checks')
                 var spec = Spec(op, result);
-                return MathTerms.IsMath(spec) ? Checks.Rename(spec, given) : null;
+                return KernelTerms.IsMath(spec) ? KernelTerms.Map(spec, x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
             }
             KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)new KLit("true"), (a, b) => new KOp("&&", a, b));
             var dPre = dc.Requires.Select(r => Of(r, null)).ToList();

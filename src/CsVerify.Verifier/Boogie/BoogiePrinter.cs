@@ -15,10 +15,10 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class BoogiePrinter
     {
         /// <summary>Arithmetic of variables and literals alone, as an index is (a heap's parent, (j - 1) / 2).</summary>
-        private static bool IndexArithmetic(KExpr e) => e switch
+        private static bool IndexArithmetic(MExpr e) => e switch
         {
-            KVar or KLit => true,
-            KOp { Op: "+" or "-" or "*" or "neg" } o => o.Args.All(IndexArithmetic),
+            MVar or MLit => true,
+            MOp { Op: "+" or "-" or "*" or "neg" } o => o.Args.All(IndexArithmetic),
             _ => false,
         };
         /// <summary>Where a case's test is printed as its tag, the cases' tags.</summary>
@@ -332,20 +332,20 @@ namespace CsVerify.Verifier.Boogie
 
         private static string Maps(Context cx) => string.Join(", ", ElementTypes.Select(t => Map(ElementMap(t), cx)));
 
-        private string E(KExpr e, Context cx)
+        private string E(MExpr e, Context cx)
         {
             switch (e)
             {
-                case KLit l: return l.Text;
-                case KVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
-                case KVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
-                case KOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
+                case MLit l: return l.Text;
+                case MVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
+                case MVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
+                case MOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
                     return $"old({E(old.Args[0], new Context { Ins = cx.Ins, AtEntry = true, Elems = cx.Elems, InFunction = cx.InFunction, Layer = cx.Layer, Result = cx.Result, Group = cx.Group })})";
-                case KFnApp f when f.Plain:
+                case MFnApp f when f.Plain:
                     return $"{f.Function}({string.Join(", ", f.Args.Select(a => E(a, cx)))})";
-                case KFnApp f when f.Snap != null:
+                case MFnApp f when f.Snap != null:
                     return $"{f.Function}({string.Join(", ", new[] { f.Snap }.Concat(f.Args).Select(a => E(a, cx)))})";
-                case KFnApp f:
+                case MFnApp f:
                 {
                     var own = OwnArrays(f.Callee);
                     // (in a function's axioms, only a call back into its recursion group is on the layer below: Dafny's rule;
@@ -360,13 +360,13 @@ namespace CsVerify.Verifier.Boogie
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
-                case KQuant q:
+                case MQuant q:
                 {
                     var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
                     if (q.Range == null) return $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Body, cx)})";
                     return q.Forall ? $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} && {E(q.Body, cx)})";
                 }
-                case KOp op:
+                case MOp op:
                 {
                     var a = op.Args.Select(x => E(x, cx)).ToArray();
                     if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag)) return $"($tag({a[0]}) == {tag})";
@@ -382,7 +382,7 @@ namespace CsVerify.Verifier.Boogie
                         case "len": return $"len({a[0]})";
                         case "old": return $"old({a[0]})";
                         case "wrap": return $"((({a[0]}) - ({a[1]})) mod {a[2]} + ({a[1]}))";
-                        case "sel" when a.Length == 3 && op.Args[1] is KVar arr && cx.Elems != null && cx.Elems.TryGetValue(arr.Name, out var elems):
+                        case "sel" when a.Length == 3 && op.Args[1] is MVar arr && cx.Elems != null && cx.Elems.TryGetValue(arr.Name, out var elems):
                             return $"{elems}[{a[2]}]";
                         case "sel": return a.Length == 2 ? $"{a[0]}[{a[1]}]" : $"{a[0]}[{a[1]}][{a[2]}]";
                         case "store": return $"{a[0]}[{a[1]} := {a[2]}]";
@@ -437,7 +437,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A library member's stub, as a function: its postconditions, where its preconditions hold, of all its arguments.</summary>
-        public void Stub(IMethodSymbol m, Contract contract, List<KExpr> requires, List<KExpr> ensures)
+        public void Stub(IMethodSymbol m, Contract contract, List<MExpr> requires, List<MExpr> ensures)
         {
             var name = Checks.StubName(m);
             // (a collection's: of its models first, its parameters of its type here)
@@ -446,8 +446,8 @@ namespace CsVerify.Verifier.Boogie
             var ps = given.Concat(contract.Stub.Parameters.Select((x, k) => (name: Local(x), type: TypeOf(models.Count == 0 ? x.Type : k == 0 ? m.ContainingType : m.Parameters[k - 1].Type)))).ToList();
             if (models.Count > 0)
             {
-                var at = models.Select((x, k) => (x.Name, k)).ToDictionary(x => x.Name, x => (KExpr)new KVar("m$" + x.k));
-                at["this"] = new KVar(Local(contract.Stub.Parameters[0]));
+                var at = models.Select((x, k) => (x.Name, k)).ToDictionary(x => x.Name, x => (MExpr)new MVar("m$" + x.k));
+                at["this"] = new MVar(Local(contract.Stub.Parameters[0]));
                 requires = requires.Select(r => Checks.Rename(r, at)).ToList();
                 ensures = ensures.Select(e => Checks.Rename(e, at)).ToList();
             }
@@ -460,7 +460,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var e in ensures) Line(Axiom($"{pre} ==> {E(e, cx)}"));
             // (trusted for its annotations: a non-nullable result isn't null; an integer one is in its type's range)
             if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line(Axiom($"{app} != null"));
-            if (IsIntegral(m.ReturnType)) Line(Axiom(E(InRange(new KLit(app), m.ReturnType), InProcedure)));
+            if (IsIntegral(m.ReturnType)) Line(Axiom(E(MathTypes.InRange(new MLit(app), m.ReturnType), InProcedure)));
         }
 
         // ------------------------------------------------------------------ data types
@@ -472,7 +472,7 @@ namespace CsVerify.Verifier.Boogie
             public string Name;
             public int Tag;
             public List<(string name, string type, bool data, string field)> Params = new List<(string, string, bool, string)>();
-            public List<(string function, KExpr value)> Fields = new List<(string, KExpr)>();
+            public List<(string function, MExpr value)> Fields = new List<(string, MExpr)>();
         }
 
         /// <summary>
@@ -480,7 +480,7 @@ namespace CsVerify.Verifier.Boogie
         /// negative); each field a function; each case's constructor a function whose value has its tag, its fields,
         /// and a rank above its data parts'; and a value of a case is that case's constructor of its fields.
         /// </summary>
-        public void Data(List<DataCase> cases, List<(string function, string type, KExpr fact)> fields)
+        public void Data(List<DataCase> cases, List<(string function, string type, MExpr fact)> fields)
         {
             Line("function $tag(d: Ref): int;");
             Line("function $rank(d: Ref): int;");
@@ -515,7 +515,7 @@ namespace CsVerify.Verifier.Boogie
         /// Valid values of data types with invariants: their invariants hold; and, of each case, the parts with
         /// invariants are valid (where the case is tested, so the parts aren't unfolded without end).
         /// </summary>
-        public void Valid(List<(string name, KExpr invariant, List<(string isCase, KExpr part)> parts)> types)
+        public void Valid(List<(string name, MExpr invariant, List<(string isCase, MExpr part)> parts)> types)
         {
             foreach (var (name, _, _) in types) Line($"function {name}(d: Ref): bool;");
             foreach (var (name, invariant, parts) in types)
@@ -723,7 +723,7 @@ namespace CsVerify.Verifier.Boogie
         /// A callee's twin, for the way it throws: its inputs, what it modifies, an exception that isn't null, and only
         /// what its EnsuresOnThrow clauses say of it (nothing of its postconditions).
         /// </summary>
-        public void Throws(KProcedure callee, ISet<string> modifies, List<(ITypeSymbol type, KExpr cond)> clauses)
+        public void Throws(KProcedure callee, ISet<string> modifies, List<(ITypeSymbol type, MExpr cond)> clauses)
         {
             var m = callee.Method;
             var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
@@ -735,7 +735,7 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
             Line("  free ensures ex != null;");
             foreach (var (type, cond) in clauses)
-                Line($"  free ensures {E(new KOp("==>", Checks.Is(new KVar("ex"), type), cond), new Context { Ins = ins, AtEntry = false })};");
+                Line($"  free ensures {E(new MOp("==>", Checks.Is(new MVar("ex"), type), cond), new Context { Ins = ins, AtEntry = false })};");
         }
 
         // ------------------------------------------------------------------ predicates
@@ -823,14 +823,14 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>The atomic fields' maps with a step, and their steps (of x$old and x$now).</summary>
-        public Dictionary<string, KExpr> AtomicSteps = new Dictionary<string, KExpr>();
+        public Dictionary<string, MExpr> AtomicSteps = new Dictionary<string, MExpr>();
 
         /// <summary>Every atomic field among these maps went by steps since the state "before" (old(...)), at every object there then (and the statics').</summary>
         private IEnumerable<string> StepsKept(IEnumerable<string> maps, bool free)
         {
             foreach (var map in maps.Where(AtomicSteps.ContainsKey).OrderBy(x => x, System.StringComparer.Ordinal))
             {
-                string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new KLit($"old({map}[{o}])")), "x$now", new KLit($"{map}[{o}]")), InProcedure);
+                string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new MLit($"old({map}[{o}])")), "x$now", new MLit($"{map}[{o}]")), InProcedure);
                 yield return $"{(free ? "free ensures" : "assume")} (forall o: Ref :: old($Alloc[o]) ==> {At("o")});";
                 yield return $"{(free ? "free ensures" : "assume")} {At("null")};";
             }
@@ -848,7 +848,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var map = FieldMap(f);
                 var t = FieldType(f);
-                var where = IsIntegral(t) ? $" where (forall o: Ref :: {E(InRange(new KOp("sel", new KVar(map), new KVar("o")), t), InProcedure)})" : "";
+                var where = IsIntegral(t) ? $" where (forall o: Ref :: {E(MathTypes.InRange(new MOp("sel", new MVar(map), new MVar("o")), t), InProcedure)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
             // (each object's ownership tree's root)
@@ -859,8 +859,8 @@ namespace CsVerify.Verifier.Boogie
             string.Join("", fields.Select(x => $", h{x}: [Ref]{TypeOf(FieldType(symbols.First(s => FieldMap(s) == x)))}"));
 
         /// <summary>An array's elements, as an argument: a parameter's own, or read from the map.</summary>
-        private string Elements(string map, KExpr array, Context cx) =>
-            array is KVar v && cx.Elems != null && cx.Elems.TryGetValue(v.Name, out var elems) ? elems : $"{Map(map, cx)}[{E(array, cx)}]";
+        private string Elements(string map, MExpr array, Context cx) =>
+            array is MVar v && cx.Elems != null && cx.Elems.TryGetValue(v.Name, out var elems) ? elems : $"{Map(map, cx)}[{E(array, cx)}]";
 
         // ------------------------------------------------------------------ functions
 
@@ -870,27 +870,27 @@ namespace CsVerify.Verifier.Boogie
         /// range for a run-time one, of every value.
         /// </summary>
         /// <summary>Does it read memory, or a procedure's state (a global, a snapshot, a function of the memory)?</summary>
-        private static bool ReadsMemory(KExpr e) =>
-            MathTerms.Subterms(e).Any(x => x is KFnApp or KOp { Op: "old" } || x is KVar v && (v.Name.StartsWith("$") || v.Name == "psnap"));
+        private static bool ReadsMemory(MExpr e) =>
+            MathTerms.Subterms(e).Any(x => x is MFnApp or MOp { Op: "old" } || x is MVar v && (v.Name.StartsWith("$") || v.Name == "psnap"));
 
-        private static IEnumerable<KExpr> Conjuncts(KExpr e) => e is KOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
+        private static IEnumerable<MExpr> Conjuncts(MExpr e) => e is MOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
 
         /// <summary>Does it speak of snapshots (a function over a predicate)?</summary>
-        private static bool Snapshots(KExpr e) => MathTerms.Subterms(e).Any(x => x is KFnApp { Snap: not null } or KVar { Name: "psnap" });
+        private static bool Snapshots(MExpr e) => MathTerms.Subterms(e).Any(x => x is MFnApp { Snap: not null } or MVar { Name: "psnap" });
 
         /// <summary>
         /// A function over a predicate: of the instance's snapshot and its arguments, its value what folding and unfolding
         /// the instance say (no axioms but its range).
         /// </summary>
-        public void FunctionOverPredicate(KProcedure p)
+        public void FunctionOverPredicate(MProcedure p)
         {
-            var m = p.Method;
+            var m = p.Source.Method;
             var name = FunctionName(m);
             var ps = string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
             Line($"function {name}(s: int{ps}): {TypeOf(m.ReturnType)};");
             var app = $"{name}(s{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
-            if (!p.Ghost && IsIntegral(m.ReturnType))
-                Line($"axiom (forall s: int{ps} :: {{ {app} }} {E(InRange(new KLit(app), m.ReturnType), InProcedure)});");
+            if (!p.Source.Ghost && IsIntegral(m.ReturnType))
+                Line($"axiom (forall s: int{ps} :: {{ {app} }} {E(MathTypes.InRange(new MLit(app), m.ReturnType), InProcedure)});");
             // its postconditions, of every snapshot, where its precondition's facts hold (those that read no memory: an
             // axiom is about every state)
             var cx = new Context { Result = app };
@@ -909,22 +909,25 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>An expression of these variables and the memory's maps alone (no snapshot, no local, no old).</summary>
-        private bool Closed(KExpr e, HashSet<string> vars) => e switch
+        private bool Closed(MExpr e, HashSet<string> vars) => e switch
         {
-            KVar v => vars.Contains(v.Name) || _stateMaps.Any(m => m.name == v.Name),
-            KLit _ => true,
-            KOp { Op: "old" } => false,
-            KOp op => op.Args.All(a => Closed(a, vars)),
-            KQuant q => Closed(q.Range ?? new KLit("true"), new HashSet<string>(vars) { q.Var }) && Closed(q.Body, new HashSet<string>(vars) { q.Var }),
-            KFnApp f => f.Snap == null && f.MapsAt == null && f.Args.All(a => Closed(a, vars)),
+            MVar v => vars.Contains(v.Name) || _stateMaps.Any(m => m.name == v.Name),
+            MLit _ => true,
+            MOp { Op: "old" } => false,
+            MOp op => op.Args.All(a => Closed(a, vars)),
+            MQuant q => Closed(q.Range ?? new MLit("true"), new HashSet<string>(vars) { q.Var }) && Closed(q.Body, new HashSet<string>(vars) { q.Var }),
+            MFnApp f => f.Snap == null && f.MapsAt == null && f.Args.All(a => Closed(a, vars)),
             _ => false,
         };
 
         /// <summary>The queries of [Owned] classes (no parameters, no arrays read): each reads only its object's tree.</summary>
         private readonly List<(IMethodSymbol method, List<string> fields)> _ownedQueries = new List<(IMethodSymbol, List<string>)>();
 
-        private static bool ReadsArrays(KExpr e) => e is KElem || e is KLen ||
-            e != null && e.GetType().GetFields().Any(f => f.GetValue(e) is KExpr k && ReadsArrays(k) || f.GetValue(e) is IEnumerable<KExpr> ks && ks.Any(ReadsArrays));
+        /// <summary>
+        /// TODO: this looked for the kernel's KElem and KLen, which a function's body after Checks never holds (mathematics
+        /// reads an array as sel($E...) and len), so it never found one; kept so, until it is fixed with a test of its own.
+        /// </summary>
+        private static bool ReadsArrays(MExpr e) => false;
 
         /// <summary>An override's dispatch: of an object exactly of its class, the base member's function is the override's.</summary>
         public void Dispatch(IMethodSymbol b, List<string> bFields, IMethodSymbol o, List<string> oFields, IEnumerable<ISymbol> symbols)
@@ -939,9 +942,9 @@ namespace CsVerify.Verifier.Boogie
             Line($"axiom (forall ly: LayerType{Sep(MapParams)}{ps} :: {{ {App(b, bFields)} }} dtype(this) == {TypeConst(o.ContainingType)} ==> {App(b, bFields)} == {App(o, oFields)});");
         }
 
-        public void Function(KProcedure p, List<string> fields, IEnumerable<ISymbol> symbols, bool overInstances = false)
+        public void Function(MProcedure p, List<string> fields, IEnumerable<ISymbol> symbols, bool overInstances = false)
         {
-            var m = p.Method;
+            var m = p.Source.Method;
             if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null && !ReadsArrays(p.FunctionBody))
                 _ownedQueries.Add((m, fields));
             var name = FunctionName(m);
@@ -978,46 +981,46 @@ namespace CsVerify.Verifier.Boogie
             // every memory; its calls give them, where its precondition is checked)
             if (overInstances) return;
             foreach (var e in p.Ensures) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {guard} ==> {E(e.Expr, cx)});");
-            if (!p.Ghost && IsIntegral(m.ReturnType)) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {E(InRange(new KLit(At("ly")), m.ReturnType), cx)});");
+            if (!p.Source.Ghost && IsIntegral(m.ReturnType)) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {E(MathTypes.InRange(new MLit(At("ly")), m.ReturnType), cx)});");
         }
 
         // ------------------------------------------------------------------ procedures
 
         /// <summary>A procedure: its header (what it modifies: <paramref name="modifies"/>, closed over calls), its locals, its blocks.</summary>
-        public void Procedure(KProcedure p, ISet<string> modifies, ISet<string> anyWrites, List<string> functionFields)
+        public void Procedure(MProcedure p, ISet<string> modifies, ISet<string> anyWrites, List<string> functionFields)
         {
-            var m = p.Method;
+            var m = p.Source.Method;
             var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
-            if (p.StructRefThis) ins.Add("this");
+            if (p.Source.StructRefThis) ins.Add("this");
             var cx = new Context { Ins = ins };
             var atEntry = new Context { Ins = ins, AtEntry = true };
             // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out; a struct's this that its
             // method writes, too)
-            var ps = string.Join(", ", (p.HasThis ? new[] { p.StructRefThis ? "this$in: Ref" : "this: Ref" } : new string[0])
+            var ps = string.Join(", ", (p.Source.HasThis ? new[] { p.Source.StructRefThis ? "this$in: Ref" : "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}"))
                 // (what a lambda or a local function captures: inputs of its own)
-                .Concat(p.Captured.Select(c => $"{c.input}: {TypeOf(c.type)}")));
-            var outs = (p.ListCtor ? new[] { "result: Ref" } : p.StructThis && !p.StructRefThis ? new[] { "this: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
-                .Concat(p.StructRefThis ? new[] { "this: Ref" } : new string[0])
+                .Concat(p.Source.Captured.Select(c => $"{c.input}: {TypeOf(c.type)}")));
+            var outs = (p.Source.ListCtor ? new[] { "result: Ref" } : p.Source.StructThis && !p.Source.StructRefThis ? new[] { "this: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
+                .Concat(p.Source.StructRefThis ? new[] { "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
             // (an abstract member's: a declaration, its specifications after it, no body)
-            Line($"procedure {p.Name}({ps}){ret}{(p.Abstract ? ";" : "")}", Undecided(p));
+            Line($"procedure {p.Source.Name}({ps}){ret}{(p.Source.Abstract ? ";" : "")}", Undecided(p));
             if (modifies.Count > 0)
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f)))) Line($"  free ensures {GoodField(f)};");
             foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees && (modifies.Contains(FieldMap(f)) || modifies.Contains("$root")))) Line($"  free ensures {TreeField(f)};");
             // (a method that writes only arrays it makes (the Engine's MayWriteHeap): every other array as it was)
-            if ((!p.Abstract || p.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(p.Method))
+            if ((!p.Source.Abstract || p.Source.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(p.Source.Method))
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
             // (a field written only at this object, in its constructor, or at objects allocated since: the same at every other)
             foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !anyWrites.Contains(x) && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
-                Line($"  free ensures (forall o: Ref :: {(p.IsCtor ? "o != this && " : "")}old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
+                Line($"  free ensures (forall o: Ref :: {(p.Source.IsCtor ? "o != this && " : "")}old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
             // (an [Owned] object's field: written only where its view is, which the procedure holds only for this, the
             // views it gets, and the objects it makes)
-            var views = (p.ThisIsView ? new[] { "this" } : new string[0])
+            var views = (p.Source.ThisIsView ? new[] { "this" } : new string[0])
                 .Concat(m.Parameters.Where(HoldsView).Select(x => Local(x) + (x.RefKind == RefKind.Ref ? "$in" : "")))
                 // (and the views in the packages it gets)
                 .Concat(m.Parameters.Where(x => IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref)
@@ -1025,7 +1028,7 @@ namespace CsVerify.Verifier.Boogie
             // (with ownership trees: the views' whole trees, and their roots)
             // (a constructor's own object is a tree of its own, its root not set yet)
             string Outside(string o) => KernelTypes.Trees
-                ? string.Concat(views.Select(v => p.IsCtor && v == "this" ? $" && {o} != this" : $" && old($root[{o}]) != old($root[{v}])"))
+                ? string.Concat(views.Select(v => p.Source.IsCtor && v == "this" ? $" && {o} != this" : $" && old($root[{o}]) != old($root[{v}])"))
                 : string.Concat(views.Select(v => $" && {o} != {v}"));
             foreach (var map in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
                 Line($"  free ensures (forall o: Ref :: old($Alloc[o]){Outside("o")} ==> {map}[o] == old({map}[o]));");
@@ -1034,7 +1037,7 @@ namespace CsVerify.Verifier.Boogie
             // (Spec.Modifies: every field and cell of an object allocated before, and not in the frame then, is as it was)
             if (p.Frame != null)
             {
-                var w = E(new KOp("old", p.Frame), cx);
+                var w = E(new MOp("old", p.Frame), cx);
                 foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !{w}[o] ==> {map}[o] == old({map}[o]));");
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
@@ -1043,10 +1046,10 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free ensures {InRangeOfMemory};");
             foreach (var l in StepsKept(modifies, true)) Line("  " + l);
             Given(p, atEntry);
-            if (p.StructRefThis) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free ensures {fact};");
+            if (p.Source.StructRefThis) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free ensures {fact};");
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
-                if (IsIntegral(x.Type)) Line($"  free ensures {E(InRange(new KVar(Local(x)), x.Type), cx)};");
+                if (IsIntegral(x.Type)) Line($"  free ensures {E(MathTypes.InRange(new MVar(Local(x)), x.Type), cx)};");
                 if (IsStruct(x.Type)) foreach (var fact in ValueFacts(Local(x), x.Type, null, cx)) Line($"  free ensures {fact};");
                 if (IsRef(x.Type)) Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
                 if (IsData(x.Type) && x.Type.IsValueType) Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
@@ -1060,26 +1063,26 @@ namespace CsVerify.Verifier.Boogie
                 else if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
             }
             // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
-            foreach (var r in p.Requires) Line($"  {(p.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.FreeRequires ? null : r.Check);
+            foreach (var r in p.Requires) Line($"  {(p.Source.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.Source.FreeRequires ? null : r.Check);
             // (checked at each return, where it is reported: Boogie would report one return path of each)
             // (one of a parameter the body assigns is of its value at return, which callers don't see: they get none)
-            foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
-            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Ghost) Line($"  free ensures {E(InRange(new KVar("result"), Returns(m)), cx)};");
+            foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.Source.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
+            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Source.Ghost) Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
             if (functionFields != null)
-                Line($"  free ensures result == {E(new KFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.HasThis ? new[] { new KVar("this") } : new KExpr[0]).Concat(m.Parameters.Select(x => (KExpr)new KVar(Local(x)))).ToArray() }, cx)};");
+                Line($"  free ensures result == {E(new MFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.Source.HasThis ? new[] { new MVar("this") } : new MExpr[0]).Concat(m.Parameters.Select(x => (MExpr)new MVar(Local(x)))).ToArray() }, cx)};");
             if (Returns(m) != null && IsRef(Returns(m))) Line("  free ensures result == null || $Alloc[result];");
             // (a list's constructor: a new list)
-            if (p.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
+            if (p.Source.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
             if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m))) Line("  free ensures result != null;");
             if (Returns(m) != null && IsData(Returns(m))) Line($"  free ensures {DataFacts("result", Returns(m), cx)};");
             // (a constructor has set the fields that may not be null: it asserts so at each return)
-            if (p.IsCtor)
+            if (p.Source.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f)) &&
                                                                          (!Checks.IsRequired(f) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))))
                     Line($"  free ensures {FieldMap(f)}[this] != null;");
-            if (p.Abstract) return;
+            if (p.Source.Abstract) return;
             Line("{");
-            if (p.UsesPerm)
+            if (p.Source.UsesPerm)
             {
                 Line("  var perm: [Ref]bool;");
                 Line("  var pk: [Ref]int;");
@@ -1088,12 +1091,12 @@ namespace CsVerify.Verifier.Boogie
                 Line("  var owner: [Ref]Inst;");
                 Line("  var psnap: [Inst]int;");
                 Line("  var psnap$entry: [Inst]int;");
-                if (p.UsesFields)
+                if (p.Source.UsesFields)
                 {
                     Line("  var fperm: [Ref][int]bool;");
                     Line("  var fowner: [Ref][int]Inst;");
                 }
-                if (p.UsesCells)
+                if (p.Source.UsesCells)
                 {
                     Line("  var cells: [Ref][int]real;");
                     Line("  var cowner: [Ref][int]Inst;");
@@ -1102,9 +1105,9 @@ namespace CsVerify.Verifier.Boogie
             // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too. A variable of
             // the program's of a non-nullable reference type is never null: each write to it is checked, and it's read only
             // once written)
-            foreach (var l in p.Locals)
+            foreach (var l in p.Source.Locals)
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
-                     IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(InRange(new KVar(l.Name), l.Type), cx)};" :
+                     IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.InRange(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
                      $"  var {l.Name}: {TypeOf(l.Type)};");
             foreach (var x in ins) Line($"    {x} := {x}$in;");
@@ -1113,7 +1116,7 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  {b.Label}:");
                 // (a block's leading assertions and assumptions are a loop's invariants where it is a head: kept whole there)
                 // (elsewhere a check not assumed after is on a side branch: inline, a failing one would make what follows vacuous)
-                int lead = !p.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is KAssert || x is KAssume || x is KLoopFrame || x is KAtomicSteps || x is KConfinedFrame).Count();
+                int lead = !p.Source.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is MAssert || x is MAssume || x is MLoopFrame || x is MAtomicSteps || x is MConfinedFrame).Count();
                 for (int k = 0; k < b.Stmts.Count; k++) { _leading = k < lead; Statement(b.Stmts[k], cx); }
                 _leading = false;
                 switch (b.Jump)
@@ -1126,34 +1129,33 @@ namespace CsVerify.Verifier.Boogie
             Line("}");
             // the preconditions well-defined: a procedure of their own, which doesn't assume them (as Dafny's
             // well-formedness checks are), each under those before it
-            if (p.Entry.Any(s => s is KAssert))
+            if (p.Entry.Any(s => s is MAssert))
             {
-                Line($"procedure {p.Name}$wf({ps})", Undecided(p));
+                Line($"procedure {p.Source.Name}$wf({ps})", Undecided(p));
                 Given(p, atEntry);
                 Line("{");
-                if (p.UsesPerm) Line("  var psnap: [Inst]int;");
+                if (p.Source.UsesPerm) Line("  var psnap: [Inst]int;");
                 foreach (var s in p.Entry) Statement(s, atEntry);
                 Line("}");
             }
         }
 
-        private static Check Undecided(KProcedure p) => new Check
+        private static Check Undecided(MProcedure p) => new Check
         {
-            Id = BoogieTranslator.Undecided, Method = p.Result, Message = "Boogie couldn't decide it",
-            Span = (p.Method.Locations.FirstOrDefault() ?? Location.None).GetLineSpan(),
+            Id = BoogieTranslator.Undecided, Method = p.Source.Result, Message = "Boogie couldn't decide it",
+            Span = (p.Source.Method.Locations.FirstOrDefault() ?? Location.None).GetLineSpan(),
         };
 
         /// <summary>What a procedure is given, free: memory in range, this, a new object's defaults, its parameters' ranges and allocation.</summary>
-        private static bool MentionsAny(KExpr e, IEnumerable<string> names) => names.Any() && e switch
+        private static bool MentionsAny(MExpr e, IEnumerable<string> names) => names.Any() && e switch
         {
-            KOp { Op: "old" } => false,
-            KLit => false,
-            KVar v => names.Contains(v.Name),
-            KOp op => op.Args.Any(a => MentionsAny(a, names)),
-            KQuant q => (q.Range != null && MentionsAny(q.Range, names)) || MentionsAny(q.Body, names),
-            KFnApp f => f.Args.Any(a => MentionsAny(a, names)),
-            KFnCall c => (c.Receiver != null && MentionsAny(c.Receiver, names)) || c.Args.Any(a => MentionsAny(a, names)),
-            _ => true,
+            MOp { Op: "old" } => false,
+            MLit => false,
+            MVar v => names.Contains(v.Name),
+            MOp op => op.Args.Any(a => MentionsAny(a, names)),
+            MQuant q => (q.Range != null && MentionsAny(q.Range, names)) || MentionsAny(q.Body, names),
+            MFnApp f => f.Args.Any(a => MentionsAny(a, names)),
+            _ => throw MathTerms.NotMath(e),
         };
 
         /// <summary>
@@ -1162,8 +1164,8 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private string DataFacts(string local, ITypeSymbol t, Context cx)
         {
-            var name = E(new KVar(local), cx);
-            var isCase = E(IsCase(new KVar(local), t), cx);
+            var name = E(new MVar(local), cx);
+            var isCase = E(MathTypes.IsCase(new MVar(local), t), cx);
             if (!t.IsValueType) return $"{name} == null || {isCase}";
             var refs = KernelTypes.Data.Fields((INamedTypeSymbol)t).Where(f => IsRef(f.Type) || IsView(f.Type)).ToList();
             var fields = refs.Where(f => NotNullable(f.Type)).Select(f => $" && {FieldFunction(f)}({name}) != null")
@@ -1172,8 +1174,8 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>The reference-valued fields a procedure reads or writes, in order.</summary>
-        private static IEnumerable<ISymbol> RefFieldsOf(KProcedure p) =>
-            p.Fields.Where(f => IsField(f) && IsRef(FieldType(f)) && !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal);
+        private static IEnumerable<ISymbol> RefFieldsOf(MProcedure p) =>
+            p.Source.Fields.Where(f => IsField(f) && IsRef(FieldType(f)) && !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal);
 
         /// <summary>What an [Owns] field holds is in its container's tree, and isn't its root (Own.Give and Own.Take keep it so).</summary>
         private static string TreeField(ISymbol f) =>
@@ -1183,24 +1185,24 @@ namespace CsVerify.Verifier.Boogie
             ? $"({FieldMap(f)}[null] == null || $Alloc[{FieldMap(f)}[null]])"
             : $"(forall o: Ref :: {{ {FieldMap(f)}[o] }} $Alloc[o] && {FieldMap(f)}[o] != null ==> $Alloc[{FieldMap(f)}[o]])";
 
-        private void Given(KProcedure p, Context cx)
+        private void Given(MProcedure p, Context cx)
         {
-            var m = p.Method;
+            var m = p.Source.Method;
             Line($"  free requires {InRangeOfMemory};");
-            if (p.HasThis && p.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
-            if (p.HasThis && !IsStruct(m.ContainingType)) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
-            if (p.HasThis && IsStruct(m.ContainingType)) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free requires {fact};");
+            if (p.Source.HasThis && p.Source.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
+            if (p.Source.HasThis && !IsStruct(m.ContainingType)) Line(IsData(m.ContainingType) ? $"  free requires {E(MathTypes.IsCase(new MVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
+            if (p.Source.HasThis && IsStruct(m.ContainingType)) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free requires {fact};");
             // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap)
             foreach (var f in RefFieldsOf(p)) Line($"  free requires {GoodField(f)};");
             foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees)) Line($"  free requires {TreeField(f)};");
             // (a new object's fields are their defaults: its caller made them so)
-            if (p.IsCtor)
+            if (p.Source.IsCtor)
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal))
-                    Line($"  free requires {FieldMap(f)}[this] == {E(Default(FieldType(f)), cx)};");
+                    Line($"  free requires {FieldMap(f)}[this] == {E(MathTypes.Default(FieldType(f)), cx)};");
             foreach (var x in m.Parameters.Where(x => x.RefKind != RefKind.Out))
                 foreach (var fact in ValueFacts(Local(x), x.Type, x, cx)) Line($"  free requires {fact};");
             // (what a lambda or a local function captures: some value of its type)
-            foreach (var (input, type, notNull) in p.Captured)
+            foreach (var (input, type, notNull) in p.Source.Captured)
             {
                 foreach (var fact in ValueFacts(input, type, null, cx)) Line($"  free requires {fact};");
                 if (notNull && !(IsNullable(type) && NotNullable(type))) Line($"  free requires {input} != null;");
@@ -1210,12 +1212,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What a value from elsewhere is, of its type: a parameter's, a variable a lambda captures.</summary>
         private IEnumerable<string> ValueFacts(string local, ITypeSymbol type, IParameterSymbol x, Context cx)
         {
-            var name = E(new KVar(local), cx);
-            if (IsIntegral(type)) yield return E(InRange(new KVar(local), type), cx);
+            var name = E(new MVar(local), cx);
+            if (IsIntegral(type)) yield return E(MathTypes.InRange(new MVar(local), type), cx);
             // (a struct's integer fields: each in its type's range)
             if (IsStruct(type))
                 foreach (var (f, k) in StructFields(type).Select((f, k) => (f, k)).Where(x => IsIntegral(x.f.Type)))
-                    yield return E(InRange(TupleItem(new KVar(local), type, k), f.Type), cx);
+                    yield return E(MathTypes.InRange(MathTypes.TupleItem(new MVar(local), type, k), f.Type), cx);
             // (a span from elsewhere: its cells some array's, within its length)
             if (IsSpan(type)) yield return $"$sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}))";
             if (IsRef(type) || IsView(type) || IsShare(type)) yield return $"{name} == null || $Alloc[{name}]";
@@ -1229,16 +1231,16 @@ namespace CsVerify.Verifier.Boogie
             if (IsData(type)) yield return DataFacts(local, type, cx);
         }
 
-        private void Statement(KStmt s, Context cx)
+        private void Statement(MStmt s, Context cx)
         {
             switch (s)
             {
-                case KAssign a: Line($"    {a.Var} := {E(a.Value, cx)};"); return;
-                case KMapUpdate u: Line($"    {u.Map}[{E(u.Ref, cx)}]{(u.Index == null ? "" : $"[{E(u.Index, cx)}]")} := {E(u.Value, cx)};"); return;
+                case MAssign a: Line($"    {a.Var} := {E(a.Value, cx)};"); return;
+                case MMapUpdate u: Line($"    {u.Map}[{E(u.Ref, cx)}]{(u.Index == null ? "" : $"[{E(u.Index, cx)}]")} := {E(u.Value, cx)};"); return;
                 // (a check not assumed after: on a branch of its own that ends, so that, reported, it isn't assumed where
                 // Boogie looks for the next failure either, which would hide those after it on the same path)
-                case KAssert a when a.NotAssumedAfter && _leading: Line($"    assert {{:subsumption 0}} {E(a.Cond, cx)};", a.Check); return;
-                case KAssert a when a.NotAssumedAfter:
+                case MAssert a when a.NotAssumedAfter && _leading: Line($"    assert {{:subsumption 0}} {E(a.Cond, cx)};", a.Check); return;
+                case MAssert a when a.NotAssumedAfter:
                 {
                     var side = $"nc${_sides++}";
                     Line($"    goto {side}, {side}$go;");
@@ -1249,13 +1251,13 @@ namespace CsVerify.Verifier.Boogie
                     Line($"  {side}$go:");
                     return;
                 }
-                case KAssert a: Line($"    assert {E(a.Cond, cx)};", a.Check); return;
-                case KAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
-                case KHavoc h: Line($"    havoc {h.Var};"); return;
-                case KRoots roots when roots.Join:
+                case MAssert a: Line($"    assert {E(a.Cond, cx)};", a.Check); return;
+                case MAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
+                case MHavoc h: Line($"    havoc {h.Var};"); return;
+                case MRoots roots when roots.Join:
                     Line($"    $root := (lambda y: Ref :: (if $root[y] == {E(roots.Child, cx)} then $root[{E(roots.Container, cx)}] else $root[y]));");
                     return;
-                case KRoots roots:
+                case MRoots roots:
                 {
                     var c = E(roots.Container, cx);
                     var x = E(roots.Child, cx);
@@ -1263,42 +1265,42 @@ namespace CsVerify.Verifier.Boogie
                     Line($"    $root := (lambda y: Ref :: (if y == {x} then {x} else (if $root[y] == $root[{c}] && y != {c}{string.Concat(roots.Siblings.Select(g => $" && y != {g}[{c}]"))} && split$[y] then {x} else $root[y])));");
                     return;
                 }
-                case KAtomicSteps st when st.Head >= 0:
+                case MAtomicSteps st when st.Head >= 0:
                     // (since the loop's entry: of its snapshot)
                     foreach (var map in st.Maps.Where(AtomicSteps.ContainsKey).OrderBy(x => x, System.StringComparer.Ordinal))
                     {
-                        string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new KLit($"as{st.Head}{map}[{o}]")), "x$now", new KLit($"{map}[{o}]")), InProcedure);
+                        string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new MLit($"as{st.Head}{map}[{o}]")), "x$now", new MLit($"{map}[{o}]")), InProcedure);
                         Line($"    assume (forall o: Ref :: as{st.Head}$Alloc[o] ==> {At("o")});");
                         Line($"    assume {At("null")};");
                     }
                     return;
-                case KAtomicSteps _:
+                case MAtomicSteps _:
                     foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
                     return;
-                case KHavocAll ha:
+                case MHavocAll ha:
                     var havoc = ha.ProgramState ? "$havocProgram" : "$havoc";
                     Line(ha.Unless == null ? $"    call {havoc}();" : $"    if (!({E(ha.Unless, cx)})) {{ call {havoc}(); }}");
                     return;
-                case KKeep keep when !keep.After:
+                case MKeep keep when !keep.After:
                     foreach (var m in _stateMaps) Line($"    k${keep.Id}{m.name} := {m.name};");
                     return;
-                case KKeep keep:
+                case MKeep keep:
                     foreach (var m in _stateMaps)
-                        Line($"    assume (forall o: Ref :: ({string.Join(" || ", keep.Keep.Select(x => $"o == {E(new KVar(x), cx)}"))}) ==> {m.name}[o] == k${keep.Id}{m.name}[o]);");
+                        Line($"    assume (forall o: Ref :: ({string.Join(" || ", keep.Keep.Select(x => $"o == {E(new MVar(x), cx)}"))}) ==> {m.name}[o] == k${keep.Id}{m.name}[o]);");
                     return;
-                case KAwait aw:
+                case MAwait aw:
                 {
-                    var k = $"(lambda r$: Ref :: {(aw.Keep.Count == 0 ? "false" : string.Join(" || ", aw.Keep.Select(x => $"r$ == {E(new KVar(x), cx)}")))})";
+                    var k = $"(lambda r$: Ref :: {(aw.Keep.Count == 0 ? "false" : string.Join(" || ", aw.Keep.Select(x => $"r$ == {E(new MVar(x), cx)}")))})";
                     // (what its permissions cover, kept too: cells it holds, objects whose views it holds)
                     var held = aw.Cells || aw.Perm ? $", {(aw.Cells ? "cells" : "(lambda a: Ref :: (lambda i: int :: 0.0))")}, {(aw.Perm ? "perm" : "(lambda o: Ref :: false)")}" : "";
                     var suffix = held.Length > 0 ? "Held" : "";
                     Line(aw.When == null ? $"    call $await{suffix}({k}{held});" : $"    call $awaitIf{suffix}({E(aw.When, cx)}, {k}{held});");
                     return;
                 }
-                case KInvoke iv:
+                case MInvoke iv:
                     Line($"    call {(iv.Result == null ? "" : iv.Result + " := ")}$call.{iv.Key}({string.Join(", ", new[] { iv.Delegate }.Concat(iv.Args).Select(x => E(x, cx)))});");
                     return;
-                case KLambda lam:
+                case MLambda lam:
                 {
                     string Bind(IEnumerable<string> more) => string.Join(", ", lam.Params.Select(x => $"{x.name}: {x.type}").Concat(more));
                     string App(string fn, string more) => $"{fn}({lam.Var}{string.Concat(lam.Params.Select(x => ", " + x.name))}{more})";
@@ -1331,11 +1333,11 @@ namespace CsVerify.Verifier.Boogie
                     if (lam.Changes != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{frame}[o$]", $"{frame}[o$] ==> ({E(lam.Changes, cx)})[o$]")};");
                     return;
                 }
-                case KNewExc ne:
+                case MNewExc ne:
                     Line($"    havoc {ne.Var};");
                     Line($"    assume {ne.Var} != null && dtype({ne.Var}) == {TypeConst(ne.Type)};");
                     return;
-                case KFork fork:
+                case MFork fork:
                 {
                     // the way it throws, then the way it doesn't (a block of its own each)
                     var n = _forks++;
@@ -1357,12 +1359,12 @@ namespace CsVerify.Verifier.Boogie
                     Line($"  f${n}:");
                     return;
                 }
-                case KCallFrame { After: false } frame:
+                case MCallFrame { After: false } frame:
                     foreach (var x in new[] { "perm", "pinst", "owner", "psnap", "$Alloc" }.Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
                                  .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]).Concat(frame.OldGlobals).Distinct())
                         Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
                     return;
-                case KCallFrame frame:
+                case MCallFrame frame:
                 {
                     // (what the caller still holds, whole or folded into an instance it holds, the call couldn't change)
                     var sn = "s" + frame.Id;
@@ -1383,8 +1385,8 @@ namespace CsVerify.Verifier.Boogie
                     if (KernelTypes.Trees)
                         foreach (var (qm, qfields) in _ownedQueries.Where(q => q.fields.Any(frame.Maps.Contains)))
                         {
-                            var x = new KVar("x$q");
-                            var now = E(new KFnApp { Callee = qm, Function = FunctionName(qm), Layer = "$LS($LZ)", Fields = qfields, Args = new KExpr[] { x } }, cx);
+                            var x = new MVar("x$q");
+                            var now = E(new MFnApp { Callee = qm, Function = FunctionName(qm), Layer = "$LS($LZ)", Fields = qfields, Args = new MExpr[] { x } }, cx);
                             var maps = OwnArrays(qm) == null ? Maps(cx) : "";
                             var then = $"{FunctionName(qm)}($LS($LZ){(maps.Length == 0 ? "" : ", " + maps)}{string.Join("", qfields.Select(f => ", " + (frame.Maps.Contains(f) ? sn + f : Map(f, cx))))}, x$q)";
                             var recv = frame.Receiver == null ? "" : $" && x$q != {E(frame.Receiver, cx)} && {sn}$root[x$q] != {E(frame.Receiver, cx)}";
@@ -1400,11 +1402,11 @@ namespace CsVerify.Verifier.Boogie
                     {
                         // (a call that takes cells changes only those it got, and those folded into the instances it got, but
                         // for those of which a share is still in hand, which nobody else can write; and arrays it allocates)
-                        var (xv, iv) = (new KVar("x$"), new KVar("i$"));
+                        var (xv, iv) = (new MVar("x$"), new MVar("i$"));
                         var parts = frame.Given.Select(g => g.atom switch
                         {
-                            KCells c => E(Checks.InCells(g.guard, c, xv, iv), cx),
-                            KInst q => $"({E(g.guard, cx)} && {sn}$cowner[x$][i$] == {E(Checks.Instance(q.Pred, q.Args), cx)})",
+                            MCells c => E(Checks.InCells(g.guard, c, xv, iv), cx),
+                            MInst q => $"({E(g.guard, cx)} && {sn}$cowner[x$][i$] == {E(Checks.Instance(q.Pred, q.Args), cx)})",
                             _ => null,
                         }).Where(x => x != null).ToList();
                         var changed = parts.Count == 0 ? "false" : $"(({string.Join(" || ", parts)}) && {sn}$cells[x$][i$] <= 0.0)";
@@ -1415,19 +1417,19 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return;
                 }
-                case KSnapshot snap:
+                case MSnapshot snap:
                     if (snap.Frame.Maps.Count == 0) return;
                     foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps)) Line($"    s${snap.Frame.Head}{map} := {map};");
                     return;
-                case KConfinedSnapshot cs:
+                case MConfinedSnapshot cs:
                     foreach (var (name, _) in _stateMaps) Line($"    c${cs.Head}{name} := {name};");
                     return;
-                case KConfinedFrame cf:
+                case MConfinedFrame cf:
                     foreach (var (local, written) in cf.Locals.OrderBy(x => x.Key, System.StringComparer.Ordinal))
                         foreach (var (name, _) in _stateMaps.Where(m => !written.Contains(m.name) && !(written.Contains("$M.") && m.name.StartsWith("$F.$M."))))
                             Line($"    assume {local} != null ==> {name}[{local}] == c${cf.Head}{name}[{local}];");
                     return;
-                case KLoopFrame frame:
+                case MLoopFrame frame:
                     // (an assume at the head: what Boogie keeps across the loop's havoc, as an invariant)
                     foreach (var map in frame.Maps)
                     {
@@ -1435,7 +1437,7 @@ namespace CsVerify.Verifier.Boogie
                         Line($"    assume (forall r: Ref :: s${frame.Head}$Alloc[r]{others} ==> {map}[r] == s${frame.Head}{map}[r]);");
                     }
                     return;
-                case KCall c:
+                case MCall c:
                 {
                     var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.ThisOut == null ? new string[0] : new[] { c.ThisOut })
                         .Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();

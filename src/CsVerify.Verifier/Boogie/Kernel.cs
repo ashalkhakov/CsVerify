@@ -4,13 +4,15 @@ using Microsoft.CodeAnalysis;
 
 namespace CsVerify.Verifier.Boogie
 {
-    // The kernel ("idealized C#"): what the passes between Roslyn and Boogie pass along (docs/boogie.md).
-    //   Lowering:  Roslyn's control-flow graph -> blocks of kernel statements; C#'s meaning kept in typed nodes
-    //              (KArith, KConv, KElem, KLen, KFnCall), checks not yet made
-    //   Checks:    each of those nodes -> mathematics, and the asserts (and assumes) it needs, in evaluation order;
-    //              well-definedness, postconditions at returns, invariants and measures, termination, non-null arguments
-    //   Heap:      arrays -> element maps and allocation; what each procedure modifies
-    //   Printer:   Boogie text, and which line is which check
+    // The passes from Roslyn to Boogie, each from one level's trees to the next's (docs/boogie.md):
+    //   level 0    Roslyn's operations and control-flow graph
+    //   Lowering:  level 0 -> level 1, the kernel ("idealized C#", this file): blocks of kernel statements, C#'s meaning
+    //              kept in typed nodes (KArith, KConv, KElem, KLen, KFnCall), checks not yet made
+    //   Checks:    level 1 -> level 2 (Math.cs): each of those nodes made mathematics, and the asserts (and assumes) it
+    //              needs, in evaluation order; well-definedness, postconditions at returns, invariants and measures,
+    //              termination, non-null arguments
+    //   Heap:      level 2 -> level 3 (the same types): stores and allocations made map updates; what each procedure modifies
+    //   Printer:   level 3 -> Boogie text, and which line is which check
 
     /// <summary>How integer arithmetic is meant where it is.</summary>
     internal enum KMode
@@ -430,12 +432,6 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public int Phase;
         public KCall Started;
-        /// <summary>(its start's, kept for its join: what Checks made of it)</summary>
-        public KExpr MathReceiver;
-        public KExpr[] MathArgs;
-        public Dictionary<string, KExpr> GivenMap;
-        public List<(KExpr, KExpr)> Gave;
-        public bool CellCall, Pure;
     }
 
     /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>
@@ -661,13 +657,12 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Expr;
         public SyntaxNode At;
-        /// <summary>After Checks, for a requires: what a failure of it at a call is about.</summary>
-        public Check Check;
     }
 
     /// <summary>
-    /// One method as the passes see it. Lowering creates it and fills it in; Checks, Heap and the printer read it and add
-    /// what each of them works out. The fields are grouped by what they are, each group saying who sets it.
+    /// One method at level 1, as Lowering makes it; Checks makes level 2's of it (MProcedure, Math.cs), which keeps this
+    /// one for what doesn't change: what method it is, how it is encoded, its effects and what it names. The fields are
+    /// grouped by what they are, each group saying who sets it.
     /// </summary>
     internal sealed class KProcedure
     {
@@ -715,7 +710,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>It keeps single-field permissions (fperm, fowner): the program uses some.</summary>
         public bool UsesFields;
 
-        // ---- its contract, as kernel expressions: by Lowering (Checks turns them into mathematics)
+        // ---- its contract, as kernel expressions: by Lowering (Checks makes level 2's of them)
 
         public List<KSpec> Requires = new List<KSpec>(), Ensures = new List<KSpec>();
         /// <summary>Spec.Decreases of the method: its parameters' measure.</summary>
@@ -726,11 +721,6 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Frame;
         /// <summary>A function's Spec.Reads: the objects whose fields and cells its value depends on (a frame axiom says so).</summary>
         public KExpr ReadsFrame;
-        /// <summary>
-        /// A function's reads, as its body says them where it gives none (Checks): the objects it reads the fields and cells
-        /// of, each its parameters' or their fields' (none under a quantifier's variable), for its frame axiom alone.
-        /// </summary>
-        public KExpr InferredReads;
         /// <summary>A [Pure] or [GhostFunction] method of one expression: a function too, of this body.</summary>
         public KExpr FunctionBody;
         /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>
@@ -745,12 +735,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The parameters the body assigns (by value): each a local of the body, its value at entry the parameter's.</summary>
         public Dictionary<string, string> AssignedParams = new Dictionary<string, string>();
 
-        // ---- its body: by Lowering (Checks rewrites the blocks; Heap rewrites them again)
+        // ---- its body: by Lowering (its locals, Checks and Heap add to: the Boogie procedure's)
 
         public List<KBlock> Blocks = new List<KBlock>();
         public List<KLocal> Locals = new List<KLocal>();
-        /// <summary>After Checks: the asserts at entry (the preconditions well-defined).</summary>
-        public List<KStmt> Entry = new List<KStmt>();
         /// <summary>A lambda's or a local function's: the variables it captures, each some value of its type at entry.</summary>
         public readonly List<(string input, ITypeSymbol type, bool notNull)> Captured = new List<(string, ITypeSymbol, bool)>();
         /// <summary>Their symbols, in the same order (a call of a local function passes their values).</summary>
@@ -813,13 +801,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Uninterpreted functions it names: their declarations.</summary>
         public HashSet<string> Functions = new HashSet<string>();
 
-        // ---- for reporting: by Lowering (warnings, causes) and Checks (the count of obligations)
+        // ---- for reporting: by Lowering (warnings, causes)
 
         /// <summary>The translation's warnings (CSV1900, not errors): reported if Boogie verifies the method.</summary>
         public List<VerificationDiagnostic> Warnings = new List<VerificationDiagnostic>();
         /// <summary>For the library report: each variable's causes (Lowering.Causes), and the variables its values were made from.</summary>
         public readonly Dictionary<string, HashSet<string>> Causes = new Dictionary<string, HashSet<string>>();
         public readonly Dictionary<string, HashSet<string>> Deps = new Dictionary<string, HashSet<string>>();
-        public int Obligations;
     }
 }

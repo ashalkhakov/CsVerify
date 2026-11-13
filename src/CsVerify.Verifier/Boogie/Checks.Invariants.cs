@@ -23,37 +23,37 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>An immutable object (or null) of a class with invariants: they hold, as they did when it was built.</summary>
-        private void ObjectInvariant(KExpr o, ITypeSymbol type)
+        private void ObjectInvariant(MExpr o, ITypeSymbol type)
         {
-            if (!HasObjectInvariant(type) || !(Invariant(type, o) is KExpr inv)) return;
-            Assume(new KOp("||", new KOp("==", o, new KLit("null")), inv));
+            if (!HasObjectInvariant(type) || !(Invariant(type, o) is MExpr inv)) return;
+            Assume(new MOp("||", new MOp("==", o, new MLit("null")), inv));
         }
 
         /// <summary>The class's [Invariant]s of o (null if it has none).</summary>
-        private KExpr Invariant(ITypeSymbol type, KExpr o)
+        private MExpr Invariant(ITypeSymbol type, MExpr o)
         {
-            var parts = new List<KExpr>();
+            var parts = new List<MExpr>();
             foreach (var inv in DataTypes.Invariants(type))
             {
                 var m = inv.OriginalDefinition;
                 if (!_program.IsFunction(m)) throw new NotTranslated("the invariant " + m.Name);
-                parts.Add(new KFnApp { Callee = m, Function = FunctionName(m), Fields = _program.FunctionFields(m), Args = new[] { o } });
+                parts.Add(new MFnApp { Callee = m, Function = FunctionName(m), Fields = _program.FunctionFields(m), Args = new[] { o } });
             }
             return parts.Count == 0 ? null : And(parts);
         }
 
-        private void ProveInvariant(ITypeSymbol type, KExpr o, SyntaxNode at, string when)
+        private void ProveInvariant(ITypeSymbol type, MExpr o, SyntaxNode at, string when)
         {
-            if (Invariant(type, o) is KExpr inv) Assert(inv, At("CSV1015", at, $"invariant of {type.Name} might not hold {when}"));
+            if (Invariant(type, o) is MExpr inv) Assert(inv, At("CSV1015", at, $"invariant of {type.Name} might not hold {when}"));
         }
 
-        private void AssumeInvariant(ITypeSymbol type, KExpr o)
+        private void AssumeInvariant(ITypeSymbol type, MExpr o)
         {
-            if (Invariant(type, o) is KExpr inv) Assume(inv);
+            if (Invariant(type, o) is MExpr inv) Assume(inv);
             // (what a view's object refers to was there before it: allocated, so nothing built later is any of it)
             if (KernelTypes.Trees && IsOwnedClass(type))
                 foreach (var g in InstanceFields(type).Where(g => IsRef(FieldType(g))))
-                    Assume(Allocated(o, new KOp("sel", new KVar(FieldMap(g)), o)));
+                    Assume(Allocated(o, new MOp("sel", new MVar(FieldMap(g)), o)));
         }
     }
 }

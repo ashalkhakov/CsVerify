@@ -63,7 +63,7 @@ namespace CsVerify.Verifier.Boogie
         private readonly bool _checkOverflow;
 
         /// <summary>The procedures translated, written when all are (their modifies need what each calls).</summary>
-        private readonly List<KProcedure> _pending = new List<KProcedure>();
+        private readonly List<MProcedure> _pending = new List<MProcedure>();
 
         public BoogieTranslator(bool checkOverflow) { _checkOverflow = checkOverflow; }
 
@@ -284,23 +284,23 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The method as a procedure; throws <see cref="NotTranslated"/> for one outside the subset (then nothing is kept).</summary>
         public void Procedure(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result, ControlFlowGraph graph = null)
         {
-            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, graph: graph);
-            Checks.Run(p, this);
+            var k = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, graph: graph);
+            var p = Checks.Run(k, this);
             Heap.Run(p);
             // (the library members it calls: each a procedure of its stub's contract, once; one that doesn't translate refuses this)
-            var lib = new List<KProcedure>();
-            foreach (var callee in p.LibCalls.Where(c => !_libraries.Contains(c)))
+            var lib = new List<MProcedure>();
+            foreach (var callee in k.LibCalls.Where(c => !_libraries.Contains(c)))
             {
                 try
                 {
-                    var lp = Lowering.Lower(callee, ContractOf(callee), null, null, new MethodResult(), x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
-                    Checks.Run(lp, this);
+                    var lk = Lowering.Lower(callee, ContractOf(callee), null, null, new MethodResult(), x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
+                    var lp = Checks.Run(lk, this);
                     Heap.Run(lp);
                     lib.Add(lp);
                 }
                 catch (NotTranslated why) { throw new NotTranslated("a call of List's " + callee.Name + ": " + why.Message); }
             }
-            foreach (var lp in lib) { _libraries.Add(lp.Method); _pending.Add(lp); }
+            foreach (var lp in lib) { _libraries.Add(lp.Source.Method); _pending.Add(lp); }
             _pending.Add(p);
         }
 
@@ -314,8 +314,8 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public void ContractOnly(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result, ControlFlowGraph graph = null)
         {
-            var p = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, contractOnly: true, graph: graph);
-            Checks.Run(p, this);
+            var k = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, contractOnly: true, graph: graph);
+            var p = Checks.Run(k, this);
             Heap.Run(p);
             _pending.Add(p);
         }
@@ -323,10 +323,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Writes the functions and the procedures: each modifies what it writes, and what what it calls does.</summary>
         public void Finish()
         {
-            var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Fields), SymbolEqualityComparer.Default);
-            foreach (var p in _pending.Where(p => IsFunction(p.Method))) fields.UnionWith(FieldsOf(p.Method));
+            var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Source.Fields), SymbolEqualityComparer.Default);
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method))) fields.UnionWith(FieldsOf(p.Source.Method));
             // the predicates named, and those their bodies name
-            var preds = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Preds), SymbolEqualityComparer.Default);
+            var preds = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Source.Preds), SymbolEqualityComparer.Default);
             for (var work = new Stack<IMethodSymbol>(preds); work.Count > 0;)
             {
                 var pred = work.Pop();
@@ -337,11 +337,11 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var q in inner)
                     if (preds.Add(q)) work.Push(q);
             }
-            if (_pending.Any(p => p.UsesPerm)) _printer.Instances(preds);
+            if (_pending.Any(p => p.Source.UsesPerm)) _printer.Instances(preds);
             // the library stubs used (a string's [Pure] members): functions their contracts describe
             // (and the stubs those stubs' contracts call)
-            var stubs = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Stubs).Concat(_signatures.Values.SelectMany(s => s.Stubs)), SymbolEqualityComparer.Default);
-            var stubMath = new Dictionary<IMethodSymbol, (List<KExpr> requires, List<KExpr> ensures)>(SymbolEqualityComparer.Default);
+            var stubs = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Source.Stubs).Concat(_signatures.Values.SelectMany(s => s.Stubs)), SymbolEqualityComparer.Default);
+            var stubMath = new Dictionary<IMethodSymbol, (List<MExpr> requires, List<MExpr> ensures)>(SymbolEqualityComparer.Default);
             for (var work = new Stack<IMethodSymbol>(stubs); work.Count > 0;)
             {
                 var s = work.Pop();
@@ -359,75 +359,74 @@ namespace CsVerify.Verifier.Boogie
             OwnArrays();
             DataTypes();
             // (the lists' models: maps as fields are)
-            var models = _pending.SelectMany(p => p.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
+            var models = _pending.SelectMany(p => p.Source.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
                 .GroupBy(m => m.Name).Select(g => g.First()).OrderBy(m => m.Name, StringComparer.Ordinal).ToList();
-            _printer.Models(models, _pending.SelectMany(p => p.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
-            _printer.Declarations(_pending.SelectMany(p => p.Functions).Concat(_signatures.Values.SelectMany(s => s.Functions)).Distinct().OrderBy(x => x, StringComparer.Ordinal));
+            _printer.Models(models, _pending.SelectMany(p => p.Source.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
+            _printer.Declarations(_pending.SelectMany(p => p.Source.Functions).Concat(_signatures.Values.SelectMany(s => s.Functions)).Distinct().OrderBy(x => x, StringComparer.Ordinal));
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
-            foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
-                if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
-                else _printer.Function(p, FunctionFields(p.Method), fields,
-                                       ((IProgramFacts)this).Signature(p.Method).Requires.SelectMany(r => Checks.Atoms(r.Expr)).Any(a => a is KInst));
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate))
+                if (OverPredicate(p.Source.Method) != null) _printer.FunctionOverPredicate(p);
+                else _printer.Function(p, FunctionFields(p.Source.Method), fields,
+                                       ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => Checks.Atoms(r.Expr)).Any(a => a is KInst));
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
-            foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && p.Method.IsOverride))
-                for (var b = p.Method.OverriddenMethod?.OriginalDefinition; b != null; b = b.OverriddenMethod?.OriginalDefinition)
-                    if (IsFunction(b) && OverPredicate(b) == null && IsModeledClass(p.Method.ContainingType))
-                        _printer.Dispatch(b, FunctionFields(b), p.Method, FunctionFields(p.Method), fields);
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && p.Source.Method.IsOverride))
+                for (var b = p.Source.Method.OverriddenMethod?.OriginalDefinition; b != null; b = b.OverriddenMethod?.OriginalDefinition)
+                    if (IsFunction(b) && OverPredicate(b) == null && IsModeledClass(p.Source.Method.ContainingType))
+                        _printer.Dispatch(b, FunctionFields(b), p.Source.Method, FunctionFields(p.Source.Method), fields);
             // (the atomic fields' steps, kept wherever the fields are forgotten)
             foreach (var f in fields.Where(f => Atomics.IsAtomic(f) && Atomics.StepOf(f) != null && IsFunction(Atomics.StepOf(f).OriginalDefinition)))
             {
                 var step = Atomics.StepOf(f).OriginalDefinition;
-                var a = new KVar("x$old");
-                var b = new KVar("x$now");
-                _printer.AtomicSteps[FieldMap(f)] = new KOp("||", new KOp("==", a, b), Checks.MathOf(new KFnCall { Callee = step, Args = new KExpr[] { a, b } }, this, step));
+                var (a, b) = (new MVar("x$old"), new MVar("x$now"));
+                _printer.AtomicSteps[FieldMap(f)] = new MOp("||", new MOp("==", a, b), Checks.MathOf(new KFnCall { Callee = step, Args = new KExpr[] { new KVar("x$old"), new KVar("x$now") } }, this, step));
             }
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
                 .Concat(models.Select(m => m.Name)).Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).ToHashSet();
-            var writes = Closed(p => p.CallsDelegates ? new HashSet<string>(p.Modifies.Concat(_allMaps)) : p.Modifies);
-            var any = Closed(p => p.CallsDelegates ? new HashSet<string>(p.AnyWrites.Concat(_allMaps)) : p.AnyWrites);
-            _printer.UsesState |= _pending.Any(p => p.UsesState);
-            _printer.Delegates(_pending.SelectMany(p => p.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
-            if (_pending.Any(p => p.HavocsAll)) _printer.Havoc(_allMaps);
-            if (_pending.Any(p => p.Awaits)) _printer.Await(_allMaps);
+            var writes = Closed(p => p.Source.CallsDelegates ? new HashSet<string>(p.Source.Modifies.Concat(_allMaps)) : p.Source.Modifies);
+            var any = Closed(p => p.Source.CallsDelegates ? new HashSet<string>(p.Source.AnyWrites.Concat(_allMaps)) : p.Source.AnyWrites);
+            _printer.UsesState |= _pending.Any(p => p.Source.UsesState);
+            _printer.Delegates(_pending.SelectMany(p => p.Source.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
+            if (_pending.Any(p => p.Source.HavocsAll)) _printer.Havoc(_allMaps);
+            if (_pending.Any(p => p.Source.Awaits)) _printer.Await(_allMaps);
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
             foreach (var p in _pending)
-                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KCallFrame>().Where(f => !f.After))
+                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<MCallFrame>().Where(f => !f.After))
                 {
                     frame.Maps.AddRange((writes.TryGetValue(frame.Callee.OriginalDefinition, out var w) ? w : new HashSet<string>())
                         .Where(_printer.OwnedMaps.Contains).OrderBy(x => x, StringComparer.Ordinal));
-                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$perm", Raw = "[Ref]bool" });
-                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$pinst", Raw = "[Inst]int" });
-                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$owner", Raw = "[Ref]Inst" });
-                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$psnap", Raw = "[Inst]int" });
-                    p.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
-                    if (KernelTypes.Trees) p.Locals.Add(new KLocal { Name = $"s{frame.Id}$root", Raw = "[Ref]Ref" });
+                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$perm", Raw = "[Ref]bool" });
+                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$pinst", Raw = "[Inst]int" });
+                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$owner", Raw = "[Ref]Inst" });
+                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$psnap", Raw = "[Inst]int" });
+                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
+                    if (KernelTypes.Trees) p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$root", Raw = "[Ref]Ref" });
                     foreach (var map in frame.Maps)
-                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
+                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
                     foreach (var map in frame.Maps) frame.FieldIds[map] = FieldId(fields.First(f => FieldMap(f) == map));
                     if (frame.Fields)
                     {
-                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$fperm", Raw = "[Ref][int]bool" });
-                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$fowner", Raw = "[Ref][int]Inst" });
+                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$fperm", Raw = "[Ref][int]bool" });
+                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$fowner", Raw = "[Ref][int]Inst" });
                     }
                     if (frame.Cells)
                     {
                         frame.ElementMaps.AddRange((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));
-                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cells", Raw = "[Ref][int]real" });
-                        p.Locals.Add(new KLocal { Name = $"s{frame.Id}$cowner", Raw = "[Ref][int]Inst" });
+                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$cells", Raw = "[Ref][int]real" });
+                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$cowner", Raw = "[Ref][int]Inst" });
                         foreach (var map in frame.ElementMaps)
-                            p.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = "[Ref][int]" + ElementValue(map) });
+                            p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = "[Ref][int]" + ElementValue(map) });
                     }
                     // (and the globals its postconditions read as they were)
-                    foreach (var g in frame.OldGlobals.Where(g => !p.Locals.Any(l => l.Name == $"s{frame.Id}{g}")).ToList())
+                    foreach (var g in frame.OldGlobals.Where(g => !p.Source.Locals.Any(l => l.Name == $"s{frame.Id}{g}")).ToList())
                     {
                         var raw = g.StartsWith("$E.") ? ("[Ref][int]" + ElementValue(g))
                                 : fields.FirstOrDefault(f => FieldMap(f) == g) is ISymbol fs ? $"[Ref]{TypeOf(FieldType(fs))}" : null;
-                        if (raw != null) p.Locals.Add(new KLocal { Name = $"s{frame.Id}{g}", Raw = raw });
+                        if (raw != null) p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}{g}", Raw = raw });
                     }
                 }
             // (a call, in array mode, that may write any array: reported only if it may)
-            foreach (var a in _pending.SelectMany(p => p.Blocks).SelectMany(b => b.Stmts).OfType<KAssert>().Where(a => a.UnlessWritesArrays != null))
+            foreach (var a in _pending.SelectMany(p => p.Blocks).SelectMany(b => b.Stmts).OfType<MAssert>().Where(a => a.UnlessWritesArrays != null))
             {
                 var cw = writes.TryGetValue(a.UnlessWritesArrays, out var w) || writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out w) ? w : new HashSet<string>();
                 bool arrays = cw.Any(x => x.StartsWith("$E.")), writesFields = cw.Any(x => x.StartsWith("$F.") && !_printer.OwnedMaps.Contains(x));
@@ -435,42 +434,43 @@ namespace CsVerify.Verifier.Boogie
                 var uw = a.UnlessWritesArrays;
                 if (arrays && uw.DeclaringSyntaxReferences.Length > 0 && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(uw)) arrays = false;
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
-                if (!stands) a.Cond = new KLit("true");
+                if (!stands) a.Cond = new MLit("true");
             }
             // (around a call of an async method: a copy of each map, for the confined objects it can't reach)
             foreach (var p in _pending)
-                foreach (var keep in p.Blocks.SelectMany(b => b.Stmts).OfType<KKeep>().Where(k => !k.After))
+                foreach (var keep in p.Blocks.SelectMany(b => b.Stmts).OfType<MKeep>().Where(k => !k.After))
                     foreach (var (name, type) in _printer.StateMaps)
-                        p.Locals.Add(new KLocal { Name = $"k${keep.Id}{name}", Raw = type });
+                        p.Source.Locals.Add(new KLocal { Name = $"k${keep.Id}{name}", Raw = type });
             // (each confined frame's snapshot of every state map)
             foreach (var p in _pending)
-                foreach (var cf in p.Blocks.SelectMany(b => b.Stmts).OfType<KConfinedFrame>())
+                foreach (var cf in p.Blocks.SelectMany(b => b.Stmts).OfType<MConfinedFrame>())
                     foreach (var (name, type) in _printer.StateMaps)
-                        p.Locals.Add(new KLocal { Name = $"c${cf.Head}{name}", Raw = type });
+                        p.Source.Locals.Add(new KLocal { Name = $"c${cf.Head}{name}", Raw = type });
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
-                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<KLoopFrame>())
+                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<MLoopFrame>())
                 {
                     if (frame.Callees.Any(c => writes.TryGetValue(c, out var w) && w.Any(x => x.StartsWith("$E.")))) continue;
-                    frame.Maps = writes[p.Method].Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal).ToList();
+                    frame.Maps = writes[p.Source.Method].Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal).ToList();
                     if (frame.Maps.Count == 0) continue;
-                    p.Locals.Add(new KLocal { Name = $"s${frame.Head}$Alloc", Raw = "[Ref]bool" });
+                    p.Source.Locals.Add(new KLocal { Name = $"s${frame.Head}$Alloc", Raw = "[Ref]bool" });
                     foreach (var map in frame.Maps)
-                        p.Locals.Add(new KLocal { Name = $"s${frame.Head}{map}", Raw = "[Ref][int]" + ElementValue(map) });
+                        p.Source.Locals.Add(new KLocal { Name = $"s${frame.Head}{map}", Raw = "[Ref][int]" + ElementValue(map) });
                 }
             // the exception types named, and how they derive
-            var exceptions = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.ExceptionTypes).Concat(_signatures.Values.SelectMany(s => s.ExceptionTypes)), SymbolEqualityComparer.Default);
-            bool throws = _pending.Any(p => p.Blocks.SelectMany(b => b.Stmts).Any(s => s is KFork || s is KThrow || s is KNewExc || s is KThrowExit));
-            var classes = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.ClassTypes).Concat(_signatures.Values.SelectMany(s => s.ClassTypes)), SymbolEqualityComparer.Default);
-            foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && p.Method.IsOverride && IsModeledClass(p.Method.ContainingType)))
-                if (p.Method.OverriddenMethod is IMethodSymbol ob && IsFunction(ob.OriginalDefinition)) classes.Add(p.Method.ContainingType.OriginalDefinition);
+            var exceptions = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.Source.ExceptionTypes).Concat(_signatures.Values.SelectMany(s => s.ExceptionTypes)), SymbolEqualityComparer.Default);
+            // (a throw and a way out by one are Checks' to make into these: an exception assigned, a fork)
+            bool throws = _pending.Any(p => p.Blocks.SelectMany(b => b.Stmts).Any(s => s is MFork || s is MNewExc));
+            var classes = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.Source.ClassTypes).Concat(_signatures.Values.SelectMany(s => s.ClassTypes)), SymbolEqualityComparer.Default);
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && p.Source.Method.IsOverride && IsModeledClass(p.Source.Method.ContainingType)))
+                if (p.Source.Method.OverriddenMethod is IMethodSymbol ob && IsFunction(ob.OriginalDefinition)) classes.Add(p.Source.Method.ContainingType.OriginalDefinition);
             if (_compilationException != null && (exceptions.Count > 0 || throws) || classes.Count > 0)
                 _printer.ExceptionTypes(exceptions, _compilationException != null && (exceptions.Count > 0 || throws) ? _compilationException : null, classes);
             foreach (var p in _pending)
             {
                 // (the function's value is its body's: not where an override may answer the call)
-                _printer.Procedure(p, writes[p.Method], any[p.Method], IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && !Engine.IsOverridable(p.Method) ? FunctionFields(p.Method) : null);
-                Obligations[p.Result] = p.Obligations;
+                _printer.Procedure(p, writes[p.Source.Method], any[p.Source.Method], IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && !Engine.IsOverridable(p.Source.Method) ? FunctionFields(p.Source.Method) : null);
+                Obligations[p.Source.Result] = p.Obligations;
             }
             // the twins of what throws, for the ways calls of them throw
             foreach (var callee in _printer.Throwing.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal).ToList())
@@ -483,28 +483,28 @@ namespace CsVerify.Verifier.Boogie
             // the twins of what's started as a task or a thread: its preconditions free, as its start checked them
             foreach (var callee in _printer.Started.ToList())
             {
-                var p = _pending.FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.Method, callee.OriginalDefinition));
+                var p = _pending.FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.Source.Method, callee.OriginalDefinition));
                 if (p == null) continue;
                 var twin = p.Clone();
-                twin.Name = p.Name + "$started";
-                twin.Abstract = true;
-                twin.FreeRequires = true;
-                _printer.Procedure(twin, writes[p.Method], any[p.Method], null);
+                twin.Source.Name = p.Source.Name + "$started";
+                twin.Source.Abstract = true;
+                twin.Source.FreeRequires = true;
+                _printer.Procedure(twin, writes[p.Source.Method], any[p.Source.Method], null);
             }
             _printer.Started.Clear();
             _printer.Tuples();
             _printer.StaticReadonlyFacts();
-            foreach (var p in _pending.Where(p => p.Result != null && p.Warnings.Count > 0))
-                (_warnings.TryGetValue(p.Result, out var w) ? w : _warnings[p.Result] = new List<VerificationDiagnostic>()).AddRange(p.Warnings);
+            foreach (var p in _pending.Where(p => p.Source.Result != null && p.Source.Warnings.Count > 0))
+                (_warnings.TryGetValue(p.Source.Result, out var w) ? w : _warnings[p.Source.Result] = new List<VerificationDiagnostic>()).AddRange(p.Source.Warnings);
             _pending.Clear();
         }
 
         /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
         private void DataTypes()
         {
-            var defs = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.DataTypes).Concat(_signatures.Values.SelectMany(s => s.DataTypes)), SymbolEqualityComparer.Default);
+            var defs = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Source.DataTypes).Concat(_signatures.Values.SelectMany(s => s.DataTypes)), SymbolEqualityComparer.Default);
             // (the types of the procedures' parameters and results: their facts name them, a body or none)
-            foreach (var t in _pending.Concat(_signatures.Values).SelectMany(p => p.Method.Parameters.Select(x => x.Type).Append(Returns(p.Method))).Where(t => t != null && IsData(t)))
+            foreach (var t in _pending.Select(p => p.Source).Concat(_signatures.Values).SelectMany(p => p.Method.Parameters.Select(x => x.Type).Append(Returns(p.Method))).Where(t => t != null && IsData(t)))
                 defs.Add(Verifier.DataTypes.Def(t));
             if (defs.Count == 0) return;
             var cases = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
@@ -517,7 +517,7 @@ namespace CsVerify.Verifier.Boogie
                             work.Push(Verifier.DataTypes.Def(f.Type));
             }
             var list = new List<BoogiePrinter.DataCase>();
-            var fields = new Dictionary<string, (string type, KExpr fact)>();
+            var fields = new Dictionary<string, (string type, MExpr fact)>();
             foreach (var c in cases.OrderBy(x => Data.TagOf(x)))
             {
                 var ctor = Verifier.DataTypes.PrimaryConstructor(c) ?? throw new NotTranslated("a data case without its primary constructor: " + c.Name);
@@ -530,23 +530,23 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var prop in Data.Fields(c))
                 {
                     var fn = FieldFunction(prop);
-                    KExpr value = SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
-                        ? new KVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
+                    MExpr value = SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
+                        ? new MVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
                         : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
                     dc.Fields.Add((fn, value));
                     // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
                     // an integer one in its type's range)
                     if (!fields.ContainsKey(fn))
                         fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
-                            ? NotNullable(prop.OriginalDefinition.Type) ? IsCase(new KOp(fn, new KVar("d")), prop.Type)
-                              : new KOp("||", new KOp("==", new KOp(fn, new KVar("d")), new KLit("null")), IsCase(new KOp(fn, new KVar("d")), prop.Type))
-                            : IsIntegral(prop.OriginalDefinition.Type) ? InRange(new KOp(fn, new KVar("d")), prop.OriginalDefinition.Type) : null);
+                            ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
+                              : new MOp("||", new MOp("==", new MOp(fn, new MVar("d")), new MLit("null")), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
+                            : IsIntegral(prop.OriginalDefinition.Type) ? MathTypes.InRange(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type) : null);
                 }
                 list.Add(dc);
             }
             _printer.Data(list, fields.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => (kv.Key, kv.Value.type, kv.Value.fact)).ToList());
             // (valid values: their invariants hold, and their parts with invariants are valid, case by case)
-            var valid = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Valid).Concat(_signatures.Values.SelectMany(s => s.Valid)), SymbolEqualityComparer.Default);
+            var valid = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Source.Valid).Concat(_signatures.Values.SelectMany(s => s.Valid)), SymbolEqualityComparer.Default);
             for (var work = new Stack<INamedTypeSymbol>(valid); work.Count > 0;)
                 foreach (var c in Data.KnownCases(work.Pop()) ?? new INamedTypeSymbol[0])
                 {
@@ -555,18 +555,18 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
                         if (valid.Add(Verifier.DataTypes.Def(f.Type))) work.Push(Verifier.DataTypes.Def(f.Type));
                 }
-            var dv = new KVar("d");
-            var validity = new List<(string name, KExpr invariant, List<(string isCase, KExpr part)> parts)>();
+            var dv = new MVar("d");
+            var validity = new List<(string name, MExpr invariant, List<(string isCase, MExpr part)> parts)>();
             foreach (var t in valid.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
             {
                 var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.Rename(Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition), "this", dv)).ToList();
-                var parts = new List<(string, KExpr)>();
+                var parts = new List<(string, MExpr)>();
                 foreach (var c in Data.KnownCases(t).Where(c => !SymbolEqualityComparer.Default.Equals(c, t) && HasInvariants(c)))
-                    parts.Add(("$is." + CaseName(c).Substring(3), new KOp(ValidName(c), dv)));
+                    parts.Add(("$is." + CaseName(c).Substring(3), new MOp(ValidName(c), dv)));
                 foreach (var c in Data.KnownCases(t))
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
-                        parts.Add(("$is." + CaseName(c).Substring(3), new KOp("||", new KOp("==", new KOp(FieldFunction(f), dv), new KLit("null")), new KOp(ValidName(f.Type), new KOp(FieldFunction(f), dv)))));
-                validity.Add((ValidName(t), invs.Count == 0 ? new KLit("true") : invs.Aggregate((a, b) => new KOp("&&", a, b)), parts));
+                        parts.Add(("$is." + CaseName(c).Substring(3), new MOp("||", new MOp("==", new MOp(FieldFunction(f), dv), new MLit("null")), new MOp(ValidName(f.Type), new MOp(FieldFunction(f), dv)))));
+                validity.Add((ValidName(t), invs.Count == 0 ? new MLit("true") : invs.Aggregate((a, b) => new MOp("&&", a, b)), parts));
             }
             _printer.Valid(validity);
         }
@@ -587,28 +587,28 @@ namespace CsVerify.Verifier.Boogie
             bool ReadsNothing(IMethodSymbol m) => m.IsStatic && !m.IsAbstract && !Engine.IsOverridable(m) && m.Parameters.All(x => Scalar(x.Type)) && FieldsOf(m).Count == 0 &&
                 m.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).All(d => !d.DescendantNodes().Any(n => n is ElementAccessExpressionSyntax || n is ObjectCreationExpressionSyntax ||
                     n is InvocationExpressionSyntax inv && !(inv.Expression.ToString().StartsWith("Spec.") || inv.Expression.ToString().StartsWith("Math."))));
-            var functions = _pending.Where(p => (p.FunctionBody != null || IsFunction(p.Method) && ReadsNothing(p.Method)) && !p.IsPredicate && OverPredicate(p.Method) == null).ToDictionary(p => p.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            var functions = _pending.Where(p => (p.FunctionBody != null || IsFunction(p.Source.Method) && ReadsNothing(p.Source.Method)) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null).ToDictionary(p => p.Source.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             var own = functions.Keys.ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             List<(int arg, string param, string map)> Of(IMethodSymbol m) =>
                 m.Parameters.Where(x => IsArray(x.Type)).Select(x => (x.Ordinal + (m.IsStatic ? 0 : 1), Local(x), Elements(x.Type))).ToList();
-            bool Reads(KExpr e, HashSet<string> mine) => e switch
+            bool Reads(MExpr e, HashSet<string> mine) => e switch
             {
-                KOp { Op: "sel" } s when s.Args.Length == 3 && s.Args[0] is KVar map && map.Name.StartsWith("$E.") =>
-                    s.Args[1] is KVar a && mine.Contains(a.Name) && Reads(s.Args[2], mine),
-                KOp op => op.Args.All(x => Reads(x, mine)),
-                KQuant q => (q.Range == null || Reads(q.Range, mine)) && Reads(q.Body, mine),
-                KFnApp f => own.Contains(f.Callee) && Of(f.Callee).All(o => f.Args[o.arg] is KVar a && mine.Contains(a.Name)) && f.Args.All(x => Reads(x, mine)),
+                MOp { Op: "sel" } s when s.Args.Length == 3 && s.Args[0] is MVar map && map.Name.StartsWith("$E.") =>
+                    s.Args[1] is MVar a && mine.Contains(a.Name) && Reads(s.Args[2], mine),
+                MOp op => op.Args.All(x => Reads(x, mine)),
+                MQuant q => (q.Range == null || Reads(q.Range, mine)) && Reads(q.Body, mine),
+                MFnApp f => own.Contains(f.Callee) && Of(f.Callee).All(o => f.Args[o.arg] is MVar a && mine.Contains(a.Name)) && f.Args.All(x => Reads(x, mine)),
                 _ => true,
             };
             for (bool shrank = true; shrank;)
             {
                 shrank = false;
-                foreach (var p in functions.Values.Where(p => own.Contains(p.Method)).ToList())
+                foreach (var p in functions.Values.Where(p => own.Contains(p.Source.Method)).ToList())
                 {
-                    var mine = Of(p.Method).Select(o => o.param).ToHashSet();
+                    var mine = Of(p.Source.Method).Select(o => o.param).ToHashSet();
                     if (!new[] { p.FunctionBody }.Where(x => x != null).Concat(p.Requires.Select(r => r.Expr)).Concat(p.Ensures.Select(x => x.Expr)).All(x => Reads(x, mine)))
                     {
-                        own.Remove(p.Method);
+                        own.Remove(p.Source.Method);
                         shrank = true;
                     }
                 }
@@ -619,42 +619,42 @@ namespace CsVerify.Verifier.Boogie
         private HashSet<string> _allMaps = new HashSet<string>();
 
         /// <summary>A set of globals of each procedure's, with those of everything it calls.</summary>
-        private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<KProcedure, HashSet<string>> own)
+        private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<MProcedure, HashSet<string>> own)
         {
-            var sets = _pending.ToDictionary(p => p.Method, p => new HashSet<string>(own(p)), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            var sets = _pending.ToDictionary(p => p.Source.Method, p => new HashSet<string>(own(p)), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             // (a virtual member's call may run any override: what each does, it does; one of them not here, anything)
-            var edges = _pending.ToDictionary(p => p.Method, p => p.Calls.ToList(), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
-            foreach (var p in _pending.Where(p => p.Method.IsVirtual || p.Method.IsAbstract || p.Method.IsOverride))
+            var edges = _pending.ToDictionary(p => p.Source.Method, p => p.Source.Calls.ToList(), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
+            foreach (var p in _pending.Where(p => p.Source.Method.IsVirtual || p.Source.Method.IsAbstract || p.Source.Method.IsOverride))
             {
                 // (a [Pure] member whose every override is [Pure] too: no call of it writes anything, whichever runs)
-                if (IsFunction(p.Method) && OverridesOf(p.Method).All(o => ContractOf(o.OriginalDefinition) is Contract oc && oc.IsPure)) continue;
-                foreach (var o in OverridesOf(p.Method).Select(o => o.OriginalDefinition))
-                    if (sets.ContainsKey(o)) edges[p.Method].Add(o);
-                    else sets[p.Method].UnionWith(_allMaps);
+                if (IsFunction(p.Source.Method) && OverridesOf(p.Source.Method).All(o => ContractOf(o.OriginalDefinition) is Contract oc && oc.IsPure)) continue;
+                foreach (var o in OverridesOf(p.Source.Method).Select(o => o.OriginalDefinition))
+                    if (sets.ContainsKey(o)) edges[p.Source.Method].Add(o);
+                    else sets[p.Source.Method].UnionWith(_allMaps);
                 // (a call that may run an override changes what the member's Spec.Modifies
                 // allows, and without one, anything)
                 // (a library member's stub: what it says, unless it may run the program's code)
-                bool library = p.Method.DeclaringSyntaxReferences.Length == 0 && ContractOf(p.Method) is Contract pc && pc.IsStub;
-                if (Engine.IsOverridable(p.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Method))) sets[p.Method].UnionWith(_allMaps);
+                bool library = p.Source.Method.DeclaringSyntaxReferences.Length == 0 && ContractOf(p.Source.Method) is Contract pc && pc.IsStub;
+                if (Engine.IsOverridable(p.Source.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Source.Method))) sets[p.Source.Method].UnionWith(_allMaps);
             }
             // (a body not translated: what CsVerify's effects analysis says it writes, which is anything but the fields it doesn't)
-            foreach (var p in _pending.Where(p => p.Opaque))
+            foreach (var p in _pending.Where(p => p.Source.Opaque))
             {
-                var (written, all) = KernelTypes.FieldEffectsOf?.Invoke(p.Method) ?? (null, true);
+                var (written, all) = KernelTypes.FieldEffectsOf?.Invoke(p.Source.Method) ?? (null, true);
                 var kept = all ? new HashSet<string>() : new HashSet<string>(_allMaps.Where(x => x.StartsWith("$F.")));
                 if (!all) foreach (var f in written) kept.Remove(FieldMap(f));
-                sets[p.Method].UnionWith(_allMaps.Where(x => !kept.Contains(x)));
+                sets[p.Source.Method].UnionWith(_allMaps.Where(x => !kept.Contains(x)));
             }
             // (a delegate's call runs whichever body it was made of: anything)
-            foreach (var p in _pending.Where(p => p.Method.MethodKind == MethodKind.DelegateInvoke)) sets[p.Method].UnionWith(_allMaps);
+            foreach (var p in _pending.Where(p => p.Source.Method.MethodKind == MethodKind.DelegateInvoke)) sets[p.Source.Method].UnionWith(_allMaps);
             for (bool grew = true; grew;)
             {
                 grew = false;
                 foreach (var p in _pending)
-                    foreach (var c in edges[p.Method])
+                    foreach (var c in edges[p.Source.Method])
                         if (sets.TryGetValue(c, out var w))
                             foreach (var g in w.ToList())
-                                if (sets[p.Method].Add(g)) grew = true;
+                                if (sets[p.Source.Method].Add(g)) grew = true;
             }
             return sets;
         }
