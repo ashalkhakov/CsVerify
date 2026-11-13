@@ -531,11 +531,14 @@ namespace CsVerify.Verifier.Boogie
                     // (a struct's method that writes its receiver: the parameter it's called on)
                     case IInvocationOperation { Instance: { } wi } wc when WritesStructThis(wc.TargetMethod): Target(wi); break;
                 }
-            // (a lambda that reads one: its own input, the value when it runs; its postconditions don't name one,
-            // as it isn't steady. One that writes one isn't translated: its writes would have to reach the local)
-            foreach (var fn in ops.OfType<IFlowAnonymousFunctionOperation>().Where(f => !InSpec(f.Syntax)))
-                if (fn.Symbol.DeclaringSyntaxReferences.Any(r => found.Any(p => !NeverWrittenIn(r.GetSyntax(), p))))
-                    throw new NotTranslated("a parameter assigned in a lambda that captures it");
+            // (one a lambda or local function writes: assigned too, and forgotten after each call that may run it, as a
+            // local it writes is; a lambda that reads one reads its own input, the value when it runs)
+            foreach (var p in CapturedWrites().OfType<IParameterSymbol>())
+                if (!found.Contains(p, SymbolEqualityComparer.Default))
+                {
+                    if (!InSubset(p.Type) || IsView(p.Type) || IsShare(p.Type) || IsPackage(p.Type)) throw new NotTranslated("an assignment to a parameter of " + p.Type);
+                    found.Add(p);
+                }
             return found;
         }
 
@@ -875,7 +878,12 @@ namespace CsVerify.Verifier.Boogie
                         _secondEntries.Add(d.Ordinal);
             // (a parameter the body assigns is a local of it, which starts as the parameter: Boogie's parameters are
             // constants; the contract was read of the parameter already, and a postcondition is checked of the local)
-            foreach (var ap in AssignedParameters(cfg).Where(x => !_capturedParams.Contains(x))) _p.AssignedParams[Local(ap)] = Declare(_assigned[ap] = Local(ap) + "$v", ap.Type);
+            // (a parameter of the enclosing method's this lambda writes: a local of its own, from its input)
+            foreach (var ap in AssignedParameters(cfg))
+            {
+                var v = Declare(_assigned[ap] = Local(ap) + "$v", ap.Type);
+                if (!_capturedParams.Contains(ap)) _p.AssignedParams[Local(ap)] = v;
+            }
             // (what it captures: a variable of it, which starts as what came in)
             foreach (var (sym, input) in _capturedIn)
                 if (sym is IParameterSymbol cp) _assigned[cp] = Declare(input + "$v", cp.Type);
@@ -6037,12 +6045,12 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Locals that lambdas and local functions here write: unknown after every call that may run one.</summary>
-        private HashSet<ILocalSymbol> _capturedWrites;
+        private HashSet<ISymbol> _capturedWrites;
 
-        private HashSet<ILocalSymbol> CapturedWrites()
+        private HashSet<ISymbol> CapturedWrites()
         {
             if (_capturedWrites != null) return _capturedWrites;
-            _capturedWrites = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
+            _capturedWrites = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             foreach (var fn in _decl.DescendantNodes().Where(n => n is AnonymousFunctionExpressionSyntax || n is LocalFunctionStatementSyntax))
                 foreach (var id in fn.DescendantNodes().OfType<IdentifierNameSyntax>())
                 {
@@ -6051,8 +6059,10 @@ namespace CsVerify.Verifier.Boogie
                     bool written = e.Parent is AssignmentExpressionSyntax a && a.Left == e || e.Parent is PrefixUnaryExpressionSyntax ||
                                    e.Parent is PostfixUnaryExpressionSyntax pu && !pu.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression) ||
                                    e.Parent is ArgumentSyntax arg && !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None);
-                    if (written && _model.GetSymbolInfo(id).Symbol is ILocalSymbol l && !fn.Span.Contains(l.DeclaringSyntaxReferences.FirstOrDefault()?.Span ?? default))
-                        _capturedWrites.Add(l);
+                    if (written && _model.GetSymbolInfo(id).Symbol is ISymbol s && s is ILocalSymbol or IParameterSymbol { RefKind: RefKind.None } &&
+                        SymbolEqualityComparer.Default.Equals(s.ContainingSymbol, s is IParameterSymbol ? _m : s.ContainingSymbol) &&
+                        !fn.Span.Contains(s.DeclaringSyntaxReferences.FirstOrDefault()?.Span ?? default))
+                        _capturedWrites.Add(s);
                 }
             return _capturedWrites;
         }
@@ -6060,10 +6070,11 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>After a call that may run a lambda that writes locals: those locals are unknown.</summary>
         private void ForgetCaptured()
         {
-            foreach (var l in CapturedWrites())
+            foreach (var s in CapturedWrites())
             {
-                if (!InSubset(l.Type)) throw new NotTranslated("a lambda that writes a local of " + l.Type);
-                Emit(new KHavoc { Var = Declare(Local(l), l.Type) });
+                var type = s is IParameterSymbol ps ? ps.Type : ((ILocalSymbol)s).Type;
+                if (!InSubset(type)) throw new NotTranslated("a lambda that writes a variable of " + type);
+                Emit(new KHavoc { Var = s is IParameterSymbol p ? _assigned[p] : Declare(Local(s), type) });
             }
         }
 

@@ -133,5 +133,21 @@ public static class U
             Assert.Empty(r.Errors("U.Cap"));
             Assert.Equal(new[] { "CSV1002" }, r.Errors("U.CapWrong"));
         }
+
+        // (a parameter a lambda or local function writes: forgotten after each call that may run it, as a local is)
+        [Fact]
+        public void AParameterALambdaWrites_IsForgottenAfterItRuns()
+        {
+            var r = Harness.Verify(@"
+public static class U
+{
+    public static int Before(int x) { Spec.Requires(x == 1); System.Action a = () => { x = 5; }; Spec.Assert(x == 1); return x; }
+    public static int After(int x) { Spec.Requires(x == 1); System.Action a = () => { x = 5; }; a(); Spec.Assert(x == 1); return x; }
+    public static int Local(int x) { Spec.Requires(x == 1); void Set() { x = 7; } Set(); Spec.Assert(x == 1); return x; }
+}");
+            Assert.Empty(r.Errors("U.Before"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("U.After"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("U.Local"));
+        }
     }
 }
