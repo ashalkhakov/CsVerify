@@ -86,6 +86,10 @@ namespace CsVerify.Verifier.Boogie
                 again = again.Where(f => !recheck.Contains(f.method) || f.diagnostic.Id == "CSV1900" || wholeKeys.Contains((f.method, Key(f))) ||
                                          kept.Contains((f.method, Key(f))) || outOfTime.Contains(f.method))
                     .Concat(timedOut).ToList();
+                // (and what that run finds of its own, a counterexample split didn't get to: a failure too, never dropped,
+                // or a method whose split failures it doesn't confirm, and whose own it finds, would be verified)
+                var present = again.Select(f => (f.method, Key(f))).ToHashSet();
+                again = again.Concat(confirm.Where(f => f.diagnostic.Id != "CSV1900" && recheck.Contains(f.method) && present.Add((f.method, Key(f))))).ToList();
             }
             foreach (var m in failed)
             {

@@ -1193,7 +1193,10 @@ a long one that is hard as a whole is often easy split (Base64's encoder, decode
 method split proves all of is verified. A failure split finds is not yet one: Boogie reports the solver's unknown,
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
-finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
+finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900);
+what that whole run finds of its own (a counterexample split didn't get to) is reported too. (Dropping it once let a
+method whose split failures the whole didn't confirm, but whose own failure it found, through as verified: the fuzz test
+caught it.)
 (Reporting what split found there instead was tried: on a loaded machine, it reported Base64's correct invariant over
 `3 * k` as failing.)
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
@@ -1211,8 +1214,7 @@ and Boogie's own TimeoutException: Boogie waits for a check as long as the time 
 that answers just late (its process slow to start, on Windows) ends the run. Where the second run ends so too, its
 methods are not verified (CSV1902, with Boogie's reason). And a method is verified only where Boogie said its
 procedure was correct: one whose outcome was anything else, with no failure that maps to one of its checks, is
-undecided ("Boogie's outcome ... was TimedOut, with nothing reported") and goes down the same ladder (the fuzz test
-caught a method reported verified on a loaded CI machine whose precondition of a callee didn't hold). `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
+undecided ("Boogie's outcome ... was TimedOut, with nothing reported") and goes down the same ladder. `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
 
 A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
 the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided
