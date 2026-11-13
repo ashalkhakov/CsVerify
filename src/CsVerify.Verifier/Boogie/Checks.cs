@@ -828,7 +828,14 @@ namespace CsVerify.Verifier.Boogie
                         if (la.Write) foreach (var (map, fresh) in la.Fresh) Emit(new KRow { Map = map, Ref = null, Value = new KVar(fresh) });
                         return;
                     }
-                    if (!la.Plain) throw new NotTranslated("a library call handed objects other than arrays, under cell permissions");
+                    // (handed other objects, one that may write arrays may write those it reaches through them, whose cells this
+                    // method can't hold: CSV1016, and every array unknown after; one that only reads them, as any read)
+                    if (!la.Plain && la.Write)
+                    {
+                        Assert(new KLit("false"), At("CSV1016", la.At, $"'{la.At}' may write arrays it reaches through the objects it's handed, whose cells this method can't hold"), notAssumedAfter: true);
+                        foreach (var (map, fresh) in la.Fresh) Emit(new KRow { Map = map, Ref = null, Value = new KVar(fresh) });
+                        return;
+                    }
                     foreach (var (array, map, row) in la.Arrays)
                     {
                         var a = Code(array);

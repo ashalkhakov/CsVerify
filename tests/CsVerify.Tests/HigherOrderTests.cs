@@ -189,6 +189,19 @@ namespace CsVerify.Tests
         public void Lambdas_UnderSpecModifies_ThatMayWriteAnything() => Assert.Contains("CSV1017", Ids(C + "static void M(Cell c, Cell d) { Spec.Requires(c != null && d != null); " +
             "Spec.Modifies(ObjSet.Of(c)); Action a = () => { d.V = 5; }; a(); } }"));
 
+        // (holding permissions: a delegate is given none, so it may only be one that changes nothing)
+        [Fact]
+        public void Delegates_HoldingPermissions() => Assert.Empty(Ids(C + "static int M(int[] b, Func<int, int> g) { Spec.Requires(Spec.Acc(b) && b.Length > 0 && g != null && Spec.ChangesNothing(g) && Spec.Total(g)); " +
+            "Spec.Ensures(Spec.Acc(b)); b[0] = 2; Func<int, int> f = x => { Spec.Requires(x < 100); return x + 1; }; var r = f(1); g(r); Spec.Assert(b[0] == 2 && r == 2); return r; } }"));
+
+        [Fact]
+        public void Delegates_HoldingPermissions_ThatMayWriteAnything() => Assert.Contains("CSV1016", Ids(C + "static void M(int[] b, Action f) { Spec.Requires(Spec.Acc(b) && f != null && Spec.Total(f)); Spec.Ensures(Spec.Acc(b)); f(); } }"));
+
+        // (a library call handed an object, under cell permissions: where it may write arrays, it may write ones this method can't hold)
+        [Fact]
+        public void ALibraryCall_HandedAnObject_UnderCellPermissions() => Assert.Contains("CSV1016", Ids("public sealed class Holder { public int[] A = new int[1]; } " + C +
+            "static void M(int[] b, Holder h) { Spec.Requires(Spec.Acc(b) && h != null); Spec.Ensures(Spec.Acc(b)); Array.Clear(h.A, 0, 1); } }"));
+
         // (a generic method's group, Twice<int>: its contract, its T's values boxed)
         private const string Generic = "public static class G { public static int Twice<T>(T x, int n) { Spec.Requires(n >= 0 && n < 100); Spec.Ensures<int>(r => r == 2 * n); return 2 * n; } } ";
 

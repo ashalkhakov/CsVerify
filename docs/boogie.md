@@ -581,7 +581,8 @@ Where exceptions are seen it may throw, once it has done what it does (a fork to
 written with a value that branches (`d[k] = c ? a : b`) is its setter's call, of its receiver and index as they are
 then. Under cell permissions (`Spec.Acc`), where it's handed only arrays, scalars and strings, all the cells of each
 array it's handed must be held (wholly where it may write, CSV1016), and only those arrays' cells change; handed any
-other object there, or under `Mem`'s views, it isn't translated.
+other object there, one that only reads is as anywhere, and one that may write arrays may write those it reaches
+through that object, whose cells the method can't hold: CSV1016. `Mem`'s cells are no array's: no library call reaches them.
 
 **Manual memory.** ATS's views of `Mem`'s cells: the cells are the element maps' rows at
 `null` (`$E.Int32[null][a]`), and a view holds permissions to its cells as `Spec.Acc` holds an array's (array mode).
@@ -935,7 +936,10 @@ result boxed where the definition's type is a `T`, as a call of it has them.
 Under a method's `Spec.Modifies`, a lambda or method group is made as anywhere; a call of a delegate that may change
 anything breaks the frame (CSV1017), one known to change nothing (`$nochange`, `Spec.ChangesNothing`) doesn't.
 
-Not yet: delegates in a method that holds permissions (views, `Spec.Acc`).
+In a method that holds permissions (views, `Spec.Acc`), a delegate without a contract is given none, so a call of one,
+by the method or by a library member it's handed to, must be of one that changes nothing (`Spec.ChangesNothing`, a
+lambda that writes nothing, a `[Pure]` method's group), CSV1016 otherwise; a lambda made there may not capture a view, a
+share or a package (it would hold their permissions twice), nor a method group be an `[Owned]` object's.
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
 datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its

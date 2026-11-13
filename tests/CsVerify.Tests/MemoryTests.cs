@@ -57,6 +57,16 @@ public static class C
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Same"));
         }
 
+        // (a library call handed an array reaches no view's cells)
+        [Fact]
+        public void ALibraryCall_LeavesTheViewsCells() => Assert.Empty(Harness.Verify(@"
+public static class C
+{
+    static int M(int[] a) {
+        Spec.Requires(Spec.Acc(a)); Spec.Ensures(Spec.Acc(a)); Spec.Ensures((int r) => r == 4);
+        var p = Mem.Alloc(4, out var v); System.Array.Clear(a, 0, a.Length); int r = Mem.Read(in v, p); Mem.Free(v, p); return r; }
+}").Errors("M"));
+
         // (one view given by ref twice: the analyzer's linearity error, and translated (not CSV1902))
         [Fact]
         public void AViewGivenTwice_IsReported()

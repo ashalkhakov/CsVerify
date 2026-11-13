@@ -212,7 +212,7 @@ namespace CsVerify.Verifier.Boogie
             var kind = ElementwiseKind(call);
             var m = call.TargetMethod;
             var at = call.Syntax;
-            DelegatesHere("a library call of a delegate");
+            if (_p.UsesPerm && kind == "write") throw new NotTranslated("a library call that writes, of a delegate, with permissions");
             var da = call.Arguments.First(a => IsFunc(a.Parameter.Type));
             var type = (INamedTypeSymbol)da.Parameter.Type;
             var key = FuncKey(type);
@@ -263,7 +263,11 @@ namespace CsVerify.Verifier.Boogie
                                                                : $"'{m.Name}' may call '{da.Value.Syntax}' with any arguments, but it isn't known to accept them all: say so with Spec.Requires(Spec.Total({da.Value.Syntax}))" });
             }
             // (what the delegate may change, and what the member writes: anything, unless the delegate changes nothing)
-            if (kind == "write") { _p.HavocsAll = true; Emit(new KHavocAll()); }
+            // (holding permissions: the delegate is given none, so it may only be one that changes nothing)
+            if (_p.UsesPerm)
+                Emit(new KCheck { Cond = new KOp("$nochange", d), Id = "CSV1016", At = da.Syntax,
+                                  Message = $"'{m.Name}' calls '{da.Value.Syntax}', which may write anything, which this method's permissions don't allow (say it changes nothing with Spec.ChangesNothing)" });
+            else if (kind == "write") { _p.HavocsAll = true; Emit(new KHavocAll()); }
             else if (!quiet) { _p.HavocsAll = true; Emit(new KHavocAll { Unless = new KOp("$nochange", d) }); }
             ForgetCaptured();
             if (call.Type == null || call.Type.SpecialType == SpecialType.System_Void || !InSubset(call.Type)) return null;
@@ -4521,7 +4525,6 @@ namespace CsVerify.Verifier.Boogie
             // (not one that runs it alongside: Task.Run's, a thread pool's, a timer's, a task's continuation)
             if (handed.Count > 0 && (IsTaskLike(m.ReturnType) || m.ContainingNamespace?.ToDisplayString() is "System.Threading" or "System.Threading.Tasks" || m.ContainingType?.Name == "Timer")) return (false, null);
             if (handed.Count > 0 && _p.UsesPerm) return (false, null);
-            if (_p.MemViews) return (false, null);
             // (all it can reach is the arrays it's handed: no object of another kind, which under cell permissions it must be)
             bool Plain(IOperation v) => v == null || v.ConstantValue.HasValue || Scalar(v.Type) || IsString(v.Type) || IsArray(Unconverted(v).Type);
             bool plain = handed.Count == 0 && Plain(call.Instance) && call.Arguments.All(a => a.ArgumentKind != ArgumentKind.Explicit || Plain(a.Value));
@@ -6137,10 +6140,15 @@ namespace CsVerify.Verifier.Boogie
             if (_p.UsesPerm) throw new NotTranslated(what + " with permissions");
         }
 
+        /// <summary>Does the lambda read a variable of the method's that holds permissions (a view, a share, a package)?</summary>
+        private bool CapturesPermissions(IAnonymousFunctionOperation af) =>
+            af.Body.DescendantsAndSelf().Any(o => (o is ILocalReferenceOperation l && !SymbolEqualityComparer.Default.Equals(l.Local.ContainingSymbol, af.Symbol) ? l.Local.Type :
+                                                   o is IParameterReferenceOperation p && !SymbolEqualityComparer.Default.Equals(p.Parameter.ContainingSymbol, af.Symbol) ? p.Parameter.Type : null)
+                                                  is ITypeSymbol t && (IsView(t) || IsMemView(t) || IsShare(t) || IsPackage(t)));
+
         private KExpr DelegateCall(IInvocationOperation call)
         {
             if (!IsFunc(call.Instance?.Type)) throw new NotTranslated("a call of a delegate of " + call.Instance?.Type);
-            if (_p.UsesPerm) throw new NotTranslated("a call of a delegate with permissions");
             var throwsTo = _cfgBlock != null ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
             var values = Operands(new[] { call.Instance }.Concat(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToArray());
             var key = FuncKey(call.Instance.Type);
@@ -6151,6 +6159,10 @@ namespace CsVerify.Verifier.Boogie
             if (_contract.Modifies != null)
                 Emit(new KCheck { Cond = new KOp("$nochange", values[0]), Id = "CSV1017", At = call.Syntax,
                                   Message = $"'{call.Syntax}' calls a delegate that may write anything, which Spec.Modifies doesn't allow (say what it may change with Spec.ChangesNothing)" });
+            // (holding permissions: a delegate without a contract is given none, so it may only be one that changes nothing)
+            else if (_p.UsesPerm)
+                Emit(new KCheck { Cond = new KOp("$nochange", values[0]), Id = "CSV1016", At = call.Syntax,
+                                  Message = $"'{call.Syntax}' calls a delegate that may write anything, which this method's permissions don't allow (say it changes nothing with Spec.ChangesNothing)" });
             Emit(new KInvoke { Result = result, Delegate = values[0], Args = values.Skip(1).ToArray(), Key = key, At = call.Syntax, DelegateAt = call.Instance.Syntax });
             // (where exceptions are seen: it may throw, anything)
             if (throwsTo != null) Emit(new KFork { Overflow = new KLit("false"), Target = throwsTo, Exception = null });
@@ -6165,8 +6177,9 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr Lambda(IDelegateCreationOperation dc, IAnonymousFunctionOperation af)
         {
-            // (made, it changes nothing: under Spec.Modifies too)
-            if (_p.UsesPerm) throw new NotTranslated("a lambda with permissions");
+            // (made, it changes nothing: under Spec.Modifies, and holding permissions, too; but one that captures a view, a
+            // share or a package would hold its permissions twice)
+            if (_p.UsesPerm && CapturesPermissions(af)) throw new NotTranslated("a lambda that captures a view, a share or a package");
             var fn = af.Symbol;
             var c = _contractOf?.Invoke(fn) ?? throw new NotTranslated("a lambda without its contract");
             var own = new HashSet<ISymbol>(fn.Parameters, SymbolEqualityComparer.Default);
@@ -6265,7 +6278,9 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr MethodGroup(IDelegateCreationOperation dc, IMethodSymbol fn, IOperation instance)
         {
-            DelegatesHere("a method group");
+            // (holding permissions: of an [Owned] object, the delegate would need its view, which it isn't given)
+            if (_p.UsesPerm && (instance != null && IsOwnedClass(instance.Type) || fn.Parameters.Any(p => IsView(p.Type) || IsShare(p.Type) || IsPackage(p.Type))))
+                throw new NotTranslated("a method group of an [Owned] object's, or of views, with permissions");
             var c = _contractOf?.Invoke(fn) ?? throw new NotTranslated("a method group without its contract");
             var invoke = ((INamedTypeSymbol)dc.Type).DelegateInvokeMethod;
             if (invoke.Parameters.Length != fn.Parameters.Length || fn.Parameters.Any(p => p.RefKind != RefKind.None)) throw new NotTranslated("a method group of another shape");
