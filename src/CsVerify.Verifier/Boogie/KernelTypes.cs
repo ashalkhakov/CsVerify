@@ -112,7 +112,9 @@ namespace CsVerify.Verifier.Boogie
         public static string ElementValue(string map) => ElementValue(ElementTypes.First(t => ElementMap(t) == map));
 
         /// <summary>An array's element type: a scalar, or a reference (an object, an interface's, a string, object).</summary>
-        public static bool IsElement(ITypeSymbol t) => Scalar(t) || FloatArrays && IsFloating(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || IsStruct(t) || IsData(t) || IsNullableValue(t) || t?.SpecialType == SpecialType.System_Object);
+        public static bool IsElement(ITypeSymbol t) => Scalar(t) || FloatArrays && IsFloating(t) || RefArrays && (IsClass(t) || IsInterface(t) || IsString(t) || IsStruct(t) || IsData(t) || IsNullableValue(t) || t?.SpecialType == SpecialType.System_Object ||
+            // (an array of arrays, int[][]: its elements references, to arrays of their own)
+            IsArray(t));
 
         public static bool IsIntegral(ITypeSymbol t) => t != null && Widths.ContainsKey(Sp(t));
 

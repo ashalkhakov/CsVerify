@@ -42,14 +42,26 @@ namespace CsVerify.Verifier.Boogie
                 // (a loop's inferred fact that didn't hold: left out, its line kept)
                 foreach (var d in Disabled) if (d - 1 < lines.Length) lines[d - 1] = "    assert true;";
                 var used = string.Join("\n", lines.Where(l => !(l.Length > 0 && l[0] == '\u0001')));
-                return string.Join("\n", lines.Select(l =>
+                return Ascii(string.Join("\n", lines.Select(l =>
                 {
                     if (!(l.Length > 0 && l[0] == '\u0001')) return l;
                     int end = l.IndexOf('\u0002');
                     var key = l.Substring(Tagged.Length, end - Tagged.Length);
                     return used.Contains(key) ? l.Substring(end + 1) : "";
-                }));
+                })));
             }
+        }
+
+        /// <summary>
+        /// The program in ASCII, Boogie's identifiers': a letter of another alphabet (a variable σ's) its code, u03C3, as
+        /// KernelTypes.Ident writes it, wherever a name was made of a symbol's (its lines, and so Lines, as they were).
+        /// </summary>
+        private static string Ascii(string text)
+        {
+            if (text.All(c => c < 128)) return text;
+            var b = new StringBuilder(text.Length);
+            foreach (var c in text) if (c < 128) b.Append(c); else if (char.IsLetterOrDigit(c)) b.Append('u').Append(((int)c).ToString("X4")); else b.Append('_');
+            return b.ToString();
         }
 
         /// <summary>The lines (1-based) of loop facts left out: they didn't hold on entry or at a back edge.</summary>
