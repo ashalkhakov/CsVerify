@@ -368,6 +368,7 @@ namespace CsVerify.Verifier.Boogie
             var models = _pending.SelectMany(p => p.Models.Values).Concat(_signatures.Values.SelectMany(s => s.Models.Values))
                 .GroupBy(m => m.Name).Select(g => g.First()).OrderBy(m => m.Name, StringComparer.Ordinal).ToList();
             _printer.Models(models, _pending.SelectMany(p => p.Pairs).Concat(_signatures.Values.SelectMany(s => s.Pairs)).Distinct().ToList());
+            _printer.Declarations(_pending.SelectMany(p => p.Functions).Concat(_signatures.Values.SelectMany(s => s.Functions)).Distinct().OrderBy(x => x, StringComparer.Ordinal));
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))

@@ -115,7 +115,7 @@ namespace CsVerify.Verifier.Boogie
                     case IInvocationOperation inv when !(_isFunction(inv.TargetMethod.OriginalDefinition) || inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Math" ||
                                                         SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) ||
                                                         // (a string's [Pure] member with a stub, a list's Contains: as a specification reads them)
-                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null ||
+                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) ||
                                                         inv.Instance != null && CollectionKind(CollectionOf(inv.Instance.Type)) == "List" && inv.TargetMethod.Name == "Contains" && inv.Arguments.Length == 1):
                         return null;
                 }

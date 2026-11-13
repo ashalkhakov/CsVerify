@@ -692,6 +692,8 @@ namespace CsVerify.Verifier.Boogie
         public bool StructThis;
         /// <summary>A struct's method that writes this: this by reference, in as this$in, out as this (as a ref parameter).</summary>
         public bool StructRefThis;
+        /// <summary>Uninterpreted functions it names: their declarations.</summary>
+        public HashSet<string> Functions = new HashSet<string>();
         public HashSet<string> DelegateKeys = new HashSet<string>();
         public IMethodSymbol Method;
         public Contract Contract;

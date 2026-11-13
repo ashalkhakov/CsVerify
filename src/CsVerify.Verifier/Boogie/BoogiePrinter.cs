@@ -784,6 +784,12 @@ namespace CsVerify.Verifier.Boogie
         /// The collections' models: maps as fields are (a size never negative, what an integer's holds in its range); and
         /// the dictionaries' pairs' Key and Value, functions of them.
         /// </summary>
+        /// <summary>The uninterpreted functions procedures name (their declarations, whole).</summary>
+        public void Declarations(IEnumerable<string> lines)
+        {
+            foreach (var l in lines) Line(l);
+        }
+
         public void Models(List<ModelMap> models, List<(string key, string value)> pairs)
         {
             string Bound(string kind, string at)

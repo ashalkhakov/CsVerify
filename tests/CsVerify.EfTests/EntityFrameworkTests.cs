@@ -693,6 +693,16 @@ public sealed class Shop : DbContext
         public void AContextMadeInTaskRun_Verifies() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M(IDbContextFactory<Shop> factory) { await Task.Run(() => { using var db = factory.CreateDbContext(); return db.Orders.Count(); }); } }"));
 
+        // (a call EF translates, in a database lambda: the database's function of its arguments)
+        [Fact]
+        public void ATranslatedCallInAQuery_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static int M(Shop db) { return db.Customers.Where(c => c.Name.ToUpper() == \"A\").Count(); } }"));
+
+        [Fact]
+        public void GroupsAndGroupJoins_OnTheDatabase_Verify() => Assert.Empty(Errors("M",
+            "public static class C { public static int M(Shop db) { return db.Orders.GroupBy(o => o.CustomerId).Select(g => g.Count()).Count() + " +
+            "db.Customers.GroupJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, os) => new { c.Id, N = os.Count() }).Count(); } }", overflow: false));
+
         [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
             "public static class C { public static int M(Shop db) { return db.Orders.Where(o => o.Total > 0).Count(); } }").Methods);

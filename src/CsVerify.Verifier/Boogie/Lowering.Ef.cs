@@ -828,6 +828,19 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>Does EF translate a call of this member (whose arguments depend on the row)?</summary>
+        /// <summary>
+        /// In a database query's lambda: a library member EF translates that the kernel has no function of (a string's
+        /// ToUpper, Math's Round), of the subset's values. The database's function of its arguments.
+        /// </summary>
+        private bool DatabaseFunction(IInvocationOperation inv)
+        {
+            var m = inv.TargetMethod;
+            return _inDatabase > 0 && KernelTypes.Ef != null && m.DeclaringSyntaxReferences.Length == 0 && Translates(m) && !m.ReturnsVoid && InSubset(m.ReturnType) &&
+                   !m.IsGenericMethod && !IsStub(m.OriginalDefinition) && StringEquals(inv) == null && !IsEnumerableCall(m) && !IsQueryableMethod(m) &&
+                   m.ContainingType?.ToDisplayString() != "System.Math" && (inv.Instance == null || InSubset(inv.Instance.Type)) &&
+                   inv.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type) && !IsDelegate(a.Value.Type));
+        }
+
         private static bool Translates(IMethodSymbol m)
         {
             var type = (m.ReducedFrom ?? m).ContainingType;

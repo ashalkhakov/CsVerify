@@ -7236,6 +7236,16 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation sct when sct.Instance != null && IsToken(sct.Instance.Type) && sct.Property.Name == "CanBeCanceled":
                     return new KOp("$canBeCanceled", Spec(sct.Instance, result));
                 // (a call of what isn't [Pure], in an assertion of the body's: unknown, which warns)
+                // (in a database query's lambda, a call EF translates to SQL that the kernel has no function of: the
+                // database's function of its arguments, not C#'s (SQL's UPPER needn't be .NET's ToUpper))
+                case IInvocationOperation dbf when DatabaseFunction(dbf):
+                {
+                    var m = dbf.TargetMethod;
+                    var args = (dbf.Instance == null ? new IOperation[0] : new[] { dbf.Instance }).Concat(dbf.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToList();
+                    var name = "$db." + Ident(m.ContainingType.ToDisplayString() + "." + m.Name) + "." + string.Join("_", args.Select(a => TypeOf(a.Type).Replace("[", "_").Replace("]", "_")));
+                    _p.Functions.Add($"function {name}({string.Join(", ", args.Select((a, k) => $"a{k}: {TypeOf(a.Type)}"))}): {TypeOf(m.ReturnType)};");
+                    return new KOp(name, args.Select(a => Spec(a, result)).ToArray());
+                }
                 case IInvocationOperation np when _p.Result != null && !SpecSymbols.IsSpecClass(np.TargetMethod.ContainingType) && InSubset(np.Type) &&
                                                   !(_contractOf?.Invoke(np.TargetMethod.OriginalDefinition) is Contract nc && (nc.IsPure || nc.IsLemma)) && !_isFunction(np.TargetMethod) &&
                                                   np.Syntax.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault(i => i.Expression.ToString() is "Spec.Assert" or "Spec.Assume") != null:
