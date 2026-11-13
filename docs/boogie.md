@@ -811,8 +811,8 @@ functions of it, `$kvp.Key.`*K* and `$kvp.Value.`*V*). `Spec.Index` of such a lo
 its head, as for an array, at most the `Count` the collection had where the loop began (`fe$`*n*`$c`): `MoveNext`
 gives another only while fewer have gone, and, where the `Count` is still that, all of them (a dictionary's `Remove`
 may go on while it's enumerated, so fewer may be given). A dictionary's `Keys` or `Values` are enumerated as the
-dictionary is; a query's elements are read where the loop starts; an interface's list, or an enumerable of the
-program's, is a library enumerator whose elements aren't known.
+dictionary is; a query's, or an interface's list's, elements are read where the loop starts; any other `IEnumerable<T>`
+is an enumerator whose elements aren't known (see Iterators).
 
 **Collections.** A `List<T>`, `Dictionary<K, V>`, `HashSet<T>`, `Stack<T>` or `Queue<T>` of the subset's values is an object whose contents
 are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and
@@ -1174,7 +1174,14 @@ collection interfaces (read through them, they're unknown at each read).
 Explicit interface implementations (`int ICounter.Next()`) are procedures like any other, held to the interface's
 contract.
 
-Not yet (such a method is not verified, CSV1902, with why): iterators (`yield`), and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
+Iterators (`yield`): the body runs at the first `MoveNext`, after the call, so at its start, and after each `yield
+return` (its value evaluated, with its checks), the caller's code may have changed anything; `yield break` returns,
+and what the call gives isn't null. An iterator's postconditions would be of the enumerable, made before its body
+runs: not translated. A `foreach` over any other `IEnumerable<T>` (an iterator's, a parameter's) evaluates it once (a
+null one throws, CSV1013); each `MoveNext` may run the program's code, so may change anything, its answer unknown; each
+element is a value of its type; `Spec.Index` counts the edges back to the head.
+
+Not yet (such a method is not verified, CSV1902, with why): what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
 
 A filter (`Where`; and `Distinct`, `GroupBy`, `Union`, `Intersect`, `Except`, `DistinctBy` over each first
 occurrence) is a count, `c[j + 1] == c[j] + (keep(j) ? 1 : 0)`, and the indices of its matches, `ix`, increasing:

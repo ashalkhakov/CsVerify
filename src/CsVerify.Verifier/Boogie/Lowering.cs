@@ -58,6 +58,14 @@ namespace CsVerify.Verifier.Boogie
                                        bool contractOnly = false, ControlFlowGraph graph = null) =>
             new Lowering(m, contract, decl, model, result, isProcedure, isFunction, literal, contractOf) { _contractOnly = contractOnly, _graph = graph }.Run();
 
+        /// <summary>An iterator's caller runs (before its first MoveNext, and between the next): anything may change.</summary>
+        private void CallersRun()
+        {
+            _p.HavocsAll = true;
+            _p.CallsDelegates = true;
+            Emit(new KHavocAll());
+        }
+
         /// <summary>A lambda's or a local function's flow graph (its enclosing method's gives it).</summary>
         private ControlFlowGraph _graph;
 
@@ -828,6 +836,8 @@ namespace CsVerify.Verifier.Boogie
             // program's code, its delegates; as a body not translated is framed, Opaque)
             if (_decl == null && LibraryStub(_m)) { _p.Abstract = true; _p.Opaque = true; return _p; }
             EfNotYet();
+            // (an iterator's postconditions would be of the enumerable, made before its body runs)
+            if (_m.IsIterator && _contract.Ensures.Count > 0) throw new NotTranslated("an iterator's postcondition");
             var cfg = _graph ?? _model.GetOperation(_decl) switch
             {
                 IMethodBodyOperation body => ControlFlowGraph.Create(body),
@@ -896,6 +906,14 @@ namespace CsVerify.Verifier.Boogie
                     MemLiveEntry();
                     // (a struct's constructor: its value begins as the default)
                     if (_p.StructThis && !_p.StructRefThis) Emit(new KAssign { Var = "this", Value = StructDefault(_m.ContainingType) });
+                    // (an iterator's body runs at the first MoveNext, after the call: the state may have changed since; what
+                    // the call gave, the enumerable C# makes, isn't null)
+                    if (_m.IsIterator)
+                    {
+                        CallersRun();
+                        Emit(new KHavoc { Var = "result" });
+                        Emit(new KAssume { Cond = new KOp("!=", new KVar("result"), new KLit("null")) });
+                    }
                     // (an [Atomic] field's step: a step after a step is a step, so what other threads do between two reads is one; CSV1030)
                     if (KernelTypes.SteppedBy?.Invoke(_m)?.FirstOrDefault() is IFieldSymbol stepped && _m.IsStatic && _m.Parameters.Length == 2 && _isFunction(_m))
                     {
@@ -984,6 +1002,8 @@ namespace CsVerify.Verifier.Boogie
             public string Version;
             /// <summary>Through an enumerator: the collection's Count where the loop began.</summary>
             public string Size0;
+            /// <summary>An IEnumerable the kernel doesn't look into (Of, the sequence): its MoveNext may change anything.</summary>
+            public bool Opaque;
             /// <summary>A dictionary's Keys or Values (null: the collection itself), enumerated as the dictionary is; Of, the dictionary.</summary>
             public string View;
             public IOperation Of;
@@ -1021,6 +1041,13 @@ namespace CsVerify.Verifier.Boogie
                 bool isCollection = IsCollection(collection.Type);
                 // (a LINQ query, or one of its groups: read into a map where the loop starts, then indexed)
                 if (!IsArray(collection.Type) && !isString && !isCollection && QueryForEach(fs, fo, cfg, collection)) continue;
+                // (any other IEnumerable<T>, an iterator's say: an enumerator whose MoveNext may run the program's code,
+                // whose contract (the library interface's) says nothing)
+                if (!IsArray(collection.Type) && !isString && !isCollection && IsSequence(collection.Type))
+                {
+                    OpaqueForEach(fs, fo, cfg, collection);
+                    continue;
+                }
                 if (!IsArray(collection.Type) && !isString && !isCollection) continue;
                 // (a list: over its model, where the loop changes no list; any other collection, or a list it may change,
                 // through its enumerator, whose MoveNext checks the collection's version)
@@ -1060,6 +1087,39 @@ namespace CsVerify.Verifier.Boogie
                         break;
                     }
             }
+        }
+
+        /// <summary>
+        /// foreach over an IEnumerable&lt;T&gt; the kernel doesn't look into (an iterator's): the sequence evaluated once (a
+        /// null one throws), each MoveNext code that may change anything and whose answer isn't known, each element a
+        /// value of its type; Spec.Index counts the edges back to the head.
+        /// </summary>
+        private void OpaqueForEach(CommonForEachStatementSyntax fs, IForEachLoopOperation fo, ControlFlowGraph cfg, IOperation collection)
+        {
+            var element = ((INamedTypeSymbol)collection.Type).TypeArguments[0];
+            var target = fo.Locals.FirstOrDefault()?.Type;
+            if (target != null && !SymbolEqualityComparer.Default.Equals(target, element)) throw new NotTranslated("a foreach's conversion of its elements");
+            // (its expression, or within it: xs!'s is xs's)
+            var capture = cfg.Blocks.SelectMany(b => b.Operations).OfType<IFlowCaptureOperation>()
+                .FirstOrDefault(c => fs.Expression.DescendantNodesAndSelf().Contains(c.Syntax) && c.Value is IInvocationOperation gi && gi.TargetMethod.Name == "GetEnumerator");
+            var head = capture == null ? null : cfg.Blocks.FirstOrDefault(b => b.BranchValue is IInvocationOperation mn && mn.TargetMethod.Name == "MoveNext" &&
+                                                                               mn.Instance is IFlowCaptureReferenceOperation r && r.Id.Equals(capture.Id));
+            if (head == null) throw new NotTranslated("a foreach without its enumerator");
+            var n = _forEachAt.Count;
+            var fe = new ForEach
+            {
+                Head = head.Ordinal, Array = Declare($"fe${n}$a", collection.Type), Index = Declare($"fe${n}$i", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
+                Type = collection.Type, Element = element, At = fs.Expression, Opaque = true, Of = collection,
+            };
+            _forEach[capture.Id] = fe;
+            _forEachAt[head.Ordinal] = fe;
+            foreach (var l in fo.Locals) _forEachOf[l] = fe;
+            for (var region = head.EnclosingRegion; region != null; region = region.EnclosingRegion)
+                if (region.Kind == ControlFlowRegionKind.Try && region.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally)
+                {
+                    _erased.Add(region.EnclosingRegion);
+                    break;
+                }
         }
 
         /// <summary>Explicit enumerators of collections, by their locals: the collection, its version where it was made.</summary>
@@ -1125,6 +1185,14 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Current(ForEach fe)
         {
             if (fe.Mat != null) return new KOp("sel", new KVar(fe.Mat), new KVar(fe.Index));
+            // (an enumerator the kernel doesn't look into: a value of the element's type, not null where that says so)
+            if (fe.Opaque)
+            {
+                var e = Declare("t$" + _temps++, fe.Element);
+                Emit(new KHavoc { Var = e });
+                if (IsNullable(fe.Element) && NotNullable(fe.Element)) Emit(new KAssume { Cond = new KOp("!=", new KVar(e), new KLit("null")) });
+                return new KVar(e);
+            }
             // (an array's element, read where the loop is: as a[i] is, CSV1027 alongside other code)
             if (fe.Version == null && fe.Collection == null && !fe.String) HeldCell(new KVar(fe.Array), fe.At, write: false);
             if (fe.Version == null) return CurrentOf(fe);
@@ -1190,7 +1258,8 @@ namespace CsVerify.Verifier.Boogie
                 // (through an enumerator: at most as many as the collection had where the loop began)
                 list.Insert(0, new KSpec
                 {
-                    Expr = fe.Version == null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true)))
+                    Expr = fe.Opaque ? new KOp("<=", new KLit("0"), i)
+                         : fe.Version == null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true)))
                          : fe.Size0 != null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, new KVar(fe.Size0)))
                          : new KOp("<=", new KLit("0"), i),
                     At = fe.At,
@@ -1487,6 +1556,12 @@ namespace CsVerify.Verifier.Boogie
             if (op is IFlowCaptureOperation spec && InSpec(spec.Value.Syntax)) return;
             switch (op)
             {
+                // (an iterator's yield return: its value evaluated, then the caller's code runs until the next MoveNext,
+                // which may change anything)
+                case IReturnOperation { Kind: OperationKind.YieldReturn } yr:
+                    if (yr.ReturnedValue != null) Emit(new KAssign { Var = Declare("t$" + _temps++, yr.ReturnedValue.Type), Value = Expr(yr.ReturnedValue) });
+                    CallersRun();
+                    return;
                 // (an interface's task as a statement: it runs on, alongside the rest of this method, never awaited)
                 case IInvocationOperation bareTask when IsTaskMethod(bareTask.TargetMethod) && bareTask.TargetMethod.IsAbstract && !_awaiting:
                 {
@@ -1739,8 +1814,9 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign { Var = fe.Array, Value = coll });
                     Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
                     // (its length, read once: where a null one throws)
-                    if (fe.Collection != null)
+                    if (fe.Collection != null || fe.Opaque)
                         Emit(new KCheck { Cond = new KOp("!=", new KVar(fe.Array), new KLit("null")), Id = "CSV1013", At = fe.At, Message = $"'{fe.At}' might be null in '{fe.At}'" });
+                    if (fe.Opaque) return;
                     if (fe.Version != null) Emit(new KAssign { Var = fe.Version, Value = new KOp("sel", new KVar(VersionMap), new KVar(fe.Array)) });
                     if (fe.Size0 != null)
                     {
@@ -4948,6 +5024,15 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KAssume { Cond = new KOp("==>", new KVar(more), new KOp("<", i, n0)) });
                         Emit(new KAssume { Cond = new KOp("==>", new KOp("&&", new KOp("!", new KVar(more)), new KOp("==", LengthOf(fv), n0)), new KOp("==", i, n0)) });
                     }
+                    return new KVar(more);
+                }
+                // (an enumerator the kernel doesn't look into: its MoveNext may run the program's code, which may change
+                // anything; whether there's another isn't known)
+                case IInvocationOperation om when om.TargetMethod.Name == "MoveNext" && om.Instance is IFlowCaptureReferenceOperation eo && _forEach.TryGetValue(eo.Id, out var fo) && fo.Opaque:
+                {
+                    CallersRun();
+                    var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
+                    Emit(new KHavoc { Var = more });
                     return new KVar(more);
                 }
                 case IInvocationOperation mn when mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation er && _forEach.TryGetValue(er.Id, out var fm):
