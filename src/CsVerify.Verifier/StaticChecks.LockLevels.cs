@@ -12,7 +12,8 @@ namespace CsVerify.Verifier
     /// takes only locks of higher levels, and nothing is waited for that only another thread can end (CSV1025). Then every
     /// thread takes its locks in increasing order and no cycle of threads can wait on each other. Two locks of one field
     /// or class are ordered by their objects' ids (OrderedBy), proved where the second is taken, directly or by a call;
-    /// an array's elements by index (CheckLockOrder). And blocking on async code that comes back to the context it
+    /// an array's elements by index (both proved by the Boogie engine: Lowering's ProveOrderAt, UnderLock and
+    /// ElementLockOrder). And blocking on async code that comes back to the context it
     /// started on would wait for itself.
     /// </summary>
     internal sealed partial class StaticChecks
@@ -105,10 +106,10 @@ namespace CsVerify.Verifier
             string H = Named(h), A = Named(a);
             if (a.Lock != null && SymbolEqualityComparer.Default.Equals(h.Lock, a.Lock) && h.Element == a.Element)
             {
-                // (the same lock again: a lock is reentrant, and a semaphore taken twice is reported where it's checked; an array's elements: by index, CheckLockOrder)
+                // (the same lock again: a lock is reentrant, and a semaphore taken twice is reported where it's checked; an array's elements: by index, Lowering.ElementLockOrder)
                 if (h.Receiver == a.Receiver || a.Static) return;
                 if (a.Element) { Report("CSV1025", at, $"'{A}' is taken while '{H}' is held: elements of two arrays, in an order nothing fixes, could deadlock", isError: true); return; }
-                if (LockLevels.OrderedBy(a.Lock) != null) return; // (proved, ProveOrderAt)
+                if (LockLevels.OrderedBy(a.Lock) != null) return; // (proved, Lowering.ProveOrderAt)
                 Report("CSV1025", at, $"'{A}' is taken while '{H}' is held: two '{a.Lock.Name}' locks of different objects, in an order nothing fixes, could deadlock. Order them by an id: [LockLevel(n, OrderedBy = nameof(Id))]", isError: true);
                 return;
             }
@@ -174,7 +175,7 @@ namespace CsVerify.Verifier
                             Report("CSV1025", at, $"{what} takes '{t.Lock.Name}' (in '{t.In?.Name}'), which is held here: it would wait for itself", isError: true);
                             return;
                         }
-                        // (two objects ordered by an id: proved where the call is made, ProveOrderAtCall)
+                        // (two objects ordered by an id: proved where the call is made, Lowering.UnderLock)
                         if (!t.Element && LockLevels.OrderedBy(t.Lock) != null && t.Origin is LockLevels.Origin { AtCall: true } && site != null) continue;
                         Report("CSV1025", at, $"{what} may take '{t.Lock.Name}' of {(whose == null ? "an object that can't be told" : $"'{whose}'")} (in '{t.In?.Name}') while '{Named(h)}' is held: in an order nothing fixes, they could deadlock. Order them by an id: [LockLevel(n, OrderedBy = nameof(Id))]", isError: true);
                         return;
