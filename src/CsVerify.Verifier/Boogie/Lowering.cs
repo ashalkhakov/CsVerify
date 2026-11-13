@@ -6481,8 +6481,9 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KCheck { Cond = new KOp("||", new KOp("!=", cx.array, cy.array), new KOp("!=", cx.index, cy.index)), Id = "CSV1020", At = at, Message = string.Format(message, "array cell") });
                     else if (refOuts[i].Item2 == refOuts[j].Item2)
                     {
-                        if (IsView(x.Parameter.Type) || IsMemView(x.Parameter.Type) || IsPackage(x.Parameter.Type)) throw new NotTranslated("a variable given twice by ref");
                         Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1020", At = at, Message = string.Format(message, "variable"), NotAssumedAfter = true });
+                        // (a view, or a package of them, given twice: its permissions twice, nothing to go on with)
+                        if (IsView(x.Parameter.Type) || IsMemView(x.Parameter.Type) || IsPackage(x.Parameter.Type)) Emit(new KAssume { Cond = new KLit("false") });
                         // (a copy for the second, as Boogie can't give one variable twice)
                         var copy = Declare("t$" + _temps++, y.Parameter.Type);
                         Emit(new KAssign { Var = copy, Value = new KVar(refOuts[j].Item2) });

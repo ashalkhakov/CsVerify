@@ -56,5 +56,18 @@ public static class C
             Assert.Empty(r.Errors("Other"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Same"));
         }
+
+        // (one view given by ref twice: CSV1020, as for any variable)
+        [Fact]
+        public void AViewGivenTwice_IsReported()
+        {
+            var r = Harness.Verify(@"
+public static class C
+{
+    static void Two(ref ArrayView<int> a, ref ArrayView<int> b) { }
+    static void M(ref ArrayView<int> v) { Two(ref v, ref v); }
+}");
+            Assert.Contains("CSV1020", r.Errors("M"));
+        }
     }
 }

@@ -596,7 +596,7 @@ trade views without touching memory; `p.Offset(k)` is `Addr + k`. Their precondi
 said at the first cells of the views granted before it too (two intervals overlap only where one starts inside the
 other). The cells live (`$live`) are those held on entry and those `Mem` grants, less those it frees: a view given
 back (`ref`, `out`, a result) is of live cells. Linearity (a view used once, given back) is the analyzer's (CSV0001 and on); a call
-that gives one variable by `ref` twice isn't translated.
+that gives one view by `ref` twice is CSV1020, as for any variable, and goes no further.
 
 **ref and out parameters.** A `ref` parameter comes in as `p$x$in` and goes out as `p$x` (a requires, and `old`, read
 `p$x$in`); an `out` one only goes out. A `ref` or `out` argument is a local or a `ref`/`out` parameter, which the call
