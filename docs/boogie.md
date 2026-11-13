@@ -285,12 +285,13 @@ field's map has a `where` clause keeping every value in range.
   unless it is `required`. A specification that reads one assumes it where it is evaluated.
 - A local of non-nullable reference type has each write asserted not null (CSV1014).
 - An instance method is a procedure with `this` (not null, allocated) first; `o.M(...)` asserts `o != null`.
-  Virtual calls aren't translated.
+  A virtual call is a call of the static target's contract, which overrides are checked against (see Inheritance).
 - A constructor is a procedure on `this`, whose fields are their defaults at entry; it runs the field initializers,
   then its body. `new C(args)` allocates the object, sets its fields to their defaults and calls the constructor. An
   implicit constructor's initialized fields are unknown values at the call. A constructor that
   chains to `this(...)` skips the initializers and calls the other constructor on `this`, as `base(...)` is called
-  (its arguments evaluated first, branching or not); one that lets `this` escape isn't translated yet. An object
+  (its arguments evaluated first, branching or not). `this` may escape (`a[0] = this`, a call with it): where the
+  class has invariants or non-nullable fields, that's CSV1015, as the object isn't built yet. An object
   initializer's assignments are field stores on the new object (the control-flow graph spells them out).
 - A method that runs alongside other code (`[RunsConcurrently]`, or started as a task or thread), or reads a field a
   lock guards, is checked for races (CSV1027, and warnings: `Lowering.Races`).

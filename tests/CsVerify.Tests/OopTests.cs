@@ -96,5 +96,24 @@ public static class C {
         [Fact]
         public void ImmutableClasses_KeepTheirInvariants() =>
             Assert.Empty(Errors("M", "static void M(Square s) { Spec.Assert(s.Side >= 0); }"));
+
+        [Fact]
+        public void AConstructorMayLetThisEscape()
+        {
+            var r = Harness.Verify(@"
+public class Item
+{
+    public int V;
+    public Item(Item[] a) { Spec.Requires(a != null && a.Length > 0); Spec.Ensures(V == 4 && a[0] == this); a[0] = this; V = 4; }
+}
+public static class U
+{
+    public static void Make() { var a = new Item[1]; var i = new Item(a); Spec.Assert(i.V == 4 && a[0] == i); }
+    public static void MakeBad() { var a = new Item[1]; var i = new Item(a); Spec.Assert(i.V == 5); }
+}");
+            Assert.Empty(r.Errors("Item..ctor"));
+            Assert.Empty(r.Errors("U.Make"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("U.MakeBad"));
+        }
     }
 }
