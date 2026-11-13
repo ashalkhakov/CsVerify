@@ -126,15 +126,7 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 // (an interface's task as a statement: it runs on, alongside the rest of this method, never awaited)
                 case IInvocationOperation bareTask when IsTaskMethod(bareTask.TargetMethod) && bareTask.TargetMethod.IsAbstract && !_awaiting:
-                {
-                    StartedTaskCall(bareTask);
-                    _opaque = true;
-                    var t = new Task { Method = bareTask.TargetMethod, At = bareTask.Syntax, Thread = true, RunAt = bareTask.Syntax,
-                                       Awaited = Declare($"aw$d{_detached.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)) };
-                    Emit(new KAssign { Var = t.Awaited, Value = new KLit("false") });
-                    _detached.Add(t);
-                    return;
-                }
+                    { InterfaceTaskStatement(bareTask); return; }
                 // (Task.Run(...) as a statement: it runs on, alongside the rest of this method, never awaited)
                 case IInvocationOperation bare when IsTaskRun(bare, out var brun, out var blam):
                     Detach(brun, blam, kept: false);
@@ -154,93 +146,20 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation chain when chain.TargetMethod.MethodKind == MethodKind.Constructor && _p.IsCtor &&
                                                      (chain.Instance is IInstanceReferenceOperation ||
                                                       chain.Instance is IFlowCaptureReferenceOperation cr && _captured.TryGetValue(cr.Id, out var cv) && cv is IInstanceReferenceOperation):
-                {
-                    // base(...): the base class's constructor, on this object
-                    var ctor = chain.TargetMethod.OriginalDefinition;
-                    // (an implicit one of a class without field initializers does nothing)
-                    if (ctor.IsImplicitlyDeclared && !ctor.ContainingType.GetMembers().Any(x => !x.IsStatic && x.DeclaringSyntaxReferences.Any(r =>
-                            r.GetSyntax() is VariableDeclaratorSyntax { Initializer: not null } || r.GetSyntax() is PropertyDeclarationSyntax { Initializer: not null }))) return;
-                    if (!_isProcedure(ctor)) throw new NotTranslated("a call of " + ctor.ContainingType.Name + "'s constructor");
-                    _p.Calls.Add(ctor);
-                    var ordered = chain.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-                    var args = Operands(ordered.Select(a => a.Value).ToArray());
-                    Emit(new KCall { Callee = ctor, Receiver = new KVar("this"), ReceiverIsThis = true, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = chain.Syntax });
-                    return;
-                }
+                    { ConstructorChain(chain); return; }
                 case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
                     Own(own);
                     return;
                 // (var (a, b) = p: a package taken apart, or a data value's fields; the views that come out are in hand)
                 // (var (a, b) = t, of a tuple: each element; of a tuple written here, (x, y), each value)
                 case IDeconstructionAssignmentOperation tdc when IsTuple(dc_Type(tdc)) && DeconstructedLocals(tdc.Target) is List<ILocalSymbol> tparts:
-                {
-                    var items = Unconverted(tdc.Value) is ITupleOperation lit && lit.Elements.Length == tparts.Count ? lit.Elements.Select(x => Expr(x)).ToList() : null;
-                    KExpr whole = null;
-                    if (items == null)
-                    {
-                        var w = Declare("t$" + _temps++, tdc.Value.Type);
-                        Emit(new KAssign { Var = w, Value = Expr(tdc.Value) });
-                        whole = new KVar(w);
-                    }
-                    // (all read before any is assigned: (a, b) = (b, a))
-                    var temps = new List<string>();
-                    for (int k = 0; k < tparts.Count; k++)
-                    {
-                        if (tparts[k] == null) { temps.Add(null); continue; }
-                        var t = Declare("t$" + _temps++, tparts[k].Type);
-                        Emit(new KAssign { Var = t, Value = items != null ? items[k] : TupleItem(whole, tdc.Value.Type, k) });
-                        temps.Add(t);
-                    }
-                    for (int k = 0; k < tparts.Count; k++)
-                        if (tparts[k] != null) Emit(new KAssign { Var = Declare(Local(tparts[k]), tparts[k].Type), Value = new KVar(temps[k]) });
-                    return;
-                }
+                    { TupleDeconstruction(tdc, tparts); return; }
                 // ((a[i], a[j]) = (a[j], a[i]), of a tuple: each value read first, then each target written, as C# does where the
                 // targets' parts are variables that the values don't change)
                 case IDeconstructionAssignmentOperation gdc when IsTuple(dc_Type(gdc)) && gdc.Target is ITupleOperation gt && gt.Elements.All(SimpleTarget):
-                {
-                    var items = Unconverted(gdc.Value) is ITupleOperation lit && lit.Elements.Length == gt.Elements.Length ? lit.Elements.Select(x => Expr(x)).ToList() : null;
-                    KExpr whole = null;
-                    if (items == null)
-                    {
-                        var w = Declare("t$" + _temps++, gdc.Value.Type);
-                        Emit(new KAssign { Var = w, Value = Expr(gdc.Value) });
-                        whole = new KVar(w);
-                    }
-                    var temps = new List<string>();
-                    for (int k = 0; k < gt.Elements.Length; k++)
-                    {
-                        if (gt.Elements[k] is IDiscardOperation) { temps.Add(null); continue; }
-                        var t = Declare("t$" + _temps++, gt.Elements[k].Type);
-                        Emit(new KAssign { Var = t, Value = items != null ? items[k] : TupleItem(whole, gdc.Value.Type, k) });
-                        temps.Add(t);
-                    }
-                    for (int k = 0; k < gt.Elements.Length; k++)
-                        if (temps[k] != null) Assign(gt.Elements[k], new KVar(temps[k]));
-                    return;
-                }
+                    { TupleSwap(gdc, gt); return; }
                 case IDeconstructionAssignmentOperation dc when IsData(dc.Value.Type) && DeconstructedLocals(dc.Target) is List<ILocalSymbol> parts:
-                {
-                    var fields = KernelTypes.Data.Fields((INamedTypeSymbol)dc.Value.Type);
-                    if (fields.Count != parts.Count) throw new NotTranslated("a deconstruction of another shape");
-                    if (IsPackage(dc.Value.Type)) CheckPackage(dc.Value.Type);
-                    Data(dc.Value.Type);
-                    var whole = Declare("t$" + _temps++, dc.Value.Type);
-                    Emit(new KAssign { Var = whole, Value = Expr(dc.Value) });
-                    for (int k = 0; k < parts.Count; k++)
-                    {
-                        if (parts[k] == null) continue;
-                        var field = fields[k];
-                        KExpr read = new KDataField { Function = FieldFunction(field), Value = new KVar(whole), At = dc.Value.Syntax, ValueAt = dc.Value.Syntax, Struct = dc.Value.Type.IsValueType };
-                        read = Unbox(read, field.OriginalDefinition.Type, parts[k].Type);
-                        var local = Declare(Local(parts[k]), parts[k].Type);
-                        Emit(new KAssign { Var = local, Value = read });
-                        if (IsView(parts[k].Type)) Emit(new KOwn { Kind = "unpack", Obj = new KVar(local), Type = ViewOf(parts[k].Type), At = dc.Syntax });
-                        else if (IsRef(parts[k].Type) && NotNullable(field.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(local), new KLit("null")) });
-                        if (HasInvariants(parts[k].Type)) AssumeValid(new KVar(local), parts[k].Type);
-                    }
-                    return;
-                }
+                    { DataDeconstruction(dc, parts); return; }
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
                     switch (inv.TargetMethod.Name)
                     {
@@ -428,6 +347,102 @@ namespace CsVerify.Verifier.Boogie
                 default:
                     throw new NotTranslated(op.Kind.ToString());
             }
+        }
+
+        private void InterfaceTaskStatement(IInvocationOperation bareTask)
+        {
+            StartedTaskCall(bareTask);
+            _opaque = true;
+            var t = new Task { Method = bareTask.TargetMethod, At = bareTask.Syntax, Thread = true, RunAt = bareTask.Syntax,
+                               Awaited = Declare($"aw$d{_detached.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)) };
+            Emit(new KAssign { Var = t.Awaited, Value = new KLit("false") });
+            _detached.Add(t);
+            return;
+        }
+
+        private void ConstructorChain(IInvocationOperation chain)
+        {
+            // base(...): the base class's constructor, on this object
+            var ctor = chain.TargetMethod.OriginalDefinition;
+            // (an implicit one of a class without field initializers does nothing)
+            if (ctor.IsImplicitlyDeclared && !ctor.ContainingType.GetMembers().Any(x => !x.IsStatic && x.DeclaringSyntaxReferences.Any(r =>
+                    r.GetSyntax() is VariableDeclaratorSyntax { Initializer: not null } || r.GetSyntax() is PropertyDeclarationSyntax { Initializer: not null }))) return;
+            if (!_isProcedure(ctor)) throw new NotTranslated("a call of " + ctor.ContainingType.Name + "'s constructor");
+            _p.Calls.Add(ctor);
+            var ordered = chain.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var args = Operands(ordered.Select(a => a.Value).ToArray());
+            Emit(new KCall { Callee = ctor, Receiver = new KVar("this"), ReceiverIsThis = true, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = chain.Syntax });
+            return;
+        }
+
+        private void TupleDeconstruction(IDeconstructionAssignmentOperation tdc, List<ILocalSymbol> tparts)
+        {
+            var items = Unconverted(tdc.Value) is ITupleOperation lit && lit.Elements.Length == tparts.Count ? lit.Elements.Select(x => Expr(x)).ToList() : null;
+            KExpr whole = null;
+            if (items == null)
+            {
+                var w = Declare("t$" + _temps++, tdc.Value.Type);
+                Emit(new KAssign { Var = w, Value = Expr(tdc.Value) });
+                whole = new KVar(w);
+            }
+            // (all read before any is assigned: (a, b) = (b, a))
+            var temps = new List<string>();
+            for (int k = 0; k < tparts.Count; k++)
+            {
+                if (tparts[k] == null) { temps.Add(null); continue; }
+                var t = Declare("t$" + _temps++, tparts[k].Type);
+                Emit(new KAssign { Var = t, Value = items != null ? items[k] : TupleItem(whole, tdc.Value.Type, k) });
+                temps.Add(t);
+            }
+            for (int k = 0; k < tparts.Count; k++)
+                if (tparts[k] != null) Emit(new KAssign { Var = Declare(Local(tparts[k]), tparts[k].Type), Value = new KVar(temps[k]) });
+            return;
+        }
+
+        private void TupleSwap(IDeconstructionAssignmentOperation gdc, ITupleOperation gt)
+        {
+            var items = Unconverted(gdc.Value) is ITupleOperation lit && lit.Elements.Length == gt.Elements.Length ? lit.Elements.Select(x => Expr(x)).ToList() : null;
+            KExpr whole = null;
+            if (items == null)
+            {
+                var w = Declare("t$" + _temps++, gdc.Value.Type);
+                Emit(new KAssign { Var = w, Value = Expr(gdc.Value) });
+                whole = new KVar(w);
+            }
+            var temps = new List<string>();
+            for (int k = 0; k < gt.Elements.Length; k++)
+            {
+                if (gt.Elements[k] is IDiscardOperation) { temps.Add(null); continue; }
+                var t = Declare("t$" + _temps++, gt.Elements[k].Type);
+                Emit(new KAssign { Var = t, Value = items != null ? items[k] : TupleItem(whole, gdc.Value.Type, k) });
+                temps.Add(t);
+            }
+            for (int k = 0; k < gt.Elements.Length; k++)
+                if (temps[k] != null) Assign(gt.Elements[k], new KVar(temps[k]));
+            return;
+        }
+
+        private void DataDeconstruction(IDeconstructionAssignmentOperation dc, List<ILocalSymbol> parts)
+        {
+            var fields = KernelTypes.Data.Fields((INamedTypeSymbol)dc.Value.Type);
+            if (fields.Count != parts.Count) throw new NotTranslated("a deconstruction of another shape");
+            if (IsPackage(dc.Value.Type)) CheckPackage(dc.Value.Type);
+            Data(dc.Value.Type);
+            var whole = Declare("t$" + _temps++, dc.Value.Type);
+            Emit(new KAssign { Var = whole, Value = Expr(dc.Value) });
+            for (int k = 0; k < parts.Count; k++)
+            {
+                if (parts[k] == null) continue;
+                var field = fields[k];
+                KExpr read = new KDataField { Function = FieldFunction(field), Value = new KVar(whole), At = dc.Value.Syntax, ValueAt = dc.Value.Syntax, Struct = dc.Value.Type.IsValueType };
+                read = Unbox(read, field.OriginalDefinition.Type, parts[k].Type);
+                var local = Declare(Local(parts[k]), parts[k].Type);
+                Emit(new KAssign { Var = local, Value = read });
+                if (IsView(parts[k].Type)) Emit(new KOwn { Kind = "unpack", Obj = new KVar(local), Type = ViewOf(parts[k].Type), At = dc.Syntax });
+                else if (IsRef(parts[k].Type) && NotNullable(field.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(local), new KLit("null")) });
+                if (HasInvariants(parts[k].Type)) AssumeValid(new KVar(local), parts[k].Type);
+            }
+            return;
         }
 
         /// <summary>A value defined where cond holds: in code, checked there (id); in a specification, needed for it to be well-defined.</summary>

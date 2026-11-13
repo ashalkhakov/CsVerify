@@ -154,162 +154,27 @@ namespace CsVerify.Verifier.Boogie
                                               rb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               Unconverted(rb.LeftOperand).Type is { IsReferenceType: true } lt && !IsString(lt) && IsRef(lt) &&
                                               Unconverted(rb.RightOperand).Type is { IsReferenceType: true } rt && !IsString(rt) && IsRef(rt):
-                {
-                    var (l, r) = (lower(Unconverted(rb.LeftOperand)), lower(Unconverted(rb.RightOperand)));
-                    var same = new KOp("==", l, r);
-                    return RelationalStrings(rb, rb.OperatorKind == BinaryOperatorKind.Equals ? same : new KOp("!", same), l, r);
-                }
+                    return RelationalNullsCompared(rb, lower);
                 // (lifted: == on the values, or both null; the comparisons false where either is null)
                 case IBinaryOperation nb when nb.OperatorMethod == null && (IsNullableValue(nb.LeftOperand.Type) || nb.LeftOperand.Type == null) && (IsNullableValue(nb.RightOperand.Type) || nb.RightOperand.Type == null) &&
                                               (IsNullableValue(nb.LeftOperand.Type) || IsNullableValue(nb.RightOperand.Type)):
-                {
-                    KExpr Side(IOperation x) => x.Type == null ? new KLit("null") : lower(x);
-                    var (l, r) = (Side(nb.LeftOperand), Side(nb.RightOperand));
-                    var t = nb.LeftOperand.Type;
-                    KExpr Both(string op) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
-                        ? new KOp("&&", new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null"))), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
-                        : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
-                    // (in a database query's lambda, with SQL's nulls (UseRelationalNulls): == and != where either is null are
-                    // unknown, SQL's unknown, for each comparison; as in C# where neither is)
-                    if (_inDatabase > 0 && KernelTypes.Ef?.RelationalNulls == true && nb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
-                        nb.LeftOperand.Type != null && nb.RightOperand.Type != null && !(Unconverted(nb.LeftOperand).ConstantValue is { HasValue: true, Value: null }) &&
-                        !(Unconverted(nb.RightOperand).ConstantValue is { HasValue: true, Value: null }))
-                    {
-                        var unknown = new KVar(LinqMap("[Ref][Ref]bool"));
-                        var eq = new KOp("ite", new KOp("||", new KOp("==", l, new KLit("null")), new KOp("==", r, new KLit("null"))), new KOp("sel", unknown, l, r), new KOp("==", l, r));
-                        return nb.OperatorKind == BinaryOperatorKind.Equals ? eq : new KOp("!", eq);
-                    }
-                    // (+, -, * of two values of one integral type: null where either is; checked where both have values,
-                    // their values 0 otherwise, which can't overflow)
-                    if (nb.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract or BinaryOperatorKind.Multiply &&
-                        IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
-                    {
-                        if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
-                        var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
-                        var u = Underlying(nb.Type);
-                        KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
-                        var sum = inSpec ? new KOp(Op(nb.OperatorKind), V(l), V(r)) : Arith(Op(nb.OperatorKind), V(l), V(r), u, nb.Syntax, nb.IsChecked);
-                        if (!inSpec)
-                        {
-                            var tv = Declare("t$" + _temps++, u);
-                            Emit(new KAssign { Var = tv, Value = sum });
-                            sum = new KVar(tv);
-                        }
-                        return new KOp("ite", both, NullableOf(sum, nb.Type), new KLit("null"));
-                    }
-                    // (&, |, ^ of two values of one integral type: null where either is, else the values' bits')
-                    if (nb.OperatorKind is BinaryOperatorKind.And or BinaryOperatorKind.Or or BinaryOperatorKind.ExclusiveOr &&
-                        IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
-                    {
-                        if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
-                        var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
-                        var u = Underlying(nb.Type);
-                        KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
-                        var bits = Bitwise(nb.OperatorKind, V(l), V(r), u, inSpec);
-                        if (!inSpec)
-                        {
-                            var tv = Declare("t$" + _temps++, u);
-                            Emit(new KAssign { Var = tv, Value = bits });
-                            bits = new KVar(tv);
-                        }
-                        return new KOp("ite", both, NullableOf(bits, nb.Type), new KLit("null"));
-                    }
-                    return nb.OperatorKind switch
-                    {
-                        BinaryOperatorKind.Equals => new KOp("==", l, r), BinaryOperatorKind.NotEquals => new KOp("!=", l, r),
-                        BinaryOperatorKind.LessThan => Both("<"), BinaryOperatorKind.LessThanOrEqual => Both("<="),
-                        BinaryOperatorKind.GreaterThan => Both(">"), BinaryOperatorKind.GreaterThanOrEqual => Both(">="),
-                        _ => throw new NotTranslated("the lifted operator " + nb.OperatorKind),
-                    };
-                }
+                    return LiftedBinary(nb, lower, inSpec);
                 case IIsPatternOperation nip when IsNullableValue(Unconverted(nip.Value).Type):
                     return NullablePattern(nip.Pattern, Operand(Unconverted(nip.Value), lower, inSpec), Unconverted(nip.Value).Type, lower, bind);
                 case IObjectCreationOperation oc when IsData(oc.Type) && oc.Initializer == null && oc.Constructor != null:
-                {
-                    Data(oc.Type);
-                    var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-                    var values = inSpec ? ordered.Select(a => lower(a.Value)).ToArray() : Operands(ordered.Select(a => a.Value).ToArray());
-                    var def = oc.Constructor.OriginalDefinition;
-                    // (a non-nullable field isn't null: each construction says so)
-                    if (!inSpec)
-                        for (int k = 0; k < ordered.Count; k++)
-                            if (IsNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type) && NotNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type))
-                                Emit(new KCheck { Cond = new KOp("!=", values[k], new KLit("null")), Id = "CSV1014", At = ordered[k].Value.Syntax,
-                                                  Message = $"'{ordered[k].Value.Syntax}' might be null, but parameter '{ordered[k].Parameter.Name}' of '{oc.Type.Name}' is not nullable" });
-                    // (a package built: the views that go in are handed over to it)
-                    if (!inSpec && IsPackage(oc.Type))
-                    {
-                        CheckPackage(oc.Type);
-                        for (int k = 0; k < ordered.Count; k++)
-                            if (IsView(def.Parameters[ordered[k].Parameter.Ordinal].Type))
-                                Emit(new KOwn { Kind = "pack", Obj = values[k], Type = ViewOf(ordered[k].Parameter.Type), Into = oc.Type, At = ordered[k].Value.Syntax });
-                    }
-                    var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray();
-                    var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args);
-                    if (inSpec || !HasInvariants(oc.Type)) return made;
-                    // (an immutable value's invariants: proved where it's built, assumed everywhere else)
-                    var t = Declare("t$" + _temps++, oc.Type);
-                    Emit(new KAssign { Var = t, Value = made });
-                    foreach (var inv in DataTypes.Invariants(DataTypes.Def(oc.Type)))
-                    {
-                        if (!_isFunction(inv.OriginalDefinition)) throw new NotTranslated("an invariant that isn't a function: " + inv.Name);
-                        Emit(new KCheck { Cond = new KFnCall { Callee = inv.OriginalDefinition, Receiver = new KVar(t), Args = new KExpr[0], At = oc.Syntax }, Id = "CSV1015", At = oc.Syntax,
-                                          Message = $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'" });
-                    }
-                    AssumeValid(new KVar(t), oc.Type);
-                    return new KVar(t);
-                }
+                    return NewData(oc, lower, inSpec);
                 case IPropertyReferenceOperation dp when dp.Instance != null && IsData(dp.Instance.Type) && DataTypes.IsPositional(dp.Property.OriginalDefinition):
-                {
-                    Data(dp.Instance.Type);
-                    var v = lower(dp.Instance);
-                    var prop = dp.Property.OriginalDefinition;
-                    var read = Unbox(new KDataField { Function = FieldFunction(prop), Value = v, At = dp.Syntax, ValueAt = dp.Instance.Syntax, Struct = dp.Instance.Type.IsValueType }, prop.Type, dp.Type);
-                    // (a non-nullable field isn't null: each construction checked it)
-                    if (!inSpec && IsNullable(dp.Type) && NotNullable(prop.Type))
-                    {
-                        var nn = Declare("t$" + _temps++, dp.Type);
-                        Emit(new KAssign { Var = nn, Value = read });
-                        Emit(new KAssume { Cond = new KOp("!=", new KVar(nn), new KLit("null")) });
-                        read = new KVar(nn);
-                    }
-                    if (inSpec || !HasInvariants(dp.Type)) return read;
-                    var t = Declare("t$" + _temps++, dp.Type);
-                    Emit(new KAssign { Var = t, Value = read });
-                    AssumeValid(new KVar(t), dp.Type);
-                    return new KVar(t);
-                }
+                    return PositionalProperty(dp, lower, inSpec);
                 // (DateTime and TimeSpan compared: their ticks, the int the kernel keeps for them, are what C# compares)
                 case IBinaryOperation dt when IsOpaqueTicks(dt.LeftOperand.Type) && SymbolEqualityComparer.Default.Equals(dt.LeftOperand.Type, dt.RightOperand.Type) &&
                                               dt.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.LessThan or BinaryOperatorKind.LessThanOrEqual
                                                   or BinaryOperatorKind.GreaterThan or BinaryOperatorKind.GreaterThanOrEqual:
-                {
-                    var (l, r) = (lower(dt.LeftOperand), lower(dt.RightOperand));
-                    var op = dt.OperatorKind switch
-                    {
-                        BinaryOperatorKind.Equals => "==", BinaryOperatorKind.NotEquals => "!=", BinaryOperatorKind.LessThan => "<",
-                        BinaryOperatorKind.LessThanOrEqual => "<=", BinaryOperatorKind.GreaterThan => ">", _ => ">=",
-                    };
-                    return new KOp(op, l, r);
-                }
+                    return TicksCompared(dt, lower);
                 case IPropertyReferenceOperation tk when tk.Property.Name == "Ticks" && tk.Instance != null && IsOpaqueTicks(tk.Instance.Type):
                     return lower(tk.Instance);
                 // (float and double, as IEEE 754: operations round to nearest; == is IEEE's, < and the rest false at NaN)
                 case IBinaryOperation fb when fb.OperatorMethod == null && IsFloating(fb.LeftOperand.Type) && IsFloating(fb.RightOperand.Type):
-                {
-                    var n = FloatSize(fb.LeftOperand.Type);
-                    var (l, r) = (lower(fb.LeftOperand), lower(fb.RightOperand));
-                    return fb.OperatorKind switch
-                    {
-                        BinaryOperatorKind.Add => new KOp("$fp.add" + n, l, r), BinaryOperatorKind.Subtract => new KOp("$fp.sub" + n, l, r),
-                        BinaryOperatorKind.Multiply => new KOp("$fp.mul" + n, l, r), BinaryOperatorKind.Divide => new KOp("$fp.div" + n, l, r),
-                        BinaryOperatorKind.Equals => new KOp("$fp.eq" + n, l, r), BinaryOperatorKind.NotEquals => new KOp("!", new KOp("$fp.eq" + n, l, r)),
-                        BinaryOperatorKind.LessThan => new KOp("$fp.lt" + n, l, r), BinaryOperatorKind.LessThanOrEqual => new KOp("$fp.leq" + n, l, r),
-                        BinaryOperatorKind.GreaterThan => new KOp("$fp.gt" + n, l, r), BinaryOperatorKind.GreaterThanOrEqual => new KOp("$fp.geq" + n, l, r),
-                        BinaryOperatorKind.Remainder => new KOp("$fp.fmod" + n, l, r),
-                        _ => throw new NotTranslated("the float operator " + fb.OperatorKind),
-                    };
-                }
+                    return FloatBinary(fb, lower);
                 case IUnaryOperation fu when IsFloating(fu.Operand.Type) && fu.OperatorKind is UnaryOperatorKind.Minus or UnaryOperatorKind.Plus:
                     return fu.OperatorKind == UnaryOperatorKind.Minus ? new KOp("$fp.neg" + FloatSize(fu.Operand.Type), lower(fu.Operand)) : lower(fu.Operand);
                 case IConversionOperation fc when (IsFloating(fc.Type) || IsFloating(fc.Operand.Type)) && fc.Conversion.IsNumeric && fc.OperatorMethod == null:
@@ -328,15 +193,7 @@ namespace CsVerify.Verifier.Boogie
                 // (the first group's key: its first element's; no group, it throws)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: IInvocationOperation { TargetMethod.Name: "First", Arguments.Length: 1 } fg } when IsLinqGroup(fg.Type) &&
                         Unconverted(fg.Arguments[0].Value) is IInvocationOperation gb && IsEnumerableCall(gb.TargetMethod) && gb.TargetMethod.Name == "GroupBy" && gb.Arguments.Length == 2 && !inSpec:
-                {
-                    var gsrc = Sequence(gb.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
-                    var gkey = LambdaArg(gb, 1);
-                    Emit(new KCheck { Cond = new KOp(">", gsrc.Length, new KLit("0")), Id = "CSV1001", At = fg.Syntax, Message = "precondition 'Q.Count(source) > 0' of 'First' might not hold" });
-                    var kv = Declare("t$" + _temps++, gkey.body.Type);
-                    Emit(new KHavoc { Var = kv });
-                    ShapeFact(new KOp("==", new KVar(kv), Apply(gkey, gsrc.Elem(new KLit("0")))), fg.Syntax);
-                    return new KVar(kv);
-                }
+                    return FirstGroupKey(gb, fg);
                 case IPropertyReferenceOperation jrm when jrm.Instance is ILocalReferenceOperation jrl && _joinRows.ContainsKey(jrl.Local) && JoinRowMember(jrm) is KExpr jrv:
                     return jrv;
                 // (t == u of tuples: the left's elements, then the right's, compared element by element)
@@ -350,36 +207,13 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (an anonymous object, new { s, b = e }: a tuple of its members; a member read, an element)
                 case IAnonymousObjectCreationOperation ao when IsTuple(ao.Type):
-                {
-                    var items = ao.Initializers.Select(x => lower(x is IAssignmentOperation asg ? asg.Value : x)).ToList();
-                    if (inSpec) return new KOp(TupleMaker(ao.Type), items.ToArray());
-                    var t = Declare("t$" + _temps++, ao.Type);
-                    Emit(new KHavoc { Var = t });
-                    for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), ao.Type, k), items[k]) });
-                    return new KVar(t);
-                }
+                    return AnonymousObject(ao, lower, inSpec);
                 case IPropertyReferenceOperation ap when ap.Instance != null && ap.Instance.Type?.IsAnonymousType == true && IsTuple(ap.Instance.Type) && PartIndex(ap.Instance.Type, ap.Property.Name) is int pi && pi >= 0:
                     return TupleItem(lower(ap.Instance), ap.Instance.Type, pi);
                 case IConversionOperation tc when IsTuple(tc.Type) && Unconverted(tc.Operand) is ITupleOperation tlit && ((INamedTypeSymbol)tc.Type).IsTupleType && tlit.Elements.Length == ((INamedTypeSymbol)tc.Type).TupleElements.Length:
-                {
-                    // (a tuple literal at the type it's converted to: (null, k) as (SlNode?, int))
-                    var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? new KLit("null") : lower(x)).ToList();
-                    if (inSpec) throw new NotTranslated("a tuple made in a specification");
-                    var t = Declare("t$" + _temps++, tc.Type);
-                    Emit(new KHavoc { Var = t });
-                    for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tc.Type, k), items[k]) });
-                    return new KVar(t);
-                }
+                    return TupleConverted(tc, tlit, lower, inSpec);
                 case ITupleOperation tu when IsTuple(tu.Type):
-                {
-                    var items = tu.Elements.Select(x => lower(x)).ToList();
-                    // (in a specification, or a lambda: the tuple of its elements, a function of them)
-                    if (inSpec) return new KOp(TupleMaker(tu.Type), items.ToArray());
-                    var t = Declare("t$" + _temps++, tu.Type);
-                    Emit(new KHavoc { Var = t });
-                    for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tu.Type, k), items[k]) });
-                    return new KVar(t);
-                }
+                    return NewTuple(tu, lower, inSpec);
                 case IFieldReferenceOperation tf when tf.Instance != null && IsTuple(tf.Instance.Type) && tf.Field.ContainingType is INamedTypeSymbol { IsTupleType: true } tt &&
                                                       tt.TupleElements.Select(x => x.CorrespondingTupleField ?? x).ToList().FindIndex(x => x.Name == (tf.Field.CorrespondingTupleField ?? tf.Field).Name) is int ti && ti >= 0:
                     return TupleItem(lower(tf.Instance), tf.Instance.Type, ti);
@@ -421,29 +255,9 @@ namespace CsVerify.Verifier.Boogie
                                                  IsTuple(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  IsClass(Unconverted(ip.Value).Type) && !IsData(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  (IsRef(Unconverted(ip.Value).Type) || IsString(Unconverted(ip.Value).Type) || IsException(Unconverted(ip.Value).Type)) && !IsData(Unconverted(ip.Value).Type):
-                {
-                    var v = Operand(Unconverted(ip.Value), lower, inSpec);
-                    StaticType(v, Unconverted(ip.Value).Type, inSpec);
-                    return Pattern(ip.Pattern, v, Unconverted(ip.Value).Type, lower, bind);
-                }
+                    return IsPattern(ip, lower, bind, inSpec);
                 case ISwitchExpressionOperation sw when inSpec:
-                {
-                    var v = lower(sw.Value);
-                    KExpr acc = null;
-                    var arms = sw.Arms.Select(arm =>
-                    {
-                        var cond = Pattern(arm.Pattern, v, sw.Value.Type, lower, bind);
-                        if (arm.Guard != null) cond = new KOp("&&", cond, lower(arm.Guard));
-                        return (cond, value: lower(arm.Value));
-                    }).ToList();
-                    // (where no arm matches, the definition throws: its check says so; the value is the last arm's)
-                    for (int k = arms.Count - 1; k >= 0; k--) acc = acc == null ? arms[k].value : new KOp("ite", arms[k].cond, arms[k].value, acc);
-                    if (acc == null) throw new NotTranslated("a switch with no arms");
-                    // (well-defined only where some arm matches, CSV1012, unless the last arm matches everything)
-                    var last = sw.Arms.Last();
-                    if (last.Guard == null && last.Pattern is IDiscardPatternOperation or IDeclarationPatternOperation { MatchesNull: true }) return acc;
-                    return new KCast { Value = acc, Test = arms.Select(a => a.cond).Aggregate((a, b) => new KOp("||", a, b)), At = sw.Syntax };
-                }
+                    return SpecSwitchExpression(sw, lower, bind);
                 case IConversionOperation up when up.IsImplicit && IsData(up.Type) && IsData(up.Operand.Type):
                     return lower(up.Operand);
                 // (o as C: o where it's an instance of C, else null)
@@ -465,15 +279,7 @@ namespace CsVerify.Verifier.Boogie
                 // ((object)o, an upcast written as a cast: o)
                 // (a string as an object, in code: a reference of its own, which another equal string's may or may not be)
                 case IConversionOperation so when !inSpec && so.Conversion.IsReference && IsString(so.Operand.Type) && so.Type.SpecialType == SpecialType.System_Object:
-                {
-                    var sv = Operand(so.Operand, lower, false);
-                    var o = Declare("t$" + _temps++, so.Type);
-                    Emit(new KHavoc { Var = o });
-                    Emit(new KAssume { Cond = new KOp("==", new KOp("==", new KVar(o), new KLit("null")), new KOp("==", sv, new KLit("null"))) });
-                    // (the object's contents: the same object, the same string)
-                    Emit(new KAssume { Cond = new KOp("==", new KOp("$strOf", new KVar(o)), sv) });
-                    return new KVar(o);
-                }
+                    return StringUpcast(so, lower);
                 // (not a string's: as an object, one isn't its value, which another equal string may be)
                 case IConversionOperation uc when !uc.IsImplicit && uc.Conversion.IsReference && uc.Conversion.IsImplicit && (IsRef(uc.Type) || IsString(uc.Type)) && IsRef(uc.Operand.Type):
                     return lower(uc.Operand);
@@ -491,30 +297,266 @@ namespace CsVerify.Verifier.Boogie
                 // (a record's == and !=: its values' equality, which is its references', a value being its constructor's)
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
-                {
-                    // (with null: whether it is null, whatever its fields are)
-                    bool withNull = Unconverted(eq.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(eq.RightOperand).ConstantValue is { HasValue: true, Value: null };
-                    // (fields that don't compare as values, strings': in code, whether they're equal isn't known)
-                    if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType))
-                    {
-                        // (in a specification: some relation, not known, between them)
-                        if (inSpec)
-                        {
-                            var eqv = new KOp("$dataEq", lower(eq.LeftOperand), lower(eq.RightOperand));
-                            return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : new KOp("!", eqv);
-                        }
-                        lower(eq.LeftOperand);
-                        lower(eq.RightOperand);
-                        var unknown = Declare("t$" + _temps++, eq.Type);
-                        Emit(new KHavoc { Var = unknown });
-                        return new KVar(unknown);
-                    }
-                    var l = lower(eq.LeftOperand);
-                    var r = lower(eq.RightOperand);
-                    return new KOp(eq.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", l, r);
-                }
+                    return RecordEquality(eq, lower, inSpec);
                 default: return null;
             }
+        }
+
+        private KExpr RelationalNullsCompared(IBinaryOperation rb, Func<IOperation, KExpr> lower)
+        {
+            var (l, r) = (lower(Unconverted(rb.LeftOperand)), lower(Unconverted(rb.RightOperand)));
+            var same = new KOp("==", l, r);
+            return RelationalStrings(rb, rb.OperatorKind == BinaryOperatorKind.Equals ? same : new KOp("!", same), l, r);
+        }
+
+        private KExpr LiftedBinary(IBinaryOperation nb, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            KExpr Side(IOperation x) => x.Type == null ? new KLit("null") : lower(x);
+            var (l, r) = (Side(nb.LeftOperand), Side(nb.RightOperand));
+            var t = nb.LeftOperand.Type;
+            KExpr Both(string op) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
+                ? new KOp("&&", new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null"))), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
+                : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
+            // (in a database query's lambda, with SQL's nulls (UseRelationalNulls): == and != where either is null are
+            // unknown, SQL's unknown, for each comparison; as in C# where neither is)
+            if (_inDatabase > 0 && KernelTypes.Ef?.RelationalNulls == true && nb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                nb.LeftOperand.Type != null && nb.RightOperand.Type != null && !(Unconverted(nb.LeftOperand).ConstantValue is { HasValue: true, Value: null }) &&
+                !(Unconverted(nb.RightOperand).ConstantValue is { HasValue: true, Value: null }))
+            {
+                var unknown = new KVar(LinqMap("[Ref][Ref]bool"));
+                var eq = new KOp("ite", new KOp("||", new KOp("==", l, new KLit("null")), new KOp("==", r, new KLit("null"))), new KOp("sel", unknown, l, r), new KOp("==", l, r));
+                return nb.OperatorKind == BinaryOperatorKind.Equals ? eq : new KOp("!", eq);
+            }
+            // (+, -, * of two values of one integral type: null where either is; checked where both have values,
+            // their values 0 otherwise, which can't overflow)
+            if (nb.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract or BinaryOperatorKind.Multiply &&
+                IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
+            {
+                if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
+                var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
+                var u = Underlying(nb.Type);
+                KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
+                var sum = inSpec ? new KOp(Op(nb.OperatorKind), V(l), V(r)) : Arith(Op(nb.OperatorKind), V(l), V(r), u, nb.Syntax, nb.IsChecked);
+                if (!inSpec)
+                {
+                    var tv = Declare("t$" + _temps++, u);
+                    Emit(new KAssign { Var = tv, Value = sum });
+                    sum = new KVar(tv);
+                }
+                return new KOp("ite", both, NullableOf(sum, nb.Type), new KLit("null"));
+            }
+            // (&, |, ^ of two values of one integral type: null where either is, else the values' bits')
+            if (nb.OperatorKind is BinaryOperatorKind.And or BinaryOperatorKind.Or or BinaryOperatorKind.ExclusiveOr &&
+                IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
+            {
+                if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
+                var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
+                var u = Underlying(nb.Type);
+                KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
+                var bits = Bitwise(nb.OperatorKind, V(l), V(r), u, inSpec);
+                if (!inSpec)
+                {
+                    var tv = Declare("t$" + _temps++, u);
+                    Emit(new KAssign { Var = tv, Value = bits });
+                    bits = new KVar(tv);
+                }
+                return new KOp("ite", both, NullableOf(bits, nb.Type), new KLit("null"));
+            }
+            return nb.OperatorKind switch
+            {
+                BinaryOperatorKind.Equals => new KOp("==", l, r), BinaryOperatorKind.NotEquals => new KOp("!=", l, r),
+                BinaryOperatorKind.LessThan => Both("<"), BinaryOperatorKind.LessThanOrEqual => Both("<="),
+                BinaryOperatorKind.GreaterThan => Both(">"), BinaryOperatorKind.GreaterThanOrEqual => Both(">="),
+                _ => throw new NotTranslated("the lifted operator " + nb.OperatorKind),
+            };
+        }
+
+        private KExpr NewData(IObjectCreationOperation oc, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            Data(oc.Type);
+            var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var values = inSpec ? ordered.Select(a => lower(a.Value)).ToArray() : Operands(ordered.Select(a => a.Value).ToArray());
+            var def = oc.Constructor.OriginalDefinition;
+            // (a non-nullable field isn't null: each construction says so)
+            if (!inSpec)
+                for (int k = 0; k < ordered.Count; k++)
+                    if (IsNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type) && NotNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type))
+                        Emit(new KCheck { Cond = new KOp("!=", values[k], new KLit("null")), Id = "CSV1014", At = ordered[k].Value.Syntax,
+                                          Message = $"'{ordered[k].Value.Syntax}' might be null, but parameter '{ordered[k].Parameter.Name}' of '{oc.Type.Name}' is not nullable" });
+            // (a package built: the views that go in are handed over to it)
+            if (!inSpec && IsPackage(oc.Type))
+            {
+                CheckPackage(oc.Type);
+                for (int k = 0; k < ordered.Count; k++)
+                    if (IsView(def.Parameters[ordered[k].Parameter.Ordinal].Type))
+                        Emit(new KOwn { Kind = "pack", Obj = values[k], Type = ViewOf(ordered[k].Parameter.Type), Into = oc.Type, At = ordered[k].Value.Syntax });
+            }
+            var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray();
+            var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args);
+            if (inSpec || !HasInvariants(oc.Type)) return made;
+            // (an immutable value's invariants: proved where it's built, assumed everywhere else)
+            var t = Declare("t$" + _temps++, oc.Type);
+            Emit(new KAssign { Var = t, Value = made });
+            foreach (var inv in DataTypes.Invariants(DataTypes.Def(oc.Type)))
+            {
+                if (!_isFunction(inv.OriginalDefinition)) throw new NotTranslated("an invariant that isn't a function: " + inv.Name);
+                Emit(new KCheck { Cond = new KFnCall { Callee = inv.OriginalDefinition, Receiver = new KVar(t), Args = new KExpr[0], At = oc.Syntax }, Id = "CSV1015", At = oc.Syntax,
+                                  Message = $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'" });
+            }
+            AssumeValid(new KVar(t), oc.Type);
+            return new KVar(t);
+        }
+
+        private KExpr PositionalProperty(IPropertyReferenceOperation dp, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            Data(dp.Instance.Type);
+            var v = lower(dp.Instance);
+            var prop = dp.Property.OriginalDefinition;
+            var read = Unbox(new KDataField { Function = FieldFunction(prop), Value = v, At = dp.Syntax, ValueAt = dp.Instance.Syntax, Struct = dp.Instance.Type.IsValueType }, prop.Type, dp.Type);
+            // (a non-nullable field isn't null: each construction checked it)
+            if (!inSpec && IsNullable(dp.Type) && NotNullable(prop.Type))
+            {
+                var nn = Declare("t$" + _temps++, dp.Type);
+                Emit(new KAssign { Var = nn, Value = read });
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(nn), new KLit("null")) });
+                read = new KVar(nn);
+            }
+            if (inSpec || !HasInvariants(dp.Type)) return read;
+            var t = Declare("t$" + _temps++, dp.Type);
+            Emit(new KAssign { Var = t, Value = read });
+            AssumeValid(new KVar(t), dp.Type);
+            return new KVar(t);
+        }
+
+        private KExpr TicksCompared(IBinaryOperation dt, Func<IOperation, KExpr> lower)
+        {
+            var (l, r) = (lower(dt.LeftOperand), lower(dt.RightOperand));
+            var op = dt.OperatorKind switch
+            {
+                BinaryOperatorKind.Equals => "==", BinaryOperatorKind.NotEquals => "!=", BinaryOperatorKind.LessThan => "<",
+                BinaryOperatorKind.LessThanOrEqual => "<=", BinaryOperatorKind.GreaterThan => ">", _ => ">=",
+            };
+            return new KOp(op, l, r);
+        }
+
+        private KExpr FloatBinary(IBinaryOperation fb, Func<IOperation, KExpr> lower)
+        {
+            var n = FloatSize(fb.LeftOperand.Type);
+            var (l, r) = (lower(fb.LeftOperand), lower(fb.RightOperand));
+            return fb.OperatorKind switch
+            {
+                BinaryOperatorKind.Add => new KOp("$fp.add" + n, l, r), BinaryOperatorKind.Subtract => new KOp("$fp.sub" + n, l, r),
+                BinaryOperatorKind.Multiply => new KOp("$fp.mul" + n, l, r), BinaryOperatorKind.Divide => new KOp("$fp.div" + n, l, r),
+                BinaryOperatorKind.Equals => new KOp("$fp.eq" + n, l, r), BinaryOperatorKind.NotEquals => new KOp("!", new KOp("$fp.eq" + n, l, r)),
+                BinaryOperatorKind.LessThan => new KOp("$fp.lt" + n, l, r), BinaryOperatorKind.LessThanOrEqual => new KOp("$fp.leq" + n, l, r),
+                BinaryOperatorKind.GreaterThan => new KOp("$fp.gt" + n, l, r), BinaryOperatorKind.GreaterThanOrEqual => new KOp("$fp.geq" + n, l, r),
+                BinaryOperatorKind.Remainder => new KOp("$fp.fmod" + n, l, r),
+                _ => throw new NotTranslated("the float operator " + fb.OperatorKind),
+            };
+        }
+
+        private KExpr FirstGroupKey(IInvocationOperation gb, IInvocationOperation fg)
+        {
+            var gsrc = Sequence(gb.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
+            var gkey = LambdaArg(gb, 1);
+            Emit(new KCheck { Cond = new KOp(">", gsrc.Length, new KLit("0")), Id = "CSV1001", At = fg.Syntax, Message = "precondition 'Q.Count(source) > 0' of 'First' might not hold" });
+            var kv = Declare("t$" + _temps++, gkey.body.Type);
+            Emit(new KHavoc { Var = kv });
+            ShapeFact(new KOp("==", new KVar(kv), Apply(gkey, gsrc.Elem(new KLit("0")))), fg.Syntax);
+            return new KVar(kv);
+        }
+
+        private KExpr AnonymousObject(IAnonymousObjectCreationOperation ao, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            var items = ao.Initializers.Select(x => lower(x is IAssignmentOperation asg ? asg.Value : x)).ToList();
+            if (inSpec) return new KOp(TupleMaker(ao.Type), items.ToArray());
+            var t = Declare("t$" + _temps++, ao.Type);
+            Emit(new KHavoc { Var = t });
+            for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), ao.Type, k), items[k]) });
+            return new KVar(t);
+        }
+
+        private KExpr TupleConverted(IConversionOperation tc, ITupleOperation tlit, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            // (a tuple literal at the type it's converted to: (null, k) as (SlNode?, int))
+            var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? new KLit("null") : lower(x)).ToList();
+            if (inSpec) throw new NotTranslated("a tuple made in a specification");
+            var t = Declare("t$" + _temps++, tc.Type);
+            Emit(new KHavoc { Var = t });
+            for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tc.Type, k), items[k]) });
+            return new KVar(t);
+        }
+
+        private KExpr NewTuple(ITupleOperation tu, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            var items = tu.Elements.Select(x => lower(x)).ToList();
+            // (in a specification, or a lambda: the tuple of its elements, a function of them)
+            if (inSpec) return new KOp(TupleMaker(tu.Type), items.ToArray());
+            var t = Declare("t$" + _temps++, tu.Type);
+            Emit(new KHavoc { Var = t });
+            for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tu.Type, k), items[k]) });
+            return new KVar(t);
+        }
+
+        private KExpr IsPattern(IIsPatternOperation ip, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        {
+            var v = Operand(Unconverted(ip.Value), lower, inSpec);
+            StaticType(v, Unconverted(ip.Value).Type, inSpec);
+            return Pattern(ip.Pattern, v, Unconverted(ip.Value).Type, lower, bind);
+        }
+
+        private KExpr SpecSwitchExpression(ISwitchExpressionOperation sw, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
+        {
+            var v = lower(sw.Value);
+            KExpr acc = null;
+            var arms = sw.Arms.Select(arm =>
+            {
+                var cond = Pattern(arm.Pattern, v, sw.Value.Type, lower, bind);
+                if (arm.Guard != null) cond = new KOp("&&", cond, lower(arm.Guard));
+                return (cond, value: lower(arm.Value));
+            }).ToList();
+            // (where no arm matches, the definition throws: its check says so; the value is the last arm's)
+            for (int k = arms.Count - 1; k >= 0; k--) acc = acc == null ? arms[k].value : new KOp("ite", arms[k].cond, arms[k].value, acc);
+            if (acc == null) throw new NotTranslated("a switch with no arms");
+            // (well-defined only where some arm matches, CSV1012, unless the last arm matches everything)
+            var last = sw.Arms.Last();
+            if (last.Guard == null && last.Pattern is IDiscardPatternOperation or IDeclarationPatternOperation { MatchesNull: true }) return acc;
+            return new KCast { Value = acc, Test = arms.Select(a => a.cond).Aggregate((a, b) => new KOp("||", a, b)), At = sw.Syntax };
+        }
+
+        private KExpr StringUpcast(IConversionOperation so, Func<IOperation, KExpr> lower)
+        {
+            var sv = Operand(so.Operand, lower, false);
+            var o = Declare("t$" + _temps++, so.Type);
+            Emit(new KHavoc { Var = o });
+            Emit(new KAssume { Cond = new KOp("==", new KOp("==", new KVar(o), new KLit("null")), new KOp("==", sv, new KLit("null"))) });
+            // (the object's contents: the same object, the same string)
+            Emit(new KAssume { Cond = new KOp("==", new KOp("$strOf", new KVar(o)), sv) });
+            return new KVar(o);
+        }
+
+        private KExpr RecordEquality(IBinaryOperation eq, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            // (with null: whether it is null, whatever its fields are)
+            bool withNull = Unconverted(eq.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(eq.RightOperand).ConstantValue is { HasValue: true, Value: null };
+            // (fields that don't compare as values, strings': in code, whether they're equal isn't known)
+            if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType))
+            {
+                // (in a specification: some relation, not known, between them)
+                if (inSpec)
+                {
+                    var eqv = new KOp("$dataEq", lower(eq.LeftOperand), lower(eq.RightOperand));
+                    return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : new KOp("!", eqv);
+                }
+                lower(eq.LeftOperand);
+                lower(eq.RightOperand);
+                var unknown = Declare("t$" + _temps++, eq.Type);
+                Emit(new KHavoc { Var = unknown });
+                return new KVar(unknown);
+            }
+            var l = lower(eq.LeftOperand);
+            var r = lower(eq.RightOperand);
+            return new KOp(eq.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", l, r);
         }
     }
 }

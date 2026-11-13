@@ -309,12 +309,7 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(Local(p.Parameter));
                 // (Math.Max, Min and Abs of integers: Abs(MinValue) throws, as checked negation does)
                 case IInvocationOperation im when IntegerMath(im):
-                {
-                    var v = Operands(im.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray());
-                    return im.TargetMethod.Name == "Abs"
-                        ? new KOp("ite", new KOp(">=", v[0], new KLit("0")), v[0], Arith("-", new KLit("0"), v[0], im.Type, im.Syntax, isChecked: true))
-                        : MinMax(im.TargetMethod.Name, v[0], v[1]);
-                }
+                    return IntegerMathCall(im);
                 case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
                     return Own(own);
                 // (a quantifier in code, a [Pure] or ghost function's body: mathematics, its reads checked over its range)
@@ -342,12 +337,7 @@ namespace CsVerify.Verifier.Boogie
                 // (an enumerator the kernel doesn't look into: its MoveNext may run the program's code, which may change
                 // anything; whether there's another isn't known)
                 case IInvocationOperation om when om.TargetMethod.Name == "MoveNext" && om.Instance is IFlowCaptureReferenceOperation eo && _forEach.TryGetValue(eo.Id, out var fo) && fo.Opaque:
-                {
-                    CallersRun();
-                    var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
-                    Emit(new KHavoc { Var = more });
-                    return new KVar(more);
-                }
+                    return MoveNextOfAnyEnumerable(om);
                 case IInvocationOperation mn when mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation er && _forEach.TryGetValue(er.Id, out var fm):
                     return new KOp("<", new KVar(fm.Index), LengthOf(fm));
                 case IConversionOperation cc when Unconverted(cc) is IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr } && _forEach.TryGetValue(cr.Id, out var fcur):
@@ -359,11 +349,7 @@ namespace CsVerify.Verifier.Boogie
                     return Current(fcur2);
                 // (an enumerator's Current: an element, not known which)
                 case IPropertyReferenceOperation { Property.Name: "Current", Instance: ILocalReferenceOperation { Local: var ecl } } ecur when _enumerators.ContainsKey(ecl) && InSubset(ecur.Type):
-                {
-                    var v = Declare("t$" + _temps++, ecur.Type);
-                    Emit(new KHavoc { Var = v });
-                    return new KVar(v);
-                }
+                    return EnumeratorCurrent(ecur);
                 case IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation ac } when _asyncEach.TryGetValue(ac.Id, out var acur):
                 {
                     var v = Declare("t$" + _temps++, acur.Element);
@@ -385,25 +371,11 @@ namespace CsVerify.Verifier.Boogie
                 case IObjectCreationOperation sc when IsStruct(sc.Type) && sc.Initializer == null && sc.Constructor != null && !sc.Constructor.IsImplicitlyDeclared:
                     return Invoke(sc.Constructor, null, sc.Arguments, sc.Syntax, null);
                 case IObjectCreationOperation ne when IsException(ne.Type) && !IsClass(ne.Type) && ne.Initializer == null:
-                {
-                    foreach (var a in ne.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation))) Expr(a.Value);
-                    var t = Declare("t$" + _temps++, ne.Type);
-                    _p.ExceptionTypes.Add(ne.Type);
-                    Emit(new KNewExc { Var = t, Type = ne.Type });
-                    return new KVar(t);
-                }
+                    return NewLibraryException(ne);
                 // (this, in a constructor, as a value: it escapes before the object is built. Where the class has invariants or
                 // non-nullable fields, CSV1015; the object goes on, as it is)
                 case IInstanceReferenceOperation ti when _p.IsCtor && ti.ReferenceKind == InstanceReferenceKind.ContainingTypeInstance:
-                {
-                    var type = _m.ContainingType;
-                    bool invariants = HasObjectInvariant(type);
-                    if (invariants || InstanceFields(type).Any(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
-                        Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1015", At = ti.Syntax, NotAssumedAfter = true,
-                                          Message = invariants ? $"'this' escapes the constructor of {type.Name} before its invariant is established"
-                                                               : $"'this' escapes the constructor of {type.Name}, whose non-nullable fields may not be set yet" });
-                    return new KVar("this");
-                }
+                    return ThisInConstructor(ti);
                 case IInstanceReferenceOperation _:
                     throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
                 // (a computed property: its getter, called)
@@ -415,28 +387,7 @@ namespace CsVerify.Verifier.Boogie
                 // (a library property without a stub, Console.Out or a stream's Position: in code, each read a value of its own,
                 // of its declared type, which warns but where it's shared state anyway)
                 case IPropertyReferenceOperation lp when LibraryProperty(lp):
-                {
-                    if (lp.Instance != null)
-                    {
-                        var iv = Expr(lp.Instance);
-                        if (IsNullable(lp.Instance.Type) && !(lp.Instance is IInstanceReferenceOperation))
-                            Emit(new KCheck { Cond = new KOp("!=", iv, new KLit("null")), Id = "CSV1013", At = lp.Syntax, Message = $"'{lp.Instance.Syntax}' might be null in '{lp.Syntax}'" });
-                    }
-                    foreach (var a in lp.Arguments) Expr(a.Value);
-                    var prop = lp.Property;
-                    var ns = prop.ContainingType.ContainingNamespace?.ToDisplayString();
-                    bool shared = prop.ContainingType.IsValueType && ns is "System.Threading" or "System.Threading.Tasks" or "System.Runtime.CompilerServices";
-                    var span = lp.Syntax.GetLocation().GetLineSpan();
-                    // (nor of one with a stub, a [Pure] one that says nothing more: Channel.Writer, a token source's Token)
-                    bool stubbed = _contractOf?.Invoke(prop.GetMethod.OriginalDefinition) is Contract sc && sc.IsStub;
-                    if (!shared && !stubbed && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator") && !_p.Warnings.Any(w => w.Span.Equals(span)))
-                        _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown", span));
-                    if (_p.Result != null) lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
-                    var lv = Declare("t$" + _temps++, lp.Type);
-                    Emit(new KHavoc { Var = lv });
-                    if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lv), new KLit("null")) });
-                    return new KVar(lv);
-                }
+                    return LibraryPropertyRead(lp);
                 // (a static readonly field the kernel doesn't have: a value that never changes, not known which; not null
                 // where its type says so)
                 case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srr } when StaticReadonly(srr) is KExpr srv:
@@ -466,90 +417,28 @@ namespace CsVerify.Verifier.Boogie
                 // (a library object: a new reference, of no fields of the program's; its constructor's arguments read)
                 // (new string(c, n), new string(chars): a string of the library's, not null, of what length its arguments say where they do)
                 case IObjectCreationOperation ns when IsString(ns.Type) && ns.Initializer == null && ns.Constructor != null && ns.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None):
-                {
-                    var vs = ns.Arguments.OrderBy(x => x.Parameter.Ordinal).Select(x => Operand(x.Value, Expr, false)).ToList();
-                    var t = Declare("t$" + _temps++, ns.Type);
-                    Emit(new KHavoc { Var = t });
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
-                    if (ns.Arguments.Length == 2 && IsIntegral(ns.Arguments[1].Value.Type) && ns.Arguments[0].Value.Type?.SpecialType == SpecialType.System_Char)
-                    {
-                        Emit(new KCheck { Cond = new KOp(">=", vs[1], new KLit("0")), Id = "CSV1001", At = ns.Syntax, Message = $"'{ns.Syntax}' might throw: its count might be negative" });
-                        Emit(new KAssume { Cond = new KOp("==", new KOp("slen", new KVar(t)), vs[1]) });
-                    }
-                    return new KVar(t);
-                }
+                    return NewString(ns);
                 case IObjectCreationOperation lob when (IsLibraryObject(lob.Type) || lob.Type.SpecialType == SpecialType.System_Object) && lob.Initializer == null && lob.Constructor != null &&
                                                        lob.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None && (x.Value.Type?.TypeKind != TypeKind.Delegate || IsFunc(x.Parameter.Type))):
-                {
-                    foreach (var x in lob.Arguments.OrderBy(x => x.Parameter.Ordinal))
-                    {
-                        var xv = Expr(x.Value);
-                        if (IsFunc(x.Parameter.Type)) StoredInLibrary(lob.Constructor, x, xv);
-                    }
-                    var t = Declare("t$" + _temps++, lob.Type);
-                    Emit(new KNewObj { Var = t, Type = lob.Type, Ctor = null, Args = new KExpr[0], ArgsAt = new SyntaxNode[0], At = lob.Syntax });
-                    return new KVar(t);
-                }
+                    return NewLibraryObject(lob);
                 case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
-                {
-                    var ctor = oc.Constructor.OriginalDefinition;
-                    bool isImplicit = ctor.IsImplicitlyDeclared;
-                    if (!isImplicit && !_isProcedure(ctor)) throw new NotTranslated("a call of " + oc.Type.Name + "'s constructor");
-                    if (!isImplicit) _p.Calls.Add(ctor);
-                    var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-                    var args = Operands(ordered.Select(a => a.Value).ToArray());
-                    // (a generic class's constructor takes boxes for its T: new Box<int>(3))
-                    for (int k = 0; k < args.Length; k++) args[k] = Box(args[k], ctor.Parameters[ordered[k].Parameter.Ordinal].Type, ordered[k].Parameter.Type);
-                    var t = Declare("t$" + _temps++, oc.Type);
-                    foreach (var f in InstanceFields(oc.Type)) _p.Fields.Add(f);
-                    Emit(new KNewObj { Var = t, Type = oc.Type, Ctor = isImplicit ? null : ctor, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = oc.Syntax });
-                    // (exactly a C)
-                    if (IsModeledClass(oc.Type))
-                    {
-                        _p.ClassTypes.Add(oc.Type.OriginalDefinition);
-                        Emit(new KAssume { Cond = new KOp("==", new KOp("dtype", new KVar(t)), new KLit(TypeConst(oc.Type))) });
-                    }
-                    // (a context made: it tracks nothing, and has nothing open)
-                    if (IsContext(oc.Type)) NewContext(new KVar(t));
-                    return new KVar(t);
-                }
+                    return NewObject(oc);
                 case IParenthesizedOperation par: return Expr(par.Operand);
                 // (object.ReferenceEquals(a, b): == of the two objects)
                 case IInvocationOperation re when re.TargetMethod is { Name: "ReferenceEquals", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Object } && re.Arguments.Length == 2 &&
                                                   re.Arguments.All(a => InSubset(a.Value.Type)):
-                {
-                    var ordered = re.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-                    var a0 = Declare("t$" + _temps++, ordered[0].Value.Type);
-                    Emit(new KAssign { Var = a0, Value = Expr(ordered[0].Value) });
-                    return new KOp("==", new KVar(a0), Expr(ordered[1].Value));
-                }
+                    return ReferenceEqualsCall(re);
                 // (an assignment as an expression, (x = 10) > 5: written, then its value)
                 case ISimpleAssignmentOperation sa when !sa.IsRef && InSubset(sa.Type) && sa.Target is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation:
-                {
-                    var t = Declare("t$" + _temps++, sa.Type);
-                    Emit(new KAssign { Var = t, Value = Expr(sa.Value) });
-                    Assign(sa.Target, new KVar(t));
-                    return new KVar(t);
-                }
+                    return AssignmentValue(sa);
                 case IConversionOperation conv when conv.Conversion.IsIdentity || conv.IsImplicit && IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
                     return Expr(conv.Operand);
                 // (a data value as an object: an object of its own, which no other is known to be, though they be equal values)
                 case IConversionOperation dobj when dobj.IsImplicit && IsData(dobj.Operand.Type) && dobj.Type.SpecialType == SpecialType.System_Object:
-                {
-                    Expr(dobj.Operand);
-                    var t = Declare("t$" + _temps++, dobj.Type);
-                    Emit(new KHavoc { Var = t });
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
-                    return new KVar(t);
-                }
+                    return DataAsObject(dobj);
                 // (an array or a modeled collection as a collection interface: what it is goes with it)
                 case IConversionOperation ci when ci.IsImplicit && IsCollectionInterface(ci.Type) && (IsArray(ci.Operand.Type) || IsCollection(ci.Operand.Type)):
-                {
-                    var t = Declare("t$" + _temps++, ci.Type);
-                    Emit(new KAssign { Var = t, Value = Expr(ci.Operand) });
-                    Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")), new KOp(IsArray(ci.Operand.Type) ? "$arr" : "$coll", new KVar(t))) });
-                    return new KVar(t);
-                }
+                    return AsCollectionInterface(ci);
                 case IPropertyReferenceOperation ir when ir.Instance != null && IsCollectionInterface(ir.Property.ContainingType) &&
                                                          (ir.Property.Name == "Count" && ir.Arguments.Length == 0 || ir.Property.IsIndexer && ir.Arguments.Length == 1):
                     return Ifc(ir, ir.Property.IsIndexer ? Expr(ir.Arguments[0].Value) : null, Expr(ir.Instance), inSpec: false);
@@ -570,12 +459,7 @@ namespace CsVerify.Verifier.Boogie
                                              b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):
                     return Binary(b);
                 case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
-                {
-                    var v = Operands(el.ArrayReference, el.Indices[0]);
-                    HeldCell(v[0], el.Syntax, write: false);
-                    return new KElem { Array = v[0], Index = v[1], ArrayType = el.ArrayReference.Type, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax,
-                                       Alongside = InSpec(el.Syntax) ? null : Concurrent ? new KLit("true") : Running() };
-                }
+                    return ArrayElement(el);
                 case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation rl } when _tasks.TryGetValue(rl.Local, out var rt):
                     return ResultOf(rt, e.Syntax);
                 // (a list's Count and indexer: its stub's getters)
@@ -583,21 +467,13 @@ namespace CsVerify.Verifier.Boogie
                     return Pair(Expr(kp.Instance), kp.Instance.Type, kp.Property.Name);
                 // (a given task's Result: a value not known)
                 case IPropertyReferenceOperation { Property.Name: "Result" } tr when tr.Instance != null && IsGivenTask(tr.Instance.Type) && InSubset(tr.Type):
-                {
-                    Expr(tr.Instance);
-                    var r = Declare("t$" + _temps++, tr.Type);
-                    Emit(new KHavoc { Var = r });
-                    return new KVar(r);
-                }
+                    return GivenTaskResult(tr);
                 case IPropertyReferenceOperation lp when IsCollection(lp.Instance?.Type) && lp.Property.GetMethod != null:
                     return Invoke(lp.Property.GetMethod, lp.Instance, lp.Arguments, lp.Syntax, null);
                 case IPropertyReferenceOperation sl when sl.Property.Name == "Length" && IsString(sl.Instance?.Type):
                     return new KLen { String = true, Array = Expr(sl.Instance), At = sl.Syntax, ArrayAt = sl.Instance.Syntax };
                 case IPropertyReferenceOperation sc when sc.Property.IsIndexer && IsString(sc.Instance?.Type) && sc.Arguments.Length == 1:
-                {
-                    var v = Operands(sc.Instance, sc.Arguments[0].Value);
-                    return new KElem { String = true, Array = v[0], Index = v[1], At = sc.Syntax, ArrayAt = sc.Instance.Syntax };
-                }
+                    return StringChar(sc);
                 // ((T[])a.Clone(): a new array of a's length, its elements a's)
                 case IConversionOperation { Operand: IInvocationOperation { TargetMethod.Name: "Clone", Arguments.Length: 0, Instance: { } ci } } cc
                     when IsArray(cc.Type) && IsArray(ci.Type) && SymbolEqualityComparer.Default.Equals(cc.Type, ci.Type) && !_p.MemViews:
@@ -608,102 +484,34 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (n++ and ++n as values: stored, as a statement stores it; the value before, or after)
                 case IIncrementOrDecrementOperation iv when IsIntegral(iv.Type):
-                {
-                    var before = Declare("t$" + _temps++, iv.Type);
-                    Emit(new KAssign { Var = before, Value = Expr(iv.Target) });
-                    var after = Declare("t$" + _temps++, iv.Type);
-                    Emit(new KAssign { Var = after, Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), new KLit("1"), iv.Type, iv.Syntax, iv.IsChecked) });
-                    Assign(iv.Target, new KVar(after));
-                    return new KVar(iv.IsPostfix ? before : after);
-                }
+                    return IncrementValue(iv);
                 // (a string + something else, "line " + n: the other's text, ToString's, is a string not known)
                 case IBinaryOperation so when so.OperatorKind == BinaryOperatorKind.Add && IsString(so.Type) &&
                                               IsString(Unconverted(so.LeftOperand).Type) != IsString(Unconverted(so.RightOperand).Type):
-                {
-                    var stringLeft = IsString(Unconverted(so.LeftOperand).Type);
-                    var str = Expr(stringLeft ? so.LeftOperand : so.RightOperand);
-                    var other = Unconverted(stringLeft ? so.RightOperand : so.LeftOperand);
-                    if (!InSubset(other.Type)) throw new NotTranslated("a string + " + other.Type);
-                    Expr(other);
-                    var text = Declare("t$" + _temps++, so.Type);
-                    Emit(new KHavoc { Var = text });
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(text), new KLit("null")) });
-                    return stringLeft ? StringBinary(BinaryOperatorKind.Add, str, new KVar(text)) : StringBinary(BinaryOperatorKind.Add, new KVar(text), str);
-                }
+                    return StringConcatenation(so);
                 case IBinaryOperation sb when IsString(sb.LeftOperand.Type) && IsString(sb.RightOperand.Type) &&
                                              (sb.OperatorMethod == null || IsString(sb.OperatorMethod.ContainingType)) &&
                                              sb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.Add:
-                {
-                    var v = Operands(sb.LeftOperand, sb.RightOperand);
-                    return RelationalStrings(sb, StringBinary(sb.OperatorKind, v[0], v[1]), v[0], v[1]);
-                }
+                    return StringOperator(sb);
                 case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
                     return new KLen { Array = Expr(pr.Instance), At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
                 // (a rectangular array: each size not negative (CSV1003), its lengths, and its initializer's cells)
                 case IArrayCreationOperation mc when IsMultiArray(mc.Type) && mc.DimensionSizes.Length == ((IArrayTypeSymbol)mc.Type).Rank:
-                {
-                    var sizes = Operands(mc.DimensionSizes.ToArray());
-                    foreach (var s in sizes)
-                        Emit(new KCheck { Cond = new KOp("<=", new KLit("0"), s), Id = "CSV1003", At = mc.Syntax, Message = $"array size in '{mc.Syntax}' might be negative" });
-                    var t = Declare("t$" + _temps++, mc.Type);
-                    Emit(new KNew { Var = t, ArrayType = mc.Type, Size = sizes.Skip(1).Aggregate(sizes[0], (x, y) => new KOp("*", x, y)) });
-                    for (int d = 0; d < sizes.Length; d++) Emit(new KAssume { Cond = new KOp("==", new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d]) });
-                    void Fill(IArrayInitializerOperation init, List<KExpr> prefix)
-                    {
-                        for (int i = 0; i < init.ElementValues.Length; i++)
-                        {
-                            var at = new List<KExpr>(prefix) { new KLit(i.ToString()) };
-                            if (at.Count < sizes.Length) Fill((IArrayInitializerOperation)init.ElementValues[i], at);
-                            else Emit(new KStore { Unchecked = true, Array = new KVar(t), Index = CellOf(at), Value = Expr(init.ElementValues[i]), ArrayType = mc.Type, At = mc.Syntax, ArrayAt = mc.Syntax });
-                        }
-                    }
-                    if (mc.Initializer != null) Fill(mc.Initializer, new List<KExpr>());
-                    return new KVar(t);
-                }
+                    return NewRectangularArray(mc);
                 case IArrayCreationOperation ac when IsArray(ac.Type) && ac.DimensionSizes.Length == 1:
-                {
-                    var v = Operands(new[] { ac.DimensionSizes[0] }.Concat(ac.Initializer?.ElementValues ?? Enumerable.Empty<IOperation>()).ToArray());
-                    var size = v[0];
-                    var elements = ac.Initializer == null ? null : v.Skip(1).ToArray();
-                    var t = Declare("t$" + _temps++, ac.Type);
-                    Emit(new KNew { Var = t, ArrayType = ac.Type, Size = size, Elements = elements });
-                    return new KVar(t);
-                }
+                    return NewArray(ac);
                 case IInvocationOperation call:
                     return Call(call);
                 case IAwaitOperation aw:
                     return Await(aw) ?? throw new NotTranslated("an await of nothing, as a value");
                 case IIsNullOperation isNull:
                     return new KOp("==", Expr(Unconverted(isNull.Operand)), new KLit("null"));
-                // (a method group made a delegate of a contract: its contract isn't compared with the type's, CSV1029;
+                // (a method group made a delegate of a contract: its contract checked against the type's, CSV1029;
                 // the delegate a new reference, its code not known)
                 case IDelegateCreationOperation cg when Contracted(cg.Type) && cg.Target is IMethodReferenceOperation cgm:
-                {
-                    var receiver = cgm.Instance != null && !(cgm.Instance is IInstanceReferenceOperation) ? Expr(cgm.Instance) : null;
-                    // (its contract against the delegate type's, behavioural subtyping: it accepts all the type does, and
-                    // gives what the type says where the type's precondition holds)
-                    if (Refines(cgm.Method, ((INamedTypeSymbol)cg.Type).DelegateInvokeMethod, receiver) is (KExpr accepts, KExpr gives))
-                    {
-                        Emit(new KCheck { Cond = accepts, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                          Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its precondition might not accept every argument the delegate type's does" });
-                        Emit(new KCheck { Cond = gives, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                          Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its postcondition might not give what the delegate type's says" });
-                    }
-                    else
-                        Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                          Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its contract, or the delegate type's, depends on state, so it isn't known to keep the type's (use a lambda)" });
-                    var t = Declare("t$" + _temps++, cg.Type);
-                    Emit(new KHavoc { Var = t });
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
-                    return new KVar(t);
-                }
+                    return MethodGroupOfContractType(cg, cgm);
                 case IDelegateCreationOperation cd when Contracted(cd.Type) && LambdaOf(cd.Target) != null:
-                {
-                    // (a lambda made a delegate with a contract: proved against it on its own; here, a new reference)
-                    var t = Declare("t$" + _temps++, cd.Type);
-                    Emit(new KNewObj { Var = t, Type = cd.Type, At = cd.Syntax, Args = new KExpr[0], ArgsAt = new SyntaxNode[0] });
-                    return new KVar(t);
-                }
+                    return LambdaOfContractType(cd);
                 case IDelegateCreationOperation dc when IsFunc(dc.Type) && LambdaOf(dc.Target) is IAnonymousFunctionOperation af:
                     return Lambda(dc, af);
                 case IDelegateCreationOperation mg when IsFunc(mg.Type) && mg.Target is IMethodReferenceOperation mr &&
@@ -714,47 +522,16 @@ namespace CsVerify.Verifier.Boogie
                     return MethodGroup(mg, mr.Method, mr.Method.IsStatic ? null : mr.Instance);
                 // ($"...{x}...": its holes evaluated, in order, as they'd throw; a string, not null, of contents not known)
                 case IInterpolatedStringOperation istr:
-                {
-                    foreach (var part in istr.Parts.OfType<IInterpolationOperation>())
-                    {
-                        if (!InSubset(part.Expression.Type) && !(Unconverted(part.Expression) is var u && InSubset(u.Type)))
-                            throw new NotTranslated("a hole of " + part.Expression.Type);
-                        // (read into a variable: its checks are where it's read)
-                        var hole = InSubset(part.Expression.Type) ? part.Expression : Unconverted(part.Expression);
-                        Emit(new KAssign { Var = Declare("t$" + _temps++, hole.Type), Value = Expr(hole) });
-                        if (part.Alignment != null) Expr(part.Alignment);
-                    }
-                    var str = Declare("t$" + _temps++, istr.Type);
-                    Emit(new KHavoc { Var = str });
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(str), new KLit("null")) });
-                    return new KVar(str);
-                }
+                    return InterpolatedString(istr);
                 // (anonymous objects compared as objects: their references, not known (the kernel's values are one per contents))
                 case IBinaryOperation ac when ac.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && AnonymousAsObject(ac.LeftOperand) && AnonymousAsObject(ac.RightOperand):
-                {
-                    Expr(Unconverted(ac.LeftOperand));
-                    Expr(Unconverted(ac.RightOperand));
-                    var same = Declare("t$" + _temps++, ac.Type);
-                    Emit(new KHavoc { Var = same });
-                    return new KVar(same);
-                }
+                    return AnonymousObjectsCompared(ac);
                 // (a library value the kernel doesn't look into, new TimeSpan(...), new DateTime(...): its arguments read, its value not known)
                 case IObjectCreationOperation ov when IsOpaqueValue(ov.Type) && ov.Initializer == null && ov.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type)):
-                {
-                    foreach (var a in ov.Arguments.OrderBy(a => a.Parameter.Ordinal)) Emit(new KAssign { Var = Declare("t$" + _temps++, a.Value.Type), Value = Expr(a.Value) });
-                    var made = Declare("t$" + _temps++, ov.Type);
-                    Emit(new KHavoc { Var = made });
-                    return new KVar(made);
-                }
+                    return NewOpaqueValue(ov);
                 // (a value boxed, as object or an interface it has: an object of its own, not null, which no other is known to be)
                 case IConversionOperation bx when bx.IsImplicit && bx.Operand.Type?.IsValueType == true && !bx.Type.IsValueType && InSubset(bx.Operand.Type) && TypeOf(bx.Type) == "Ref":
-                {
-                    Emit(new KAssign { Var = Declare("t$" + _temps++, bx.Operand.Type), Value = Expr(bx.Operand) });
-                    var boxed = Declare("t$" + _temps++, bx.Type);
-                    Emit(new KHavoc { Var = boxed });
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(boxed), new KLit("null")) });
-                    return new KVar(boxed);
-                }
+                    return Boxed(bx);
                 // (a task, or a library's object, as object or an interface it has: the same reference)
                 case IConversionOperation tr when tr.IsImplicit && tr.Conversion.IsReference && (IsGivenTask(tr.Operand.Type) || IsLibraryObject(tr.Operand.Type) ||
                                                   IsSequence(tr.Type) && (IsCollection(tr.Operand.Type) || IsArray(tr.Operand.Type))) && TypeOf(tr.Type) == "Ref":
@@ -763,6 +540,310 @@ namespace CsVerify.Verifier.Boogie
                     if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type)) return new KLit("null");
                     throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
             }
+        }
+
+        private KExpr MethodGroupOfContractType(IDelegateCreationOperation cg, IMethodReferenceOperation cgm)
+        {
+            var receiver = cgm.Instance != null && !(cgm.Instance is IInstanceReferenceOperation) ? Expr(cgm.Instance) : null;
+            // (its contract against the delegate type's, behavioural subtyping: it accepts all the type does, and
+            // gives what the type says where the type's precondition holds)
+            if (Refines(cgm.Method, ((INamedTypeSymbol)cg.Type).DelegateInvokeMethod, receiver) is (KExpr accepts, KExpr gives))
+            {
+                Emit(new KCheck { Cond = accepts, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                  Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its precondition might not accept every argument the delegate type's does" });
+                Emit(new KCheck { Cond = gives, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                  Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its postcondition might not give what the delegate type's says" });
+            }
+            else
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                  Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its contract, or the delegate type's, depends on state, so it isn't known to keep the type's (use a lambda)" });
+            var t = Declare("t$" + _temps++, cg.Type);
+            Emit(new KHavoc { Var = t });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            return new KVar(t);
+        }
+
+        private KExpr Boxed(IConversionOperation bx)
+        {
+            Emit(new KAssign { Var = Declare("t$" + _temps++, bx.Operand.Type), Value = Expr(bx.Operand) });
+            var boxed = Declare("t$" + _temps++, bx.Type);
+            Emit(new KHavoc { Var = boxed });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(boxed), new KLit("null")) });
+            return new KVar(boxed);
+        }
+
+        private KExpr NewOpaqueValue(IObjectCreationOperation ov)
+        {
+            foreach (var a in ov.Arguments.OrderBy(a => a.Parameter.Ordinal)) Emit(new KAssign { Var = Declare("t$" + _temps++, a.Value.Type), Value = Expr(a.Value) });
+            var made = Declare("t$" + _temps++, ov.Type);
+            Emit(new KHavoc { Var = made });
+            return new KVar(made);
+        }
+
+        private KExpr AnonymousObjectsCompared(IBinaryOperation ac)
+        {
+            Expr(Unconverted(ac.LeftOperand));
+            Expr(Unconverted(ac.RightOperand));
+            var same = Declare("t$" + _temps++, ac.Type);
+            Emit(new KHavoc { Var = same });
+            return new KVar(same);
+        }
+
+        private KExpr InterpolatedString(IInterpolatedStringOperation istr)
+        {
+            foreach (var part in istr.Parts.OfType<IInterpolationOperation>())
+            {
+                if (!InSubset(part.Expression.Type) && !(Unconverted(part.Expression) is var u && InSubset(u.Type)))
+                    throw new NotTranslated("a hole of " + part.Expression.Type);
+                // (read into a variable: its checks are where it's read)
+                var hole = InSubset(part.Expression.Type) ? part.Expression : Unconverted(part.Expression);
+                Emit(new KAssign { Var = Declare("t$" + _temps++, hole.Type), Value = Expr(hole) });
+                if (part.Alignment != null) Expr(part.Alignment);
+            }
+            var str = Declare("t$" + _temps++, istr.Type);
+            Emit(new KHavoc { Var = str });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(str), new KLit("null")) });
+            return new KVar(str);
+        }
+
+        private KExpr LambdaOfContractType(IDelegateCreationOperation cd)
+        {
+            // (a lambda made a delegate with a contract: proved against it on its own; here, a new reference)
+            var t = Declare("t$" + _temps++, cd.Type);
+            Emit(new KNewObj { Var = t, Type = cd.Type, At = cd.Syntax, Args = new KExpr[0], ArgsAt = new SyntaxNode[0] });
+            return new KVar(t);
+        }
+
+        private KExpr NewArray(IArrayCreationOperation ac)
+        {
+            var v = Operands(new[] { ac.DimensionSizes[0] }.Concat(ac.Initializer?.ElementValues ?? Enumerable.Empty<IOperation>()).ToArray());
+            var size = v[0];
+            var elements = ac.Initializer == null ? null : v.Skip(1).ToArray();
+            var t = Declare("t$" + _temps++, ac.Type);
+            Emit(new KNew { Var = t, ArrayType = ac.Type, Size = size, Elements = elements });
+            return new KVar(t);
+        }
+
+        private KExpr NewRectangularArray(IArrayCreationOperation mc)
+        {
+            var sizes = Operands(mc.DimensionSizes.ToArray());
+            foreach (var s in sizes)
+                Emit(new KCheck { Cond = new KOp("<=", new KLit("0"), s), Id = "CSV1003", At = mc.Syntax, Message = $"array size in '{mc.Syntax}' might be negative" });
+            var t = Declare("t$" + _temps++, mc.Type);
+            Emit(new KNew { Var = t, ArrayType = mc.Type, Size = sizes.Skip(1).Aggregate(sizes[0], (x, y) => new KOp("*", x, y)) });
+            for (int d = 0; d < sizes.Length; d++) Emit(new KAssume { Cond = new KOp("==", new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d]) });
+            void Fill(IArrayInitializerOperation init, List<KExpr> prefix)
+            {
+                for (int i = 0; i < init.ElementValues.Length; i++)
+                {
+                    var at = new List<KExpr>(prefix) { new KLit(i.ToString()) };
+                    if (at.Count < sizes.Length) Fill((IArrayInitializerOperation)init.ElementValues[i], at);
+                    else Emit(new KStore { Unchecked = true, Array = new KVar(t), Index = CellOf(at), Value = Expr(init.ElementValues[i]), ArrayType = mc.Type, At = mc.Syntax, ArrayAt = mc.Syntax });
+                }
+            }
+            if (mc.Initializer != null) Fill(mc.Initializer, new List<KExpr>());
+            return new KVar(t);
+        }
+
+        private KExpr StringOperator(IBinaryOperation sb)
+        {
+            var v = Operands(sb.LeftOperand, sb.RightOperand);
+            return RelationalStrings(sb, StringBinary(sb.OperatorKind, v[0], v[1]), v[0], v[1]);
+        }
+
+        private KExpr StringConcatenation(IBinaryOperation so)
+        {
+            var stringLeft = IsString(Unconverted(so.LeftOperand).Type);
+            var str = Expr(stringLeft ? so.LeftOperand : so.RightOperand);
+            var other = Unconverted(stringLeft ? so.RightOperand : so.LeftOperand);
+            if (!InSubset(other.Type)) throw new NotTranslated("a string + " + other.Type);
+            Expr(other);
+            var text = Declare("t$" + _temps++, so.Type);
+            Emit(new KHavoc { Var = text });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(text), new KLit("null")) });
+            return stringLeft ? StringBinary(BinaryOperatorKind.Add, str, new KVar(text)) : StringBinary(BinaryOperatorKind.Add, new KVar(text), str);
+        }
+
+        private KExpr IncrementValue(IIncrementOrDecrementOperation iv)
+        {
+            var before = Declare("t$" + _temps++, iv.Type);
+            Emit(new KAssign { Var = before, Value = Expr(iv.Target) });
+            var after = Declare("t$" + _temps++, iv.Type);
+            Emit(new KAssign { Var = after, Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), new KLit("1"), iv.Type, iv.Syntax, iv.IsChecked) });
+            Assign(iv.Target, new KVar(after));
+            return new KVar(iv.IsPostfix ? before : after);
+        }
+
+        private KExpr StringChar(IPropertyReferenceOperation sc)
+        {
+            var v = Operands(sc.Instance, sc.Arguments[0].Value);
+            return new KElem { String = true, Array = v[0], Index = v[1], At = sc.Syntax, ArrayAt = sc.Instance.Syntax };
+        }
+
+        private KExpr GivenTaskResult(IPropertyReferenceOperation tr)
+        {
+            Expr(tr.Instance);
+            var r = Declare("t$" + _temps++, tr.Type);
+            Emit(new KHavoc { Var = r });
+            return new KVar(r);
+        }
+
+        private KExpr ArrayElement(IArrayElementReferenceOperation el)
+        {
+            var v = Operands(el.ArrayReference, el.Indices[0]);
+            HeldCell(v[0], el.Syntax, write: false);
+            return new KElem { Array = v[0], Index = v[1], ArrayType = el.ArrayReference.Type, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax,
+                               Alongside = InSpec(el.Syntax) ? null : Concurrent ? new KLit("true") : Running() };
+        }
+
+        private KExpr AsCollectionInterface(IConversionOperation ci)
+        {
+            var t = Declare("t$" + _temps++, ci.Type);
+            Emit(new KAssign { Var = t, Value = Expr(ci.Operand) });
+            Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")), new KOp(IsArray(ci.Operand.Type) ? "$arr" : "$coll", new KVar(t))) });
+            return new KVar(t);
+        }
+
+        private KExpr DataAsObject(IConversionOperation dobj)
+        {
+            Expr(dobj.Operand);
+            var t = Declare("t$" + _temps++, dobj.Type);
+            Emit(new KHavoc { Var = t });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            return new KVar(t);
+        }
+
+        private KExpr AssignmentValue(ISimpleAssignmentOperation sa)
+        {
+            var t = Declare("t$" + _temps++, sa.Type);
+            Emit(new KAssign { Var = t, Value = Expr(sa.Value) });
+            Assign(sa.Target, new KVar(t));
+            return new KVar(t);
+        }
+
+        private KExpr ReferenceEqualsCall(IInvocationOperation re)
+        {
+            var ordered = re.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var a0 = Declare("t$" + _temps++, ordered[0].Value.Type);
+            Emit(new KAssign { Var = a0, Value = Expr(ordered[0].Value) });
+            return new KOp("==", new KVar(a0), Expr(ordered[1].Value));
+        }
+
+        private KExpr NewObject(IObjectCreationOperation oc)
+        {
+            var ctor = oc.Constructor.OriginalDefinition;
+            bool isImplicit = ctor.IsImplicitlyDeclared;
+            if (!isImplicit && !_isProcedure(ctor)) throw new NotTranslated("a call of " + oc.Type.Name + "'s constructor");
+            if (!isImplicit) _p.Calls.Add(ctor);
+            var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var args = Operands(ordered.Select(a => a.Value).ToArray());
+            // (a generic class's constructor takes boxes for its T: new Box<int>(3))
+            for (int k = 0; k < args.Length; k++) args[k] = Box(args[k], ctor.Parameters[ordered[k].Parameter.Ordinal].Type, ordered[k].Parameter.Type);
+            var t = Declare("t$" + _temps++, oc.Type);
+            foreach (var f in InstanceFields(oc.Type)) _p.Fields.Add(f);
+            Emit(new KNewObj { Var = t, Type = oc.Type, Ctor = isImplicit ? null : ctor, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = oc.Syntax });
+            // (exactly a C)
+            if (IsModeledClass(oc.Type))
+            {
+                _p.ClassTypes.Add(oc.Type.OriginalDefinition);
+                Emit(new KAssume { Cond = new KOp("==", new KOp("dtype", new KVar(t)), new KLit(TypeConst(oc.Type))) });
+            }
+            // (a context made: it tracks nothing, and has nothing open)
+            if (IsContext(oc.Type)) NewContext(new KVar(t));
+            return new KVar(t);
+        }
+
+        private KExpr NewLibraryObject(IObjectCreationOperation lob)
+        {
+            foreach (var x in lob.Arguments.OrderBy(x => x.Parameter.Ordinal))
+            {
+                var xv = Expr(x.Value);
+                if (IsFunc(x.Parameter.Type)) StoredInLibrary(lob.Constructor, x, xv);
+            }
+            var t = Declare("t$" + _temps++, lob.Type);
+            Emit(new KNewObj { Var = t, Type = lob.Type, Ctor = null, Args = new KExpr[0], ArgsAt = new SyntaxNode[0], At = lob.Syntax });
+            return new KVar(t);
+        }
+
+        private KExpr NewString(IObjectCreationOperation ns)
+        {
+            var vs = ns.Arguments.OrderBy(x => x.Parameter.Ordinal).Select(x => Operand(x.Value, Expr, false)).ToList();
+            var t = Declare("t$" + _temps++, ns.Type);
+            Emit(new KHavoc { Var = t });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            if (ns.Arguments.Length == 2 && IsIntegral(ns.Arguments[1].Value.Type) && ns.Arguments[0].Value.Type?.SpecialType == SpecialType.System_Char)
+            {
+                Emit(new KCheck { Cond = new KOp(">=", vs[1], new KLit("0")), Id = "CSV1001", At = ns.Syntax, Message = $"'{ns.Syntax}' might throw: its count might be negative" });
+                Emit(new KAssume { Cond = new KOp("==", new KOp("slen", new KVar(t)), vs[1]) });
+            }
+            return new KVar(t);
+        }
+
+        private KExpr LibraryPropertyRead(IPropertyReferenceOperation lp)
+        {
+            if (lp.Instance != null)
+            {
+                var iv = Expr(lp.Instance);
+                if (IsNullable(lp.Instance.Type) && !(lp.Instance is IInstanceReferenceOperation))
+                    Emit(new KCheck { Cond = new KOp("!=", iv, new KLit("null")), Id = "CSV1013", At = lp.Syntax, Message = $"'{lp.Instance.Syntax}' might be null in '{lp.Syntax}'" });
+            }
+            foreach (var a in lp.Arguments) Expr(a.Value);
+            var prop = lp.Property;
+            var ns = prop.ContainingType.ContainingNamespace?.ToDisplayString();
+            bool shared = prop.ContainingType.IsValueType && ns is "System.Threading" or "System.Threading.Tasks" or "System.Runtime.CompilerServices";
+            var span = lp.Syntax.GetLocation().GetLineSpan();
+            // (nor of one with a stub, a [Pure] one that says nothing more: Channel.Writer, a token source's Token)
+            bool stubbed = _contractOf?.Invoke(prop.GetMethod.OriginalDefinition) is Contract sc && sc.IsStub;
+            if (!shared && !stubbed && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator") && !_p.Warnings.Any(w => w.Span.Equals(span)))
+                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown", span));
+            if (_p.Result != null) lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
+            var lv = Declare("t$" + _temps++, lp.Type);
+            Emit(new KHavoc { Var = lv });
+            if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lv), new KLit("null")) });
+            return new KVar(lv);
+        }
+
+        private KExpr ThisInConstructor(IInstanceReferenceOperation ti)
+        {
+            var type = _m.ContainingType;
+            bool invariants = HasObjectInvariant(type);
+            if (invariants || InstanceFields(type).Any(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
+                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1015", At = ti.Syntax, NotAssumedAfter = true,
+                                  Message = invariants ? $"'this' escapes the constructor of {type.Name} before its invariant is established"
+                                                       : $"'this' escapes the constructor of {type.Name}, whose non-nullable fields may not be set yet" });
+            return new KVar("this");
+        }
+
+        private KExpr NewLibraryException(IObjectCreationOperation ne)
+        {
+            foreach (var a in ne.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation))) Expr(a.Value);
+            var t = Declare("t$" + _temps++, ne.Type);
+            _p.ExceptionTypes.Add(ne.Type);
+            Emit(new KNewExc { Var = t, Type = ne.Type });
+            return new KVar(t);
+        }
+
+        private KExpr EnumeratorCurrent(IPropertyReferenceOperation ecur)
+        {
+            var v = Declare("t$" + _temps++, ecur.Type);
+            Emit(new KHavoc { Var = v });
+            return new KVar(v);
+        }
+
+        private KExpr MoveNextOfAnyEnumerable(IInvocationOperation om)
+        {
+            CallersRun();
+            var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
+            Emit(new KHavoc { Var = more });
+            return new KVar(more);
+        }
+
+        private KExpr IntegerMathCall(IInvocationOperation im)
+        {
+            var v = Operands(im.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray());
+            return im.TargetMethod.Name == "Abs"
+                ? new KOp("ite", new KOp(">=", v[0], new KLit("0")), v[0], Arith("-", new KLit("0"), v[0], im.Type, im.Syntax, isChecked: true))
+                : MinMax(im.TargetMethod.Name, v[0], v[1]);
         }
 
         /// <summary>
