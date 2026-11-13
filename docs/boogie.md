@@ -887,7 +887,8 @@ functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, i
   `$pre` its `Spec.Requires` (or `true`), `$post` (with `$pre`) implying its postconditions and an expression's value,
   and `$nochange` if it writes no field, cell or object and calls only what's `[Pure]`. They count only as far as they
   depend on its parameters, constants, `this`, and variables never written after they're declared (the rest is left
-  out); a precondition that depends on more isn't translated. Its body is verified on its own.
+  out); a precondition that depends on more is of the state it's made in where the lambda says what it reads
+  (`Spec.Reads`, below), and CSV1029 where it doesn't. Its body is verified on its own.
 - A method whose specifications speak of a parameter's `Spec.Pre`, `Spec.Post` or `Spec.Total` (and not of what it
   reads) takes it to be the same in every state: `$steady(p)` at entry, and each call of it asserts `$steady` of the
   argument (CSV1001). A lambda or method group that reads no state is steady.
