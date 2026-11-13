@@ -424,6 +424,13 @@ namespace CsVerify.Verifier.Boogie
         private static bool AnonymousAsObject(IOperation o) =>
             o is IConversionOperation { Conversion.IsReference: true } c && c.Operand.Type is INamedTypeSymbol { IsAnonymousType: true } && !c.Type.IsAnonymousType;
 
+        /// <summary>An anonymous object compared with null (an OrDefault's none): the anonymous object, and whether it's ==.</summary>
+        private static (IOperation anonymous, bool equals)? AnonymousVsNull(IOperation e) =>
+            e is IBinaryOperation b && b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && b.OperatorMethod == null &&
+            (AnonymousAsObject(b.LeftOperand) && Unconverted(b.RightOperand).ConstantValue is { HasValue: true, Value: null } ? Unconverted(b.LeftOperand) :
+             AnonymousAsObject(b.RightOperand) && Unconverted(b.LeftOperand).ConstantValue is { HasValue: true, Value: null } ? Unconverted(b.RightOperand) : null) is IOperation a
+                ? (a, b.OperatorKind == BinaryOperatorKind.Equals) : null;
+
         /// <summary>A delegate handed to a library member: the lambda it is, if it is one; whether it writes nothing; whether it accepts anything.</summary>
         private (IAnonymousFunctionOperation lambda, bool quiet, bool free) Handed(IArgumentOperation da)
         {
@@ -3954,6 +3961,9 @@ namespace CsVerify.Verifier.Boogie
                     CastThrows(downOk, inSpec);
                     return new KCast { Value = v, Test = downOk, At = down.Syntax };
                 }
+                // (an anonymous object compared with null: its reference, null where an OrDefault found none, never one made)
+                case IBinaryOperation an when AnonymousVsNull(an) is var (anon, anonEq):
+                    return new KOp(anonEq ? "==" : "!=", lower(anon), new KLit("null"));
                 // (a record's == and !=: its values' equality, which is its references', a value being its constructor's)
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):

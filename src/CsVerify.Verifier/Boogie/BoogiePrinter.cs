@@ -73,6 +73,8 @@ namespace CsVerify.Verifier.Boogie
                 var ps = string.Join(", ", types.Select((t, i) => $"x{i}: {t}"));
                 var app = $"{mk}({string.Join(", ", types.Select((t, i) => "x" + i))})";
                 Line($"function {mk}({ps}): Ref;");
+                // (one made isn't null: null is an anonymous object's none, an OrDefault's)
+                Line(types.Count == 0 ? $"axiom {app} != null;" : $"axiom (forall {ps} :: {{ {app} }} {app} != null);");
                 for (int i = 0; i < types.Count; i++)
                 {
                     var item = $"$tup.{i}.{types[i].Replace("[", "_").Replace("]", "_")}";

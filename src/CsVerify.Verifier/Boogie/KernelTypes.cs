@@ -858,7 +858,11 @@ namespace CsVerify.Verifier.Boogie
         public static string Ident(string s)
         {
             var b = new StringBuilder();
-            foreach (var ch in s ?? "") b.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == '$' ? ch : '_');
+            // (Boogie's identifiers are ASCII: another letter, σ, is its code, u03C3, as one such name stays apart from others)
+            foreach (var ch in s ?? "")
+                if (ch < 128 && (char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == '$')) b.Append(ch);
+                else if (ch >= 128 && char.IsLetterOrDigit(ch)) b.Append("u").Append(((int)ch).ToString("X4"));
+                else b.Append('_');
             return b.ToString();
         }
 
