@@ -622,7 +622,8 @@ index (`sdiff`), so a string is its characters. `s.Length` and `s[i]` are checke
 `StringComparison.Ordinal`, ...) is a Boogie function of its arguments, its postconditions axioms where its
 preconditions hold, its non-nullable result not null; a call checks its receiver (CSV1013) and its precondition
 (CSV1001). A string as an object (`(object)s`, `ReferenceEquals`) is a reference whose contents are `$strOf(o)`:
-the same object is the same string; equal strings may be different objects. Other library members of string, without a stub, aren't translated.
+the same object is the same string; equal strings may be different objects. Other library members of string (`ToUpper`, `Trim`, `Split`) are, in code,
+library calls whose results aren't known (not null where declared so); a specification reads only the `[Pure]` ones with stubs.
 
 **Quantifiers in code.** A `Spec.Forall` or `Spec.Exists` in code (a `[Pure]` or ghost function's body) is
 mathematics, read as the source has it; its body's checks (null, bounds, division, a function's precondition) are
