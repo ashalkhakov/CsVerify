@@ -1082,10 +1082,14 @@ namespace CsVerify.Verifier.Boogie
                     Line("  var cowner: [Ref][int]Inst;");
                 }
             }
-            // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too)
+            // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too. A variable of
+            // the program's of a non-nullable reference type is never null: each write to it is checked, and it's read only
+            // once written)
             foreach (var l in p.Locals)
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
-                     IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(InRange(new KVar(l.Name), l.Type), cx)};" : $"  var {l.Name}: {TypeOf(l.Type)};");
+                     IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(InRange(new KVar(l.Name), l.Type), cx)};" :
+                     l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
+                     $"  var {l.Name}: {TypeOf(l.Type)};");
             foreach (var x in ins) Line($"    {x} := {x}$in;");
             foreach (var b in p.Blocks)
             {

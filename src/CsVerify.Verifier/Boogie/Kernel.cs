@@ -536,6 +536,8 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KAssume : KStmt
     {
         public KExpr Cond;
+        /// <summary>True in every state (what a field's type says of its value): not put under a guard or a quantifier.</summary>
+        public bool Always;
     }
 
     /// <summary>An immutable object of a class with invariants, where a condition holds: its invariants hold (Checks' ObjectInvariant).</summary>

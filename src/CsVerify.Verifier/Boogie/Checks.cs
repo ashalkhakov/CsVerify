@@ -313,6 +313,11 @@ namespace CsVerify.Verifier.Boogie
                 if (head && invariants.TryGetValue(b.Ordinal, out var invs))
                     foreach (var inv in invs)
                     {
+                        // (what reading the invariant lets one assume, a non-nullable field not null, holds in every state:
+                        // assumed on the way in too, as Boogie takes an assume at a loop's head for a free invariant, only
+                        // after its havoc, and the invariant's checks on entry need it)
+                        foreach (var into in _p.Blocks.Where(x => x.Ordinal < b.Ordinal && x.Jump is KGoto g && g.Targets.Contains(b.Label)))
+                            foreach (var f in inv.facts) into.Stmts.Add(new KAssume { Cond = f });
                         foreach (var f in inv.facts) Assume(f);
                         WellDefined(inv.wf, inv.spec.At, null);
                         Assert(inv.math, At("CSV1005", inv.spec.At, $"loop invariant '{inv.spec.At}'"));
@@ -1188,8 +1193,9 @@ namespace CsVerify.Verifier.Boogie
                     if (sig.FunctionBody == null || !app.Callee.IsStatic) continue;
                     var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
                     KExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, given); }
-                    var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((KExpr)new KLit("true"), Conj);
+                    // (the facts so far kept: the definition's own are left out)
                     var saved = _facts.ToList();
+                    var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((KExpr)new KLit("true"), Conj);
                     var definition = new KOp("==", app, M(sig.FunctionBody));
                     _facts.Clear();
                     _facts.AddRange(saved);
@@ -1661,6 +1667,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(s switch
                     {
                         KAssert a => new KAssert { Cond = Implies(guard, a.Cond), Check = a.Check, NotAssumedAfter = a.NotAssumedAfter },
+                        KAssume { Always: true } a => a,
                         KAssume a => new KAssume { Cond = Implies(guard, a.Cond) },
                         _ => s,
                     });
@@ -2025,6 +2032,7 @@ namespace CsVerify.Verifier.Boogie
                             Emit(s switch
                             {
                                 KAssert a => new KAssert { Cond = new KQuant { Forall = true, Var = q.Var, Range = null, Body = a.Cond }, Check = a.Check, NotAssumedAfter = a.NotAssumedAfter },
+                                KAssume { Always: true } a when !Mentions(a.Cond, new HashSet<string> { q.Var }) => a,
                                 KAssume a => new KAssume { Cond = new KQuant { Forall = true, Var = q.Var, Range = null, Body = a.Cond } },
                                 _ => throw new NotTranslated("a quantifier whose body changes state"),
                             });
@@ -2085,10 +2093,13 @@ namespace CsVerify.Verifier.Boogie
                     if (_p.IsPredicate)
                         Assert(CanWrite(o, fd.Field), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     var v = new KOp("sel", new KVar(FieldMap(fd.Field)), o);
-                    // (a non-nullable field of a built object: not this one's, while its constructor builds it)
-                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis)) Assume(new KOp("!=", v, new KLit("null")));
+                    // (a non-nullable field of a built object: not this one's, while its constructor builds it. True in every
+                    // state, as the type says: not under a quantifier's range, whose variable it doesn't mention, where the
+                    // solver would have no term to instantiate it with)
+                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis))
+                        Emit(new KAssume { Cond = new KOp("==>", new KOp("!=", o, new KLit("null")), new KOp("!=", v, new KLit("null"))), Always = true });
                     // (a field of an allocated object refers to an allocated object, as CsVerify's engine assumes where it reads one)
-                    if (IsRef(FieldType(fd.Field))) Assume(Allocated(o, v));
+                    if (IsRef(FieldType(fd.Field))) Emit(new KAssume { Cond = Allocated(o, v), Always = true });
                     ObjectInvariant(v, FieldType(fd.Field));
                     return v;
                 }
