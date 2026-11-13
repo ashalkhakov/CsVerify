@@ -124,5 +124,12 @@ namespace CsVerify.Tests
         [Fact]
         public void Foreach_OverNull_IsReported() => Assert.NotEmpty(Errors(
             "static void M(string? s) { foreach (char c in s!) { } }"));
+
+        // (the same object is the same string; equal strings may be different objects)
+        [Theory]
+        [InlineData("static bool M(string a, string b) { Spec.Ensures((bool r) => !r || a == b); return (object)a == (object)b; }", true)]
+        [InlineData("static bool M(string a, string b) { Spec.Ensures((bool r) => !r || a == b); return ReferenceEquals(a, b); }", true)]
+        [InlineData("static bool M(string a, string b) { Spec.Ensures((bool r) => r == (a == b)); return ReferenceEquals(a, b); }", false)]
+        public void ComparedAsObjects(string body, bool verifies) => Assert.Equal(verifies, Errors(body).Length == 0);
     }
 }

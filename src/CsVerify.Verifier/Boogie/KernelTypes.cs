@@ -672,6 +672,9 @@ namespace CsVerify.Verifier.Boogie
             b.ContainingNamespace?.ToDisplayString() is string ns && ns.StartsWith("System") && !IsCollection(b) && CollectionKind(b) == null && !IsException(b) &&
             !IsTaskLike(b) && !IsContext(b) && !IsSemaphore(b) && !IsDelegate(b);
 
+        /// <summary>The library's exception class (System.Exception and those derived from it), a base of a program's exception class.</summary>
+        public static bool IsLibraryException(ITypeSymbol t) => t is INamedTypeSymbol { TypeKind: TypeKind.Class } b && b.DeclaringSyntaxReferences.Length == 0 && IsException(b);
+
         /// <summary>Does this class of the program's derive from one of the library's?</summary>
         public static bool DerivesFromLibrary(ITypeSymbol t)
         {
@@ -716,8 +719,8 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && !n.IsAnonymousType && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
             // (derived from object, or from a class of the subset; an [Owned] one from object)
-            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType)) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || IsLibraryCollectionInterface(i)) || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
+            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() is "System.IDisposable" or "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i)) || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute")) &&
             // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
             // (ToString may be overridden: what the library makes of an object's text, it doesn't know anyway)
@@ -837,11 +840,11 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A class or interface whose objects have dynamic types (dtype, sub): not generic (its instantiations would share
-        /// one), nor object, a data type (tags), an exception (typed already) or a delegate.
+        /// one), nor object, a data type (tags) or a delegate. Exceptions included.
         /// </summary>
         public static bool IsModeledClass(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.IsReferenceType && n.TypeKind is TypeKind.Class or TypeKind.Interface && !n.IsGenericType && n.ContainingType?.IsGenericType != true &&
-            n.SpecialType != SpecialType.System_Object && !IsData(n) && !IsException(n) && !IsDelegate(n);
+            n.SpecialType != SpecialType.System_Object && !IsData(n) && !IsDelegate(n);
 
         /// <summary>A lambda or a local function: a unit of its own, which nothing calls as a procedure.</summary>
         public static bool IsNested(IMethodSymbol m) => m.MethodKind is MethodKind.AnonymousFunction or MethodKind.LocalFunction;

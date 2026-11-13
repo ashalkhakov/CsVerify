@@ -850,5 +850,20 @@ namespace CsVerify.Tests
             Assert.Empty(Errors("M", "static int M(string? s) { ArgumentNullException.ThrowIfNull(s); return s.Length; }"));
             Assert.Empty(Errors("M", "static int M(string s) => s.Trim().Length;")); // Trim returns string, not string?
         }
+
+        [Fact]
+        public void Tuples_CompareElementByElement()
+        {
+            Assert.Empty(Errors("M", "static bool M(long a, int b) { Spec.Ensures((bool r) => r == (a == 1 && b == 2)); return (a, b) == (1, 2); }"));
+            Assert.Empty(Errors("M", "static bool M((int, bool) t) { Spec.Ensures((bool r) => r == (t.Item1 != 3 || !t.Item2)); return t != (3, true); }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static bool M(int a, int b) { Spec.Ensures((bool r) => r == (a == 1)); return (a, b) == (1, 2); }"));
+        }
+
+        [Fact]
+        public void LiftedArithmetic_IsNullWhereAnOperandIs()
+        {
+            Assert.Empty(Errors("M", "static int? M(int? x) { Spec.Requires(x == null || x.Value < 100 && x.Value > -100); Spec.Ensures((int? r) => (r == null) == (x == null)); return x + 1; }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static int? M(int? x) { Spec.Requires(x == null || x.Value < 100 && x.Value > -100); Spec.Ensures((int? r) => r != null); return x + 1; }"));
+        }
     }
 }

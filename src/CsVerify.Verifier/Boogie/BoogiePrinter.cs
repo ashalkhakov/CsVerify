@@ -174,7 +174,8 @@ namespace CsVerify.Verifier.Boogie
             Optional("$canBeCanceled(", "function $canBeCanceled(t: Ref): bool; // a cancellation token's, which never changes");
             Optional("$eqc(", "function $eqc(o: Ref): Ref; // a class's own Equals: its class of equals, not known");
             Optional("$refEq(", "function $refEq(a: Ref, b: Ref): bool; // anonymous objects' references compared: not known");
-            Optional("$sfRef(", "function $sfRef(k: int): Ref; // a static readonly field's value, which never changes");
+            Optional("$strOf(", "function $strOf(o: Ref): Ref; // a string as an object: its contents");
+            Optional("$sfRef(","function $sfRef(k: int): Ref; // a static readonly field's value, which never changes");
             Optional("$sfInt(", "function $sfInt(k: int): int;");
             Optional("$sfBool(", "function $sfBool(k: int): bool;");
             Optional("$eqc(", "axiom (forall o: Ref :: { $eqc(o) } o != null ==> $eqc(o) != null);");
@@ -245,6 +246,11 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var (name, op) in new[] { ("isNaN", "fp.isNaN"), ("isInf", "fp.isInfinite"), ("isPos", "fp.isPositive"), ("isNeg", "fp.isNegative"),
                                                     ("isNormal", "fp.isNormal"), ("isSubnormal", "fp.isSubnormal") })
                     Optional("$fp.", F(name, op, x, "bool"));
+                Optional("$fp.", F("rem", "fp.rem", xy, t));
+                Optional("$fp.", F("isZero", "fp.isZero", x, "bool"));
+                // (C's fmod, .NET's %: IEEE's remainder moved by |y| to x's sign, which is exact)
+                Optional("$fp.", $"function {{:inline}} $fp.fmod{n}({xy}): {t} {{ if !$fp.isZero{n}($fp.rem{n}(x, y)) && $fp.isNeg{n}($fp.rem{n}(x, y)) != $fp.isNeg{n}(x) " +
+                                 $"then (if $fp.isNeg{n}(x) then $fp.sub{n}($fp.rem{n}(x, y), $fp.abs{n}(y)) else $fp.add{n}($fp.rem{n}(x, y), $fp.abs{n}(y))) else $fp.rem{n}(x, y) }}");
                 Optional("$fp.", F("real", "fp.to_real", x, "real"));
                 Optional("$fp.", F("ofReal", $"(_ to_fp {size}) RNE", "r: real", t));
                 Optional("$fp.", F("bits", $"(_ to_fp {size})", $"b: {bv}", t));

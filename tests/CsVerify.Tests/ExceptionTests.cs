@@ -148,5 +148,26 @@ public static class C { static void Work() { } static void M() {
     var c = Own.New(new Cell(), out var v);
     try { Work(); } finally { Own.Drop(v); } } }"));
         }
+
+        [Fact]
+        public void ProgramExceptionClasses_HaveFieldsAndDynamicTypes()
+        {
+            var r = Harness.Verify(@"
+public class AppException : System.InvalidOperationException { public readonly int Level; public AppException(string m, int level) : base(m) { Spec.Ensures(Level == level); Level = level; } }
+public sealed class DbException : AppException { public DbException(int level) : base(""db"", level) { Spec.Ensures(Level == level); } }
+public static class C
+{
+    static int Read() { Spec.Ensures((int r) => r == 3); try { throw new DbException(3); } catch (AppException e) { return e.Level; } }
+    static int ReadBad() { Spec.Ensures((int r) => r == 4); try { throw new DbException(3); } catch (AppException e) { return e.Level; } }
+    static int ByBase() { Spec.Ensures((int r) => r == 3); try { throw new DbException(3); } catch (System.InvalidOperationException e) { return e is AppException a ? a.Level : -1; } }
+    static bool Other() { Spec.Ensures((bool r) => r); try { throw new System.ArgumentException(""x""); } catch (System.Exception e) { return !(e is AppException); } }
+    static bool OtherBad() { Spec.Ensures((bool r) => r); try { throw new DbException(1); } catch (System.Exception e) { return !(e is AppException); } }
+    static int InLock(object l) { Spec.Requires(l != null); Spec.Ensures((int r) => r == 1); try { lock (l) { throw new DbException(1); } } catch (AppException e) { return e.Level; } }
+}");
+            foreach (var good in new[] { "AppException..ctor", "DbException..ctor", "C.Read", "C.ByBase", "C.Other", "C.InLock" })
+                Assert.True(r[good].Verified, good + ": " + string.Join("; ", r[good].Diagnostics.Select(d => d.Message)));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("ReadBad"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("OtherBad"));
+        }
 }
 }

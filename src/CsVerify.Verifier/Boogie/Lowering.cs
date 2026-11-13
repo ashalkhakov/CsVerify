@@ -422,6 +422,18 @@ namespace CsVerify.Verifier.Boogie
             return new KOp("$sf" + kind, new KLit(k.ToString()));
         }
 
+        /// <summary>A tuple whose elements compare as values: integers, enums, chars and bools.</summary>
+        private static bool TupleComparable(ITypeSymbol t) =>
+            t is INamedTypeSymbol { IsTupleType: true } n && n.TupleElements.All(e => IsIntegral(e.Type) || e.Type.SpecialType == SpecialType.System_Boolean);
+
+        /// <summary>A tuple's elements, in order: a tuple written here, (x, y), each value; any other, each item of it.</summary>
+        private List<KExpr> TupleParts(IOperation op, Func<IOperation, KExpr> lower, bool inSpec)
+        {
+            if (Unconverted(op) is ITupleOperation lit) return lit.Elements.Select(e => Operand(e, lower, inSpec)).ToList();
+            var v = Operand(op, lower, inSpec);
+            return Enumerable.Range(0, ((INamedTypeSymbol)op.Type).TupleElements.Length).Select(k => TupleItem(v, op.Type, k)).ToList();
+        }
+
         private static bool AnonymousAsObject(IOperation o) =>
             o is IConversionOperation { Conversion.IsReference: true } c && c.Operand.Type is INamedTypeSymbol { IsAnonymousType: true } && !c.Type.IsAnonymousType;
 
@@ -1473,6 +1485,11 @@ namespace CsVerify.Verifier.Boogie
                 // (a context's base, DbContext(options): nothing the kernel keeps; a new context is new where it's made)
                 case IInvocationOperation efBase when efBase.TargetMethod.MethodKind == MethodKind.Constructor && _p.IsCtor && KernelTypes.Ef != null &&
                                                       efBase.TargetMethod.ContainingType?.ToDisplayString() == "Microsoft.EntityFrameworkCore.DbContext" && efBase.Instance is IInstanceReferenceOperation:
+                    return;
+                // (a library exception's base(...): its arguments evaluated; its state isn't the kernel's)
+                case IInvocationOperation excBase when excBase.TargetMethod.MethodKind == MethodKind.Constructor && _p.IsCtor &&
+                                                       IsLibraryException(excBase.TargetMethod.ContainingType) && excBase.Instance is IInstanceReferenceOperation:
+                    foreach (var a in excBase.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation))) Expr(a.Value);
                     return;
                 case IInvocationOperation chain when chain.TargetMethod.MethodKind == MethodKind.Constructor && _p.IsCtor &&
                                                      (chain.Instance is IInstanceReferenceOperation ||
@@ -3798,7 +3815,7 @@ namespace CsVerify.Verifier.Boogie
                         BinaryOperatorKind.Equals => new KOp("$fp.eq" + n, l, r), BinaryOperatorKind.NotEquals => new KOp("!", new KOp("$fp.eq" + n, l, r)),
                         BinaryOperatorKind.LessThan => new KOp("$fp.lt" + n, l, r), BinaryOperatorKind.LessThanOrEqual => new KOp("$fp.leq" + n, l, r),
                         BinaryOperatorKind.GreaterThan => new KOp("$fp.gt" + n, l, r), BinaryOperatorKind.GreaterThanOrEqual => new KOp("$fp.geq" + n, l, r),
-                        // (% is C's fmod, not IEEE's remainder: not modeled)
+                        BinaryOperatorKind.Remainder => new KOp("$fp.fmod" + n, l, r),
                         _ => throw new NotTranslated("the float operator " + fb.OperatorKind),
                     };
                 }
@@ -3831,6 +3848,15 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IPropertyReferenceOperation jrm when jrm.Instance is ILocalReferenceOperation jrl && _joinRows.ContainsKey(jrl.Local) && JoinRowMember(jrm) is KExpr jrv:
                     return jrv;
+                // (t == u of tuples: the left's elements, then the right's, compared element by element)
+                case ITupleBinaryOperation tb when TupleComparable(tb.LeftOperand.Type) && TupleComparable(tb.RightOperand.Type):
+                {
+                    var l = TupleParts(tb.LeftOperand, lower, inSpec);
+                    var r = TupleParts(tb.RightOperand, lower, inSpec);
+                    KExpr same = new KLit("true");
+                    for (int k = l.Count - 1; k >= 0; k--) same = k == l.Count - 1 ? new KOp("==", l[k], r[k]) : new KOp("&&", new KOp("==", l[k], r[k]), same);
+                    return tb.OperatorKind == BinaryOperatorKind.Equals ? same : new KOp("!", same);
+                }
                 // (an anonymous object, new { s, b = e }: a tuple of its members; a member read, an element)
                 case IAnonymousObjectCreationOperation ao when IsTuple(ao.Type):
                 {
@@ -3888,7 +3914,7 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation { Property.Name: "Value", Instance: IPropertyReferenceOperation { Property.Name: "Obj" } vo } when IsView(vo.Instance?.Type) || IsShare(vo.Instance?.Type):
                     return lower(vo.Instance);
                 // (o is C of a class: not null, an instance of C; a value of its static type is an instance of that)
-                case IIsTypeOperation ct when IsModeledClass(ct.TypeOperand) && (IsRef(ct.ValueOperand.Type) || IsString(ct.ValueOperand.Type)):
+                case IIsTypeOperation ct when IsModeledClass(ct.TypeOperand) && (IsRef(ct.ValueOperand.Type) || IsString(ct.ValueOperand.Type) || IsException(ct.ValueOperand.Type)):
                 {
                     var v = Operand(ct.ValueOperand, lower, inSpec);
                     StaticType(v, ct.ValueOperand.Type, inSpec);
@@ -3903,7 +3929,7 @@ namespace CsVerify.Verifier.Boogie
                                                  IsArray(Unconverted(ip.Value).Type) && ip.Pattern is IListPatternOperation ||
                                                  IsTuple(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  IsClass(Unconverted(ip.Value).Type) && !IsData(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
-                                                 (IsRef(Unconverted(ip.Value).Type) || IsString(Unconverted(ip.Value).Type)) && !IsData(Unconverted(ip.Value).Type):
+                                                 (IsRef(Unconverted(ip.Value).Type) || IsString(Unconverted(ip.Value).Type) || IsException(Unconverted(ip.Value).Type)) && !IsData(Unconverted(ip.Value).Type):
                 {
                     var v = Operand(Unconverted(ip.Value), lower, inSpec);
                     StaticType(v, Unconverted(ip.Value).Type, inSpec);
@@ -3953,6 +3979,8 @@ namespace CsVerify.Verifier.Boogie
                     var o = Declare("t$" + _temps++, so.Type);
                     Emit(new KHavoc { Var = o });
                     Emit(new KAssume { Cond = new KOp("==", new KOp("==", new KVar(o), new KLit("null")), new KOp("==", sv, new KLit("null"))) });
+                    // (the object's contents: the same object, the same string)
+                    Emit(new KAssume { Cond = new KOp("==", new KOp("$strOf", new KVar(o)), sv) });
                     return new KVar(o);
                 }
                 // (not a string's: as an object, one isn't its value, which another equal string may be)
@@ -4911,7 +4939,7 @@ namespace CsVerify.Verifier.Boogie
                 // (a struct's constructor: the value it gives)
                 case IObjectCreationOperation sc when IsStruct(sc.Type) && sc.Initializer == null && sc.Constructor != null && !sc.Constructor.IsImplicitlyDeclared:
                     return Invoke(sc.Constructor, null, sc.Arguments, sc.Syntax, null);
-                case IObjectCreationOperation ne when IsException(ne.Type) && ne.Initializer == null:
+                case IObjectCreationOperation ne when IsException(ne.Type) && !IsClass(ne.Type) && ne.Initializer == null:
                 {
                     foreach (var a in ne.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation))) Expr(a.Value);
                     var t = Declare("t$" + _temps++, ne.Type);
@@ -5041,6 +5069,15 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(t);
                 }
                 case IParenthesizedOperation par: return Expr(par.Operand);
+                // (object.ReferenceEquals(a, b): == of the two objects)
+                case IInvocationOperation re when re.TargetMethod is { Name: "ReferenceEquals", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Object } && re.Arguments.Length == 2 &&
+                                                  re.Arguments.All(a => InSubset(a.Value.Type)):
+                {
+                    var ordered = re.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    var a0 = Declare("t$" + _temps++, ordered[0].Value.Type);
+                    Emit(new KAssign { Var = a0, Value = Expr(ordered[0].Value) });
+                    return new KOp("==", new KVar(a0), Expr(ordered[1].Value));
+                }
                 // (an assignment as an expression, (x = 10) > 5: written, then its value)
                 case ISimpleAssignmentOperation sa when !sa.IsRef && InSubset(sa.Type) && sa.Target is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation:
                 {
@@ -5280,7 +5317,7 @@ namespace CsVerify.Verifier.Boogie
         /// objects is reference equality.
         /// </summary>
         private static bool Upcast(IConversionOperation conv) =>
-            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && IsException(conv.Type) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
+            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && (IsException(conv.Type) || conv.Type.SpecialType == SpecialType.System_Object) || conv.Operand.ConstantValue is { HasValue: true, Value: null });
 
         private static IOperation Unconverted(IOperation op)
         {

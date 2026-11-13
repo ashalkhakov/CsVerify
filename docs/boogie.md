@@ -444,13 +444,14 @@ NaN, a literal is its bits (`$fp.bits32(1065353216bv32)`). An integer converts t
 of `real(i)`), a float to the other float type rounds; a float cast to an integer type truncates and must fit, not
 NaN, infinite or out of range (CSV1010), its value then `int(fp.to_real(trunc(x)))`. `float.IsNaN` and the other tests
 are Z3's, `Math.Abs`, `Sqrt`, `Floor`, `Ceiling`, `Truncate`, `Round` (to even), `FusedMultiplyAdd` exact, `Min` and
-`Max` .NET's (NaN if either is; -0.0 below 0.0); `Sin`, `Exp` and the like are values not known, and `%` (C's fmod,
-not IEEE's remainder) isn't translated. Fields, records and arrays of floats hold them as they are (`$E.Single`,
+`Max` .NET's (NaN if either is; -0.0 below 0.0); `Sin`, `Exp` and the like are values not known. `%` is C's `fmod`: IEEE's
+remainder (`fp.rem`) moved by `|y|` to `x`'s sign where it differs, which is exact. Fields, records and arrays of floats hold them as they are (`$E.Single`,
 `$E.Double` where the program has float arrays), +0.0 by default.
 
 **Tuples.** A tuple of the subset's values is a value whose elements are functions of it (`$tup.0.int(t)`): `(x, y)`
 makes one (a literal at the type it's converted to too), `t.k` reads one, `var (a, b) = t` and `(a, b) = (b, a)` read
-every element before assigning any. Two tuples compared with `==` aren't translated.
+every element before assigning any. `t == u` of tuples of integers, enums, chars and bools evaluates the left's
+elements, then the right's, and compares them element by element; `!=` is its negation.
 
 **Structs.** A struct of the program whose instance fields (an auto-property's backing field too) are the subset's
 values, no struct or tuple among them, is a value as a tuple is, its fields its elements in declaration order: `p.X`
@@ -470,7 +471,7 @@ value, `$nmk.Int32(v)` where it has `v`, one reference per value (`$nmk` and `$n
 inverse, `$nv` in the type's range), so the lifted `==` is the references'. Conversions wrap (`null` and `default` are
 `null`), `(int)x` and `x.Value` unwrap (CSV1013 where it may be null), `HasValue` is `!= null`, `GetValueOrDefault` an
 `if`, the lifted comparisons false where either is null, and patterns (`x is int k`, `x is null`, `x is > 0`) test the
-value where there is one. Lifted arithmetic isn't translated.
+value where there is one. Lifted arithmetic (`x + 1`) is `null` where an operand is, else the operation on the values.
 
 **Strings, as values.** `a + b` of strings is as long as both and has their characters
 (one too long throws OutOfMemoryException, a path not followed); `==` of strings in a specification gets the fact a
@@ -612,7 +613,8 @@ index (`sdiff`), so a string is its characters. `s.Length` and `s[i]` are checke
 (CSV1003). A `[Pure]` member of string with a stub contract (`Substring`, `IndexOf`, `Contains`, `StartsWith` with
 `StringComparison.Ordinal`, ...) is a Boogie function of its arguments, its postconditions axioms where its
 preconditions hold, its non-nullable result not null; a call checks its receiver (CSV1013) and its precondition
-(CSV1001). Comparing strings as objects, and other library members, aren't translated yet.
+(CSV1001). A string as an object (`(object)s`, `ReferenceEquals`) is a reference whose contents are `$strOf(o)`:
+the same object is the same string; equal strings may be different objects. Other library members of string, without a stub, aren't translated.
 
 **Quantifiers in code.** A `Spec.Forall` or `Spec.Exists` in code (a `[Pure]` or ghost function's body) is
 mathematics, read as the source has it; its body's checks (null, bounds, division, a function's precondition) are
@@ -780,7 +782,9 @@ exception type, where classes have dynamic types too: see "Dynamic types").
   exception goes on to the next handler (or outward) as if the type hadn't matched. An exception thrown inside a filter
   makes it false, as in .NET.
 
-Not yet: `lock` in a `try`, and reading an exception's members (`e.Code` of a program's exception class).
+- A program's exception class is a class: its fields are on the heap, `new E(...)` runs its constructor (a library
+  base's constructor, `base(message)`, keeps nothing), and it has `dtype` and `sub` like any class, so `catch`, `is`,
+  `as` and casts test it. A library exception's members (`Message`) are unknown values (CSV1900).
 
 **foreach.** A `foreach` over a one-dimensional array or a string is what C# compiles it to: the collection
 evaluated once into `fe$`*n*`$a` (its length read, so a null one is CSV1013), an index `fe$`*n*`$i` from 0, the head's
