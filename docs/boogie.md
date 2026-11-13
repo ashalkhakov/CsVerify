@@ -572,13 +572,14 @@ parameter declared nullable, a call that may return null, a call between a check
 **Library calls without a stub.** A library member with neither a stub nor sources is a library call: what it is
 handed decides what it may change. It may write the arrays it's handed (any of the element maps, then) where the
 Engine's analysis says it may write memory (`MayWriteHeap`), and anything where what it's handed may run
-the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. One handed a delegate isn't translated,
-but for a delegate parameter left at its default, null. Its `ref` and `out` arguments and its
+the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. One handed a `Func` or an `Action`
+(`Array.Exists(a, x => x > 0)`) may call it on anything: the lambda's body is verified for every argument, and what
+it may change changes; one that runs it alongside (a task's, a timer's) isn't translated. Its `ref` and `out` arguments and its
 result are values not known, not null where they're declared so; its receiver mustn't be null (CSV1013). A library
 object (`Random`) is a reference, its `new` a new one; an argument boxed to `object` for it is evaluated as what it is.
 Where exceptions are seen it may throw, once it has done what it does (a fork to the handlers). A collection's element
 written with a value that branches (`d[k] = c ? a : b`) is its setter's call, of its receiver and index as they are
-then. Not yet where it's handed a delegate, or where cells are held.
+then. Not yet where cells are held (array mode, `Mem`'s views).
 
 **Manual memory.** ATS's views of `Mem`'s cells: the cells are the element maps' rows at
 `null` (`$E.Int32[null][a]`), and a view holds permissions to its cells as `Spec.Acc` holds an array's (array mode).
