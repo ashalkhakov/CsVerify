@@ -578,7 +578,9 @@ handed decides what it may change. It may write the arrays it's handed (any of t
 Engine's analysis says it may write memory (`MayWriteHeap`), and anything where what it's handed may run
 the program's code or reach a model (`WritesFieldsAt`: `$havoc`); nothing else. One handed a `Func` or an `Action`
 (`Array.Exists(a, x => x > 0)`) may call it on anything: the lambda's body is verified for every argument, and what
-it may change changes; one that runs it alongside (a task's, a timer's) isn't translated. Its `ref` and `out` arguments and its
+it may change changes. A lambda of the library's own delegate type that it runs alongside (`ThreadPool`'s
+`WaitCallback`, a `Timer`'s callback) may run at any moment from then on, so it may only be one that changes nothing
+(CSV1027); a `Func` or an `Action` run alongside (`Task.Run`, a continuation) is a task's (see Tasks). Its `ref` and `out` arguments and its
 result are values not known, not null where they're declared so; its receiver mustn't be null (CSV1013). A library
 object (`Random`) is a reference, its `new` a new one; an argument boxed to `object` for it is evaluated as what it is.
 Where exceptions are seen it may throw, once it has done what it does (a fork to the handlers). A collection's element

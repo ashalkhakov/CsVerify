@@ -4527,10 +4527,18 @@ namespace CsVerify.Verifier.Boogie
             // Action: it must accept anything, and what it may change, changes)
             var handed = call.Arguments.Where(a => (a.Value.Type?.TypeKind == TypeKind.Delegate || a.Parameter?.Type.TypeKind == TypeKind.Delegate) &&
                                                    !(a.ArgumentKind == ArgumentKind.DefaultValue && a.Value.ConstantValue is { HasValue: true, Value: null })).ToList();
+            // (one that runs it alongside, a thread pool's, a timer's, a task's continuation: it may run at any moment from
+            // now on, so it may only be one that changes nothing, CSV1027; holding permissions, one too, CSV1016)
+            bool alongside = handed.Count > 0 && (IsTaskLike(m.ReturnType) || m.ContainingNamespace?.ToDisplayString() is "System.Threading" or "System.Threading.Tasks" || m.ContainingType?.Name == "Timer");
+            // (a lambda of a delegate type of the library's (WaitCallback, TimerCallback) handed to run alongside: whether it
+            // writes is its own (its body is verified on its own); nothing else of it is the call's)
+            var alongLambdas = alongside ? handed.Where(a => !IsFunc(a.Parameter.Type) && a.Parameter.RefKind == RefKind.None &&
+                                                             Unconverted(a.Value) is IDelegateCreationOperation adc && LambdaOf(adc.Target) != null).ToList()
+                                         : new List<IArgumentOperation>();
+            handed = handed.Except(alongLambdas).ToList();
+            // (a Func or an Action run alongside, Task.Run's: a task's, not a library call's)
+            if (alongside && handed.Count > 0) return (false, null);
             if (handed.Any(a => !IsFunc(a.Parameter.Type) || a.Parameter.RefKind != RefKind.None)) return (false, null);
-            // (not one that runs it alongside: Task.Run's, a thread pool's, a timer's, a task's continuation)
-            if (handed.Count > 0 && (IsTaskLike(m.ReturnType) || m.ContainingNamespace?.ToDisplayString() is "System.Threading" or "System.Threading.Tasks" || m.ContainingType?.Name == "Timer")) return (false, null);
-            if (handed.Count > 0 && _p.UsesPerm) return (false, null);
             // (all it can reach is the arrays it's handed: no object of another kind, which under cell permissions it must be)
             bool Plain(IOperation v) => v == null || v.ConstantValue.HasValue || Scalar(v.Type) || IsString(v.Type) || IsArray(Unconverted(v).Type);
             bool plain = handed.Count == 0 && Plain(call.Instance) && call.Arguments.All(a => a.ArgumentKind != ArgumentKind.Explicit || Plain(a.Value));
@@ -4540,9 +4548,13 @@ namespace CsVerify.Verifier.Boogie
             if (call.Instance != null && !lockObject && !(InSubset(call.Instance.Type) || IsLibraryObject(call.Instance.Type))) return (false, null);
             // (a lambda quoted as an expression tree is data: EF's configuration, nothing that runs)
             bool Quoted(IOperation v) => Unconverted(v) is IAnonymousFunctionOperation || v.Type is INamedTypeSymbol { Name: "Expression", Arity: 1 } && v.Type.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions";
-            foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit))
+            foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit && !alongLambdas.Contains(a)))
                 if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IConversionOperation { IsImplicit: true } ac && IsArray(ac.Operand.Type)) &&
                     !(a.Value is IInterpolatedStringOperation) && !Quoted(a.Value)) return (false, null);
+            foreach (var a in alongLambdas)
+                if (!WritesNothing(LambdaOf(((IDelegateCreationOperation)Unconverted(a.Value)).Target)))
+                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1027", At = a.Syntax, NotAssumedAfter = true,
+                                      Message = $"'{m.Name}' runs this alongside this code, at any moment from now on, and it writes: it may only be code that changes nothing" });
             // (the arrays it's handed, under cell permissions)
             var cellArrays = new List<(KExpr array, ITypeSymbol type)>();
             if (call.Instance != null && !lockObject)
@@ -4578,7 +4590,10 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KCheck { Cond = new KOp("$total." + key, dv), Id = "CSV1029", At = da.Syntax,
                                       Message = lambda != null ? $"'{m.Name}' may call this with any arguments, but its precondition might not hold for them all"
                                                                : $"'{m.Name}' may call '{da.Value.Syntax}' with any arguments, but it isn't known to accept them all: say so with Spec.Requires(Spec.Total({da.Value.Syntax}))" });
-                if (!quiet) { delegatesQuiet = false; _p.HavocsAll = true; Emit(new KHavocAll { Unless = new KOp("$nochange", dv) }); }
+                if (_p.UsesPerm && !quiet)
+                    Emit(new KCheck { Cond = new KOp("$nochange", dv), Id = "CSV1016", At = da.Syntax,
+                                      Message = $"'{m.Name}' calls '{da.Value.Syntax}', which may write anything, which this method's permissions don't allow (say it changes nothing with Spec.ChangesNothing)" });
+                else if (!quiet) { delegatesQuiet = false; _p.HavocsAll = true; Emit(new KHavocAll { Unless = new KOp("$nochange", dv) }); }
             }
             if (!delegatesQuiet) ForgetCaptured();
             ReentryUnderLock(m, call.Syntax);

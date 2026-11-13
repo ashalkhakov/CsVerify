@@ -197,6 +197,13 @@ namespace CsVerify.Tests
         [Fact]
         public void Delegates_HoldingPermissions_ThatMayWriteAnything() => Assert.Contains("CSV1016", Ids(C + "static void M(int[] b, Action f) { Spec.Requires(Spec.Acc(b) && f != null && Spec.Total(f)); Spec.Ensures(Spec.Acc(b)); f(); } }"));
 
+        // (a lambda a library member runs alongside (a thread pool's, a timer's) may run at any moment: it may only change nothing)
+        [Fact]
+        public void ALambdaRunAlongside_ThatChangesNothing() => Assert.Empty(Ids(C + "static void M() { System.Threading.ThreadPool.QueueUserWorkItem(_ => { }); } }"));
+
+        [Fact]
+        public void ALambdaRunAlongside_ThatWrites() => Assert.Contains("CSV1027", Ids(C + "static void M(Cell c) { Spec.Requires(c != null); System.Threading.ThreadPool.QueueUserWorkItem(_ => { c.V = 1; }); } }"));
+
         // (a library call handed an object, under cell permissions: where it may write arrays, it may write ones this method can't hold)
         [Fact]
         public void ALibraryCall_HandedAnObject_UnderCellPermissions() => Assert.Contains("CSV1016", Ids("public sealed class Holder { public int[] A = new int[1]; } " + C +
