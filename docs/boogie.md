@@ -922,8 +922,10 @@ A method group made a delegate type with a contract (`Step s = F`) is compared w
 override: for every argument, the type's precondition implies `F`'s, and where both hold, `F`'s postconditions imply
 the type's (CSV1029 where either might not); where either contract depends on state, CSV1029.
 
-Not yet: `Spec.Total` of a delegate that may read state, a method group of a generic method, and delegates with
-permissions or method `Spec.Modifies`.
+`Spec.Total` of a delegate that may read state is that it accepts every argument in this state:
+`forall x :: $preS.K(d, now, x)`.
+
+Not yet: a method group of a generic method, and delegates with permissions or method `Spec.Modifies`.
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
 datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its

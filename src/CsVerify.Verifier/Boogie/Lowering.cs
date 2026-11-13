@@ -7202,7 +7202,12 @@ namespace CsVerify.Verifier.Boogie
                                 case "Post": return steady ? new KOp("$post." + key, args.ToArray()) : new KOp("$postS." + key, stated);
                                 case "ReadsOf": return new KOp("$readsS." + key, stated);
                                 case "Total" when steady: return new KOp("$total." + key, args[0]);
-                                case "Total": throw new NotTranslated("Spec.Total of a delegate that may read state");
+                                // (of one that may read state: that it accepts every argument in this one)
+                                case "Total":
+                                {
+                                    var ps = ((INamedTypeSymbol)f.Type).DelegateInvokeMethod.Parameters.Select((p, k) => ("x$tot" + k, TypeOf(p.Type))).ToList();
+                                    return Forall(ps, new KOp("$preS." + key, new[] { args[0], new KOp("$state") }.Concat(ps.Select(p => (KExpr)new KVar(p.Item1))).ToArray()));
+                                }
                                 default: return new KOp("$nochange", args[0]);
                             }
                         }

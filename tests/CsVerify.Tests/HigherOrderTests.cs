@@ -171,6 +171,15 @@ namespace CsVerify.Tests
         [InlineData("CSV1004", C + "static void N(Cell c, Cell d) { c.V = 7; d.V = 1; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0); return d.V; }; var r = h(1); Spec.Assert(r == 1); } }")]
         public void ReadsOf_Reported(string id, string code) => Assert.Contains(id, Ids(code));
 
+        // (Spec.Total of a delegate that reads state: it accepts every argument in this state)
+        [Fact]
+        public void Total_OfADelegateThatReadsState() => Assert.Empty(Ids(C + "static int M(Cell c) { Spec.Requires(c != null); " +
+            "Func<int, int> f = x => { Spec.Reads(ObjSet.Of(c)); return c.V; }; Spec.Assert(Spec.Total(f)); return 0; } }"));
+
+        [Fact]
+        public void Total_OfADelegateThatReadsState_WithAPrecondition() => Assert.Contains("CSV1004", Ids(C + "static int M(Cell c) { Spec.Requires(c != null && c.V > 0); " +
+            "Func<int, int> f = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(x < c.V); return c.V; }; Spec.Assert(Spec.Total(f)); return 0; } }"));
+
         // (o.M as a delegate: o evaluated where it's made, M's contract the delegate's)
         private const string Doubler = "public sealed class Dbl { public Dbl() { } public int Twice(int x) { Spec.Requires(x >= 0 && x < 100); Spec.Ensures<int>(r => r == 2 * x); return 2 * x; } } ";
 
