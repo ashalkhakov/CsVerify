@@ -8,7 +8,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Entity Framework Core's queries, as CsVerify's engine reads them (StaticChecks.EntityFramework, its model
+    /// Entity Framework Core's queries (StaticChecks.EntityFramework, its model
     /// EfModel): a query on a context's DbSet is LINQ over the table as it is when the query runs, a sequence in no order
     /// the database promises, whose rows are not null, have distinct keys (and distinct values of each unique index),
     /// and pass the entity's query filters unless the query ignores them. Queryable's operators and EF's ...Async forms
@@ -185,7 +185,7 @@ namespace CsVerify.Verifier.Boogie
         private sealed class Made
         {
             public System.Func<System.Func<KExpr, KExpr>, KExpr> All, Any;
-            /// <summary>An object is one of them: quantifier-free, by inverse maps (which row, which of its list), as CsVerify's engine has it.</summary>
+            /// <summary>An object is one of them: quantifier-free, by inverse maps (which row, which of its list).</summary>
             public System.Func<KExpr, KExpr> Has;
             public EfModel.Entity Entity;
         }
@@ -239,7 +239,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// Rows read without tracking, as CsVerify's engine has them (StaticChecks.EntityFramework's Navigations): new
+        /// Rows read without tracking (StaticChecks.EntityFramework's Navigations): new
         /// objects, each a different one; a reference navigation not included null, a collection one as its initializer
         /// made it (a new empty List, or null), but where a path loads its type (EF may fix it up then); an included
         /// reference the row its foreign key names, an included List the rows whose foreign key is this row's key, each
@@ -317,7 +317,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// What a tracked query's Include loads, as CsVerify's engine has it: where the context tracked no entity of the
+        /// What a tracked query's Include loads: where the context tracked no entity of the
         /// rows' type before (<paramref name="known"/>), an included reference is null or the row its foreign key names;
         /// where it tracked none of the types the paths load either, what they load is the database's, as without
         /// tracking (Loaded), and tracked from here on, unchanged (of an entity of those types the context didn't track,
@@ -421,7 +421,7 @@ namespace CsVerify.Verifier.Boogie
             paths.Where(p => p.Count > 1 && SymbolEqualityComparer.Default.Equals(p[0], nav)).Select(p => p.Skip(1).ToList()).ToList();
 
         /// <summary>
-        /// What the paths load of each object of a level (CsVerify's engine's Loaded): an included reference is the row its
+        /// What the paths load of each object of a level: an included reference is the row its
         /// foreign key names (not null where the key can't be), an included List holds only rows with this object's key,
         /// each through its type's filters; new objects, each; and so on down each path.
         /// </summary>
@@ -511,7 +511,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// Before an await: the entities' columns (and lists' models), to keep at the objects no other code reaches. After
-        /// it, each as it was there (CsVerify's engine's KeepUnshared).
+        /// it, each as it was there.
         /// </summary>
         private List<(string map, string snapshot, bool whole)> UnsharedBefore()
         {
@@ -553,7 +553,7 @@ namespace CsVerify.Verifier.Boogie
         private bool? _entitiesStayHere;
 
         /// <summary>
-        /// Does the method keep the entities it has to itself (as CsVerify's engine reads it)? None is passed to the
+        /// Does the method keep the entities it has to itself? None is passed to the
         /// program's code, to a library call on something not local, or to a constructor, stored anywhere but in a local,
         /// captured by a lambda that isn't a query's, or yielded. (EF's calls and LINQ's take them without letting other
         /// code reach them.)
@@ -564,7 +564,7 @@ namespace CsVerify.Verifier.Boogie
             bool stay = true;
             bool IsEntity(ITypeSymbol t) => t != null && KernelTypes.Ef.Entities.Any(e => Mentions(t, e.Type));
             bool Harmless(IMethodSymbol m) => IsEfMethod(m) || KernelTypes.Ef.IsContextType(m.ContainingType) || m.ContainingNamespace?.ToDisplayString() == "System.Linq";
-            // (a member of .NET's own, as CsVerify's engine's IsLibrary has it)
+            // (a member of .NET's own)
             bool Library(IMethodSymbol m)
             {
                 var type = m.ContainingType;
@@ -682,12 +682,6 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// What of EF CsVerify's engine checks that isn't translated yet: its change tracker (Add, Attach, Update, Remove,
-        /// Entry, SaveChanges, Find, transactions, ExecuteUpdate: CSV1033 to CSV1035), a write of a row version (CSV1034),
-        /// an operation not awaited where it starts, and a context used in a lambda (CSV1036). A method with any is
-        /// verified by CsVerify's engine.
-        /// </summary>
-        /// <summary>
         /// The objects read without tracking that no other code reaches (a [Ref]bool local), where the method lets none of
         /// them out (<see cref="EntitiesStayHere"/>) and awaits; null otherwise.
         /// </summary>
@@ -742,7 +736,7 @@ namespace CsVerify.Verifier.Boogie
             if (query)
             {
                 // (First and Last: CSV1031's check where the order isn't by a key, DatabaseOrder; of a tracked query, only
-                // where the context tracked no rows of the type before, CsVerify's engine's Known)
+                // where the context tracked no rows of the type before)
                 if (RowLimits.Contains(name) && !(name is "First" or "FirstOrDefault" or "Last" or "LastOrDefault" or "Single" or "SingleOrDefault" or "Take" or "Skip"))
                     return $"EF's {m.Name} on a database query";
                 // (a join on keys the database and .NET compare alike: LINQ's, in no order)
@@ -754,7 +748,7 @@ namespace CsVerify.Verifier.Boogie
                              PureLambda(gkey) is var (gkb, _, _) && ComparedAlike(gkb.Type) ||
                              name is "Distinct" or "Contains" or "Union" && given <= (name == "Distinct" ? 1 : 2) && ElementOf(receiver) is ITypeSymbol el && ComparedAlike(el);
                 // (one that compares what the database and .NET don't compare alike, and RightJoin: a library call that says
-                // nothing of what it gives, as CsVerify's engine has it: Lowering.Linq's DatabaseUnknown)
+                // nothing of what it gives: Lowering.Linq's DatabaseUnknown)
                 if (EqualityOperators.Contains(name) && !alike && !DatabaseUnknown(inv))
                     return $"EF's {m.Name} on a database query";
                 foreach (var a in inv.Arguments)
@@ -776,7 +770,7 @@ namespace CsVerify.Verifier.Boogie
         private readonly HashSet<SyntaxNode> _translationChecked = new HashSet<SyntaxNode>();
 
         /// <summary>
-        /// The lambdas of a Queryable or EF operator the database runs (CSV1032), as CsVerify's engine checks them: what
+        /// The lambdas of a Queryable or EF operator the database runs (CSV1032): what
         /// depends on their parameters may only read mapped properties and navigations, and call what EF translates.
         /// Code of the program, or a property computed in C#, can't be sent to the database: EF throws when the query
         /// runs. A projection runs on the client when it is the query's last, so anything may be called there: Select's
@@ -883,7 +877,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>
         /// A database query's operator that compares values for equality as the database does (strings by its collation,
         /// rows by every column), not as LINQ's definition says, or RightJoin (EF Core applies the left side's filters after
-        /// the join): CsVerify's engine reads it as a library call, which says nothing of what it gives.
+        /// the join): read as a library call, which says nothing of what it gives.
         /// </summary>
         private bool DatabaseUnknown(IInvocationOperation inv)
         {
@@ -901,8 +895,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// Keys the database and .NET compare alike (as CsVerify's engine's ComparedAlike, but not nullable ones yet, nor
-        /// tuples): integers, bool, enums, Guid; strings where it compares them exactly.
+        /// Keys the database and .NET compare alike (not nullable ones yet, nor tuples): integers, bool, enums, Guid; strings where it compares them exactly.
         /// </summary>
         private static bool ComparedAlike(ITypeSymbol t) =>
             t != null && (t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? ComparedAlike(n.TypeArguments[0]) :
@@ -985,8 +978,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A compiled query (a static readonly field made by EF.CompileQuery, in this file) that gives a value (First,
-        /// Single, Count, Any...) called: the query its lambda writes, on the arguments, read at the call (CsVerify's
-        /// engine's CompiledQueryCall). Null for any other call.
+        /// Single, Count, Any...) called: the query its lambda writes, on the arguments, read at the call.
+        /// Null for any other call.
         /// </summary>
         private KExpr CompiledQueryCall(IInvocationOperation call)
         {
@@ -1016,8 +1009,8 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// A compiled query of a sequence (EF.CompileQuery's lambda giving IEnumerable or IQueryable), called: CsVerify's
-        /// engine's library call, which says nothing of the rows it gives. Its arguments read; null for any other source.
+        /// A compiled query of a sequence (EF.CompileQuery's lambda giving IEnumerable or IQueryable), called: a library
+        /// call, which says nothing of the rows it gives. Its arguments read; null for any other source.
         /// </summary>
         private LSeq CompiledSequence(IOperation src)
         {

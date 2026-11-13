@@ -6,9 +6,8 @@ using Xunit;
 namespace CsVerify.Tests
 {
     /// <summary>
-    /// The Boogie engine (docs/boogie.md): on every method it verifies, it reports what CsVerify's own engine did, before
-    /// that engine was removed (each diagnostic's id and line, a snapshot: Expected/BoogieEngine.json), and what it
-    /// doesn't translate is reported not verified (CSV1902).
+    /// The Boogie engine (docs/boogie.md): each method reports the diagnostics recorded in Expected/BoogieEngine.json,
+    /// and what isn't translated is reported not verified (CSV1902).
     /// </summary>
     public class BoogieEngineTests
     {
@@ -173,10 +172,9 @@ public static class W
 }";
 
         [Fact]
-        public void Ownership_BothEnginesReportTheSame()
+        public void Ownership_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Ownership) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "Acct.Overdraw", "W.NoView", "W.Broken", "W.AfterConsume", "W.Unlinked" })
                 Assert.False(b[bug].Verified, bug);
@@ -203,10 +201,9 @@ public static class P
 }";
 
         [Fact]
-        public void Predicates_BothEnginesReportTheSame()
+        public void Predicates_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Predicates) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "P.Peeks", "P.SetBad", "P.Twice", "P.NoAcc", "P.Folded" })
                 Assert.False(b[bug].Verified, bug);
@@ -402,10 +399,9 @@ public static class Rd
 ";
 
         [Fact]
-        public void DelegatesThatReadState_BothEnginesReportTheSame()
+        public void DelegatesThatReadState_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Delegates) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "Mg.UseIncBad", "Mg.QuoteBad", "Mg.QuoteWrong", "Rd.AskBad", "Rd.ProbeBad", "Rd.NoFrame", "Rd.OutOfFrame", "Rd.PassReading", "Rd.TouchBad", "Rd.Sums" })
                 Assert.False(b[bug].Verified, bug);
@@ -448,7 +444,7 @@ public static class Ls
 ";
 
         [Fact]
-        public void Lists_BothEnginesReportTheSame()
+        public void Lists_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Lists) }, o));
             Agree(b);
@@ -555,7 +551,7 @@ public static class Fin
 ";
 
         [Fact]
-        public void FinallyAndUsing_BothEnginesReportTheSame()
+        public void FinallyAndUsing_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Finally) }, o));
             Agree(b);
@@ -599,7 +595,7 @@ public static class Dc
 ";
 
         [Fact]
-        public void DictionariesAndSets_BothEnginesReportTheSame()
+        public void DictionariesAndSets_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Dictionaries) }, o));
             Agree(b);
@@ -641,7 +637,7 @@ public static class As
 ";
 
         [Fact]
-        public void AsyncAndLocks_BothEnginesReportTheSame()
+        public void AsyncAndLocks_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Concurrency) }, o));
             Agree(b);
@@ -680,7 +676,7 @@ public static class Th
 ";
 
         [Fact]
-        public void TasksAndThreads_BothEnginesReportTheSame()
+        public void TasksAndThreads_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Tasks) }, o));
             Agree(b);
@@ -734,7 +730,7 @@ public static class Pw
 ";
 
         [Fact]
-        public void TasksWithPermissions_BothEnginesReportTheSame()
+        public void TasksWithPermissions_MatchTheRecordedDiagnostics()
         {
             // a task's start gives its callee's permissions, its join takes back what it gives
             var b = Run(o => { o.TimeoutMs = 60000; return Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + TaskPermissions) }, o); });
@@ -745,10 +741,9 @@ public static class Pw
         }
 
         [Fact]
-        public void ForEachAndDelegates_BothEnginesReportTheSame()
+        public void ForEachAndDelegates_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Higher) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "F.BadInv", "F.Overflow", "D.NoPre", "D.UseValueBad", "D.Needs", "D.Loses", "D.TotalBad" })
                 Assert.False(b[bug].Verified, bug);
@@ -757,10 +752,9 @@ public static class Pw
         }
 
         [Fact]
-        public void Inheritance_BothEnginesReportTheSame()
+        public void Inheritance_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Inheritance) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "Hole.Area", "Greedy.Deposit", "Greedy.Fee", "Picky.Deposit", "I.Forgets", "Zero.Next" })
                 Assert.False(b[bug].Verified, bug);
@@ -769,10 +763,9 @@ public static class Pw
         }
 
         [Fact]
-        public void Objects_BothEnginesReportTheSame()
+        public void Objects_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Objects) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "Counter.Overflow", "Counter.First", "Unset..ctor", "O.AliasBad", "O.Alias", "O.Forgets", "O.NextVal", "O.SetNull", "O.NullReceiver", "O.LocalNull" })
                 Assert.False(b[bug].Verified, bug);
@@ -788,9 +781,8 @@ public static class Pw
             m.Diagnostics.Where(d => d.IsError).Select(d => d.Id + "@" + d.Line).OrderBy(x => x).ToArray();
 
         /// <summary>
-        /// Each method reports what it reported when the snapshot was taken (Expected/BoogieEngine.json: each error's id and
-        /// line, as CsVerify's own engine reported them where Boogie verified the method, before that engine was removed;
-        /// CSV1902 where Boogie doesn't verify it). With CSVERIFY_RECORD=1, the snapshot is written instead.
+        /// Each method reports the errors recorded in Expected/BoogieEngine.json (id and line).
+        /// With CSVERIFY_RECORD=1, the snapshot is written instead.
         /// </summary>
         private static int Agree(VerificationResult boogie, string key = null, [System.Runtime.CompilerServices.CallerMemberName] string test = null)
         {
@@ -802,7 +794,7 @@ public static class Pw
         }
 
         [Fact]
-        public void Corpus_BothEnginesReportTheSame()
+        public void Corpus_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Corpus) }, o));
             Agree(b);
@@ -817,7 +809,7 @@ public static class Pw
         [Fact]
         public void Exceptions_AreBoogies()
         {
-            // throw, try/catch by type, rethrow, checked overflow caught, EnsuresOnThrow: by Boogie, as CsVerify's engine says
+            // throw, try/catch by type, rethrow, checked overflow caught, EnsuresOnThrow
             var root = Harness.RepoRoot();
             var files = new[] { Path.Combine(root, "samples", "Good", "Exceptions.cs"), Path.Combine(root, "samples", "Buggy", "ExceptionBugs.cs") };
             var b = Engine.VerifyFiles(files, new VerifierOptions { TimeoutMs = 120000 });
@@ -876,7 +868,7 @@ public static class Pw
         [Fact]
         public void SharesAndPackages_AreBoogies()
         {
-            // read shares counted as CsVerify's engine's fractions, in views lent read-only; packages of views
+            // read shares counted as fractions, in views lent read-only; packages of views
             var root = Harness.RepoRoot();
             var files = new[] { "Good/Shares.cs", "Buggy/ShareBugs.cs", "Good/Packages.cs", "Buggy/PackageBugs.cs" }
                 .Select(f => Path.Combine(root, "samples", f)).ToArray();
@@ -915,10 +907,9 @@ public static class Mk {
 ";
 
         [Fact]
-        public void Parameters_BothEnginesReportTheSame()
+        public void Parameters_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Parameters) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "Pa.Entry", "Ch..ctor", "Mk.Bad" })
                 Assert.Contains(b.Methods, m => m.Name == bug && !m.Verified);
@@ -926,7 +917,7 @@ public static class Mk {
                 Assert.True(b[good].Verified, good);
         }
 
-        // (bitwise operators and shifts, as CsVerify's engine has them; Math.Max, Min and Abs)
+        // (bitwise operators and shifts; Math.Max, Min and Abs)
         private const string Bits = @"
 public static class Bi {
     public static void Holds0(int x) { Spec.Assert((x & 255) >= 0 && (x & 255) <= 255); }
@@ -964,10 +955,9 @@ public static class Bi {
 ";
 
         [Fact]
-        public void Bits_BothEnginesReportTheSame()
+        public void Bits_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Bits) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             foreach (var bug in new[] { "Bi.Wrong0", "Bi.Wrong1", "Bi.Wrong2", "Bi.Wrong3", "Bi.Wrong4", "Bi.WrongHalf", "Bi.TooWide", "Bi.NotAnything", "Bi.Wrongly" })
                 Assert.False(b[bug].Verified, bug);
@@ -1033,10 +1023,9 @@ public static class Iv
 ";
 
         [Fact]
-        public void Invariants_BothEnginesReportTheSame()
+        public void Invariants_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Invariants) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
             foreach (var bug in new[] { "Iv.Bad", "Iv.Same", "Rd.Positive", "Tl..ctor" })
@@ -1151,22 +1140,21 @@ public static class Dv
 ";
 
         [Fact]
-        public void Polymorphism_BothEnginesReportTheSame()
+        public void Polymorphism_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Polymorphism) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
             foreach (var bug in new[] { "If.Twice", "If.Keep", "If.Mine", "Cell.Bad", "Holder.Peek", "Gn.Keyed", "Gn.Use", "Gn.Ints", "Dv.Ten", "Dv.Four" })
                 Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
             foreach (var good in new[] { "Cell.Take", "Holder.Safe", "Gn.KeyedSafe", "Gn.Counts", "Dv.Nine", "Dv.Again", "Dv.Seven" })
-                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified), good + ": " + names);
         }
 
         [Fact]
         public void ConstrainedGenerics_BoogieProvesWhatTheirContractsSay()
         {
-            // (CsVerify's engine doesn't keep that the result is one of the arguments; Boogie does)
+            // (Boogie keeps that the result is one of the arguments)
             var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Polymorphism + @"
 public static class Pk
 {
@@ -1179,7 +1167,7 @@ public static class Pk
     public static void Use(K x, K y) { var p = Pick(x, y); Spec.Assert(p == x || p == y); }
     public static void Wrong(K x, K y) { var p = Pick(x, y); Spec.Assert(p == x); }
 }") }, new VerifierOptions());
-            Assert.True(r["Pk.Pick"].Verified && r["Pk.Pick"].Engine == "boogie");
+            Assert.True(r["Pk.Pick"].Verified);
             Assert.True(r["Pk.Use"].Verified);
             Assert.False(r["Pk.Wrong"].Verified);
         }
@@ -1229,16 +1217,15 @@ public static class Ar
 ";
 
         [Fact]
-        public void ObjectArrays_BothEnginesReportTheSame()
+        public void ObjectArrays_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + ObjectArrays) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
             foreach (var bug in new[] { "Ar.E", "Ar.G", "Ar.H", "Ar.Total", "Ar.Unchecked" })
                 Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
             foreach (var good in new[] { "Ar.A", "Ar.B", "Ar.C", "Ar.D", "Ar.F", "Ar.Mk", "Ar.Count", "Ar.Made" })
-                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified), good + ": " + names);
         }
 
         // exception filters, multisets, collections keyed by strings, Keys and Values, collections through their interfaces
@@ -1298,17 +1285,16 @@ public static class Il
 ";
 
         [Fact]
-        public void Collections_BothEnginesReportTheSame()
+        public void Collections_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Collections5) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
             foreach (var bug in new[] { "Fl.B", "Fl.C", "Ms.Bad", "Ms.Wd", "Sk.Lookup", "Sk.Other", "Sk.Set", "Kv.KeysAdd", "Il.Empty", "Il.Unchecked", "Il.Aliased" })
                 Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
             foreach (var good in new[] { "Fl.A", "Fl.D", "Ms.Sw", "Ms.Out", "Ms.Conc", "Ms.Un", "Sk.Safe", "Sk.Put", "Sk.Two", "Sk.Cnt", "Kv.KeysAssign", "Kv.KeysRemove",
                                          "Kv.Count", "Kv.Has", "Qi.First", "Il.List", "Il.Array", "Il.Kept", "Il.Stable", "Il.Mutable" })
-                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified), good + ": " + names);
         }
 
         [Fact]
@@ -1319,8 +1305,8 @@ public static class Il
             {
                 var file = Path.Combine(Harness.RepoRoot(), "samples", "Good", name + ".cs");
                 var r = Engine.VerifyFiles(new[] { file }, new VerifierOptions { TimeoutMs = 120000 });
-                Assert.True(r.Methods.Count > 0 && r.Methods.All(m => m.Engine == "boogie" && m.Verified),
-                    name + ": " + string.Join(", ", r.Methods.Select(m => m.Name + "/" + m.Engine + (m.Verified ? "" : "!"))) + " " + r.BoogieFailure);
+                Assert.True(r.Methods.Count > 0 && r.Methods.All(m => m.Verified),
+                    name + ": " + string.Join(", ", r.Methods.Select(m => m.Name + (m.Verified ? "" : "!"))) + " " + r.BoogieFailure);
             }
         }
 
@@ -1369,16 +1355,15 @@ public static class Tu
 ";
 
         [Fact]
-        public void WaitsAndTuples_BothEnginesReportTheSame()
+        public void WaitsAndTuples_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + WaitsAndTuples) }, o));
-            var boogie = b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name).ToList();
             Agree(b);
             var names = string.Join(", ", b.Methods.Select(m => m.Name + (m.Verified ? "" : "!")));
             foreach (var bug in new[] { "Qu.Bad", "Qu.Stale", "Gt.A", "Gt.R", "Tu.Spread", "Tu.Wrong" })
                 Assert.True(b.Methods.Any(m => m.Name == bug && !m.Verified), bug + ": " + names);
             foreach (var good in new[] { "Qu.Put", "Qu.Take", "Gt.W", "Tu.Order", "Tu.Swap" })
-                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified && m.Engine == "boogie"), good + ": " + names);
+                Assert.True(b.Methods.Any(m => m.Name == good && m.Verified), good + ": " + names);
         }
 
         private const string ElementLocks = @"
@@ -1411,12 +1396,12 @@ public sealed class Fk
 ";
 
         [Fact]
-        public void ElementLocks_BothEnginesReportTheSame()
+        public void ElementLocks_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + ElementLocks) }, o));
             Agree(b);
             foreach (var bug in new[] { "Fk.Wrong", "Fk.Moves", "Fk.MaybeNull" }) Assert.False(b[bug].Verified, bug);
-            foreach (var good in new[] { "Fk..ctor", "Fk.Right" }) Assert.True(b[good].Verified && b[good].Engine == "boogie", good);
+            foreach (var good in new[] { "Fk..ctor", "Fk.Right" }) Assert.True(b[good].Verified, good);
         }
 
         private const string Nullables = @"
@@ -1460,12 +1445,12 @@ public static class Nu
 ";
 
         [Fact]
-        public void Nullables_BothEnginesReportTheSame()
+        public void Nullables_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Nullables) }, o));
             Agree(b);
             foreach (var bug in new[] { "Nu.Bad", "Nu.Bad2", "Nu.Wrong" }) Assert.False(b[bug].Verified, bug);
-            foreach (var good in new[] { "Nu.Find", "Nu.Use", "Nu.Cmp", "Nu.Eq" }) Assert.True(b[good].Verified && b[good].Engine == "boogie", good);
+            foreach (var good in new[] { "Nu.Find", "Nu.Use", "Nu.Cmp", "Nu.Eq" }) Assert.True(b[good].Verified, good);
         }
 
         private const string Fills = @"
@@ -1485,7 +1470,7 @@ public static class Fi {
 ";
 
         [Fact]
-        public void ArrayFill_BothEnginesReportTheSame()
+        public void ArrayFill_MatchTheRecordedDiagnostics()
         {
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + Fills) }, o));
             Agree(b);
@@ -1577,11 +1562,11 @@ public static class C3 {
         [InlineData("tasks", 8)]
         [InlineData("lambdas", 3)]
         [InlineData("misc", 8)]
-        public void Parity_BothEnginesReportTheSame(string which, int atLeast)
+        public void Parity_MatchTheRecordedDiagnostics(string which, int atLeast)
         {
             var source = which switch { "loops" => ParityLoops, "tasks" => "using System.Threading.Tasks;\n" + ParityTasks, "lambdas" => ParityLambdas, _ => "using System.Linq;\n" + ParityMisc };
             var b = Run(o => Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + "using System.Collections.Generic;\n" + source) }, o));
-            Assert.True(Agree(b, which) >= atLeast, "by Boogie: " + string.Join(", ", b.Methods.Where(m => m.Engine == "boogie").Select(m => m.Name)));
+            Assert.True(Agree(b, which) >= atLeast, "verified: " + string.Join(", ", b.Methods.Where(m => m.Verified).Select(m => m.Name)));
         }
 
         [Fact]
@@ -1596,15 +1581,13 @@ public static class C3 {
         [Theory]
         [InlineData("Good")]
         [InlineData("Buggy")]
-        public void Samples_BothEnginesReportTheSame(string dir)
+        public void Samples_MatchTheRecordedDiagnostics(string dir)
         {
             {
                 var files = Directory.GetFiles(Path.Combine(Harness.RepoRoot(), "samples", dir), "*.cs");
-                // (Boogie's methods, then those alone by CsVerify's engine)
-                // (Boogie's time limit long enough for a loaded machine, where Z3 giving up reads as a failure: this compares
-                // what the engines say, not how fast; CsVerify's engine retries a query that runs out of time)
+                // (a time limit long enough for a loaded machine: this compares what is reported, not how fast)
                 var b = Engine.VerifyFiles(files, new VerifierOptions { TimeoutMs = 120000 });
-                Assert.True(Agree(b, dir) > 0, dir + ": no method went to Boogie: " + b.BoogieFailure);
+                Assert.True(Agree(b, dir) > 0, dir + ": nothing verified: " + b.BoogieFailure);
             }
         }
     }

@@ -1,5 +1,5 @@
 {
-  "ArrayFill_BothEnginesReportTheSame": {
+  "ArrayFill_MatchTheRecordedDiagnostics": {
     "Fi.Bad@Test.cs:12": [
       "CSV1004@12"
     ],
@@ -9,7 +9,7 @@
     ],
     "Fi.Zeroes@Test.cs:4": []
   },
-  "AsyncAndLocks_BothEnginesReportTheSame": {
+  "AsyncAndLocks_MatchTheRecordedDiagnostics": {
     "Account..ctor@Test.cs:9": [],
     "Account.Balance@Test.cs:10": [],
     "Account.Breaks@Test.cs:12": [
@@ -46,7 +46,7 @@
       "CSV1002@22"
     ]
   },
-  "Bits_BothEnginesReportTheSame": {
+  "Bits_MatchTheRecordedDiagnostics": {
     "Bi.Big@Test.cs:31": [],
     "Bi.ByCount@Test.cs:30": [],
     "Bi.Clamp@Test.cs:32": [],
@@ -97,7 +97,7 @@
       "CSV1002@34"
     ]
   },
-  "Collections_BothEnginesReportTheSame": {
+  "Collections_MatchTheRecordedDiagnostics": {
     "Fl.A@Test.cs:8": [],
     "Fl.B@Test.cs:9": [
       "CSV1002@9"
@@ -155,7 +155,7 @@
     ],
     "Sk.Two@Test.cs:27": []
   },
-  "Corpus_BothEnginesReportTheSame": {
+  "Corpus_MatchTheRecordedDiagnostics": {
     "A.Abs@Test.cs:5": [],
     "A.Assertion@Test.cs:24": [
       "CSV1004@24"
@@ -288,7 +288,7 @@
     ],
     "Tree..ctor@DataBugs.cs:8": []
   },
-  "DelegatesThatReadState_BothEnginesReportTheSame": {
+  "DelegatesThatReadState_MatchTheRecordedDiagnostics": {
     "Mg.Apply@Test.cs:7": [],
     "Mg.Inc@Test.cs:8": [],
     "Mg.MakeAndQuote.<lambda:16>@Test.cs:16:52": [],
@@ -339,7 +339,7 @@
     "Rd.UseAsk.<lambda:49>@Test.cs:49:30": [],
     "Rd.UseAsk@Test.cs:45": []
   },
-  "DictionariesAndSets_BothEnginesReportTheSame": {
+  "DictionariesAndSets_MatchTheRecordedDiagnostics": {
     "Dc.Adds@Test.cs:10": [],
     "Dc.AddsBad@Test.cs:11": [
       "CSV1001@11"
@@ -373,7 +373,7 @@
       "CSV1010@24"
     ]
   },
-  "ElementLocks_BothEnginesReportTheSame": {
+  "ElementLocks_MatchTheRecordedDiagnostics": {
     "Fk..ctor@Test.cs:7": [],
     "Fk.MaybeNull@Test.cs:18": [
       "CSV1013@21"
@@ -407,7 +407,7 @@
     "ExceptionSamples.Sum@Exceptions.cs:46": [],
     "ExceptionSamples.Update@Exceptions.cs:58": []
   },
-  "FinallyAndUsing_BothEnginesReportTheSame": {
+  "FinallyAndUsing_MatchTheRecordedDiagnostics": {
     "Fin.Digit@Test.cs:10": [],
     "Fin.Forgets@Test.cs:26": [
       "CSV1002@29"
@@ -429,7 +429,7 @@
     "Res..ctor@Test.cs:5": [],
     "Res.Dispose@Test.cs:6": []
   },
-  "ForEachAndDelegates_BothEnginesReportTheSame": {
+  "ForEachAndDelegates_MatchTheRecordedDiagnostics": {
     "D.Act@Test.cs:31": [],
     "D.Apply@Test.cs:21": [],
     "D.ApplyAll@Test.cs:23": [],
@@ -478,7 +478,7 @@
     "F.Upto@Test.cs:17": [],
     "F.Widen@Test.cs:14": []
   },
-  "Inheritance_BothEnginesReportTheSame": {
+  "Inheritance_MatchTheRecordedDiagnostics": {
     "Account.Deposit@Test.cs:29": [],
     "Account.Fee@Test.cs:30": [],
     "Greedy.Deposit@Test.cs:41": [
@@ -514,7 +514,7 @@
       "CSV1002@52"
     ]
   },
-  "Invariants_BothEnginesReportTheSame": {
+  "Invariants_MatchTheRecordedDiagnostics": {
     "Av..ctor@Test.cs:5": [],
     "Iv.Bad@Test.cs:39": [
       "CSV1015@39"
@@ -538,7 +538,7 @@
     ],
     "Tl.Valid@Test.cs:27": []
   },
-  "Lists_BothEnginesReportTheSame": {
+  "Lists_MatchTheRecordedDiagnostics": {
     "Ls.First@Test.cs:20": [],
     "Ls.FirstBad@Test.cs:21": [
       "CSV1001@21"
@@ -627,7 +627,7 @@
       "CSV1030@41"
     ]
   },
-  "Nullables_BothEnginesReportTheSame": {
+  "Nullables_MatchTheRecordedDiagnostics": {
     "Nu.Bad@Test.cs:22": [
       "CSV1013@22"
     ],
@@ -642,7 +642,7 @@
       "CSV1002@37"
     ]
   },
-  "ObjectArrays_BothEnginesReportTheSame": {
+  "ObjectArrays_MatchTheRecordedDiagnostics": {
     "Ar.A@Test.cs:14": [],
     "Ar.B@Test.cs:15": [],
     "Ar.C@Test.cs:16": [],
@@ -670,7 +670,7 @@
     "Sq.Area@Test.cs:10": [],
     "Sq.Valid@Test.cs:8": []
   },
-  "Objects_BothEnginesReportTheSame": {
+  "Objects_MatchTheRecordedDiagnostics": {
     "Box..ctor@Test.cs:23": [],
     "Counter..ctor@Test.cs:7": [],
     "Counter.First@Test.cs:11": [
@@ -782,7 +782,7 @@
       "CSV1004@66"
     ]
   },
-  "Ownership_BothEnginesReportTheSame": {
+  "Ownership_MatchTheRecordedDiagnostics": {
     "Acct..ctor@Test.cs:8": [],
     "Acct.Deposit@Test.cs:9": [],
     "Acct.Get@Test.cs:12": [],
@@ -812,7 +812,7 @@
       "CSV1016@50"
     ]
   },
-  "Parameters_BothEnginesReportTheSame": {
+  "Parameters_MatchTheRecordedDiagnostics": {
     "Ch..ctor@Test.cs:13": [],
     "Ch..ctor@Test.cs:14": [],
     "Ch..ctor@Test.cs:15": [
@@ -831,7 +831,7 @@
     "Pa.Now@Test.cs:5": [],
     "Pa.Was@Test.cs:6": []
   },
-  "Parity_BothEnginesReportTheSame/lambdas": {
+  "Parity_MatchTheRecordedDiagnostics/lambdas": {
     "C.M.<lambda:6>@Test.cs:6:99": [],
     "C.M@Test.cs:6": [],
     "C.M2.<lambda:7>@Test.cs:7:120": [],
@@ -839,7 +839,7 @@
     "C.N.<lambda:8>@Test.cs:8:92": [],
     "C.N@Test.cs:8": []
   },
-  "Parity_BothEnginesReportTheSame/loops": {
+  "Parity_MatchTheRecordedDiagnostics/loops": {
     "P.Down@Test.cs:8": [],
     "P.Inclusive@Test.cs:16": [],
     "P.Up@Test.cs:7": [],
@@ -856,7 +856,7 @@
       "CSV1010@25"
     ]
   },
-  "Parity_BothEnginesReportTheSame/misc": {
+  "Parity_MatchTheRecordedDiagnostics/misc": {
     "Box.get_Twice@Test.cs:25": [
       "CSV1010@25"
     ],
@@ -884,7 +884,7 @@
     "L.OrdersOf.<lambda:8>@Test.cs:8:93": [],
     "L.OrdersOf@Test.cs:6": []
   },
-  "Parity_BothEnginesReportTheSame/tasks": {
+  "Parity_MatchTheRecordedDiagnostics/tasks": {
     "C.B1@Test.cs:11": [
       "CSV1026@11"
     ],
@@ -903,7 +903,7 @@
     "C.M4@Test.cs:10": [],
     "C.Work@Test.cs:6": []
   },
-  "Polymorphism_BothEnginesReportTheSame": {
+  "Polymorphism_MatchTheRecordedDiagnostics": {
     "Cell..ctor@Test.cs:43": [],
     "Cell.Bad@Test.cs:46": [
       "CSV1010@46"
@@ -957,7 +957,7 @@
     "Sq.Grow@Test.cs:89": [],
     "Sq.Valid@Test.cs:86": []
   },
-  "Predicates_BothEnginesReportTheSame": {
+  "Predicates_MatchTheRecordedDiagnostics": {
     "P.Folded@Test.cs:14": [
       "CSV1016@14"
     ],
@@ -980,7 +980,7 @@
       "CSV1016@11"
     ]
   },
-  "Samples_BothEnginesReportTheSame/Buggy": {
+  "Samples_MatchTheRecordedDiagnostics/Buggy": {
     "Account..ctor@LockLevelBugs.cs:15": [],
     "AcslBugs.CopyOverlapping@AcslBugs.cs:46": [
       "CSV1006@52"
@@ -1591,7 +1591,7 @@
     ],
     "Wallet.Valid@OwnedBugs.cs:10": []
   },
-  "Samples_BothEnginesReportTheSame/Good": {
+  "Samples_MatchTheRecordedDiagnostics/Good": {
     "Account..ctor@LockLevels.cs:38": [],
     "Account..ctor@Owned.cs:16": [],
     "Account.Deposit@Owned.cs:23": [],
@@ -2312,7 +2312,7 @@
     "Tally..ctor@Packages.cs:17": [],
     "Tally.Valid@Packages.cs:15": []
   },
-  "TasksAndThreads_BothEnginesReportTheSame": {
+  "TasksAndThreads_MatchTheRecordedDiagnostics": {
     "Th.Lambda.<lambda:22>@Test.cs:22:58": [],
     "Th.Lambda@Test.cs:22": [],
     "Th.Mine.<lambda:26>@Test.cs:26:85": [],
@@ -2362,7 +2362,7 @@
     ],
     "Tk.Twice@Test.cs:6": []
   },
-  "TasksWithPermissions_BothEnginesReportTheSame": {
+  "TasksWithPermissions_MatchTheRecordedDiagnostics": {
     "Pw.Bad@Test.cs:28": [
       "CSV1001@31",
       "CSV1010@31"
@@ -2374,7 +2374,7 @@
     "Pw.Part@Test.cs:5": [],
     "Pw.Threads@Test.cs:34": []
   },
-  "WaitsAndTuples_BothEnginesReportTheSame": {
+  "WaitsAndTuples_MatchTheRecordedDiagnostics": {
     "Gt.A@Test.cs:28": [
       "CSV1004@28"
     ],

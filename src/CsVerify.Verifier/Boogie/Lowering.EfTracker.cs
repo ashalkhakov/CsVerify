@@ -9,7 +9,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Entity Framework Core's change tracker and transactions, as CsVerify's engine has them (StaticChecks.EfTracker,
+    /// Entity Framework Core's change tracker and transactions (StaticChecks.EfTracker,
     /// over the ghost state CsVerify.Ef.Tracker declares):
     /// - what a context tracks and how ($ef.State), its changes not saved ($ef.Unsaved), its open transaction ($ef.InTx):
     ///   maps of the program's state, which a call changes where its code does, and an await doesn't (CSV1036 has each
@@ -211,7 +211,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (_failed == null || KernelTypes.Ef == null) return (false, null);
             var m = inv.TargetMethod;
-            // (an ...Async one not awaited where it's called: what it does, and its task, as CsVerify's engine has it; CSV1036
+            // (an ...Async one not awaited where it's called: what it does, and its task; CSV1036
             // is its static check's)
             if (m.Name.EndsWith("Async") && !awaited)
             {
@@ -455,7 +455,7 @@ namespace CsVerify.Verifier.Boogie
             for (int j = 0; j < e.Tokens.Count; j++)
             {
                 var token = e.Tokens[j];
-                // (a token of a type the kernel doesn't have, a DateTime: CsVerify's engine checks it)
+                // (a token of a type the kernel doesn't have, a DateTime: not translated, CSV1902)
                 if (!IsField(token)) throw new NotTranslated($"{e.Type.Name}'s concurrency token {token.Name}, of {token.Type}");
                 _p.Fields.Add(token.OriginalDefinition);
                 var read = new KOp("sel", new KVar(_read), c, o);
@@ -567,7 +567,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A local view (DbSet.Local) as it is now: each entity of its type the context tracks and doesn't delete
-        /// (Unchanged, Modified or Added) once, in some order, and every one (CsVerify's engine's LocalSequence).
+        /// (Unchanged, Modified or Added) once, in some order, and every one.
         /// </summary>
         private LSeq LocalView(IPropertyReferenceOperation local)
         {
@@ -662,7 +662,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A write of an entity's column: for every context tracking the entity unchanged, it is now modified, with changes
-        /// to save. (A row version's write is CsVerify's engine's, CSV1034: Lowering.Ef.)
+        /// to save. (A row version's write is checked in Lowering.Ef, CSV1034.)
         /// </summary>
         private void TrackerFieldWrite(ISymbol field, KExpr o, SyntaxNode at)
         {

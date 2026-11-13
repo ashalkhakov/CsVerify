@@ -81,7 +81,7 @@ namespace CsVerify.Verifier.Boogie
                            IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
                           (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType)) ||
                           m.MethodKind == MethodKind.Constructor && IsStruct(m.ContainingType) ||
-                          // (a struct's member that reads it: this, a value; one that writes it is CsVerify's engine's to refuse)
+                          // (a struct's member that reads it: this, a value; one that writes it isn't translated: not verified, CSV1902)
                           IsStruct(m.ContainingType) && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsOverride) &&
             (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
             (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type) || InValue(p)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
@@ -95,7 +95,7 @@ namespace CsVerify.Verifier.Boogie
             m.DeclaringSyntaxReferences.Length == 1 && m.DeclaringSyntaxReferences[0].GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax
                 { Initializer: null, ExpressionBody: null, Body: { Statements.Count: 0 } };
 
-        /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is CsVerify's engine's to check.</summary>
+        /// <summary>CsVerify's attributes that the translation knows; any other (an atomic step, a lock's) is StaticChecks' to check.</summary>
         private static readonly HashSet<string> Known = new HashSet<string>
         {
             "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
@@ -162,12 +162,11 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A [Pure] or [GhostFunction] method with a single expression for its body: a Boogie function too, which
-        /// specifications call (as Dafny's functions, with fuel: one unfolding per use, as CsVerify's engine).
+        /// specifications call (as Dafny's functions, with fuel: one unfolding per use).
         /// </summary>
         /// <summary>
         /// (an abstract [Pure] member too, of its contract alone; and a virtual one, which an override may answer: of its
-        /// contract alone; and one whose body is more than an expression, of its contract alone, as CsVerify's engine has
-        /// it: its procedure proves the contract, and gives the function's value)
+        /// contract alone; and one whose body is more than an expression, of its contract alone: its procedure proves the contract, and gives the function's value)
         /// </summary>
         private bool IsFunction(IMethodSymbol m) => _procedures.Contains(m.OriginalDefinition) && !SpecSymbols.IsPredicate(m.OriginalDefinition) &&
                                                      ContractOf?.Invoke(m) is Contract c && Pure(m, c) && (c.PureBody != null || m.IsAbstract || !m.ReturnsVoid && m.DeclaringSyntaxReferences.Length > 0);
@@ -198,7 +197,7 @@ namespace CsVerify.Verifier.Boogie
 
         bool IProgramFacts.IsFunction(IMethodSymbol m) => IsFunction(m);
 
-        /// <summary>Does the program use permissions at all (Spec.Acc, Spec.AccRead: CsVerify's engine checks array writes against cells then)?</summary>
+        /// <summary>Does the program use permissions at all (Spec.Acc, Spec.AccRead: array writes are checked against cells then)?</summary>
         public bool UsesPermissions { get; set; }
 
         public bool UsesFieldPermissions { get; set; }
@@ -435,7 +434,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var cw = writes.TryGetValue(a.UnlessWritesArrays, out var w) || writes.TryGetValue(a.UnlessWritesArrays.OriginalDefinition, out w) ? w : new HashSet<string>();
                 bool arrays = cw.Any(x => x.StartsWith("$E.")), writesFields = cw.Any(x => x.StartsWith("$F.") && !_printer.OwnedMaps.Contains(x));
-                // (a callee of the program's that writes only arrays it makes, as CsVerify's engine infers it: none of ours)
+                // (a callee of the program's that writes only arrays it makes, as the Engine's MayWriteHeap infers it: none of ours)
                 var uw = a.UnlessWritesArrays;
                 if (arrays && uw.DeclaringSyntaxReferences.Length > 0 && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(uw)) arrays = false;
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
@@ -581,7 +580,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// Which functions read arrays only through their own array parameters (and call only such functions, on
-        /// them): their value depends on those arrays' elements alone, as in CsVerify's engine, so a write of another
+        /// them): their value depends on those arrays' elements alone, so a write of another
         /// array leaves it as it was. The others depend on the element maps whole.
         /// </summary>
         private void OwnArrays()
@@ -635,9 +634,9 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var o in OverridesOf(p.Method).Select(o => o.OriginalDefinition))
                     if (sets.ContainsKey(o)) edges[p.Method].Add(o);
                     else sets[p.Method].UnionWith(_allMaps);
-                // (as CsVerify's engine says: a call that may run an override changes what the member's Spec.Modifies
+                // (a call that may run an override changes what the member's Spec.Modifies
                 // allows, and without one, anything)
-                // (a library member's stub: what it says, unless it may run the program's code, as CsVerify's engine has it)
+                // (a library member's stub: what it says, unless it may run the program's code)
                 bool library = p.Method.DeclaringSyntaxReferences.Length == 0 && ContractOf(p.Method) is Contract pc && pc.IsStub;
                 if (Engine.IsOverridable(p.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Method))) sets[p.Method].UnionWith(_allMaps);
             }

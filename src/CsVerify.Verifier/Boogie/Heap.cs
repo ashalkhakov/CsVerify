@@ -138,7 +138,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// Each loop that writes arrays only through variables it doesn't change (as CsVerify's engine keeps the rest):
+        /// Each loop that writes arrays only through variables it doesn't change:
         /// a frame at its head, and a snapshot on each way in. A write through anything else keeps nothing.
         /// </summary>
         private static void LoopFrames(KProcedure p)

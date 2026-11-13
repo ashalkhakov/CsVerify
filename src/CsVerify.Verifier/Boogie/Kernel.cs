@@ -692,7 +692,7 @@ namespace CsVerify.Verifier.Boogie
         public IMethodSymbol Method;
         public Contract Contract;
         public MethodResult Result;
-        /// <summary>Warnings of CsVerify's engine's that the translation gives too (CSV1900, not errors): reported if Boogie verifies the method.</summary>
+        /// <summary>The translation's warnings (CSV1900, not errors): reported if Boogie verifies the method.</summary>
         public List<VerificationDiagnostic> Warnings = new List<VerificationDiagnostic>();
         public string Name;
         public bool Ghost;
@@ -754,7 +754,7 @@ namespace CsVerify.Verifier.Boogie
         public List<KExpr> Decreases;
         /// <summary>Each loop head's invariants and measure (by the head's ordinal).</summary>
         public Dictionary<int, List<KSpec>> Invariants = new Dictionary<int, List<KSpec>>();
-        /// <summary>A loop without invariants: facts Houdini may keep at its head (the ones that hold on entry and at every back edge), as CsVerify's engine infers them.</summary>
+        /// <summary>A loop without invariants: facts Houdini may keep at its head (the ones that hold on entry and at every back edge).</summary>
         public Dictionary<int, List<KSpec>> Candidates = new Dictionary<int, List<KSpec>>();
         public Dictionary<int, List<KSpec>> Measures = new Dictionary<int, List<KSpec>>();
         /// <summary>Each loop head's last block (by ordinal): the loop is the blocks from the head to it.</summary>

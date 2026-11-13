@@ -6,8 +6,8 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// A collection's members called, or its indexer written, through IList&lt;T&gt; or ICollection&lt;T&gt;, as CsVerify's
-    /// engine reads them: by what the object is. An array's: a fixed size (Add, Insert, Remove, RemoveAt and Clear throw
+    /// A collection's members called, or its indexer written, through IList&lt;T&gt; or ICollection&lt;T&gt;:
+    /// by what the object is. An array's: a fixed size (Add, Insert, Remove, RemoveAt and Clear throw
     /// NotSupportedException), its indexer its element; a List's: the List's stub; any other collection's: a library
     /// call, which says nothing of what it then holds. (Reads through the interfaces are Lowering's Ifc.)
     /// </summary>

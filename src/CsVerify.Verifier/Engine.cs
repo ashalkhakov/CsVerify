@@ -92,8 +92,6 @@ namespace CsVerify.Verifier
         /// <summary>Constructs the verifier does not model, treated as unknown values (only within a check profile).</summary>
         public int Unmodeled;
         public bool Verified => Diagnostics.All(d => !d.IsError);
-        /// <summary>The engine that verified it: "csverify", or "boogie".</summary>
-        public string Engine = "csverify";
         /// <summary>A lambda's or a local function's flow graph (its enclosing method's gives it).</summary>
         internal Microsoft.CodeAnalysis.FlowAnalysis.ControlFlowGraph Graph;
 
@@ -111,7 +109,7 @@ namespace CsVerify.Verifier
     {
         public readonly List<MethodResult> Methods = new List<MethodResult>();
         public readonly List<VerificationDiagnostic> CompilationErrors = new List<VerificationDiagnostic>();
-        /// <summary>Why Boogie verified nothing, when it failed (its methods were then verified by CsVerify's engine).</summary>
+        /// <summary>Why Boogie verified nothing, when it failed (its methods are then not verified, CSV1902, with this reason).</summary>
         public string BoogieFailure;
         /// <summary>Analyzer errors outside any method body (a linear field in a non-linear type, say).</summary>
         public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
@@ -893,7 +891,7 @@ namespace CsVerify.Verifier
         private static readonly object TraceLock = new object();
 
         /// <summary>
-        /// Why a method went to CsVerify's engine: on stderr with CSVERIFY_TRACE, and appended to the file
+        /// Why a method isn't translated to Boogie, or isn't decided: on stderr with CSVERIFY_TRACE, and appended to the file
         /// CSVERIFY_TRACE_FILE names (a test run's, whose stderr isn't shown).
         /// </summary>
         private static void Trace(string line)
@@ -1000,13 +998,12 @@ namespace CsVerify.Verifier
                 x.result.Clear();
                 x.result.LibraryCalls.UnionWith(libraryCalls);
                 x.result.Assumptions.UnionWith(assumed);
-                x.result.Engine = "boogie";
                 // (a failed check of a warning's: the warning, CSV1900, not an error)
                 mine = mine.Select(d => d.Id == Boogie.Lowering.Warning ? new VerificationDiagnostic("CSV1900", false, d.Message.Replace(" (boogie)", ""), d.Span) : d).ToList();
-                // (outside the check profile: assumed, not proved; Boogie assumes what it asserts, so it is as CsVerify's engine has it)
+                // (outside the check profile: assumed, not proved; Boogie assumes what it asserts, so it is)
                 if (engine.Options.CheckKinds != null)
                     x.result.AssumedObligations += translator.Lines.Values.Distinct().Count(c => c.Method == x.result && Checks.KindOf(c.Id) != null && !engine.Options.Checked(c.Id));
-                // (within a check profile, a construct not modeled is a warning, its value unknown, as CsVerify's engine has it)
+                // (within a check profile, a construct not modeled is a warning, its value unknown)
                 if (engine.Options.CheckKinds != null)
                     mine = mine.Select(d =>
                     {
@@ -1030,7 +1027,7 @@ namespace CsVerify.Verifier
                 x.result.Obligations = translator.Obligations.TryGetValue(x.result, out var n) ? n : 0;
                 x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count(d => d.IsError));
                 x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
-                // (past its time budget, as CsVerify's engine has it: not verified, never verified)
+                // (past its time budget: not verified, never verified)
                 if (engine.Options.MethodBudgetMs > 0 && x.result.Milliseconds > engine.Options.MethodBudgetMs)
                     x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1901", true,
                         $"time budget ({engine.Options.MethodBudgetMs} ms) reached; the rest of '{x.result.Name}' is not verified", x.decl.GetLocation().GetLineSpan()));
@@ -1045,7 +1042,6 @@ namespace CsVerify.Verifier
         private static void NotVerified(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested, string reason)
         {
             mr.Clear();
-            mr.Engine = "boogie";
             var staticResult = new MethodResult();
             try { new StaticChecks(engine, contract, staticResult) { NestedGraph = nested }.Run(); }
             catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan())); }

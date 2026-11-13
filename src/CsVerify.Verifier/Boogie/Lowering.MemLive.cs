@@ -8,7 +8,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// Memory views in hand cover different cells, as CsVerify's engine has them: the views a method is given are of
+    /// Memory views in hand cover different cells: the views a method is given are of
     /// cells apart (where they hold any), and Mem's allocations give cells no view in hand covers. Their cells live
     /// here (a set the method keeps, m$live): its parameters', what it allocates and what calls give it back, less what
     /// it frees (which may be given out again).

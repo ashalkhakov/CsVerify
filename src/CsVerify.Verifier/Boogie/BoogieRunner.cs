@@ -35,15 +35,16 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown. A procedure that
-        /// times out is verified once more an assertion at a time (/vcsSplitOnEveryAssert), as CsVerify's engine
-        /// proves its obligations one by one: a long one that is hard as a whole is often easy split. So is one that
-        /// fails: once Boogie has a counterexample it looks for more, and where the solver then answers unknown it stops,
-        /// the assertions it hadn't decided reported neither failed nor undecided (and it reports five at most). Split,
-        /// each is decided on its own; where that says other than the whole did, the method is undecided.
+        /// times out is verified once more an assertion at a time (/vcsSplitOnEveryAssert): a long one that is hard as a
+        /// whole is often easy split. So is one that fails: once Boogie has a counterexample it looks for more, and where
+        /// the solver then answers unknown it stops, the assertions it hadn't decided reported neither failed nor
+        /// undecided (and it reports five at most). Split, each is decided on its own. What split finds of a method the
+        /// whole didn't find failing is checked whole again, with more time (below); a method is verified only where
+        /// Boogie said its procedure was correct.
         /// </summary>
         public static List<(MethodResult method, VerificationDiagnostic diagnostic)> Verify(BoogieTranslator program, string z3Path, int timeoutMs)
         {
-            // (loops' inferred facts, as CsVerify's engine has them: one that doesn't hold on entry or at a back edge is left
+            // (loops' inferred facts: one that doesn't hold on entry or at a back edge is left
             // out, and the program verified again, until those assumed all held; what that run says is what's reported)
             // (again, of only the procedures whose facts failed: the others' results stand)
             // (first, each whole in a quarter of the time: one that is hard whole is mostly easy split, which gets all of it;
@@ -112,7 +113,7 @@ namespace CsVerify.Verifier.Boogie
             // (split, each assertion is decided with the others assumed: a counterexample to one is an execution that
             // fails it, as one of the whole is, and the rest are proved. A redone method all of whose assertions split
             // decided is decided: verified, or failed where they failed. One that split doesn't decide all of is
-            // undecided, for CsVerify's engine to verify where it is the fallback)
+            // undecided: not verified, CSV1902)
             var splitDecided = again.Where(f => redone.Contains(f.method)).GroupBy(f => f.method).Where(g => g.All(f => f.diagnostic.Id != "CSV1900")).ToList();
             var decidedSplit = splitDecided.SelectMany(g => g).ToList();
             var decidedMethods = splitDecided.Select(g => g.Key).ToHashSet();
@@ -252,7 +253,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
                 Console.Error.WriteLine(output + $"\n[stats] verified {stats.VerifiedCount} errors {stats.ErrorCount} inconclusive {stats.InconclusiveCount} timeouts {stats.TimeoutCount} outOfResource {stats.OutOfResourceCount} outOfMemory {stats.OutOfMemoryCount}");
-            // (one report of a check, however many paths fail it; and, as CsVerify's engine reports them, one of a kind at a
+            // (one report of a check, however many paths fail it; and one of a kind at a
             // place: the first in the program)
             return (failures.Where(f => f.Item1 != null).OrderBy(f => lines[f.Item2]).GroupBy(f => (f.Item1, f.Item2.Id, f.Item2.Span.StartLinePosition, f.Item2.Span.EndLinePosition))
                 .Select(g => g.First()).ToList(), undecided, facts);

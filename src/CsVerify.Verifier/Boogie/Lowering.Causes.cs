@@ -8,7 +8,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// What a failure's unknown values come from, for the library report (CsVerify's engine's causes): a library member
+    /// What a failure's unknown values come from, for the library report: a library member
     /// without a contract ("library M"), a method of the program without postconditions ("source M"), a loop without
     /// invariants. Each variable has the causes of the unknown values it was made from (a call's result, what such a
     /// loop assigns), and those of the variables its values were computed from; a check, those of its condition's.
@@ -72,7 +72,7 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        /// <summary>What a call's unknown values are charged to (CsVerify's engine's CallCause): null where nothing is.</summary>
+        /// <summary>What a call's unknown values are charged to: null where nothing is.</summary>
         private string CallCause(IMethodSymbol m)
         {
             if (SpecSymbols.IsSpecClass(m.ContainingType) || m.ContainingNamespace?.ToDisplayString()?.StartsWith("CsVerify") == true) return null;
@@ -84,7 +84,7 @@ namespace CsVerify.Verifier.Boogie
             return "source " + m.OriginalDefinition.ToDisplayString();
         }
 
-        /// <summary>The library's members the method's code calls, for the report (as CsVerify's engine lists them).</summary>
+        /// <summary>The library's members the method's code calls, for the report.</summary>
         private void LibraryCalls()
         {
             if (_p.Result == null || _decl == null || _model == null || !(_model.GetOperation(_decl) is IOperation root)) return;

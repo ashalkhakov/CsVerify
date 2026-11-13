@@ -8,7 +8,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// What code started here may race on, as CsVerify's engine warns of it (StaticChecks.Async): the fields and arrays
+    /// What code started here may race on (StaticChecks.Async): the fields and arrays
     /// each of two things running at once uses, from their source and their callees' (what's under a lock left out), on
     /// the objects they're given as far as can be told (this, a parameter or a local that stays the same). Where one
     /// writes what the other uses, on what may be one object, that could race (CSV1900, a warning): "may be one object"
@@ -236,7 +236,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The id of a check whose failure is a warning (CSV1900, not an error), never assumed after.</summary>
         public const string Warning = "WARN";
 
-        /// <summary>What goes on running after this method (a thread never joined): a warning of what it writes, as CsVerify's engine gives it.</summary>
+        /// <summary>What goes on running after this method (a thread never joined): a warning of what it writes.</summary>
         private void Detached(SyntaxNode at, Effects effects)
         {
             if (at == null) return;

@@ -10,7 +10,7 @@ using static CsVerify.Verifier.Boogie.KernelTypes;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// LINQ to Objects, as CsVerify's engine reads it from its definitions (Bcl/Linq.cs), member by member: a source the
+    /// LINQ to Objects, as its definitions in Bcl/Linq.cs say, member by member: a source the
     /// verifier indexes (an array, a List, a list interface) is a sequence, its length and its elements; Select maps
     /// them, Where filters them (a running count of the matches, and the index of each), OrderBy and ThenBy permute
     /// them in their keys' order (stably), Distinct keeps each first occurrence, Zip pairs them; Count, Sum, Max, Min,
@@ -68,7 +68,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A fact of the library's, assumed as mathematics where the call is.</summary>
         /// <summary>
         /// A fact of a query, assumed. Of a database query read with tracking, only where the context tracked no entity of
-        /// the type before (CsVerify's engine's Known, Lowering.Ef's <see cref="_known"/>): else the rows are instances
+        /// the type before (Lowering.Ef's <see cref="_known"/>): else the rows are instances
         /// it tracks, as the program left them, not as the database matched them.
         /// </summary>
         private void LinqFact(KExpr fact, SyntaxNode at) =>
@@ -518,7 +518,7 @@ namespace CsVerify.Verifier.Boogie
                     return _inDatabase > 0 ? Sort(union, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : union;
                 }
                 // (groups as values, of a selector that reads their key and count: GroupValue. A database's counts are
-                // bounds; LINQ to Objects' are exact, as CsVerify's engine has them: how many of the source have the key)
+                // bounds; LINQ to Objects' are exact: how many of the source have the key)
                 case "GroupBy" when args.Count == 2 || args.Count == 3 && _inDatabase == 0 && LambdaArg(q, 2).p2 != null:
                 {
                     var src = Sequence(args[0].Value);
@@ -909,7 +909,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>
         /// A stable sort: element i is the source's p[i], p a bijection (q its inverse), in the keys' order (the first,
         /// then the next among equal ones); keys are ordered where they are integers or chars, from the first that
-        /// isn't, only those before it are (as CsVerify's engine has it).
+        /// isn't, only those before it are.
         /// </summary>
         private LSeq Sort(LSeq src, List<((IOperation, IParameterSymbol, IParameterSymbol) key, ITypeSymbol type, bool down)> keys, SyntaxNode at)
         {

@@ -159,7 +159,7 @@ namespace CsVerify.Verifier.Boogie
             // parent (j - 1) / 2, the function, which keeps the triggers of quantifiers over indices simple)
             Line("function {:inline} cs#divI(a: int, b: int): int { if a >= 0 then (if b > 0 then a div b else -(a div (-b))) else (if b > 0 then -((-a) div b) else (-a) div (-b)) }");
             Line("function {:inline} cs#remI(a: int, b: int): int { a - b * cs#divI(a, b) }");
-            Line("// bitwise operators of two variables (as CsVerify's engine has them), and a shift count's power of two");
+            Line("// bitwise operators of two variables, and a shift count's power of two");
             foreach (var w in new[] { 32, 64 })
             {
                 foreach (var op in new[] { "and", "or", "xor" }) Line($"function $bit.{op}{w}(x: int, y: int): int;");
@@ -179,7 +179,7 @@ namespace CsVerify.Verifier.Boogie
             Optional("$sfBool(", "function $sfBool(k: int): bool;");
             Optional("$eqc(", "axiom (forall o: Ref :: { $eqc(o) } o != null ==> $eqc(o) != null);");
             Optional("$dataEq(", "function $dataEq(a: Ref, b: Ref): bool; // records' ==, of fields that don't compare as values (strings'): not known");
-            Optional("$cell(", "// a rectangular array's cell: an injective pairing of its indices, as CsVerify's engine's cv_cell");
+            Optional("$cell(", "// a rectangular array's cell: an injective pairing of its indices");
             Optional("$cell(", "function $cell(i: int, j: int): int;");
             Optional("$cell(", "function $crow(c: int): int;");
             Optional("$cell(", "function $ccol(c: int): int;");
@@ -190,7 +190,7 @@ namespace CsVerify.Verifier.Boogie
             Optional("$dim(", "// a rectangular array's length of a dimension");
             Optional("$dim(", "function $dim(a: Ref, d: int): int;");
             Optional("$dim(", "axiom (forall a: Ref, d: int :: { $dim(a, d) } 0 <= $dim(a, d) && $dim(a, d) <= 2147483647);");
-            Optional("$bag", "// multisets (Bag): maps from value to count, as CsVerify's engine has them. $bag(ly, r, n) is the multiset of");
+            Optional("$bag", "// multisets (Bag): maps from value to count. $bag(ly, r, n) is the multiset of");
             Optional("$bag", "// r[0..n), unfolded once per $LS; writing r[i] inside the prefix trades the old element for the new one, outside");
             Optional("$bag", "// it changes nothing. The write axioms are triggered only by the multiset of a written array, so they can't loop.");
             Optional("$bag", "const $bag.empty: [int]int;");
@@ -227,7 +227,7 @@ namespace CsVerify.Verifier.Boogie
                             Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r), {Lowering.IsaFunction(b)}(r) }} !({Lowering.IsaFunction(a)}(r) && {Lowering.IsaFunction(b)}(r)));");
             }
             // (strings as a database compares them, by its collation: an equivalence, as the same key; equal strings have
-            // one. CsVerify's engine's cv_collate, without the axioms that make the solver go round)
+            // one: without axioms that make the solver go round)
             Optional("$ckey(", "function $ckey(s: Ref): int;");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
             foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
@@ -271,7 +271,7 @@ namespace CsVerify.Verifier.Boogie
             Line("axiom (forall s: Ref, i: int :: { sat(s, i) } 0 <= sat(s, i) && sat(s, i) <= 65535);");
             Line("function sl(s: Ref): int { if s == null then 0 else slen(s) }");
             Line("function scat(a: Ref, b: Ref): Ref;");
-            Line("// (a concatenation is as long as both, as CsVerify's engine has it: one too long throws OutOfMemoryException, a path not followed)");
+            Line("// (a concatenation is as long as both: one too long throws OutOfMemoryException, a path not followed)");
             Line("axiom (forall a: Ref, b: Ref :: { scat(a, b) } scat(a, b) != null && slen(scat(a, b)) == sl(a) + sl(b));");
             Line("axiom (forall a: Ref, b: Ref, i: int :: { sat(scat(a, b), i) } 0 <= i && i < sl(a) + sl(b) ==> sat(scat(a, b), i) == (if i < sl(a) then sat(a, i) else sat(b, i - sl(a))));");
             Line("function sdiff(a: Ref, b: Ref): int;");
@@ -675,7 +675,7 @@ namespace CsVerify.Verifier.Boogie
         /// Dynamic types: a constant each of the exception types and the classes and interfaces named, how they derive
         /// (sub, as C# does). Every exception type is an Exception (with no class named, every type is). Classes form a
         /// tree, so unrelated ones have no instance in common, nor have a sealed type and one not above it; a sealed
-        /// type's instances are of it exactly. As CsVerify's engine has them.
+        /// type's instances are of it exactly.
         /// </summary>
         public void ExceptionTypes(IEnumerable<ITypeSymbol> types, ITypeSymbol exception, IEnumerable<ITypeSymbol> classes)
         {
@@ -900,7 +900,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var e in p.Ensures.SelectMany(e => Conjuncts(e.Expr)).Where(e => !ReadsMemory(e)))
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
             // (its value is its body, read in the snapshot's state: so the functions over one snapshot agree with each
-            // other, as CsVerify's engine's functions of one memory do; where its body reads no snapshot of its own)
+            // other; where its body reads no snapshot of its own)
             if (p.FunctionBody != null && Closed(p.FunctionBody, m.Parameters.Select(Local).ToHashSet()))
             {
                 UsesState = true;
@@ -1002,7 +1002,7 @@ namespace CsVerify.Verifier.Boogie
             if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
             foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f)))) Line($"  free ensures {GoodField(f)};");
             foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees && (modifies.Contains(FieldMap(f)) || modifies.Contains("$root")))) Line($"  free ensures {TreeField(f)};");
-            // (a method that writes only arrays it makes, as CsVerify's engine infers it (MayWriteHeap): every other array as it was)
+            // (a method that writes only arrays it makes (the Engine's MayWriteHeap): every other array as it was)
             if ((!p.Abstract || p.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(p.Method))
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
@@ -1181,7 +1181,7 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free requires {InRangeOfMemory};");
             if (p.HasThis && p.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
             if (p.HasThis && !IsStruct(m.ContainingType)) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
-            // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap, as CsVerify's engine assumes where it reads one)
+            // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap)
             foreach (var f in RefFieldsOf(p)) Line($"  free requires {GoodField(f)};");
             foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees)) Line($"  free requires {TreeField(f)};");
             // (a new object's fields are their defaults: its caller made them so)

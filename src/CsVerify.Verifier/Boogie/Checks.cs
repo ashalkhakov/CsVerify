@@ -60,13 +60,13 @@ namespace CsVerify.Verifier.Boogie
         private Check At(string id, SyntaxNode at, string message, string reportAs = null) =>
             new Check { Id = id, Message = message, Span = at.GetLocation().GetLineSpan(), Method = _p.Result, ReportAs = reportAs };
 
-        /// <summary>A null check of what <paramref name="what"/> is, saying where the null may come from, as CsVerify's engine does.</summary>
+        /// <summary>A null check of what <paramref name="what"/> is, saying where the null may come from.</summary>
         private Check NullAt(SyntaxNode at, SyntaxNode what, string message) => At("CSV1013", at, message + NullReasons(what));
 
         private static int LineOf(SyntaxNode n) => n.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
         /// <summary>
-        /// Why a value might be null, from the source, as CsVerify's engine says it (StaticChecks.NullReasons): a parameter
+        /// Why a value might be null, from the source (StaticChecks.NullReasons): a parameter
         /// declared nullable, a call that may return null (or a local made of one), a call between a check of it and its use
         /// (with the usual fix). Empty if nothing is known.
         /// </summary>
@@ -216,8 +216,8 @@ namespace CsVerify.Verifier.Boogie
         private void Assume(KExpr cond) => Emit(new KAssume { Cond = cond });
 
         /// <summary>
-        /// What reading a specification lets one assume (a non-nullable field of a built object isn't null), as
-        /// CsVerify's engine assumes it where it reads one; quantified ones are left out.
+        /// What reading a specification lets one assume (a non-nullable field of a built object isn't null), where
+        /// it reads one; quantified ones are left out.
         /// </summary>
         private readonly List<KExpr> _facts = new List<KExpr>();
         private readonly HashSet<string> _bound = new HashSet<string>();
@@ -519,7 +519,7 @@ namespace CsVerify.Verifier.Boogie
             if (wf.Count == 0) return;
             var cond = And(wf);
             if (before != null && before.Count > 0) cond = new KOp("==>", And(before), cond);
-            // (checked, not assumed after: what an ill-defined specification says is unknown, as in CsVerify's engine)
+            // (checked, not assumed after: what an ill-defined specification says is unknown)
             Assert(cond, At("CSV1012", at, $"specification might not be well-defined: '{at}'"), true);
         }
 
@@ -662,7 +662,7 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 case KThrow th:
                 {
-                    // (throwing null throws a NullReferenceException instead: CsVerify's engine checks it, but in a proof)
+                    // (throwing null throws a NullReferenceException instead: checked, but in a proof)
                     var v = Code(th.Value);
                     if (!(_p.Ghost || _p.Contract.IsPure || _p.Contract.IsLemma))
                         Assert(new KOp("!=", v, new KLit("null")), At("CSV1013", th.At, $"'{th.At}' might be null: throwing it would throw a NullReferenceException"));
@@ -1042,7 +1042,7 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>
-        /// Walks a permission assertion left to right, as CsVerify's engine does: &amp;&amp; and the branches of ?: are
+        /// Walks a permission assertion left to right: &amp;&amp; and the branches of ?: are
         /// followed, each permission goes to <paramref name="atom"/> under the condition it holds in, every other part
         /// is a fact. Its parameters given values by <paramref name="given"/>. Returns its facts, as a condition.
         /// </summary>
@@ -1303,7 +1303,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A function's application under a quantifier, of its variable: its definition, unfolded once, for every value
-        /// in its range, as CsVerify's engine says it. That quantified equation applies again to the applications in
+        /// in its range. That quantified equation applies again to the applications in
         /// its body, so recursion over the range unfolds as far as it needs to (a concrete array's sum).
         /// </summary>
         private void Unfoldings(string var, KExpr range, KExpr body)
@@ -1358,8 +1358,7 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ strings
 
         /// <summary>
-        /// Two strings compared: of one length, and different, they differ at some index (a string is its characters),
-        /// as CsVerify's engine says where it compares two.
+        /// Two strings compared: of one length, and different, they differ at some index (a string is its characters).
         /// </summary>
         private static KExpr Extensional(KExpr x, KExpr y)
         {
@@ -1825,8 +1824,8 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// Is the object's view in hand whole (write permission)? pk counts read shares as CsVerify's engine's
-        /// fractions do, each one ε: those in hand, less those given away for good; the view is whole with none missing.
+        /// Is the object's view in hand whole (write permission)? pk counts read shares as
+        /// fractions, each one ε: those in hand, less those given away for good; the view is whole with none missing.
         /// </summary>
         /// <summary>An object in a tree this method borrows (Spec.Modifies(Own.Tree(x))): writable without its view.</summary>
         private KExpr Lent(KExpr o)
@@ -1980,7 +1979,7 @@ namespace CsVerify.Verifier.Boogie
             if (!_program.Recursive(_p.Method, c.Callee)) return;
             var theirs = _program.ContractOf(c.Callee);
             bool self = SymbolEqualityComparer.Default.Equals(c.Callee.OriginalDefinition, _p.Method.OriginalDefinition);
-            // (as CsVerify's engine says it: without measures on both, a proof doesn't terminate, other code isn't checked to;
+            // (without measures on both, a proof doesn't terminate, other code isn't checked to;
             // measures of different shapes can't be compared)
             if ((mine == null || theirs?.Decreases == null) && (_p.Contract.IsPure || _p.Contract.IsLemma || _p.Ghost))
             {
@@ -2105,7 +2104,7 @@ namespace CsVerify.Verifier.Boogie
                     var i = Code(el.Index);
                     if (el.Unchecked) { if (!el.NoNull) Assert(new KOp("!=", a, new KLit("null")), NullAt(el.At, el.ArrayAt, $"'{el.ArrayAt}' might be null in '{el.At}'")); }
                     else InBounds(a, i, el.At, el.ArrayAt);
-                    // (alongside other code, under cell permissions: read only what it holds, as CsVerify's engine checks it)
+                    // (alongside other code, under cell permissions: read only what it holds)
                     if (el.Alongside != null && _p.UsesCells)
                         Assert(Implies(Code(el.Alongside), new KOp(">", Cell(a, i), new KLit("0.0"))),
                             At("CSV1016", el.At, $"'{el.At}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it"));
@@ -2226,7 +2225,7 @@ namespace CsVerify.Verifier.Boogie
                     // solver would have no term to instantiate it with)
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis))
                         Emit(new KAssume { Cond = new KOp("==>", new KOp("!=", o, new KLit("null")), new KOp("!=", v, new KLit("null"))), Always = true });
-                    // (a field of an allocated object refers to an allocated object, as CsVerify's engine assumes where it reads one)
+                    // (a field of an allocated object refers to an allocated object)
                     if (IsRef(FieldType(fd.Field))) Emit(new KAssume { Cond = Allocated(o, v), Always = true });
                     ObjectInvariant(v, FieldType(fd.Field));
                     return v;
@@ -2281,7 +2280,7 @@ namespace CsVerify.Verifier.Boogie
                 case KMode.Unchecked: return Wrap(value, type);
                 case KMode.Math: return value;
                 case KMode.Default when _program.CheckOverflow:
-                // (checked, in a [Pure] member or a lemma: it may not throw, so the overflow is reported, as CsVerify's engine does)
+                // (checked, in a [Pure] member or a lemma: it may not throw, so the overflow is reported)
                 case KMode.Checked when _program.CheckOverflow && (_p.Contract.IsPure || _p.Contract.IsLemma):
                     Assert(InRange(value, type), At("CSV1010", at, message));
                     return value;

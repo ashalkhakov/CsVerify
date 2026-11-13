@@ -8,10 +8,8 @@ using Xunit;
 namespace CsVerify.Tests
 {
     /// <summary>
-    /// What each method of a test's program reports (each error's id and line), as it was when the snapshot was taken:
-    /// Expected/BoogieEngine.json, a test's key to its methods. The snapshot was taken where both engines agreed, before
-    /// CsVerify's own engine was removed, so a method's expectation is that engine's too. With CSVERIFY_RECORD=1, a test
-    /// writes its entry instead of checking it.
+    /// What each method of a test's program reports (each error's id and line), recorded in
+    /// Expected/BoogieEngine.json under the test's key. With CSVERIFY_RECORD=1, a test writes its entry instead of checking it.
     /// </summary>
     internal static class Snapshots
     {

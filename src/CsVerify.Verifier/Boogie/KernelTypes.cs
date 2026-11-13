@@ -148,7 +148,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A rectangular array of scalars (int[,]): a reference, a length per dimension ($dim), its cells in its element type's map at $cell of their indices.</summary>
         public static bool IsMultiArray(ITypeSymbol t) => t is IArrayTypeSymbol { IsSZArray: false, Rank: > 1 } a && Scalar(a.ElementType);
 
-        /// <summary>The cell of a rectangular array's indices: $cell(i, j), $cell($cell(i, j), k), an injective pairing (as CsVerify's engine's cv_cell).</summary>
+        /// <summary>The cell of a rectangular array's indices: $cell(i, j), $cell($cell(i, j), k), an injective pairing.</summary>
         public static KExpr CellOf(IReadOnlyList<KExpr> indices)
         {
             var cell = indices[0];
@@ -445,7 +445,7 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsSemaphore(ITypeSymbol t) => t?.ToDisplayString() == "System.Threading.SemaphoreSlim";
 
-        /// <summary>What runs concurrently (CsVerify's engine's: marked, or started alongside), for the run this thread is in.</summary>
+        /// <summary>What runs concurrently (the Engine's analysis: marked, or started alongside), for the run this thread is in.</summary>
         [System.ThreadStatic] public static StartedDelegates Started;
 
         /// <summary>The [Atomic] fields a method is the step of (it's proved transitive), for the run this thread is in.</summary>
@@ -454,10 +454,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The flow graphs of the lambdas and local functions (their methods' give them), for the run this thread is in.</summary>
         [System.ThreadStatic] public static Dictionary<IMethodSymbol, Microsoft.CodeAnalysis.FlowAnalysis.ControlFlowGraph> NestedGraphs;
 
-        /// <summary>The locks' levels and what code takes (CsVerify's engine's static analysis), for the run this thread is in.</summary>
+        /// <summary>The locks' levels and what code takes (LockLevels, the Engine's static analysis), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockLevels Levels;
 
-        /// <summary>CsVerify's engine's judgments of a library call without a stub: may it write arrays (MayWriteHeap), fields (WritesFieldsAt)?</summary>
+        /// <summary>The Engine's judgments of a library call without a stub: may it write arrays (MayWriteHeap), fields (WritesFieldsAt)?</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayWriteHeap;
 
         /// <summary>A library member whose stub is async (Stream.ReadAsync's): awaited, its contract is of what its task gives.</summary>
@@ -465,7 +465,7 @@ namespace CsVerify.Verifier.Boogie
         [System.ThreadStatic] public static System.Func<Microsoft.CodeAnalysis.Operations.IInvocationOperation, bool> WritesFieldsAt;
         /// <summary>May a library member run the program's code (what it is handed, its receiver)? A stub's call changes what it says, and, where it may, anything.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> RunsUserCode;
-        /// <summary>The program's Entity Framework model (CsVerify's engine's), where it references EF Core.</summary>
+        /// <summary>The program's Entity Framework model (the Engine's), where it references EF Core.</summary>
         [System.ThreadStatic] public static EfModel Ef;
 
         /// <summary>A query, before it runs: a DbSet, an IQueryable (a reference, read where the query runs).</summary>
@@ -491,7 +491,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A context of the program's: a class derived from DbContext.</summary>
         public static bool IsContext(ITypeSymbol t) => Ef != null && t?.DeclaringSyntaxReferences.Length > 0 && Ef.IsContextType(t);
-        /// <summary>CsVerify's engine's effects of a library member with a stub: the fields it writes, reads, and whether it may use arrays.</summary>
+        /// <summary>The Engine's effects of a library member with a stub: the fields it writes, reads, and whether it may use arrays.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, IEnumerable<ISymbol>> FieldWrites, FieldReads;
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayTouchArrays;
         /// <summary>CsVerify's effects analysis of a method: the fields it (or what it calls) writes, and whether it may write any.</summary>
@@ -507,7 +507,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The program has ownership trees ([Owns] fields): each object's tree root is the ghost map $root.</summary>
         [System.ThreadStatic] public static bool Trees;
 
-        /// <summary>The locks of the program (CsVerify's engine's: what guards what, the locks' invariants), for the run this thread is in.</summary>
+        /// <summary>The locks of the program (LockGuards: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
         public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsSequence(t) || t?.SpecialType == SpecialType.System_Object;
@@ -744,7 +744,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// An immutable class with invariants (not [Owned]): proved where each object is built, and assumed of every
-        /// object of it after, as its fields never change (as CsVerify's engine has a data type's).
+        /// object of it after, as its fields never change.
         /// </summary>
         public static bool HasObjectInvariant(ITypeSymbol t) =>
             t is INamedTypeSymbol n && IsClass(n) && !SpecSymbols.IsOwned(n) && HasInvariantMethods(n) && Immutable(n);
@@ -777,7 +777,7 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr Default(ITypeSymbol t) => IsGhost(t) ? Default(GhostOf(t)) : IsStruct(t) ? StructDefault(t) : IsObjSet(t) ? new KLit("(lambda r$: Ref :: false)") : IsFloating(t) ? FloatLiteral(0.0, t) : new KLit(IsNullable(t) || TypeOf(t) == "Ref" ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
-        /// (Not a type parameter's: where T : class may be instantiated with K?, as CsVerify's engine has it.)
+        /// (Not a type parameter's: where T : class may be instantiated with K?.)
         public static bool NotNullable(ITypeSymbol t) => IsGhost(t) ? NotNullable(GhostOf(t)) : t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
 
         public static string TypeOf(ITypeSymbol t) =>
@@ -825,7 +825,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A static field whose initializer makes an object, is a string literal, or calls a method whose return type
-        /// isn't nullable: never null, as CsVerify's engine has it (every write keeps it so, CSV1014).
+        /// isn't nullable: never null (every write keeps it so, CSV1014).
         /// </summary>
         public static bool StaticStartsWithObject(ISymbol field) =>
             field.IsStatic && field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().Any(v =>
@@ -837,7 +837,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A class or interface whose objects have dynamic types (dtype, sub): not generic (its instantiations would share
-        /// one), nor object, a data type (tags), an exception (typed already) or a delegate. As CsVerify's engine has them.
+        /// one), nor object, a data type (tags), an exception (typed already) or a delegate.
         /// </summary>
         public static bool IsModeledClass(ITypeSymbol t) =>
             t is INamedTypeSymbol n && n.IsReferenceType && n.TypeKind is TypeKind.Class or TypeKind.Interface && !n.IsGenericType && n.ContainingType?.IsGenericType != true &&

@@ -218,7 +218,7 @@ namespace CsVerify.Tests.Fuzz
                         if (failure == null) continue;
                         // (and what the verifier said of it, each unit's diagnostics, warnings too: why it took it for verified)
                         var said = string.Concat(result.Methods.Where(r => r.Name == "G." + m.Name + "T" || r.Name.StartsWith("G." + m.Name + "T."))
-                            .Select(r => $"    // {r.Name}: {r.Engine}, {r.Obligations} obligations, {r.Milliseconds} ms{string.Concat(r.Diagnostics.Select(d => $"; {d.Id} {d.Message}"))}\n"));
+                            .Select(r => $"    // {r.Name}: {r.Obligations} obligations, {r.Milliseconds} ms{string.Concat(r.Diagnostics.Select(d => $"; {d.Id} {d.Message}"))}\n"));
                         o.Problems.Add($"seed {seed}, {m.Name}: verified, but on {input}: {failure}\n{Text(m, keep, -1, post, throwPost)}\n{said}");
                         break;
                     }
