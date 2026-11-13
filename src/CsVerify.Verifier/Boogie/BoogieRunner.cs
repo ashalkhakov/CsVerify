@@ -25,6 +25,14 @@ namespace CsVerify.Verifier.Boogie
             new System.Collections.Concurrent.ConcurrentBag<System.Threading.Tasks.TaskScheduler>();
 
         /// <summary>
+        /// Two runs at a time, at most: one alone has a solver for each core, two half of them each. Each run with a solver
+        /// for each core, tests side by side ran dozens of solvers at once, a gigabyte each on a hard query, and the
+        /// machine killed them (Boogie: "Prover died with no further output") or they starved.
+        /// </summary>
+        private static readonly SemaphoreSlim Gate = new SemaphoreSlim(2);
+        private static int _running;
+
+        /// <summary>
         /// The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown. A procedure that
         /// times out is verified once more an assertion at a time (/vcsSplitOnEveryAssert), as CsVerify's engine
         /// proves its obligations one by one: a long one that is hard as a whole is often easy split. So is one that
@@ -117,14 +125,22 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!Schedulers.TryTake(out var scheduler))
                 scheduler = CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
-            var result = Run(scheduler, program, z3Path, timeoutMs, split, procs, names);
+            Gate.Wait();
+            (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) result;
+            try
+            {
+                var alone = Interlocked.Increment(ref _running) == 1;
+                var cores = Math.Max(1, alone ? Environment.ProcessorCount : Environment.ProcessorCount / 2);
+                result = Run(scheduler, cores, program, z3Path, timeoutMs, split, procs, names);
+            }
+            finally { Interlocked.Decrement(ref _running); Gate.Release(); }
             // (given back after a run that ended: one that didn't may still hold its threads)
             Schedulers.Add(scheduler);
             return result;
         }
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
-            System.Threading.Tasks.TaskScheduler scheduler, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split,
+            System.Threading.Tasks.TaskScheduler scheduler, int solvers, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split,
             List<string> procs, Dictionary<MethodResult, string> names)
         {
             var output = new StringWriter();
@@ -136,7 +152,7 @@ namespace CsVerify.Verifier.Boogie
             var only = split == null ? (procs ?? new List<string>()).Select(x => "/proc:" + x) : new[] { "/vcsSplitOnEveryAssert" }.Concat(split.Select(x => "/proc:" + x));
 
             // (procedures verified side by side, a solver each: their results don't depend on each other)
-            var cores = "/vcsCores:" + Math.Max(1, Environment.ProcessorCount);
+            var cores = "/vcsCores:" + solvers;
             options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores }.Concat(only).Concat(extra).ToArray());
             using var engine = new ExecutionEngine(options, new EmptyVerificationResultCache(), scheduler, false);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
