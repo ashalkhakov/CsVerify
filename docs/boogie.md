@@ -918,8 +918,12 @@ A method group of an instance method (`a.Twice`) evaluates `a` where the delegat
 and is the method's contract with `this` that object; as for a static one, a precondition that reads state isn't
 translated. A delegate called inside a `try` may throw, to its handlers.
 
-Not yet: `Spec.Total` of a delegate that may read state, a method group of a generic method or one made a delegate
-type with a contract, and delegates with permissions or method `Spec.Modifies`.
+A method group made a delegate type with a contract (`Step s = F`) is compared with it, behavioural subtyping as for an
+override: for every argument, the type's precondition implies `F`'s, and where both hold, `F`'s postconditions imply
+the type's (CSV1029 where either might not); where either contract depends on state, CSV1029.
+
+Not yet: `Spec.Total` of a delegate that may read state, a method group of a generic method, and delegates with
+permissions or method `Spec.Modifies`.
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
 datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its

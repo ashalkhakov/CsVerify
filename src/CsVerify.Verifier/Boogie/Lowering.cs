@@ -5404,9 +5404,19 @@ namespace CsVerify.Verifier.Boogie
                 // the delegate a new reference, its code not known)
                 case IDelegateCreationOperation cg when Contracted(cg.Type) && cg.Target is IMethodReferenceOperation cgm:
                 {
-                    if (cgm.Instance != null && !(cgm.Instance is IInstanceReferenceOperation)) Expr(cgm.Instance);
-                    Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                      Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': a method group's contract isn't compared with the delegate type's, so it isn't known to keep it (use a lambda)" });
+                    var receiver = cgm.Instance != null && !(cgm.Instance is IInstanceReferenceOperation) ? Expr(cgm.Instance) : null;
+                    // (its contract against the delegate type's, behavioural subtyping: it accepts all the type does, and
+                    // gives what the type says where the type's precondition holds)
+                    if (Refines(cgm.Method, ((INamedTypeSymbol)cg.Type).DelegateInvokeMethod, receiver) is (KExpr accepts, KExpr gives))
+                    {
+                        Emit(new KCheck { Cond = accepts, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                          Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its precondition might not accept every argument the delegate type's does" });
+                        Emit(new KCheck { Cond = gives, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                          Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its postcondition might not give what the delegate type's says" });
+                    }
+                    else
+                        Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
+                                          Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its contract, or the delegate type's, depends on state, so it isn't known to keep the type's (use a lambda)" });
                     var t = Declare("t$" + _temps++, cg.Type);
                     Emit(new KHavoc { Var = t });
                     Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
@@ -6258,6 +6268,39 @@ namespace CsVerify.Verifier.Boogie
             }
             Emit(lam);
             return new KVar(t);
+        }
+
+        /// <summary>
+        /// A method's contract against a delegate type's, where both depend only on their parameters (and the method's
+        /// this, the receiver): that it accepts every argument the type does, and gives what the type says there. Null
+        /// where either depends on more.
+        /// </summary>
+        private (KExpr accepts, KExpr gives)? Refines(IMethodSymbol m, IMethodSymbol invoke, KExpr receiver)
+        {
+            var mc = _contractOf?.Invoke(m.OriginalDefinition);
+            var dc = _contractOf?.Invoke(invoke);
+            if (mc == null || dc == null || m.IsGenericMethod || m.Parameters.Length != invoke.Parameters.Length || m.Parameters.Any(p => p.RefKind != RefKind.None) ||
+                mc.Modifies != null || mc.Reads != null) return null;
+            var vars = invoke.Parameters.Select((p, k) => ("q$" + k, TypeOf(p.Type))).ToList();
+            var withResult = invoke.ReturnsVoid ? vars : vars.Append(("r$", TypeOf(invoke.ReturnType))).ToList();
+            // (each contract's parameters, by position, to the bound variables; its result to r$; the method's this to the receiver)
+            KExpr Of(IOperation op, IParameterSymbol result)
+            {
+                var own = new HashSet<ISymbol>(op.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Select(p => p.Parameter), SymbolEqualityComparer.Default);
+                if (!Steady(op, own)) return null;
+                var given = own.OfType<IParameterSymbol>().Where(p => !SymbolEqualityComparer.Default.Equals(p, result)).ToDictionary(p => Local(p), p => (KExpr)new KVar("q$" + p.Ordinal));
+                given["result"] = new KVar("r$");
+                if (receiver != null) given["this"] = receiver;
+                return Checks.Rename(Spec(op, result), given);
+            }
+            KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)new KLit("true"), (a, b) => new KOp("&&", a, b));
+            var dPre = dc.Requires.Select(r => Of(r, null)).ToList();
+            var mPre = mc.Requires.Select(r => Of(r, null)).ToList();
+            var mPost = mc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();
+            var dPost = dc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();
+            if (dPre.Concat(mPre).Concat(mPost).Concat(dPost).Any(x => x == null)) return null;
+            return (Forall(vars, new KOp("==>", All(dPre), All(mPre))),
+                    Forall(withResult, new KOp("==>", new KOp("&&", new KOp("&&", All(dPre), All(mPre)), All(mPost)), All(dPost))));
         }
 
         /// <summary>For every value of these variables (none: the body itself).</summary>
