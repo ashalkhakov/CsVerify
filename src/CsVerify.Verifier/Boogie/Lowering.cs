@@ -506,11 +506,11 @@ namespace CsVerify.Verifier.Boogie
                     case IDeconstructionAssignmentOperation d when d.Target is ITupleOperation tt: foreach (var e in tt.Elements) Target(e); break;
                     case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } arg: Target(arg.Value); break;
                 }
-            // (a lambda that captures one would read the parameter, not the local)
+            // (a lambda that reads one: its own input, the value when it runs; its postconditions don't name one,
+            // as it isn't steady. One that writes one isn't translated: its writes would have to reach the local)
             foreach (var fn in ops.OfType<IFlowAnonymousFunctionOperation>().Where(f => !InSpec(f.Syntax)))
-                if (fn.Symbol.DeclaringSyntaxReferences.Any(r => r.GetSyntax().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>()
-                        .Any(n => found.Any(p => p.Name == n.Identifier.Text))))
-                    throw new NotTranslated("a parameter assigned and captured");
+                if (fn.Symbol.DeclaringSyntaxReferences.Any(r => found.Any(p => !NeverWrittenIn(r.GetSyntax(), p))))
+                    throw new NotTranslated("a parameter assigned in a lambda that captures it");
             return found;
         }
 
@@ -5110,6 +5110,9 @@ namespace CsVerify.Verifier.Boogie
                     return Ifc(ir, ir.Property.IsIndexer ? Expr(ir.Arguments[0].Value) : null, Expr(ir.Instance), inSpec: false);
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
+                // (a target-typed conditional, Sh s = c ? new S1() : new S2(): each branch already converted)
+                case IConversionOperation tt when tt.IsImplicit && tt.OperatorMethod == null && SymbolEqualityComparer.Default.Equals(tt.Type, tt.Operand.Type):
+                    return Expr(tt.Operand);
                 // (and an enum's: an integer of its underlying type)
                 case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && (conv.Conversion.IsNumeric || conv.Type.TypeKind == TypeKind.Enum || conv.Operand.Type.TypeKind == TypeKind.Enum):
                     return new KConv { Value = Expr(conv.Operand), From = conv.Operand.Type, To = conv.Type, Mode = Mode(conv.Syntax, conv.IsChecked), At = conv.Syntax };

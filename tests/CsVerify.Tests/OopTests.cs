@@ -115,5 +115,23 @@ public static class U
             Assert.Empty(r.Errors("U.Make"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("U.MakeBad"));
         }
+
+        [Fact]
+        public void ATargetTypedConditional_AndAnAssignedParameterALambdaReads()
+        {
+            var r = Harness.Verify(@"
+public abstract class Sh { public abstract int A(); }
+public sealed class S1 : Sh { public S1() { } public override int A() => 1; }
+public sealed class S2 : Sh { public S2() { } public override int A() => 2; }
+public static class U
+{
+    public static Sh Pick(bool c) { Spec.Ensures((Sh r) => r != null); Sh s = c ? new S1() : new S2(); return s; }
+    public static int Cap(int x) { Spec.Requires(x == 1); Spec.Ensures((int r) => r == 2); x = x + 1; System.Func<int> f = () => x; return x; }
+    public static int CapWrong(int x) { Spec.Requires(x == 1); Spec.Ensures((int r) => r == 1); x = x + 1; System.Func<int> f = () => x; return x; }
+}");
+            Assert.Empty(r.Errors("U.Pick"));
+            Assert.Empty(r.Errors("U.Cap"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("U.CapWrong"));
+        }
     }
 }

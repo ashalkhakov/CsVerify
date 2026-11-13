@@ -602,7 +602,8 @@ CSV1020.
 of the body, `p$x$v`, which starts as `p$x`. The contract is read of the parameter: a precondition, and `old(x)`, are
 of its value at entry. A postcondition is checked at each return of the local (the
 parameter's value then). Callers don't see that value, so a postcondition that names such a parameter (outside
-`old`) isn't one they assume. One that a lambda in the body captures isn't translated.
+`old`) isn't one they assume. A lambda that reads one reads its own input, the value when it runs (the parameter
+isn't steady, so the lambda's postconditions don't name it); one a lambda writes isn't translated.
 
 **Strings.** As [the semantics](semantics.md#strings) says, a string is its value: a `Ref` (so that null is one), with
 a length `slen(s)` and UTF-16 code units `sat(s, i)` in `0..65535`, functions of the value. A literal is a unique
