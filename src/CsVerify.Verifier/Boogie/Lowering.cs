@@ -3787,6 +3787,17 @@ namespace CsVerify.Verifier.Boogie
                     var otherwise = ng.Arguments.Length == 1 ? lower(ng.Arguments[0].Value) : Default(Underlying(ng.Instance.Type));
                     return new KOp("ite", new KOp("!=", v, new KLit("null")), NullableValue(v, ng.Instance.Type), otherwise);
                 }
+                // (objects compared in a database query's lambda, with SQL's nulls (UseRelationalNulls): where one that may be
+                // null is, SQL's unknown, for each comparison, as for strings; against the literal null, IS NULL, exact)
+                case IBinaryOperation rb when _inDatabase > 0 && KernelTypes.Ef?.RelationalNulls == true && rb.OperatorMethod == null &&
+                                              rb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                                              Unconverted(rb.LeftOperand).Type is { IsReferenceType: true } lt && !IsString(lt) && IsRef(lt) &&
+                                              Unconverted(rb.RightOperand).Type is { IsReferenceType: true } rt && !IsString(rt) && IsRef(rt):
+                {
+                    var (l, r) = (lower(Unconverted(rb.LeftOperand)), lower(Unconverted(rb.RightOperand)));
+                    var same = new KOp("==", l, r);
+                    return RelationalStrings(rb, rb.OperatorKind == BinaryOperatorKind.Equals ? same : new KOp("!", same), l, r);
+                }
                 // (lifted: == on the values, or both null; the comparisons false where either is null)
                 case IBinaryOperation nb when nb.OperatorMethod == null && (IsNullableValue(nb.LeftOperand.Type) || nb.LeftOperand.Type == null) && (IsNullableValue(nb.RightOperand.Type) || nb.RightOperand.Type == null) &&
                                               (IsNullableValue(nb.LeftOperand.Type) || IsNullableValue(nb.RightOperand.Type)):

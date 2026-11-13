@@ -555,7 +555,8 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   lambda writes, on the arguments; of a sequence, a library call that says nothing of its rows.
 - A call EF translates to SQL in a database query's lambda that the kernel has no function of (`c.Name.ToUpper()`)
   is the database's function of its arguments (`$db.`*member*), apart from C#'s: SQL's `UPPER` needn't be .NET's.
-- Not yet (such a method is not verified, CSV1902): SQL's nulls (`UseRelationalNulls`) of references.
+- With SQL's nulls (`UseRelationalNulls`), objects compared in a database query's lambda (`o.Customer == c`) are SQL's
+  unknown where one that may be null is, as strings and nullable values are; against the literal null, `IS NULL`, exact.
 
 **Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
 parameter takes it, a call gives it, and an EF concurrency token is compared by it. That int is its `Ticks`, so
