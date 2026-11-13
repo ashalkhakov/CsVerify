@@ -435,6 +435,20 @@ namespace CsVerify.Verifier.Boogie
             return Enumerable.Range(0, ((INamedTypeSymbol)op.Type).TupleElements.Length).Select(k => TupleItem(v, op.Type, k)).ToList();
         }
 
+        /// <summary>A new array of <paramref name="length"/> elements, src's from <paramref name="start"/> on (Clone, a slice).</summary>
+        private KExpr CopyOf(KExpr src, KExpr start, KExpr length, ITypeSymbol arrayType, SyntaxNode at)
+        {
+            var copy = Declare("t$" + _temps++, arrayType);
+            Emit(new KNew { Var = copy, ArrayType = arrayType, Size = length });
+            var map = Elements(arrayType);
+            var row = new KVar(LinqMap("[int]" + ElementValue(map)));
+            Emit(new KRow { Map = map, Ref = new KVar(copy), Value = row });
+            var i = new KVar("i$k");
+            Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$k", Body = new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, new KOp("+", start, i))) },
+                                 Assume = true, Free = true, At = at, ArgumentAt = at });
+            return new KVar(copy);
+        }
+
         private static bool AnonymousAsObject(IOperation o) =>
             o is IConversionOperation { Conversion.IsReference: true } c && c.Operand.Type is INamedTypeSymbol { IsAnonymousType: true } && !c.Type.IsAnonymousType;
 
@@ -4200,10 +4214,20 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (lp.DeclaredSymbol != null) throw new NotTranslated("a list pattern that declares its value");
                     int slice = lp.Patterns.IndexOf(lp.Patterns.FirstOrDefault(x => x is ISlicePatternOperation));
-                    if (slice >= 0 && ((ISlicePatternOperation)lp.Patterns[slice]).Pattern != null) throw new NotTranslated("a slice pattern with a pattern of its own");
+                    var slicePattern = slice >= 0 ? ((ISlicePatternOperation)lp.Patterns[slice]).Pattern : null;
+                    // (in a specification a pattern makes nothing: a slice's own pattern, of a new array, is code's)
+                    if (slicePattern != null && (_cfgBlock == null || _p.UsesCells || _p.MemViews)) throw new NotTranslated("a slice pattern with a pattern of its own, in a specification");
                     int fixedCount = lp.Patterns.Length - (slice >= 0 ? 1 : 0);
                     var len = new KOp("len", v);
                     KExpr cond = new KOp("&&", new KOp("!=", v, new KLit("null")), new KOp(slice >= 0 ? ">=" : "==", len, new KLit(fixedCount.ToString())));
+                    // (.. var rest: a new array of the elements between, as C#'s GetSubArray makes; where v doesn't match
+                    // the length, an empty one nothing reads)
+                    if (slicePattern != null)
+                    {
+                        var between = new KOp("ite", cond, new KOp("-", len, new KLit(fixedCount.ToString())), new KLit("0"));
+                        var rest = CopyOf(v, new KLit(slice.ToString()), between, type, lp.Syntax);
+                        cond = new KOp("&&", cond, Pattern(slicePattern, rest, type, lower, bind));
+                    }
                     for (int k = 0; k < lp.Patterns.Length; k++)
                     {
                         if (k == slice) continue;
@@ -5182,15 +5206,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var src = Expr(ci);
                     Emit(new KCheck { Cond = new KOp("!=", src, new KLit("null")), Id = "CSV1013", At = ci.Syntax, Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'" });
-                    var copy = Declare("t$" + _temps++, cc.Type);
-                    Emit(new KNew { Var = copy, ArrayType = cc.Type, Size = new KOp("len", src) });
-                    var map = Elements(cc.Type);
-                    var row = new KVar(LinqMap("[int]" + ElementValue(map)));
-                    Emit(new KRow { Map = map, Ref = new KVar(copy), Value = row });
-                    var i = new KVar("i$k");
-                    Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$k", Body = new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, i)) },
-                                         Assume = true, Free = true, At = cc.Syntax, ArgumentAt = cc.Syntax });
-                    return new KVar(copy);
+                    return CopyOf(src, new KLit("0"), new KOp("len", src), cc.Type, cc.Syntax);
                 }
                 // (n++ and ++n as values: stored, as a statement stores it; the value before, or after)
                 case IIncrementOrDecrementOperation iv when IsIntegral(iv.Type):

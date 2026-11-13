@@ -106,6 +106,22 @@ public static class P
             Assert.True(r.Success, string.Join("\n", r.Diagnostics));
         }
 
+        // (.. var rest: a new array of the elements between)
+        [Fact]
+        public void Patterns_SliceWithAPatternOfItsOwn()
+        {
+            var r = Harness.Verify(@"
+public static class P
+{
+    public static int Rest(int[] a) { Spec.Requires(a != null); if (a is [1, .. var rest, 9]) { Spec.Assert(rest.Length == a.Length - 2 && (rest.Length == 0 || rest[0] == a[1])); return rest.Length; } return -1; }
+    public static bool Nested(int[] a) { Spec.Requires(a != null); Spec.Ensures<bool>(r => !r || a.Length >= 3 && a[1] == 2); return a is [_, .. [2, ..], _]; }
+    public static int Wrong(int[] a) { Spec.Requires(a != null); if (a is [1, .. var rest]) { Spec.Assert(rest.Length == a.Length); return 0; } return -1; }
+}");
+            Assert.Empty(r.Errors("Rest"));
+            Assert.Empty(r.Errors("Nested"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
         [Fact]
         public void With_OnAStruct_CopiesIt()
         {

@@ -700,8 +700,9 @@ called on another object is its function, which each `[Pure]` override defines f
 
 **Patterns.** Besides the null patterns: a class's property pattern (`p is { Age: >= 18 }`: not null, each field
 read unchecked); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`, `[>= 9, ..]`: not null, of the length,
-each element as its pattern says, those after a slice counted from the end; a slice with a pattern of its own, or a
-list pattern that declares its value, isn't translated); a string's constant pattern (`s is "a"`, a string's value).
+each element as its pattern says, those after a slice counted from the end; in code, a slice with a pattern of its own
+(`.. var rest`) matches a new array of the elements between, as C#'s `GetSubArray` makes; in a specification it, and a
+list pattern that declares its value, aren't translated); a string's constant pattern (`s is "a"`, a string's value).
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`
