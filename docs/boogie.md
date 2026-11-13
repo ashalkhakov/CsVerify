@@ -806,9 +806,12 @@ A `foreach` over a collection: a `List<T>` whose loop changes no list (it calls 
 enumerator, as C# does: `GetEnumerator()` keeps the collection's `Version()`, each `MoveNext()` checks the
 collection's is still that (else it throws: CSV1001) and gives an unknown answer, and `Current` is unknown, but for a
 dictionary's: a pair it has (`Domain[key]`, and `Entries[key]` its value; a `KeyValuePair`'s `Key` and `Value` are
-functions of it, `$kvp.Key.`*K* and `$kvp.Value.`*V*). `Spec.Index` of such a loop isn't translated. A `foreach` over
-anything else (an interface's list, a dictionary's `Keys` or `Values`, a query, an enumerable of the program's) isn't
-translated yet.
+functions of it, `$kvp.Key.`*K* and `$kvp.Value.`*V*). `Spec.Index` of such a loop is the number of edges back to
+its head, as for an array, at most the `Count` the collection had where the loop began (`fe$`*n*`$c`): `MoveNext`
+gives another only while fewer have gone, and, where the `Count` is still that, all of them (a dictionary's `Remove`
+may go on while it's enumerated, so fewer may be given). A dictionary's `Keys` or `Values` are enumerated as the
+dictionary is; a query's elements are read where the loop starts; an interface's list, or an enumerable of the
+program's, is a library enumerator whose elements aren't known.
 
 **Collections.** A `List<T>`, `Dictionary<K, V>`, `HashSet<T>`, `Stack<T>` or `Queue<T>` of the subset's values is an object whose contents
 are CsVerify.Bcl's models: maps as fields are, `$F.$M.Size: [Ref]int` (never negative), `$F.$M.Version: [Ref]int`, and

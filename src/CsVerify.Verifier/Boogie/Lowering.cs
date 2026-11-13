@@ -968,6 +968,8 @@ namespace CsVerify.Verifier.Boogie
             public INamedTypeSymbol Collection;
             /// <summary>A list its loop may change: through its enumerator, whose MoveNext checks the list's version (Version, as it was).</summary>
             public string Version;
+            /// <summary>Through an enumerator: the collection's Count where the loop began.</summary>
+            public string Size0;
             /// <summary>A dictionary's Keys or Values (null: the collection itself), enumerated as the dictionary is; Of, the dictionary.</summary>
             public string View;
             public IOperation Of;
@@ -1033,6 +1035,7 @@ namespace CsVerify.Verifier.Boogie
                 };
                 if (isCollection) foreach (var model in ModelsOf(fe.Collection)) _p.Models[model.Name] = model;
                 if (enumerated) fe.Version = Declare($"fe${n}$v", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                if (enumerated && ModelOf("Size", fe.Collection) != null) fe.Size0 = Declare($"fe${n}$c", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
                 _forEach[capture.Id] = fe;
                 _forEachAt[head.Ordinal] = fe;
                 foreach (var l in fo.Locals) _forEachOf[l] = fe;
@@ -1166,13 +1169,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A foreach's index stays within its collection: the loop's first invariant (it holds by itself).</summary>
         private void ForEachInvariants()
         {
-            foreach (var fe in _forEachAt.Values.Where(x => x.Version == null))
+            foreach (var fe in _forEachAt.Values)
             {
                 if (!_p.Invariants.TryGetValue(fe.Head, out var list)) _p.Invariants[fe.Head] = list = new List<KSpec>();
                 var i = new KVar(fe.Index);
+                // (through an enumerator: at most as many as the collection had where the loop began)
                 list.Insert(0, new KSpec
                 {
-                    Expr = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true))),
+                    Expr = fe.Version == null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true)))
+                         : fe.Size0 != null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, new KVar(fe.Size0)))
+                         : new KOp("<=", new KLit("0"), i),
                     At = fe.At,
                 });
             }
@@ -1722,6 +1728,12 @@ namespace CsVerify.Verifier.Boogie
                     if (fe.Collection != null)
                         Emit(new KCheck { Cond = new KOp("!=", new KVar(fe.Array), new KLit("null")), Id = "CSV1013", At = fe.At, Message = $"'{fe.At}' might be null in '{fe.At}'" });
                     if (fe.Version != null) Emit(new KAssign { Var = fe.Version, Value = new KOp("sel", new KVar(VersionMap), new KVar(fe.Array)) });
+                    if (fe.Size0 != null)
+                    {
+                        Emit(new KAssign { Var = fe.Size0, Value = LengthOf(fe) });
+                        // (its Count, an int)
+                        Emit(new KAssume { Cond = new KOp("<=", new KVar(fe.Size0), new KLit("2147483647")) });
+                    }
                     else if (fe.Collection == null) Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
                     return;
                 }
@@ -4904,6 +4916,14 @@ namespace CsVerify.Verifier.Boogie
                                       Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
                     var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
                     Emit(new KHavoc { Var = more });
+                    // (it gives at most the Count it had where the loop began (a dictionary's Remove may go on while it's
+                    // enumerated, the version as it was); all of them where the Count is still that)
+                    if (fv.Size0 != null)
+                    {
+                        var (i, n0) = (new KVar(fv.Index), new KVar(fv.Size0));
+                        Emit(new KAssume { Cond = new KOp("==>", new KVar(more), new KOp("<", i, n0)) });
+                        Emit(new KAssume { Cond = new KOp("==>", new KOp("&&", new KOp("!", new KVar(more)), new KOp("==", LengthOf(fv), n0)), new KOp("==", i, n0)) });
+                    }
                     return new KVar(more);
                 }
                 case IInvocationOperation mn when mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation er && _forEach.TryGetValue(er.Id, out var fm):
@@ -7014,15 +7034,8 @@ namespace CsVerify.Verifier.Boogie
                                 : new KOp("$frame." + key, new[] { d }.Concat(xs).ToArray());
                             return Forall(ps, new KOp("set.subset", set, within));
                         }
-                        // (a foreach's index: of its element in the body, the number gone through at its head)
-                        case "Index" when Unconverted(inv.Arguments[0].Value) is ILocalReferenceOperation ix && _forEachOf.TryGetValue(ix.Local, out var fx) && fx.Version != null:
-                        {
-                            // (no index to go by: an unknown value, which warns)
-                            var span = inv.Syntax.GetLocation().GetLineSpan();
-                            if (!_p.Warnings.Any(w => w.Span.Equals(span)))
-                                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, "the foreach goes through an enumerator; Spec.Index of its element is unknown", span));
-                            return new KVar(Declare("t$" + _temps++, inv.Type));
-                        }
+                        // (a foreach's index: of its element in the body, the number gone through at its head; through an
+                        // enumerator too, as it counts the edges back to the head)
                         case "Index" when Unconverted(inv.Arguments[0].Value) is ILocalReferenceOperation ix && _forEachOf.TryGetValue(ix.Local, out var fx):
                             return new KVar(fx.Index);
                         // (allocated during the call)
