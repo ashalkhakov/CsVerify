@@ -341,7 +341,8 @@ namespace CsVerify.Verifier.Boogie
                     var a = Sequence(args[0].Value);
                     var b = Sequence(args[1].Value);
                     bool keep = m.Name == "Intersect";
-                    return FilterAt(a, j => new KOp("&&", new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(a.Elem(k), a.Elem(j), a.Type), forall: false).Q),
+                    var unseen = Unseen(a.Length, (k, j) => SameValue(a.Elem(k), a.Elem(j), a.Type), q.Syntax);
+                    return FilterAt(a, j => new KOp("&&", unseen(j),
                                                     keep ? (KExpr)new KQuantOver(this, new KLit("0"), b.Length, k => SameValue(b.Elem(k), a.Elem(j), a.Type), forall: false).Q
                                                          : new KOp("!", new KQuantOver(this, new KLit("0"), b.Length, k => SameValue(b.Elem(k), a.Elem(j), a.Type), forall: false).Q)), q.Syntax);
                 }
@@ -352,7 +353,7 @@ namespace CsVerify.Verifier.Boogie
                     var f = LambdaArg(q, 1);
                     if (f.p2 != null) throw new NotTranslated("DistinctBy with an index");
                     var keyType = f.body.Type;
-                    return FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(Apply(f, src.Elem(k)), Apply(f, src.Elem(j)), keyType), forall: false).Q), q.Syntax);
+                    return FilterAt(src, Unseen(src.Length, (k, j) => SameValue(Apply(f, src.Elem(k)), Apply(f, src.Elem(j)), keyType), q.Syntax), q.Syntax);
                 }
                 // (each element with its index: a tuple (Index, Item))
                 case "Index" when args.Count == 1 && _inDatabase == 0 && resultElem != null && IsTuple(resultElem):
@@ -418,7 +419,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var src = Sequence(args[0].Value);
                     // (each element's first occurrence, in order: Q.Unseen; the database's, in no order)
-                    var distinct = FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(src.Elem(k), src.Elem(j), src.Type), forall: false).Q), q.Syntax);
+                    var distinct = FilterAt(src, Unseen(src.Length, (k, j) => SameValue(src.Elem(k), src.Elem(j), src.Type), q.Syntax), q.Syntax);
                     return _inDatabase > 0 ? Sort(distinct, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : distinct;
                 }
                 // (a.Zip(b): pairs of the elements at each index, as long as the shorter)
@@ -513,7 +514,7 @@ namespace CsVerify.Verifier.Boogie
                     var both = new LSeq { Length = new KOp("+", a.Length, b.Length), Type = a.Type,
                                           Elem = i => new KOp("ite", new KOp("<", i, a.Length), a.Elem(i), b.Elem(new KOp("-", i, a.Length))) };
                     if (m.Name == "Concat") return _inDatabase > 0 ? Sort(both, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : both;
-                    var union = FilterAt(both, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(both.Elem(k), both.Elem(j), both.Type), forall: false).Q), q.Syntax);
+                    var union = FilterAt(both, Unseen(both.Length, (k, j) => SameValue(both.Elem(k), both.Elem(j), both.Type), q.Syntax), q.Syntax);
                     return _inDatabase > 0 ? Sort(union, new List<((IOperation, IParameterSymbol, IParameterSymbol), ITypeSymbol, bool)>(), q.Syntax) : union;
                 }
                 // (groups as values, of a selector that reads their key and count: GroupValue. A database's counts are
@@ -523,7 +524,7 @@ namespace CsVerify.Verifier.Boogie
                     var src = Sequence(args[0].Value);
                     var key = LambdaArg(q, 1);
                     // (a group: the index in the source of its key's first element; each key's first, in order)
-                    var firsts = FilterAt(src, j => new KOp("!", new KQuantOver(this, new KLit("0"), j, k => SameValue(Apply(key, src.Elem(k)), Apply(key, src.Elem(j)), key.body.Type), forall: false).Q), q.Syntax);
+                    var firsts = FilterAt(src, Unseen(src.Length, (k, j) => SameValue(Apply(key, src.Elem(k)), Apply(key, src.Elem(j)), key.body.Type), q.Syntax), q.Syntax);
                     // (how many of the source have its key: at least the one, at most all)
                     var count = new KVar(LinqMap("[int]int"));
                     ShapeFact(Over(new KLit("0"), src.Length, j => new KOp("&&", new KOp("<=", new KLit("1"), new KOp("sel", count, j)), new KOp("<=", new KOp("sel", count, j), src.Length))), q.Syntax);
@@ -736,7 +737,7 @@ namespace CsVerify.Verifier.Boogie
                 LinqFact(Over(new KLit("0"), new KVar(count), i => new KOp("==", new KOp("sel", new KVar(map), i), source.Elem(i))), at);
                 var read = new LSeq { Length = new KVar(count), Elem = i => new KOp("sel", new KVar(map), i), Type = source.Type };
                 // (the groups in the order their keys first appear: each one's first index)
-                var firsts = FilterAt(read, j => new KOp("!", Over(new KLit("0"), j, k => SameValue(Apply(key, read.Elem(k)), Apply(key, read.Elem(j)), key.body.Type), forall: false)), at);
+                var firsts = FilterAt(read, Unseen(read.Length, (k, j) => SameValue(Apply(key, read.Elem(k)), Apply(key, read.Elem(j)), key.body.Type), at), at);
                 seq = new LSeq { Length = firsts.Length, Elem = firsts.Index, Type = fe.Element };
                 foreach (var l in _forEachOf.Where(kv => kv.Value == fe).Select(kv => kv.Key)) _groups[l] = (map, key, source.Type, count);
             }
@@ -846,6 +847,23 @@ namespace CsVerify.Verifier.Boogie
             throw new NotTranslated("LINQ's equality of " + t);
         }
 
+        /// <summary>
+        /// Whether no element before j is the same as it (Q.Unseen: each first occurrence), as a map of its own: where it
+        /// is, none before is; where it isn't, seen[j] is one before that is. Not the existential itself, inside the
+        /// count's facts: each instance of that made an element the solver hadn't, whose own instances made more, so a
+        /// failing proof never saturated them.
+        /// </summary>
+        private Func<KExpr, KExpr> Unseen(KExpr n, Func<KExpr, KExpr, KExpr> same, SyntaxNode at)
+        {
+            var first = new KVar(LinqMap("[int]bool"));
+            var seen = new KVar(LinqMap("[int]int"));
+            KExpr First(KExpr j) => new KOp("sel", first, j);
+            KExpr Seen(KExpr j) => new KOp("sel", seen, j);
+            LinqFact(Over(new KLit("0"), n, j => new KOp("==>", First(j), Over(new KLit("0"), j, k => new KOp("!", same(k, j))))), at);
+            LinqFact(Over(new KLit("0"), n, j => new KOp("==>", new KOp("!", First(j)), new KOp("&&", Between(new KLit("0"), Seen(j), j), same(Seen(j), j)))), at);
+            return First;
+        }
+
         private sealed class KQuantOver
         {
             public KQuant Q;
@@ -880,7 +898,11 @@ namespace CsVerify.Verifier.Boogie
             ShapeFact(Over(new KLit("0"), new KOp("+", n, new KLit("1")), j => new KOp("&&", new KOp("<=", new KLit("0"), C(j)), new KOp("<=", C(j), j))), at);
             LinqFact(Over(new KLit("0"), n, j => new KOp("==>", keep(j), new KOp("==", Ix(C(j)), j))), at);
             LinqFact(Over(new KLit("0"), C(n), i => new KOp("&&", new KOp("&&", Between(new KLit("0"), Ix(i), n), keep(Ix(i))), new KOp("==", C(Ix(i)), i))), at);
-            LinqFact(Over(new KLit("0"), new KOp("-", C(n), new KLit("1")), i => new KOp("<", Ix(i), Ix(new KOp("+", i, new KLit("1"))))), at);
+            // (of two indices there are: one alone would make the next, and so on without end)
+            var increasing = Over(new KLit("0"), new KOp("-", C(n), new KLit("1")), i => new KOp("<", Ix(i), Ix(new KOp("+", i, new KLit("1")))));
+            var iv = new KVar(increasing.Var);
+            increasing.Trigger = new KExpr[] { new KOp("$pattern", Ix(iv), Ix(new KOp("+", iv, new KLit("1")))) };
+            LinqFact(increasing, at);
             return new LSeq { Length = C(n), Elem = i => src.Elem(Ix(i)), Type = src.Type, Index = Ix };
         }
 

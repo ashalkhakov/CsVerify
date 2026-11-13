@@ -63,6 +63,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Its variable's Boogie type (int, unless said).</summary>
         public string Type = "int";
         public KExpr Range, Body;
+        /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
+        public KExpr[] Trigger;
     }
 
     /// <summary>

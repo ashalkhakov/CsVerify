@@ -64,7 +64,8 @@ namespace CsVerify.Verifier.Boogie
             // (a failure split finds that the whole didn't: Boogie reports the solver's unknown, where it gives up, as a
             // failure, and split, without what it learned from the others, it gives up more. So the method is verified
             // whole again, with four times the time: what that finds too is a failure, what it proves is proved; where the
-            // time runs out again, the method is undecided)
+            // time runs out again, what split found is reported, a failure the whole couldn't rule out, never a proof (as
+            // CsVerify's engine reported an obligation it couldn't prove on its own))
             var wholeKeys = failures.Select(f => (f.method, Key(f))).ToHashSet();
             var fresh = again.Where(f => f.diagnostic.Id != "CSV1900" && !wholeKeys.Contains((f.method, Key(f)))).ToList();
             if (fresh.Count > 0)
@@ -75,8 +76,7 @@ namespace CsVerify.Verifier.Boogie
                 var timedOut = confirm.Where(f => f.diagnostic.Id == "CSV1900" && recheck.Contains(f.method)).ToList();
                 var outOfTime = timedOut.Select(f => f.method).ToHashSet();
                 again = again.Where(f => !recheck.Contains(f.method) || f.diagnostic.Id == "CSV1900" || wholeKeys.Contains((f.method, Key(f))) ||
-                                         kept.Contains((f.method, Key(f))) || outOfTime.Contains(f.method))
-                    .Concat(timedOut).ToList();
+                                         kept.Contains((f.method, Key(f))) || outOfTime.Contains(f.method)).ToList();
             }
             foreach (var m in failed)
             {

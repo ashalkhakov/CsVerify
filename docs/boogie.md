@@ -1166,12 +1166,17 @@ of the library's members on such an object may run them, so it forgets everythin
 collection interfaces (read through them, they're unknown at each read).
 
 Not yet (such a method is not verified, CSV1902, with why): iterators (`yield`), explicit interface implementations,
-and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`). And a group query's counts (`GroupBy`,
-`Distinct`, a filter's: `c[i + 1] == c[i] + ...`, with an `exists` for the keys seen before) carry the solver's own
-triggers: where a method's assertion fails, the solver may never saturate them, and the method is undecided (CSV1902)
-where CsVerify's engine reported the failure (`LambdaTests`' `WrongGroup`, in some program texts). A trigger on the
-count alone decides that failure but loses the proof of a correct count up from `c[0]`, and one on the elements too
-brings the loop back: the counts want an encoding of their own.
+and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
+
+A filter (`Where`; and `Distinct`, `GroupBy`, `Union`, `Intersect`, `Except`, `DistinctBy` over each first
+occurrence) is a count, `c[j + 1] == c[j] + (keep(j) ? 1 : 0)`, and the indices of its matches, `ix`, increasing:
+that fact, `ix[i] < ix[i + 1]`, is triggered on the two indices together, as one alone would make the next and so on
+without end. A first occurrence (no element before it the same) is a map of its own: where it is one, none before is
+the same; where it isn't, `seen[j]`, one before, is. Not the `exists` itself inside the count's facts: each instance
+of that made an element the solver hadn't, whose own instances made more, and a failing group query was undecided.
+(A trigger on the count, `c[j + 1]`, was tried: it doesn't match `c[len(a)]`, so a count of a known length isn't
+proved.) A failing proof of a group query can still be too hard for the solver whole; split finds the failure, and
+that is reported (see below).
 
 ## How it's checked
 
@@ -1189,7 +1194,9 @@ a long one that is hard as a whole is often easy split (Base64's encoder, decode
 method split proves all of is verified. A failure split finds is not yet one: Boogie reports the solver's unknown,
 where it gives up, as a failure, and split, without what it learned from the others, it gives up more (a correct loop
 invariant over `3 * k`, say). So such a method is verified whole once more, with four times the time: a failure that
-finds too is reported, one it proves is proved, and where the time runs out again the method is undecided (CSV1900).
+finds too is reported, one it proves is proved, and where the time runs out again what split found is reported: a
+failure the whole couldn't rule out, never a proof (CsVerify's engine reported an obligation it couldn't prove on its
+own; a group query's failing assertion is one the whole can't decide).
 One that split doesn't decide all of is tried whole once more, with the whole limit, and if that doesn't prove it
 either it is undecided: not verified (CSV1902), with the failures it did decide. The procedures run on pools of
 large-stack threads, never disposed (disposing one interrupts threads the solver's processes may still be finishing

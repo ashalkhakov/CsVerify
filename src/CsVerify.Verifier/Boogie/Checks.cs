@@ -1304,7 +1304,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 KVar v when v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.") => new KOp("$st." + v.Name, snap),
                 KOp op => new KOp(op.Op, op.Args.Select(In).ToArray()),
-                KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : In(q.Range), Body = In(q.Body) },
+                KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : In(q.Range), Body = In(q.Body), Trigger = q.Trigger?.Select(t => In(t)).ToArray() },
                 _ => e,
             };
             bool Plain(KExpr e) => e switch
@@ -1376,7 +1376,7 @@ namespace CsVerify.Verifier.Boogie
         {
             KOp { Op: "old" } old => new KOp("old", Subst(old.Args[0], new Dictionary<string, KExpr> { ["psnap"] = new KVar("psnap$entry") })),
             KOp op => new KOp(op.Op, op.Args.Select(OldAtEntry).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body), Trigger = q.Trigger?.Select(t => OldAtEntry(t)).ToArray() },
             // (an old(...) in a function's argument: Key(t, Spec.Old(Count(t))))
             KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(OldAtEntry).ToArray(), Snap = f.Snap == null ? null : OldAtEntry(f.Snap) },
             _ => e,
@@ -1387,7 +1387,7 @@ namespace CsVerify.Verifier.Boogie
         {
             KOp { Op: "old" } old => Before(old.Args[0], frame),
             KOp op => new KOp(op.Op, op.Args.Select(a => OldBefore(a, frame)).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame), Trigger = q.Trigger?.Select(t => OldBefore(t, frame)).ToArray() },
             KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => OldBefore(a, frame)).ToArray(), Snap = f.Snap == null ? null : OldBefore(f.Snap, frame) },
             _ => e,
         };
@@ -1402,7 +1402,7 @@ namespace CsVerify.Verifier.Boogie
                     frame.OldGlobals.Add(v.Name);
                     return new KVar($"s{frame.Id}{v.Name}");
                 case KOp op: return new KOp(op.Op, op.Args.Select(a => Before(a, frame)).ToArray());
-                case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame) };
+                case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame), Trigger = q.Trigger?.Select(t => Before(t, frame)).ToArray() };
                 case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
                 // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
                 case KFnApp f when !f.Plain:
@@ -2376,11 +2376,16 @@ namespace CsVerify.Verifier.Boogie
                     var inner = new List<KExpr>();
                     bool added = _bound.Add(q.Var);
                     KExpr body;
-                    try { body = Spec(q.Body, inner, new List<KExpr> { range }); }
+                    KExpr[] trigger = null;
+                    try
+                    {
+                        body = Spec(q.Body, inner, new List<KExpr> { range });
+                        trigger = q.Trigger?.Select(t => Spec(t, new List<KExpr>(), new List<KExpr>())).ToArray();
+                    }
                     finally { if (added) _bound.Remove(q.Var); }
                     foreach (var c in inner) Need(new KQuant { Forall = true, Var = q.Var, Range = null, Body = c });
                     if (!Mentions(range, _bound)) Unfoldings(q.Var, range, body);
-                    return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = range, Body = body };
+                    return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = range, Body = body, Trigger = trigger };
                 }
                 case KFnCall fn:
                 {
@@ -2413,7 +2418,7 @@ namespace CsVerify.Verifier.Boogie
             KOp { Op: "old" } => e,
             KVar v when _p.AssignedParams.TryGetValue(v.Name, out var now) => new KVar(now),
             KOp op => new KOp(op.Op, op.Args.Select(AtReturn).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : AtReturn(q.Range), Body = AtReturn(q.Body) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : AtReturn(q.Range), Body = AtReturn(q.Body), Trigger = q.Trigger?.Select(t => AtReturn(t)).ToArray() },
             KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(AtReturn).ToArray(), Snap = f.Snap == null ? null : AtReturn(f.Snap) },
             _ => e,
         };
@@ -2427,7 +2432,7 @@ namespace CsVerify.Verifier.Boogie
         {
             KVar v when given.TryGetValue(v.Name, out var x) => x,
             KOp op => new KOp(op.Op, op.Args.Select(a => Subst(a, given)).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given) },
+            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given), Trigger = q.Trigger?.Select(t => Subst(t, given)).ToArray() },
             KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray(), Snap = f.Snap == null ? null : Subst(f.Snap, given) },
             _ => e,
         };

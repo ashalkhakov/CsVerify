@@ -332,14 +332,19 @@ namespace CsVerify.Verifier.Boogie
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
-                case KQuant q when q.Range == null: return $"(forall {q.Var}: {q.Type} :: {E(q.Body, cx)})";
-                case KQuant q: return q.Forall ? $"(forall {q.Var}: {q.Type} :: {E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {E(q.Range, cx)} && {E(q.Body, cx)})";
+                case KQuant q:
+                {
+                    var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
+                    if (q.Range == null) return $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Body, cx)})";
+                    return q.Forall ? $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} && {E(q.Body, cx)})";
+                }
                 case KOp op:
                 {
                     var a = op.Args.Select(x => E(x, cx)).ToArray();
                     if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag)) return $"($tag({a[0]}) == {tag})";
                     switch (op.Op)
                     {
+                        case "$pattern": return string.Join(", ", a);
                         case "!": return $"!({a[0]})";
                         case "ite": return $"(if {a[0]} then {a[1]} else {a[2]})";
                         case "div": return $"cs#div{(IndexArithmetic(op.Args[0]) ? "" : "I")}({a[0]}, {a[1]})";
