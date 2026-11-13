@@ -180,6 +180,15 @@ namespace CsVerify.Tests
         public void Total_OfADelegateThatReadsState_WithAPrecondition() => Assert.Contains("CSV1004", Ids(C + "static int M(Cell c) { Spec.Requires(c != null && c.V > 0); " +
             "Func<int, int> f = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(x < c.V); return c.V; }; Spec.Assert(Spec.Total(f)); return 0; } }"));
 
+        // (under Spec.Modifies: a lambda that changes nothing is called freely; one that may change anything breaks the frame)
+        [Fact]
+        public void Lambdas_UnderSpecModifies() => Assert.Empty(Ids(C + "static int M(Cell c) { Spec.Requires(c != null); Spec.Modifies(ObjSet.Of(c)); c.V = 1; " +
+            "Func<int, int> f = x => { Spec.Requires(x < 100); return x + 1; }; return f(2); } }"));
+
+        [Fact]
+        public void Lambdas_UnderSpecModifies_ThatMayWriteAnything() => Assert.Contains("CSV1017", Ids(C + "static void M(Cell c, Cell d) { Spec.Requires(c != null && d != null); " +
+            "Spec.Modifies(ObjSet.Of(c)); Action a = () => { d.V = 5; }; a(); } }"));
+
         // (a generic method's group, Twice<int>: its contract, its T's values boxed)
         private const string Generic = "public static class G { public static int Twice<T>(T x, int n) { Spec.Requires(n >= 0 && n < 100); Spec.Ensures<int>(r => r == 2 * n); return 2 * n; } } ";
 

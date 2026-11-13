@@ -6105,7 +6105,8 @@ namespace CsVerify.Verifier.Boogie
 
         private void DelegatesHere(string what)
         {
-            if (_p.UsesPerm || _contract.Modifies != null) throw new NotTranslated(what + " with permissions or Spec.Modifies");
+            // (under Spec.Modifies, its frame is checked as for any write: a call of one that may change anything breaks it)
+            if (_p.UsesPerm) throw new NotTranslated(what + " with permissions");
         }
 
         private KExpr DelegateCall(IInvocationOperation call)

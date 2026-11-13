@@ -929,7 +929,10 @@ the type's (CSV1029 where either might not); where either contract depends on st
 A method group of a static generic method (`Twice<int>`) is its definition's contract with each argument and the
 result boxed where the definition's type is a `T`, as a call of it has them.
 
-Not yet: delegates with permissions or method `Spec.Modifies`.
+Under a method's `Spec.Modifies`, a lambda or method group is made as anywhere; a call of a delegate that may change
+anything breaks the frame (CSV1017), one known to change nothing (`$nochange`, `Spec.ChangesNothing`) doesn't.
+
+Not yet: delegates in a method that holds permissions (views, `Spec.Acc`).
 
 **Data types.** A data record (a closed hierarchy of positional records) is Dafny's
 datatype. A value is a reference (null too) made by its case's constructor function `mk.`*C*`(fields)`: not null, its
