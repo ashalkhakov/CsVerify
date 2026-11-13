@@ -1205,8 +1205,11 @@ on work queued behind the others'. Two runs go at a time, at most: one alone has
 them each. With a solver for each core in every run, tests side by side ran dozens of solvers at once, a gigabyte each
 on a hard query, and the machine killed them (Boogie's "Prover died with no further output") or they starved. A run that goes on with nothing done for a long while (ten times the time limit,
 five minutes at least) has lost a solver's answer: Boogie waits for it, its solvers idle, and would wait for ever (it
-happens, on a loaded machine, in the fuzz test). It is ended, and its methods are not verified (CSV1902, "no answer
-from its solvers"); its threads aren't given to another run. `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
+happens, on a loaded machine, in the fuzz test). It is ended; its threads aren't given to another run. A run a mishap of the solver's ended is run once more, on
+threads of its own: that one, Boogie's fatal error (a solver killed for memory: "Prover died with no further output"),
+and Boogie's own TimeoutException: Boogie waits for a check as long as the time limit it gives the solver, so a solver
+that answers just late (its process slow to start, on Windows) ends the run. Where the second run ends so too, its
+methods are not verified (CSV1902, with Boogie's reason). `CSVERIFY_TRACE=2` prints each run and each failure Boogie reports.
 
 A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
 the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided

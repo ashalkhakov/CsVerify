@@ -123,21 +123,39 @@ namespace CsVerify.Verifier.Boogie
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
             BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null)
         {
-            if (!Schedulers.TryTake(out var scheduler))
-                scheduler = CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
-            Gate.Wait();
-            (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) result;
-            try
+            // (a run that a mishap of the solver's ended, not anything the program says, once more: Boogie's own wait for
+            // a check is as long as the time limit the solver is given, so a solver that answers late (its process slow
+            // to start, on Windows; a loaded machine) ends the run with a TimeoutException; a solver killed for memory,
+            // with Boogie's fatal error. The second time on threads of its own: the first run's may still be held)
+            for (int attempt = 0; ; attempt++)
             {
-                var alone = Interlocked.Increment(ref _running) == 1;
-                var cores = Math.Max(1, alone ? Environment.ProcessorCount : Environment.ProcessorCount / 2);
-                result = Run(scheduler, cores, program, z3Path, timeoutMs, split, procs, names);
+                if (!Schedulers.TryTake(out var scheduler))
+                    scheduler = CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
+                Gate.Wait();
+                (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) result;
+                try
+                {
+                    var alone = Interlocked.Increment(ref _running) == 1;
+                    var cores = Math.Max(1, alone ? Environment.ProcessorCount : Environment.ProcessorCount / 2);
+                    result = Run(scheduler, cores, program, z3Path, timeoutMs, split, procs, names);
+                }
+                catch (Exception e) when (attempt == 0 && SolverMishap(e))
+                {
+                    if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine("[run] again, after: " + e.Message);
+                    continue;
+                }
+                finally { Interlocked.Decrement(ref _running); Gate.Release(); }
+                // (given back after a run that ended: one that didn't may still hold its threads)
+                Schedulers.Add(scheduler);
+                return result;
             }
-            finally { Interlocked.Decrement(ref _running); Gate.Release(); }
-            // (given back after a run that ended: one that didn't may still hold its threads)
-            Schedulers.Add(scheduler);
-            return result;
         }
+
+        /// <summary>A run ended by the solver, not by the program: Boogie's wait for a late answer, or a solver that died.</summary>
+        private static bool SolverMishap(Exception e) =>
+            e is TimeoutException || e is AggregateException a && a.Flatten().InnerExceptions.Any(SolverMishap) ||
+            e.InnerException != null && SolverMishap(e.InnerException) ||
+            e is InvalidOperationException && (e.Message.StartsWith("Boogie: FatalError") || e.Message.Contains("Prover died") || e.Message.StartsWith("Boogie: no answer"));
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
             System.Threading.Tasks.TaskScheduler scheduler, int solvers, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split,
