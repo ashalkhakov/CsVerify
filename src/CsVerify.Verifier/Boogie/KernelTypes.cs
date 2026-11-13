@@ -35,6 +35,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>The program's static readonly fields the kernel reads as constants ($sf), numbered, for the run this thread is in.</summary>
         [System.ThreadStatic] public static Dictionary<string, int> StaticReadonlyIds;
+        /// <summary>Of those, the ones never null (made by new, of a non-nullable type): an axiom each.</summary>
+        [System.ThreadStatic] public static HashSet<int> StaticReadonlyNonNull;
 
         /// <summary>The scalar types the user's code has arrays, spans or memory of: of any type an expression or a declaration of it has.</summary>
         public static HashSet<SpecialType> NamesScalarArrays(Compilation c, IEnumerable<SyntaxTree> userTrees)
@@ -359,7 +361,7 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.ContainingNamespace?.ToDisplayString() == "System" && d.Name is "Func" or "Action" or "Predicate" or "Comparison" or "Converter" &&
             d.DelegateInvokeMethod is IMethodSymbol inv && inv.Parameters.All(p => p.RefKind == RefKind.None && FuncValue(p.Type)) && (inv.ReturnsVoid || FuncValue(inv.ReturnType));
 
-        private static bool FuncValue(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsString(t) || IsToken(t) || IsGivenTask(t);
+        private static bool FuncValue(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsString(t) || IsToken(t) || IsGivenTask(t) || t?.SpecialType == SpecialType.System_Object;
 
         /// <summary>A Func's or an Action's signature, as Boogie's types: its parameters', then its result's (or void).</summary>
         public static string FuncKey(ITypeSymbol t)

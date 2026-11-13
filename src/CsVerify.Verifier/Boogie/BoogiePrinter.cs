@@ -76,6 +76,14 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The scalars of the nullable values it names (int?: Int32).</summary>
         private readonly HashSet<string> _nullables = new HashSet<string>();
 
+        /// <summary>The static readonly fields' values never null (made by new, of a non-nullable type), once each.</summary>
+        public void StaticReadonlyFacts()
+        {
+            foreach (var k in (KernelTypes.StaticReadonlyNonNull ?? new HashSet<int>()).OrderBy(x => x).Where(_staticFacts.Add))
+                Line($"axiom $sfRef({k}) != null;");
+        }
+        private readonly HashSet<int> _staticFacts = new HashSet<int>();
+
         public void Tuples()
         {
 

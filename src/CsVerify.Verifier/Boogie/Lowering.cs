@@ -418,6 +418,7 @@ namespace CsVerify.Verifier.Boogie
             var ids = KernelTypes.StaticReadonlyIds ??= new Dictionary<string, int>();
             var key = f.OriginalDefinition.ToDisplayString();
             if (!ids.TryGetValue(key, out var k)) ids[key] = k = ids.Count;
+            if (kind == "Ref" && IsNullable(f.Type) && NotNullable(f.Type) && StaticStartsWithObject(f)) (KernelTypes.StaticReadonlyNonNull ??= new HashSet<int>()).Add(k);
             return new KOp("$sf" + kind, new KLit(k.ToString()));
         }
 
@@ -513,7 +514,10 @@ namespace CsVerify.Verifier.Boogie
             _ => false,
         };
 
-        private static bool Plain(IOperation o) => Unconverted(o) is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation || o.ConstantValue.HasValue;
+        private static bool Plain(IOperation o) => Unconverted(o) is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation || o.ConstantValue.HasValue ||
+            // (an index of them, i * 2 + 1: arithmetic, which reads nothing else)
+            Unconverted(o) is IBinaryOperation { OperatorMethod: null, OperatorKind: BinaryOperatorKind.Add or BinaryOperatorKind.Subtract or BinaryOperatorKind.Multiply } b &&
+            IsIntegral(b.Type) && Plain(b.LeftOperand) && Plain(b.RightOperand);
 
         private static List<ILocalSymbol> DeconstructedLocals(IOperation target)
         {
@@ -1904,7 +1908,7 @@ namespace CsVerify.Verifier.Boogie
                 case IFlowCaptureReferenceOperation tc when _captured.TryGetValue(tc.Id, out var tv) && SimpleTarget(tv) && !(tv is IDiscardOperation):
                     Assign(tv, value);
                     return;
-                default: throw new NotTranslated("an assignment to " + target.Kind);
+                default: throw new NotTranslated("an assignment to " + target.Kind + " '" + target.Syntax + "'");
             }
         }
 
@@ -6176,6 +6180,9 @@ namespace CsVerify.Verifier.Boogie
                 // (a list of data values: its stubs compare elements as references, which data values aren't)
                 if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(IsData) && callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
                     throw new NotTranslated("a list of data values' " + callee.Name);
+                // (of objects: their own Equals, any type's, which a reference's comparison isn't)
+                if (((INamedTypeSymbol)callee.ContainingType).TypeArguments.Any(a => a.SpecialType == SpecialType.System_Object) && callee.Name is "Contains" or "IndexOf" or "LastIndexOf" or "Remove" or "BinarySearch")
+                    throw new NotTranslated("a list of objects' " + callee.Name);
                 if (_p.UsesPerm) throw new NotTranslated("a list with permissions");
                 _p.LibCalls.Add(callee);
                 foreach (var model in ModelsOf((INamedTypeSymbol)callee.ContainingType)) _p.Models[model.Name] = model;
@@ -6569,6 +6576,8 @@ namespace CsVerify.Verifier.Boogie
                 return ao.OperatorKind == BinaryOperatorKind.Equals ? eqv : new KOp("!", eqv);
             }
             if (DataExpr(e, x => Spec(x, result), (l, v) => _bound[l] = v, inSpec: true) is KExpr data) return data;
+            // (a static readonly field the kernel doesn't have: its value, a constant of the run's, as in code)
+            if (e is IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } sro } && StaticReadonly(sro) is KExpr srov) return srov;
             switch (e)
             {
                 case IDelegateCreationOperation d: return Spec(d.Target, result);
@@ -6629,6 +6638,13 @@ namespace CsVerify.Verifier.Boogie
                     return Spec(conv.Operand, result);
                 case IConversionOperation conv when Upcast(conv):
                     return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Spec(conv.Operand, result);
+                // (an unchecked cast to an integer type that doesn't hold all of the operand's, (uint)n: modulo its size, from its least)
+                case IConversionOperation nc when !nc.IsChecked && nc.OperatorMethod == null && IsIntegral(nc.Type) && IsIntegral(nc.Operand.Type) && nc.Conversion.IsNumeric:
+                {
+                    var (lo, hi) = Range(nc.Type);
+                    var size = Number(hi - lo + 1);
+                    return new KOp("+", new KOp("emod", new KOp("-", Spec(nc.Operand, result), Number(lo)), size), Number(lo));
+                }
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Spec(u.Operand, result));
                 case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Spec(bn.Operand, result), bn.Type);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && _codeArith: return Arith("-", new KLit("0"), Spec(u.Operand, result), u.Type, u.Syntax, u.IsChecked);

@@ -636,6 +636,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.FloatArrays = Boogie.KernelTypes.NamesFloatArrays(compilation);
             Boogie.KernelTypes.ScalarArrays = Boogie.KernelTypes.NamesScalarArrays(compilation, userTrees);
             Boogie.KernelTypes.StaticReadonlyIds = new Dictionary<string, int>();
+            Boogie.KernelTypes.StaticReadonlyNonNull = new HashSet<int>();
             Boogie.KernelTypes.Locks = engine.Locks;
             Boogie.KernelTypes.SteppedBy = m => engine.Atomics.SteppedBy(m).Where(f => Atomics.StepOf(f) != null);
             Boogie.KernelTypes.Started = engine.StartedDelegates;

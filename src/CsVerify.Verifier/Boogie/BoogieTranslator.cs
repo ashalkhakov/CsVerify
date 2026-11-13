@@ -495,6 +495,7 @@ namespace CsVerify.Verifier.Boogie
             }
             _printer.Started.Clear();
             _printer.Tuples();
+            _printer.StaticReadonlyFacts();
             foreach (var p in _pending.Where(p => p.Result != null && p.Warnings.Count > 0))
                 (_warnings.TryGetValue(p.Result, out var w) ? w : _warnings[p.Result] = new List<VerificationDiagnostic>()).AddRange(p.Warnings);
             _pending.Clear();
