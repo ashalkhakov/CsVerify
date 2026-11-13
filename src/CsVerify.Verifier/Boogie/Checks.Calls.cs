@@ -177,47 +177,41 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>old(...) of a procedure's snapshots is of those it had at entry.</summary>
-        private static KExpr OldAtEntry(KExpr e) => e switch
+        private static KExpr OldAtEntry(KExpr e) => MathTerms.Map(e, x => x switch
         {
+            // (also an old(...) in a function's argument: Key(t, Spec.Old(Count(t))))
             KOp { Op: "old" } old => new KOp("old", Subst(old.Args[0], new Dictionary<string, KExpr> { ["psnap"] = new KVar("psnap$entry") })),
-            KOp op => new KOp(op.Op, op.Args.Select(OldAtEntry).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldAtEntry(q.Range), Body = OldAtEntry(q.Body), Trigger = q.Trigger?.Select(t => OldAtEntry(t)).ToArray() },
-            // (an old(...) in a function's argument: Key(t, Spec.Old(Count(t))))
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(OldAtEntry).ToArray(), Snap = f.Snap == null ? null : OldAtEntry(f.Snap) },
-            _ => e,
-        };
+            _ => null,
+        });
 
         /// <summary>A callee's postcondition, in the caller after the call: old(...) of its snapshots is of the caller's before it (and of nothing else, here).</summary>
-        private static KExpr OldBefore(KExpr e, KCallFrame frame) => e switch
+        private static KExpr OldBefore(KExpr e, KCallFrame frame) => MathTerms.Map(e, x => x switch
         {
             KOp { Op: "old" } old => Before(old.Args[0], frame),
-            KOp op => new KOp(op.Op, op.Args.Select(a => OldBefore(a, frame)).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : OldBefore(q.Range, frame), Body = OldBefore(q.Body, frame), Trigger = q.Trigger?.Select(t => OldBefore(t, frame)).ToArray() },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => OldBefore(a, frame)).ToArray(), Snap = f.Snap == null ? null : OldBefore(f.Snap, frame) },
-            _ => e,
-        };
+            _ => null,
+        });
 
         /// <summary>What a callee's old(...) reads, as it was just before the call: the snapshots the frame took then.</summary>
-        private static KExpr Before(KExpr e, KCallFrame frame)
+        private static KExpr Before(KExpr e, KCallFrame frame) => MathTerms.Map(e, x =>
         {
-            switch (e)
+            KExpr[] Args(KFnApp f) => f.Args.Select(a => Before(a, frame)).ToArray();
+            switch (x)
             {
                 case KVar v when v.Name == "psnap": return new KVar($"s{frame.Id}$psnap");
                 case KVar v when v.Name.StartsWith("$"):
                     frame.OldGlobals.Add(v.Name);
                     return new KVar($"s{frame.Id}{v.Name}");
-                case KOp op: return new KOp(op.Op, op.Args.Select(a => Before(a, frame)).ToArray());
-                case KQuant q: return new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Before(q.Range, frame), Body = Before(q.Body, frame), Trigger = q.Trigger?.Select(t => Before(t, frame)).ToArray() };
-                case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Args = f.Args.Select(a => Before(a, frame)).ToArray(), Snap = Before(f.Snap, frame) };
+                // (a function over a predicate: of the snapshot as it was, at no layer and of no maps)
+                case KFnApp f when f.Snap != null: return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Args = Args(f), Snap = Before(f.Snap, frame) };
                 // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
                 case KFnApp f when !f.Plain:
                     foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields)) frame.OldGlobals.Add(map);
-                    return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Before(a, frame)).ToArray(), MapsAt = $"s{frame.Id}" };
+                    return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, Layer = f.Layer, Fields = f.Fields, Args = Args(f), MapsAt = $"s{frame.Id}" };
                 case KFnApp f:
-                    return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = true, Args = f.Args.Select(a => Before(a, frame)).ToArray() };
-                default: return e;
+                    return new KFnApp { Callee = f.Callee, Function = f.Function, Plain = true, Args = Args(f) };
+                default: return null;
             }
-        }
+        });
 
         /// <summary>A call's arguments, each checked, then not null where its parameter may not be (CSV1014).</summary>
         private KExpr[] Arguments(IMethodSymbol callee, KExpr[] given, SyntaxNode[] at)

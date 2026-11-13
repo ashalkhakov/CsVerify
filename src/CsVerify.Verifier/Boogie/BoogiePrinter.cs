@@ -870,26 +870,13 @@ namespace CsVerify.Verifier.Boogie
         /// range for a run-time one, of every value.
         /// </summary>
         /// <summary>Does it read memory, or a procedure's state (a global, a snapshot, a function of the memory)?</summary>
-        private static bool ReadsMemory(KExpr e) => e switch
-        {
-            KVar v => v.Name.StartsWith("$") || v.Name == "psnap",
-            KOp op => op.Op == "old" || op.Args.Any(ReadsMemory),
-            KQuant q => (q.Range != null && ReadsMemory(q.Range)) || ReadsMemory(q.Body),
-            KFnApp _ => true,
-            _ => false,
-        };
+        private static bool ReadsMemory(KExpr e) =>
+            MathTerms.Subterms(e).Any(x => x is KFnApp or KOp { Op: "old" } || x is KVar v && (v.Name.StartsWith("$") || v.Name == "psnap"));
 
         private static IEnumerable<KExpr> Conjuncts(KExpr e) => e is KOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
 
         /// <summary>Does it speak of snapshots (a function over a predicate)?</summary>
-        private static bool Snapshots(KExpr e) => e switch
-        {
-            KFnApp f => f.Snap != null || f.Args.Any(Snapshots),
-            KOp op => op.Args.Any(Snapshots),
-            KQuant q => (q.Range != null && Snapshots(q.Range)) || Snapshots(q.Body),
-            KVar v => v.Name == "psnap",
-            _ => false,
-        };
+        private static bool Snapshots(KExpr e) => MathTerms.Subterms(e).Any(x => x is KFnApp { Snap: not null } or KVar { Name: "psnap" });
 
         /// <summary>
         /// A function over a predicate: of the instance's snapshot and its arguments, its value what folding and unfolding

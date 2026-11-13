@@ -82,7 +82,8 @@ namespace CsVerify.Verifier.Boogie
             return body != null && Atoms(body).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred, seen));
         }
 
-        private static IEnumerable<KExpr> Atoms(KExpr e) => e switch
+        /// <summary>A permission assertion's permissions: its atoms, through its operators (not into a quantifier).</summary>
+        internal static IEnumerable<KExpr> Atoms(KExpr e) => e switch
         {
             KCells _ or KAcc _ or KInst _ or KFieldAcc _ => new[] { e },
             KOp op => op.Args.SelectMany(Atoms),

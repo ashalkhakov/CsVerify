@@ -229,7 +229,7 @@ namespace CsVerify.Verifier.Boogie
                 if (f.IsStatic && IsFunction(f) && ContractOf(f).Requires.Any(Lowering.HasAtoms))
                 {
                     var sig = ((IProgramFacts)this).Signature(f);
-                    var atoms = sig.Requires.SelectMany(r => AtomsOf(r.Expr)).ToList();
+                    var atoms = sig.Requires.SelectMany(r => Checks.Atoms(r.Expr)).ToList();
                     if (atoms.Count == 1 && atoms[0] is KInst q && q.Args.All(a => a is KVar))
                     {
                         var names = q.Args.Select(a => ((KVar)a).Name).ToList();
@@ -244,13 +244,6 @@ namespace CsVerify.Verifier.Boogie
             catch (NotTranslated) { _over[f] = null; throw; }
             return _over[f] = over;
         }
-
-        private static IEnumerable<KExpr> AtomsOf(KExpr e) => e switch
-        {
-            KCells _ or KAcc _ or KInst _ or KFieldAcc _ => new[] { e },
-            KOp op => op.Args.SelectMany(AtomsOf),
-            _ => Enumerable.Empty<KExpr>(),
-        };
 
         public IEnumerable<IMethodSymbol> FunctionsOver(IMethodSymbol pred)
         {
@@ -375,7 +368,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate))
                 if (OverPredicate(p.Method) != null) _printer.FunctionOverPredicate(p);
                 else _printer.Function(p, FunctionFields(p.Method), fields,
-                                       ((IProgramFacts)this).Signature(p.Method).Requires.SelectMany(r => AtomsOf(r.Expr)).Any(a => a is KInst));
+                                       ((IProgramFacts)this).Signature(p.Method).Requires.SelectMany(r => Checks.Atoms(r.Expr)).Any(a => a is KInst));
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
             foreach (var p in _pending.Where(p => IsFunction(p.Method) && !p.IsPredicate && OverPredicate(p.Method) == null && p.Method.IsOverride))
                 for (var b = p.Method.OverriddenMethod?.OriginalDefinition; b != null; b = b.OverriddenMethod?.OriginalDefinition)

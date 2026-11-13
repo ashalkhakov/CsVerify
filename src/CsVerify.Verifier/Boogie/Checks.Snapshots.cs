@@ -36,22 +36,15 @@ namespace CsVerify.Verifier.Boogie
             var sig = _program.Signature(pred);
             if (sig.FunctionBody == null) return;
             var snap = new KOp("$sst", new KOp("sel", new KVar("psnap"), Instance(pred, args)));
-            KExpr In(KExpr e) => e switch
+            KExpr In(KExpr e) => MathTerms.Map(e, x => x switch
             {
                 KVar v when v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.") => new KOp("$st." + v.Name, snap),
-                KOp op => new KOp(op.Op, op.Args.Select(In).ToArray()),
-                KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : In(q.Range), Body = In(q.Body), Trigger = q.Trigger?.Select(t => In(t)).ToArray() },
-                _ => e,
-            };
-            bool Plain(KExpr e) => e switch
-            {
-                KFnApp f => f.Plain && f.Args.All(Plain),
-                KOp { Op: "old" } => false,
-                KVar v => v.Name != "psnap",
-                KOp op => op.Args.All(Plain),
-                KQuant q => (q.Range == null || Plain(q.Range)) && Plain(q.Body),
-                _ => true,
-            };
+                // (not into a function's arguments: a map read there stays the memory's now. TODO: of the snapshot too?)
+                KFnApp => x,
+                _ => null,
+            });
+            // (of no memory now, no old(...), no other snapshot)
+            bool Plain(KExpr e) => MathTerms.Subterms(e).All(x => x is not (KFnApp { Plain: false } or KOp { Op: "old" } or KVar { Name: "psnap" }));
             var given = pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
             var facts = new List<(KExpr g, KExpr f)>();
             var saved = _old;

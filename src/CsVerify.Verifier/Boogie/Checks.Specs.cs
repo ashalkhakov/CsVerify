@@ -48,14 +48,7 @@ namespace CsVerify.Verifier.Boogie
             return objects.Select(o => (KExpr)new KOp("set.of", o)).Aggregate((a, b) => new KOp("set.union", a, b));
         }
 
-        private static bool Mentions(KExpr e, HashSet<string> vars) => e switch
-        {
-            KVar v => vars.Contains(v.Name),
-            KOp op => op.Args.Any(a => Mentions(a, vars)),
-            KQuant q => Mentions(q.Range, vars) || Mentions(q.Body, vars),
-            KFnApp f => f.Args.Any(a => Mentions(a, vars)) || f.Snap != null && Mentions(f.Snap, vars),
-            _ => false,
-        };
+        private static bool Mentions(KExpr e, HashSet<string> vars) => MathTerms.Subterms(e).Any(x => x is KVar v && vars.Contains(v.Name));
 
         /// <summary>A specification's well-definedness, asserted (CSV1012) where it is evaluated, under what holds before it.</summary>
         private void WellDefined(List<KExpr> wf, SyntaxNode at, List<KExpr> before)
@@ -390,13 +383,6 @@ namespace CsVerify.Verifier.Boogie
         internal static KExpr Rename(KExpr e, Dictionary<string, KExpr> given) => Subst(e, given);
 
         /// <summary>Parameters given values (mathematics in, mathematics out).</summary>
-        private static KExpr Subst(KExpr e, Dictionary<string, KExpr> given) => e switch
-        {
-            KVar v when given.TryGetValue(v.Name, out var x) => x,
-            KOp op => new KOp(op.Op, op.Args.Select(a => Subst(a, given)).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : Subst(q.Range, given), Body = Subst(q.Body, given), Trigger = q.Trigger?.Select(t => Subst(t, given)).ToArray() },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(a => Subst(a, given)).ToArray(), Snap = f.Snap == null ? null : Subst(f.Snap, given) },
-            _ => e,
-        };
+        private static KExpr Subst(KExpr e, Dictionary<string, KExpr> given) => MathTerms.Map(e, x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null);
     }
 }

@@ -31,12 +31,7 @@ namespace CsVerify.Verifier.Boogie
         private static KExpr Implies(KExpr g, KExpr c) => g is KLit { Text: "true" } ? c : new KOp("==>", g, c);
         private static KExpr Conj(KExpr a, KExpr b) => a is KLit { Text: "true" } ? b : b is KLit { Text: "true" } ? a : new KOp("&&", a, b);
 
-        private static bool HasAtoms(KExpr e) => e switch
-        {
-            KAcc _ => true, KInst _ => true, KCells _ => true, KFieldAcc _ => true,
-            KOp op => op.Args.Any(HasAtoms),
-            _ => false,
-        };
+        private static bool HasAtoms(KExpr e) => Atoms(e).Any();
 
         /// <summary>
         /// Walks a permission assertion left to right: &amp;&amp; and the branches of ?: are

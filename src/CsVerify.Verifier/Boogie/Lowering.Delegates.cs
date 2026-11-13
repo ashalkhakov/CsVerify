@@ -270,7 +270,9 @@ namespace CsVerify.Verifier.Boogie
                 var given = own.OfType<IParameterSymbol>().Where(p => !SymbolEqualityComparer.Default.Equals(p, result)).ToDictionary(p => Local(p), p => (KExpr)new KVar("q$" + p.Ordinal));
                 given["result"] = new KVar("r$");
                 if (receiver != null) given["this"] = receiver;
-                return Checks.Rename(Spec(op, result), given);
+                // (a contract of code's reads, an element or a call, isn't compared: its well-definedness is Checks')
+                var spec = Spec(op, result);
+                return MathTerms.IsMath(spec) ? Checks.Rename(spec, given) : null;
             }
             KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)new KLit("true"), (a, b) => new KOp("&&", a, b));
             var dPre = dc.Requires.Select(r => Of(r, null)).ToList();

@@ -376,14 +376,11 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A postcondition at a return: of the parameters the body assigns, their values now (in old(...), at entry).</summary>
-        private KExpr AtReturn(KExpr e) => _p.AssignedParams.Count == 0 ? e : e switch
+        private KExpr AtReturn(KExpr e) => _p.AssignedParams.Count == 0 ? e : MathTerms.Map(e, x => x switch
         {
-            KOp { Op: "old" } => e,
+            KOp { Op: "old" } => x,
             KVar v when _p.AssignedParams.TryGetValue(v.Name, out var now) => new KVar(now),
-            KOp op => new KOp(op.Op, op.Args.Select(AtReturn).ToArray()),
-            KQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = q.Range == null ? null : AtReturn(q.Range), Body = AtReturn(q.Body), Trigger = q.Trigger?.Select(t => AtReturn(t)).ToArray() },
-            KFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(AtReturn).ToArray(), Snap = f.Snap == null ? null : AtReturn(f.Snap) },
-            _ => e,
-        };
+            _ => null,
+        });
     }
 }
