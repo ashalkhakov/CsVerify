@@ -301,8 +301,7 @@ namespace CsVerify.Verifier.Boogie
         private void Run()
         {
             if (_p.IsPredicate) { RunPredicate(); return; }
-            var m = _p.Method;
-            // (what the contract gives and takes: its permissions, read from the specifications as written)
+            var m = _p.Method;            // (what the contract gives and takes: its permissions, read from the specifications as written)
             _rawRequires = _p.Requires.Select(r => r.Expr).ToList();
             _rawEnsures = _p.Ensures.Select(e => e.Expr).ToList();
             _rawInvariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => (i.Expr, i.At)).ToList());
@@ -319,19 +318,7 @@ namespace CsVerify.Verifier.Boogie
                 _p.Locals.Add(new KLocal { Name = "w$entry", Raw = "[Ref]bool" });
                 _p.Locals.Add(new KLocal { Name = "alloc$entry", Raw = "[Ref]bool" });
             }
-            // cells: a method whose contract names some holds none but those it gets (it is in array mode); one that
-            // exchanges some (a call, a fold) keeps them; any other holds every cell, which nothing then changes
-            if (_program.UsesPermissions)
-            {
-                var stmts = _p.Blocks.SelectMany(b => b.Stmts).ToList();
-                bool foldsCells = stmts.OfType<KFold>().Any(f => PredicateHasCells(f.Inst.Pred));
-                bool callsCells(Func<KProcedure, IEnumerable<KExpr>> specs) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
-                _p.ArrayMode = _p.MemViews || NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
-                               callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(Atoms).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
-                _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
-                if (_p.UsesCells) _p.UsesPerm = true;
-            }
-            _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
+            DecideCellModes();
             // the contract as mathematics (each with what makes it well-defined)
             var requires = _p.Requires.Select(r => (spec: r, math: Spec(r.Expr, out var wf), wf, facts: Take())).ToList();
             var ensures = _p.Ensures.Select(e => (spec: e, math: OldAtEntry(Spec(e.Expr, out var wf)), wf: wf.Select(OldAtEntry).ToList(), facts: Take().Select(OldAtEntry).ToList())).ToList();
@@ -1691,6 +1678,26 @@ namespace CsVerify.Verifier.Boogie
             var body = _program.Signature(pred).FunctionBody;
             IEnumerable<KExpr> Conjuncts(KExpr e) => e is KOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
             return body != null && Conjuncts(body).Any(c => c is KAcc);
+        }
+
+        /// <summary>
+        /// The cell modes, decided from the lowered body and its callees' signatures before anything reads them. A method
+        /// whose contract names cells holds none but those it gets (array mode); one that exchanges some (a call, a fold)
+        /// keeps them; any other holds every cell, which nothing then changes.
+        /// </summary>
+        private void DecideCellModes()
+        {
+            if (_program.UsesPermissions)
+            {
+                var stmts = _p.Blocks.SelectMany(b => b.Stmts).ToList();
+                bool foldsCells = stmts.OfType<KFold>().Any(f => PredicateHasCells(f.Inst.Pred));
+                bool callsCells(Func<KProcedure, IEnumerable<KExpr>> specs) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
+                _p.ArrayMode = _p.MemViews || NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
+                               callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(Atoms).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
+                _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
+                if (_p.UsesCells) _p.UsesPerm = true;
+            }
+            _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
         }
 
         private bool PredicateHasCells(IMethodSymbol pred, HashSet<IMethodSymbol> seen = null)

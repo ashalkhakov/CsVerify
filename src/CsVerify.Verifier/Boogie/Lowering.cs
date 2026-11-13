@@ -50,7 +50,8 @@ namespace CsVerify.Verifier.Boogie
             };
             // (a constructor knows its object's fields are their defaults: their maps are declared)
             if (_p.IsCtor) foreach (var f in InstanceFields(m.ContainingType)) _p.Fields.Add(f);
-            _p.UsesPerm = _p.ThisIsView || m.Parameters.Any(x => IsView(x.Type) || IsShare(x.Type) || IsPackage(x.Type));
+            // (of its contract; Run decides again with its body)
+            DecideModes(null);
         }
 
         public static KProcedure Lower(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result,
@@ -694,13 +695,11 @@ namespace CsVerify.Verifier.Boogie
             var decl = l._m.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
             foreach (var p in l._m.Parameters.Where(x => IsMemView(x.Type)))
             {
-                l._p.MemViews = true;
                 if (p.RefKind != RefKind.Out) foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl)) l._p.Requires.Add(new KSpec { Expr = c, At = decl });
                 if (p.RefKind != RefKind.None) foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl)) l._p.Ensures.Add(new KSpec { Expr = c, At = decl });
             }
             if (Returns(l._m) is ITypeSymbol rt && IsMemView(rt))
             {
-                l._p.MemViews = true;
                 foreach (var c in MemCells(new KVar("result"), rt, decl)) l._p.Ensures.Add(new KSpec { Expr = c, At = decl });
             }
             if (contract.Reads != null) l._p.ReadsFrame = l.Spec(contract.Reads, null);
@@ -836,8 +835,6 @@ namespace CsVerify.Verifier.Boogie
                 _p.Frame = Spec(_contract.Modifies, null);
                 LentRoots(_contract.Modifies);
             }
-            // (Viper's functions over predicates read their footprint: not yet)
-            _p.UsesPerm |= _contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr));
             ContractOf(this, _contract);
             LibraryCalls();
             if (KernelTypes.Trees && !_m.IsStatic && SpecSymbols.IsOwned(_m.ContainingType) && _contract.Reads == null && (_contract.IsPure || _isFunction(_m))) _p.TreeReads = true;
@@ -873,6 +870,7 @@ namespace CsVerify.Verifier.Boogie
                 IBlockOperation block => ControlFlowGraph.Create(block),
                 _ => throw new NotTranslated("no body"),
             };
+            DecideModes(cfg);
             // (foreach over an array or a string: a loop over an index, its enumerator's try/finally gone)
             ForEachLoops(cfg);
             // (try and catch: each catch of an exception type the kernel has, with its filter or not; finally)
@@ -1696,7 +1694,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var fields = KernelTypes.Data.Fields((INamedTypeSymbol)dc.Value.Type);
                     if (fields.Count != parts.Count) throw new NotTranslated("a deconstruction of another shape");
-                    if (IsPackage(dc.Value.Type)) { CheckPackage(dc.Value.Type); _p.UsesPerm = true; }
+                    if (IsPackage(dc.Value.Type)) CheckPackage(dc.Value.Type);
                     Data(dc.Value.Type);
                     var whole = Declare("t$" + _temps++, dc.Value.Type);
                     Emit(new KAssign { Var = whole, Value = Expr(dc.Value) });
@@ -1722,7 +1720,6 @@ namespace CsVerify.Verifier.Boogie
                         {
                             var whole = SpecArgument(inv);
                             if (!(Spec(whole, null) is KInst instance)) throw new NotTranslated("Spec." + inv.TargetMethod.Name + " of what isn't a predicate instance");
-                            _p.UsesPerm = true;
                             Emit(new KFold { Inst = instance, Unfold = inv.TargetMethod.Name == "Unfold", At = inv.Syntax, InstAt = whole.Syntax });
                             return;
                         }
@@ -2020,7 +2017,6 @@ namespace CsVerify.Verifier.Boogie
                 case IFieldReferenceOperation _: case IPropertyReferenceOperation _:
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(target);
-                    if (IsOwnedField(field)) _p.UsesPerm = true;
                     if (SpecSymbols.IsOwnsField(field))
                         Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1016", At = target.Syntax, NotAssumedAfter = true,
                                           Message = $"'{target.Syntax}': an [Owns] field changes hands only through Own.Take and Own.Give" });
@@ -2033,7 +2029,6 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IArrayElementReferenceOperation me when IsMultiArray(me.ArrayReference.Type) && me.Indices.Length == ((IArrayTypeSymbol)me.ArrayReference.Type).Rank:
                 {
-                    if (_p.UsesCells) throw new NotTranslated("a rectangular array under permissions");
                     var v = Operands(new[] { me.ArrayReference }.Concat(me.Indices).ToArray());
                     var ix = v.Skip(1).ToList();
                     MultiIndices(v[0], ix, me.Syntax, null, inSpec: false);
@@ -2706,7 +2701,7 @@ namespace CsVerify.Verifier.Boogie
         private void HeldCell(KExpr array, SyntaxNode at, bool write)
         {
             // (under cell permissions, they say: checked as any cell is, CSV1016)
-            if (!Concurrent && Running() == null || InSpec(at) || _p.UsesPerm || _p.UsesCells || _p.ArrayMode) return;
+            if (!Concurrent && Running() == null || InSpec(at) || _p.UsesPerm) return;
             Emit(new KCheck { Cond = Alongside(InHand(array)), Id = "CSV1027", At = at, NotAssumedAfter = true,
                               Message = write ? $"'{at}' writes an array this code has no Spec.Acc for, and it runs alongside other code that could be using it"
                                               : $"'{at}' reads an array this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it" });
@@ -3914,7 +3909,6 @@ namespace CsVerify.Verifier.Boogie
                     if (!inSpec && IsPackage(oc.Type))
                     {
                         CheckPackage(oc.Type);
-                        _p.UsesPerm = true;
                         for (int k = 0; k < ordered.Count; k++)
                             if (IsView(def.Parameters[ordered[k].Parameter.Ordinal].Type))
                                 Emit(new KOwn { Kind = "pack", Obj = values[k], Type = ViewOf(ordered[k].Parameter.Type), Into = oc.Type, At = ordered[k].Value.Syntax });
@@ -4653,7 +4647,6 @@ namespace CsVerify.Verifier.Boogie
             if (!offset && !(SpecSymbols.IsCsVerifyType(m.ContainingType, "Mem") && m.IsGenericMethod)) return false;
             var elem = offset ? ((INamedTypeSymbol)m.ContainingType).TypeArguments[0] : m.TypeArguments[0];
             if (!Scalar(elem)) throw new NotTranslated("memory of " + elem);
-            _p.MemViews = true;
             var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var named = args.ToDictionary(a => a.Parameter.Name, a => a);
             var at = call.Syntax;
@@ -5375,7 +5368,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // ((T[])a.Clone(): a new array of a's length, its elements a's)
                 case IConversionOperation { Operand: IInvocationOperation { TargetMethod.Name: "Clone", Arguments.Length: 0, Instance: { } ci } } cc
-                    when IsArray(cc.Type) && IsArray(ci.Type) && SymbolEqualityComparer.Default.Equals(cc.Type, ci.Type) && !_p.UsesCells && !_p.MemViews:
+                    when IsArray(cc.Type) && IsArray(ci.Type) && SymbolEqualityComparer.Default.Equals(cc.Type, ci.Type) && !_p.MemViews:
                 {
                     var src = Expr(ci);
                     Emit(new KCheck { Cond = new KOp("!=", src, new KLit("null")), Id = "CSV1013", At = ci.Syntax, Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'" });
@@ -6020,7 +6013,7 @@ namespace CsVerify.Verifier.Boogie
             }
             // (Array.Fill(a, v), as its stub has it: a's elements all v, and nothing else changed)
             if (callee.ContainingType?.ToDisplayString() == "System.Array" && callee.Name == "Fill" && call.Arguments.Length == 2 &&
-                call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value is var fa && IsArray(fa.Type) && !_p.UsesCells && !_p.MemViews)
+                call.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value is var fa && IsArray(fa.Type) && !_p.MemViews)
             {
                 var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
                 var v = Operands(ordered[0].Value, ordered[1].Value);
@@ -6035,7 +6028,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$f", Body = new KOp("==", new KOp("sel", new KVar(row), new KVar("i$f")), v[1]) }, Assume = true, Free = true, At = call.Syntax, ArgumentAt = call.Syntax });
                 return null;
             }
-            if (callee.ContainingType?.ToDisplayString() == "System.Array" && !_p.UsesCells && !_p.MemViews && ArrayHelper(call) is var (helped, hv) && helped) return hv;
+            if (callee.ContainingType?.ToDisplayString() == "System.Array" && !_p.MemViews && ArrayHelper(call) is var (helped, hv) && helped) return hv;
             if (!_isProcedure(callee) && LibraryCall(call) is var (handled, lib) && handled) return lib;
             // (as called: a generic one's instantiation boxes its arguments and unboxes its result)
             return Invoke(call.TargetMethod, call.Instance, call.Arguments, call.Syntax, null);
@@ -6468,10 +6461,6 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Invoke(IMethodSymbol callee, IOperation instance, IReadOnlyList<IArgumentOperation> arguments, SyntaxNode at, KExpr value)
         {
-            // (a callee that borrows a tree through Spec.Modifies: its root's view must be in hand here, as permissions say)
-            if (_contractOf?.Invoke(callee.OriginalDefinition) is Contract lc && lc.Modifies != null &&
-                lc.Modifies.DescendantsAndSelf().OfType<IInvocationOperation>().Any(t => SpecSymbols.IsCsVerifyType(t.TargetMethod.ContainingType, "Own") && t.TargetMethod.Name == "Tree"))
-                _p.UsesPerm = true;
             var outer = _cause;
             _cause = CallCause(callee) ?? outer;
             try { return InvokeCore(callee, instance, arguments, at, value); }
@@ -6604,8 +6593,6 @@ namespace CsVerify.Verifier.Boogie
                 args = args.Concat(localCaptures).ToArray();
                 argsAt = argsAt.Concat(localCaptures.Select(_ => at)).ToArray();
             }
-            if (refOuts.Any()) _p.UsesPerm |= ordered.Any(a => IsView(a.Parameter.Type));
-            if (ordered.Any(a => IsView(a.Parameter.Type) || IsShare(a.Parameter.Type) || IsPackage(a.Parameter.Type)) || IsPackage(Returns(callee)) || IsOwnedClass(callee.ContainingType) && !callee.IsStatic) _p.UsesPerm = true;
             var gives = Returns(constructed);
             var result = listCtor ? Declare("t$" + _temps++, callee.ContainingType) : gives == null ? null : Declare("t$" + _temps++, !list && Returns(callee.OriginalDefinition) is ITypeParameterSymbol tp ? tp : gives);
             // (where exceptions are seen, a call of what may throw (not a proof) throws, or returns)
@@ -6835,7 +6822,6 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Own.New(new C(...), out view): a view of the new object; Own.Drop(view). The rest of Own isn't translated yet.</summary>
         private KExpr Own(IInvocationOperation own)
         {
-            _p.UsesPerm = true;
             switch (own.TargetMethod.Name)
             {
                 // (of an object not made here: its fields may be anyone's, so no view of it, CSV1016)
@@ -7224,7 +7210,6 @@ namespace CsVerify.Verifier.Boogie
                                                    acc.Arguments.Length == 1 && IsOwnedClass(Unconverted(acc.Arguments[0].Value).Type):
                 {
                     var target = Unconverted(acc.Arguments[0].Value);
-                    _p.UsesPerm = true;
                     return new KAcc { Obj = Spec(target, result), Type = target.Type, At = acc.Syntax };
                 }
                 case IInvocationOperation fa when SpecSymbols.IsSpecClass(fa.TargetMethod.ContainingType) && fa.TargetMethod.Name == "Acc" &&
@@ -7246,11 +7231,9 @@ namespace CsVerify.Verifier.Boogie
                             _p.Warnings.Add(new VerificationDiagnostic("CSV1016", true, $"Spec.Acc of a single field: {why}", span));
                         return new KLit("true");
                     }
-                    _p.UsesPerm = true;
                     return new KFieldAcc { Obj = Spec(target, result), Field = field, Type = target.Type, At = fa.Syntax };
                 }
                 case IInvocationOperation pc when SpecSymbols.IsPredicate(pc.TargetMethod.OriginalDefinition) && pc.TargetMethod.IsStatic:
-                    _p.UsesPerm = true;
                     _p.Preds.Add(pc.TargetMethod.OriginalDefinition);
                     return new KInst { Pred = pc.TargetMethod.OriginalDefinition, Args = pc.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray(), At = pc.Syntax };
                 case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
@@ -7330,7 +7313,6 @@ namespace CsVerify.Verifier.Boogie
                         case "Acc" or "AccRead" when IsArray(Unconverted(inv.Arguments[0].Value).Type) && inv.Arguments.Length is 1 or 3:
                         {
                             var arr = Spec(Unconverted(inv.Arguments[0].Value), result);
-                            _p.UsesPerm = true;
                             return new KCells
                             {
                                 Arr = arr, Read = inv.TargetMethod.Name == "AccRead", At = inv.Syntax,
