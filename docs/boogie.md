@@ -833,8 +833,11 @@ a reference of one of three kinds: an array (`$arr`), a modeled collection (`$co
 `if $arr(x) then len(x) else if $coll(x) then Size[x] else $ocount(x, $st(...))`, and `x[i]` the array's cell, the
 list's `Items`, or `$oitem(x, i, $st(...))`: a value of the whole state, so the same until something changes (an
 `l.Clear()` of a list that `x` may be changes `x.Count`). Where the program implements one of
-these interfaces itself, each read through them is a new unknown. `x[i]` checks `0 <= i < Count` (CSV1003). Writes and
-other members through the interfaces, and `foreach` over them, aren't translated yet.
+these interfaces itself, each read through them is a new unknown. `x[i]` checks `0 <= i < Count` (CSV1003). Writes
+through `IList`/`ICollection` (`Add`, `Insert`, `Remove`, `RemoveAt`, `Clear`, `x[i] = v`) branch on the three kinds: an
+array's throw `NotSupportedException` (its indexer writes its cell), a `List`'s are its stub's, anything else's are
+library calls that may change anything. Other members (`Contains`, `IndexOf`) and `foreach` over them are library
+calls: values not known.
 
 **Multisets.** A `Bag` is an `[int]int` map from value to count: `Bag.Empty` (`$bag.empty`), `Bag.Of(x)`, `Add`
 (`$badd`), `Union` (`$bunion`), `Count(x)` (a read), `Contains(x)` (`0 <` its count), `==`. `Spec.Multiset(a, n)` of an
@@ -1155,8 +1158,10 @@ Also classes of the program that derive from a library class (`Collection<T>`, i
 of the library's members on such an object may run them, so it forgets everything) or implement the library's
 collection interfaces (read through them, they're unknown at each read).
 
-Not yet (such a method is not verified, CSV1902, with why): iterators (`yield`), explicit interface implementations,
-and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
+Explicit interface implementations (`int ICounter.Next()`) are procedures like any other, held to the interface's
+contract.
+
+Not yet (such a method is not verified, CSV1902, with why): iterators (`yield`), and what the sweep's trace lists for a program (`CSVERIFY_TRACE_FILE`).
 
 A filter (`Where`; and `Distinct`, `GroupBy`, `Union`, `Intersect`, `Except`, `DistinctBy` over each first
 occurrence) is a count, `c[j + 1] == c[j] + (keep(j) ? 1 : 0)`, and the indices of its matches, `ix`, increasing:

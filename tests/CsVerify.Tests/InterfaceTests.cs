@@ -114,5 +114,35 @@ public static class P
 }");
             Assert.True(r.Success, string.Join("\n", r.Diagnostics));
         }
+
+        [Fact]
+        public void ExplicitImplementations_KeepTheInterfacesContract()
+        {
+            var r = Harness.Verify(@"
+public interface ICounter { int Next(); }
+[ContractClassFor(typeof(ICounter))]
+internal abstract class CounterContract : ICounter { public int Next() { Spec.Ensures<int>(r => r > 0); return default; } }
+public class One : ICounter { int ICounter.Next() { return 1; } }
+public class Zero : ICounter { int ICounter.Next() { return 0; } }
+public static class P { public static int Ask(ICounter c) { Spec.Ensures<int>(r => r > 0); return c.Next(); } }");
+            Assert.Empty(r.Errors("One.ICounter.Next"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Zero.ICounter.Next"));
+            Assert.Empty(r.Errors("P.Ask"));
+        }
+
+        [Fact]
+        public void OtherMembersAndForeach_ThroughTheInterfaces()
+        {
+            var r = Harness.Verify(Common + @"
+public static class P
+{
+    public static bool Has(ICollection<int> l) { Spec.Requires(l != null); return l.Contains(3); }
+    public static int Last(IList<int> l) { Spec.Requires(l != null); int s = 0; foreach (var x in l) { s = x; } return s; }
+    public static void Guess(IList<int> l) { Spec.Requires(l != null); foreach (var x in l) { Spec.Assert(x == 5); } }
+}");
+            Assert.Empty(r.Errors("P.Has"));
+            Assert.Empty(r.Errors("P.Last"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Guess"));
+        }
     }
 }
