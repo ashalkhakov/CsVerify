@@ -960,7 +960,7 @@ namespace CsVerify.Verifier.Boogie
             if (c.ThrowsTo != null)
                 Emit(new KFork { Call = new KCall { Callee = callee, Receiver = receiver, Args = args, RefOuts = c.RefOuts }, Target = c.ThrowsTo });
             if (frame != null) Emit(frame);
-            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, At = c.At, ArgsAt = c.ArgsAt,
+            Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, ThisOut = c.ThisOut, At = c.At, ArgsAt = c.ArgsAt,
                              RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
             AfterCall(c, callee, receiver, given, frame, sig, pure, ownedReceiver);
         }
@@ -1000,6 +1000,7 @@ namespace CsVerify.Verifier.Boogie
                 // and those its postconditions give back are in hand (its result and ref and out arguments, as they came back)
                 var back = new Dictionary<string, KExpr>(given);
                 if (c.Result != null) back["result"] = new KVar(c.Result);
+                if (c.ThisOut != null) back["this"] = new KVar(c.ThisOut);
                 foreach (var (ordinal, var) in c.RefOuts) back[Local(callee.Parameters[ordinal])] = new KVar(var);
                 _old = x => OldBefore(x, frame);
                 try { if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null); }

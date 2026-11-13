@@ -460,8 +460,10 @@ reads one; `p.X = v` (of a local, a `ref` parameter, an array's cell, an object 
 others and `v` and writes it where `p` is (a struct in a class's field written in place is
 refused, CSV1901), so a copy is a copy. `default(S)`, `new S()` and a new array's cells are the default value; a
 constructor is a procedure giving the value it makes (`returns (this: Ref)`, the default to begin with). A member
-that reads `this` is a procedure of it, a value never null; one that writes it isn't translated
-(CSV1902).
+that reads `this` is a procedure of it, a value never null. One that writes it (a member, `this` itself, or by calling
+such a method on it) has `this` by reference, as C# does: in as `this$in`, out as `this`, `Spec.Old` of the value
+in; a call writes the value out back to the receiver (a local, a parameter, an array's cell, a struct's member). A
+struct value's integer fields are in their types' ranges.
 
 **Enums.** An enum is an integer of its underlying type (any value of it, not only the named ones); conversions to
 and from integers are the integers'. A switch expression no arm of which matches throws

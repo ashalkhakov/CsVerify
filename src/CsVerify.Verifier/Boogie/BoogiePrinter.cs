@@ -991,14 +991,17 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = p.Method;
             var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
+            if (p.StructRefThis) ins.Add("this");
             var cx = new Context { Ins = ins };
             var atEntry = new Context { Ins = ins, AtEntry = true };
-            // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out)
-            var ps = string.Join(", ", (p.HasThis ? new[] { "this: Ref" } : new string[0])
+            // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out; a struct's this that its
+            // method writes, too)
+            var ps = string.Join(", ", (p.HasThis ? new[] { p.StructRefThis ? "this$in: Ref" : "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}"))
                 // (what a lambda or a local function captures: inputs of its own)
                 .Concat(p.Captured.Select(c => $"{c.input}: {TypeOf(c.type)}")));
-            var outs = (p.ListCtor ? new[] { "result: Ref" } : p.StructThis ? new[] { "this: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
+            var outs = (p.ListCtor ? new[] { "result: Ref" } : p.StructThis && !p.StructRefThis ? new[] { "this: Ref" } : Returns(m) == null ? new string[0] : new[] { $"result: {TypeOf(Returns(m))}" })
+                .Concat(p.StructRefThis ? new[] { "this: Ref" } : new string[0])
                 .Concat(m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out).Select(x => $"{Local(x)}: {TypeOf(x.Type)}")).ToList();
             var ret = outs.Count == 0 ? "" : $" returns ({string.Join(", ", outs)})";
             // (an abstract member's: a declaration, its specifications after it, no body)
@@ -1043,9 +1046,11 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free ensures {InRangeOfMemory};");
             foreach (var l in StepsKept(modifies, true)) Line("  " + l);
             Given(p, atEntry);
+            if (p.StructRefThis) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free ensures {fact};");
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
                 if (IsIntegral(x.Type)) Line($"  free ensures {E(InRange(new KVar(Local(x)), x.Type), cx)};");
+                if (IsStruct(x.Type)) foreach (var fact in ValueFacts(Local(x), x.Type, null, cx)) Line($"  free ensures {fact};");
                 if (IsRef(x.Type)) Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
                 if (IsData(x.Type) && x.Type.IsValueType) Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
                 // (a library member's, as its nullability says: [MaybeNullWhen(b)] not null where it returns !b)
@@ -1187,6 +1192,7 @@ namespace CsVerify.Verifier.Boogie
             Line($"  free requires {InRangeOfMemory};");
             if (p.HasThis && p.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
             if (p.HasThis && !IsStruct(m.ContainingType)) Line(IsData(m.ContainingType) ? $"  free requires {E(IsCase(new KVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
+            if (p.HasThis && IsStruct(m.ContainingType)) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free requires {fact};");
             // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap)
             foreach (var f in RefFieldsOf(p)) Line($"  free requires {GoodField(f)};");
             foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees)) Line($"  free requires {TreeField(f)};");
@@ -1209,6 +1215,10 @@ namespace CsVerify.Verifier.Boogie
         {
             var name = E(new KVar(local), cx);
             if (IsIntegral(type)) yield return E(InRange(new KVar(local), type), cx);
+            // (a struct's integer fields: each in its type's range)
+            if (IsStruct(type))
+                foreach (var (f, k) in StructFields(type).Select((f, k) => (f, k)).Where(x => IsIntegral(x.f.Type)))
+                    yield return E(InRange(TupleItem(new KVar(local), type, k), f.Type), cx);
             // (a span from elsewhere: its cells some array's, within its length)
             if (IsSpan(type)) yield return $"$sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}))";
             if (IsRef(type) || IsView(type) || IsShare(type)) yield return $"{name} == null || $Alloc[{name}]";
@@ -1430,7 +1440,8 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 case KCall c:
                 {
-                    var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();
+                    var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.ThisOut == null ? new string[0] : new[] { c.ThisOut })
+                        .Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();
                     var given = c.Args.Where((a, k) => k >= c.Callee.Parameters.Length || c.Callee.Parameters[k].RefKind != RefKind.Out);
                     if (c.Phase == 2) Started.Add(c.Callee);
                     Line($"    call {(targets.Count == 0 ? "" : string.Join(", ", targets) + " := ")}{Name(c.Callee)}{(c.Phase == 2 ? "$started" : "")}({string.Join(", ", (c.Receiver == null ? given : new[] { c.Receiver }.Concat(given)).Select(a => E(a, cx)))});", c.Check);

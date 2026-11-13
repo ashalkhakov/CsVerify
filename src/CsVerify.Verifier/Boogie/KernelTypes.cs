@@ -173,6 +173,51 @@ namespace CsVerify.Verifier.Boogie
         /// instance fields (an auto-property's backing field too) its elements, in declaration order. A member written
         /// makes a new value of the others and it.
         /// </summary>
+        /// <summary>
+        /// A struct's method (not readonly) that writes this: a member of it, this itself, or by a call of such a method on
+        /// it. Its this is a ref parameter, as C# has it.
+        /// </summary>
+        public static bool WritesStructThis(IMethodSymbol m)
+        {
+            m = m.OriginalDefinition;
+            if (m.IsStatic || m.IsReadOnly || !(m.MethodKind is MethodKind.Ordinary or MethodKind.PropertySet) || !IsStruct(m.ContainingType) || Compilation == null) return false;
+            _writesThisSeen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            if (!_writesThisSeen.Add(m)) return false;
+            try
+            {
+                foreach (var r in m.DeclaringSyntaxReferences)
+                {
+                    var node = r.GetSyntax();
+                    var model = Compilation.GetSemanticModel(node.SyntaxTree);
+                    bool OfThis(ExpressionSyntax e)
+                    {
+                        while (e is ParenthesizedExpressionSyntax p) e = p.Expression;
+                        if (e is ThisExpressionSyntax) return true;
+                        // (this.X, or X.Y of a struct member X: a part of this)
+                        if (e is MemberAccessExpressionSyntax ma)
+                            return ma.Expression is ThisExpressionSyntax ? OfThis(ma.Name) : model.GetTypeInfo(ma.Expression).Type?.IsValueType == true && OfThis(ma.Expression);
+                        return e is IdentifierNameSyntax && model.GetSymbolInfo(e).Symbol is ISymbol s && s is IFieldSymbol or IPropertySymbol && !s.IsStatic &&
+                               SymbolEqualityComparer.Default.Equals(s.ContainingType, m.ContainingType);
+                    }
+                    foreach (var n in node.DescendantNodes())
+                        switch (n)
+                        {
+                            case AssignmentExpressionSyntax a when OfThis(a.Left): return true;
+                            case PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PreIncrementExpression or (int)SyntaxKind.PreDecrementExpression } pre when OfThis(pre.Operand): return true;
+                            case PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PostIncrementExpression or (int)SyntaxKind.PostDecrementExpression } post when OfThis(post.Operand): return true;
+                            case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword) && OfThis(arg.Expression): return true;
+                            case InvocationExpressionSyntax inv when (inv.Expression is IdentifierNameSyntax || inv.Expression is MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }) &&
+                                                                     model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee && !callee.IsStatic && WritesStructThis(callee):
+                                return true;
+                        }
+                }
+                return false;
+            }
+            finally { _writesThisSeen.Remove(m); }
+        }
+
+        [System.ThreadStatic] private static HashSet<IMethodSymbol> _writesThisSeen;
+
         public static bool IsStruct(ITypeSymbol t)
         {
             if (!(t is INamedTypeSymbol { TypeKind: TypeKind.Struct, IsGenericType: false, IsRefLikeType: false } n) || n.DeclaringSyntaxReferences.Length == 0 ||

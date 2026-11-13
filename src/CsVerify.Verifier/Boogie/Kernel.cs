@@ -402,6 +402,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr[] Args;
         /// <summary>The variable its result goes to; null for none.</summary>
         public string Result;
+        /// <summary>A struct's method that writes this: the variable the receiver's new value goes to.</summary>
+        public string ThisOut;
         public SyntaxNode At;
         /// <summary>Where each argument is (for a non-null one's check).</summary>
         public SyntaxNode[] ArgsAt;
@@ -688,6 +690,8 @@ namespace CsVerify.Verifier.Boogie
         public bool ListCtor;
         /// <summary>A struct's constructor: it gives the value it makes (this, a value it writes, its default to begin with).</summary>
         public bool StructThis;
+        /// <summary>A struct's method that writes this: this by reference, in as this$in, out as this (as a ref parameter).</summary>
+        public bool StructRefThis;
         public HashSet<string> DelegateKeys = new HashSet<string>();
         public IMethodSymbol Method;
         public Contract Contract;

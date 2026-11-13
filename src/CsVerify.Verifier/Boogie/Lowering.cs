@@ -43,7 +43,8 @@ namespace CsVerify.Verifier.Boogie
                 Ghost = SpecSymbols.IsGhostFunction(m) || contract.IsLemma,
                 HasThis = !StaticContext(m) && !(IsCollection(m.ContainingType) && m.MethodKind == MethodKind.Constructor) && !(IsStruct(m.ContainingType) && m.MethodKind == MethodKind.Constructor),
                 IsCtor = m.MethodKind == MethodKind.Constructor && !IsCollection(m.ContainingType) && !IsStruct(m.ContainingType),
-                StructThis = m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsStruct(m.ContainingType),
+                StructThis = m.MethodKind == MethodKind.Constructor && !m.IsStatic && IsStruct(m.ContainingType) || WritesStructThis(m),
+                StructRefThis = WritesStructThis(m),
                 ListCtor = m.MethodKind == MethodKind.Constructor && IsCollection(m.ContainingType),
                 ThisIsView = !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && (m.MethodKind == MethodKind.Constructor || !contract.IsPure),
             };
@@ -505,6 +506,8 @@ namespace CsVerify.Verifier.Boogie
                     case IIncrementOrDecrementOperation i: Target(i.Target); break;
                     case IDeconstructionAssignmentOperation d when d.Target is ITupleOperation tt: foreach (var e in tt.Elements) Target(e); break;
                     case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } arg: Target(arg.Value); break;
+                    // (a struct's method that writes its receiver: the parameter it's called on)
+                    case IInvocationOperation { Instance: { } wi } wc when WritesStructThis(wc.TargetMethod): Target(wi); break;
                 }
             // (a lambda that reads one: its own input, the value when it runs; its postconditions don't name one,
             // as it isn't steady. One that writes one isn't translated: its writes would have to reach the local)
@@ -878,7 +881,7 @@ namespace CsVerify.Verifier.Boogie
                     TrackerEntry();
                     MemLiveEntry();
                     // (a struct's constructor: its value begins as the default)
-                    if (_p.StructThis) Emit(new KAssign { Var = "this", Value = StructDefault(_m.ContainingType) });
+                    if (_p.StructThis && !_p.StructRefThis) Emit(new KAssign { Var = "this", Value = StructDefault(_m.ContainingType) });
                     // (an [Atomic] field's step: a step after a step is a step, so what other threads do between two reads is one; CSV1030)
                     if (KernelTypes.SteppedBy?.Invoke(_m)?.FirstOrDefault() is IFieldSymbol stepped && _m.IsStatic && _m.Parameters.Length == 2 && _isFunction(_m))
                     {
@@ -6325,9 +6328,24 @@ namespace CsVerify.Verifier.Boogie
             var keepers = IsTaskMethod(constructed) && !list ? Confined().Select(l => Declare(Local(l), l.Type)).ToList() : new List<string>();
             int keepId = _keeps++;
             if (keepers.Count > 0) Emit(new KKeep { Id = keepId, Keep = keepers });
+            // (a struct's method that writes this: the receiver's new value, written back where it is; on this, this)
+            string thisOut = null;
+            if (WritesStructThis(callee))
+            {
+                if (_phase != 0) throw new NotTranslated("a struct's method that writes this, run alongside");
+                if (onThis && !_p.StructThis) throw new NotTranslated("a struct's method that writes this, called on this where this isn't written");
+                if (onThis) thisOut = "this";
+                else
+                {
+                    thisOut = Declare("t$" + _temps++, call.Instance.Type);
+                    var where = Unconverted(call.Instance) is IFlowCaptureReferenceOperation ic && _captured.TryGetValue(ic.Id, out var icv) ? icv : call.Instance;
+                    if (where is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation || StructMember(where) != null)
+                        _writeBacks.Add((where, thisOut));
+                }
+            }
             Emit(new KCall { Callee = callee, Receiver = receiver, ReceiverIsThis = onThis, ReceiverAt = call.Instance?.Syntax, ThrowsTo = _phase == 1 ? null : throwsTo, Phase = _phase,
                              Args = args, ArgsAt = argsAt,
-                             Result = result, At = call.Syntax, RefOuts = refOuts });
+                             Result = result, ThisOut = thisOut, At = call.Syntax, RefOuts = refOuts });
             // (a collection that compares its elements with an Equals of the program's, or hashes them: that code runs, and
             // may change anything)
             if (list && RunsEquals(callee)) { _p.HavocsAll = true; _p.CallsDelegates = true; Emit(new KHavocAll { ProgramState = true }); }
