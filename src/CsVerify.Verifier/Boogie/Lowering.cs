@@ -783,14 +783,13 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The captured variables: each one's input.</summary>
         private readonly Dictionary<ISymbol, string> _capturedIn = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
 
-        /// <summary>Those the lambda writes (a specification of one isn't translated: of which value?).</summary>
+        /// <summary>
+        /// Those the lambda writes: a precondition reads one's value at entry (its input), a postcondition its value at
+        /// each return, as for a parameter the body assigns (callers don't assume it).
+        /// </summary>
         private readonly HashSet<ISymbol> _capturedWritten = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
 
-        private KExpr CapturedInSpec(ISymbol s)
-        {
-            if (_capturedWritten.Contains(s)) throw new NotTranslated("a specification of a captured variable the lambda writes");
-            return new KVar(_capturedIn[s]);
-        }
+        private KExpr CapturedInSpec(ISymbol s) => new KVar(_capturedIn[s]);
 
         private KProcedure Run()
         {
@@ -884,6 +883,9 @@ namespace CsVerify.Verifier.Boogie
                 var v = Declare(_assigned[ap] = Local(ap) + "$v", ap.Type);
                 if (!_capturedParams.Contains(ap)) _p.AssignedParams[Local(ap)] = v;
             }
+            // (a captured variable this lambda writes: at a return, its value then)
+            foreach (var cw in _capturedWritten.Where(_capturedIn.ContainsKey))
+                _p.AssignedParams[_capturedIn[cw]] = cw is IParameterSymbol cwp && _assigned.TryGetValue(cwp, out var cwv) ? cwv : Declare(Local(cw), ((ILocalSymbol)cw).Type);
             // (what it captures: a variable of it, which starts as what came in)
             foreach (var (sym, input) in _capturedIn)
                 if (sym is IParameterSymbol cp) _assigned[cp] = Declare(input + "$v", cp.Type);

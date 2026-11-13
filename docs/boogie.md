@@ -1118,7 +1118,8 @@ may run at any time: in range, allocated, not null where its type says so; a loc
 `foreach`'s, or one assigned only where it's declared) that the compiler's flow analysis has as not null is not
 null. A query clause's own parameter (the object its previous clause made, a group) is never null. The lambda
 knows what its method requires of what never changes: that a delegate it captures is steady, and `Spec.Pre` and
-`Spec.Total` of it. A specification of a captured variable the lambda writes isn't translated (of which value?). An
+`Spec.Total` of it. A captured variable the lambda writes is, in its precondition, its value at entry, and in its
+postconditions its value at each return, as for a parameter the body assigns (callers don't assume those). An
 exception in a lambda leaves it: the method's `try` and `finally` around it are not the lambda's. `this` is the
 method's, where it has one. A local function is called as a procedure is: its captured inputs passed after its
 arguments, as they are where it's called (the method's variables, or what a lambda calling it captures in turn); a

@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -148,6 +149,20 @@ public static class U
             Assert.Empty(r.Errors("U.Before"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("U.After"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("U.Local"));
+        }
+
+        // (a lambda's postcondition of a captured variable it writes: its value at the lambda's return)
+        [Fact]
+        public void ALambdasPostcondition_OfAVariableItWrites()
+        {
+            var r = Harness.Verify(@"
+public static class U
+{
+    public static int Inc() { int k = 0; System.Action a = () => { Spec.Ensures(k == Spec.Old(k) + 1); k = k + 1; }; return k; }
+    public static int IncBad() { int k = 0; System.Action a = () => { Spec.Ensures(k == Spec.Old(k) + 2); k = k + 1; }; return k; }
+}", overflow: false);
+            Assert.True(r.Methods.Where(m => m.Name.StartsWith("U.Inc.")).All(m => m.Verified));
+            Assert.Contains(r.Methods, m => m.Name.StartsWith("U.IncBad.") && m.Diagnostics.Any(d => d.Id == "CSV1002"));
         }
     }
 }
