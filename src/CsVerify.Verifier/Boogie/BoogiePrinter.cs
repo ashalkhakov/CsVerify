@@ -961,12 +961,13 @@ namespace CsVerify.Verifier.Boogie
                                    Group = callee => callee != null && Recursive(m, callee) };
             var guard = p.Requires.Count == 0 ? "true" : string.Join(" && ", p.Requires.Select(r => E(r.Expr, cx)));
             // (its Spec.Reads, Dafny's frame axiom: two memories that agree on every object it reads give one value)
-            if (p.ReadsFrame != null && own == null)
+            var reads = p.ReadsFrame ?? p.InferredReads;
+            if (reads != null && own == null)
             {
                 string Mem(string pre) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{ElementValue(t)}"))
                                         + string.Join("", fields.Select(x => $", {pre}{x}: [Ref]{TypeOf(FieldType(symbols.First(f => FieldMap(f) == x)))}"));
                 string App(string pre) => $"{name}(ly, {string.Join(", ", ElementTypes.Select(t => pre + ElementMap(t)))}{string.Join("", fields.Select(x => ", " + pre + x))}{(m.IsStatic ? "" : ", this")}{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
-                var r = E(p.ReadsFrame, new Context { InFunction = true, Layer = "ly", Prefix = "a", Group = cx.Group });
+                var r = E(reads, new Context { InFunction = true, Layer = "ly", Prefix = "a", Group = cx.Group });
                 var agree = ElementTypes.Select(t => $"(forall o: Ref, i: int :: {r}[o] ==> a{ElementMap(t)}[o][i] == b{ElementMap(t)}[o][i])")
                     .Concat(fields.Select(x => $"(forall o: Ref :: {r}[o] ==> a{x}[o] == b{x}[o])"));
                 Line($"axiom (forall ly: LayerType, {Mem("a")}, {Mem("b")}{self}{string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"))} :: {{ {App("a")}, {App("b")} }} {string.Join(" && ", agree)} ==> {App("a")} == {App("b")});");

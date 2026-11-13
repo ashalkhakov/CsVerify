@@ -716,6 +716,11 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Frame;
         /// <summary>A function's Spec.Reads: the objects whose fields and cells its value depends on (a frame axiom says so).</summary>
         public KExpr ReadsFrame;
+        /// <summary>
+        /// A function's reads, as its body says them where it gives none: the objects it reads the fields and cells of,
+        /// each its parameters' or their fields' (none under a quantifier's variable), for its frame axiom alone.
+        /// </summary>
+        public KExpr InferredReads;
         /// <summary>An abstract member: a procedure with no body, which calls go to.</summary>
         public bool Abstract;
         /// <summary>A method whose body doesn't translate: its contract alone, for its callers (it may write what CsVerify's effects analysis says).</summary>

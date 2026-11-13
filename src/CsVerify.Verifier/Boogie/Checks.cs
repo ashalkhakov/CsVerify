@@ -109,7 +109,16 @@ namespace CsVerify.Verifier.Boogie
             return reasons;
         }
 
-        private void Emit(KStmt s) => _out.Add(s);
+        private void Emit(KStmt s)
+        {
+            _out.Add(s);
+            if (_headInto != null && _inQuantifier == 0 && s is KAssume { Always: true } always)
+                foreach (var into in _headInto) into.Stmts.Add(new KAssume { Cond = always.Cond, Always = true });
+        }
+
+        /// <summary>The blocks into a loop's head from before it, while its statements are checked.</summary>
+        private List<KBlock> _headInto;
+        private int _inQuantifier;
 
         /// <summary>The id of a loop's inferred fact, a candidate of Houdini's: never reported.</summary>
         public const string Candidate = "HOUDINI";
@@ -176,6 +185,44 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A field whose value, once its object is built, is never null.</summary>
         private static bool NonNullField(ISymbol field) => (!field.IsStatic || StaticStartsWithObject(field)) && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
 
+        /// <summary>
+        /// The objects a function's body (as mathematics) reads the fields and cells of, as a set: null where it reads
+        /// anything else (another function, the allocation, an object named by a quantifier's variable).
+        /// </summary>
+        private static KExpr InferReads(KExpr body)
+        {
+            var objects = new List<KExpr>();
+            var keys = new HashSet<string>();
+            var bound = new HashSet<string>();
+            bool Walk(KExpr e)
+            {
+                switch (e)
+                {
+                    case KLit _: return true;
+                    case KVar v: return v.Name != "$Alloc";
+                    case KOp { Op: "sel" } s when s.Args[0] is KVar map && (map.Name.StartsWith("$F.") || map.Name.StartsWith("$E.")):
+                        if (Mentions(s.Args[1], bound)) return false;
+                        if (keys.Add(Key(s.Args[1]))) objects.Add(s.Args[1]);
+                        return s.Args.Skip(1).All(Walk);
+                    case KOp op: return op.Args.All(Walk);
+                    case KQuant q:
+                        bound.Add(q.Var);
+                        try { return (q.Range == null || Walk(q.Range)) && Walk(q.Body); }
+                        finally { bound.Remove(q.Var); }
+                    default: return false;
+                }
+            }
+            string Key(KExpr e) => e switch
+            {
+                KVar v => v.Name,
+                KLit l => l.Text,
+                KOp op => op.Op + "(" + string.Join(",", op.Args.Select(Key)) + ")",
+                _ => "?" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e),
+            };
+            if (!Walk(body) || objects.Count == 0) return null;
+            return objects.Select(o => (KExpr)new KOp("set.of", o)).Aggregate((a, b) => new KOp("set.union", a, b));
+        }
+
         private static bool Mentions(KExpr e, HashSet<string> vars) => e switch
         {
             KVar v => vars.Contains(v.Name),
@@ -237,6 +284,7 @@ namespace CsVerify.Verifier.Boogie
             // (the caller's measure is as it was at entry, as Dafny's is: what the body writes before the call doesn't count)
             var decreases = _p.Decreases?.Select(d => (KExpr)new KOp("old", Spec(d, out _))).ToList();
             if (_p.FunctionBody != null) _p.FunctionBody = Spec(_p.FunctionBody, out _);
+            if (_p.FunctionBody != null && _p.ReadsFrame == null) _p.InferredReads = InferReads(_p.FunctionBody);
             // (a function's axioms are about every state: what they say can't be of a procedure's snapshots)
             if (_p.FunctionBody != null && _program.OverPredicate(m) == null &&
                 new[] { _p.FunctionBody }.Concat(requires.Select(r => r.math)).Concat(ensures.Select(e => e.math)).Any(x => Mentions(x, Snaps)))
@@ -346,14 +394,12 @@ namespace CsVerify.Verifier.Boogie
                     try { foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(b.Ordinal) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null); }
                     finally { _atLoopHead = false; }
                 }
-                // (a loop's head: its invariants end here. Boogie takes the assumes at a head's start for free invariants,
-                // assumed only after its havoc; what the code there assumes (a field read not null) holds on the way in too)
-                if (head && _p.Blocks.Any(x => x.Ordinal >= b.Ordinal && x.Jump is KGoto lg && lg.Targets.Contains(b.Label)))
-                {
-                    if (!_p.Locals.Any(l => l.Name == "head$")) _p.Locals.Add(new KLocal { Name = "head$", Raw = "bool" });
-                    Emit(new KAssign { Var = "head$", Value = new KLit("true") });
-                }
+                // (a loop's head: what the code there assumes that holds in every state (a non-nullable field read not
+                // null) is assumed on the way in too, as Boogie takes the assumes at a head's start for free invariants)
+                _headInto = head ? _p.Blocks.Where(x => x.Ordinal < b.Ordinal && x.Jump is KGoto hg && hg.Targets.Contains(b.Label)).ToList() : null;
+                if (_headInto != null && !_p.Blocks.Any(x => x.Ordinal >= b.Ordinal && x.Jump is KGoto lg && lg.Targets.Contains(b.Label))) _headInto = null;
                 foreach (var s in stmts) Statement(s, decreases);
+                _headInto = null;
                 switch (b.Jump)
                 {
                     case KReturn ret:
@@ -2030,9 +2076,11 @@ namespace CsVerify.Verifier.Boogie
                     var outer = _out;
                     _out = new List<KStmt>();
                     KExpr body;
+                    _inQuantifier++;
                     try { body = CWalk(q.Body, mathRange); }
                     finally
                     {
+                        _inQuantifier--;
                         var inner = _out;
                         _out = outer;
                         foreach (var s in inner)
