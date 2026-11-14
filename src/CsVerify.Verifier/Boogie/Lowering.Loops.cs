@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -89,21 +90,17 @@ namespace CsVerify.Verifier.Boogie
                             }
                         }
                         var (lv, rv) = (Spec(l, null), Spec(r, null));
-                        KExpr Plus(int k) => k == 0 ? rv : new KOp("+", rv, new KLit(k < 0 ? $"(-{-k})" : k.ToString()));
+                        KExpr Offset(int k) => k == 0 ? rv : Plus(rv, new KLit(k < 0 ? $"(-{-k})" : k.ToString()));
                         var made = b.OperatorKind switch
                         {
-                            BinaryOperatorKind.LessThan => new[] { new KOp("<=", lv, Plus(0)) },
-                            BinaryOperatorKind.LessThanOrEqual => new[] { new KOp("<=", lv, Plus(1)) },
-                            BinaryOperatorKind.GreaterThan => new[] { new KOp(">=", lv, Plus(0)) },
-                            BinaryOperatorKind.GreaterThanOrEqual => new[] { new KOp(">=", lv, Plus(-1)) },
-                            BinaryOperatorKind.NotEquals => new[] { new KOp("<=", lv, Plus(0)), new KOp(">=", lv, Plus(0)) },
+                            BinaryOperatorKind.LessThan => new[] { Le(lv, Offset(0)) },
+                            BinaryOperatorKind.LessThanOrEqual => new[] { Le(lv, Offset(1)) },
+                            BinaryOperatorKind.GreaterThan => new[] { Ge(lv, Offset(0)) },
+                            BinaryOperatorKind.GreaterThanOrEqual => new[] { Ge(lv, Offset(-1)) },
+                            BinaryOperatorKind.NotEquals => new[] { Le(lv, Offset(0)), Ge(lv, Offset(0)) },
                             _ => new KOp[0],
                         };
-                        facts.AddRange(made.Select(x => new KSpec
-                        {
-                            Expr = x,
-                            At = loop,
-                        }));
+                        facts.AddRange(made.Select(x => KSpec.Of(x, loop)));
                     }
                     // (what the loop changes: an integer that moves one way)
                     foreach (var path in paths.Where(p => !(p is ILiteralOperation)))
@@ -111,16 +108,8 @@ namespace CsVerify.Verifier.Boogie
                         var v = Spec(path, null);
                         var entry = Declare($"lf${h}${_entryValues.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Int64));
                         _entryValues.Add((h, entry, v));
-                        facts.Add(new KSpec
-                        {
-                            Expr = new KOp(">=", v, new KVar(entry)),
-                            At = loop,
-                        });
-                        facts.Add(new KSpec
-                        {
-                            Expr = new KOp("<=", v, new KVar(entry)),
-                            At = loop,
-                        });
+                        facts.Add(KSpec.Of(Ge(v, new KVar(entry)), loop));
+                        facts.Add(KSpec.Of(Le(v, new KVar(entry)), loop));
                     }
                 }
                 catch (NotTranslated)
@@ -147,11 +136,7 @@ namespace CsVerify.Verifier.Boogie
                         var measure = new List<KSpec>();
                         for (int k = 0; k < whole.Arguments.Length; k++)
                         {
-                            measure.Add(new KSpec
-                            {
-                                Expr = Measure(whole.Arguments[k].Value),
-                                At = whole.Arguments[k].Value.Syntax,
-                            });
+                            measure.Add(KSpec.Of(Measure(whole.Arguments[k].Value), whole.Arguments[k].Value.Syntax));
                             Declare($"m${h}${k}", IsData(whole.Arguments[k].Value.Type) ? _model.Compilation.GetSpecialType(SpecialType.System_Int32) : whole.Arguments[k].Value.Type);
                         }
                         _p.Measures[h] = measure;
@@ -169,11 +154,7 @@ namespace CsVerify.Verifier.Boogie
                         }
                         _writtenInvariants.Add(head);
                         var arg = SpecArgument(inv);
-                        list.Add(new KSpec
-                        {
-                            Expr = Spec(arg, null),
-                            At = arg.Syntax,
-                        });
+                        list.Add(KSpec.Of(Spec(arg, null), arg.Syntax));
                     }
                 }
             }

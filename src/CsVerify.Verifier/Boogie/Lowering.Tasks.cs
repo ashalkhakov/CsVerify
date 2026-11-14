@@ -120,11 +120,7 @@ namespace CsVerify.Verifier.Boogie
             if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string failed)
             {
                 // (awaited all the same: its failure is seen)
-                Emit(new KAssign
-                {
-                    Var = task.Awaited,
-                    Value = KLit.True,
-                });
+                Emit(KAssign.Of(task.Awaited, KLit.True));
                 Emit(new KFork
                 {
                     Overflow = KLit.False,
@@ -134,11 +130,7 @@ namespace CsVerify.Verifier.Boogie
                 forked = true;
             }
             JoinOf(task);
-            Emit(new KAssign
-            {
-                Var = task.Awaited,
-                Value = KLit.True,
-            });
+            Emit(KAssign.Of(task.Awaited, KLit.True));
             return new Awaited
             {
                 Value = task.Result == null ? null : new KVar(task.Result),
@@ -158,10 +150,10 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             var r = Declare("t$" + _temps++, type);
-            Emit(new KHavoc { Var = r });
+            Emit(KHavoc.Of(r));
             if (notNull && IsNullable(type) && NotNullable(type))
             {
-                Emit(new KAssume { Cond = NotNull(new KVar(r)) });
+                Emit(KAssume.Of(NotNull(new KVar(r))));
             }
             return new KVar(r);
         }
@@ -336,13 +328,7 @@ namespace CsVerify.Verifier.Boogie
                         var recv = Expr(Unconverted(la.Instance));
                         if (!la.Instance.Type.IsValueType)
                         {
-                            Emit(new KCheck
-                            {
-                                Cond = NotNull(recv),
-                                Id = "CSV1013",
-                                At = la.Instance.Syntax,
-                                Message = $"'{la.Instance.Syntax}' might be null in '{la.Syntax}'",
-                            });
+                            Emit(KCheck.Of(NotNull(recv), "CSV1013", la.Instance.Syntax, $"'{la.Instance.Syntax}' might be null in '{la.Syntax}'"));
                         }
                     }
                     foreach (var a in la.Arguments.OrderBy(a => a.Parameter.Ordinal))
@@ -403,11 +389,7 @@ namespace CsVerify.Verifier.Boogie
                 // (a batch of tasks: all joined; how many, and what they give, isn't known)
                 else if (Unconverted(a is IFlowCaptureReferenceOperation bc && _captured.TryGetValue(bc.Id, out var bv) ? bv : a) is ILocalReferenceOperation bl && _batches.TryGetValue(bl.Local, out var batch))
                 {
-                    Emit(new KAssign
-                    {
-                        Var = batch.Awaited,
-                        Value = KLit.True,
-                    });
+                    Emit(KAssign.Of(batch.Awaited, KLit.True));
                     order.Add(null);
                 }
                 // (a call written in it: started with the others, joined with them)
@@ -456,11 +438,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var t in joins)
             {
                 JoinOf(t);
-                Emit(new KAssign
-                {
-                    Var = t.Awaited,
-                    Value = KLit.True,
-                });
+                Emit(KAssign.Of(t.Awaited, KLit.True));
             }
             foreach (var t in inlineStarts)
             {
@@ -478,8 +456,8 @@ namespace CsVerify.Verifier.Boogie
                 if (order.Contains(null))
                 {
                     var n = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
-                    Emit(new KHavoc { Var = n });
-                    Emit(new KAssume { Cond = new KOp("<=", KLit.Zero, new KVar(n)) });
+                    Emit(KHavoc.Of(n));
+                    Emit(KAssume.Of(Le(KLit.Zero, new KVar(n))));
                     var barr = Declare("t$" + _temps++, rat);
                     var map = Elements(rat);
                     return new Awaited
@@ -487,18 +465,8 @@ namespace CsVerify.Verifier.Boogie
                         Value = new KVar(barr),
                         After = () =>
                         {
-                            Emit(new KNew
-                            {
-                                Var = barr,
-                                ArrayType = rat,
-                                Size = new KVar(n),
-                            });
-                            Emit(new KRow
-                            {
-                                Map = map,
-                                Ref = new KVar(barr),
-                                Value = new KVar(LinqMap("[int]" + ElementValue(map))),
-                            });
+                            Emit(KNew.Of(barr, rat, new KVar(n)));
+                            Emit(KRow.Of(map, new KVar(barr), new KVar(LinqMap("[int]" + ElementValue(map)))));
                         },
                     };
                 }
@@ -509,19 +477,13 @@ namespace CsVerify.Verifier.Boogie
                         return (KExpr)new KVar(t.Result);
                     }
                     var u = Declare("t$" + _temps++, rat.ElementType);
-                    Emit(new KHavoc { Var = u });
+                    Emit(KHavoc.Of(u));
                     return new KVar(u);
                 }).ToArray();
                 return new Awaited
                 {
                     Value = new KVar(arr),
-                    After = () => Emit(new KNew
-                    {
-                        Var = arr,
-                        ArrayType = rat,
-                        Size = new KLit(order.Count.ToString()),
-                        Elements = elements,
-                    }),
+                    After = () => Emit(KNew.Of(arr, rat, new KLit(order.Count.ToString()), elements: elements)),
                 };
             }
             if (used)
@@ -549,19 +511,17 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var t = Declare("t$" + _temps++, FieldType(f));
                     _p.Fields.Add(f.OriginalDefinition);
-                    Emit(new KAssign
-                    {
-                        Var = t,
-                        Value = new KField
-                        {
-                            Field = f.OriginalDefinition,
-                            Instance = f.IsStatic ? null : owner,
-                            OnThis = owner is KVar { Name: "this" },
-                            NoNull = true,
-                            At = aw.Syntax,
-                            InstanceAt = aw.Syntax,
-                        },
-                    });
+                    Emit(KAssign.Of(
+                        t,
+                        new KField
+                {
+                    Field = f.OriginalDefinition,
+                    Instance = f.IsStatic ? null : owner,
+                    OnThis = owner is KVar { Name: "this" },
+                    NoNull = true,
+                    At = aw.Syntax,
+                    InstanceAt = aw.Syntax,
+                }));
                     kept.Add((f.OriginalDefinition, t, f.IsStatic ? null : owner));
                 }
             }
@@ -578,15 +538,16 @@ namespace CsVerify.Verifier.Boogie
             UnsharedAfter(unshared);
             foreach (var (f, t, owner) in kept)
             {
-                Emit(new KAssume { Cond = Eq(new KField
-                {
-                    Field = f,
-                    Instance = owner,
-                    OnThis = owner is KVar { Name: "this" },
-                    NoNull = true,
-                    At = aw.Syntax,
-                    InstanceAt = aw.Syntax,
-                }, new KVar(t)) });
+                Emit(KAssume.Of(
+                Eq(new KField
+{
+Field = f,
+Instance = owner,
+OnThis = owner is KVar { Name: "this" },
+NoNull = true,
+At = aw.Syntax,
+InstanceAt = aw.Syntax,
+}, new KVar(t))));
             }
             ForgetCaptured();
         }
@@ -686,14 +647,12 @@ namespace CsVerify.Verifier.Boogie
             }
             if (read != null)
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1016",
-                    At = call.Syntax,
-                    NotAssumedAfter = true,
-                    Message = $"the postcondition of the task started here reads '{read.Syntax}', which it doesn't give back (no Spec.Acc for it to its left): by the time it is awaited, others may have changed it. Give it back, or await the call at once",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1016",
+                    call.Syntax,
+                    notAssumedAfter: true,
+                    message: $"the postcondition of the task started here reads '{read.Syntax}', which it doesn't give back (no Spec.Acc for it to its left): by the time it is awaited, others may have changed it. Give it back, or await the call at once"));
             }
             return unkept;
         }
@@ -719,7 +678,7 @@ namespace CsVerify.Verifier.Boogie
                     forget.Add(() =>
                     {
                         var v = Declare("t$" + _temps++, sf.Type);
-                        Emit(new KHavoc { Var = v });
+                        Emit(KHavoc.Of(v));
                         Emit(new KFieldStore
                         {
                             Field = field,
@@ -744,12 +703,7 @@ namespace CsVerify.Verifier.Boogie
                     forget.Add(() =>
                     {
                         var fresh = new KVar(LinqMap("[int]" + ElementValue(map)));
-                        Emit(new KRow
-                        {
-                            Map = map,
-                            Ref = target,
-                            Value = fresh,
-                        });
+                        Emit(KRow.Of(map, target, fresh));
                     });
                 }
                 else if (r is IFieldReferenceOperation fr && IsField(fr.Field))
@@ -759,13 +713,8 @@ namespace CsVerify.Verifier.Boogie
                     forget.Add(() =>
                     {
                         var v = Declare("t$" + _temps++, fr.Field.Type);
-                        Emit(new KHavoc { Var = v });
-                        Emit(new KRow
-                        {
-                            Map = FieldMap(field),
-                            Ref = target,
-                            Value = new KVar(v),
-                        });
+                        Emit(KHavoc.Of(v));
+                        Emit(KRow.Of(FieldMap(field), target, new KVar(v)));
                     });
                 }
                 else
@@ -781,14 +730,12 @@ namespace CsVerify.Verifier.Boogie
         {
             if (call?.TargetMethod != null && call.TargetMethod.IsAsync && KernelTypes.Locks?.GuardOf(call.TargetMethod) is IFieldSymbol held && KernelTypes.Locks.IsSemaphore(held))
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1023",
-                    At = call.Syntax,
-                    NotAssumedAfter = true,
-                    Message = $"'{call.TargetMethod.Name}' relies on holding '{held.Name}', but its task isn't awaited here: it would run alongside this code",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1023",
+                    call.Syntax,
+                    notAssumedAfter: true,
+                    message: $"'{call.TargetMethod.Name}' relies on holding '{held.Name}', but its task isn't awaited here: it would run alongside this code"));
             }
         }
 
@@ -806,14 +753,12 @@ namespace CsVerify.Verifier.Boogie
             if (!thread && call != null && call.TargetMethod.IsAsync &&
                 (call.Arguments.Any(a => SpecSymbols.IsLinear(a.Parameter?.Type) || a.Parameter?.RefKind != RefKind.None) || !call.TargetMethod.IsStatic && SpecSymbols.IsOwned(call.TargetMethod.ContainingType)))
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1901",
-                    At = call.Syntax,
-                    NotAssumedAfter = true,
-                    Message = $"'{call.TargetMethod.Name}' is async and is not awaited at once: it would run interleaved with this method, each changing what the other relies on (write 'await' at the call)",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1901",
+                    call.Syntax,
+                    notAssumedAfter: true,
+                    message: $"'{call.TargetMethod.Name}' is async and is not awaited at once: it would run interleaved with this method, each changing what the other relies on (write 'await' at the call)"));
             }
             // (what it may race on: a Task.Run's or a thread's code, with this method's
             // alongside; an async method's, with the others')
@@ -887,11 +832,11 @@ namespace CsVerify.Verifier.Boogie
             if (call == null && local.Type is INamedTypeSymbol { Arity: 1 } tt && InSubset(tt.TypeArguments[0]))
             {
                 var unknown = Declare("t$" + _temps++, tt.TypeArguments[0]);
-                Emit(new KHavoc { Var = unknown });
+                Emit(KHavoc.Of(unknown));
                 // (not null, where the code it runs doesn't return that)
                 if (IsNullable(tt.TypeArguments[0]) && NotNullable(tt.TypeArguments[0]))
                 {
-                    Emit(new KAssume { Cond = NotNull(new KVar(unknown)) });
+                    Emit(KAssume.Of(NotNull(new KVar(unknown))));
                 }
                 result = new KVar(unknown);
             }
@@ -915,22 +860,14 @@ namespace CsVerify.Verifier.Boogie
             if (result != null && task.Result == null)
             {
                 task.Result = Declare("t$" + _temps++, Returns(call.TargetMethod));
-                Emit(new KAssign
-                {
-                    Var = task.Result,
-                    Value = result,
-                });
+                Emit(KAssign.Of(task.Result, result));
             }
             // (started in a loop: the one it started last time round must have been awaited, CSV1026; none was before the first)
             if (!thread && _cfgBlock != null && _p.LoopBodies.Any(lb => lb.Key <= _cfgBlock.Ordinal && _cfgBlock.Ordinal <= lb.Value))
             {
                 _awaitedAtEntry.Add((task.Awaited, _cfgBlock.Ordinal, at ?? call.Syntax, call?.TargetMethod.Name ?? "Run"));
             }
-            Emit(new KAssign
-            {
-                Var = task.Awaited,
-                Value = KLit.False,
-            });
+            Emit(KAssign.Of(task.Awaited, KLit.False));
             // (the locals its code writes, which it captured: changed by it, whenever, while it runs)
             if (lambda != null && call == null)
             {
@@ -961,14 +898,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Emit(new KCheck
-            {
-                Cond = KLit.False,
-                Id = "CSV1901",
-                At = at,
-                NotAssumedAfter = true,
-                Message = $"the task in '{local.Name}' is {how}, which is not supported: await it where it is used",
-            });
+            Emit(KCheck.Of(
+                KLit.False,
+                "CSV1901",
+                at,
+                notAssumedAfter: true,
+                message: $"the task in '{local.Name}' is {how}, which is not supported: await it where it is used"));
         }
 
         /// <summary>A task of code of its own was started: no object is in hand from then on.</summary>
@@ -1015,31 +950,19 @@ namespace CsVerify.Verifier.Boogie
             }
             // (once, on each path: where an earlier await joined it already (its awaited flag), nothing is given back again)
             var n = _joins++;
-            var (join, skip, after) = (new KBlock
-            {
-                Label = $"b{_cfgBlock.Ordinal}$j{n}",
-                Ordinal = _cfgBlock.Ordinal,
-            },
-                                       new KBlock
-                                       {
-                                           Label = $"b{_cfgBlock.Ordinal}$j{n}$no",
-                                           Ordinal = _cfgBlock.Ordinal,
-                                       },
-                                       new KBlock
-                                       {
-                                           Label = $"b{_cfgBlock.Ordinal}$j{n}$after",
-                                           Ordinal = _cfgBlock.Ordinal,
-                                       });
+            var (join, skip, after) = (KBlock.Of($"b{_cfgBlock.Ordinal}$j{n}", _cfgBlock.Ordinal),
+                                       KBlock.Of($"b{_cfgBlock.Ordinal}$j{n}$no", _cfgBlock.Ordinal),
+                                       KBlock.Of($"b{_cfgBlock.Ordinal}$j{n}$after", _cfgBlock.Ordinal));
             _block.Jump = new KGoto(join.Label, skip.Label);
             _p.Blocks.Add(join);
             _p.Blocks.Add(skip);
             _p.Blocks.Add(after);
             _block = join;
-            Emit(new KAssume { Cond = Not(new KVar(t.Awaited)) });
+            Emit(KAssume.Of(Not(new KVar(t.Awaited))));
             Join();
             join.Jump = new KGoto(after.Label);
             _block = skip;
-            Emit(new KAssume { Cond = new KVar(t.Awaited) });
+            Emit(KAssume.Of(new KVar(t.Awaited)));
             skip.Jump = new KGoto(after.Label);
             _block = after;
         }
@@ -1121,10 +1044,10 @@ namespace CsVerify.Verifier.Boogie
                 if (run.Type is INamedTypeSymbol { Arity: 1 } rt && InSubset(rt.TypeArguments[0]))
                 {
                     var u = Declare("t$" + _temps++, rt.TypeArguments[0]);
-                    Emit(new KHavoc { Var = u });
+                    Emit(KHavoc.Of(u));
                     if (IsNullable(rt.TypeArguments[0]) && NotNullable(rt.TypeArguments[0]))
                     {
-                        Emit(new KAssume { Cond = NotNull(new KVar(u)) });
+                        Emit(KAssume.Of(NotNull(new KVar(u))));
                     }
                     t.Result = u;
                 }
@@ -1148,11 +1071,7 @@ namespace CsVerify.Verifier.Boogie
             Detached(run.Syntax, t.Effects);
             t.Kept = kept;
             t.Awaited = Declare($"aw$d{_detached.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign
-            {
-                Var = t.Awaited,
-                Value = KLit.False,
-            });
+            Emit(KAssign.Of(t.Awaited, KLit.False));
             _detached.Add(t);
         }
 
@@ -1185,8 +1104,8 @@ namespace CsVerify.Verifier.Boogie
                 _awaiting = false;
             }
             var t = Declare("t$" + _temps++, call.Type);
-            Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = NotNull(new KVar(t)) });
+            Emit(KHavoc.Of(t));
+            Emit(KAssume.Of(NotNull(new KVar(t))));
             return new KVar(t);
         }
 
@@ -1231,13 +1150,7 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             var src = Expr(Unconverted(source));
-            Emit(new KCheck
-            {
-                Cond = NotNull(src),
-                Id = "CSV1013",
-                At = source.Syntax,
-                Message = $"'{source.Syntax}' might be null: LINQ would throw ArgumentNullException",
-            });
+            Emit(KCheck.Of(NotNull(src), "CSV1013", source.Syntax, $"'{source.Syntax}' might be null: LINQ would throw ArgumentNullException"));
             Expr(select.Arguments.First(a => a.Parameter.Ordinal == 1).Value);
             var effects = EffectsOfDelegate(lambda);
             foreach (var o in AllTasks().Where(x => x.Effects != null))
@@ -1255,11 +1168,7 @@ namespace CsVerify.Verifier.Boogie
                 Effects = effects,
                 Awaited = Declare($"aw$b{_batches.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)),
             };
-            Emit(new KAssign
-            {
-                Var = t.Awaited,
-                Value = KLit.False,
-            });
+            Emit(KAssign.Of(t.Awaited, KLit.False));
             _batches[local] = t;
             _detached.Add(t);
         }
@@ -1276,13 +1185,11 @@ namespace CsVerify.Verifier.Boogie
             var d = Expr(arg.Value);
             var key = FuncKey(dc.Type);
             _p.DelegateKeys.Add(key);
-            Emit(new KCheck
-            {
-                Cond = new KOp("$pre." + key, d),
-                Id = "CSV1029",
-                At = arg.Syntax,
-                Message = "Task.Run calls this with no arguments, but its precondition might not hold here",
-            });
+            Emit(KCheck.Of(
+                new KOp("$pre." + key, d),
+                "CSV1029",
+                arg.Syntax,
+                "Task.Run calls this with no arguments, but its precondition might not hold here"));
         }
 
         private Task StartInline(IInvocationOperation call)
@@ -1333,11 +1240,7 @@ namespace CsVerify.Verifier.Boogie
                 StartCall = twoPhase ? _block.Stmts.OfType<KCall>().Last() : null,
                 Awaited = Declare($"aw${_tasks.Count + _startedCaptures.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Boolean)),
             };
-            Emit(new KAssign
-            {
-                Var = task.Awaited,
-                Value = KLit.False,
-            });
+            Emit(KAssign.Of(task.Awaited, KLit.False));
             _startedCaptures[id] = task;
         }
 
@@ -1361,14 +1264,12 @@ namespace CsVerify.Verifier.Boogie
             // (a thread needn't be joined: nothing is lost if it isn't; a task, a Task.Run's too, must be awaited)
             foreach (var t in AllTasks().Where(t => !t.RealThread && !t.Kept))
             {
-                at.Stmts.Add(new KCheck
-                {
-                    Cond = new KVar(t.Awaited),
-                    Id = "CSV1026",
-                    At = t.RunAt ?? t.At,
-                    NotAssumedAfter = true,
-                    Message = $"the task of '{t.Method?.Name ?? "Run"}' might not be awaited on every path: a failure in it would be lost",
-                });
+                at.Stmts.Add(KCheck.Of(
+                    new KVar(t.Awaited),
+                    "CSV1026",
+                    t.RunAt ?? t.At,
+                    notAssumedAfter: true,
+                    message: $"the task of '{t.Method?.Name ?? "Run"}' might not be awaited on every path: a failure in it would be lost"));
             }
         }
 
@@ -1399,12 +1300,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Declare(Local(l), l.Type);
                     var h = Declare("t$" + _temps++, l.Type);
-                    Emit(new KHavoc { Var = h });
-                    Emit(new KAssign
-                    {
-                        Var = v,
-                        Value = new KOp("ite", new KVar(t.Awaited), new KVar(v), new KVar(h)),
-                    });
+                    Emit(KHavoc.Of(h));
+                    Emit(KAssign.Of(v, Ite(new KVar(t.Awaited), new KVar(v), new KVar(h))));
                 }
             }
         }
@@ -1412,14 +1309,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>t.Result: of a task that has finished (else it blocks, CSV1026).</summary>
         private KExpr ResultOf(Task task, SyntaxNode at)
         {
-            Emit(new KCheck
-            {
-                Cond = new KVar(task.Awaited),
-                Id = "CSV1026",
-                At = at,
-                NotAssumedAfter = true,
-                Message = $"the task of '{task.Method?.Name ?? "Run"}' might not have finished: reading Result blocks until it does, and that can deadlock (await it first)",
-            });
+            Emit(KCheck.Of(
+                new KVar(task.Awaited),
+                "CSV1026",
+                at,
+                notAssumedAfter: true,
+                message: $"the task of '{task.Method?.Name ?? "Run"}' might not have finished: reading Result blocks until it does, and that can deadlock (await it first)"));
             return task.Result == null ? throw new NotTranslated("the Result of a task of nothing") : new KVar(task.Result);
         }
 

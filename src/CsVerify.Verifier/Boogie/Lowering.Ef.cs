@@ -176,22 +176,20 @@ namespace CsVerify.Verifier.Boogie
             // (a path that comes back to a type on it: a query without tracking refuses it, CSV1032)
             if (t.Cycle != null && t.NoTracking && !t.IdentityResolution)
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1032",
-                    At = t.Cycle,
-                    NotAssumedAfter = true,
-                    Message = $"'{t.Cycle}' makes an Include path that comes back to a type on it, which a query without tracking refuses " +
-                                            "(EF throws when it runs): track the query, or use AsNoTrackingWithIdentityResolution",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1032",
+                    t.Cycle,
+                    notAssumedAfter: true,
+                    message: $"'{t.Cycle}' makes an Include path that comes back to a type on it, which a query without tracking refuses " +
+                                           "(EF throws when it runs): track the query, or use AsNoTrackingWithIdentityResolution"));
             }
             var rows = new KVar(LinqMap("[int]Ref"));
             var n = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
-            Emit(new KHavoc { Var = n });
+            Emit(KHavoc.Of(n));
             var len = new KVar(n);
-            KExpr Row(KExpr i) => new KOp("sel", rows, i);
-            LinqFact(new KOp("<=", KLit.Zero, len), at);
+            KExpr Row(KExpr i) => Sel(rows, i);
+            LinqFact(Le(KLit.Zero, len), at);
             LinqFact(Over(KLit.Zero, len, i => NotNull(Row(i))), at);
             // (a different object at each index)
             LinqFact(Over(KLit.Zero, len, i => Over(KLit.Zero, len, j => OrElse(Eq(i, j), Ne(Row(i), Row(j))))), at);
@@ -219,9 +217,9 @@ namespace CsVerify.Verifier.Boogie
             // (each an entity of the type; which row an object is, the inverse of Row)
             LinqFact(Over(KLit.Zero, len, i => Isa(Row(i), e)), at);
             var index = new KVar(LinqMap("[Ref]int"));
-            LinqFact(Over(KLit.Zero, len, i => Eq(new KOp("sel", index, Row(i)), i)), at);
+            LinqFact(Over(KLit.Zero, len, i => Eq(Sel(index, Row(i)), i)), at);
             var y = new KVar("y$");
-            var isRow = AndAlso(Between(KLit.Zero, new KOp("sel", index, y), len), Eq(Row(new KOp("sel", index, y)), y));
+            var isRow = AndAlso(Between(KLit.Zero, Sel(index, y), len), Eq(Row(Sel(index, y)), y));
             // (a query that gives no entity of the type, Count, Any, a projection of columns: the database's values, no objects)
             if (_dbResult != null && !Mentions(_dbResult, e.Type)) { }
             else if (t.NoTracking)
@@ -234,14 +232,10 @@ namespace CsVerify.Verifier.Boogie
             else
             {
                 var k = "ef$known" + _temps++;
-                _p.Locals.Add(new KLocal
-                {
-                    Name = k,
-                    Raw = "bool",
-                });
-                Emit(new KHavoc { Var = k });
+                _p.Locals.Add(KLocal.Of(k, "bool"));
+                Emit(KHavoc.Of(k));
                 var o = new KVar("o$");
-                var none = KQuant.ForAll("o$", "Ref", new KOp("==>", Ne(State(t.Context, o), I(EfDetached)), Not(Isa(o, e))));
+                var none = KQuant.ForAll("o$", "Ref", Implies(Ne(State(t.Context, o), I(EfDetached)), Not(Isa(o, e))));
                 var outer = _known;
                 _known = null;
                 LinqFact(Eq(new KVar(k), none), at);
@@ -276,14 +270,14 @@ namespace CsVerify.Verifier.Boogie
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
             KExpr Null = KLit.Null;
-            LinqFact(parent.All(x => maybeNull ? new KOp("==>", Ne(of(x), Null), Eq(new KOp("sel", parentOf, of(x)), x))
-                                               : Eq(new KOp("sel", parentOf, of(x)), x)), at);
+            LinqFact(parent.All(x => maybeNull ? Implies(Ne(of(x), Null), Eq(Sel(parentOf, of(x)), x))
+                                               : Eq(Sel(parentOf, of(x)), x)), at);
             return new Made
             {
                 Entity = entity,
-                All = maybeNull ? body => parent.All(x => new KOp("==>", Ne(of(x), Null), body(of(x)))) : body => parent.All(x => body(of(x))),
+                All = maybeNull ? body => parent.All(x => Implies(Ne(of(x), Null), body(of(x)))) : body => parent.All(x => body(of(x))),
                 Any = maybeNull ? body => parent.Any(x => AndAlso(Ne(of(x), Null), body(of(x)))) : body => parent.Any(x => body(of(x))),
-                Has = r => AndAlso(AndAlso(Ne(r, Null), parent.Has(new KOp("sel", parentOf, r))), Eq(of(new KOp("sel", parentOf, r)), r)),
+                Has = r => AndAlso(AndAlso(Ne(r, Null), parent.Has(Sel(parentOf, r))), Eq(of(Sel(parentOf, r)), r)),
             };
         }
 
@@ -292,9 +286,9 @@ namespace CsVerify.Verifier.Boogie
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
             var indexOf = new KVar(LinqMap("[Ref]int"));
-            LinqFact(parent.All(x => Over(KLit.Zero, size(x), j => AndAlso(Eq(new KOp("sel", parentOf, el(x, j)), x), Eq(new KOp("sel", indexOf, el(x, j)), j)))), at);
-            KExpr P(KExpr r) => new KOp("sel", parentOf, r);
-            KExpr J(KExpr r) => new KOp("sel", indexOf, r);
+            LinqFact(parent.All(x => Over(KLit.Zero, size(x), j => AndAlso(Eq(Sel(parentOf, el(x, j)), x), Eq(Sel(indexOf, el(x, j)), j)))), at);
+            KExpr P(KExpr r) => Sel(parentOf, r);
+            KExpr J(KExpr r) => Sel(indexOf, r);
             return new Made
             {
                 Entity = entity,
@@ -308,12 +302,12 @@ namespace CsVerify.Verifier.Boogie
         private Made MembersOf(Made parent, System.Func<KExpr, KExpr, KExpr> member, EfModel.Entity entity, SyntaxNode at)
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
-            KExpr P(KExpr r) => new KOp("sel", parentOf, r);
-            LinqFact(parent.All(x => KQuant.ForAll("z$", "Ref", new KOp("==>", member(x, new KVar("z$")), Eq(P(new KVar("z$")), x)))), at);
+            KExpr P(KExpr r) => Sel(parentOf, r);
+            LinqFact(parent.All(x => KQuant.ForAll("z$", "Ref", Implies(member(x, new KVar("z$")), Eq(P(new KVar("z$")), x)))), at);
             return new Made
             {
                 Entity = entity,
-                All = body => parent.All(x => KQuant.ForAll("z$", "Ref", new KOp("==>", member(x, new KVar("z$")), body(new KVar("z$"))))),
+                All = body => parent.All(x => KQuant.ForAll("z$", "Ref", Implies(member(x, new KVar("z$")), body(new KVar("z$"))))),
                 Any = body => parent.Any(x => KQuant.Exists("z$", "Ref", AndAlso(member(x, new KVar("z$")), body(new KVar("z$"))))),
                 Has = r => AndAlso(parent.Has(P(r)), member(P(r), r)),
             };
@@ -330,7 +324,7 @@ namespace CsVerify.Verifier.Boogie
         private void Materialized(DbTable t, KVar rows, KVar len, SyntaxNode at, KVar index)
         {
             var e = t.Entity;
-            KExpr Row(KExpr i) => new KOp("sel", rows, i);
+            KExpr Row(KExpr i) => Sel(rows, i);
             KExpr Alloc(KExpr r) => Sel("$Alloc", r);
             KExpr Zero = KLit.Zero;
             KExpr Null = KLit.Null;
@@ -340,7 +334,7 @@ namespace CsVerify.Verifier.Boogie
                 Entity = e,
                 All = body => Over(Zero, len, i => body(Row(i))),
                 Any = body => Over(Zero, len, i => body(Row(i)), forall: false),
-                Has = r => AndAlso(Between(Zero, new KOp("sel", index, r), len), Eq(Row(new KOp("sel", index, r)), r)),
+                Has = r => AndAlso(Between(Zero, Sel(index, r), len), Eq(Row(Sel(index, r)), r)),
             };
             var made = new List<Made> { top };
             var loadedTypes = new HashSet<ITypeSymbol>(t.IncludePaths.SelectMany(x => x).Select(nav => EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition)
@@ -412,11 +406,7 @@ namespace CsVerify.Verifier.Boogie
             // (no other code reaches them, if the method lets none out: an await leaves their columns as they were)
             if (_unshared != null)
             {
-                Emit(new KAssign
-                {
-                    Var = _unshared,
-                    Value = new KOp("lambda", new KLit("r$: Ref"), OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$")))),
-                });
+                Emit(KAssign.Of(_unshared, MapLambda("r$: Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"))))));
                 foreach (var p in KernelTypes.Ef.Entities.SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField))
                 {
                     _p.Fields.Add(p.OriginalDefinition);
@@ -438,14 +428,14 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             var e = t.Entity;
-            KExpr Row(KExpr i) => new KOp("sel", rows, i);
+            KExpr Row(KExpr i) => Sel(rows, i);
             KExpr Null = KLit.Null;
             var top = new Made
             {
                 Entity = e,
                 All = body => Over(KLit.Zero, len, i => body(Row(i))),
                 Any = body => Over(KLit.Zero, len, i => body(Row(i)), forall: false),
-                Has = r => AndAlso(Between(KLit.Zero, new KOp("sel", index, r), len), Eq(Row(new KOp("sel", index, r)), r)),
+                Has = r => AndAlso(Between(KLit.Zero, Sel(index, r), len), Eq(Row(Sel(index, r)), r)),
             };
             _known = known;
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r.OriginalDefinition) && IsField(r)))
@@ -463,12 +453,8 @@ namespace CsVerify.Verifier.Boogie
             // (none of the types the paths load tracked before either)
             var types = t.IncludePaths.SelectMany(x => x).Select(nav => KernelTypes.Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _))).Where(x => x != null).Distinct().ToList();
             var all = "ef$known" + _temps++;
-            _p.Locals.Add(new KLocal
-            {
-                Name = all,
-                Raw = "bool",
-            });
-            Emit(new KHavoc { Var = all });
+            _p.Locals.Add(KLocal.Of(all, "bool"));
+            Emit(KHavoc.Of(all));
             var o = new KVar("o$");
             KExpr none = known;
             foreach (var d in types)
@@ -476,7 +462,7 @@ namespace CsVerify.Verifier.Boogie
                 none = AndAlso(none, KQuant.ForAll(
                     "o$",
                     "Ref",
-                    new KOp("==>", Ne(State(t.Context, o), I(EfDetached)), Not(Isa(o, d)))));
+                    Implies(Ne(State(t.Context, o), I(EfDetached)), Not(Isa(o, d)))));
             }
             _known = null;
             LinqFact(Eq(new KVar(all), none), at);
@@ -489,8 +475,8 @@ namespace CsVerify.Verifier.Boogie
             var maybe = new KVar(LinqMap("[Ref]bool"));
             var y = new KVar("y$");
             KExpr ofTypes = types.Select(d => Isa(y, d)).DefaultIfEmpty(KLit.False).Aggregate((a, b) => OrElse(a, b));
-            SetStates(t.Context, new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
-                new KOp("ite", new KOp("sel", maybe, y), I(Unchanged), I(EfDetached)), State(t.Context, y))));
+            SetStates(t.Context, MapLambda("y$: Ref", Ite(AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
+                Ite(Sel(maybe, y), I(Unchanged), I(EfDetached)), State(t.Context, y))));
         }
 
         /// <summary>
@@ -504,16 +490,8 @@ namespace CsVerify.Verifier.Boogie
             _p.Modifies.Add("$Alloc");
             _p.AnyWrites.Add("$Alloc");
             var before = "ef$alloc" + _temps++;
-            _p.Locals.Add(new KLocal
-            {
-                Name = before,
-                Raw = "[Ref]bool",
-            });
-            Emit(new KAssign
-            {
-                Var = before,
-                Value = new KVar("$Alloc"),
-            });
+            _p.Locals.Add(KLocal.Of(before, "[Ref]bool"));
+            Emit(KAssign.Of(before, new KVar("$Alloc")));
             if (made.Count == 0)
             {
                 return before;
@@ -531,13 +509,8 @@ namespace CsVerify.Verifier.Boogie
             LinqFact(KQuant.ForAll(
                 "r$",
                 "Ref",
-                Eq(new KOp("sel", after, r), OrElse(Alloc(r), AndAlso(Ne(r, Null), isMade)))), at);
-            Emit(new KRow
-            {
-                Map = "$Alloc",
-                Ref = null,
-                Value = after,
-            });
+                Eq(Sel(after, r), OrElse(Alloc(r), AndAlso(Ne(r, Null), isMade)))), at);
+            Emit(KRow.Of("$Alloc", null, after));
             _known = guard;
             foreach (var m in made.Where(m => m.Entity != null))
             {
@@ -652,7 +625,7 @@ namespace CsVerify.Verifier.Boogie
                     LinqFact(level.All(x => KQuant.ForAll(
                         "z$",
                         "Ref",
-                        new KOp("==>", In(x, new KVar("z$")),
+                        Implies(In(x, new KVar("z$")),
                         AndAlso(AndAlso(Ne(new KVar("z$"), Null), Not(Sel("$Alloc", new KVar("z$")))),
                             AndAlso(AndAlso(Isa(new KVar("z$"), sd), ForeignKey(sfk, new KVar("z$"), e.Key[0], x)), Filtered(t, sd, new KVar("z$"))))))), at);
                     var sets = ChildOf(level, S, false, null, at);
@@ -711,16 +684,8 @@ namespace CsVerify.Verifier.Boogie
             void Keep(string map, string type, bool whole)
             {
                 var snap = "ef$kept" + _temps++;
-                _p.Locals.Add(new KLocal
-                {
-                    Name = snap,
-                    Raw = type,
-                });
-                Emit(new KAssign
-                {
-                    Var = snap,
-                    Value = new KVar(map),
-                });
+                _p.Locals.Add(KLocal.Of(snap, type));
+                Emit(KAssign.Of(snap, new KVar(map)));
                 kept.Add((map, snap, whole));
             }
             // (the tracker's state, whole: a context is this code's alone while it runs, CSV1036)
@@ -768,14 +733,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (whole)
                 {
-                    Emit(new KAssume { Cond = Eq(new KVar(map), new KVar(snap)) });
+                    Emit(KAssume.Of(Eq(new KVar(map), new KVar(snap))));
                 }
                 else
                 {
                     LinqFact(KQuant.ForAll(
                         "r$",
                         "Ref",
-                        new KOp("==>", Sel(_unshared, new KVar("r$")),
+                        Implies(Sel(_unshared, new KVar("r$")),
                                                          Eq(Sel(map, new KVar("r$")), Sel(snap, new KVar("r$"))))), _decl);
                 }
             }
@@ -891,7 +856,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var unknown = new KVar(LinqMap("[Ref][Ref]bool"));
             var eq = b.OperatorKind == BinaryOperatorKind.Equals ? value : Not(value);
-            var result = new KOp("ite", isNull, new KOp("sel", unknown, l, r), eq);
+            var result = Ite(isNull, Sel(unknown, l, r), eq);
             return b.OperatorKind == BinaryOperatorKind.Equals ? result : Not(result);
         }
 
@@ -977,11 +942,7 @@ namespace CsVerify.Verifier.Boogie
             if (root.DescendantsAndSelf().OfType<IAwaitOperation>().Any() && EntitiesStayHere())
             {
                 _unshared = "ef$unshared";
-                _p.Locals.Add(new KLocal
-                {
-                    Name = _unshared,
-                    Raw = "[Ref]bool",
-                });
+                _p.Locals.Add(KLocal.Of(_unshared, "[Ref]bool"));
             }
             foreach (var op in root.DescendantsAndSelf())
             {
@@ -1127,14 +1088,12 @@ namespace CsVerify.Verifier.Boogie
                         }
                         if (why != null)
                         {
-                            Emit(new KCheck
-                            {
-                                Cond = KLit.False,
-                                Id = "CSV1032",
-                                At = op.Syntax,
-                                NotAssumedAfter = true,
-                                Message = $"'{op.Syntax}' can't be translated to SQL: {why}; EF throws when the query runs. Compute it before the query, or after it (AsEnumerable)",
-                            });
+                            Emit(KCheck.Of(
+                                KLit.False,
+                                "CSV1032",
+                                op.Syntax,
+                                notAssumedAfter: true,
+                                message: $"'{op.Syntax}' can't be translated to SQL: {why}; EF throws when the query runs. Compute it before the query, or after it (AsEnumerable)"));
                             _untranslatable.Add(inv.Syntax);
                         }
                     }
@@ -1214,15 +1173,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Emit(new KCheck
-            {
-                Cond = _known == null ? new KOp("<=", count, KLit.One) : new KOp("==>", _known, new KOp("<=", count, KLit.One)),
-                Id = "CSV1031",
-                At = call.Syntax,
-                NotAssumedAfter = true,
-                Message = $"'{call.Syntax}' keeps rows by their place in an order the database doesn't fix: order the query by a key " +
-                                        "(OrderBy, or ThenBy, ending in the key or a unique index), or show that at most one row matches",
-            });
+            Emit(KCheck.Of(
+                _known == null ? Le(count, KLit.One) : Implies(_known, Le(count, KLit.One)),
+                "CSV1031",
+                call.Syntax,
+                notAssumedAfter: true,
+                message: $"'{call.Syntax}' keeps rows by their place in an order the database doesn't fix: order the query by a key " +
+                                       "(OrderBy, or ThenBy, ending in the key or a unique index), or show that at most one row matches"));
         }
 
         /// <summary>Is the query (as written here) sorted by a set of columns that identifies a row?</summary>
@@ -1407,11 +1364,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var p = lambda.Symbol.Parameters[k];
                 var local = Declare("q$" + p.Name, p.Type);
-                Emit(new KAssign
-                {
-                    Var = local,
-                    Value = Expr(args[k].Value),
-                });
+                Emit(KAssign.Of(local, Expr(args[k].Value)));
                 _compiledParams.Add(p);
             }
             try
@@ -1455,23 +1408,17 @@ namespace CsVerify.Verifier.Boogie
                 var v = Expr(a.Value);
                 if (KernelTypes.Ef.IsContextType(a.Value.Type))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = NotNull(v),
-                        Id = "CSV1013",
-                        At = a.Value.Syntax,
-                        Message = $"'{a.Value.Syntax}' might be null in '{call.Syntax}'",
-                    });
+                    Emit(KCheck.Of(NotNull(v), "CSV1013", a.Value.Syntax, $"'{a.Value.Syntax}' might be null in '{call.Syntax}'"));
                 }
             }
             var items = new KVar(LinqMap("[int]" + TypeOf(elem)));
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
-            Emit(new KHavoc { Var = n });
-            ShapeFact(new KOp("<=", KLit.Zero, new KVar(n)), call.Syntax);
+            Emit(KHavoc.Of(n));
+            ShapeFact(Le(KLit.Zero, new KVar(n)), call.Syntax);
             return new LSeq
             {
                 Length = new KVar(n),
-                Elem = i => new KOp("sel", items, i),
+                Elem = i => Sel(items, i),
                 Type = elem,
             };
         }

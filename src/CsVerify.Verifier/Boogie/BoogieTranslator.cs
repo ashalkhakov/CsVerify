@@ -646,46 +646,18 @@ namespace CsVerify.Verifier.Boogie
                 {
                     frame.Maps.AddRange((writes.TryGetValue(frame.Callee.OriginalDefinition, out var w) ? w : new HashSet<string>())
                         .Where(_printer.OwnedMaps.Contains).OrderBy(x => x, StringComparer.Ordinal));
-                    p.Source.Locals.Add(new KLocal
-                    {
-                        Name = $"s{frame.Id}$perm",
-                        Raw = "[Ref]bool",
-                    });
-                    p.Source.Locals.Add(new KLocal
-                    {
-                        Name = $"s{frame.Id}$pinst",
-                        Raw = "[Inst]int",
-                    });
-                    p.Source.Locals.Add(new KLocal
-                    {
-                        Name = $"s{frame.Id}$owner",
-                        Raw = "[Ref]Inst",
-                    });
-                    p.Source.Locals.Add(new KLocal
-                    {
-                        Name = $"s{frame.Id}$psnap",
-                        Raw = "[Inst]int",
-                    });
-                    p.Source.Locals.Add(new KLocal
-                    {
-                        Name = $"s{frame.Id}$Alloc",
-                        Raw = "[Ref]bool",
-                    });
+                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$perm", "[Ref]bool"));
+                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$pinst", "[Inst]int"));
+                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$owner", "[Ref]Inst"));
+                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$psnap", "[Inst]int"));
+                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$Alloc", "[Ref]bool"));
                     if (KernelTypes.Trees)
                     {
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s{frame.Id}$root",
-                            Raw = "[Ref]Ref",
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$root", "[Ref]Ref"));
                     }
                     foreach (var map in frame.Maps)
                     {
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s{frame.Id}{map}",
-                            Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}",
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}{map}", $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}"));
                     }
                     foreach (var map in frame.Maps)
                     {
@@ -693,37 +665,17 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (frame.Fields)
                     {
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s{frame.Id}$fperm",
-                            Raw = "[Ref][int]bool",
-                        });
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s{frame.Id}$fowner",
-                            Raw = "[Ref][int]Inst",
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$fperm", "[Ref][int]bool"));
+                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$fowner", "[Ref][int]Inst"));
                     }
                     if (frame.Cells)
                     {
                         frame.ElementMaps.AddRange((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s{frame.Id}$cells",
-                            Raw = "[Ref][int]real",
-                        });
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s{frame.Id}$cowner",
-                            Raw = "[Ref][int]Inst",
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$cells", "[Ref][int]real"));
+                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$cowner", "[Ref][int]Inst"));
                         foreach (var map in frame.ElementMaps)
                         {
-                            p.Source.Locals.Add(new KLocal
-                            {
-                                Name = $"s{frame.Id}{map}",
-                                Raw = "[Ref][int]" + ElementValue(map),
-                            });
+                            p.Source.Locals.Add(KLocal.Of($"s{frame.Id}{map}", "[Ref][int]" + ElementValue(map)));
                         }
                     }
                     // (and the globals its postconditions read as they were)
@@ -733,11 +685,7 @@ namespace CsVerify.Verifier.Boogie
                                 : fields.FirstOrDefault(f => FieldMap(f) == g) is ISymbol fs ? $"[Ref]{TypeOf(FieldType(fs))}" : null;
                         if (raw != null)
                         {
-                            p.Source.Locals.Add(new KLocal
-                            {
-                                Name = $"s{frame.Id}{g}",
-                                Raw = raw,
-                            });
+                            p.Source.Locals.Add(KLocal.Of($"s{frame.Id}{g}", raw));
                         }
                     }
                 }
@@ -766,11 +714,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var (name, type) in _printer.StateMaps)
                     {
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"k${keep.Id}{name}",
-                            Raw = type,
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"k${keep.Id}{name}", type));
                     }
                 }
             }
@@ -781,11 +725,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var (name, type) in _printer.StateMaps)
                     {
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"c${cf.Head}{name}",
-                            Raw = type,
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"c${cf.Head}{name}", type));
                     }
                 }
             }
@@ -803,18 +743,10 @@ namespace CsVerify.Verifier.Boogie
                     {
                         continue;
                     }
-                    p.Source.Locals.Add(new KLocal
-                    {
-                        Name = $"s${frame.Head}$Alloc",
-                        Raw = "[Ref]bool",
-                    });
+                    p.Source.Locals.Add(KLocal.Of($"s${frame.Head}$Alloc", "[Ref]bool"));
                     foreach (var map in frame.Maps)
                     {
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"s${frame.Head}{map}",
-                            Raw = "[Ref][int]" + ElementValue(map),
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"s${frame.Head}{map}", "[Ref][int]" + ElementValue(map)));
                     }
                 }
             }

@@ -290,13 +290,7 @@ namespace CsVerify.Verifier.Boogie
                     var recv = Expr(Unconverted(src.Instance));
                     if (!src.Instance.Type.IsValueType)
                     {
-                        Emit(new KCheck
-                        {
-                            Cond = NotNull(recv),
-                            Id = "CSV1013",
-                            At = src.Instance.Syntax,
-                            Message = $"'{src.Instance.Syntax}' might be null in '{src.Syntax}'",
-                        });
+                        Emit(KCheck.Of(NotNull(recv), "CSV1013", src.Instance.Syntax, $"'{src.Instance.Syntax}' might be null in '{src.Syntax}'"));
                     }
                 }
                 foreach (var a in src.Arguments.OrderBy(a => a.Parameter.Ordinal))
@@ -325,10 +319,10 @@ namespace CsVerify.Verifier.Boogie
             if (fe.Opaque)
             {
                 var e = Declare("t$" + _temps++, fe.Element);
-                Emit(new KHavoc { Var = e });
+                Emit(KHavoc.Of(e));
                 if (IsNullable(fe.Element) && NotNullable(fe.Element))
                 {
-                    Emit(new KAssume { Cond = NotNull(new KVar(e)) });
+                    Emit(KAssume.Of(NotNull(new KVar(e))));
                 }
                 return new KVar(e);
             }
@@ -347,14 +341,14 @@ namespace CsVerify.Verifier.Boogie
                 _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, "property 'Current' of Enumerator is not modeled; its value is unknown", fe.At.GetLocation().GetLineSpan()));
             }
             var v = Declare("t$" + _temps++, fe.Element);
-            Emit(new KHavoc { Var = v });
+            Emit(KHavoc.Of(v));
             if (fe.View == "Keys")
             {
                 // (a key it has: never null)
-                Emit(new KAssume { Cond = Sel(ModelOf("Domain", fe.Collection).Name, new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
+                Emit(KAssume.Of(Sel(ModelOf("Domain", fe.Collection).Name, new KVar(fe.Array), Keyed(new KVar(v), fe.Element))));
                 if (fe.Element.IsReferenceType)
                 {
-                    Emit(new KAssume { Cond = NotNull(new KVar(v)) });
+                    Emit(KAssume.Of(NotNull(new KVar(v))));
                 }
             }
             else if (fe.View == "Values") { } // (a value it has: not modeled)
@@ -362,13 +356,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 var key = Pair(new KVar(v), fe.Element, "Key");
                 var value = Pair(new KVar(v), fe.Element, "Value");
-                Emit(new KAssume { Cond = AndAlso(Sel(ModelOf("Domain", fe.Collection).Name, new KVar(fe.Array), key),
-                                                       Eq(Sel(ModelOf("Entries", fe.Collection).Name, new KVar(fe.Array), key), value)) });
+                Emit(KAssume.Of(
+                AndAlso(Sel(ModelOf("Domain", fe.Collection).Name, new KVar(fe.Array), key),
+                             Eq(Sel(ModelOf("Entries", fe.Collection).Name, new KVar(fe.Array), key), value))));
             }
             // (a set's: one of its members, as the version at the start has them, in some order)
             else if (CollectionKind(fe.Collection) == "HashSet")
             {
-                Emit(new KAssume { Cond = Sel(ModelOf("Members", fe.Collection).Name, new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
+                Emit(KAssume.Of(Sel(ModelOf("Members", fe.Collection).Name, new KVar(fe.Array), Keyed(new KVar(v), fe.Element))));
             }
             return new KVar(v);
         }
@@ -426,14 +421,12 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var i = new KVar(fe.Index);
                 // (through an enumerator: at most as many as the collection had where the loop began)
-                list.Insert(0, new KSpec
-                {
-                    Expr = fe.Opaque ? new KOp("<=", KLit.Zero, i)
-                         : fe.Version == null ? AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<=", i, LengthOf(fe, true)))
-                         : fe.Size0 != null ? AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<=", i, new KVar(fe.Size0)))
-                         : new KOp("<=", KLit.Zero, i),
-                    At = fe.At,
-                });
+                list.Insert(0, KSpec.Of(
+                    fe.Opaque ? Le(KLit.Zero, i)
+                  : fe.Version == null ? AndAlso(Le(KLit.Zero, i), Le(i, LengthOf(fe, true)))
+                  : fe.Size0 != null ? AndAlso(Le(KLit.Zero, i), Le(i, new KVar(fe.Size0)))
+                  : Le(KLit.Zero, i),
+                    fe.At));
             }
         }
     }

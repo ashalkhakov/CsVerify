@@ -28,14 +28,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(s switch
                     {
-                        MAssert a => new MAssert
-                        {
-                            Cond = Implies(guard, a.Cond),
-                            Check = a.Check,
-                            NotAssumedAfter = a.NotAssumedAfter,
-                        },
+                        MAssert a => MAssert.Of(Implication(guard, a.Cond), a.Check, notAssumedAfter: a.NotAssumedAfter),
                         MAssume { Always: true } a => a,
-                        MAssume a => new MAssume { Cond = Implies(guard, a.Cond) },
+                        MAssume a => MAssume.Of(Implication(guard, a.Cond)),
                         _ => s,
                     });
                 }
@@ -56,7 +51,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var (l, r) = (Code(cat.Args[0]), Code(cat.Args[1]));
                     // (a concatenation too long for a string throws: the path ends)
-                    Assume(new MOp("<=", new MOp("+", new MOp("sl", l), new MOp("sl", r)), new MLit("2147483647")));
+                    Assume(Le(Plus(new MOp("sl", l), new MOp("sl", r)), new MLit("2147483647")));
                     return new MOp("scat", l, r);
                 }
                 case KOp { Op: "streq" } eq:
@@ -75,14 +70,14 @@ namespace CsVerify.Verifier.Boogie
                     if (ic.Fresh)
                     {
                         var c = Fresh("int");
-                        Assume(new MOp("<=", MLit.Zero, c));
+                        Assume(Le(MLit.Zero, c));
                         count = c;
                     }
                     if (i == null)
                     {
                         return count;
                     }
-                    Assert(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
+                    Assert(AndAlso(Le(MLit.Zero, i), Lt(i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
                     return ic.Fresh ? Fresh(TypeOf(ic.Element)) : MathTypes.IfcRead(x, i, ic.Element);
                 }
                 case KMultiset ms:
@@ -90,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
                     var a = Code(ms.Array);
                     var n = Code(ms.Count);
                     Assert(NotNull(a), At("CSV1013", ms.At, $"'{ms.At}' might dereference null"));
-                    Assert(AndAlso(new MOp("<=", MLit.Zero, n), new MOp("<=", n, new MOp("len", a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
+                    Assert(AndAlso(Le(MLit.Zero, n), Le(n, Length(a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
@@ -136,7 +131,7 @@ namespace CsVerify.Verifier.Boogie
                     var lo = Code(((KOp)range.Args[0]).Args[0]);
                     var hi = Code(((KOp)range.Args[1]).Args[1]);
                     var v = new MVar(q.Var);
-                    var mathRange = AndAlso(new MOp("<=", lo, v), new MOp("<", v, hi));
+                    var mathRange = AndAlso(Le(lo, v), Lt(v, hi));
                     var outer = _out;
                     _out = new List<MStmt>();
                     MExpr body;
@@ -154,14 +149,9 @@ namespace CsVerify.Verifier.Boogie
                         {
                             Emit(s switch
                             {
-                                MAssert a => new MAssert
-                                {
-                                    Cond = MQuant.ForAll(q.Var, a.Cond),
-                                    Check = a.Check,
-                                    NotAssumedAfter = a.NotAssumedAfter,
-                                },
+                                MAssert a => MAssert.Of(MQuant.ForAll(q.Var, a.Cond), a.Check, notAssumedAfter: a.NotAssumedAfter),
                                 MAssume { Always: true } a when !a.Cond.Mentions(new HashSet<string> { q.Var }) => a,
-                                MAssume a => new MAssume { Cond = MQuant.ForAll(q.Var, a.Cond) },
+                                MAssume a => MAssume.Of(MQuant.ForAll(q.Var, a.Cond)),
                                 _ => throw new NotTranslated("a quantifier whose body changes state"),
                             });
                         }
@@ -225,7 +215,7 @@ namespace CsVerify.Verifier.Boogie
         private MExpr StringChar(KElem sc, MExpr s, MExpr i)
         {
             Assert(NotNull(s), NullAt(sc.At, sc.ArrayAt, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
-            Assert(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
+            Assert(AndAlso(Le(MLit.Zero, i), Lt(i, new MOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
             return new MOp("sat", s, i);
         }
 
@@ -246,7 +236,7 @@ namespace CsVerify.Verifier.Boogie
             // (alongside other code, under cell permissions: read only what it holds)
             if (alongside != null && _p.UsesCells)
             {
-                Assert(Implies(Code(alongside), new MOp(">", Cell(a, i), MLit.NoPermission)),
+                Assert(Implication(Code(alongside), Gt(Cell(a, i), MLit.NoPermission)),
                     At("CSV1016", el.At, $"'{el.At}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it"));
             }
             var ev = Sel(Elements(el.ArrayType), a, i);
@@ -303,20 +293,12 @@ namespace CsVerify.Verifier.Boogie
             // solver would have no term to instantiate it with)
             if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis))
             {
-                Emit(new MAssume
-                {
-                    Cond = new MOp("==>", NotNull(o), NotNull(v)),
-                    Always = true,
-                });
+                Emit(MAssume.Of(Implies(NotNull(o), NotNull(v)), always: true));
             }
             // (a field of an allocated object refers to an allocated object)
             if (IsRef(FieldType(fd.Field)))
             {
-                Emit(new MAssume
-                {
-                    Cond = Allocated(o, v),
-                    Always = true,
-                });
+                Emit(MAssume.Of(Allocated(o, v), always: true));
             }
             ObjectInvariant(v, FieldType(fd.Field));
             return v;
@@ -325,7 +307,7 @@ namespace CsVerify.Verifier.Boogie
         private void InBounds(MExpr a, MExpr i, SyntaxNode at, SyntaxNode arrayAt)
         {
             Assert(NotNull(a), NullAt(at, arrayAt, $"'{arrayAt}' might be null in '{at}'"));
-            Assert(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
+            Assert(AndAlso(Le(MLit.Zero, i), Lt(i, Length(a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
         }
 
         /// <summary>

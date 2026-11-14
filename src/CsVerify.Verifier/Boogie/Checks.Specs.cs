@@ -75,7 +75,7 @@ namespace CsVerify.Verifier.Boogie
             var cond = And(wf);
             if (before != null && before.Count > 0)
             {
-                cond = new MOp("==>", And(before), cond);
+                cond = Implies(And(before), cond);
             }
             // (checked, not assumed after: what an ill-defined specification says is unknown)
             Assert(cond, At("CSV1012", at, $"specification might not be well-defined: '{at}'"), true);
@@ -95,9 +95,9 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr Extensional(MExpr x, MExpr y)
         {
             var at = new MOp("sdiff", x, y);
-            return new MOp("==>", AndAlso(AndAlso(AndAlso(NotNull(x), NotNull(y)), Ne(x, y)),
+            return Implies(AndAlso(AndAlso(AndAlso(NotNull(x), NotNull(y)), Ne(x, y)),
                                              Eq(new MOp("slen", x), new MOp("slen", y))),
-                AndAlso(AndAlso(new MOp("<=", MLit.Zero, at), new MOp("<", at, new MOp("slen", x))), Ne(new MOp("sat", x, at), new MOp("sat", y, at))));
+                AndAlso(AndAlso(Le(MLit.Zero, at), Lt(at, new MOp("slen", x))), Ne(new MOp("sat", x, at), new MOp("sat", y, at))));
         }
 
         /// <summary>A stub's parameters given values: its receiver (@this, first), then the member's arguments.</summary>
@@ -175,7 +175,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private MExpr Spec(KExpr e, List<MExpr> wf, List<MExpr> guard)
         {
-            void Need(MExpr cond) => wf.Add(guard.Count == 0 ? cond : new MOp("==>", And(guard), cond));
+            void Need(MExpr cond) => wf.Add(guard.Count == 0 ? cond : Implies(And(guard), cond));
             MExpr Under(MExpr g, KExpr x)
             {
                 guard.Add(g);
@@ -194,7 +194,7 @@ namespace CsVerify.Verifier.Boogie
                 case KOp { Op: "ite" } ite:
                 {
                     var c = Spec(ite.Args[0], wf, guard);
-                    return new MOp("ite", c, Under(c, ite.Args[1]), Under(Not(c), ite.Args[2]));
+                    return Ite(c, Under(c, ite.Args[1]), Under(Not(c), ite.Args[2]));
                 }
                 case KOp { Op: "&&" } and:
                 {
@@ -214,9 +214,9 @@ namespace CsVerify.Verifier.Boogie
                     var v = Spec(old.Args[0], inner, new List<MExpr>());
                     foreach (var c in inner)
                     {
-                        Need(new MOp("old", c));
+                        Need(Old(c));
                     }
-                    return new MOp("old", v);
+                    return Old(v);
                 }
                 // (a value defined only where its condition holds: a float cast to an integer, which must fit)
                 case KOp { Op: "$need" } nd:
@@ -251,7 +251,7 @@ namespace CsVerify.Verifier.Boogie
                     var x = Spec(si.Of, wf, guard);
                     var i = si.Index == null ? null : Spec(si.Index, wf, guard);
                     var count = MathTypes.IfcRead(x, null, si.Element);
-                    Need(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, count))));
+                    Need(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(Le(MLit.Zero, i), Lt(i, count))));
                     return i == null ? count : MathTypes.IfcRead(x, i, si.Element);
                 }
                 case KLet let:
@@ -284,7 +284,7 @@ namespace CsVerify.Verifier.Boogie
                     // (well-defined within the array: 0 <= n <= a.Length; its contents as of where it's read)
                     var a = Spec(ms.Array, wf, guard);
                     var n = Spec(ms.Count, wf, guard);
-                    Need(AndAlso(AndAlso(NotNull(a), new MOp("<=", MLit.Zero, n)), new MOp("<=", n, new MOp("len", a))));
+                    Need(AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, n)), Le(n, Length(a))));
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
@@ -299,14 +299,14 @@ namespace CsVerify.Verifier.Boogie
                     var i = Spec(le.Index, wf, guard);
                     Need(le.Domain != null
                         ? AndAlso(NotNull(a), Sel(le.Domain, a, i))
-                        : AndAlso(AndAlso(NotNull(a), new MOp("<=", MLit.Zero, i)), new MOp("<", i, Sel(SizeMap, a))));
+                        : AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, i)), Lt(i, Sel(SizeMap, a))));
                     return Sel(model, a, i);
                 }
                 case KElem el:
                 {
                     var a = Spec(el.Array, wf, guard);
                     var i = Spec(el.Index, wf, guard);
-                    Need(el.Unchecked ? (el.NoNull ? MLit.True : NotNull(a)) : AndAlso(AndAlso(NotNull(a), new MOp("<=", MLit.Zero, i)), new MOp("<", i, new MOp(el.String ? "slen" : "len", a))));
+                    Need(el.Unchecked ? (el.NoNull ? MLit.True : NotNull(a)) : AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, i)), Lt(i, new MOp(el.String ? "slen" : "len", a))));
                     return el.String ? new MOp("sat", a, i) : Sel(Elements(el.ArrayType), a, i);
                 }
                 case KDataField df:
@@ -373,12 +373,12 @@ namespace CsVerify.Verifier.Boogie
                     var i = new MVar("i$");
                     return MQuant.ForAll(
                         "i$",
-                        Implies(AndAlso(new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))));
+                        Implication(AndAlso(Le(lo, i), Lt(i, hi)), Ge(Cell(a, i), Amount(cl.Read))));
                 }
                 case KInst inst:
                 {
                     var q = Instance(inst.Pred, inst.Args.Select(a => Spec(a, wf, guard)).ToArray());
-                    return _held ? new MOp(">=", Sel("pinst", q), MLit.One) : MLit.True;
+                    return _held ? Ge(Sel("pinst", q), MLit.One) : MLit.True;
                 }
                 case KField fd:
                 {
@@ -399,7 +399,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Sel(FieldMap(fd.Field), o);
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !o.Mentions(_bound))
                     {
-                        _facts.Add(new MOp("==>", NotNull(o), NotNull(v)));
+                        _facts.Add(Implies(NotNull(o), NotNull(v)));
                     }
                     if (IsRef(FieldType(fd.Field)) && !o.Mentions(_bound))
                     {
@@ -434,7 +434,7 @@ namespace CsVerify.Verifier.Boogie
                     // (Range is lo <= q && q < hi, from Lowering)
                     var lo = Spec(((KOp)((KOp)q.Range).Args[0]).Args[0], wf, guard);
                     var hi = Spec(((KOp)((KOp)q.Range).Args[1]).Args[1], wf, guard);
-                    var range = AndAlso(new MOp("<=", lo, new MVar(q.Var)), new MOp("<", new MVar(q.Var), hi));
+                    var range = AndAlso(Le(lo, new MVar(q.Var)), Lt(new MVar(q.Var), hi));
                     // (its body well-defined over the range: each condition quantified the same way)
                     var inner = new List<MExpr>();
                     bool added = _bound.Add(q.Var);

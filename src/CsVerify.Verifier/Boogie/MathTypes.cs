@@ -36,7 +36,7 @@ namespace CsVerify.Verifier.Boogie
         public static MExpr InRange(MExpr e, ITypeSymbol t)
         {
             var (lo, hi) = Range(t);
-            return AndAlso(new MOp("<=", Number(lo), e), new MOp("<=", e, Number(hi)));
+            return AndAlso(Le(Number(lo), e), Le(e, Number(hi)));
         }
 
         /// <summary>e wrapped around into t's range: two's complement, as Euclidean mod.</summary>
@@ -73,11 +73,11 @@ namespace CsVerify.Verifier.Boogie
             var kind = Kind(element);
             if (index == null)
             {
-                return new MOp("ite", new MOp("$arr", x), new MOp("len", x), new MOp("ite", new MOp("$coll", x), Sel(SizeMap, x), new MOp("$ocount", x, new MOp("$state"))));
+                return Ite(new MOp("$arr", x), Length(x), Ite(new MOp("$coll", x), Sel(SizeMap, x), new MOp("$ocount", x, new MOp("$state"))));
             }
             var array = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            return new MOp("ite", new MOp("$arr", x), Sel(Elements(array), x, index),
-                new MOp("ite", new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));
+            return Ite(new MOp("$arr", x), Sel(Elements(array), x, index),
+                Ite(new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));
         }
     }
 }

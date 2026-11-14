@@ -30,14 +30,12 @@ namespace CsVerify.Verifier.Boogie
                 // (of an object not made here: its fields may be anyone's, so no view of it, CSV1016)
                 case "New" when !(own.Arguments[0].Value is IObjectCreationOperation) && own.Arguments.Length == 2 && IsOwnedClass(own.Arguments[0].Value.Type):
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1016",
-                        At = own.Syntax,
-                        NotAssumedAfter = true,
-                        Message = $"Own.New makes a view only of an object made where it is called, new {own.Arguments[0].Value.Type.Name}(...): '{own.Arguments[0].Value.Syntax}' may be anyone's",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1016",
+                        own.Syntax,
+                        notAssumedAfter: true,
+                        message: $"Own.New makes a view only of an object made where it is called, new {own.Arguments[0].Value.Type.Name}(...): '{own.Arguments[0].Value.Syntax}' may be anyone's"));
                     var obj = Expr(own.Arguments[0].Value);
                     var view = RefVariable(own.Arguments[1]);
                     // (the error stands for it: the view, as a new object's would be, nothing else said of it)

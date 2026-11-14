@@ -39,11 +39,11 @@ namespace CsVerify.Verifier.Boogie
         private KExpr OthersStep(ISymbol field, KExpr o, bool onThis, SyntaxNode at)
         {
             var now = Declare("t$" + _temps++, FieldType(field));
-            Emit(new KHavoc { Var = now });
+            Emit(KHavoc.Of(now));
             // (others store what may be stored there: not null, where the field is declared so)
             if (IsNullable(FieldType(field)) && NotNullable(FieldType(field)))
             {
-                Emit(new KAssume { Cond = NotNull(new KVar(now)) });
+                Emit(KAssume.Of(NotNull(new KVar(now))));
             }
             var last = new KField
             {
@@ -55,13 +55,7 @@ namespace CsVerify.Verifier.Boogie
             };
             if (Step(field, last, new KVar(now)) is KExpr step)
             {
-                Emit(new KSpecStmt
-                {
-                    Spec = step,
-                    Assume = true,
-                    At = at,
-                    ArgumentAt = at,
-                });
+                Emit(KSpecStmt.Assumed(step, at, argumentAt: at));
             }
             Emit(new KFieldStore
             {
@@ -79,14 +73,12 @@ namespace CsVerify.Verifier.Boogie
         {
             if (field is IFieldSymbol { IsVolatile: false })
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1030",
-                    At = at,
-                    NotAssumedAfter = true,
-                    Message = $"'{at}' reads [Atomic] '{field.Name}' plainly, which the compiler may reorder or keep from an earlier read: declare it volatile, or read it with Volatile.Read or Interlocked",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1030",
+                    at,
+                    notAssumedAfter: true,
+                    message: $"'{at}' reads [Atomic] '{field.Name}' plainly, which the compiler may reorder or keep from an earlier read: declare it volatile, or read it with Volatile.Read or Interlocked"));
             }
             return OthersStep(field, o, onThis, at);
         }
@@ -96,31 +88,23 @@ namespace CsVerify.Verifier.Boogie
         {
             if (field is IFieldSymbol { IsVolatile: false })
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1030",
-                    At = at,
-                    NotAssumedAfter = true,
-                    Message = $"'{at}' writes [Atomic] '{field.Name}' plainly, which the compiler may reorder: declare it volatile, or write it with Volatile.Write or Interlocked",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1030",
+                    at,
+                    notAssumedAfter: true,
+                    message: $"'{at}' writes [Atomic] '{field.Name}' plainly, which the compiler may reorder: declare it volatile, or write it with Volatile.Write or Interlocked"));
             }
             var written = Declare("t$" + _temps++, FieldType(field));
-            Emit(new KAssign
-            {
-                Var = written,
-                Value = v,
-            });
+            Emit(KAssign.Of(written, v));
             var cur = OthersStep(field, o, onThis, at);
             if (Step(field, cur, new KVar(written)) is KExpr step)
             {
-                Emit(new KCheck
-                {
-                    Cond = step,
-                    Id = "CSV1030",
-                    At = at,
-                    Message = $"this write of [Atomic] '{field.Name}' might not be a step from what it overwrites, which another thread may have changed since this one read it: write it with Interlocked.CompareExchange, or a value any it could replace allows",
-                });
+                Emit(KCheck.Of(
+                    step,
+                    "CSV1030",
+                    at,
+                    $"this write of [Atomic] '{field.Name}' might not be a step from what it overwrites, which another thread may have changed since this one read it: write it with Interlocked.CompareExchange, or a value any it could replace allows"));
             }
             return new KVar(written);
         }
@@ -134,14 +118,12 @@ namespace CsVerify.Verifier.Boogie
             // runs alongside other code mustn't do unheld, CSV1027; the call's value unknown)
             if (Unconverted(target) is IFieldReferenceOperation pf0 && !Atomics.IsAtomic(pf0.Field) && InSubset(pf0.Type))
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1901",
-                    At = ordered[0].Syntax,
-                    NotAssumedAfter = true,
-                    Message = $"passing '{ordered[0].Value.Syntax}' by ref is not supported: only locals, parameters, array elements and their structs' members",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1901",
+                    ordered[0].Syntax,
+                    notAssumedAfter: true,
+                    message: $"passing '{ordered[0].Value.Syntax}' by ref is not supported: only locals, parameters, array elements and their structs' members"));
                 Expr(Unconverted(target));
                 foreach (var a in ordered.Skip(1))
                 {
@@ -152,7 +134,7 @@ namespace CsVerify.Verifier.Boogie
                     return null;
                 }
                 var u = Declare("t$" + _temps++, inv.Type);
-                Emit(new KHavoc { Var = u });
+                Emit(KHavoc.Of(u));
                 return new KVar(u);
             }
             if (!(Unconverted(target) is IFieldReferenceOperation fr) || !Atomics.IsAtomic(fr.Field))
@@ -164,11 +146,7 @@ namespace CsVerify.Verifier.Boogie
             var args = ordered.Skip(1).Select(a =>
             {
                 var t = Declare("t$" + _temps++, a.Value.Type);
-                Emit(new KAssign
-                {
-                    Var = t,
-                    Value = Expr(a.Value),
-                });
+                Emit(KAssign.Of(t, Expr(a.Value)));
                 return (KExpr)new KVar(t);
             }).ToArray();
             var type = FieldType(field);
@@ -178,20 +156,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (Step(field, cur, v) is KExpr step)
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = when == null ? step : new KOp("==>", when, step),
-                        Id = "CSV1030",
-                        At = inv.Syntax,
-                        Message = what,
-                    });
+                    Emit(KCheck.Of(when == null ? step : Implies(when, step), "CSV1030", inv.Syntax, what));
                 }
                 Emit(new KFieldStore
                 {
                     Field = field,
                     Instance = o,
                     OnThis = onThis,
-                    Value = when == null ? v : new KOp("ite", when, v, cur),
+                    Value = when == null ? v : Ite(when, v, cur),
                     At = inv.Syntax,
                     InstanceAt = inv.Syntax,
                 });
@@ -208,19 +180,17 @@ namespace CsVerify.Verifier.Boogie
                     // (wrapping at the type's ends, as at run time)
                     var delta = name == "Increment" ? KLit.One : name == "Decrement" ? KLit.MinusOne : args[0];
                     var t = Declare("t$" + _temps++, type);
-                    Emit(new KAssign
-                    {
-                        Var = t,
-                        Value = new KArith
-                        {
-                            Op = "+",
-                            Left = cur,
-                            Right = delta,
-                            Type = type,
-                            Mode = KMode.Unchecked,
-                            At = inv.Syntax,
-                        },
-                    });
+                    Emit(KAssign.Of(
+                        t,
+                        new KArith
+                {
+                    Op = "+",
+                    Left = cur,
+                    Right = delta,
+                    Type = type,
+                    Mode = KMode.Unchecked,
+                    At = inv.Syntax,
+                }));
                     Write(new KVar(t));
                     return new KVar(t);
                 }
@@ -234,11 +204,7 @@ namespace CsVerify.Verifier.Boogie
                 case "And" or "Or" when IsIntegral(type):
                 {
                     var t = Declare("t$" + _temps++, type);
-                    Emit(new KAssign
-                    {
-                        Var = t,
-                        Value = Bitwise(name == "And" ? BinaryOperatorKind.And : BinaryOperatorKind.Or, cur, args[0], type, inSpec: false),
-                    });
+                    Emit(KAssign.Of(t, Bitwise(name == "And" ? BinaryOperatorKind.And : BinaryOperatorKind.Or, cur, args[0], type, inSpec: false)));
                     Write(new KVar(t));
                     return cur;
                 }

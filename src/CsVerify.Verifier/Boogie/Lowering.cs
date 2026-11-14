@@ -202,12 +202,7 @@ namespace CsVerify.Verifier.Boogie
             // (a data type's constructor that does nothing: a procedure of no statements, and no object)
             if (BoogieTranslator.EmptyDataConstructor(_m))
             {
-                _p.Blocks.Add(new KBlock
-                {
-                    Label = "b0",
-                    Ordinal = 0,
-                    Jump = new KReturn { At = _decl },
-                });
+                _p.Blocks.Add(KBlock.Of("b0", 0, jump: KReturn.Of(_decl)));
                 return _p;
             }
             // (Dafny's dynamic frames: what it may write. An [Owned] class's objects are framed by their views instead)
@@ -377,25 +372,16 @@ namespace CsVerify.Verifier.Boogie
             // (a view that comes in says what its cells hold)
             else if (_m.Parameters.Any(x => IsMemView(x.Type) && x.RefKind != RefKind.Out))
             {
-                _block = new KBlock
-                {
-                    Label = "mem",
-                    Ordinal = -1,
-                    Jump = new KGoto("b0"),
-                };
+                _block = KBlock.Of("mem", -1, jump: new KGoto("b0"));
                 _p.Blocks.Add(_block);
                 foreach (var x in _m.Parameters.Where(x => IsMemView(x.Type) && x.RefKind != RefKind.Out))
                 {
-                    Emit(new KAssume { Cond = MemTie(new KVar(Local(x)), x.Type) });
+                    Emit(KAssume.Of(MemTie(new KVar(Local(x)), x.Type)));
                 }
             }
             foreach (var b in cfg.Blocks)
             {
-                _block = new KBlock
-                {
-                    Label = $"b{b.Ordinal}",
-                    Ordinal = b.Ordinal,
-                };
+                _block = KBlock.Of($"b{b.Ordinal}", b.Ordinal);
                 _p.Blocks.Add(_block);
                 _cfgBlock = b;
                 // (its data values are valid: their invariants hold)
@@ -403,46 +389,30 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var (param, local) in _assigned)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = local,
-                            Value = new KVar(_capturedIn.TryGetValue(param, out var cin) ? cin : Local(param)),
-                        });
+                        Emit(KAssign.Of(local, new KVar(_capturedIn.TryGetValue(param, out var cin) ? cin : Local(param))));
                     }
                     foreach (var (sym, input) in _capturedIn.Where(x => x.Key is ILocalSymbol))
                     {
-                        Emit(new KAssign
-                        {
-                            Var = Local(sym),
-                            Value = new KVar(input),
-                        });
+                        Emit(KAssign.Of(Local(sym), new KVar(input)));
                     }
                     if (_unshared != null)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = _unshared,
-                            Value = new KOp("lambda", new KLit("r$: Ref"), KLit.False),
-                        });
+                        Emit(KAssign.Of(_unshared, MapLambda("r$: Ref", KLit.False)));
                     }
                     TrackerEntry();
                     MemLiveEntry();
                     // (a struct's constructor: its value begins as the default)
                     if (_p.StructThis && !_p.StructRefThis)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = "this",
-                            Value = StructDefault(_m.ContainingType),
-                        });
+                        Emit(KAssign.Of("this", StructDefault(_m.ContainingType)));
                     }
                     // (an iterator's body runs at the first MoveNext, after the call: the state may have changed since; what
                     // the call gave, the enumerable C# makes, isn't null)
                     if (_m.IsIterator)
                     {
                         CallersRun();
-                        Emit(new KHavoc { Var = "result" });
-                        Emit(new KAssume { Cond = NotNull(new KVar("result")) });
+                        Emit(KHavoc.Of("result"));
+                        Emit(KAssume.Of(NotNull(new KVar("result"))));
                     }
                     // (an [Atomic] field's step: a step after a step is a step, so what other threads do between two reads is one; CSV1030)
                     if (KernelTypes.SteppedBy?.Invoke(_m)?.FirstOrDefault() is IFieldSymbol stepped && _m.IsStatic && _m.Parameters.Length == 2 && _isFunction(_m))
@@ -455,38 +425,30 @@ namespace CsVerify.Verifier.Boogie
                             At = _decl,
                         };
                         KExpr R(string x) => IsIntegral(ft) ? InRange(new KVar(x), ft) : KLit.True;
-                        KExpr body = new KOp("==>", AndAlso(S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
+                        KExpr body = Implies(AndAlso(S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
                         foreach (var v in new[] { "q$c", "q$b", "q$a" })
                         {
-                            body = KQuant.ForAll(v, TypeOf(ft), new KOp("==>", R(v), body));
+                            body = KQuant.ForAll(v, TypeOf(ft), Implies(R(v), body));
                         }
-                        Emit(new KCheck
-                        {
-                            Cond = body,
-                            Id = "CSV1030",
-                            At = _decl,
-                            NotAssumedAfter = true,
-                            Message = $"step '{_m.Name}' of [Atomic] '{stepped.Name}' might not be transitive: two steps of other threads in a row must make one",
-                        });
+                        Emit(KCheck.Of(
+                            body,
+                            "CSV1030",
+                            _decl,
+                            notAssumedAfter: true,
+                            message: $"step '{_m.Name}' of [Atomic] '{stepped.Name}' might not be transitive: two steps of other threads in a row must make one"));
                     }
                     if (_ownedModifies)
                     {
-                        Emit(new KCheck
-                        {
-                            Cond = KLit.False,
-                            Id = "CSV1017",
-                            At = _decl,
-                            NotAssumedAfter = true,
-                            Message = $"{_m.ContainingType.Name} is [Owned]: its objects are changed through their views, not by Spec.Modifies",
-                        });
+                        Emit(KCheck.Of(
+                            KLit.False,
+                            "CSV1017",
+                            _decl,
+                            notAssumedAfter: true,
+                            message: $"{_m.ContainingType.Name} is [Owned]: its objects are changed through their views, not by Spec.Modifies"));
                     }
                     foreach (var cl in Confined())
                     {
-                        Emit(new KAssign
-                        {
-                            Var = Declare(Local(cl), cl.Type),
-                            Value = KLit.Null,
-                        });
+                        Emit(KAssign.Of(Declare(Local(cl), cl.Type), KLit.Null));
                     }
                     if (_p.HasThis && HasInvariants(_m.ContainingType))
                     {
@@ -503,7 +465,7 @@ namespace CsVerify.Verifier.Boogie
                     foreach (var sp in SteadyParams(_m).Where(x => IsFunc(x.Type)))
                     {
                         _p.DelegateKeys.Add(FuncKey(sp.Type));
-                        Emit(new KAssume { Cond = new KOp("$steady", new KVar(Local(_m.Parameters[sp.Ordinal]))) });
+                        Emit(KAssume.Of(new KOp("$steady", new KVar(Local(_m.Parameters[sp.Ordinal])))));
                     }
                 }
                 if (b.Ordinal == 0)
@@ -529,24 +491,20 @@ namespace CsVerify.Verifier.Boogie
                 // (a proof's loop must be shown to end: CSV1011 without Spec.Decreases)
                 if (heads.Contains(b.Ordinal) && (_p.Ghost || _contract.IsPure || _contract.IsLemma) && !_p.Measures.ContainsKey(b.Ordinal) && !_forEachAt.ContainsKey(b.Ordinal))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1011",
-                        At = _p.LoopSyntax.TryGetValue(b.Ordinal, out var ls0) ? ls0 : b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
-                        NotAssumedAfter = true,
-                        Message = "a loop in a lemma or [Pure] function needs Spec.Decreases",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1011",
+                        _p.LoopSyntax.TryGetValue(b.Ordinal, out var ls0) ? ls0 : b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
+                        notAssumedAfter: true,
+                        message: "a loop in a lemma or [Pure] function needs Spec.Decreases"));
                 }
                 if (_secondEntries.Contains(b.Ordinal))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1901",
-                        At = b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
-                        Message = "a cycle with no single entry (a goto into a loop) is not supported",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1901",
+                        b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
+                        "a cycle with no single entry (a goto into a loop) is not supported"));
                 }
                 foreach (var op in b.Operations)
                 {
@@ -571,38 +529,25 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var into in _p.Blocks.Where(x => x.Ordinal < h && x.Jump is KGoto g && g.Targets.Contains($"b{h}")))
                 {
-                    into.Stmts.Add(new KSpecStmt
-                    {
-                        Spec = Eq(new KVar(var), value),
-                        Assume = true,
-                        Free = true,
-                        At = _decl,
-                        ArgumentAt = _decl,
-                    });
+                    into.Stmts.Add(KSpecStmt.AssumedFree(Eq(new KVar(var), value), _decl, argumentAt: _decl));
                 }
             }
             // (no task started in a loop is running at the method's entry)
             // (each loop it's started in: the one of the last round was awaited on every way back, so at the head none is running)
             foreach (var (aw, block, awAt, awName) in _awaitedAtEntry)
             {
-                _p.Blocks[0].Stmts.Insert(0, new KAssign
-                {
-                    Var = aw,
-                    Value = KLit.True,
-                });
+                _p.Blocks[0].Stmts.Insert(0, KAssign.Of(aw, KLit.True));
                 foreach (var (h, last) in _p.LoopBodies.Where(lb => lb.Key <= block && block <= lb.Value))
                 {
-                    _p.Blocks.FirstOrDefault(x => x.Label == $"b{h}")?.Stmts.Insert(0, new KAssume { Cond = new KVar(aw) });
+                    _p.Blocks.FirstOrDefault(x => x.Label == $"b{h}")?.Stmts.Insert(0, KAssume.Of(new KVar(aw)));
                     foreach (var back in _p.Blocks.Where(x => x.Ordinal >= h && x.Ordinal <= last && x.Jump is KGoto g && g.Targets.Contains($"b{h}")))
                     {
-                        back.Stmts.Add(new KCheck
-                        {
-                            Cond = new KVar(aw),
-                            Id = "CSV1026",
-                            At = awAt,
-                            NotAssumedAfter = true,
-                            Message = $"the task of '{awName}' might not be awaited on every path: a failure in it would be lost",
-                        });
+                        back.Stmts.Add(KCheck.Of(
+                            new KVar(aw),
+                            "CSV1026",
+                            awAt,
+                            notAssumedAfter: true,
+                            message: $"the task of '{awName}' might not be awaited on every path: a failure in it would be lost"));
                     }
                 }
             }

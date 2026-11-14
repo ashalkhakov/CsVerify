@@ -46,8 +46,6 @@ namespace CsVerify.Verifier.Boogie
 
         private static KExpr Mod(KExpr a, int k) => new KOp("emod", a, Number(Pow2(k)));
         private static KExpr Shifted(KExpr a, int k) => k == 0 ? a : new KOp("ediv", a, Number(Pow2(k)));
-        private static KExpr Plus(KExpr a, KExpr b) => new KOp("+", a, b);
-        private static KExpr Minus(KExpr a, KExpr b) => new KOp("-", a, b);
 
         /// <summary>An operand that is repeated: in code, a temporary (in a specification, the expression itself).</summary>
         private KExpr Once(KExpr e, bool inSpec)
@@ -57,11 +55,7 @@ namespace CsVerify.Verifier.Boogie
                 return e;
             }
             var t = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int64));
-            Emit(new KAssign
-            {
-                Var = t,
-                Value = e,
-            });
+            Emit(KAssign.Of(t, e));
             var v = new KVar(t);
             if (_lowZeros.TryGetValue(e, out var z))
             {
@@ -90,7 +84,7 @@ namespace CsVerify.Verifier.Boogie
                     i++;
                 }
                 var run = Mod(Shifted(x, from), i + 1 - from);
-                runs.Add(from == 0 ? run : new KOp("*", Number(Pow2(from)), run));
+                runs.Add(from == 0 ? run : Times(Number(Pow2(from)), run));
             }
             return runs.Count == 0 ? Number(0) : runs.Aggregate(Plus);
         }
@@ -156,7 +150,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 if (kind == BinaryOperatorKind.LeftShift)
                 {
-                    var shifted = AsTyped(Mod(new KOp("*", l, Number(Pow2(k))), width), width, signed);
+                    var shifted = AsTyped(Mod(Times(l, Number(Pow2(k))), width), width, signed);
                     _lowZeros[shifted] = k;
                     return shifted;
                 }
@@ -166,7 +160,7 @@ namespace CsVerify.Verifier.Boogie
             var power = new KOp("$pow" + width, new KOp("emod", r, Number(width)));
             if (kind == BinaryOperatorKind.LeftShift)
             {
-                return AsTyped(Mod(new KOp("*", l, power), width), width, signed);
+                return AsTyped(Mod(Times(l, power), width), width, signed);
             }
             var value = new KOp("ediv", logical ? Mod(l, width) : l, power);
             // (a logical shift by 0 of a negative value: its unsigned image is not its value)
@@ -247,30 +241,26 @@ namespace CsVerify.Verifier.Boogie
         {
             string op = kind == BinaryOperatorKind.And ? "and" : kind == BinaryOperatorKind.Or ? "or" : "xor";
             var app = new KVar(Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int64)));
-            Emit(new KAssign
-            {
-                Var = app.Name,
-                Value = new KOp($"$bit.{op}{width}", x, y),
-            });
-            Emit(new KAssume { Cond = InRange(app, type) });
+            Emit(KAssign.Of(app.Name, new KOp($"$bit.{op}{width}", x, y)));
+            Emit(KAssume.Of(InRange(app, type)));
             int xz = LowZeros(x), yz = LowZeros(y);
             if (xz == 0 && yz == 0)
             {
                 // nothing suggests how they fit together: bit by bit
-                Emit(new KAssume { Cond = BitFacts(op, x, y, app, width) });
+                Emit(KAssume.Of(BitFacts(op, x, y, app, width)));
                 return app;
             }
-            Emit(new KAssume { Cond = RangeFacts(op, x, y, app) });
-            KExpr Disjoint(KExpr zeros, int k, KExpr low) => AndAlso(AndAlso(                Eq(Mod(zeros, System.Math.Min(k, width)), Number(0)), new KOp("<=", Number(0), low)), new KOp("<", low, Number(Pow2(System.Math.Min(k, width)))));
+            Emit(KAssume.Of(RangeFacts(op, x, y, app)));
+            KExpr Disjoint(KExpr zeros, int k, KExpr low) => AndAlso(AndAlso(                Eq(Mod(zeros, System.Math.Min(k, width)), Number(0)), Le(Number(0), low)), Lt(low, Number(Pow2(System.Math.Min(k, width)))));
             KExpr disjoint = kind == BinaryOperatorKind.And ? Number(0) : Plus(x, y);
             KExpr value = app;
             if (yz > 0)
             {
-                value = new KOp("ite", Disjoint(y, yz, x), disjoint, value);
+                value = Ite(Disjoint(y, yz, x), disjoint, value);
             }
             if (xz > 0)
             {
-                value = new KOp("ite", Disjoint(x, xz, y), disjoint, value);
+                value = Ite(Disjoint(x, xz, y), disjoint, value);
             }
             var v = Once(value, false);
             _lowZeros[v] = System.Math.Min(xz, yz);
@@ -280,13 +270,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What holds of any non-negative operands: their results' ranges.</summary>
         private static KExpr RangeFacts(string op, KExpr x, KExpr y, KExpr r)
         {
-            KExpr Le(KExpr a, KExpr b) => new KOp("<=", a, b);
             KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => AndAlso(a, b));
             var nonNegative = And(Le(Number(0), x), Le(Number(0), y));
             var fact = op == "and" ? And(Le(Number(0), r), Le(r, x), Le(r, y))
                      : op == "or" ? And(Le(x, r), Le(y, r), Le(r, Plus(x, y)))
                      : And(Le(Number(0), r), Le(r, Plus(x, y)));
-            return new KOp("==>", nonNegative, fact);
+            return Implies(nonNegative, fact);
         }
 
         /// <summary>The result, bit by bit, and the value those bits add up to.</summary>
@@ -298,7 +287,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 facts.Add(Eq(Bit(r, i), op == "and" ? AndAlso(Bit(x, i), Bit(y, i)) : op == "or" ? OrElse(Bit(x, i), Bit(y, i)) : Ne(Bit(x, i), Bit(y, i))));
             }
-            var sum = Enumerable.Range(0, width).Select(i => (KExpr)new KOp("ite", Bit(r, i), Number(Pow2(i)), Number(0))).Aggregate(Plus);
+            var sum = Enumerable.Range(0, width).Select(i => (KExpr)Ite(Bit(r, i), Number(Pow2(i)), Number(0))).Aggregate(Plus);
             facts.Add(Eq(Mod(r, width), sum));
             return facts.Aggregate((a, b) => AndAlso(a, b));
         }

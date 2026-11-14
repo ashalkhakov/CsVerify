@@ -951,7 +951,7 @@ namespace CsVerify.Verifier.Boogie
             Line("  free ensures ex != null;");
             foreach (var (type, cond) in clauses)
             {
-                Line($"  free ensures {E(new MOp("==>", Checks.Is(new MVar("ex"), type), cond), new Context
+                Line($"  free ensures {E(Implies(Checks.Is(new MVar("ex"), type), cond), new Context
                 {
                     Ins = ins,
                     AtEntry = false,
@@ -1347,7 +1347,7 @@ namespace CsVerify.Verifier.Boogie
             // (Spec.Modifies: every field and cell of an object allocated before, and not in the frame then, is as it was)
             if (p.Frame != null)
             {
-                var w = E(new MOp("old", p.Frame), cx);
+                var w = E(Old(p.Frame), cx);
                 foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
                 {
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !{w}[o] ==> {map}[o] == old({map}[o]));");

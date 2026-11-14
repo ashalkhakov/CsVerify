@@ -57,26 +57,10 @@ namespace CsVerify.Verifier.Boogie
                 Type = "[Ref]bool",
             };
             _failed = "ef$failed"; _savedAlone = "ef$savedAlone"; _stale = "ef$stale"; _read = "ef$read";
-            _p.Locals.Add(new KLocal
-            {
-                Name = _failed,
-                Raw = "[Ref]bool",
-            });
-            _p.Locals.Add(new KLocal
-            {
-                Name = _savedAlone,
-                Raw = "[Ref]bool",
-            });
-            _p.Locals.Add(new KLocal
-            {
-                Name = _stale,
-                Raw = "[Ref][Ref]bool",
-            });
-            _p.Locals.Add(new KLocal
-            {
-                Name = _read,
-                Raw = "[Ref][Ref]bool",
-            });
+            _p.Locals.Add(KLocal.Of(_failed, "[Ref]bool"));
+            _p.Locals.Add(KLocal.Of(_savedAlone, "[Ref]bool"));
+            _p.Locals.Add(KLocal.Of(_stale, "[Ref][Ref]bool"));
+            _p.Locals.Add(KLocal.Of(_read, "[Ref][Ref]bool"));
         }
 
         /// <summary>At entry: nothing of the method's own record (each, for every context, false).</summary>
@@ -88,19 +72,11 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var x in new[] { _failed, _savedAlone })
             {
-                Emit(new KAssign
-                {
-                    Var = x,
-                    Value = new KOp("lambda", new KLit("c$: Ref"), KLit.False),
-                });
+                Emit(KAssign.Of(x, MapLambda("c$: Ref", KLit.False)));
             }
             foreach (var x in new[] { _stale, _read })
             {
-                Emit(new KAssign
-                {
-                    Var = x,
-                    Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("lambda", new KLit("o$: Ref"), KLit.False)),
-                });
+                Emit(KAssign.Of(x, MapLambda("c$: Ref", MapLambda("o$: Ref", KLit.False))));
             }
         }
 
@@ -111,11 +87,7 @@ namespace CsVerify.Verifier.Boogie
                 return name;
             }
             name = "ef$token" + _tokenRead.Count;
-            _p.Locals.Add(new KLocal
-            {
-                Name = name,
-                Raw = "[Ref][Ref]" + TypeOf(e.Tokens[j].Type),
-            });
+            _p.Locals.Add(KLocal.Of(name, "[Ref][Ref]" + TypeOf(e.Tokens[j].Type)));
             _tokenRead[(e, j)] = name;
             return name;
         }
@@ -124,38 +96,15 @@ namespace CsVerify.Verifier.Boogie
 
         private static KExpr States(KExpr c) => Sel(StateMap, c);
         private static KExpr State(KExpr c, KExpr o) => Sel(StateMap, c, o);
-        private void SetStates(KExpr c, KExpr row) => Emit(new KRow
-        {
-            Map = StateMap,
-            Ref = c,
-            Value = row,
-        });
+        private void SetStates(KExpr c, KExpr row) => Emit(KRow.Of(StateMap, c, row));
         private static KExpr Unsaved(KExpr c) => Sel(UnsavedMap, c);
-        private void SetUnsaved(KExpr c, KExpr v) => Emit(new KRow
-        {
-            Map = UnsavedMap,
-            Ref = c,
-            Value = v,
-        });
+        private void SetUnsaved(KExpr c, KExpr v) => Emit(KRow.Of(UnsavedMap, c, v));
         private static KExpr InTx(KExpr c) => Sel(InTxMap, c);
-        private void SetInTx(KExpr c, KExpr v) => Emit(new KRow
-        {
-            Map = InTxMap,
-            Ref = c,
-            Value = v,
-        });
+        private void SetInTx(KExpr c, KExpr v) => Emit(KRow.Of(InTxMap, c, v));
         private KExpr Failed(KExpr c) => Sel(_failed, c);
-        private void SetLocal(string map, KExpr c, KExpr v) => Emit(new KAssign
-        {
-            Var = map,
-            Value = Store(map, c, v),
-        });
+        private void SetLocal(string map, KExpr c, KExpr v) => Emit(KAssign.Of(map, Store(map, c, v)));
         private void SetLocal(string map, KExpr c, KExpr o, KExpr v) =>
-            Emit(new KAssign
-            {
-                Var = map,
-                Value = Store(map, c, new KOp("store", Sel(map, c), o, v)),
-            });
+            Emit(KAssign.Of(map, Store(map, c, Store(Sel(map, c), o, v))));
 
         /// <summary>An object of the entity's type (or one derived from it).</summary>
         private static KExpr Isa(KExpr o, EfModel.Entity e) => new KOp(IsaFunction(e.Type), o);
@@ -231,13 +180,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         private void TrackerCheck(KExpr cond, string id, SyntaxNode at, string message) =>
-            Emit(new KCheck
-            {
-                Cond = cond,
-                Id = id,
-                At = at,
-                Message = message,
-            });
+            Emit(KCheck.Of(cond, id, at, message));
 
         /// <summary>A context SaveChanges failed on, or whose transaction rolled back, is done with (CSV1033).</summary>
         private void UsableContext(KExpr c, SyntaxNode at) =>
@@ -267,12 +210,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            SetStates(c, new KOp("lambda", new KLit("o$: Ref"), I(EfDetached)));
-            Emit(new KAssign
-            {
-                Var = _stale,
-                Value = Store(_stale, c, new KOp("lambda", new KLit("o$: Ref"), KLit.False)),
-            });
+            SetStates(c, MapLambda("o$: Ref", I(EfDetached)));
+            Emit(KAssign.Of(_stale, Store(_stale, c, MapLambda("o$: Ref", KLit.False))));
             SetUnsaved(c, KLit.False);
             SetInTx(c, KLit.False);
             SetLocal(_failed, c, KLit.False);
@@ -289,22 +228,12 @@ namespace CsVerify.Verifier.Boogie
                 return v;
             }
             var t = Declare("t$" + _temps++, type ?? op.Type);
-            Emit(new KAssign
-            {
-                Var = t,
-                Value = v,
-            });
+            Emit(KAssign.Of(t, v));
             return new KVar(t);
         }
 
         private void NotNullHere(KExpr v, IOperation op, SyntaxNode at) =>
-            Emit(new KCheck
-            {
-                Cond = Ne(v, Null),
-                Id = "CSV1013",
-                At = op.Syntax,
-                Message = $"'{op.Syntax}' might be null in '{at}'",
-            });
+            Emit(KCheck.Of(Ne(v, Null), "CSV1013", op.Syntax, $"'{op.Syntax}' might be null in '{at}'"));
 
         /// <summary>The context a receiver stands for (a context, or a DbSet of one), with the DbSet's entity.</summary>
         private KExpr ContextOf(IOperation receiver, out EfModel.Entity setEntity)
@@ -354,13 +283,9 @@ namespace CsVerify.Verifier.Boogie
                     return (false, null);
                 }
                 var task = "t$" + _temps++;
-                _p.Locals.Add(new KLocal
-                {
-                    Name = task,
-                    Raw = "Ref",
-                });
-                Emit(new KHavoc { Var = task });
-                Emit(new KAssume { Cond = Ne(new KVar(task), Null) });
+                _p.Locals.Add(KLocal.Of(task, "Ref"));
+                Emit(KHavoc.Of(task));
+                Emit(KAssume.Of(Ne(new KVar(task), Null)));
                 return (true, new KVar(task));
             }
             var name = Plain(m);
@@ -385,7 +310,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _p.Fields.Add(p.OriginalDefinition);
                     var v = Declare("t$" + _temps++, p.Type);
-                    Emit(new KHavoc { Var = v });
+                    Emit(KHavoc.Of(v));
                     Emit(new KFieldStore
                     {
                         Field = p.OriginalDefinition,
@@ -396,7 +321,7 @@ namespace CsVerify.Verifier.Boogie
                     });
                 }
                 SetLocal(_stale, ec, eo, KLit.False);
-                SetStates(ec, new KOp("store", States(ec), eo, I(Unchanged)));
+                SetStates(ec, Store(States(ec), eo, I(Unchanged)));
                 MayThrow();
                 return (true, null);
             }
@@ -416,12 +341,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 if (facade.Property.Name == "ChangeTracker" && name == "Clear" && args.Count == 0)
                 {
-                    SetStates(c, new KOp("lambda", new KLit("o$: Ref"), I(EfDetached)));
-                    Emit(new KAssign
-                    {
-                        Var = _stale,
-                        Value = Store(_stale, c, new KOp("lambda", new KLit("o$: Ref"), KLit.False)),
-                    });
+                    SetStates(c, MapLambda("o$: Ref", I(EfDetached)));
+                    Emit(KAssign.Of(_stale, Store(_stale, c, MapLambda("o$: Ref", KLit.False))));
                     SetUnsaved(c, KLit.False);
                     return (true, null);
                 }
@@ -434,8 +355,8 @@ namespace CsVerify.Verifier.Boogie
                 NotNullHere(f, receiver, at);
                 var ctxType = ((INamedTypeSymbol)receiver.Type).TypeArguments[0];
                 var made = Declare("t$" + _temps++, ctxType);
-                Emit(new KHavoc { Var = made });
-                Emit(new KAssume { Cond = Ne(new KVar(made), Null) });
+                Emit(KHavoc.Of(made));
+                Emit(KAssume.Of(Ne(new KVar(made), Null)));
                 NewContext(new KVar(made));
                 MayThrow();
                 return (true, new KVar(made));
@@ -452,11 +373,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         TrackerCheck(Not(Unsaved(c)), "CSV1035", at, $"'{at}' commits with changes the context hasn't saved: they aren't in the transaction. SaveChanges first");
                         var was = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-                        Emit(new KAssign
-                        {
-                            Var = was,
-                            Value = Failed(c),
-                        });
+                        Emit(KAssign.Of(was, Failed(c)));
                         MayThrow(() =>
                         {
                             SetLocal(_failed, c, KLit.True);
@@ -528,8 +445,8 @@ namespace CsVerify.Verifier.Boogie
         private KExpr FreshRef(ITypeSymbol t)
         {
             var r = Declare("t$" + _temps++, t);
-            Emit(new KHavoc { Var = r });
-            Emit(new KAssume { Cond = Ne(new KVar(r), Null) });
+            Emit(KHavoc.Of(r));
+            Emit(KAssume.Of(Ne(new KVar(r), Null)));
             return new KVar(r);
         }
 
@@ -631,7 +548,7 @@ namespace CsVerify.Verifier.Boogie
         private void Track(string how, KExpr c, KExpr o, EfModel.Entity e, SyntaxNode at)
         {
             UsableContext(c, at);
-            Emit(new KAssume { Cond = Isa(o, e) });
+            Emit(KAssume.Of(Isa(o, e)));
             var state = State(c, o);
             var unset = KeyUnset(e, o);
             // another instance of the same row already tracked: EF throws
@@ -654,26 +571,18 @@ namespace CsVerify.Verifier.Boogie
             KExpr next = how switch
             {
                 "Add" => I(Added),
-                "Attach" => new KOp("ite", Eq(state, I(EfDetached)), new KOp("ite", unset, I(Added), I(Unchanged)), state),
-                "Update" => new KOp("ite", unset, I(Added), new KOp("ite", Eq(state, I(Added)), state, I(Modified))),
-                "Remove" => new KOp("ite", Eq(state, I(Added)), I(EfDetached), I(Deleted)),
+                "Attach" => Ite(Eq(state, I(EfDetached)), Ite(unset, I(Added), I(Unchanged)), state),
+                "Update" => Ite(unset, I(Added), Ite(Eq(state, I(Added)), state, I(Modified))),
+                "Remove" => Ite(Eq(state, I(Added)), I(EfDetached), I(Deleted)),
                 _ => state,
             };
             var empty = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign
-            {
-                Var = empty,
-                Value = NavigationsEmpty(o, e),
-            });
+            Emit(KAssign.Of(empty, NavigationsEmpty(o, e)));
             var unsetNow = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign
-            {
-                Var = unsetNow,
-                Value = unset,
-            });
+            Emit(KAssign.Of(unsetNow, unset));
             // what o's navigations lead to may be tracked now too (unless they hold nothing)
             var others = new KVar(LinqMap("[Ref]int"));
-            SetStates(c, new KOp("store", new KOp("ite", new KVar(empty), States(c), others), o, next));
+            SetStates(c, Store(Ite(new KVar(empty), States(c), others), o, next));
             SetUnsaved(c, how == "Attach" ? OrElse(OrElse(Unsaved(c), new KVar(unsetNow)), Not(new KVar(empty))) : KLit.True);
         }
 
@@ -690,7 +599,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 _p.Fields.Add(token.OriginalDefinition);
                 var read = Sel(_read, c, o);
-                TrackerCheck(new KOp("==>", read, Eq(Column(token, o), Sel(TokenRead(e, j), c, o))), "CSV1034", at,
+                TrackerCheck(Implies(read, Eq(Column(token, o), Sel(TokenRead(e, j), c, o))), "CSV1034", at,
                     $"'{at}' takes {token.Name}, a concurrency token, as the value the row had when read, but it was changed since: EF would check the row against the new value. {then}");
             }
         }
@@ -703,18 +612,14 @@ namespace CsVerify.Verifier.Boogie
             TrackerCheck(KQuant.ForAll(
                 "y$",
                 "Ref",
-                new KOp("==>", Eq(State(c, y), I(Modified)), Not(Sel(_stale, c, y)))),
+                Implies(Eq(State(c, y), I(Modified)), Not(Sel(_stale, c, y)))),
                 "CSV1033", at, $"'{at}' writes an entity that ExecuteUpdate or ExecuteDelete may have changed since it was read, overwriting what they wrote: reload it (Entry(e).Reload()) first");
             // two saves: one transaction around both, or the first stays if the second fails
             TrackerCheck(OrElse(InTx(c), Not(Sel(_savedAlone, c))), "CSV1035", at,
                 $"'{at}' saves a second time on this context outside a transaction: if it fails, what the first saved stays. Begin a transaction before the first (Database.BeginTransaction), and commit after the last");
             // it may fail: then the context is done with
             var was = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign
-            {
-                Var = was,
-                Value = Failed(c),
-            });
+            Emit(KAssign.Of(was, Failed(c)));
             MayThrow(() => SetLocal(_failed, c, KLit.True), () => SetLocal(_failed, c, new KVar(was)));
             // the database sets the row versions of what it writes
             KExpr Written(KExpr x) => OrElse(Eq(State(c, x), I(Added)), Eq(State(c, x), I(Modified)));
@@ -722,19 +627,17 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Fields.Add(p);
                 var fresh = new KVar(LinqMap("[Ref]" + TypeOf(p.Type)));
-                Emit(new KRow
-                {
-                    Map = FieldMap(p),
-                    Ref = null,
-                    Value = new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", Written(y), new KOp("sel", fresh, y), Sel(FieldMap(p), y))),
-                });
+                Emit(KRow.Of(
+                    FieldMap(p),
+                    null,
+                    MapLambda("y$: Ref", Ite(Written(y), Sel(fresh, y), Sel(FieldMap(p), y)))));
             }
             SetLocal(_savedAlone, c, OrElse(Sel(_savedAlone, c), Not(InTx(c))));
-            SetStates(c, new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", Written(y), I(Unchanged), new KOp("ite", Eq(State(c, y), I(Deleted)), I(EfDetached), State(c, y)))));
+            SetStates(c, MapLambda("y$: Ref", Ite(Written(y), I(Unchanged), Ite(Eq(State(c, y), I(Deleted)), I(EfDetached), State(c, y)))));
             SetUnsaved(c, KLit.False);
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
-            Emit(new KHavoc { Var = n });
-            Emit(new KAssume { Cond = new KOp("<=", KLit.Zero, new KVar(n)) });
+            Emit(KHavoc.Of(n));
+            Emit(KAssume.Of(Le(KLit.Zero, new KVar(n))));
             return new KVar(n);
         }
 
@@ -765,12 +668,8 @@ namespace CsVerify.Verifier.Boogie
             var ks = parts.Select(p => Once(p)).ToList();
             // (a reference, which may be null)
             var r = "t$" + _temps++;
-            _p.Locals.Add(new KLocal
-            {
-                Name = r,
-                Raw = "Ref",
-            });
-            Emit(new KHavoc { Var = r });
+            _p.Locals.Add(KLocal.Of(r, "Ref"));
+            Emit(KHavoc.Of(r));
             var rv = new KVar(r);
             foreach (var p in e.Key)
             {
@@ -779,8 +678,8 @@ namespace CsVerify.Verifier.Boogie
             // (the maps themselves: of what may be null)
             KExpr Col(IPropertySymbol p) => Sel(FieldMap(p.OriginalDefinition), rv);
             var match = And(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Col(p), ks[j]) : (KExpr)Eq(Col(p), ks[j])));
-            Emit(new KAssume { Cond = OrElse(Eq(rv, Null), AndAlso(Isa(rv, e), match)) });
-            SetStates(c, new KOp("store", States(c), rv, new KOp("ite", Eq(State(c, rv), I(EfDetached)), I(Unchanged), State(c, rv))));
+            Emit(KAssume.Of(OrElse(Eq(rv, Null), AndAlso(Isa(rv, e), match))));
+            SetStates(c, Store(States(c), rv, Ite(Eq(State(c, rv), I(EfDetached)), I(Unchanged), State(c, rv))));
             MayThrow();
             return rv;
         }
@@ -798,16 +697,14 @@ namespace CsVerify.Verifier.Boogie
             NotNullHere(c, root.Value.context, inv.Syntax);
             UsableContext(c, inv.Syntax);
             var y = new KVar("o$");
-            Emit(new KAssign
-            {
-                Var = _stale,
-                Value = Store(_stale, c, new KOp("lambda", new KLit("o$: Ref"),
-                OrElse(AndAlso(Ne(State(c, y), I(EfDetached)), Isa(y, root.Value.entity)), Sel(_stale, c, y)))),
-            });
+            Emit(KAssign.Of(
+                _stale,
+                Store(_stale, c, MapLambda("o$: Ref",
+        OrElse(AndAlso(Ne(State(c, y), I(EfDetached)), Isa(y, root.Value.entity)), Sel(_stale, c, y))))));
             MayThrow();
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
-            Emit(new KHavoc { Var = n });
-            Emit(new KAssume { Cond = new KOp("<=", KLit.Zero, new KVar(n)) });
+            Emit(KHavoc.Of(n));
+            Emit(KAssume.Of(Le(KLit.Zero, new KVar(n))));
             return new KVar(n);
         }
 
@@ -853,22 +750,22 @@ namespace CsVerify.Verifier.Boogie
             var el = new KVar(LinqMap("[int]Ref"));
             var idx = new KVar(LinqMap("[Ref]int"));
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
-            Emit(new KHavoc { Var = n });
+            Emit(KHavoc.Of(n));
             var len = new KVar(n);
-            KExpr El(KExpr i) => new KOp("sel", el, i);
+            KExpr El(KExpr i) => Sel(el, i);
             KExpr Live(KExpr y) => AndAlso(Ne(State(c, y), I(EfDetached)), Ne(State(c, y), I(Deleted)));
-            KExpr Each(KExpr i) => And(new[] { Eq(new KOp("sel", idx, El(i)), i), Ne(El(i), Null), Isa(El(i), e), Live(El(i)) });
+            KExpr Each(KExpr i) => And(new[] { Eq(Sel(idx, El(i)), i), Ne(El(i), Null), Isa(El(i), e), Live(El(i)) });
             var known = _known;
             _known = null;
-            ShapeFact(new KOp("<=", KLit.Zero, len), at);
+            ShapeFact(Le(KLit.Zero, len), at);
             ShapeFact(Over(KLit.Zero, len, Each), at);
-            ShapeFact(new KOp("==>", new KOp("<", KLit.Zero, len), Each(KLit.Zero)), at);
+            ShapeFact(Implies(Lt(KLit.Zero, len), Each(KLit.Zero)), at);
             var y = new KVar("y$");
             ShapeFact(KQuant.ForAll(
                 "y$",
                 "Ref",
-                new KOp("==>", AndAlso(Isa(y, e), Live(y)),
-                And(new KExpr[] { new KOp("<=", KLit.Zero, new KOp("sel", idx, y)), new KOp("<", new KOp("sel", idx, y), len), Eq(El(new KOp("sel", idx, y)), y) }))), at);
+                Implies(AndAlso(Isa(y, e), Live(y)),
+                And(new KExpr[] { Le(KLit.Zero, Sel(idx, y)), Lt(Sel(idx, y), len), Eq(El(Sel(idx, y)), y) }))), at);
             _known = known;
             return new LSeq
             {
@@ -895,8 +792,8 @@ namespace CsVerify.Verifier.Boogie
                 var c = Once(db);
                 NotNullHere(c, db, pr.Syntax);
                 var t = Declare("t$" + _temps++, pr.Type);
-                Emit(new KHavoc { Var = t });
-                Emit(new KAssume { Cond = Eq(Ne(new KVar(t), Null), InTx(c)) });
+                Emit(KHavoc.Of(t));
+                Emit(KAssume.Of(Eq(Ne(new KVar(t), Null), InTx(c))));
                 return new KVar(t);
             }
             if (pr.Property.Name == "State" && Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry && EntryOf(entry) is var (c2, o, _))
@@ -941,14 +838,14 @@ namespace CsVerify.Verifier.Boogie
                         TrackAs(c, o, e, Unchanged, at);
                         return true;
                     case EfDetached:
-                        SetStates(c, new KOp("store", States(c), o, I(EfDetached)));
+                        SetStates(c, Store(States(c), o, I(EfDetached)));
                         return true;
                 }
             }
             // (a state not known here: anything)
-            SetStates(c, new KOp("store", States(c), o, value));
+            SetStates(c, Store(States(c), o, value));
             var u = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KHavoc { Var = u });
+            Emit(KHavoc.Of(u));
             SetUnsaved(c, new KVar(u));
             return true;
         }
@@ -957,14 +854,14 @@ namespace CsVerify.Verifier.Boogie
         private void TrackAs(KExpr c, KExpr o, EfModel.Entity e, int state, SyntaxNode at)
         {
             UsableContext(c, at);
-            Emit(new KAssume { Cond = Isa(o, e) });
+            Emit(KAssume.Of(Isa(o, e)));
             TrackerCheck(OrElse(Ne(State(c, o), I(EfDetached)), NoOtherWithKey(c, o, e)), "CSV1033", at,
                 $"'{at}' may meet another {e.Type.Name} with the same key that the context already tracks, and EF throws: use the tracked one, or a context that tracks none");
             if (state == Modified)
             {
                 TokensAsRead(c, o, e, at, "Mark it modified first, then change it");
             }
-            SetStates(c, new KOp("store", States(c), o, I(state)));
+            SetStates(c, Store(States(c), o, I(state)));
             if (state == Modified)
             {
                 SetUnsaved(c, KLit.True);
@@ -984,30 +881,21 @@ namespace CsVerify.Verifier.Boogie
             // (a row version is the database's to set, CSV1034)
             if (entity.RowVersions.Contains(p.OriginalDefinition) || entity.RowVersions.Contains(p))
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1034",
-                    At = at,
-                    NotAssumedAfter = true,
-                    Message = $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1034",
+                    at,
+                    notAssumedAfter: true,
+                    message: $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read"));
             }
             var c = new KVar("c$");
             KExpr Was(KExpr x) => Sel(StateMap, x, o);
-            Emit(new KRow
-            {
-                Map = UnsavedMap,
-                Ref = null,
-                Value = new KOp("lambda", new KLit("c$: Ref"), OrElse(Ne(Was(c), I(EfDetached)), Unsaved(c))),
-            });
-            Emit(new KRow
-            {
-                Map = StateMap,
-                Ref = null,
-                Value = new KOp("lambda", new KLit("c$: Ref"),
-                new KOp("store", States(c), o, new KOp("ite", Eq(Was(c), I(Unchanged)), I(Modified), Was(c)))),
-            });
+            Emit(KRow.Of(UnsavedMap, null, MapLambda("c$: Ref", OrElse(Ne(Was(c), I(EfDetached)), Unsaved(c)))));
+            Emit(KRow.Of(
+                StateMap,
+                null,
+                MapLambda("c$: Ref",
+        Store(States(c), o, Ite(Eq(Was(c), I(Unchanged)), I(Modified), Was(c))))));
         }
 
         /// <summary>Rows read with tracking: tracked from here on (unchanged, those it didn't track).</summary>
@@ -1018,7 +906,7 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             var y = new KVar("y$");
-            SetStates(c, new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", AndAlso(isRow, Eq(State(c, y), I(EfDetached))), I(Unchanged), State(c, y))));
+            SetStates(c, MapLambda("y$: Ref", Ite(AndAlso(isRow, Eq(State(c, y), I(EfDetached))), I(Unchanged), State(c, y))));
         }
 
         /// <summary>Rows read without tracking: read by the context, with their tokens as they are (for CSV1034).</summary>
@@ -1029,11 +917,7 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             var y = new KVar("y$");
-            Emit(new KAssign
-            {
-                Var = _read,
-                Value = Store(_read, c, new KOp("lambda", new KLit("y$: Ref"), OrElse(isRow, Sel(_read, c, y)))),
-            });
+            Emit(KAssign.Of(_read, Store(_read, c, MapLambda("y$: Ref", OrElse(isRow, Sel(_read, c, y))))));
             for (int j = 0; j < e.Tokens.Count; j++)
             {
                 // (a token of a type the kernel doesn't have isn't kept: an Attach or Update that would check it isn't translated)
@@ -1043,12 +927,10 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var map = TokenRead(e, j);
                 _p.Fields.Add(e.Tokens[j].OriginalDefinition);
-                Emit(new KAssign
-                {
-                    Var = map,
-                    Value = Store(map, c, new KOp("lambda", new KLit("y$: Ref"),
-                    new KOp("ite", isRow, Sel(FieldMap(e.Tokens[j].OriginalDefinition), y), Sel(map, c, y)))),
-                });
+                Emit(KAssign.Of(
+                    map,
+                    Store(map, c, MapLambda("y$: Ref",
+            Ite(isRow, Sel(FieldMap(e.Tokens[j].OriginalDefinition), y), Sel(map, c, y))))));
             }
         }
 
@@ -1126,31 +1008,23 @@ namespace CsVerify.Verifier.Boogie
             if (e.Breaks)
             {
                 var may = new KVar(LinqMap("[Ref]bool"));
-                Emit(new KAssign
-                {
-                    Var = _failed,
-                    Value = new KOp("lambda", new KLit("c$: Ref"), OrElse(new KOp("sel", may, c), Failed(c))),
-                });
+                Emit(KAssign.Of(_failed, MapLambda("c$: Ref", OrElse(Sel(may, c), Failed(c)))));
             }
             if (e.Saves)
             {
                 var may = new KVar(LinqMap("[Ref]bool"));
-                Emit(new KAssign
-                {
-                    Var = _savedAlone,
-                    Value = new KOp("lambda", new KLit("c$: Ref"),
-                    OrElse(AndAlso(new KOp("sel", may, c), Not(InTx(c))), Sel(_savedAlone, c))),
-                });
+                Emit(KAssign.Of(
+                    _savedAlone,
+                    MapLambda("c$: Ref",
+            OrElse(AndAlso(Sel(may, c), Not(InTx(c))), Sel(_savedAlone, c)))));
             }
             if (e.BulkUpdates)
             {
                 var may = new KVar(LinqMap("[Ref][Ref]bool"));
-                Emit(new KAssign
-                {
-                    Var = _stale,
-                    Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("lambda", new KLit("o$: Ref"),
-                    OrElse(new KOp("sel", may, c, new KVar("o$")), Sel(_stale, c, new KVar("o$"))))),
-                });
+                Emit(KAssign.Of(
+                    _stale,
+                    MapLambda("c$: Ref", MapLambda("o$: Ref",
+            OrElse(Sel(may, c, new KVar("o$")), Sel(_stale, c, new KVar("o$")))))));
             }
         }
     }

@@ -87,6 +87,28 @@ namespace CsVerify.Verifier.Boogie
         public static MOp Not(MExpr a) => new MOp("!", a);
         public static MOp AndAlso(MExpr a, MExpr b) => new MOp("&&", a, b);
         public static MOp OrElse(MExpr a, MExpr b) => new MOp("||", a, b);
+        public static MOp Lt(MExpr a, MExpr b) => new MOp("<", a, b);
+        public static MOp Le(MExpr a, MExpr b) => new MOp("<=", a, b);
+        public static MOp Gt(MExpr a, MExpr b) => new MOp(">", a, b);
+        public static MOp Ge(MExpr a, MExpr b) => new MOp(">=", a, b);
+        public static MOp Plus(MExpr a, MExpr b) => new MOp("+", a, b);
+        public static MOp Minus(MExpr a, MExpr b) => new MOp("-", a, b);
+        public static MOp Implies(MExpr a, MExpr b) => new MOp("==>", a, b);
+        public static MOp Ite(MExpr c, MExpr then, MExpr otherwise) => new MOp("ite", c, then, otherwise);
+
+        /// <summary>A read of a map given as an expression: map[at] (map[at][at2], with two).</summary>
+        public static MOp Sel(MExpr map, params MExpr[] at) => new MOp("sel", at.Prepend(map).ToArray());
+
+        /// <summary>A map given as an expression, with one entry changed: map[at := value].</summary>
+        public static MOp Store(MExpr map, MExpr at, MExpr value) => new MOp("store", map, at, value);
+
+        public static MOp Times(MExpr a, MExpr b) => new MOp("*", a, b);
+        public static MOp Length(MExpr a) => new MOp("len", a);
+        public static MOp Old(MExpr a) => new MOp("old", a);
+
+        /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
+        public static MOp MapLambda(string binder, MExpr body) => new MOp("lambda", new MLit(binder), body);
+
         public static MOp IsNull(MExpr a) => new MOp("==", a, MLit.Null);
         public static MOp NotNull(MExpr a) => new MOp("!=", a, MLit.Null);
     }
@@ -228,6 +250,12 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Var;
         public MExpr Value;
+
+        public static MAssign Of(string var, MExpr value) => new MAssign
+        {
+            Var = var,
+            Value = value,
+        };
     }
 
     /// <summary>A write of a field, checked (a map's update, after Heap).</summary>
@@ -266,6 +294,14 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Ref, Value;
         /// <summary>Where the program writes the row (checked against Spec.Modifies, CSV1017); null for the kernel's own.</summary>
         public SyntaxNode At;
+
+        public static MRow Of(string map, MExpr @ref, MExpr value, SyntaxNode at = null) => new MRow
+        {
+            Map = map,
+            Ref = @ref,
+            Value = value,
+            At = at,
+        };
     }
 
     /// <summary>Memory cells [Lo, Hi) of Map's row at null set to Value (AllocArray's fill).</summary>
@@ -396,6 +432,15 @@ namespace CsVerify.Verifier.Boogie
         public string UnlessKind;
         /// <summary>Not assumed after it ({:subsumption 0}).</summary>
         public bool NotAssumedAfter;
+
+        public static MAssert Of(MExpr cond, Check check, bool notAssumedAfter = false, IMethodSymbol unlessWritesArrays = null, string unlessKind = null) => new MAssert
+        {
+            Cond = cond,
+            Check = check,
+            NotAssumedAfter = notAssumedAfter,
+            UnlessWritesArrays = unlessWritesArrays,
+            UnlessKind = unlessKind,
+        };
     }
 
     internal sealed class MAssume : MStmt, IHeapStmt
@@ -403,11 +448,19 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Cond;
         /// <summary>True in every state (what a field's type says of its value): not put under a guard or a quantifier.</summary>
         public bool Always;
+
+        public static MAssume Of(MExpr cond, bool always = false) => new MAssume
+        {
+            Cond = cond,
+            Always = always,
+        };
     }
 
     internal sealed class MHavoc : MStmt, IHeapStmt
     {
         public string Var;
+
+        public static MHavoc Of(string var) => new MHavoc { Var = var };
     }
 
     /// <summary>Level 3 (Heap's): map[Ref] := Value, or map[Ref][Index] := Value.</summary>
@@ -415,6 +468,14 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Map;
         public MExpr Ref, Index, Value;
+
+        public static MMapUpdate Of(string map, MExpr @ref, MExpr value, MExpr index = null) => new MMapUpdate
+        {
+            Map = map,
+            Ref = @ref,
+            Value = value,
+            Index = index,
+        };
     }
 
     internal sealed class MBlock
@@ -424,6 +485,13 @@ namespace CsVerify.Verifier.Boogie
         public int Ordinal;
         public List<MStmt> Stmts = new List<MStmt>();
         public KJump Jump;
+
+        public static MBlock Of(string label, int ordinal, KJump jump = null) => new MBlock
+        {
+            Label = label,
+            Ordinal = ordinal,
+            Jump = jump,
+        };
     }
 
     // ------------------------------------------------------------------ level 3 (Heap's): what the printer reads

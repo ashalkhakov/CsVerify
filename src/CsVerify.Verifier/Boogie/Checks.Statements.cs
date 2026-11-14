@@ -107,11 +107,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Assert(NotNull(value), At("CSV1014", a.NotNullAt, $"'{a.NotNullAt}' might store null, but '{a.NotNullName}' is not nullable"));
                     }
-                    Emit(new MAssign
-                    {
-                        Var = a.Var,
-                        Value = value,
-                    });
+                    Emit(MAssign.Of(a.Var, value));
                     return;
                 }
                 case KFieldStore fs:
@@ -138,11 +134,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var o = Code(from.Obj);
                     Assert(Held(o), At("CSV1016", from.At, $"'{from.At}' has no permission in hand to make a view of"));
-                    Emit(new MAssign
-                    {
-                        Var = from.View,
-                        Value = o,
-                    });
+                    Emit(MAssign.Of(from.View, o));
                     return;
                 }
                 case KFold fold:
@@ -158,11 +150,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (th.Seen)
                     {
-                        Emit(new MAssign
-                        {
-                            Var = "ex$",
-                            Value = v,
-                        });
+                        Emit(MAssign.Of("ex$", v));
                     }
                     return;
                 }
@@ -206,7 +194,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var holds = OldAtEntry(Spec(cond, out _));
                         _facts.Clear();
-                        Assert(new MOp("==>", Is(new MVar("ex$"), type), holds), At("CSV1002", at, $"postcondition on throw '{at}' might not hold when '{_p.Method.Name}' throws"));
+                        Assert(Implies(Is(new MVar("ex$"), type), holds), At("CSV1002", at, $"postcondition on throw '{at}' might not hold when '{_p.Method.Name}' throws"));
                     }
                     return;
                 case KOwn { Kind: "pack" } pack:
@@ -214,18 +202,8 @@ namespace CsVerify.Verifier.Boogie
                     // a view packed: its invariant holds, and it is the package's now (not in hand to write with)
                     var x = Code(pack.Obj);
                     ProveInvariant(pack.Type, x, pack.At, $"when it is packed into {pack.Into.Name}");
-                    Emit(new MMapUpdate
-                    {
-                        Map = "perm",
-                        Ref = x,
-                        Value = MLit.False,
-                    });
-                    Emit(new MMapUpdate
-                    {
-                        Map = "pkg",
-                        Ref = x,
-                        Value = MLit.True,
-                    });
+                    Emit(MMapUpdate.Of("perm", x, MLit.False));
+                    Emit(MMapUpdate.Of("pkg", x, MLit.True));
                     return;
                 }
                 case KOwn { Kind: "unpack" } unpack:
@@ -235,11 +213,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case KOwn { Kind: "share" } share:
                     // Own.Share(ref v, out s): s is a share of v's object; v keeps the rest, so in sum nothing changes here
-                    Emit(new MAssign
-                    {
-                        Var = share.View,
-                        Value = Code(share.Obj),
-                    });
+                    Emit(MAssign.Of(share.View, Code(share.Obj)));
                     return;
                 case KOwn { Kind: "unshare" } unshare:
                 {
@@ -251,12 +225,7 @@ namespace CsVerify.Verifier.Boogie
                     Shares(Code(dropShare.Obj), -1);
                     return;
                 case KOwn { Kind: "drop" } drop:
-                    Emit(new MMapUpdate
-                    {
-                        Map = "perm",
-                        Ref = Code(drop.Obj),
-                        Value = MLit.False,
-                    });
+                    Emit(MMapUpdate.Of("perm", Code(drop.Obj), MLit.False));
                     return;
                 case KNewObj n:
                 {
@@ -343,11 +312,7 @@ namespace CsVerify.Verifier.Boogie
                     // (a new array's cells are all in hand)
                     if (_p.UsesCells)
                     {
-                        Emit(new MAssign
-                        {
-                            Var = "cells",
-                            Value = Store("cells", new MVar(n.Var), new MLit("(lambda i$: int :: 1.0)")),
-                        });
+                        Emit(MAssign.Of("cells", Store("cells", new MVar(n.Var), new MLit("(lambda i$: int :: 1.0)"))));
                     }
                     return;
                 case KCall c:
@@ -358,12 +323,12 @@ namespace CsVerify.Verifier.Boogie
                     var o = Code(ai.Obj);
                     if (HasObjectInvariant(ai.Type) && Invariant(ai.Type, o) is MExpr inv)
                     {
-                        Assume(new MOp("==>", Code(ai.When), OrElse(IsNull(o), inv)));
+                        Assume(Implies(Code(ai.When), OrElse(IsNull(o), inv)));
                     }
                     return;
                 }
                 case KAssume a:
-                    Emit(new MAssume { Cond = Code(a.Cond) });
+                    Emit(MAssume.Of(Code(a.Cond)));
                     return;
                 case KSpecStmt ss:
                 {
@@ -372,7 +337,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (what has no obligation of its own: the same at level 2)
                 case KHavoc h:
-                    Emit(new MHavoc { Var = h.Var });
+                    Emit(MHavoc.Of(h.Var));
                     return;
                 case KHavocAll ha:
                     Emit(new MHavocAll { ProgramState = ha.ProgramState });
@@ -452,22 +417,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 ProveInvariant(own.Type, o, own.At, "when its view is made");
             }
-            Emit(new MAssign
-            {
-                Var = own.View,
-                Value = o,
-            });
+            Emit(MAssign.Of(own.View, o));
             // (a new tree of its own)
             if (KernelTypes.Trees)
             {
                 _p.Modifies.Add("$root");
                 _p.AnyWrites.Add("$root");
-                Emit(new MMapUpdate
-                {
-                    Map = "$root",
-                    Ref = o,
-                    Value = o,
-                });
+                Emit(MMapUpdate.Of("$root", o, o));
             }
             Receive(o);
             return;
@@ -481,22 +437,18 @@ namespace CsVerify.Verifier.Boogie
             Assert(Whole(c), At("CSV1016", take.At, $"'{take.SlotAt}' changes an [Owned] {take.Field.ContainingType.Name} without holding its view"));
             var x = Sel(FieldMap(take.Field), c);
             Assert(NotNull(x), At("CSV1016", take.At, $"'{take.SlotAt}' might be null: there is nothing to take"));
-            Emit(new MAssign
-            {
-                Var = take.View,
-                Value = x,
-            });
+            Emit(MAssign.Of(take.View, x));
             var child = new MVar(take.View);
             // (what an [Owns] field holds is in its container's tree, and isn't its root)
             var root = new MVar("$root");
-            Assume(AndAlso(Eq(new MOp("sel", root, child), new MOp("sel", root, c)), Ne(new MOp("sel", root, child), child)));
+            Assume(AndAlso(Eq(Sel(root, child), Sel(root, c)), Ne(Sel(root, child), child)));
             var siblings = InstanceFields(take.Field.ContainingType).Where(g => SpecSymbols.IsOwnsField(g) && !SymbolEqualityComparer.Default.Equals(g, take.Field.OriginalDefinition)).Select(FieldMap).ToList();
             // (and so is what the container's other [Owns] fields hold, each a different object: they stay in its tree)
             foreach (var g in siblings)
             {
                 var held = Sel(g, c);
                 Assume(OrElse(IsNull(held),
-                    AndAlso(AndAlso(Eq(new MOp("sel", root, held), new MOp("sel", root, c)), Ne(new MOp("sel", root, held), held)),
+                    AndAlso(AndAlso(Eq(Sel(root, held), Sel(root, c)), Ne(Sel(root, held), held)),
                         Ne(held, child))));
             }
             Emit(new MFieldStore
@@ -511,11 +463,7 @@ namespace CsVerify.Verifier.Boogie
             _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root");
             if (!_p.Locals.Any(l => l.Name == "split$"))
             {
-                _p.Locals.Add(new KLocal
-                {
-                    Name = "split$",
-                    Raw = "[Ref]bool",
-                });
+                _p.Locals.Add(KLocal.Of("split$", "[Ref]bool"));
             }
             Emit(new MRoots
             {
@@ -540,12 +488,7 @@ namespace CsVerify.Verifier.Boogie
             Assert(Whole(x), At("CSV1016", give.At, $"'{give.ValueAt}' might have read shares out: join them back (Own.Unshare) first"));
             Assert(Ne(Sel("$root", c), x), At("CSV1016", give.At, $"'{give.ValueAt}' might own the container: ownership would be a cycle"));
             ProveInvariant(give.Type, x, give.At, "when it is given to its owner");
-            Emit(new MMapUpdate
-            {
-                Map = "perm",
-                Ref = x,
-                Value = MLit.False,
-            });
+            Emit(MMapUpdate.Of("perm", x, MLit.False));
             Emit(new MFieldStore
             {
                 Field = give.Field,
@@ -622,18 +565,8 @@ namespace CsVerify.Verifier.Boogie
             // a view taken out of its package: in hand again, its invariant holding
             var x = Code(unpack.Obj);
             Assume(NotNull(x));
-            Emit(new MMapUpdate
-            {
-                Map = "pkg",
-                Ref = x,
-                Value = MLit.False,
-            });
-            Emit(new MMapUpdate
-            {
-                Map = "perm",
-                Ref = x,
-                Value = MLit.True,
-            });
+            Emit(MMapUpdate.Of("pkg", x, MLit.False));
+            Emit(MMapUpdate.Of("perm", x, MLit.True));
             AssumeInvariant(unpack.Type, x);
             if (KernelTypes.Trees)
             {
@@ -705,17 +638,12 @@ namespace CsVerify.Verifier.Boogie
                 var i = new MVar("i$");
                 Assert(OrElse(IsNull(r), MQuant.ForAll(
                     "i$",
-                    Implies(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), MLit.FullPermission)))),
+                    Implication(AndAlso(Le(MLit.Zero, i), Lt(i, Length(r))), Ge(Cell(r, i), MLit.FullPermission)))),
                        At("CSV1016", row.At, $"'{row.At}' writes the whole array: this method needs Spec.Acc of all its cells"));
             }
             var v = Spec(row.Value, out _);
             _facts.Clear();
-            Emit(new MRow
-            {
-                Map = row.Map,
-                Ref = r,
-                Value = v,
-            });
+            Emit(MRow.Of(row.Map, r, v));
             return;
         }
 
@@ -738,7 +666,7 @@ namespace CsVerify.Verifier.Boogie
             WithinFrame(a, st.At);
             if (_p.UsesCells)
             {
-                Assert(new MOp(">=", Cell(a, i), MLit.FullPermission), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
+                Assert(Ge(Cell(a, i), MLit.FullPermission), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
             }
             Emit(new MStore
             {
@@ -760,12 +688,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var (map, fresh) in la.Fresh)
                     {
-                        Emit(new MRow
-                        {
-                            Map = map,
-                            Ref = null,
-                            Value = new MVar(fresh),
-                        });
+                        Emit(MRow.Of(map, null, new MVar(fresh)));
                     }
                 }
                 return;
@@ -777,12 +700,7 @@ namespace CsVerify.Verifier.Boogie
                 Assert(MLit.False, At("CSV1016", la.At, $"'{la.At}' may write arrays it reaches through the objects it's handed, whose cells this method can't hold"), notAssumedAfter: true);
                 foreach (var (map, fresh) in la.Fresh)
                 {
-                    Emit(new MRow
-                    {
-                        Map = map,
-                        Ref = null,
-                        Value = new MVar(fresh),
-                    });
+                    Emit(MRow.Of(map, null, new MVar(fresh)));
                 }
                 return;
             }
@@ -790,24 +708,19 @@ namespace CsVerify.Verifier.Boogie
             {
                 var a = Code(array);
                 var i = new MVar("i$");
-                var inRange = AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", a)));
+                var inRange = AndAlso(Le(MLit.Zero, i), Lt(i, Length(a)));
                 Assert(OrElse(IsNull(a),
                                MQuant.ForAll(
                                    "i$",
-                                   Implies(inRange, la.Write ? new MOp(">=", Cell(a, i), MLit.FullPermission) : new MOp(">", Cell(a, i), MLit.NoPermission)))),
+                                   Implication(inRange, la.Write ? Ge(Cell(a, i), MLit.FullPermission) : Gt(Cell(a, i), MLit.NoPermission)))),
                        At("CSV1016", la.At, la.Write ? $"'{la.At}' may write the array it's handed: this method needs Spec.Acc of all its cells"
                                                      : $"'{la.At}' reads the array it's handed: this method needs Spec.Acc or Spec.AccRead of all its cells"));
                 if (!la.Write)
                 {
                     continue;
                 }
-                Emit(new MHavoc { Var = row });
-                Emit(new MRow
-                {
-                    Map = map,
-                    Ref = a,
-                    Value = new MVar(row),
-                });
+                Emit(MHavoc.Of(row));
+                Emit(MRow.Of(map, a, new MVar(row)));
             }
             return;
         }

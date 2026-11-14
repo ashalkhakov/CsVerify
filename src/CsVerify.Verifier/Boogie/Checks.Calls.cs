@@ -153,12 +153,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var f in PackageViews(param.Type))
                 {
-                    Emit(new MMapUpdate
-                    {
-                        Map = "pkg",
-                        Ref = new MOp(FieldFunction(f), args[param.Ordinal]),
-                        Value = MLit.False,
-                    });
+                    Emit(MMapUpdate.Of("pkg", new MOp(FieldFunction(f), args[param.Ordinal]), MLit.False));
                 }
             }
             foreach (var param in callee.Parameters.Where(HoldsView))
@@ -166,12 +161,7 @@ namespace CsVerify.Verifier.Boogie
                 var x = args[param.Ordinal];
                 ProveInvariant(ViewOf(param.Type), x, c.ArgsAt[param.Ordinal], $"when its view is handed to '{callee.Name}'");
                 Assert(Whole(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
-                Emit(new MMapUpdate
-                {
-                    Map = "perm",
-                    Ref = x,
-                    Value = MLit.False,
-                });
+                Emit(MMapUpdate.Of("perm", x, MLit.False));
             }
         }
 
@@ -211,36 +201,30 @@ namespace CsVerify.Verifier.Boogie
             var (c, callee) = (call.C, call.Callee);
             if (call.Sig.Frame == null)
             {
-                Emit(new MAssert
-                {
-                    Cond = MLit.False,
-                    UnlessWritesArrays = callee,
-                    UnlessKind = "arrays",
-                    Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked"),
-                });
-                Emit(new MAssert
-                {
-                    Cond = MLit.False,
-                    UnlessWritesArrays = callee,
-                    UnlessKind = "fields",
-                    Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked"),
-                });
+                Emit(MAssert.Of(
+                    MLit.False,
+                    unlessWritesArrays: callee,
+                    unlessKind: "arrays",
+                    check: At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked")));
+                Emit(MAssert.Of(
+                    MLit.False,
+                    unlessWritesArrays: callee,
+                    unlessKind: "fields",
+                    check: At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked")));
                 return;
             }
             var theirs = Spec(call.Sig.Frame, out _).Substitute(call.Given);
             _facts.Clear();
             var r = new MVar("r$");
-            Emit(new MAssert
-            {
-                Cond = MQuant.ForAll(
-                    "r$",
-                    "Ref",
-                    new MOp("==>", new MOp("sel", theirs, r),
-                    OrElse(Sel("w$entry", r), Not(Sel("alloc$entry", r))))),
-                UnlessWritesArrays = callee,
-                UnlessKind = "any",
-                Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),
-            });
+            Emit(MAssert.Of(
+                MQuant.ForAll(
+             "r$",
+             "Ref",
+             Implies(Sel(theirs, r),
+             OrElse(Sel("w$entry", r), Not(Sel("alloc$entry", r))))),
+                unlessWritesArrays: callee,
+                unlessKind: "any",
+                check: At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's")));
         }
 
         /// <summary>
@@ -261,12 +245,10 @@ namespace CsVerify.Verifier.Boogie
             call.CellCall = _p.UsesCells && !call.Pure && NamesCells(sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
             if (_p.ArrayMode && !call.CellCall && !call.Pure)
             {
-                Emit(new MAssert
-                {
-                    Cond = MLit.False,
-                    UnlessWritesArrays = callee,
-                    Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes"),
-                });
+                Emit(MAssert.Of(
+                    MLit.False,
+                    unlessWritesArrays: callee,
+                    check: At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes")));
             }
         }
 
@@ -448,7 +430,7 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr OldAtEntry(MExpr e) => e.Rewrite(x => x switch
         {
             // (also an old(...) in a function's argument: Key(t, Spec.Old(Count(t))))
-            MOp { Op: "old" } old => new MOp("old", old.Args[0].Substitute(new Dictionary<string, MExpr> { ["psnap"] = new MVar("psnap$entry") })),
+            MOp { Op: "old" } old => Old(old.Args[0].Substitute(new Dictionary<string, MExpr> { ["psnap"] = new MVar("psnap$entry") })),
             _ => null,
         });
 

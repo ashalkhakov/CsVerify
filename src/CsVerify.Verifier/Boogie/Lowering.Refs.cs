@@ -23,14 +23,12 @@ namespace CsVerify.Verifier.Boogie
         /// (the callee's parameter and the cell would disagree); it is lent as a copy, written back after.
         /// </summary>
         private void ArrayCellLent(IArgumentOperation a, IMethodSymbol callee) =>
-            Emit(new KCheck
-            {
-                Cond = KLit.False,
-                Id = "CSV1901",
-                At = a.Syntax,
-                NotAssumedAfter = true,
-                Message = $"passing the array cell '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} to '{callee.Name}', which may touch arrays itself, is not supported: the cell and the parameter would disagree (copy the element into a local)",
-            });
+            Emit(KCheck.Of(
+                KLit.False,
+                "CSV1901",
+                a.Syntax,
+                notAssumedAfter: true,
+                message: $"passing the array cell '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} to '{callee.Name}', which may touch arrays itself, is not supported: the cell and the parameter would disagree (copy the element into a local)"));
 
         /// <summary>What each ref local names: a variable (its kernel name), or an array's cell (the array and the index, as they were bound).</summary>
         private readonly Dictionary<ILocalSymbol, (string Var, KExpr Array, KExpr Index, ITypeSymbol ArrayType)> _refAlias =
@@ -50,14 +48,12 @@ namespace CsVerify.Verifier.Boogie
             }
             if (_refAlias.ContainsKey(r))
             {
-                Emit(new KCheck
-                {
-                    Cond = KLit.False,
-                    Id = "CSV1901",
-                    At = at,
-                    NotAssumedAfter = true,
-                    Message = $"binding the ref local '{r.Name}' again is not supported: it names one variable or cell",
-                });
+                Emit(KCheck.Of(
+                    KLit.False,
+                    "CSV1901",
+                    at,
+                    notAssumedAfter: true,
+                    message: $"binding the ref local '{r.Name}' again is not supported: it names one variable or cell"));
             }
             switch (target)
             {
@@ -78,46 +74,34 @@ namespace CsVerify.Verifier.Boogie
                     var v = Operands(e.ArrayReference, e.Indices[0]);
                     var arr = Declare("t$" + _temps++, e.ArrayReference.Type);
                     var idx = Declare("t$" + _temps++, e.Indices[0].Type);
-                    Emit(new KAssign
-                    {
-                        Var = arr,
-                        Value = v[0],
-                    });
-                    Emit(new KAssign
-                    {
-                        Var = idx,
-                        Value = v[1],
-                    });
+                    Emit(KAssign.Of(arr, v[0]));
+                    Emit(KAssign.Of(idx, v[1]));
                     // (its checks: not null, within bounds, as reading it)
                     var probe = Declare("t$" + _temps++, e.Type);
                     HeldCell(new KVar(arr), e.Syntax, write: false);
-                    Emit(new KAssign
-                    {
-                        Var = probe,
-                        Value = new KElem
-                        {
-                            Array = new KVar(arr),
-                            Index = new KVar(idx),
-                            ArrayType = e.ArrayReference.Type,
-                            At = e.Syntax,
-                            ArrayAt = e.ArrayReference.Syntax,
-                        },
-                    });
+                    Emit(KAssign.Of(
+                        probe,
+                        new KElem
+                {
+                    Array = new KVar(arr),
+                    Index = new KVar(idx),
+                    ArrayType = e.ArrayReference.Type,
+                    At = e.Syntax,
+                    ArrayAt = e.ArrayReference.Syntax,
+                }));
                     _refAlias[r] = (null, new KVar(arr), new KVar(idx), e.ArrayReference.Type);
                     return;
                 }
                 case IFieldReferenceOperation:
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1901",
-                        At = at,
-                        NotAssumedAfter = true,
-                        Message = $"a ref local to the field '{target.Syntax}' is not supported: only locals, parameters and array elements",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1901",
+                        at,
+                        notAssumedAfter: true,
+                        message: $"a ref local to the field '{target.Syntax}' is not supported: only locals, parameters and array elements"));
                     var t = Declare("t$" + _temps++, r.Type);
-                    Emit(new KHavoc { Var = t });
+                    Emit(KHavoc.Of(t));
                     _refAlias[r] = (t, null, null, null);
                     return;
                 }
@@ -164,11 +148,7 @@ namespace CsVerify.Verifier.Boogie
                     _lentCells[t] = (rca.Array, rca.Index);
                     if (a.Parameter.RefKind != RefKind.Out)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = t,
-                            Value = Expr(rc),
-                        });
+                        Emit(KAssign.Of(t, Expr(rc)));
                     }
                     _writeBacks.Add((rc, t));
                     return t;
@@ -192,11 +172,7 @@ namespace CsVerify.Verifier.Boogie
                     // (an out one isn't read, but its place must be one)
                     if (a.Parameter.RefKind == RefKind.Out)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = t,
-                            Value = Expr(v),
-                        });
+                        Emit(KAssign.Of(t, Expr(v)));
                     }
                     _writeBacks.Add((v, t));
                     return t;
@@ -204,22 +180,16 @@ namespace CsVerify.Verifier.Boogie
                 // (a field by ref: not supported, CSV1901; a variable of the callee's, unknown after)
                 case IFieldReferenceOperation rfr when InSubset(v.Type):
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1901",
-                        At = a.Syntax,
-                        NotAssumedAfter = true,
-                        Message = $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals, parameters, array elements and their structs' members",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1901",
+                        a.Syntax,
+                        notAssumedAfter: true,
+                        message: $"passing '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} is not supported: only locals, parameters, array elements and their structs' members"));
                     var t = Declare("t$" + _temps++, v.Type);
                     if (a.Parameter.RefKind != RefKind.Out)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = t,
-                            Value = Expr(rfr),
-                        });
+                        Emit(KAssign.Of(t, Expr(rfr)));
                     }
                     return t;
                 }

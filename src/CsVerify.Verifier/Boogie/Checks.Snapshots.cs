@@ -55,7 +55,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (gg, f) in facts.Where(x => Plain(x.f) && Plain(x.g)))
             {
                 _p.UsesState = true;
-                Assume(Implies(In(gg), In(f)));
+                Assume(Implication(In(gg), In(f)));
             }
         }
 
@@ -93,7 +93,7 @@ namespace CsVerify.Verifier.Boogie
                     Args = args,
                     Snap = Sel("psnap", p),
                 };
-                MExpr fact = Implies(pre, Eq(app, M(sig.FunctionBody)));
+                MExpr fact = Implication(pre, Eq(app, M(sig.FunctionBody)));
                 for (int k = map.Length - 1; k >= 0; k--)
                 {
                     if (map[k] < 0)

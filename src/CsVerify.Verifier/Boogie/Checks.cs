@@ -178,11 +178,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var into in _headInto)
                 {
-                    into.Stmts.Add(new MAssume
-                    {
-                        Cond = always.Cond,
-                        Always = true,
-                    });
+                    into.Stmts.Add(MAssume.Of(always.Cond, always: true));
                 }
             }
         }
@@ -286,12 +282,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 check.Causes.UnionWith(CausesOf(cond));
             }
-            Emit(new MAssert
-            {
-                Cond = cond,
-                Check = check,
-                NotAssumedAfter = notAssumedAfter,
-            });
+            Emit(MAssert.Of(cond, check, notAssumedAfter: notAssumedAfter));
         }
 
         /// <summary>The causes of a condition's unknown values: its variables', and those they were made from.</summary>
@@ -322,7 +313,7 @@ namespace CsVerify.Verifier.Boogie
             return causes;
         }
 
-        private void Assume(MExpr cond) => Emit(new MAssume { Cond = cond });
+        private void Assume(MExpr cond) => Emit(MAssume.Of(cond));
 
         /// <summary>
         /// What reading a specification lets one assume (a non-nullable field of a built object isn't null), where
@@ -346,17 +337,13 @@ namespace CsVerify.Verifier.Boogie
         private MVar Fresh(string type)
         {
             var name = "f$" + _fresh++;
-            _p.Locals.Add(new KLocal
-            {
-                Name = name,
-                Raw = type,
-            });
-            Emit(new MHavoc { Var = name });
+            _p.Locals.Add(KLocal.Of(name, type));
+            Emit(MHavoc.Of(name));
             return new MVar(name);
         }
 
         private static MExpr Allocated(MExpr o, MExpr v) =>
-            new MOp("==>", AndAlso(Sel("$Alloc", o), NotNull(v)), Sel("$Alloc", v));
+            Implies(AndAlso(Sel("$Alloc", o), NotNull(v)), Sel("$Alloc", v));
 
         /// <summary>A field whose value, once its object is built, is never null.</summary>
         private static bool NonNullField(ISymbol field) => (!field.IsStatic || StaticStartsWithObject(field)) && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
@@ -426,12 +413,7 @@ namespace CsVerify.Verifier.Boogie
 
             // (each block's statements, made into level 2's in a block of its own, the same label and jump)
             _bodies = _p.Blocks;
-            _m.Blocks = _p.Blocks.Select(b => new MBlock
-            {
-                Label = b.Label,
-                Ordinal = b.Ordinal,
-                Jump = b.Jump,
-            }).ToList();
+            _m.Blocks = _p.Blocks.Select(b => MBlock.Of(b.Label, b.Ordinal, jump: b.Jump)).ToList();
             foreach (var (b, mb) in _p.Blocks.Zip(_m.Blocks))
             {
                 _out = mb.Stmts;
@@ -477,26 +459,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 _m.ReadsFrame = Spec(_p.ReadsFrame, out _);
                 _facts.Clear();
-                _p.Locals.Add(new KLocal
-                {
-                    Name = "r$entry",
-                    Raw = "[Ref]bool",
-                });
+                _p.Locals.Add(KLocal.Of("r$entry", "[Ref]bool"));
             }
             if (_p.Frame != null)
             {
                 _m.Frame = Spec(_p.Frame, out _);
                 _facts.Clear();
-                _p.Locals.Add(new KLocal
-                {
-                    Name = "w$entry",
-                    Raw = "[Ref]bool",
-                });
-                _p.Locals.Add(new KLocal
-                {
-                    Name = "alloc$entry",
-                    Raw = "[Ref]bool",
-                });
+                _p.Locals.Add(KLocal.Of("w$entry", "[Ref]bool"));
+                _p.Locals.Add(KLocal.Of("alloc$entry", "[Ref]bool"));
             }
         }
 
@@ -522,7 +492,7 @@ namespace CsVerify.Verifier.Boogie
                 At = e.Source.At,
             }).ToList();
             // (the caller's measure is as it was at entry, as Dafny's is: what the body writes before the call doesn't count)
-            var decreases = _p.Decreases?.Select(d => (MExpr)new MOp("old", Spec(d, out _))).ToList();
+            var decreases = _p.Decreases?.Select(d => (MExpr)Old(Spec(d, out _))).ToList();
             if (_p.FunctionBody != null)
             {
                 _m.FunctionBody = Spec(_p.FunctionBody, out _);
@@ -576,14 +546,14 @@ namespace CsVerify.Verifier.Boogie
             }).Aggregate((MExpr)MLit.True, Conj);
             foreach (var (b, reqs) in _p.BaseRequires)
             {
-                Assert(new MOp("==>", Conjunction(reqs), Conjunction(_p.OwnRequires)),
+                Assert(Implies(Conjunction(reqs), Conjunction(_p.OwnRequires)),
                     At("CSV1018", decl, $"'{m.Name}' requires more than {b.ContainingType.Name}.{b.Name}, which it overrides, promises its callers"), true);
             }
             foreach (var (b, frame) in _p.BaseFrames.Where(_ => _p.Frame != null))
             {
                 var allowed = Conjunction(new[] { frame });
                 var r = new MVar("r$");
-                Assert(MQuant.ForAll("r$", "Ref", new MOp("==>", new MOp("sel", _m.Frame, r), new MOp("sel", allowed, r))),
+                Assert(MQuant.ForAll("r$", "Ref", Implies(Sel(_m.Frame, r), Sel(allowed, r))),
                     At("CSV1018", decl, $"Spec.Modifies of '{m.Name}' might not be within that of {b.ContainingType.Name}.{b.Name}, which it overrides"), true);
             }
         }
@@ -602,11 +572,7 @@ namespace CsVerify.Verifier.Boogie
                     Inhale(r, null, null);
                 }
                 // (what the preconditions say of snapshots: Boogie's requires can't name them)
-                Emit(new MAssign
-                {
-                    Var = "psnap$entry",
-                    Value = new MVar("psnap"),
-                });
+                Emit(MAssign.Of("psnap$entry", new MVar("psnap")));
                 foreach (var r in contract.Requires.Where(r => r.Math.Mentions(Snaps)))
                 {
                     Assume(r.Math);
@@ -614,11 +580,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (_m.ReadsFrame != null)
             {
-                Emit(new MAssign
-                {
-                    Var = "r$entry",
-                    Value = _m.ReadsFrame,
-                });
+                Emit(MAssign.Of("r$entry", _m.ReadsFrame));
             }
             // (a precondition that is a function, Wf(p), of no precondition: its body too, unfolded once, so
             // that its quantifiers are facts the solver uses as they are, not inside the function's equation)
@@ -651,17 +613,9 @@ namespace CsVerify.Verifier.Boogie
             if (_m.Frame != null)
             {
                 // (the frame as it is on entry, and what was allocated then)
-                Emit(new MAssign
-                {
-                    Var = "w$entry",
-                    Value = _m.Frame,
-                });
+                Emit(MAssign.Of("w$entry", _m.Frame));
                 // (a constructor's object was allocated just before it ran: new, as far as its frame is concerned)
-                Emit(new MAssign
-                {
-                    Var = "alloc$entry",
-                    Value = _p.IsCtor ? Store("$Alloc", new MVar("this"), MLit.False) : new MVar("$Alloc"),
-                });
+                Emit(MAssign.Of("alloc$entry", _p.IsCtor ? Store("$Alloc", new MVar("this"), MLit.False) : new MVar("$Alloc")));
             }
         }
 
@@ -678,11 +632,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var math = Spec(candidates[k].Expr, out _);
                     _facts.Clear();
-                    Emit(new MAssert
-                    {
-                        Cond = math,
-                        Check = At(Candidate, candidates[k].At, "a loop's inferred fact"),
-                    });
+                    Emit(MAssert.Of(math, At(Candidate, candidates[k].At, "a loop's inferred fact")));
                 }
             }
             if (contract.Invariants.TryGetValue(b.Ordinal, out var invs))
@@ -696,7 +646,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         foreach (var f in inv.Facts)
                         {
-                            into.Stmts.Add(new MAssume { Cond = f });
+                            into.Stmts.Add(MAssume.Of(f));
                         }
                     }
                     foreach (var f in inv.Facts)
@@ -711,11 +661,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 for (int k = 0; k < measure.Count; k++)
                 {
-                    Emit(new MAssign
-                    {
-                        Var = $"m${b.Ordinal}${k}",
-                        Value = measure[k],
-                    });
+                    Emit(MAssign.Of($"m${b.Ordinal}${k}", measure[k]));
                 }
             }
             if (Exchanges(b.Ordinal))
@@ -727,34 +673,18 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A loop that exchanges permissions: what it holds at its head is what was held outside it, and its invariants'.</summary>
         private void PermissionsAtLoopHead(int head)
         {
-            Emit(new MAssign
-            {
-                Var = "perm",
-                Value = new MVar($"l${head}$perm"),
-            });
-            Emit(new MAssign
-            {
-                Var = "pinst",
-                Value = new MVar($"l${head}$pinst"),
-            });
-            Emit(new MHavoc { Var = "owner" });
+            Emit(MAssign.Of("perm", new MVar($"l${head}$perm")));
+            Emit(MAssign.Of("pinst", new MVar($"l${head}$pinst")));
+            Emit(MHavoc.Of("owner"));
             if (_p.UsesFields)
             {
-                Emit(new MAssign
-                {
-                    Var = "fperm",
-                    Value = new MVar($"l${head}$fperm"),
-                });
-                Emit(new MHavoc { Var = "fowner" });
+                Emit(MAssign.Of("fperm", new MVar($"l${head}$fperm")));
+                Emit(MHavoc.Of("fowner"));
             }
             if (_p.UsesCells)
             {
-                Emit(new MAssign
-                {
-                    Var = "cells",
-                    Value = new MVar($"l${head}$cells"),
-                });
-                Emit(new MHavoc { Var = "cowner" });
+                Emit(MAssign.Of("cells", new MVar($"l${head}$cells")));
+                Emit(MHavoc.Of("cowner"));
             }
             // (the loop havocs the snapshots it changes: an instance's at the head is new already, and the
             // invariants' facts, assumed by Boogie at the head, are of it)
@@ -789,31 +719,15 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (into > b.Ordinal)
                     {
-                        Emit(new MAssign
-                        {
-                            Var = $"l${into}$perm",
-                            Value = new MVar("perm"),
-                        });
-                        Emit(new MAssign
-                        {
-                            Var = $"l${into}$pinst",
-                            Value = new MVar("pinst"),
-                        });
+                        Emit(MAssign.Of($"l${into}$perm", new MVar("perm")));
+                        Emit(MAssign.Of($"l${into}$pinst", new MVar("pinst")));
                         if (_p.UsesCells)
                         {
-                            Emit(new MAssign
-                            {
-                                Var = $"l${into}$cells",
-                                Value = new MVar("cells"),
-                            });
+                            Emit(MAssign.Of($"l${into}$cells", new MVar("cells")));
                         }
                         if (_p.UsesFields)
                         {
-                            Emit(new MAssign
-                            {
-                                Var = $"l${into}$fperm",
-                                Value = new MVar("fperm"),
-                            });
+                            Emit(MAssign.Of($"l${into}$fperm", new MVar("fperm")));
                         }
                     }
                     else

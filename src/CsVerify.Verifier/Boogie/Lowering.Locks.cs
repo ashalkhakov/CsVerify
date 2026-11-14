@@ -67,13 +67,7 @@ namespace CsVerify.Verifier.Boogie
                 var o = Expr(arg);
                 if (!(lockOp is IInstanceReferenceOperation))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = NotNull(o),
-                        Id = "CSV1013",
-                        At = stmt,
-                        Message = $"'{lockOp.Syntax}' might be null in '{stmt}'",
-                    });
+                    Emit(KCheck.Of(NotNull(o), "CSV1013", stmt, $"'{lockOp.Syntax}' might be null in '{stmt}'"));
                 }
                 ElementLockOrder((LockStatementSyntax)stmt);
                 return;
@@ -87,11 +81,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (call.TargetMethod.Name == "Enter" && call.Arguments.Length == 2)
                 {
-                    Emit(new KAssign
-                    {
-                        Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()),
-                        Value = KLit.True,
-                    });
+                    Emit(KAssign.Of(RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()), KLit.True));
                 }
                 return;
             }
@@ -99,11 +89,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (call.Arguments.Length == 2)
                 {
-                    Emit(new KAssign
-                    {
-                        Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()),
-                        Value = KLit.True,
-                    });
+                    Emit(KAssign.Of(RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()), KLit.True));
                 }
                 ProveOrderAt(stmt);
                 if (lockField == null)
@@ -117,7 +103,7 @@ namespace CsVerify.Verifier.Boogie
                         throw new NotTranslated("a guarded member the kernel doesn't have: " + g.Name);
                     }
                     var t = Declare("t$" + _temps++, FieldType(g));
-                    Emit(new KHavoc { Var = t });
+                    Emit(KHavoc.Of(t));
                     _p.Fields.Add(g.OriginalDefinition);
                     Emit(new KFieldStore
                     {
@@ -131,26 +117,18 @@ namespace CsVerify.Verifier.Boogie
                 }
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
                 {
-                    Emit(new KSpecStmt
-                    {
-                        Spec = InvariantCall(inv, owner),
-                        Assume = true,
-                        At = stmt,
-                        ArgumentAt = stmt,
-                    });
+                    Emit(KSpecStmt.Assumed(InvariantCall(inv, owner), stmt, argumentAt: stmt));
                 }
             }
             else if (lockField != null)
             {
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = InvariantCall(inv, owner),
-                        Id = "CSV1024",
-                        At = stmt,
-                        Message = $"the invariant of lock '{lockField.Name}' might not hold when it is released",
-                    });
+                    Emit(KCheck.Of(
+                        InvariantCall(inv, owner),
+                        "CSV1024",
+                        stmt,
+                        $"the invariant of lock '{lockField.Name}' might not hold when it is released"));
                 }
             }
         }
@@ -217,24 +195,20 @@ namespace CsVerify.Verifier.Boogie
                 var after = _model.GetOperation(ia.ArgumentList.Arguments[0].Expression);
                 if (before == null || after == null || !(before.ConstantValue.HasValue || StaysTheSame(index, outer.Statement)))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1025",
-                        At = inner,
-                        NotAssumedAfter = true,
-                        Message = $"'{outer.Expression}' and '{inner.Expression}': their order can't be told, since '{index}' may change under the lock",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1025",
+                        inner,
+                        notAssumedAfter: true,
+                        message: $"'{outer.Expression}' and '{inner.Expression}': their order can't be told, since '{index}' may change under the lock"));
                     continue;
                 }
-                Emit(new KCheck
-                {
-                    Cond = new KOp("<", Spec(before, null), Spec(after, null)),
-                    Id = "CSV1025",
-                    At = inner,
-                    NotAssumedAfter = true,
-                    Message = $"'{inner.Expression}' might not come after '{outer.Expression}': locks of one array taken in different orders can deadlock",
-                });
+                Emit(KCheck.Of(
+                    Lt(Spec(before, null), Spec(after, null)),
+                    "CSV1025",
+                    inner,
+                    notAssumedAfter: true,
+                    message: $"'{inner.Expression}' might not come after '{outer.Expression}': locks of one array taken in different orders can deadlock"));
             }
         }
 
@@ -266,13 +240,11 @@ namespace CsVerify.Verifier.Boogie
             var owner = lockField.IsStatic ? null : fr.Instance is IInstanceReferenceOperation ? new KVar("this") : Fixed(fr.Instance) ? Expr(fr.Instance) : throw new NotTranslated("a lock of an object that may change");
             foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
             {
-                Emit(new KCheck
-                {
-                    Cond = InvariantCall(inv, owner),
-                    Id = "CSV1024",
-                    At = call.Syntax,
-                    Message = $"the invariant of lock '{lockField.Name}' might not hold at '{call.Syntax}', which gives it to others",
-                });
+                Emit(KCheck.Of(
+                    InvariantCall(inv, owner),
+                    "CSV1024",
+                    call.Syntax,
+                    $"the invariant of lock '{lockField.Name}' might not hold at '{call.Syntax}', which gives it to others"));
             }
             foreach (var g in KernelTypes.Locks.GuardedBy(lockField).Where(g => g.IsStatic == lockField.IsStatic))
             {
@@ -281,7 +253,7 @@ namespace CsVerify.Verifier.Boogie
                     throw new NotTranslated("a guarded member the kernel doesn't have: " + g.Name);
                 }
                 var t = Declare("t$" + _temps++, FieldType(g));
-                Emit(new KHavoc { Var = t });
+                Emit(KHavoc.Of(t));
                 _p.Fields.Add(g.OriginalDefinition);
                 Emit(new KFieldStore
                 {
@@ -295,13 +267,7 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var inv in KernelTypes.Locks.InvariantsOf(lockField))
             {
-                Emit(new KSpecStmt
-                {
-                    Spec = InvariantCall(inv, owner),
-                    Assume = true,
-                    At = call.Syntax,
-                    ArgumentAt = call.Syntax,
-                });
+                Emit(KSpecStmt.Assumed(InvariantCall(inv, owner), call.Syntax, argumentAt: call.Syntax));
             }
         }
 
@@ -382,14 +348,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     continue;
                 }
-                Emit(new KCheck
-                {
-                    Cond = new KOp("<", KeyOf(key, OwnerValue(h.Owner)), KeyOf(key, OwnerValue(a.Owner))),
-                    Id = "CSV1025",
-                    At = a.At,
-                    NotAssumedAfter = true,
-                    Message = $"'{a.Receiver}''s '{a.Lock.Name}' might not come after '{h.Receiver}''s by '{key.Name}': two of them taken in different orders can deadlock",
-                });
+                Emit(KCheck.Of(
+                    Lt(KeyOf(key, OwnerValue(h.Owner)), KeyOf(key, OwnerValue(a.Owner))),
+                    "CSV1025",
+                    a.At,
+                    notAssumedAfter: true,
+                    message: $"'{a.Receiver}''s '{a.Lock.Name}' might not come after '{h.Receiver}''s by '{key.Name}': two of them taken in different orders can deadlock"));
             }
         }
 
@@ -430,13 +394,7 @@ namespace CsVerify.Verifier.Boogie
                     throw new NotTranslated("a gate of an object that may change");
                 }
                 _gateOwner = Expr(fr.Instance);
-                Emit(new KCheck
-                {
-                    Cond = NotNull(_gateOwner),
-                    Id = "CSV1013",
-                    At = fr.Syntax,
-                    Message = $"'{fr.Instance.Syntax}' might be null in '{fr.Syntax}'",
-                });
+                Emit(KCheck.Of(NotNull(_gateOwner), "CSV1013", fr.Syntax, $"'{fr.Instance.Syntax}' might be null in '{fr.Syntax}'"));
             }
             var at = call.Syntax;
             // (taking one while it's held waits for itself: StaticChecks reports it, CSV1025)
@@ -517,7 +475,7 @@ namespace CsVerify.Verifier.Boogie
                     throw new NotTranslated("a guarded member the kernel doesn't have: " + g.Name);
                 }
                 var t = Declare("t$" + _temps++, FieldType(g));
-                Emit(new KHavoc { Var = t });
+                Emit(KHavoc.Of(t));
                 _p.Fields.Add(g.OriginalDefinition);
                 Emit(new KFieldStore
                 {
@@ -531,13 +489,7 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var inv in KernelTypes.Locks.InvariantsOf(gate))
             {
-                Emit(new KSpecStmt
-                {
-                    Spec = InvariantCall(inv, owner),
-                    Assume = true,
-                    At = at,
-                    ArgumentAt = at,
-                });
+                Emit(KSpecStmt.Assumed(InvariantCall(inv, owner), at, argumentAt: at));
             }
         }
 
@@ -547,13 +499,7 @@ namespace CsVerify.Verifier.Boogie
             var owner = gate.IsStatic ? null : of ?? new KVar("this");
             foreach (var inv in KernelTypes.Locks.InvariantsOf(gate))
             {
-                Emit(new KCheck
-                {
-                    Cond = InvariantCall(inv, owner),
-                    Id = "CSV1024",
-                    At = at,
-                    Message = $"the invariant of lock '{gate.Name}' might not hold when it is {how}",
-                });
+                Emit(KCheck.Of(InvariantCall(inv, owner), "CSV1024", at, $"the invariant of lock '{gate.Name}' might not hold when it is {how}"));
             }
         }
 
@@ -598,11 +544,11 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             var was = Declare("t$" + _temps++, call.TargetMethod.ReturnType);
-            Emit(new KHavoc { Var = was });
+            Emit(KHavoc.Of(was));
             // (taken again by the thread that has it: it isn't free)
             if (!givesBack && FlagHeldAt(call.Syntax, flag, ordered[0].Value.Syntax as ExpressionSyntax))
             {
-                Emit(new KAssume { Cond = Eq(new KVar(was), new KLit(call.TargetMethod.ReturnType.SpecialType == SpecialType.System_Boolean ? "true" : "1")) });
+                Emit(KAssume.Of(Eq(new KVar(was), new KLit(call.TargetMethod.ReturnType.SpecialType == SpecialType.System_Boolean ? "true" : "1"))));
             }
             return new KVar(was);
         }
@@ -732,14 +678,12 @@ namespace CsVerify.Verifier.Boogie
             string fix = "guard it with a lock, hold a Spec.Acc for it (the class must be [Owned]), or make it [Atomic]";
             if (o == null)
             {
-                Emit(new KCheck
-                {
-                    Cond = Alongside(KLit.False),
-                    Id = "CSV1027",
-                    At = at,
-                    NotAssumedAfter = true,
-                    Message = $"'{at}' is static, with no lock, and this runs alongside other code: {fix}",
-                });
+                Emit(KCheck.Of(
+                    Alongside(KLit.False),
+                    "CSV1027",
+                    at,
+                    notAssumedAfter: true,
+                    message: $"'{at}' is static, with no lock, and this runs alongside other code: {fix}"));
                 return;
             }
             if (_p.IsCtor && o is KVar { Name: "this" })
@@ -751,14 +695,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Emit(new KCheck
-            {
-                Cond = Alongside(InHand(o)),
-                Id = "CSV1027",
-                At = at,
-                NotAssumedAfter = true,
-                Message = $"'{at}' has no lock and no permission here, and this runs alongside other code that could be using it: {fix}",
-            });
+            Emit(KCheck.Of(
+                Alongside(InHand(o)),
+                "CSV1027",
+                at,
+                notAssumedAfter: true,
+                message: $"'{at}' has no lock and no permission here, and this runs alongside other code that could be using it: {fix}"));
         }
 
         private void HeldCell(KExpr array, SyntaxNode at, bool write)
@@ -768,15 +710,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Emit(new KCheck
-            {
-                Cond = Alongside(InHand(array)),
-                Id = "CSV1027",
-                At = at,
-                NotAssumedAfter = true,
-                Message = write ? $"'{at}' writes an array this code has no Spec.Acc for, and it runs alongside other code that could be using it"
-                                              : $"'{at}' reads an array this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it",
-            });
+            Emit(KCheck.Of(
+                Alongside(InHand(array)),
+                "CSV1027",
+                at,
+                notAssumedAfter: true,
+                message: write ? $"'{at}' writes an array this code has no Spec.Acc for, and it runs alongside other code that could be using it"
+                                             : $"'{at}' reads an array this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it"));
         }
 
         /// <summary>An object only this code has: a confined local's.</summary>
@@ -819,26 +759,22 @@ namespace CsVerify.Verifier.Boogie
                     ? (Fixed(li) ? Spec(li, null) : throw new NotTranslated("a lock's owner that may change, at a call under it")) : new KVar("this");
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(guard))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = InvariantCall(inv, owner),
-                        Id = "CSV1024",
-                        At = at,
-                        Message = $"the invariant of lock '{guard.Name}' might not hold at '{at}', which may enter the lock again",
-                    });
+                    Emit(KCheck.Of(
+                        InvariantCall(inv, owner),
+                        "CSV1024",
+                        at,
+                        $"the invariant of lock '{guard.Name}' might not hold at '{at}', which may enter the lock again"));
                 }
             }
             if (KernelTypes.Locks.GuardOf(_m) is IFieldSymbol own && !KernelTypes.Locks.IsSemaphore(own) && !SymbolEqualityComparer.Default.Equals(KernelTypes.Locks.GuardOf(callee), own))
             {
                 foreach (var inv in KernelTypes.Locks.InvariantsOf(own))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = InvariantCall(inv, own.IsStatic ? null : new KVar("this")),
-                        Id = "CSV1024",
-                        At = at,
-                        Message = $"the invariant of lock '{own.Name}' might not hold at '{at}', which may enter the lock again",
-                    });
+                    Emit(KCheck.Of(
+                        InvariantCall(inv, own.IsStatic ? null : new KVar("this")),
+                        "CSV1024",
+                        at,
+                        $"the invariant of lock '{own.Name}' might not hold at '{at}', which may enter the lock again"));
                 }
             }
         }
@@ -881,24 +817,20 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (given == null || !Fixed(given) || h.Owner == null)
                     {
-                        Emit(new KCheck
-                        {
-                            Cond = KLit.False,
-                            Id = "CSV1025",
-                            At = at,
-                            NotAssumedAfter = true,
-                            Message = $"'{at}' takes '{t.Lock.Name}' (in '{t.In?.Name}') while '{h.Receiver}' is held, and their order can't be told: pass a local, a parameter or a field",
-                        });
+                        Emit(KCheck.Of(
+                            KLit.False,
+                            "CSV1025",
+                            at,
+                            notAssumedAfter: true,
+                            message: $"'{at}' takes '{t.Lock.Name}' (in '{t.In?.Name}') while '{h.Receiver}' is held, and their order can't be told: pass a local, a parameter or a field"));
                         continue;
                     }
-                    Emit(new KCheck
-                    {
-                        Cond = new KOp("<", KeyOf(key, OwnerValue(h.Owner)), KeyOf(key, Spec(given, null))),
-                        Id = "CSV1025",
-                        At = at,
-                        NotAssumedAfter = true,
-                        Message = $"'{at}' takes '{t.Lock.Name}' (in '{t.In?.Name}') of '{given.Syntax}', which might not come after '{h.Receiver}''s by '{key.Name}': two of them taken in different orders can deadlock",
-                    });
+                    Emit(KCheck.Of(
+                        Lt(KeyOf(key, OwnerValue(h.Owner)), KeyOf(key, Spec(given, null))),
+                        "CSV1025",
+                        at,
+                        notAssumedAfter: true,
+                        message: $"'{at}' takes '{t.Lock.Name}' (in '{t.In?.Name}') of '{given.Syntax}', which might not come after '{h.Receiver}''s by '{key.Name}': two of them taken in different orders can deadlock"));
                 }
             }
         }

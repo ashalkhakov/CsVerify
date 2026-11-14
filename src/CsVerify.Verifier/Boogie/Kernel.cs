@@ -84,6 +84,28 @@ namespace CsVerify.Verifier.Boogie
         public static KOp Not(KExpr a) => new KOp("!", a);
         public static KOp AndAlso(KExpr a, KExpr b) => new KOp("&&", a, b);
         public static KOp OrElse(KExpr a, KExpr b) => new KOp("||", a, b);
+        public static KOp Lt(KExpr a, KExpr b) => new KOp("<", a, b);
+        public static KOp Le(KExpr a, KExpr b) => new KOp("<=", a, b);
+        public static KOp Gt(KExpr a, KExpr b) => new KOp(">", a, b);
+        public static KOp Ge(KExpr a, KExpr b) => new KOp(">=", a, b);
+        public static KOp Plus(KExpr a, KExpr b) => new KOp("+", a, b);
+        public static KOp Minus(KExpr a, KExpr b) => new KOp("-", a, b);
+        public static KOp Implies(KExpr a, KExpr b) => new KOp("==>", a, b);
+        public static KOp Ite(KExpr c, KExpr then, KExpr otherwise) => new KOp("ite", c, then, otherwise);
+
+        /// <summary>A read of a map given as an expression: map[at] (map[at][at2], with two).</summary>
+        public static KOp Sel(KExpr map, params KExpr[] at) => new KOp("sel", at.Prepend(map).ToArray());
+
+        /// <summary>A map given as an expression, with one entry changed: map[at := value].</summary>
+        public static KOp Store(KExpr map, KExpr at, KExpr value) => new KOp("store", map, at, value);
+
+        public static KOp Times(KExpr a, KExpr b) => new KOp("*", a, b);
+        public static KOp Length(KExpr a) => new KOp("len", a);
+        public static KOp Old(KExpr a) => new KOp("old", a);
+
+        /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
+        public static KOp MapLambda(string binder, KExpr body) => new KOp("lambda", new KLit(binder), body);
+
         public static KOp IsNull(KExpr a) => new KOp("==", a, KLit.Null);
         public static KOp NotNull(KExpr a) => new KOp("!=", a, KLit.Null);
     }
@@ -181,6 +203,13 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Var;
         public KExpr Value, Body;
+
+        public static KLet Of(string var, KExpr value, KExpr body) => new KLet
+        {
+            Var = var,
+            Value = value,
+            Body = body,
+        };
     }
 
     /// <summary>Spec.Multiset(a, n): the multiset of an integer array's a[0..n), unfolded Levels elements where it's used.</summary>
@@ -347,6 +376,14 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A local of non-nullable type: where its write is checked not null (CSV1014), and its name.</summary>
         public SyntaxNode NotNullAt;
         public string NotNullName;
+
+        public static KAssign Of(string var, KExpr value, SyntaxNode notNullAt = null, string notNullName = null) => new KAssign
+        {
+            Var = var,
+            Value = value,
+            NotNullAt = notNullAt,
+            NotNullName = notNullName,
+        };
     }
 
     /// <summary>A write of a field (checked, until Checks; a map's, after Heap).</summary>
@@ -401,6 +438,12 @@ namespace CsVerify.Verifier.Boogie
     {
         public List<KCells> Cells;
         public bool Grant;
+
+        public static KMemCells Of(List<KCells> cells, bool grant) => new KMemCells
+        {
+            Cells = cells,
+            Grant = grant,
+        };
     }
 
     /// <summary>
@@ -424,6 +467,14 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Ref, Value;
         /// <summary>Where the program writes the row (checked against Spec.Modifies, CSV1017); null for the kernel's own.</summary>
         public SyntaxNode At;
+
+        public static KRow Of(string map, KExpr @ref, KExpr value, SyntaxNode at = null) => new KRow
+        {
+            Map = map,
+            Ref = @ref,
+            Value = value,
+            At = at,
+        };
     }
 
     /// <summary>Memory cells [Lo, Hi) of Map's row at null set to Value (AllocArray's fill).</summary>
@@ -456,6 +507,14 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol ArrayType;
         public KExpr Size;
         public KExpr[] Elements;
+
+        public static KNew Of(string var, ITypeSymbol arrayType, KExpr size, KExpr[] elements = null) => new KNew
+        {
+            Var = var,
+            ArrayType = arrayType,
+            Size = size,
+            Elements = elements,
+        };
     }
 
     internal sealed class KCall : KStmt
@@ -531,6 +590,15 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
         /// <summary>Not assumed after it: a report, not a fact.</summary>
         public bool NotAssumedAfter;
+
+        public static KCheck Of(KExpr cond, string id, SyntaxNode at, string message, bool notAssumedAfter = false) => new KCheck
+        {
+            Cond = cond,
+            Id = id,
+            At = at,
+            Message = message,
+            NotAssumedAfter = notAssumedAfter,
+        };
     }
 
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
@@ -602,6 +670,12 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Cond;
         /// <summary>True in every state (what a field's type says of its value): not put under a guard or a quantifier.</summary>
         public bool Always;
+
+        public static KAssume Of(KExpr cond, bool always = false) => new KAssume
+        {
+            Cond = cond,
+            Always = always,
+        };
     }
 
     /// <summary>An immutable object of a class with invariants, where a condition holds: its invariants hold (Checks' ObjectInvariant).</summary>
@@ -609,11 +683,20 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Obj, When;
         public ITypeSymbol Type;
+
+        public static KAssumeInvariant Of(KExpr obj, KExpr when, ITypeSymbol type) => new KAssumeInvariant
+        {
+            Obj = obj,
+            When = when,
+            Type = type,
+        };
     }
 
     internal sealed class KHavoc : KStmt
     {
         public string Var;
+
+        public static KHavoc Of(string var) => new KHavoc { Var = var };
     }
 
     /// <summary>Spec.Assert or Spec.Assume, until Checks: well-defined, then asserted (or assumed).</summary>
@@ -624,6 +707,23 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A fact assumed as it is (what a library member gives, as mathematics): no well-definedness of its own.</summary>
         public bool Free;
         public SyntaxNode At, ArgumentAt;
+
+        public static KSpecStmt Assumed(KExpr spec, SyntaxNode at, SyntaxNode argumentAt = null) => new KSpecStmt
+        {
+            Spec = spec,
+            At = at,
+            ArgumentAt = argumentAt,
+            Assume = true,
+        };
+
+        public static KSpecStmt AssumedFree(KExpr spec, SyntaxNode at, SyntaxNode argumentAt = null) => new KSpecStmt
+        {
+            Spec = spec,
+            At = at,
+            ArgumentAt = argumentAt,
+            Assume = true,
+            Free = true,
+        };
     }
 
     /// <summary>After Heap: map[Ref] := Value, or map[Ref][Index] := Value.</summary>
@@ -651,6 +751,8 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KReturn : KJump
     {
         public SyntaxNode At;
+
+        public static KReturn Of(SyntaxNode at) => new KReturn { At = at };
     }
 
     /// <summary>The path ends (a throw, or what can't be reached).</summary>
@@ -663,6 +765,13 @@ namespace CsVerify.Verifier.Boogie
         public int Ordinal;
         public List<KStmt> Stmts = new List<KStmt>();
         public KJump Jump;
+
+        public static KBlock Of(string label, int ordinal, KJump jump = null) => new KBlock
+        {
+            Label = label,
+            Ordinal = ordinal,
+            Jump = jump,
+        };
     }
 
     internal sealed class KLocal
@@ -671,6 +780,13 @@ namespace CsVerify.Verifier.Boogie
         public ITypeSymbol Type;
         /// <summary>A Boogie type of its own (a snapshot of a map), in place of Type's.</summary>
         public string Raw;
+
+        public static KLocal Of(string name, string raw, ITypeSymbol type = null) => new KLocal
+        {
+            Name = name,
+            Raw = raw,
+            Type = type,
+        };
     }
 
     /// <summary>
@@ -712,6 +828,12 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Expr;
         public SyntaxNode At;
+
+        public static KSpec Of(KExpr expr, SyntaxNode at) => new KSpec
+        {
+            Expr = expr,
+            At = at,
+        };
     }
 
     /// <summary>

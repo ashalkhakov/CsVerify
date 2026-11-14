@@ -30,12 +30,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Assume(Eq(Sel("$root", v), v));
                 }
-                Emit(new MMapUpdate
-                {
-                    Map = "pkg",
-                    Ref = v,
-                    Value = MLit.True,
-                });
+                Emit(MMapUpdate.Of("pkg", v, MLit.True));
             }
         }
 
@@ -56,27 +51,17 @@ namespace CsVerify.Verifier.Boogie
             return any;
         }
 
-        private static MExpr Whole(MExpr o) => AndAlso(Held(o), new MOp(">=", Sel("pk", o), MLit.Zero));
+        private static MExpr Whole(MExpr o) => AndAlso(Held(o), Ge(Sel("pk", o), MLit.Zero));
 
         private void Shares(MExpr o, int by) =>
-            Emit(new MMapUpdate
-            {
-                Map = "pk",
-                Ref = o,
-                Value = new MOp(by > 0 ? "+" : "-", Sel("pk", o), new MLit(System.Math.Abs(by).ToString())),
-            });
+            Emit(MMapUpdate.Of("pk", o, new MOp(by > 0 ? "+" : "-", Sel("pk", o), new MLit(System.Math.Abs(by).ToString()))));
 
         /// <summary>A view received: nobody else has it (views are linear), so it isn't one in hand already; now it is.</summary>
         private void Receive(MExpr o)
         {
             Assume(Not(Held(o)));
             Assume(Not(Packed(o)));
-            Emit(new MMapUpdate
-            {
-                Map = "perm",
-                Ref = o,
-                Value = MLit.True,
-            });
+            Emit(MMapUpdate.Of("perm", o, MLit.True));
             // (an object whose view is in hand is its tree's root: no [Owns] field holds it)
             if (KernelTypes.Trees)
             {
@@ -90,55 +75,26 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void EnterOwned()
         {
-            Emit(new MAssign
-            {
-                Var = "perm",
-                Value = new MLit("(lambda o: Ref :: false)"),
-            });
-            Emit(new MAssign
-            {
-                Var = "pk",
-                Value = new MLit("(lambda o: Ref :: 0)"),
-            });
-            Emit(new MAssign
-            {
-                Var = "pkg",
-                Value = new MLit("(lambda o: Ref :: false)"),
-            });
+            Emit(MAssign.Of("perm", new MLit("(lambda o: Ref :: false)")));
+            Emit(MAssign.Of("pk", new MLit("(lambda o: Ref :: 0)")));
+            Emit(MAssign.Of("pkg", new MLit("(lambda o: Ref :: false)")));
             // (no instances held yet: the preconditions bring them; who owns what is unknown)
-            Emit(new MAssign
-            {
-                Var = "pinst",
-                Value = new MLit("(lambda q: Inst :: 0)"),
-            });
-            Emit(new MHavoc { Var = "owner" });
-            Emit(new MHavoc { Var = "psnap" });
+            Emit(MAssign.Of("pinst", new MLit("(lambda q: Inst :: 0)")));
+            Emit(MHavoc.Of("owner"));
+            Emit(MHavoc.Of("psnap"));
             if (_p.UsesFields)
             {
-                Emit(new MAssign
-                {
-                    Var = "fperm",
-                    Value = new MLit("(lambda y$: Ref :: (lambda k$: int :: false))"),
-                });
-                Emit(new MHavoc { Var = "fowner" });
+                Emit(MAssign.Of("fperm", new MLit("(lambda y$: Ref :: (lambda k$: int :: false))")));
+                Emit(MHavoc.Of("fowner"));
             }
             if (_p.UsesCells)
             {
-                Emit(new MAssign
-                {
-                    Var = "cells",
-                    Value = new MLit($"(lambda x$: Ref :: (lambda i$: int :: {(_p.ArrayMode ? "0.0" : "1.0")}))"),
-                });
-                Emit(new MHavoc { Var = "cowner" });
+                Emit(MAssign.Of("cells", new MLit($"(lambda x$: Ref :: (lambda i$: int :: {(_p.ArrayMode ? "0.0" : "1.0")}))")));
+                Emit(MHavoc.Of("cowner"));
             }
             if (_p.ThisIsView)
             {
-                Emit(new MMapUpdate
-                {
-                    Map = "perm",
-                    Ref = new MVar("this"),
-                    Value = MLit.True,
-                });
+                Emit(MMapUpdate.Of("perm", new MVar("this"), MLit.True));
             }
             ViewsAtEntry(grant: true);
         }

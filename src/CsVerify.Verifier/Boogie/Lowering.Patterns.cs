@@ -19,12 +19,7 @@ namespace CsVerify.Verifier.Boogie
             // (an instance of a class with invariants, in code: they hold, as of every one that was built)
             if (HasObjectInvariant(t) && _cfgBlock != null && !_inSpecTest)
             {
-                Emit(new KAssumeInvariant
-                {
-                    Obj = v,
-                    When = test,
-                    Type = t,
-                });
+                Emit(KAssumeInvariant.Of(v, test, t));
             }
             return test;
         }
@@ -40,7 +35,7 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             _p.ClassTypes.Add(type.OriginalDefinition);
-            Emit(new KAssume { Cond = new KOp("==>", NotNull(v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(type)))) });
+            Emit(KAssume.Of(Implies(NotNull(v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(type))))));
         }
 
         /// <summary>A pattern, as a condition of the value; the variables it declares bound to their parts.</summary>
@@ -239,18 +234,18 @@ namespace CsVerify.Verifier.Boogie
                         throw new NotTranslated("a slice pattern with a pattern of its own, in a specification");
                     }
                     int fixedCount = lp.Patterns.Length - (slice >= 0 ? 1 : 0);
-                    var len = new KOp("len", v);
+                    var len = Length(v);
                     KExpr cond = AndAlso(NotNull(v), new KOp(slice >= 0 ? ">=" : "==", len, new KLit(fixedCount.ToString())));
                     // (.. var rest: a new array of the elements between, as C#'s GetSubArray makes; where v doesn't match
                     // the length, an empty one nothing reads)
                     if (sliceInSpec)
                     {
                         bind(((IDeclarationPatternOperation)slicePattern).DeclaredSymbol as ILocalSymbol,
-                             new KOp("$slice", v, new KLit(slice.ToString()), new KOp("-", len, new KLit(fixedCount.ToString()))));
+                             new KOp("$slice", v, new KLit(slice.ToString()), Minus(len, new KLit(fixedCount.ToString()))));
                     }
                     else if (slicePattern != null)
                     {
-                        var between = new KOp("ite", cond, new KOp("-", len, new KLit(fixedCount.ToString())), KLit.Zero);
+                        var between = Ite(cond, Minus(len, new KLit(fixedCount.ToString())), KLit.Zero);
                         var rest = CopyOf(v, new KLit(slice.ToString()), between, type, lp.Syntax);
                         cond = AndAlso(cond, Pattern(slicePattern, rest, type, lower, bind));
                     }
@@ -260,7 +255,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             continue;
                         }
-                        KExpr index = slice < 0 || k < slice ? new KLit(k.ToString()) : new KOp("-", len, new KLit((lp.Patterns.Length - k).ToString()));
+                        KExpr index = slice < 0 || k < slice ? new KLit(k.ToString()) : Minus(len, new KLit((lp.Patterns.Length - k).ToString()));
                         var element = new KElem
                         {
                             Array = v,

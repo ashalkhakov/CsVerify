@@ -15,35 +15,18 @@ namespace CsVerify.Verifier.Boogie
         private void RunPredicate()
         {
             // (its one block, b0, empty: what the check makes is all of it)
-            _m.Blocks = _p.Blocks.Select(b => new MBlock
-            {
-                Label = b.Label,
-                Ordinal = b.Ordinal,
-                Jump = b.Jump,
-            }).ToList();
+            _m.Blocks = _p.Blocks.Select(b => MBlock.Of(b.Label, b.Ordinal, jump: b.Jump)).ToList();
             _out = _m.Blocks[0].Stmts;
-            Emit(new MAssign
-            {
-                Var = "perm",
-                Value = new MLit("(lambda o: Ref :: false)"),
-            });
+            Emit(MAssign.Of("perm", new MLit("(lambda o: Ref :: false)")));
             _p.UsesCells = _program.UsesPermissions;
             _p.UsesFields = _program.UsesFieldPermissions;
             if (_p.UsesFields)
             {
-                Emit(new MAssign
-                {
-                    Var = "fperm",
-                    Value = new MLit("(lambda y$: Ref :: (lambda k$: int :: false))"),
-                });
+                Emit(MAssign.Of("fperm", new MLit("(lambda y$: Ref :: (lambda k$: int :: false))")));
             }
             if (_p.UsesCells)
             {
-                Emit(new MAssign
-                {
-                    Var = "cells",
-                    Value = new MLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))"),
-                });
+                Emit(MAssign.Of("cells", new MLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))")));
             }
             CWalk(_p.FunctionBody, MLit.True);
             _m.Obligations = _m.Blocks[0].Stmts.Count(s => s is MAssert a && a.Check != null);
@@ -76,7 +59,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var o = CWalk(acc.Obj, guard);
                     // (no permission to null is ever held)
-                    Assume(Implies(guard, NotNull(o)));
+                    Assume(Implication(guard, NotNull(o)));
                     SetPerm(o, OrElse(Held(o), guard));
                     return MLit.True;
                 }
@@ -89,7 +72,7 @@ namespace CsVerify.Verifier.Boogie
                 case KFieldAcc fa:
                 {
                     var o = CWalk(fa.Obj, guard);
-                    Assume(Implies(guard, NotNull(o)));
+                    Assume(Implication(guard, NotNull(o)));
                     if (_p.UsesFields)
                     {
                         SetField(o, fa.Field, OrElse(FieldHeld(o, fa.Field), guard));
@@ -123,7 +106,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Guarded(guard, () => el.String ? StringChar(el, a, i) : Elem(el, a, i, alongside: null));
                     if (_p.UsesCells && !el.String)
                     {
-                        Assert(Implies(guard, new MOp(">", Cell(a, i), MLit.NoPermission)), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
+                        Assert(Implication(guard, Gt(Cell(a, i), MLit.NoPermission)), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     }
                     return v;
                 }

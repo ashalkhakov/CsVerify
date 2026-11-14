@@ -373,15 +373,15 @@ namespace CsVerify.Verifier.Boogie
             };
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
             {
-                return new List<KCells> { Of(addr, new KOp("+", addr, KLit.One)) };
+                return new List<KCells> { Of(addr, Plus(addr, KLit.One)) };
             }
-            var end = new KOp("+", addr, MemProp("Length", v, type));
+            var end = Plus(addr, MemProp("Length", v, type));
             if (SpecSymbols.IsCsVerifyType(type, "ArrayView`1"))
             {
                 return new List<KCells> { Of(addr, end) };
             }
-            var hole = new KOp("+", addr, MemProp("Index", v, type));
-            return new List<KCells> { Of(addr, hole), Of(new KOp("+", hole, KLit.One), end) };
+            var hole = Plus(addr, MemProp("Index", v, type));
+            return new List<KCells> { Of(addr, hole), Of(Plus(hole, KLit.One), end) };
         }
 
         /// <summary>What a view says is what its cells hold (true while it's in hand: nobody else writes them).</summary>
@@ -391,15 +391,15 @@ namespace CsVerify.Verifier.Boogie
             var addr = MemProp("Addr", v, type);
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
             {
-                return Eq(new KOp("sel", map, KLit.Null, addr), MemProp("Value", v, type));
+                return Eq(Sel(map, KLit.Null, addr), MemProp("Value", v, type));
             }
             var i = new KVar("m$i");
-            KExpr range = AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<", i, MemProp("Length", v, type)));
-            KExpr body = Eq(new KOp("sel", map, KLit.Null, new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
+            KExpr range = AndAlso(Le(KLit.Zero, i), Lt(i, MemProp("Length", v, type)));
+            KExpr body = Eq(Sel(map, KLit.Null, Plus(addr, i)), Sel(MemProp("Elems", v, type), i));
             // (a hole's: all but its index)
             if (SpecSymbols.IsCsVerifyType(type, "ArrayHole`1"))
             {
-                body = new KOp("==>", Ne(i, MemProp("Index", v, type)), body);
+                body = Implies(Ne(i, MemProp("Index", v, type)), body);
             }
             return KQuant.ForAll("m$i", body, range: range);
         }
@@ -756,11 +756,11 @@ namespace CsVerify.Verifier.Boogie
             var kind = Kind(element);
             if (index == null)
             {
-                return new KOp("ite", new KOp("$arr", x), new KOp("len", x), new KOp("ite", new KOp("$coll", x), Sel(SizeMap, x), new KOp("$ocount", x, new KOp("$state"))));
+                return Ite(new KOp("$arr", x), Length(x), Ite(new KOp("$coll", x), Sel(SizeMap, x), new KOp("$ocount", x, new KOp("$state"))));
             }
             var array = (IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element);
-            return new KOp("ite", new KOp("$arr", x), Sel(Elements(array), x, index),
-                new KOp("ite", new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
+            return Ite(new KOp("$arr", x), Sel(Elements(array), x, index),
+                Ite(new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
         }
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
@@ -1086,7 +1086,7 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr InRange(KExpr e, ITypeSymbol t)
         {
             var (lo, hi) = Range(t);
-            return AndAlso(new KOp("<=", Number(lo), e), new KOp("<=", e, Number(hi)));
+            return AndAlso(Le(Number(lo), e), Le(e, Number(hi)));
         }
 
         /// <summary>e wrapped around into t's range: two's complement, as Euclidean mod.</summary>

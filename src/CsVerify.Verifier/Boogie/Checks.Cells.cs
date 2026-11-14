@@ -11,19 +11,17 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>Is cell (x, i) among c's, where g holds?</summary>
         internal static MExpr InCells(MExpr g, MCells c, MExpr x, MExpr i) =>
-            Conj(g, AndAlso(AndAlso(Eq(x, c.Arr), new MOp("<=", c.Lo, i)), new MOp("<", i, c.Hi)));
+            Conj(g, AndAlso(AndAlso(Eq(x, c.Arr), Le(c.Lo, i)), Lt(i, c.Hi)));
 
         private static MExpr Cell(MExpr x, MExpr i) => Sel("cells", x, i);
 
         private void ChangeCells(MExpr g, MCells c, string op)
         {
             var (x, i) = (new MVar("x$"), new MVar("i$"));
-            Emit(new MAssign
-            {
-                Var = "cells",
-                Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
-                Ite(InCells(g, c, x, i), new MOp(op, Cell(x, i), Amount(c.Read)), Cell(x, i)))),
-            });
+            Emit(MAssign.Of(
+                "cells",
+                MapLambda("x$: Ref", MapLambda("i$: int",
+        Ite(InCells(g, c, x, i), new MOp(op, Cell(x, i), Amount(c.Read)), Cell(x, i))))));
         }
 
         /// <summary>The first cells of the memory views granted so far: where a new one's room is said too.</summary>
@@ -35,16 +33,16 @@ namespace CsVerify.Verifier.Boogie
             if (_p.ArrayMode)
             {
                 var i = new MVar("i$");
-                var room = c.Read ? new MOp("<=", Cell(c.Arr, i), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, i), MLit.FullPermission);
-                Assume(MQuant.ForAll("i$", Implies(InCells(g, c, c.Arr, i), room)));
-                var lo = c.Read ? new MOp("<=", Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, c.Lo), MLit.FullPermission);
-                Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
+                var room = c.Read ? Le(Cell(c.Arr, i), new MLit("1.0 - " + Share)) : Lt(Cell(c.Arr, i), MLit.FullPermission);
+                Assume(MQuant.ForAll("i$", Implication(InCells(g, c, c.Arr, i), room)));
+                var lo = c.Read ? Le(Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : Lt(Cell(c.Arr, c.Lo), MLit.FullPermission);
+                Assume(Implication(InCells(g, c, c.Arr, c.Lo), lo));
                 // (memory: two intervals overlap only where one starts inside the other, so at the other views' first cells too)
                 if (c.Arr is MLit { Text: "null" })
                 {
                     foreach (var other in _memLos)
                     {
-                        Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new MOp("<=", Cell(c.Arr, other), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, other), MLit.FullPermission)));
+                        Assume(Implication(InCells(g, c, c.Arr, other), c.Read ? Le(Cell(c.Arr, other), new MLit("1.0 - " + Share)) : Lt(Cell(c.Arr, other), MLit.FullPermission)));
                     }
                     _memLos.Add(c.Lo);
                 }
@@ -55,7 +53,7 @@ namespace CsVerify.Verifier.Boogie
         private void ExhaleCells(MExpr g, MCells c, SyntaxNode at, string message)
         {
             var i = new MVar("i$");
-            Assert(MQuant.ForAll("i$", Implies(InCells(g, c, c.Arr, i), new MOp(">=", Cell(c.Arr, i), Amount(c.Read)))), At("CSV1016", at, message));
+            Assert(MQuant.ForAll("i$", Implication(InCells(g, c, c.Arr, i), Ge(Cell(c.Arr, i), Amount(c.Read)))), At("CSV1016", at, message));
             ChangeCells(g, c, "-");
         }
 

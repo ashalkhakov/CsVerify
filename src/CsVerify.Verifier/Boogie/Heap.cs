@@ -23,15 +23,10 @@ namespace CsVerify.Verifier.Boogie
         private static void Allocate(List<IHeapStmt> stmts, string var, MExpr extra = null)
         {
             var t = new MVar(var);
-            stmts.Add(new MHavoc { Var = var });
+            stmts.Add(MHavoc.Of(var));
             MExpr fresh = AndAlso(NotNull(t), Not(Sel("$Alloc", t)));
-            stmts.Add(new MAssume { Cond = extra == null ? fresh : AndAlso(fresh, extra) });
-            stmts.Add(new MMapUpdate
-            {
-                Map = "$Alloc",
-                Ref = t,
-                Value = MLit.True,
-            });
+            stmts.Add(MAssume.Of(extra == null ? fresh : AndAlso(fresh, extra)));
+            stmts.Add(MMapUpdate.Of("$Alloc", t, MLit.True));
         }
 
         /// <summary>Level 2 to level 3: each block's statements made level 3's, then the loop frames added.</summary>
@@ -73,12 +68,7 @@ namespace CsVerify.Verifier.Boogie
                             {
                                 p.Source.AnyWrites.Add(map);
                             }
-                            stmts.Add(new MMapUpdate
-                            {
-                                Map = map,
-                                Ref = fs.Instance,
-                                Value = fs.Value,
-                            });
+                            stmts.Add(MMapUpdate.Of(map, fs.Instance, fs.Value));
                             break;
                         }
                         case MNewObj n:
@@ -94,12 +84,7 @@ namespace CsVerify.Verifier.Boogie
                                 // (a generic class's field of T: the default of a T the class doesn't know, a box nothing is known of)
                                 if (!IsTypeParameter(FieldType(field)))
                                 {
-                                    stmts.Add(new MMapUpdate
-                                    {
-                                        Map = map,
-                                        Ref = t,
-                                        Value = MathTypes.Default(FieldType(field)),
-                                    });
+                                    stmts.Add(MMapUpdate.Of(map, t, MathTypes.Default(FieldType(field))));
                                 }
                             }
                             if (n.Ctor != null)
@@ -128,13 +113,8 @@ namespace CsVerify.Verifier.Boogie
                                             Type = FieldType(field),
                                         });
                                     }
-                                    stmts.Add(new MHavoc { Var = u });
-                                    stmts.Add(new MMapUpdate
-                                    {
-                                        Map = FieldMap(field),
-                                        Ref = t,
-                                        Value = new MVar(u),
-                                    });
+                                    stmts.Add(MHavoc.Of(u));
+                                    stmts.Add(MMapUpdate.Of(FieldMap(field), t, new MVar(u)));
                                 }
                             }
                             break;
@@ -143,34 +123,23 @@ namespace CsVerify.Verifier.Boogie
                             // (the whole map: a library call's arrays, any of them)
                             p.Source.Modifies.Add(row.Map);
                             p.Source.AnyWrites.Add(row.Map);
-                            stmts.Add(new MAssign
-                            {
-                                Var = row.Map,
-                                Value = row.Value,
-                            });
+                            stmts.Add(MAssign.Of(row.Map, row.Value));
                             break;
                         case MRow row:
                             p.Source.Modifies.Add(row.Map);
                             p.Source.AnyWrites.Add(row.Map);
-                            stmts.Add(new MMapUpdate
-                            {
-                                Map = row.Map,
-                                Ref = row.Ref,
-                                Value = row.Value,
-                            });
+                            stmts.Add(MMapUpdate.Of(row.Map, row.Ref, row.Value));
                             break;
                         case MFill fill:
                         {
                             p.Source.Modifies.Add(fill.Map);
                             p.Source.AnyWrites.Add(fill.Map);
                             var j = new MVar("j$");
-                            stmts.Add(new MMapUpdate
-                            {
-                                Map = fill.Map,
-                                Ref = MLit.Null,
-                                Value = new MOp("lambda", new MLit("j$: int"),
-                                new MOp("ite", AndAlso(new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, Sel(fill.Map, MLit.Null, j))),
-                            });
+                            stmts.Add(MMapUpdate.Of(
+                                fill.Map,
+                                MLit.Null,
+                                MapLambda("j$: int",
+                        Ite(AndAlso(Le(fill.Lo, j), Lt(j, fill.Hi)), fill.Value, Sel(fill.Map, MLit.Null, j)))));
                             break;
                         }
                         case MStore st:
@@ -178,13 +147,7 @@ namespace CsVerify.Verifier.Boogie
                             var map = Elements(st.ArrayType);
                             p.Source.Modifies.Add(map);
                             p.Source.AnyWrites.Add(map);
-                            stmts.Add(new MMapUpdate
-                            {
-                                Map = map,
-                                Ref = st.Array,
-                                Index = st.Index,
-                                Value = st.Value,
-                            });
+                            stmts.Add(MMapUpdate.Of(map, st.Array, index: st.Index, value: st.Value));
                             break;
                         }
                         case MNew n:
@@ -196,30 +159,22 @@ namespace CsVerify.Verifier.Boogie
                             p.Source.AnyWrites.Add("$Alloc");
                             p.Source.AnyWrites.Add(map);
                             // (a negative size throws: the path ends)
-                            stmts.Add(new MAssume { Cond = new MOp(">=", n.Size, MLit.Zero) });
-                            Allocate(stmts, n.Var, Eq(new MOp("len", t), n.Size));
+                            stmts.Add(MAssume.Of(Ge(n.Size, MLit.Zero)));
+                            Allocate(stmts, n.Var, Eq(Length(t), n.Size));
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;
-                            stmts.Add(new MMapUpdate
-                            {
-                                Map = map,
-                                Ref = t,
-                                Value = IsStruct(element) ? new MOp("lambda", new MLit("j: int"), MathTypes.StructDefault(element))
-                                                                                 : IsFloating(element) ? new MOp("lambda", new MLit("j: int"), MathTypes.FloatLiteral(0.0, element))
-                                                                                 : new MLit($"(lambda j: int :: {zero})"),
-                            });
+                            stmts.Add(MMapUpdate.Of(
+                                map,
+                                t,
+                                IsStruct(element) ? MapLambda("j: int", MathTypes.StructDefault(element))
+                                                                         : IsFloating(element) ? MapLambda("j: int", MathTypes.FloatLiteral(0.0, element))
+                                                                         : new MLit($"(lambda j: int :: {zero})")));
                             if (n.Elements != null)
                             {
                                 for (int k = 0; k < n.Elements.Length; k++)
                                 {
-                                    stmts.Add(new MMapUpdate
-                                    {
-                                        Map = map,
-                                        Ref = t,
-                                        Index = new MLit(k.ToString()),
-                                        Value = n.Elements[k],
-                                    });
+                                    stmts.Add(MMapUpdate.Of(map, t, index: new MLit(k.ToString()), value: n.Elements[k]));
                                 }
                             }
                             break;
@@ -333,34 +288,18 @@ namespace CsVerify.Verifier.Boogie
                     if (atomic.Count > 0 && into.Count > 0)
                     {
                         steps.Head = head;
-                        p.Source.Locals.Add(new KLocal
-                        {
-                            Name = $"as{head}$Alloc",
-                            Raw = "[Ref]bool",
-                        });
+                        p.Source.Locals.Add(KLocal.Of($"as{head}$Alloc", "[Ref]bool"));
                         foreach (var (map, type) in atomic)
                         {
                             steps.Maps.Add(map);
-                            p.Source.Locals.Add(new KLocal
-                            {
-                                Name = $"as{head}{map}",
-                                Raw = "[Ref]" + type,
-                            });
+                            p.Source.Locals.Add(KLocal.Of($"as{head}{map}", "[Ref]" + type));
                         }
                         foreach (var b in into)
                         {
-                            b.Stmts.Add(new MAssign
-                            {
-                                Var = $"as{head}$Alloc",
-                                Value = new MVar("$Alloc"),
-                            });
+                            b.Stmts.Add(MAssign.Of($"as{head}$Alloc", new MVar("$Alloc")));
                             foreach (var (map, _) in atomic)
                             {
-                                b.Stmts.Add(new MAssign
-                                {
-                                    Var = $"as{head}{map}",
-                                    Value = new MVar(map),
-                                });
+                                b.Stmts.Add(MAssign.Of($"as{head}{map}", new MVar(map)));
                             }
                         }
                     }

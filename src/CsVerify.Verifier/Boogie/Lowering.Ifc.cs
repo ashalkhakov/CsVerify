@@ -26,19 +26,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 Label = name + "t",
                 Ordinal = from.Ordinal,
-                Stmts = { new KAssume { Cond = cond } },
+                Stmts = { KAssume.Of(cond) },
             };
             var no = new KBlock
             {
                 Label = name + "f",
                 Ordinal = from.Ordinal,
-                Stmts = { new KAssume { Cond = Not(cond) } },
+                Stmts = { KAssume.Of(Not(cond)) },
             };
-            var join = new KBlock
-            {
-                Label = name + "j",
-                Ordinal = from.Ordinal,
-            };
+            var join = KBlock.Of(name + "j", from.Ordinal);
             from.Jump = new KGoto(yes.Label, no.Label);
             _p.Blocks.Add(yes);
             _block = yes;
@@ -64,7 +60,7 @@ namespace CsVerify.Verifier.Boogie
                     Exception = null,
                 });
             }
-            Emit(new KAssume { Cond = KLit.False });
+            Emit(KAssume.Of(KLit.False));
         }
 
         /// <summary>A call through IList or ICollection of a member that changes the collection: its value, handled; else (false, null).</summary>
@@ -94,13 +90,7 @@ namespace CsVerify.Verifier.Boogie
                 return (false, null);
             }
             var receiver = Expr(call.Instance);
-            Emit(new KCheck
-            {
-                Cond = NotNull(receiver),
-                Id = "CSV1013",
-                At = call.Instance.Syntax,
-                Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'",
-            });
+            Emit(KCheck.Of(NotNull(receiver), "CSV1013", call.Instance.Syntax, $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'"));
             KExpr value = null;
             string result = m.ReturnsVoid ? null : Declare("t$" + _temps++, m.ReturnType);
             Branch(new KOp("$arr", receiver), FixedSize, () =>
@@ -113,11 +103,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Invoke(target, call.Instance, call.Arguments, call.Syntax, null);
                     if (result != null)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = result,
-                            Value = v,
-                        });
+                        Emit(KAssign.Of(result, v));
                     }
                 }, () =>
                 {
@@ -128,11 +114,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (result != null)
                     {
-                        Emit(new KAssign
-                        {
-                            Var = result,
-                            Value = v,
-                        });
+                        Emit(KAssign.Of(result, v));
                     }
                 }));
             if (result != null)
@@ -168,18 +150,8 @@ namespace CsVerify.Verifier.Boogie
             var receiver = Expr(pr.Instance);
             var index = Expr(pr.Arguments[0].Value);
             var v = Declare("t$" + _temps++, element);
-            Emit(new KAssign
-            {
-                Var = v,
-                Value = value,
-            });
-            Emit(new KCheck
-            {
-                Cond = NotNull(receiver),
-                Id = "CSV1013",
-                At = pr.Instance.Syntax,
-                Message = $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'",
-            });
+            Emit(KAssign.Of(v, value));
+            Emit(KCheck.Of(NotNull(receiver), "CSV1013", pr.Instance.Syntax, $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'"));
             var array = KernelTypes.Compilation.CreateArrayTypeSymbol(element);
             Branch(new KOp("$arr", receiver), () =>
             {

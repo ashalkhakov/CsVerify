@@ -51,8 +51,8 @@ namespace CsVerify.Verifier.Boogie
                     var less = Op(min ? "lt" : "gt", a[0], a[1]);
                     var more = Op(min ? "lt" : "gt", a[1], a[0]);
                     var keepA = Op(min ? "isNeg" : "isPos", a[0]);
-                    return new KOp("ite", nan, FloatLiteral(t.SpecialType == SpecialType.System_Single ? (object)float.NaN : double.NaN, t),
-                        new KOp("ite", less, a[0], new KOp("ite", more, a[1], new KOp("ite", keepA, a[0], a[1]))));
+                    return Ite(nan, FloatLiteral(t.SpecialType == SpecialType.System_Single ? (object)float.NaN : double.NaN, t),
+                        Ite(less, a[0], Ite(more, a[1], Ite(keepA, a[0], a[1]))));
                 }
                 default:
                     if (inSpec || !InSubset(result))
@@ -60,7 +60,7 @@ namespace CsVerify.Verifier.Boogie
                         throw new NotTranslated("Math." + name + " of floats");
                     }
                     var r = Declare("t$" + _temps++, result);
-                    Emit(new KHavoc { Var = r });
+                    Emit(KHavoc.Of(r));
                     return new KVar(r);
             }
         }
@@ -98,7 +98,7 @@ namespace CsVerify.Verifier.Boogie
             // (where it doesn't, a value of the type all the same, which nothing is then concluded from)
             if (inSpec)
             {
-                return new KOp("$need", fits, new KOp("ite", AndAlso(fits, AndAlso(new KOp("<=", Number(lo), value), new KOp("<=", value, Number(hi)))), value, Number(lo)));
+                return new KOp("$need", fits, Ite(AndAlso(fits, AndAlso(Le(Number(lo), value), Le(value, Number(hi)))), value, Number(lo)));
             }
             var mode = Mode(c.Syntax, c.IsChecked);
             // (checked: where it doesn't fit, it throws an OverflowException, which the handlers may catch; in a proof, it may not)
@@ -106,13 +106,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (_contract.IsPure || _contract.IsLemma)
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = fits,
-                        Id = "CSV1010",
-                        At = c.Syntax,
-                        Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)",
-                    });
+                    Emit(KCheck.Of(
+                        fits,
+                        "CSV1010",
+                        c.Syntax,
+                        $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)"));
                 }
                 else
                 {
@@ -125,27 +123,25 @@ namespace CsVerify.Verifier.Boogie
                             Exception = null,
                         });
                     }
-                    Emit(new KAssume { Cond = fits });
+                    Emit(KAssume.Of(fits));
                 }
                 return value;
             }
             if (mode == KMode.Default)
             {
-                Emit(new KCheck
-                {
-                    Cond = fits,
-                    Id = "CSV1010",
-                    At = c.Syntax,
-                    Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)",
-                });
+                Emit(KCheck.Of(
+                    fits,
+                    "CSV1010",
+                    c.Syntax,
+                    $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)"));
             }
             if (mode == KMode.Default)
             {
                 return value;
             }
             var r = Declare("t$" + _temps++, to);
-            Emit(new KHavoc { Var = r });
-            return new KOp("ite", fits, value, new KVar(r));
+            Emit(KHavoc.Of(r));
+            return Ite(fits, value, new KVar(r));
         }
     }
 }

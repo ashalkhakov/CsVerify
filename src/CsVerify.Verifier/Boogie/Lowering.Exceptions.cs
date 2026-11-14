@@ -28,7 +28,7 @@ namespace CsVerify.Verifier.Boogie
                 Target = to,
                 Exception = null,
             });
-            Emit(new KAssume { Cond = ok });
+            Emit(KAssume.Of(ok));
         }
 
         // ------------------------------------------------------------------ exceptions
@@ -194,25 +194,20 @@ namespace CsVerify.Verifier.Boogie
                 }
                 else
                 {
-                    _p.Blocks.Add(new KBlock
-                    {
-                        Label = here,
-                        Ordinal = tryRegion.FirstBlockOrdinal,
-                        Jump = new KGoto(take, pass),
-                    });
+                    _p.Blocks.Add(KBlock.Of(here, tryRegion.FirstBlockOrdinal, jump: new KGoto(take, pass)));
                 }
                 _p.Blocks.Add(new KBlock
                 {
                     Label = take,
                     Ordinal = tryRegion.FirstBlockOrdinal,
-                    Stmts = { new KAssume { Cond = test } },
+                    Stmts = { KAssume.Of(test) },
                     Jump = new KGoto($"b{h.FirstBlockOrdinal}"),
                 });
                 var next = new KBlock
                 {
                     Label = pass,
                     Ordinal = tryRegion.FirstBlockOrdinal,
-                    Stmts = { new KAssume { Cond = Not(test) } },
+                    Stmts = { KAssume.Of(Not(test)) },
                 };
                 _p.Blocks.Add(next);
                 if (k == handlers.Count - 1)
@@ -222,33 +217,22 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     next.Jump = new KGoto($"{label}$n{k}");
-                    _p.Blocks.Add(new KBlock
-                    {
-                        Label = $"{label}$n{k}",
-                        Ordinal = tryRegion.FirstBlockOrdinal,
-                    });
+                    _p.Blocks.Add(KBlock.Of($"{label}$n{k}", tryRegion.FirstBlockOrdinal));
                 }
                 // (a filter: its type matched, it runs; false, on to the next handler as if the type hadn't)
                 if (h.Kind == ControlFlowRegionKind.FilterAndHandler)
                 {
                     var filter = h.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Filter);
                     _filterFalse[filter] = $"{label}$f{k}";
-                    _p.Blocks.Add(new KBlock
-                    {
-                        Label = $"{label}$f{k}",
-                        Ordinal = tryRegion.FirstBlockOrdinal,
-                        Jump = k == handlers.Count - 1 ? (outer == null ? new KStop() : new KGoto(outer)) : new KGoto($"{label}$n{k}"),
-                    });
+                    _p.Blocks.Add(KBlock.Of(
+                        $"{label}$f{k}",
+                        tryRegion.FirstBlockOrdinal,
+                        jump: k == handlers.Count - 1 ? (outer == null ? new KStop() : new KGoto(outer)) : new KGoto($"{label}$n{k}")));
                 }
             }
             if (handlers.Count == 0)
             {
-                _p.Blocks.Add(new KBlock
-                {
-                    Label = label,
-                    Ordinal = tryRegion.FirstBlockOrdinal,
-                    Jump = outer == null ? new KStop() : new KGoto(outer),
-                });
+                _p.Blocks.Add(KBlock.Of(label, tryRegion.FirstBlockOrdinal, jump: outer == null ? new KStop() : new KGoto(outer)));
             }
             return label;
         }
@@ -293,11 +277,7 @@ namespace CsVerify.Verifier.Boogie
                 Ordinal = ordinal,
                 Stmts =
                 {
-                    new KAssign
-                    {
-                        Var = Continuation(fin),
-                        Value = new KLit(id.ToString()),
-                    },
+                    KAssign.Of(Continuation(fin), new KLit(id.ToString())),
                 },
                 Jump = new KGoto($"b{fin.FirstBlockOrdinal}"),
             });
@@ -347,7 +327,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Label = label,
                         Ordinal = end.Ordinal,
-                        Stmts = { new KAssume { Cond = Eq(new KVar(v), new KLit(id.ToString())) } },
+                        Stmts = { KAssume.Of(Eq(new KVar(v), new KLit(id.ToString()))) },
                         Jump = then,
                     };
                     // (a return through the finally: the tasks are awaited by now, CSV1026)
@@ -374,7 +354,7 @@ namespace CsVerify.Verifier.Boogie
                 // last operation; falling off the end, at the method)
                 var at = from.BranchValue?.Syntax.Parent as ReturnStatementSyntax as SyntaxNode ?? from.BranchValue?.Syntax ??
                          (from.FallThroughSuccessor?.Semantics == ControlFlowBranchSemantics.Return ? from.Operations.LastOrDefault()?.Syntax : null) ?? _decl;
-                return new KReturn { At = at };
+                return KReturn.Of(at);
             }
             return new KGoto($"b{to.Ordinal}");
         }

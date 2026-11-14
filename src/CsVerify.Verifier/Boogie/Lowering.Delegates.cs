@@ -62,7 +62,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     throw new NotTranslated("a lambda that writes a variable of " + type);
                 }
-                Emit(new KHavoc { Var = s is IParameterSymbol p ? _assigned[p] : Declare(Local(s), type) });
+                Emit(KHavoc.Of(s is IParameterSymbol p ? _assigned[p] : Declare(Local(s), type)));
             }
         }
 
@@ -107,24 +107,20 @@ namespace CsVerify.Verifier.Boogie
             // (under Spec.Modifies: what it may change must be in the frame; one that changes nothing is, any other may not be, CSV1017)
             if (_contract.Modifies != null)
             {
-                Emit(new KCheck
-                {
-                    Cond = new KOp("$nochange", values[0]),
-                    Id = "CSV1017",
-                    At = call.Syntax,
-                    Message = $"'{call.Syntax}' calls a delegate that may write anything, which Spec.Modifies doesn't allow (say what it may change with Spec.ChangesNothing)",
-                });
+                Emit(KCheck.Of(
+                    new KOp("$nochange", values[0]),
+                    "CSV1017",
+                    call.Syntax,
+                    $"'{call.Syntax}' calls a delegate that may write anything, which Spec.Modifies doesn't allow (say what it may change with Spec.ChangesNothing)"));
             }
             // (holding permissions: a delegate without a contract is given none, so it may only be one that changes nothing)
             else if (_p.UsesPerm)
             {
-                Emit(new KCheck
-                {
-                    Cond = new KOp("$nochange", values[0]),
-                    Id = "CSV1016",
-                    At = call.Syntax,
-                    Message = $"'{call.Syntax}' calls a delegate that may write anything, which this method's permissions don't allow (say it changes nothing with Spec.ChangesNothing)",
-                });
+                Emit(KCheck.Of(
+                    new KOp("$nochange", values[0]),
+                    "CSV1016",
+                    call.Syntax,
+                    $"'{call.Syntax}' calls a delegate that may write anything, which this method's permissions don't allow (say it changes nothing with Spec.ChangesNothing)"));
             }
             Emit(new KInvoke
             {
@@ -188,15 +184,13 @@ namespace CsVerify.Verifier.Boogie
                 var objects = new List<IOperation>();
                 if (c.Reads == null || !Steady(c.Reads, own) || !c.OwnRequires.All(r => StateRead(r, own, objects)))
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = KLit.False,
-                        Id = "CSV1029",
-                        NotAssumedAfter = true,
-                        At = dc.Syntax,
-                        Message = $"the precondition of what is made a '{dc.Type.Name}' here depends on state that may change: " +
-                                                "say what it reads with Spec.Reads(...) in the lambda (fields and array cells of the objects it names), or use a delegate type with a contract",
-                    });
+                    Emit(KCheck.Of(
+                        KLit.False,
+                        "CSV1029",
+                        notAssumedAfter: true,
+                        at: dc.Syntax,
+                        message: $"the precondition of what is made a '{dc.Type.Name}' here depends on state that may change: " +
+                                               "say what it reads with Spec.Reads(...) in the lambda (fields and array cells of the objects it names), or use a delegate type with a contract"));
                     Emit(new KNewObj
                     {
                         Var = t,
@@ -213,14 +207,12 @@ namespace CsVerify.Verifier.Boogie
                 lam.Reads = frame;
                 foreach (var o in objects)
                 {
-                    Emit(new KCheck
-                    {
-                        Cond = Forall(lam.Params, new KOp("sel", frame, Spec(o, null))),
-                        Id = "CSV1029",
-                        NotAssumedAfter = true,
-                        At = o.Syntax,
-                        Message = $"the precondition reads '{o.Syntax}', which isn't in its Spec.Reads",
-                    });
+                    Emit(KCheck.Of(
+                        Forall(lam.Params, Sel(frame, Spec(o, null))),
+                        "CSV1029",
+                        notAssumedAfter: true,
+                        at: o.Syntax,
+                        message: $"the precondition reads '{o.Syntax}', which isn't in its Spec.Reads"));
                 }
                 // (what it gives, where it changes nothing and reads only its frame: of the state it's made in, as its precondition)
                 if (lam.NoChange)
@@ -361,18 +353,8 @@ namespace CsVerify.Verifier.Boogie
             if (instance != null)
             {
                 receiver = Declare("t$" + _temps++, instance.Type);
-                Emit(new KAssign
-                {
-                    Var = receiver,
-                    Value = Expr(instance),
-                });
-                Emit(new KCheck
-                {
-                    Cond = NotNull(new KVar(receiver)),
-                    Id = "CSV1013",
-                    At = instance.Syntax,
-                    Message = $"'{instance.Syntax}' might be null in '{dc.Syntax}'",
-                });
+                Emit(KAssign.Of(receiver, Expr(instance)));
+                Emit(KCheck.Of(NotNull(new KVar(receiver)), "CSV1013", instance.Syntax, $"'{instance.Syntax}' might be null in '{dc.Syntax}'"));
             }
             var key = FuncKey(dc.Type);
             _p.DelegateKeys.Add(key);
@@ -461,8 +443,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            return (Forall(vars, new KOp("==>", All(dPre), All(mPre))),
-                    Forall(withResult, new KOp("==>", AndAlso(AndAlso(All(dPre), All(mPre)), All(mPost)), All(dPost))));
+            return (Forall(vars, Implies(All(dPre), All(mPre))),
+                    Forall(withResult, Implies(AndAlso(AndAlso(All(dPre), All(mPre)), All(mPost)), All(dPost))));
         }
 
         /// <summary>For every value of these variables (none: the body itself).</summary>

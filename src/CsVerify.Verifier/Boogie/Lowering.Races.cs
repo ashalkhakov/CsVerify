@@ -322,14 +322,12 @@ namespace CsVerify.Verifier.Boogie
             KExpr Or(KExpr c) => unless == null ? c : OrElse(unless, c);
             if (fields.Count > 0)
             {
-                Emit(new KCheck
-                {
-                    Cond = Or(fieldsApart),
-                    Id = Warning,
-                    At = at,
-                    NotAssumedAfter = true,
-                    Message = $"'{a.Name}' and '{b.Name}' run at once, and '{fields[0].field.Name}' is written by one and used by the other: on one object, that could race, and each is proved as if alone",
-                });
+                Emit(KCheck.Of(
+                    Or(fieldsApart),
+                    Warning,
+                    at,
+                    notAssumedAfter: true,
+                    message: $"'{a.Name}' and '{b.Name}' run at once, and '{fields[0].field.Name}' is written by one and used by the other: on one object, that could race, and each is proved as if alone"));
             }
             if (a.Covered && b.Covered)
             {
@@ -340,14 +338,12 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             // (as an else of the fields': warned of only where those are apart)
-            Emit(new KCheck
-            {
-                Cond = Or(OrElse(Not(fieldsApart), AndAlso(ArraysApart(a, b), ArraysApart(b, a)))),
-                Id = Warning,
-                At = at,
-                NotAssumedAfter = true,
-                Message = $"'{a.Name}' and '{b.Name}' run at once, and one writes arrays the other may use: on one array, that could race, and each is proved as if alone",
-            });
+            Emit(KCheck.Of(
+                Or(OrElse(Not(fieldsApart), AndAlso(ArraysApart(a, b), ArraysApart(b, a)))),
+                Warning,
+                at,
+                notAssumedAfter: true,
+                message: $"'{a.Name}' and '{b.Name}' run at once, and one writes arrays the other may use: on one array, that could race, and each is proved as if alone"));
         }
 
         /// <summary>The id of a check whose failure is a warning (CSV1900, not an error), never assumed after.</summary>
