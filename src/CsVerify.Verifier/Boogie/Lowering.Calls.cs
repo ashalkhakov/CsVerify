@@ -304,7 +304,7 @@ namespace CsVerify.Verifier.Boogie
             if (m.Name is "FindIndex" or "FindLastIndex" && src != null)
             {
                 var len = IsArray(srcOp.Type) ? new KOp("len", src) : Sel(SizeMap, src);
-                Emit(new KAssume { Cond = AndAlso(new KOp("<=", new KLit("-1"), new KVar(r)), new KOp("<", new KVar(r), len)) });
+                Emit(new KAssume { Cond = AndAlso(new KOp("<=", KLit.MinusOne, new KVar(r)), new KOp("<", new KVar(r), len)) });
             }
             return new KVar(r);
         }
@@ -449,7 +449,7 @@ namespace CsVerify.Verifier.Boogie
                 Expr(ordered[1].Value);
                 var r = Declare("t$" + _temps++, m.ReturnType);
                 Emit(new KHavoc { Var = r });
-                Emit(new KAssume { Cond = AndAlso(new KOp("<=", new KLit("-1"), new KVar(r)), new KOp("<", new KVar(r), Len(a))) });
+                Emit(new KAssume { Cond = AndAlso(new KOp("<=", KLit.MinusOne, new KVar(r)), new KOp("<", new KVar(r), Len(a))) });
                 return (true, new KVar(r));
             }
             if (m.Name == "Reverse" && ordered.Count == 1 && IsArray(Unconverted(ordered[0].Value).Type))
@@ -1374,7 +1374,7 @@ namespace CsVerify.Verifier.Boogie
                     var rv = new KVar(r);
                     var at = AndAlso(AndAlso(new KOp("<=", KLit.Zero, rv), new KOp("<", rv, src.Length)), SameValue(src.Elem(rv), new KVar(x), src.Type));
                     var first = new KQuantOver(this, KLit.Zero, rv, j => Not(SameValue(src.Elem(j), new KVar(x), src.Type)), forall: true).Q;
-                    fact = OrElse(AndAlso(Eq(rv, new KLit("(-1)")), Not(has)), AndAlso(at, first));
+                    fact = OrElse(AndAlso(Eq(rv, KLit.MinusOne), Not(has)), AndAlso(at, first));
                 }
                 Emit(new KSpecStmt
                 {

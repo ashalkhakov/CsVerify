@@ -706,7 +706,7 @@ namespace CsVerify.Verifier.Boogie
                 var i = new MVar("i$");
                 Assert(OrElse(IsNull(r), MQuant.ForAll(
                     "i$",
-                    Implies(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))))),
+                    Implies(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), MLit.FullPermission)))),
                        At("CSV1016", row.At, $"'{row.At}' writes the whole array: this method needs Spec.Acc of all its cells"));
             }
             var v = Spec(row.Value, out _);
@@ -739,7 +739,7 @@ namespace CsVerify.Verifier.Boogie
             WithinFrame(a, st.At);
             if (_p.UsesCells)
             {
-                Assert(new MOp(">=", Cell(a, i), new MLit("1.0")), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
+                Assert(new MOp(">=", Cell(a, i), MLit.FullPermission), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
             }
             Emit(new MStore
             {
@@ -795,7 +795,7 @@ namespace CsVerify.Verifier.Boogie
                 Assert(OrElse(IsNull(a),
                                MQuant.ForAll(
                                    "i$",
-                                   Implies(inRange, la.Write ? new MOp(">=", Cell(a, i), new MLit("1.0")) : new MOp(">", Cell(a, i), new MLit("0.0"))))),
+                                   Implies(inRange, la.Write ? new MOp(">=", Cell(a, i), MLit.FullPermission) : new MOp(">", Cell(a, i), MLit.NoPermission)))),
                        At("CSV1016", la.At, la.Write ? $"'{la.At}' may write the array it's handed: this method needs Spec.Acc of all its cells"
                                                      : $"'{la.At}' reads the array it's handed: this method needs Spec.Acc or Spec.AccRead of all its cells"));
                 if (!la.Write)

@@ -210,7 +210,7 @@ namespace CsVerify.Verifier.Boogie
                 case "Increment": case "Decrement": case "Add":
                 {
                     // (wrapping at the type's ends, as at run time)
-                    var delta = name == "Increment" ? KLit.One : name == "Decrement" ? new KLit("(-1)") : args[0];
+                    var delta = name == "Increment" ? KLit.One : name == "Decrement" ? KLit.MinusOne : args[0];
                     var t = Declare("t$" + _temps++, type);
                     Emit(new KAssign
                     {

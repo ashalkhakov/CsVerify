@@ -42,6 +42,13 @@ namespace CsVerify.Verifier.Boogie
         public static MLit Null => new MLit("null");
         public static MLit Zero => new MLit("0");
         public static MLit One => new MLit("1");
+        public static MLit MinusOne => new MLit("(-1)");
+
+        /// <summary>A whole permission to a cell (Spec.Acc's, a write's).</summary>
+        public static MLit FullPermission => new MLit("1.0");
+
+        /// <summary>No permission to a cell; a read needs more.</summary>
+        public static MLit NoPermission => new MLit("0.0");
     }
 
     /// <summary>A variable: a parameter, a local, a quantifier's variable, "result".</summary>

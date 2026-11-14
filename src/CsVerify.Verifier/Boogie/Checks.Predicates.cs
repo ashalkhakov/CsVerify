@@ -126,7 +126,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Guarded(guard, () => el.String ? StringChar(el, a, i) : Elem(el, a, i, alongside: null));
                     if (_p.UsesCells && !el.String)
                     {
-                        Assert(Implies(guard, new MOp(">", Cell(a, i), new MLit("0.0"))), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
+                        Assert(Implies(guard, new MOp(">", Cell(a, i), MLit.NoPermission)), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
                     }
                     return v;
                 }

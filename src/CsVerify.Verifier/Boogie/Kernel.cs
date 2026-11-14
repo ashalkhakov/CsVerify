@@ -45,6 +45,7 @@ namespace CsVerify.Verifier.Boogie
         public static KLit Null => new KLit("null");
         public static KLit Zero => new KLit("0");
         public static KLit One => new KLit("1");
+        public static KLit MinusOne => new KLit("(-1)");
     }
 
     /// <summary>A variable: a parameter, a local, a quantifier's variable, "result".</summary>

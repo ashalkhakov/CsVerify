@@ -37,16 +37,16 @@ namespace CsVerify.Verifier.Boogie
             if (_p.ArrayMode)
             {
                 var i = new MVar("i$");
-                var room = c.Read ? new MOp("<=", Cell(c.Arr, i), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, i), new MLit("1.0"));
+                var room = c.Read ? new MOp("<=", Cell(c.Arr, i), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, i), MLit.FullPermission);
                 Assume(MQuant.ForAll("i$", Implies(InCells(g, c, c.Arr, i), room)));
-                var lo = c.Read ? new MOp("<=", Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, c.Lo), new MLit("1.0"));
+                var lo = c.Read ? new MOp("<=", Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, c.Lo), MLit.FullPermission);
                 Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
                 // (memory: two intervals overlap only where one starts inside the other, so at the other views' first cells too)
                 if (c.Arr is MLit { Text: "null" })
                 {
                     foreach (var other in _memLos)
                     {
-                        Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new MOp("<=", Cell(c.Arr, other), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, other), new MLit("1.0"))));
+                        Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new MOp("<=", Cell(c.Arr, other), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, other), MLit.FullPermission)));
                     }
                     _memLos.Add(c.Lo);
                 }

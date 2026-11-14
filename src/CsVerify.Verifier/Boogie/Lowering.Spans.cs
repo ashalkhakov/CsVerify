@@ -207,7 +207,7 @@ namespace CsVerify.Verifier.Boogie
                             return null;
                         }
                         var v = lower(ordered[1].Value);
-                        Emit(new KAssume { Cond = AndAlso(new KOp("<=", new KLit("-1"), rv), new KOp("<", rv, Len(sp))) });
+                        Emit(new KAssume { Cond = AndAlso(new KOp("<=", KLit.MinusOne, rv), new KOp("<", rv, Len(sp))) });
                         Emit(new KAssume { Cond = new KOp("==>", new KOp(">=", rv, KLit.Zero), Eq(At(sp, rv), v)) });
                         Emit(new KSpecStmt
                         {

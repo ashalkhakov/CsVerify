@@ -1496,8 +1496,8 @@ namespace CsVerify.Verifier.Boogie
                     break;
                 }
                 default: // FindIndex
-                    ShapeFact(AndAlso(new KOp("<=", new KLit("-1"), v), new KOp("<", v, s.Length)), at);
-                    ShapeFact(new KOp("ite", Eq(v, new KLit("-1")), Over(KLit.Zero, s.Length, i => Not(P(s.Elem(i)))),
+                    ShapeFact(AndAlso(new KOp("<=", KLit.MinusOne, v), new KOp("<", v, s.Length)), at);
+                    ShapeFact(new KOp("ite", Eq(v, KLit.MinusOne), Over(KLit.Zero, s.Length, i => Not(P(s.Elem(i)))),
                                       AndAlso(P(s.Elem(v)), Over(KLit.Zero, v, i => Not(P(s.Elem(i)))))), at);
                     break;
             }

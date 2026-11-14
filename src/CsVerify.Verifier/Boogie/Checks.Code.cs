@@ -247,7 +247,7 @@ namespace CsVerify.Verifier.Boogie
             // (alongside other code, under cell permissions: read only what it holds)
             if (alongside != null && _p.UsesCells)
             {
-                Assert(Implies(Code(alongside), new MOp(">", Cell(a, i), new MLit("0.0"))),
+                Assert(Implies(Code(alongside), new MOp(">", Cell(a, i), MLit.NoPermission)),
                     At("CSV1016", el.At, $"'{el.At}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it"));
             }
             var ev = Sel(Elements(el.ArrayType), a, i);
@@ -343,12 +343,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new MFork
                     {
-                        Overflow = Not(AndAlso(Eq(l, MathTypes.Number(Range(ar.Type).lo)), Eq(r, new MLit("(-1)")))),
+                        Overflow = Not(AndAlso(Eq(l, MathTypes.Number(Range(ar.Type).lo)), Eq(r, MLit.MinusOne))),
                         Target = ar.ThrowsTo,
                     });
                 }
                 // (MinValue / -1 throws in .NET, checked or not: a [Pure] member or lemma may not throw, so it's reported there)
-                var minOverMinus1 = Not(AndAlso(Eq(l, MathTypes.Number(Range(ar.Type).lo)), Eq(r, new MLit("(-1)"))));
+                var minOverMinus1 = Not(AndAlso(Eq(l, MathTypes.Number(Range(ar.Type).lo)), Eq(r, MLit.MinusOne)));
                 if (_program.CheckOverflow && (_p.Contract.IsPure || _p.Contract.IsLemma) && ar.Mode != KMode.Math)
                 {
                     Assert(minOverMinus1, At("CSV1010", ar.At, $"arithmetic '{ar.At}' might overflow {ar.Type.Name}"));
