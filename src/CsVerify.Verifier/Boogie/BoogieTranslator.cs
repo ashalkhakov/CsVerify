@@ -905,7 +905,7 @@ namespace CsVerify.Verifier.Boogie
                         parts.Add(("$is." + CaseName(c).Substring(3), OrElse(IsNull(new MOp(FieldFunction(f), dv)), new MOp(ValidName(f.Type), new MOp(FieldFunction(f), dv)))));
                     }
                 }
-                validity.Add((ValidName(t), invs.Count == 0 ? MLit.True : invs.Aggregate((a, b) => AndAlso(a, b)), parts));
+                validity.Add((ValidName(t), invs.Count == 0 ? MLit.True : AndAll(invs), parts));
             }
             _printer.Valid(validity);
         }

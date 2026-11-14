@@ -351,7 +351,7 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr And(IEnumerable<MExpr> xs)
         {
             var list = xs.ToList();
-            return list.Count == 0 ? MLit.True : list.Aggregate((a, b) => AndAlso(a, b));
+            return list.Count == 0 ? MLit.True : AndAll(list);
         }
 
         /// <summary>A clause of the contract as mathematics: the clause, its value, what makes it well-defined, what reading it gives.</summary>
@@ -538,12 +538,17 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = _p.Method;
             var decl = m.DeclaringSyntaxReferences[0].GetSyntax();
-            MExpr Conjunction(IEnumerable<KExpr> xs) => xs.Select(x =>
+            MExpr Conjunction(IEnumerable<KExpr> xs)
             {
-                var v = Spec(x, out _);
-                _facts.Clear();
-                return v;
-            }).Aggregate((MExpr)MLit.True, Conj);
+                MExpr all = MLit.True;
+                foreach (var x in xs)
+                {
+                    var v = Spec(x, out _);
+                    _facts.Clear();
+                    all = Conj(all, v);
+                }
+                return all;
+            }
             foreach (var (b, reqs) in _p.BaseRequires)
             {
                 Assert(Implies(Conjunction(reqs), Conjunction(_p.OwnRequires)),

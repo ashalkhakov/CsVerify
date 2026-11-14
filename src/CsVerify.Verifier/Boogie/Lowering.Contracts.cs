@@ -91,7 +91,6 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static void ContractOf(Lowering l, Contract contract)
         {
-            KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(KLit.True).Aggregate((a, b) => AndAlso(a, b));
             foreach (var r in contract.Requires)
             {
                 l._p.Requires.Add(KSpec.Of(l.Spec(r, null), r.Syntax));
@@ -110,7 +109,7 @@ namespace CsVerify.Verifier.Boogie
                 var post = l.Spec(e.Expr, e.ResultParameter);
                 if (e.Guard != null)
                 {
-                    post = Implies(Old(And(e.Guard.Select(g => l.Spec(g, null)))), post);
+                    post = Implies(Old(AndAll(e.Guard.Select(g => l.Spec(g, null)))), post);
                 }
                 l._p.Ensures.Add(KSpec.Of(post, e.Syntax));
             }

@@ -85,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
                     _facts.Clear();
                     return v.Substitute(given);
                 }
-                var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)MLit.True, Conj);
+                var pre = ConjAll(sig.Requires.Select(r => M(r.Expr)));
                 var app = new MFnApp
                 {
                     Callee = f,

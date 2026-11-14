@@ -203,7 +203,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 lam.Steady = false;
                 var frame = Spec(c.Reads, null);
-                lam.PreS = c.OwnRequires.Select(r => Spec(r, null)).Aggregate((a, b) => AndAlso(a, b));
+                lam.PreS = AndAll(c.OwnRequires.Select(r => Spec(r, null)));
                 lam.Reads = frame;
                 foreach (var o in objects)
                 {
@@ -252,7 +252,7 @@ namespace CsVerify.Verifier.Boogie
             }
             else if (c.OwnRequires.Count > 0)
             {
-                lam.Pre = c.OwnRequires.Select(r => Spec(r, null)).Aggregate((a, b) => AndAlso(a, b));
+                lam.Pre = AndAll(c.OwnRequires.Select(r => Spec(r, null)));
             }
             if (c.Modifies != null && Steady(c.Modifies, own))
             {
@@ -382,7 +382,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (c.Requires.Count > 0)
             {
-                lam.Pre = c.Requires.Select(r => Spec(r, null)).Aggregate((a, b) => AndAlso(a, b));
+                lam.Pre = AndAll(c.Requires.Select(r => Spec(r, null)));
             }
             foreach (var post in c.Ensures.Where(e => e.Guard == null))
             {
@@ -434,7 +434,6 @@ namespace CsVerify.Verifier.Boogie
                 var spec = Spec(op, result);
                 return spec.IsMath() ? spec.Rewrite(x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
             }
-            KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)KLit.True, (a, b) => AndAlso(a, b));
             var dPre = dc.Requires.Select(r => Of(r, null)).ToList();
             var mPre = mc.Requires.Select(r => Of(r, null)).ToList();
             var mPost = mc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();
@@ -443,8 +442,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            return (Forall(vars, Implies(All(dPre), All(mPre))),
-                    Forall(withResult, Implies(AndAlso(AndAlso(All(dPre), All(mPre)), All(mPost)), All(dPost))));
+            return (Forall(vars, Implies(AndAll(dPre), AndAll(mPre))),
+                    Forall(withResult, Implies(AndAlso(AndAlso(AndAll(dPre), AndAll(mPre)), AndAll(mPost)), AndAll(dPost))));
         }
 
         /// <summary>For every value of these variables (none: the body itself).</summary>

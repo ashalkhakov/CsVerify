@@ -106,6 +106,52 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
         public static KOp MapLambda(string binder, KExpr body) => new KOp("lambda", new KLit(binder), body);
 
+        /// <summary>The conjunction of these, left to right; true, of none.</summary>
+        public static KExpr AndAll(IEnumerable<KExpr> xs)
+        {
+            KExpr all = null;
+            foreach (var x in xs)
+            {
+                all = all == null ? x : AndAlso(all, x);
+            }
+            return all ?? KLit.True;
+        }
+
+        public static KExpr AndAll(params KExpr[] xs) => AndAll((IEnumerable<KExpr>)xs);
+
+        /// <summary>The disjunction of these, left to right; false, of none.</summary>
+        public static KExpr OrAny(IEnumerable<KExpr> xs)
+        {
+            KExpr any = null;
+            foreach (var x in xs)
+            {
+                any = any == null ? x : OrElse(any, x);
+            }
+            return any ?? KLit.False;
+        }
+
+        /// <summary>The sum of these (at least one), left to right.</summary>
+        public static KExpr Sum(IEnumerable<KExpr> xs)
+        {
+            KExpr sum = null;
+            foreach (var x in xs)
+            {
+                sum = sum == null ? x : Plus(sum, x);
+            }
+            return sum;
+        }
+
+        /// <summary>The product of these (at least one), left to right.</summary>
+        public static KExpr Product(IEnumerable<KExpr> xs)
+        {
+            KExpr product = null;
+            foreach (var x in xs)
+            {
+                product = product == null ? x : Times(product, x);
+            }
+            return product;
+        }
+
         public static KOp IsNull(KExpr a) => new KOp("==", a, KLit.Null);
         public static KOp NotNull(KExpr a) => new KOp("!=", a, KLit.Null);
     }

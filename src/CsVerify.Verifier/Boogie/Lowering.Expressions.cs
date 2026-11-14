@@ -1081,7 +1081,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Emit(KCheck.Of(Le(KLit.Zero, s), "CSV1003", mc.Syntax, $"array size in '{mc.Syntax}' might be negative"));
             }
             var t = Declare("t$" + _temps++, mc.Type);
-            Emit(KNew.Of(t, mc.Type, sizes.Skip(1).Aggregate(sizes[0], (x, y) => Times(x, y))));
+            Emit(KNew.Of(t, mc.Type, Product(sizes)));
             for (int d = 0; d < sizes.Length; d++)
             {
                 Emit(KAssume.Of(Eq(new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d])));

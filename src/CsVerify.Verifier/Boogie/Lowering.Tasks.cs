@@ -27,7 +27,12 @@ namespace CsVerify.Verifier.Boogie
 
         private IEnumerable<Task> AllTasks() => _tasks.Values.Concat(_startedCaptures.Values).Concat(_detached);
 
-        private KExpr Running() => AllTasks().Select(t => (KExpr)Not(new KVar(t.Awaited))).DefaultIfEmpty(null).Aggregate((a, b) => a == null ? b : OrElse(a, b));
+        /// <summary>That some task is not yet awaited (null: there are none).</summary>
+        private KExpr Running()
+        {
+            var running = AllTasks().Select(t => Not(new KVar(t.Awaited))).ToList();
+            return running.Count == 0 ? null : OrAny(running);
+        }
 
         /// <summary>Running alongside other code here: always (a method that runs concurrently), or while a task it started does.</summary>
         private KExpr Alongside(KExpr inHand) => Concurrent ? inHand : Running() is KExpr r ? OrElse(Not(r), inHand) : null;
@@ -1283,7 +1288,7 @@ InstanceAt = aw.Syntax,
         {
             _p.Awaits = true;
             _p.CallsDelegates = true;
-            var running = AllTasks().Select(t => (KExpr)Not(new KVar(t.Awaited))).Aggregate((a, b) => OrElse(a, b));
+            var running = OrAny(AllTasks().Select(t => (KExpr)Not(new KVar(t.Awaited))));
             var k = new KAwait { When = running };
             if (!_opaque)
             {

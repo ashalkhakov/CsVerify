@@ -19,7 +19,7 @@ namespace CsVerify.Verifier.Boogie
         private string _memLive;
 
         private static KExpr InCells(List<KCells> cells, KExpr a) =>
-            cells.Select(c => (KExpr)AndAlso(Le(c.Lo, a), Lt(a, c.Hi))).Aggregate((x, y) => OrElse(x, y));
+            OrAny(cells.Select(c => (KExpr)AndAlso(Le(c.Lo, a), Lt(a, c.Hi))));
 
         /// <summary>At the start: whether the method has views, and its parameters' cells apart and live.</summary>
         private void MemLiveEntry()
@@ -153,7 +153,6 @@ namespace CsVerify.Verifier.Boogie
                 At = at,
                 ArrayAt = at,
             });
-            KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => AndAlso(a, b));
             switch (m.Name)
             {
                 case "Offset":
@@ -172,7 +171,7 @@ namespace CsVerify.Verifier.Boogie
                     var view = Out("view");
                     Emit(KHavoc.Of(view));
                     var v = new KVar(view);
-                    Assume(And(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Value", v, "view"), init)));
+                    Assume(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Value", v, "view"), init)));
                     Emit(KMemCells.Of(MemCells(v, TypeOfParam("view"), at), true));
                     MemFresh(v, TypeOfParam("view"), at);
                     StoreCell(P("Addr", v, "view"), init);
@@ -195,7 +194,7 @@ namespace CsVerify.Verifier.Boogie
                     var view = Out("view");
                     Emit(KHavoc.Of(view));
                     var nv = new KVar(view);
-                    Assume(And(Eq(P("Addr", nv, "view"), P("Addr", new KVar(old), "view")), Eq(P("Value", nv, "view"), x)));
+                    Assume(AndAll(Eq(P("Addr", nv, "view"), P("Addr", new KVar(old), "view")), Eq(P("Value", nv, "view"), x)));
                     StoreCell(P("Addr", nv, "view"), x);
                     return true;
                 }
@@ -215,9 +214,9 @@ namespace CsVerify.Verifier.Boogie
                     var view = Out("view"); var gc = Out("gc");
                     Emit(KHavoc.Of(view)); Emit(KHavoc.Of(gc));
                     var v = new KVar(view); var g = new KVar(gc);
-                    Assume(And(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Length", v, "view"), n),
+                    Assume(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Length", v, "view"), n),
                                Eq(P("Elems", v, "view"), new KOp("seq.const", fill))));
-                    Assume(And(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Length", g, "gc"), P("Length", v, "view"))));
+                    Assume(AndAll(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Length", g, "gc"), P("Length", v, "view"))));
                     Emit(KMemCells.Of(MemCells(v, TypeOfParam("view"), at), true));
                     MemFresh(v, TypeOfParam("view"), at);
                     Emit(new KFill
@@ -236,7 +235,7 @@ namespace CsVerify.Verifier.Boogie
                 case "Get":
                 {
                     var v = In("view"); var p = In("p"); var i = In("i");
-                    Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), Le(KLit.Zero, i), Lt(i, P("Length", v, "view"))),
+                    Need(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), Le(KLit.Zero, i), Lt(i, P("Length", v, "view"))),
                          "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
                     value = Sel(P("Elems", v, "view"), i);
                     return true;
@@ -244,14 +243,14 @@ namespace CsVerify.Verifier.Boogie
                 case "Set":
                 {
                     var v = In("view"); var p = In("p"); var i = In("i"); var x = In("value");
-                    Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), Le(KLit.Zero, i), Lt(i, P("Length", v, "view"))),
+                    Need(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), Le(KLit.Zero, i), Lt(i, P("Length", v, "view"))),
                          "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
                     var old = Declare("t$" + _temps++, TypeOfParam("view"));
                     Emit(KAssign.Of(old, v));
                     var view = Out("view");
                     Emit(KHavoc.Of(view));
                     var nv = new KVar(view); var ov = new KVar(old);
-                    Assume(And(Eq(P("Addr", nv, "view"), P("Addr", ov, "view")), Eq(P("Length", nv, "view"), P("Length", ov, "view")),
+                    Assume(AndAll(Eq(P("Addr", nv, "view"), P("Addr", ov, "view")), Eq(P("Length", nv, "view"), P("Length", ov, "view")),
                                Eq(P("Elems", nv, "view"), Store(P("Elems", ov, "view"), i, x))));
                     StoreCell(Plus(P("Addr", nv, "view"), i), x);
                     return true;
@@ -259,7 +258,7 @@ namespace CsVerify.Verifier.Boogie
                 case "FreeArray":
                 {
                     var g = In("gc"); var v = In("view"); var p = In("p");
-                    Need(And(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Addr", g, "gc"), MemProp("Addr", p, TypeOfParam("p"))), Eq(P("Length", g, "gc"), P("Length", v, "view"))),
+                    Need(AndAll(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Addr", g, "gc"), MemProp("Addr", p, TypeOfParam("p"))), Eq(P("Length", g, "gc"), P("Length", v, "view"))),
                          "gc.Addr == view.Addr && gc.Addr == p.Addr && gc.Length == view.Length");
                     Revoke(v, TypeOfParam("view"));
                     return true;
@@ -267,13 +266,13 @@ namespace CsVerify.Verifier.Boogie
                 case "Split":
                 {
                     var w = In("whole"); var cut = In("at");
-                    Need(And(Le(KLit.Zero, cut), Le(cut, P("Length", w, "whole"))), "0 <= at.Value && at.Value <= whole.Length.Value");
+                    Need(AndAll(Le(KLit.Zero, cut), Le(cut, P("Length", w, "whole"))), "0 <= at.Value && at.Value <= whole.Length.Value");
                     var left = Out("left"); var right = Out("right");
                     Emit(KHavoc.Of(left)); Emit(KHavoc.Of(right));
                     var l = new KVar(left); var r = new KVar(right);
-                    Assume(And(Eq(P("Addr", l, "left"), P("Addr", w, "whole")), Eq(P("Length", l, "left"), cut), Eq(P("Elems", l, "left"), P("Elems", w, "whole")),
+                    Assume(AndAll(Eq(P("Addr", l, "left"), P("Addr", w, "whole")), Eq(P("Length", l, "left"), cut), Eq(P("Elems", l, "left"), P("Elems", w, "whole")),
                                Ge(P("Length", r, "right"), KLit.Zero)));
-                    Assume(And(Eq(P("Addr", r, "right"), Plus(P("Addr", w, "whole"), cut)), Eq(P("Length", r, "right"), Minus(P("Length", w, "whole"), cut)),
+                    Assume(AndAll(Eq(P("Addr", r, "right"), Plus(P("Addr", w, "whole"), cut)), Eq(P("Length", r, "right"), Minus(P("Length", w, "whole"), cut)),
                                Eq(P("Elems", r, "right"), new KOp("seq.drop", P("Elems", w, "whole"), cut))));
                     Revoke(w, TypeOfParam("whole"));
                     Grant(l, TypeOfParam("left")); Grant(r, TypeOfParam("right"));
@@ -286,7 +285,7 @@ namespace CsVerify.Verifier.Boogie
                     var whole = Out("whole");
                     Emit(KHavoc.Of(whole));
                     var w = new KVar(whole);
-                    Assume(And(Eq(P("Addr", w, "whole"), P("Addr", l, "left")), Eq(P("Length", w, "whole"), Plus(P("Length", l, "left"), P("Length", r, "right"))),
+                    Assume(AndAll(Eq(P("Addr", w, "whole"), P("Addr", l, "left")), Eq(P("Length", w, "whole"), Plus(P("Length", l, "left"), P("Length", r, "right"))),
                                Eq(P("Elems", w, "whole"), new KOp("seq.concat", P("Elems", l, "left"), P("Length", l, "left"), P("Elems", r, "right")))));
                     Revoke(l, TypeOfParam("left")); Revoke(r, TypeOfParam("right"));
                     Grant(w, TypeOfParam("whole"));
@@ -295,12 +294,12 @@ namespace CsVerify.Verifier.Boogie
                 case "TakeOut":
                 {
                     var w = In("whole"); var i = In("i");
-                    Need(And(Le(KLit.Zero, i), Lt(i, P("Length", w, "whole"))), "0 <= i.Value && i.Value < whole.Length.Value");
+                    Need(AndAll(Le(KLit.Zero, i), Lt(i, P("Length", w, "whole"))), "0 <= i.Value && i.Value < whole.Length.Value");
                     var cell = Out("cell"); var rest = Out("rest");
                     Emit(KHavoc.Of(cell)); Emit(KHavoc.Of(rest));
                     var c = new KVar(cell); var h = new KVar(rest);
-                    Assume(And(Eq(P("Addr", c, "cell"), Plus(P("Addr", w, "whole"), i)), Eq(P("Value", c, "cell"), Sel(P("Elems", w, "whole"), i))));
-                    Assume(And(Eq(P("Addr", h, "rest"), P("Addr", w, "whole")), Eq(P("Length", h, "rest"), P("Length", w, "whole")), Eq(P("Index", h, "rest"), i),
+                    Assume(AndAll(Eq(P("Addr", c, "cell"), Plus(P("Addr", w, "whole"), i)), Eq(P("Value", c, "cell"), Sel(P("Elems", w, "whole"), i))));
+                    Assume(AndAll(Eq(P("Addr", h, "rest"), P("Addr", w, "whole")), Eq(P("Length", h, "rest"), P("Length", w, "whole")), Eq(P("Index", h, "rest"), i),
                                Eq(P("Elems", h, "rest"), P("Elems", w, "whole"))));
                     Revoke(w, TypeOfParam("whole"));
                     Grant(c, TypeOfParam("cell")); Grant(h, TypeOfParam("rest"));
@@ -313,7 +312,7 @@ namespace CsVerify.Verifier.Boogie
                     var whole = Out("whole");
                     Emit(KHavoc.Of(whole));
                     var w = new KVar(whole);
-                    Assume(And(Eq(P("Addr", w, "whole"), P("Addr", h, "rest")), Eq(P("Length", w, "whole"), P("Length", h, "rest")),
+                    Assume(AndAll(Eq(P("Addr", w, "whole"), P("Addr", h, "rest")), Eq(P("Length", w, "whole"), P("Length", h, "rest")),
                                Eq(P("Elems", w, "whole"), Store(P("Elems", h, "rest"), P("Index", h, "rest"), P("Value", c, "cell")))));
                     Revoke(c, TypeOfParam("cell")); Revoke(h, TypeOfParam("rest"));
                     Grant(w, TypeOfParam("whole"));

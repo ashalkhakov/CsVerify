@@ -61,7 +61,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            return objects.Select(o => (MExpr)new MOp("set.of", o)).Aggregate((a, b) => new MOp("set.union", a, b));
+            MExpr union = null;
+            foreach (var o in objects)
+            {
+                var one = new MOp("set.of", o);
+                union = union == null ? one : new MOp("set.union", union, one);
+            }
+            return union;
         }
 
 

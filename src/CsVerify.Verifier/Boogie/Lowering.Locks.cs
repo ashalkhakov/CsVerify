@@ -721,7 +721,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>An object only this code has: a confined local's.</summary>
         private KExpr InHand(KExpr o) =>
-            Confined().Select(l => (KExpr)Eq(o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(KLit.False).Aggregate((a, b) => OrElse(a, b));
+            OrAny(Confined().Select(l => (KExpr)Eq(o, new KVar(Declare(Local(l), l.Type)))));
 
         /// <summary>
         /// A call under a lock of what may enter it again, which relies on its invariants: they hold at the call (CSV1024),

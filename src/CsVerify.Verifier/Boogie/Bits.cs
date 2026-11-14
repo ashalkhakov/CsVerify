@@ -86,7 +86,7 @@ namespace CsVerify.Verifier.Boogie
                 var run = Mod(Shifted(x, from), i + 1 - from);
                 runs.Add(from == 0 ? run : Times(Number(Pow2(from)), run));
             }
-            return runs.Count == 0 ? Number(0) : runs.Aggregate(Plus);
+            return runs.Count == 0 ? Number(0) : Sum(runs);
         }
 
         /// <summary>~x.</summary>
@@ -270,11 +270,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What holds of any non-negative operands: their results' ranges.</summary>
         private static KExpr RangeFacts(string op, KExpr x, KExpr y, KExpr r)
         {
-            KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => AndAlso(a, b));
-            var nonNegative = And(Le(Number(0), x), Le(Number(0), y));
-            var fact = op == "and" ? And(Le(Number(0), r), Le(r, x), Le(r, y))
-                     : op == "or" ? And(Le(x, r), Le(y, r), Le(r, Plus(x, y)))
-                     : And(Le(Number(0), r), Le(r, Plus(x, y)));
+            var nonNegative = AndAll(Le(Number(0), x), Le(Number(0), y));
+            var fact = op == "and" ? AndAll(Le(Number(0), r), Le(r, x), Le(r, y))
+                     : op == "or" ? AndAll(Le(x, r), Le(y, r), Le(r, Plus(x, y)))
+                     : AndAll(Le(Number(0), r), Le(r, Plus(x, y)));
             return Implies(nonNegative, fact);
         }
 
@@ -287,9 +286,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 facts.Add(Eq(Bit(r, i), op == "and" ? AndAlso(Bit(x, i), Bit(y, i)) : op == "or" ? OrElse(Bit(x, i), Bit(y, i)) : Ne(Bit(x, i), Bit(y, i))));
             }
-            var sum = Enumerable.Range(0, width).Select(i => (KExpr)Ite(Bit(r, i), Number(Pow2(i)), Number(0))).Aggregate(Plus);
+            var sum = Sum(Enumerable.Range(0, width).Select(i => (KExpr)Ite(Bit(r, i), Number(Pow2(i)), Number(0))));
             facts.Add(Eq(Mod(r, width), sum));
-            return facts.Aggregate((a, b) => AndAlso(a, b));
+            return AndAll(facts);
         }
     }
 }

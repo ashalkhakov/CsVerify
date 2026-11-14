@@ -490,7 +490,7 @@ namespace CsVerify.Verifier.Boogie
                 return NotNull(v);
             }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (KExpr)new KOp("$is." + CaseName(c).Substring(3), v)).ToList();
-            var any = tags.Count == 0 ? KLit.False : tags.Aggregate((a, b) => OrElse(a, b));
+            var any = tags.Count == 0 ? KLit.False : OrAny(tags);
             return AndAlso(NotNull(v), any);
         }
 

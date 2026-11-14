@@ -284,7 +284,6 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Two objects told apart: both known, and not equal (a condition, false where either isn't known).</summary>
         private static KExpr Apart(KExpr x, KExpr y) => x == null || y == null ? KLit.False : KeyOf(x) == KeyOf(y) && KeyOf(x) != "" ? KLit.False : Ne(x, y);
 
-        private static KExpr All(IEnumerable<KExpr> parts) => parts.DefaultIfEmpty(KLit.True).Aggregate((a, b) => AndAlso(a, b));
 
         /// <summary>The unguarded fields one writes and the other uses, with the condition that each such pair is on two objects.</summary>
         private static List<(ISymbol field, KExpr apart)> FieldRaces(Effects writer, Effects other)
@@ -305,7 +304,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         private static KExpr ArraysApart(Effects writer, Effects other) =>
-            All(writer.WrittenArrays.SelectMany(w => other.UsedArrays.Select(u => Apart(w, u))));
+            AndAll(writer.WrittenArrays.SelectMany(w => other.UsedArrays.Select(u => Apart(w, u))));
 
         /// <summary>
         /// Two things running at once, where one writes what the other uses, on what may be one object: a warning (each is
@@ -318,7 +317,7 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             var fields = FieldRaces(a, b).Concat(FieldRaces(b, a)).ToList();
-            var fieldsApart = All(fields.Select(f => f.apart));
+            var fieldsApart = AndAll(fields.Select(f => f.apart));
             KExpr Or(KExpr c) => unless == null ? c : OrElse(unless, c);
             if (fields.Count > 0)
             {

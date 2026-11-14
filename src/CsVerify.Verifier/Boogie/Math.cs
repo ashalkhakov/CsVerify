@@ -109,6 +109,28 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
         public static MOp MapLambda(string binder, MExpr body) => new MOp("lambda", new MLit(binder), body);
 
+        /// <summary>The conjunction of these, left to right; true, of none.</summary>
+        public static MExpr AndAll(IEnumerable<MExpr> xs)
+        {
+            MExpr all = null;
+            foreach (var x in xs)
+            {
+                all = all == null ? x : AndAlso(all, x);
+            }
+            return all ?? MLit.True;
+        }
+
+        /// <summary>The disjunction of these, left to right; false, of none.</summary>
+        public static MExpr OrAny(IEnumerable<MExpr> xs)
+        {
+            MExpr any = null;
+            foreach (var x in xs)
+            {
+                any = any == null ? x : OrElse(any, x);
+            }
+            return any ?? MLit.False;
+        }
+
         public static MOp IsNull(MExpr a) => new MOp("==", a, MLit.Null);
         public static MOp NotNull(MExpr a) => new MOp("!=", a, MLit.Null);
     }

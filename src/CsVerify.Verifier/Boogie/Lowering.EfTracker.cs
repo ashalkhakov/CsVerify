@@ -111,7 +111,6 @@ namespace CsVerify.Verifier.Boogie
 
         public static string IsaFunction(ITypeSymbol t) => "$isa." + Ident(t.OriginalDefinition.ToDisplayString());
 
-        private static KExpr And(IEnumerable<KExpr> parts) => parts.DefaultIfEmpty(KLit.True).Aggregate((a, b) => AndAlso(a, b));
 
         private KExpr KeyColumnsEqual(EfModel.Entity e, KExpr a, KExpr b)
         {
@@ -119,7 +118,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Fields.Add(p.OriginalDefinition);
             }
-            return And(e.Key.Select(p => IsString(p.Type) ? new KOp("streq", Column(p, a), Column(p, b)) : (KExpr)Eq(Column(p, a), Column(p, b))));
+            return AndAll(e.Key.Select(p => IsString(p.Type) ? new KOp("streq", Column(p, a), Column(p, b)) : (KExpr)Eq(Column(p, a), Column(p, b))));
         }
 
         /// <summary>A key EF generates on insert, not set yet: a single integer key at 0.</summary>
@@ -138,7 +137,7 @@ namespace CsVerify.Verifier.Boogie
                 return KLit.False;
             }
             var y = new KVar("y$");
-            var clash = And(new KExpr[] { Ne(State(c, y), I(EfDetached)), Ne(y, o), Isa(y, e), KeyColumnsEqual(e, y, o) });
+            var clash = AndAll(new KExpr[] { Ne(State(c, y), I(EfDetached)), Ne(y, o), Isa(y, e), KeyColumnsEqual(e, y, o) });
             return KQuant.ForAll("y$", "Ref", Not(clash));
         }
 
@@ -176,7 +175,7 @@ namespace CsVerify.Verifier.Boogie
                     parts.Add(Eq(l, Null));
                 }
             }
-            return And(parts);
+            return AndAll(parts);
         }
 
         private void TrackerCheck(KExpr cond, string id, SyntaxNode at, string message) =>
@@ -677,7 +676,7 @@ namespace CsVerify.Verifier.Boogie
             }
             // (the maps themselves: of what may be null)
             KExpr Col(IPropertySymbol p) => Sel(FieldMap(p.OriginalDefinition), rv);
-            var match = And(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Col(p), ks[j]) : (KExpr)Eq(Col(p), ks[j])));
+            var match = AndAll(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Col(p), ks[j]) : (KExpr)Eq(Col(p), ks[j])));
             Emit(KAssume.Of(OrElse(Eq(rv, Null), AndAlso(Isa(rv, e), match))));
             SetStates(c, Store(States(c), rv, Ite(Eq(State(c, rv), I(EfDetached)), I(Unchanged), State(c, rv))));
             MayThrow();
@@ -754,7 +753,7 @@ namespace CsVerify.Verifier.Boogie
             var len = new KVar(n);
             KExpr El(KExpr i) => Sel(el, i);
             KExpr Live(KExpr y) => AndAlso(Ne(State(c, y), I(EfDetached)), Ne(State(c, y), I(Deleted)));
-            KExpr Each(KExpr i) => And(new[] { Eq(Sel(idx, El(i)), i), Ne(El(i), Null), Isa(El(i), e), Live(El(i)) });
+            KExpr Each(KExpr i) => AndAll(new[] { Eq(Sel(idx, El(i)), i), Ne(El(i), Null), Isa(El(i), e), Live(El(i)) });
             var known = _known;
             _known = null;
             ShapeFact(Le(KLit.Zero, len), at);
@@ -765,7 +764,7 @@ namespace CsVerify.Verifier.Boogie
                 "y$",
                 "Ref",
                 Implies(AndAlso(Isa(y, e), Live(y)),
-                And(new KExpr[] { Le(KLit.Zero, Sel(idx, y)), Lt(Sel(idx, y), len), Eq(El(Sel(idx, y)), y) }))), at);
+                AndAll(new KExpr[] { Le(KLit.Zero, Sel(idx, y)), Lt(Sel(idx, y), len), Eq(El(Sel(idx, y)), y) }))), at);
             _known = known;
             return new LSeq
             {

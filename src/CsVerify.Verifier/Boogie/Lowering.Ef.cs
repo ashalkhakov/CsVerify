@@ -201,7 +201,7 @@ namespace CsVerify.Verifier.Boogie
                     _p.Fields.Add(p.OriginalDefinition);
                 }
                 LinqFact(Over(KLit.Zero, len, i => Over(KLit.Zero, len, j => OrElse(Eq(i, j),
-                    Not(key.Select(p => SameColumn(p, Column(p, Row(i)), Column(p, Row(j)))).Aggregate((a, b) => AndAlso(a, b)))))), at);
+                    Not(AndAll(key.Select(p => SameColumn(p, Column(p, Row(i)), Column(p, Row(j))))))))), at);
             }
             // each passes the entity's query filters, unless the query ignores them
             if (!t.IgnoreFilters)
@@ -474,7 +474,7 @@ namespace CsVerify.Verifier.Boogie
             // (tracked now: of those types, maybe)
             var maybe = new KVar(LinqMap("[Ref]bool"));
             var y = new KVar("y$");
-            KExpr ofTypes = types.Select(d => Isa(y, d)).DefaultIfEmpty(KLit.False).Aggregate((a, b) => OrElse(a, b));
+            KExpr ofTypes = OrAny(types.Select(d => Isa(y, d)));
             SetStates(t.Context, MapLambda("y$: Ref", Ite(AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
                 Ite(Sel(maybe, y), I(Unchanged), I(EfDetached)), State(t.Context, y))));
         }
@@ -501,7 +501,7 @@ namespace CsVerify.Verifier.Boogie
             var after = new KVar(LinqMap("[Ref]bool"));
             var r = new KVar("r$");
             // (what's made: by the inverse maps, no quantifier in it, so the solver finds no more objects than these)
-            KExpr isMade = made.Select(m => m.Has(r)).Aggregate((x, y) => OrElse(x, y));
+            KExpr isMade = OrAny(made.Select(m => m.Has(r)));
             if (guard != null)
             {
                 isMade = AndAlso(guard, isMade);

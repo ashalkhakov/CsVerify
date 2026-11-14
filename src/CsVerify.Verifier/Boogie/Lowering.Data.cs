@@ -881,7 +881,7 @@ namespace CsVerify.Verifier.Boogie
             return new KCast
             {
                 Value = acc,
-                Test = arms.Select(a => a.cond).Aggregate((a, b) => OrElse(a, b)),
+                Test = OrAny(arms.Select(a => a.cond)),
                 At = sw.Syntax,
             };
         }

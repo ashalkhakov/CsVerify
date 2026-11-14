@@ -31,6 +31,17 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr Implication(MExpr g, MExpr c) => g.IsTrue ? c : Implies(g, c);
         private static MExpr Conj(MExpr a, MExpr b) => a.IsTrue ? b : b.IsTrue ? a : AndAlso(a, b);
 
+        /// <summary>These conjoined by Conj, left to right (true, of none).</summary>
+        private static MExpr ConjAll(IEnumerable<MExpr> xs)
+        {
+            MExpr all = MLit.True;
+            foreach (var x in xs)
+            {
+                all = Conj(all, x);
+            }
+            return all;
+        }
+
         private static bool HasAtoms(KExpr e) => e.Atoms().Any();
 
         /// <summary>
@@ -438,7 +449,7 @@ namespace CsVerify.Verifier.Boogie
             MExpr elsewhere = Footprint(yv);
             if (nested.Count > 0)
             {
-                elsewhere = Ite(nested.Select(n => (MExpr)Eq(Footprint(yv), n.q)).Aggregate((a, b) => OrElse(a, b)), None, Footprint(yv));
+                elsewhere = Ite(OrAny(nested.Select(n => (MExpr)Eq(Footprint(yv), n.q))), None, Footprint(yv));
             }
             Emit(MAssign.Of("owner", MapLambda("y$: Ref", Ite(Eq(Footprint(yv), p), to, elsewhere))));
         }
@@ -465,7 +476,7 @@ namespace CsVerify.Verifier.Boogie
             MExpr celsewhere = CFoot();
             if (nested.Count > 0)
             {
-                celsewhere = Ite(nested.Select(n => (MExpr)Eq(CFoot(), n.q)).Aggregate((a, b) => OrElse(a, b)), None, CFoot());
+                celsewhere = Ite(OrAny(nested.Select(n => (MExpr)Eq(CFoot(), n.q))), None, CFoot());
             }
             Emit(MAssign.Of(
                 "cowner",
@@ -507,7 +518,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     // (the facts so far kept: the definition's own are left out)
                     var saved = _facts.ToList();
-                    var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)MLit.True, Conj);
+                    var pre = ConjAll(sig.Requires.Select(r => M(r.Expr)));
                     var definition = Eq(app, M(sig.FunctionBody));
                     _facts.Clear();
                     _facts.AddRange(saved);
@@ -618,7 +629,7 @@ namespace CsVerify.Verifier.Boogie
             Assume(Implication(g, AndAlso(AndAlso(NotNull(fa.Obj), Not(Held(fa.Obj))), Not(FieldHeld(fa.Obj, fa.Field)))));
             SetField(fa.Obj, fa.Field, OrElse(FieldHeld(fa.Obj, fa.Field), g));
             var fields = WholeFields(fa.Type);
-            Emit(MAssign.Of("all$", fields.Select(f => FieldHeld(fa.Obj, f)).Aggregate(g, (a, b) => Conj(a, b))));
+            Emit(MAssign.Of("all$", ConjAll(fields.Select(f => FieldHeld(fa.Obj, f)).Prepend(g))));
             if (!_p.Locals.Any(l => l.Name == "all$"))
             {
                 _p.Locals.Add(KLocal.Of("all$", "bool"));
