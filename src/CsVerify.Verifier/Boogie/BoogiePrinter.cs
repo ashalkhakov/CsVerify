@@ -487,7 +487,7 @@ namespace CsVerify.Verifier.Boogie
                         var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
                         if (q.Range == null)
                         {
-                            return $"(forall {name}: {q.Type} :: {trigger}{E(q.Body, cx)})";
+                            return $"({(q.Forall ? "forall" : "exists")} {name}: {q.Type} :: {trigger}{E(q.Body, cx)})";
                         }
                         var range = E(q.Range, cx);
                         var body = E(q.Body, cx);
