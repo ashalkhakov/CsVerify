@@ -80,8 +80,8 @@ namespace CsVerify.Verifier.Boogie
         public static MOp Not(MExpr a) => new MOp("!", a);
         public static MOp AndAlso(MExpr a, MExpr b) => new MOp("&&", a, b);
         public static MOp OrElse(MExpr a, MExpr b) => new MOp("||", a, b);
-        public static MOp IsNull(MExpr a) => new MOp("==", a, new MLit("null"));
-        public static MOp NotNull(MExpr a) => new MOp("!=", a, new MLit("null"));
+        public static MOp IsNull(MExpr a) => new MOp("==", a, MLit.Null);
+        public static MOp NotNull(MExpr a) => new MOp("!=", a, MLit.Null);
     }
 
     /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>

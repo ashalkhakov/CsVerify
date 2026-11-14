@@ -83,8 +83,8 @@ namespace CsVerify.Verifier.Boogie
         public static KOp Not(KExpr a) => new KOp("!", a);
         public static KOp AndAlso(KExpr a, KExpr b) => new KOp("&&", a, b);
         public static KOp OrElse(KExpr a, KExpr b) => new KOp("||", a, b);
-        public static KOp IsNull(KExpr a) => new KOp("==", a, new KLit("null"));
-        public static KOp NotNull(KExpr a) => new KOp("!=", a, new KLit("null"));
+        public static KOp IsNull(KExpr a) => new KOp("==", a, KLit.Null);
+        public static KOp NotNull(KExpr a) => new KOp("!=", a, KLit.Null);
     }
 
     /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>
