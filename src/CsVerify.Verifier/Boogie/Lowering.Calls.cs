@@ -1238,7 +1238,7 @@ namespace CsVerify.Verifier.Boogie
                     var first = Over(KLit.Zero, rv, j, Not(SameValue(src.Elem.At(j), new KVar(x), src.Type)), forall: true);
                     fact = OrElse(AndAlso(Eq(rv, KLit.MinusOne), Not(has)), AndAlso(at, first));
                 }
-                Emit(KSpecStmt.AssumedFree(fact, call.Syntax, argumentAt: call.Syntax));
+                ShapeFact(fact, call.Syntax);
                 return new KVar(r);
             }
             // (a.GetLength(d) of a one-dimensional array: its length, d being 0, CSV1003)
