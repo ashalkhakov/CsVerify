@@ -253,98 +253,57 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Expr(IOperation e)
         {
+            // (a data value's, a span's: Lowering.Data's and Lowering.Spans')
             if (DataExpr(e, Expr, BindInCode) is KExpr data) return data;
-            // (a cancellation token's state: cancelled may change at any moment, so each read is a value of its own; whether it
-            // can be is fixed)
-            if (e is IPropertyReferenceOperation tk && tk.Instance != null && IsToken(tk.Instance.Type) && tk.Property.Name == "CanBeCanceled")
-                return new KOp("$canBeCanceled", Expr(tk.Instance));
-            // (a lock's object read as a value, new Releaser(_s): some object, not null where declared so (no state of the kernel's))
-            if (e is IFieldReferenceOperation lockRead && IsLockObject(lockRead.Field))
-            {
-                if (lockRead.Instance != null && !(lockRead.Instance is IInstanceReferenceOperation)) Expr(lockRead.Instance);
-                var lt = Declare("t$" + _temps++, lockRead.Type);
-                Emit(new KHavoc { Var = lt });
-                if (NotNullable(lockRead.Field.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lt), new KLit("null")) });
-                return new KVar(lt);
-            }
-            // (default(CancellationToken), CancellationToken.None: a token, of whatever state)
-            if (e is IDefaultValueOperation dt && IsToken(dt.Type) || e is IPropertyReferenceOperation { Property.Name: "None", Instance: null } tn && IsToken(tn.Type))
-            {
-                var tt = Declare("t$" + _temps++, e.Type);
-                Emit(new KHavoc { Var = tt });
-                return new KVar(tt);
-            }
-            if (e is IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation resultOf } && _tasks.TryGetValue(resultOf.Local, out var resultTask)) return ResultOf(resultTask, e.Syntax);
-            // (EF's tracker: Database.CurrentTransaction, Entry(o).State)
-            if (e is IPropertyReferenceOperation trackerRead && TrackerRead(trackerRead) is KExpr tracked) return tracked;
-            // (a context's table, ctx.Orders or ctx.Set<T>(): a reference that changes nothing;
-            // what reads it is Lowering.Ef's)
-            if (KernelTypes.Ef != null && DbSetEntity(e.Type) != null &&
-                (e is IPropertyReferenceOperation { Instance: { } dbi } && KernelTypes.Ef.IsContextType(dbi.Type) ||
-                 e is IInvocationOperation { TargetMethod.Name: "Set", Instance: { } dbs, Arguments.Length: 0 } && KernelTypes.Ef.IsContextType(dbs.Type)))
-            {
-                var ctx = e is IPropertyReferenceOperation pdb ? pdb.Instance : ((IInvocationOperation)e).Instance;
-                var cv = Expr(ctx);
-                Emit(new KCheck { Cond = new KOp("!=", cv, new KLit("null")), Id = "CSV1013", At = ctx.Syntax, Message = $"'{ctx.Syntax}' might be null in '{e.Syntax}'" });
-                var table = Declare("t$" + _temps++, e.Type);
-                Emit(new KHavoc { Var = table });
-                Emit(new KAssume { Cond = new KOp("!=", new KVar(table), new KLit("null")) });
-                return new KVar(table);
-            }
-            // (a transaction as an object, compared with null: itself)
-            if (e is IConversionOperation { IsImplicit: true, Conversion.IsReference: true } txc && IsEfTransaction(txc.Operand.Type)) return Expr(txc.Operand);
+            // (a constant: its value; no form below is a constant of these types)
+            if (e.ConstantValue is { HasValue: true } cv && (Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type))) return Constant(cv.Value, e.Type);
             switch (e)
             {
-                case { ConstantValue: { HasValue: true } cv } when Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type): return Constant(cv.Value, e.Type);
-                case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
-                case ILocalReferenceOperation rr when _refAlias.TryGetValue(rr.Local, out var ra):
-                    if (ra.Var != null) return new KVar(ra.Var);
-                    HeldCell(ra.Array, rr.Syntax, write: false);
-                    return new KElem { Array = ra.Array, Index = ra.Index, ArrayType = ra.ArrayType, At = rr.Syntax, ArrayAt = rr.Syntax,
-                                       Alongside = InSpec(rr.Syntax) ? null : Concurrent ? new KLit("true") : Running() };
-                case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal): return new KVar(apLocal);
-                // (a compiled query's lambda's, where it's called: its argument)
-                case IParameterReferenceOperation cq when _compiledParams.Contains(cq.Parameter): return new KVar("q$" + cq.Parameter.Name);
-                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && (p.Parameter.RefKind is RefKind.None or RefKind.Ref or RefKind.Out || p.Parameter.RefKind == RefKind.In && (IsMemView(p.Parameter.Type) || InValue(p.Parameter))):
-                    return new KVar(Local(p.Parameter));
-                // (Math.Max, Min and Abs of integers: Abs(MinValue) throws, as checked negation does)
-                case IInvocationOperation im when IntegerMath(im):
-                    return IntegerMathCall(im);
-                case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
-                    return Own(own);
-                // (a quantifier in code, a [Pure] or ghost function's body: mathematics, its reads checked over its range)
-                case IInvocationOperation q when SpecSymbols.IsSpecClass(q.TargetMethod.ContainingType) && q.TargetMethod.Name is "Forall" or "Exists" && q.Arguments.Length == 3:
-                    // (read as the source has it: the graph lowers its lambda)
-                    return Spec(_model.GetOperation(q.Syntax) as IInvocationOperation ?? q, null);
-                case IInvocationOperation mv when mv.TargetMethod.Name == "MoveNext" && mv.Instance is IFlowCaptureReferenceOperation ev && _forEach.TryGetValue(ev.Id, out var fv) && fv.Version != null:
-                {
-                    // (the list may not have changed since: MoveNext throws if it has; whether there's another, unknown)
-                    var what = CollectionKind(fv.Collection) switch { "Dictionary" => "dictionary", "HashSet" => "set", "Stack" => "stack", "Queue" => "queue", _ => "list" };
-                    Emit(new KCheck { Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(fv.Array)), new KVar(fv.Version)), Id = "CSV1001", At = fv.At,
-                                      Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
-                    var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
-                    Emit(new KHavoc { Var = more });
-                    // (it gives at most the Count it had where the loop began (a dictionary's Remove may go on while it's
-                    // enumerated, the version as it was); all of them where the Count is still that)
-                    if (fv.Size0 != null)
-                    {
-                        var (i, n0) = (new KVar(fv.Index), new KVar(fv.Size0));
-                        Emit(new KAssume { Cond = new KOp("==>", new KVar(more), new KOp("<", i, n0)) });
-                        Emit(new KAssume { Cond = new KOp("==>", new KOp("&&", new KOp("!", new KVar(more)), new KOp("==", LengthOf(fv), n0)), new KOp("==", i, n0)) });
-                    }
-                    return new KVar(more);
-                }
-                // (an enumerator the kernel doesn't look into: its MoveNext may run the program's code, which may change
-                // anything; whether there's another isn't known)
-                case IInvocationOperation om when om.TargetMethod.Name == "MoveNext" && om.Instance is IFlowCaptureReferenceOperation eo && _forEach.TryGetValue(eo.Id, out var fo) && fo.Opaque:
-                    return MoveNextOfAnyEnumerable(om);
-                case IInvocationOperation mn when mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation er && _forEach.TryGetValue(er.Id, out var fm):
-                    return new KOp("<", new KVar(fm.Index), LengthOf(fm));
-                case IConversionOperation cc when Unconverted(cc) is IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr } && _forEach.TryGetValue(cr.Id, out var fcur):
-                {
-                    var el = Current(fcur);
-                    return SymbolEqualityComparer.Default.Equals(cc.Type, fcur.Element) ? el : new KConv { Value = el, From = fcur.Element, To = cc.Type, Mode = KMode.Default, At = cc.Syntax };
-                }
+                case IPropertyReferenceOperation: return ExprOfPropertyReference(e);
+                case IFieldReferenceOperation: return ExprOfFieldReference(e);
+                case IDefaultValueOperation: return ExprOfDefaultValue(e);
+                case IInvocationOperation: return ExprOfInvocation(e);
+                case IConversionOperation: return ExprOfConversion(e);
+                case ILocalReferenceOperation: return ExprOfLocalReference(e);
+                case IParameterReferenceOperation: return ExprOfParameterReference(e);
+                case IFlowCaptureReferenceOperation: return ExprOfFlowCaptureReference(e);
+                case IInstanceReferenceOperation: return ExprOfInstanceReference(e);
+                case ICaughtExceptionOperation: return ExprOfCaughtException(e);
+                case IObjectCreationOperation: return ExprOfObjectCreation(e);
+                case IParenthesizedOperation: return ExprOfParenthesized(e);
+                case ISimpleAssignmentOperation: return ExprOfSimpleAssignment(e);
+                case IUnaryOperation: return ExprOfUnary(e);
+                case IBinaryOperation: return ExprOfBinary(e);
+                case IArrayElementReferenceOperation: return ExprOfArrayElementReference(e);
+                case IIncrementOrDecrementOperation: return ExprOfIncrementOrDecrement(e);
+                case IArrayCreationOperation: return ExprOfArrayCreation(e);
+                case IAwaitOperation: return ExprOfAwait(e);
+                case IIsNullOperation: return ExprOfIsNull(e);
+                case IDelegateCreationOperation: return ExprOfDelegateCreation(e);
+                case IInterpolatedStringOperation: return ExprOfInterpolatedString(e);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a property reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfPropertyReference(IOperation e)
+        {
+            switch (e)
+            {
+                // (a cancellation token's state: cancelled may change at any moment, so each read is a value of its own; whether it
+                // can be is fixed)
+                case IPropertyReferenceOperation tk when tk.Instance != null && IsToken(tk.Instance.Type) && tk.Property.Name == "CanBeCanceled":
+                    return new KOp("$canBeCanceled", Expr(tk.Instance));
+                case IPropertyReferenceOperation { Property.Name: "None", Instance: null } tn when IsToken(tn.Type):
+                    return AnyToken(e);
+                case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation resultOf } when _tasks.TryGetValue(resultOf.Local, out var resultTask):
+                    return ResultOf(resultTask, e.Syntax);
+                // (EF's tracker: Database.CurrentTransaction, Entry(o).State)
+                case IPropertyReferenceOperation trackerRead when TrackerRead(trackerRead) is KExpr tracked:
+                    return tracked;
+                // (a context's table, ctx.Orders or ctx.Set<T>(): a reference that changes nothing; what reads it is Lowering.Ef's)
+                case IPropertyReferenceOperation { Instance: { } dbi } when KernelTypes.Ef != null && DbSetEntity(e.Type) != null && KernelTypes.Ef.IsContextType(dbi.Type):
+                    return ContextTable(e, dbi);
                 case IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr2 } when _forEach.TryGetValue(cr2.Id, out var fcur2):
                     return Current(fcur2);
                 // (an enumerator's Current: an element, not known which)
@@ -357,27 +316,6 @@ namespace CsVerify.Verifier.Boogie
                     if (IsNullable(acur.Element) && NotNullable(acur.Element)) Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
                     return new KVar(v);
                 }
-                case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
-                case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when !_p.IsCtor:
-                    return new KVar("this");
-                // (in a catch: the exception it caught)
-                case ICaughtExceptionOperation _:
-                    return new KVar("ex$");
-                // (a new exception of the library's: its arguments' values aren't kept, only what is in the kernel is checked)
-                // (a list: its stub's constructor, which gives a new one)
-                case IObjectCreationOperation lo when IsCollection(lo.Type) && lo.Initializer == null && lo.Constructor != null:
-                    return Invoke(lo.Constructor, null, lo.Arguments, lo.Syntax, null);
-                // (a struct's constructor: the value it gives)
-                case IObjectCreationOperation sc when IsStruct(sc.Type) && sc.Initializer == null && sc.Constructor != null && !sc.Constructor.IsImplicitlyDeclared:
-                    return Invoke(sc.Constructor, null, sc.Arguments, sc.Syntax, null);
-                case IObjectCreationOperation ne when IsException(ne.Type) && !IsClass(ne.Type) && ne.Initializer == null:
-                    return NewLibraryException(ne);
-                // (this, in a constructor, as a value: it escapes before the object is built. Where the class has invariants or
-                // non-nullable fields, CSV1015; the object goes on, as it is)
-                case IInstanceReferenceOperation ti when _p.IsCtor && ti.ReferenceKind == InstanceReferenceKind.ContainingTypeInstance:
-                    return ThisInConstructor(ti);
-                case IInstanceReferenceOperation _:
-                    throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
                 // (a computed property: its getter, called)
                 case IPropertyReferenceOperation cp when IsComputed(cp.Property) && cp.Property.GetMethod != null:
                     return Invoke(cp.Property.GetMethod, cp.Instance, cp.Arguments, cp.Syntax, null);
@@ -388,78 +326,13 @@ namespace CsVerify.Verifier.Boogie
                 // of its declared type, which warns but where it's shared state anyway)
                 case IPropertyReferenceOperation lp when LibraryProperty(lp):
                     return LibraryPropertyRead(lp);
-                // (a static readonly field the kernel doesn't have: a value that never changes, not known which; not null
-                // where its type says so)
-                case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srr } when StaticReadonly(srr) is KExpr srv:
-                {
-                    if (IsNullable(srr.Type) && NotNullable(srr.Type)) Emit(new KAssume { Cond = new KOp("!=", srv, new KLit("null")) });
-                    if (IsIntegral(srr.Type)) Emit(new KAssume { Cond = InRange(srv, srr.Type) });
-                    return srv;
-                }
-                case IFieldReferenceOperation _:
+                // (a property that reads as a field: an auto-property, of no collection, no pair, no specification type)
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
                                                       !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
-                {
-                    var (field, instance, onThis, instanceAt) = FieldOf(e);
-                    if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis)) return AtomicRead(field, instance, onThis, e.Syntax);
-                    if (KernelTypes.Trees && SpecSymbols.IsOwnsField(field) && instance != null)
-                    {
-                        // (what an [Owns] field holds is in its container's tree, and isn't its root: it's owned)
-                        var t = Declare("t$" + _temps++, FieldType(field));
-                        Emit(new KAssign { Var = t, Value = new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt } });
-                        var r = new KVar("$root");
-                        Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")),
-                            new KOp("&&", new KOp("==", new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), new KOp("!=", new KOp("sel", r, new KVar(t)), new KVar(t)))) });
-                        return new KVar(t);
-                    }
-                    return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
-                }
-                // (a library object: a new reference, of no fields of the program's; its constructor's arguments read)
-                // (new string(c, n), new string(chars): a string of the library's, not null, of what length its arguments say where they do)
-                case IObjectCreationOperation ns when IsString(ns.Type) && ns.Initializer == null && ns.Constructor != null && ns.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None):
-                    return NewString(ns);
-                case IObjectCreationOperation lob when (IsLibraryObject(lob.Type) || lob.Type.SpecialType == SpecialType.System_Object) && lob.Initializer == null && lob.Constructor != null &&
-                                                       lob.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None && (x.Value.Type?.TypeKind != TypeKind.Delegate || IsFunc(x.Parameter.Type))):
-                    return NewLibraryObject(lob);
-                case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
-                    return NewObject(oc);
-                case IParenthesizedOperation par: return Expr(par.Operand);
-                // (object.ReferenceEquals(a, b): == of the two objects)
-                case IInvocationOperation re when re.TargetMethod is { Name: "ReferenceEquals", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Object } && re.Arguments.Length == 2 &&
-                                                  re.Arguments.All(a => InSubset(a.Value.Type)):
-                    return ReferenceEqualsCall(re);
-                // (an assignment as an expression, (x = 10) > 5: written, then its value)
-                case ISimpleAssignmentOperation sa when !sa.IsRef && InSubset(sa.Type) && sa.Target is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation:
-                    return AssignmentValue(sa);
-                case IConversionOperation conv when conv.Conversion.IsIdentity || conv.IsImplicit && IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
-                    return Expr(conv.Operand);
-                // (a data value as an object: an object of its own, which no other is known to be, though they be equal values)
-                case IConversionOperation dobj when dobj.IsImplicit && IsData(dobj.Operand.Type) && dobj.Type.SpecialType == SpecialType.System_Object:
-                    return DataAsObject(dobj);
-                // (an array or a modeled collection as a collection interface: what it is goes with it)
-                case IConversionOperation ci when ci.IsImplicit && IsCollectionInterface(ci.Type) && (IsArray(ci.Operand.Type) || IsCollection(ci.Operand.Type)):
-                    return AsCollectionInterface(ci);
+                    return FieldRead(e);
                 case IPropertyReferenceOperation ir when ir.Instance != null && IsCollectionInterface(ir.Property.ContainingType) &&
                                                          (ir.Property.Name == "Count" && ir.Arguments.Length == 0 || ir.Property.IsIndexer && ir.Arguments.Length == 1):
                     return Ifc(ir, ir.Property.IsIndexer ? Expr(ir.Arguments[0].Value) : null, Expr(ir.Instance), inSpec: false);
-                case IConversionOperation conv when Upcast(conv):
-                    return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
-                // (a target-typed conditional, Sh s = c ? new S1() : new S2(): each branch already converted)
-                case IConversionOperation tt when tt.IsImplicit && tt.OperatorMethod == null && SymbolEqualityComparer.Default.Equals(tt.Type, tt.Operand.Type):
-                    return Expr(tt.Operand);
-                // (and an enum's: an integer of its underlying type)
-                case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && (conv.Conversion.IsNumeric || conv.Type.TypeKind == TypeKind.Enum || conv.Operand.Type.TypeKind == TypeKind.Enum):
-                    return new KConv { Value = Expr(conv.Operand), From = conv.Operand.Type, To = conv.Type, Mode = Mode(conv.Syntax, conv.IsChecked), At = conv.Syntax };
-                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Expr(u.Operand));
-                case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
-                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
-                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
-                    return Arith("-", new KLit("0"), Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
-                case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.Type) && b.OperatorKind == BinaryOperatorKind.Add) && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
-                                             b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):
-                    return Binary(b);
-                case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
-                    return ArrayElement(el);
                 case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation rl } when _tasks.TryGetValue(rl.Local, out var rt):
                     return ResultOf(rt, e.Syntax);
                 // (a list's Count and indexer: its stub's getters)
@@ -474,6 +347,146 @@ namespace CsVerify.Verifier.Boogie
                     return new KLen { String = true, Array = Expr(sl.Instance), At = sl.Syntax, ArrayAt = sl.Instance.Syntax };
                 case IPropertyReferenceOperation sc when sc.Property.IsIndexer && IsString(sc.Instance?.Type) && sc.Arguments.Length == 1:
                     return StringChar(sc);
+                case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
+                    return new KLen { Array = Expr(pr.Instance), At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a field reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfFieldReference(IOperation e)
+        {
+            switch (e)
+            {
+                // (a lock's object read as a value, new Releaser(_s): some object, not null where declared so (no state of the kernel's))
+                case IFieldReferenceOperation lockRead when IsLockObject(lockRead.Field):
+                    return LockObjectRead(lockRead);
+                // (a static readonly field the kernel doesn't have: a value that never changes, not known which; not null
+                // where its type says so)
+                case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srr } when StaticReadonly(srr) is KExpr srv:
+                {
+                    if (IsNullable(srr.Type) && NotNullable(srr.Type)) Emit(new KAssume { Cond = new KOp("!=", srv, new KLit("null")) });
+                    if (IsIntegral(srr.Type)) Emit(new KAssume { Cond = InRange(srv, srr.Type) });
+                    return srv;
+                }
+                case IFieldReferenceOperation _:
+                    return FieldRead(e);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>A field's value (or an auto-property's, its field's): an atomic one's, an [Owns] field's, any other's.</summary>
+        private KExpr FieldRead(IOperation e)
+        {
+            var (field, instance, onThis, instanceAt) = FieldOf(e);
+            if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis)) return AtomicRead(field, instance, onThis, e.Syntax);
+            if (KernelTypes.Trees && SpecSymbols.IsOwnsField(field) && instance != null)
+            {
+                // (what an [Owns] field holds is in its container's tree, and isn't its root: it's owned)
+                var t = Declare("t$" + _temps++, FieldType(field));
+                Emit(new KAssign { Var = t, Value = new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt } });
+                var r = new KVar("$root");
+                Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")),
+                    new KOp("&&", new KOp("==", new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), new KOp("!=", new KOp("sel", r, new KVar(t)), new KVar(t)))) });
+                return new KVar(t);
+            }
+            return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
+        }
+
+        /// <summary>Expr of a default value: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfDefaultValue(IOperation e)
+        {
+            switch (e)
+            {
+                // (default(CancellationToken), CancellationToken.None: a token, of whatever state)
+                case IDefaultValueOperation dt when IsToken(dt.Type):
+                    return AnyToken(e);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a invocation: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfInvocation(IOperation e)
+        {
+            switch (e)
+            {
+                case IInvocationOperation { TargetMethod.Name: "Set", Instance: { } dbs, Arguments.Length: 0 } when KernelTypes.Ef != null && DbSetEntity(e.Type) != null && KernelTypes.Ef.IsContextType(dbs.Type):
+                    return ContextTable(e, dbs);
+                // (Math.Max, Min and Abs of integers: Abs(MinValue) throws, as checked negation does)
+                case IInvocationOperation im when IntegerMath(im):
+                    return IntegerMathCall(im);
+                case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
+                    return Own(own);
+                // (a quantifier in code, a [Pure] or ghost function's body: mathematics, its reads checked over its range)
+                case IInvocationOperation q when SpecSymbols.IsSpecClass(q.TargetMethod.ContainingType) && q.TargetMethod.Name is "Forall" or "Exists" && q.Arguments.Length == 3:
+                    // (read as the source has it: the graph lowers its lambda)
+                    return Spec(_model.GetOperation(q.Syntax) as IInvocationOperation ?? q, null);
+                case IInvocationOperation mv when mv.TargetMethod.Name == "MoveNext" && mv.Instance is IFlowCaptureReferenceOperation ev && _forEach.TryGetValue(ev.Id, out ForEach fv) && fv.Version != null:
+                    return MoveNextOfEnumerator(fv);
+                // (an enumerator the kernel doesn't look into: its MoveNext may run the program's code, which may change
+                // anything; whether there's another isn't known)
+                case IInvocationOperation om when om.TargetMethod.Name == "MoveNext" && om.Instance is IFlowCaptureReferenceOperation eo && _forEach.TryGetValue(eo.Id, out var fo) && fo.Opaque:
+                    return MoveNextOfAnyEnumerable(om);
+                case IInvocationOperation mn when mn.TargetMethod.Name == "MoveNext" && mn.Instance is IFlowCaptureReferenceOperation er && _forEach.TryGetValue(er.Id, out var fm):
+                    return new KOp("<", new KVar(fm.Index), LengthOf(fm));
+                // (object.ReferenceEquals(a, b): == of the two objects)
+                case IInvocationOperation re when re.TargetMethod is { Name: "ReferenceEquals", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Object } && re.Arguments.Length == 2 &&
+                                                  re.Arguments.All(a => InSubset(a.Value.Type)):
+                    return ReferenceEqualsCall(re);
+                case IInvocationOperation call:
+                    return Call(call);
+                default: return ExprOther(e);
+            }
+        }
+
+        private KExpr MoveNextOfEnumerator(ForEach fv)
+        {
+            // (the list may not have changed since: MoveNext throws if it has; whether there's another, unknown)
+            var what = CollectionKind(fv.Collection) switch { "Dictionary" => "dictionary", "HashSet" => "set", "Stack" => "stack", "Queue" => "queue", _ => "list" };
+            Emit(new KCheck { Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(fv.Array)), new KVar(fv.Version)), Id = "CSV1001", At = fv.At,
+                              Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
+            var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
+            Emit(new KHavoc { Var = more });
+            // (it gives at most the Count it had where the loop began (a dictionary's Remove may go on while it's
+            // enumerated, the version as it was); all of them where the Count is still that)
+            if (fv.Size0 != null)
+            {
+                var (i, n0) = (new KVar(fv.Index), new KVar(fv.Size0));
+                Emit(new KAssume { Cond = new KOp("==>", new KVar(more), new KOp("<", i, n0)) });
+                Emit(new KAssume { Cond = new KOp("==>", new KOp("&&", new KOp("!", new KVar(more)), new KOp("==", LengthOf(fv), n0)), new KOp("==", i, n0)) });
+            }
+            return new KVar(more);
+        }
+
+        /// <summary>Expr of a conversion: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfConversion(IOperation e)
+        {
+            switch (e)
+            {
+                // (a transaction as an object, compared with null: itself)
+                case IConversionOperation { IsImplicit: true, Conversion.IsReference: true } txc when IsEfTransaction(txc.Operand.Type):
+                    return Expr(txc.Operand);
+                case IConversionOperation cc when Unconverted(cc) is IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr } && _forEach.TryGetValue(cr.Id, out var fcur):
+                {
+                    var el = Current(fcur);
+                    return SymbolEqualityComparer.Default.Equals(cc.Type, fcur.Element) ? el : new KConv { Value = el, From = fcur.Element, To = cc.Type, Mode = KMode.Default, At = cc.Syntax };
+                }
+                case IConversionOperation conv when conv.Conversion.IsIdentity || conv.IsImplicit && IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
+                    return Expr(conv.Operand);
+                // (a data value as an object: an object of its own, which no other is known to be, though they be equal values)
+                case IConversionOperation dobj when dobj.IsImplicit && IsData(dobj.Operand.Type) && dobj.Type.SpecialType == SpecialType.System_Object:
+                    return DataAsObject(dobj);
+                // (an array or a modeled collection as a collection interface: what it is goes with it)
+                case IConversionOperation ci when ci.IsImplicit && IsCollectionInterface(ci.Type) && (IsArray(ci.Operand.Type) || IsCollection(ci.Operand.Type)):
+                    return AsCollectionInterface(ci);
+                case IConversionOperation conv when Upcast(conv):
+                    return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
+                // (a target-typed conditional, Sh s = c ? new S1() : new S2(): each branch already converted)
+                case IConversionOperation tt when tt.IsImplicit && tt.OperatorMethod == null && SymbolEqualityComparer.Default.Equals(tt.Type, tt.Operand.Type):
+                    return Expr(tt.Operand);
+                // (and an enum's: an integer of its underlying type)
+                case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && (conv.Conversion.IsNumeric || conv.Type.TypeKind == TypeKind.Enum || conv.Operand.Type.TypeKind == TypeKind.Enum):
+                    return new KConv { Value = Expr(conv.Operand), From = conv.Operand.Type, To = conv.Type, Mode = Mode(conv.Syntax, conv.IsChecked), At = conv.Syntax };
                 // ((T[])a.Clone(): a new array of a's length, its elements a's)
                 case IConversionOperation { Operand: IInvocationOperation { TargetMethod.Name: "Clone", Arguments.Length: 0, Instance: { } ci } } cc
                     when IsArray(cc.Type) && IsArray(ci.Type) && SymbolEqualityComparer.Default.Equals(cc.Type, ci.Type) && !_p.MemViews:
@@ -482,9 +495,159 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KCheck { Cond = new KOp("!=", src, new KLit("null")), Id = "CSV1013", At = ci.Syntax, Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'" });
                     return CopyOf(src, new KLit("0"), new KOp("len", src), cc.Type, cc.Syntax);
                 }
-                // (n++ and ++n as values: stored, as a statement stores it; the value before, or after)
-                case IIncrementOrDecrementOperation iv when IsIntegral(iv.Type):
-                    return IncrementValue(iv);
+                // (a value boxed, as object or an interface it has: an object of its own, not null, which no other is known to be)
+                case IConversionOperation bx when bx.IsImplicit && bx.Operand.Type?.IsValueType == true && !bx.Type.IsValueType && InSubset(bx.Operand.Type) && TypeOf(bx.Type) == "Ref":
+                    return Boxed(bx);
+                // (a task, or a library's object, as object or an interface it has: the same reference)
+                case IConversionOperation tr when tr.IsImplicit && tr.Conversion.IsReference && (IsGivenTask(tr.Operand.Type) || IsLibraryObject(tr.Operand.Type) ||
+                                                  IsSequence(tr.Type) && (IsCollection(tr.Operand.Type) || IsArray(tr.Operand.Type))) && TypeOf(tr.Type) == "Ref":
+                    return Expr(tr.Operand);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a local reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfLocalReference(IOperation e)
+        {
+            switch (e)
+            {
+                case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
+                case ILocalReferenceOperation rr when _refAlias.TryGetValue(rr.Local, out var ra):
+                    if (ra.Var != null) return new KVar(ra.Var);
+                    HeldCell(ra.Array, rr.Syntax, write: false);
+                    return new KElem { Array = ra.Array, Index = ra.Index, ArrayType = ra.ArrayType, At = rr.Syntax, ArrayAt = rr.Syntax,
+                                       Alongside = InSpec(rr.Syntax) ? null : Concurrent ? new KLit("true") : Running() };
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a parameter reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfParameterReference(IOperation e)
+        {
+            switch (e)
+            {
+                case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal): return new KVar(apLocal);
+                // (a compiled query's lambda's, where it's called: its argument)
+                case IParameterReferenceOperation cq when _compiledParams.Contains(cq.Parameter): return new KVar("q$" + cq.Parameter.Name);
+                case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && (p.Parameter.RefKind is RefKind.None or RefKind.Ref or RefKind.Out || p.Parameter.RefKind == RefKind.In && (IsMemView(p.Parameter.Type) || InValue(p.Parameter))):
+                    return new KVar(Local(p.Parameter));
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a flow capture reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfFlowCaptureReference(IOperation e)
+        {
+            switch (e)
+            {
+                case IFlowCaptureReferenceOperation r: return new KVar(Capture(r.Id, r.Type));
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a instance reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfInstanceReference(IOperation e)
+        {
+            switch (e)
+            {
+                case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when !_p.IsCtor:
+                    return new KVar("this");
+                // (this, in a constructor, as a value: it escapes before the object is built. Where the class has invariants or
+                // non-nullable fields, CSV1015; the object goes on, as it is)
+                case IInstanceReferenceOperation ti when _p.IsCtor && ti.ReferenceKind == InstanceReferenceKind.ContainingTypeInstance:
+                    return ThisInConstructor(ti);
+                case IInstanceReferenceOperation _:
+                    throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a caught exception: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfCaughtException(IOperation e)
+        {
+            switch (e)
+            {
+                // (in a catch: the exception it caught)
+                case ICaughtExceptionOperation _:
+                    return new KVar("ex$");
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a object creation: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfObjectCreation(IOperation e)
+        {
+            switch (e)
+            {
+                // (a new exception of the library's: its arguments' values aren't kept, only what is in the kernel is checked)
+                // (a list: its stub's constructor, which gives a new one)
+                case IObjectCreationOperation lo when IsCollection(lo.Type) && lo.Initializer == null && lo.Constructor != null:
+                    return Invoke(lo.Constructor, null, lo.Arguments, lo.Syntax, null);
+                // (a struct's constructor: the value it gives)
+                case IObjectCreationOperation sc when IsStruct(sc.Type) && sc.Initializer == null && sc.Constructor != null && !sc.Constructor.IsImplicitlyDeclared:
+                    return Invoke(sc.Constructor, null, sc.Arguments, sc.Syntax, null);
+                case IObjectCreationOperation ne when IsException(ne.Type) && !IsClass(ne.Type) && ne.Initializer == null:
+                    return NewLibraryException(ne);
+                // (a library object: a new reference, of no fields of the program's; its constructor's arguments read)
+                // (new string(c, n), new string(chars): a string of the library's, not null, of what length its arguments say where they do)
+                case IObjectCreationOperation ns when IsString(ns.Type) && ns.Initializer == null && ns.Constructor != null && ns.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None):
+                    return NewString(ns);
+                case IObjectCreationOperation lob when (IsLibraryObject(lob.Type) || lob.Type.SpecialType == SpecialType.System_Object) && lob.Initializer == null && lob.Constructor != null &&
+                                                       lob.Arguments.All(x => InSubset(x.Value.Type) && x.Parameter.RefKind == RefKind.None && (x.Value.Type?.TypeKind != TypeKind.Delegate || IsFunc(x.Parameter.Type))):
+                    return NewLibraryObject(lob);
+                case IObjectCreationOperation oc when IsClass(oc.Type) && oc.Initializer == null && oc.Constructor != null:
+                    return NewObject(oc);
+                // (a library value the kernel doesn't look into, new TimeSpan(...), new DateTime(...): its arguments read, its value not known)
+                case IObjectCreationOperation ov when IsOpaqueValue(ov.Type) && ov.Initializer == null && ov.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type)):
+                    return NewOpaqueValue(ov);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a parenthesized: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfParenthesized(IOperation e)
+        {
+            switch (e)
+            {
+                case IParenthesizedOperation par: return Expr(par.Operand);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a simple assignment: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfSimpleAssignment(IOperation e)
+        {
+            switch (e)
+            {
+                // (an assignment as an expression, (x = 10) > 5: written, then its value)
+                case ISimpleAssignmentOperation sa when !sa.IsRef && InSubset(sa.Type) && sa.Target is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation:
+                    return AssignmentValue(sa);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a unary: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfUnary(IOperation e)
+        {
+            switch (e)
+            {
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Expr(u.Operand));
+                case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
+                    return Arith("-", new KLit("0"), Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a binary: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfBinary(IOperation e)
+        {
+            switch (e)
+            {
+                case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.Type) && b.OperatorKind == BinaryOperatorKind.Add) && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
+                                             b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):
+                    return Binary(b);
                 // (a string + something else, "line " + n: the other's text, ToString's, is a string not known)
                 case IBinaryOperation so when so.OperatorKind == BinaryOperatorKind.Add && IsString(so.Type) &&
                                               IsString(Unconverted(so.LeftOperand).Type) != IsString(Unconverted(so.RightOperand).Type):
@@ -493,19 +656,77 @@ namespace CsVerify.Verifier.Boogie
                                              (sb.OperatorMethod == null || IsString(sb.OperatorMethod.ContainingType)) &&
                                              sb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.Add:
                     return StringOperator(sb);
-                case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
-                    return new KLen { Array = Expr(pr.Instance), At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
+                // (anonymous objects compared as objects: their references, not known (the kernel's values are one per contents))
+                case IBinaryOperation ac when ac.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && AnonymousAsObject(ac.LeftOperand) && AnonymousAsObject(ac.RightOperand):
+                    return AnonymousObjectsCompared(ac);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a array element reference: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfArrayElementReference(IOperation e)
+        {
+            switch (e)
+            {
+                case IArrayElementReferenceOperation el when IsArray(el.ArrayReference.Type) && el.Indices.Length == 1:
+                    return ArrayElement(el);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a increment or decrement: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfIncrementOrDecrement(IOperation e)
+        {
+            switch (e)
+            {
+                // (n++ and ++n as values: stored, as a statement stores it; the value before, or after)
+                case IIncrementOrDecrementOperation iv when IsIntegral(iv.Type):
+                    return IncrementValue(iv);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a array creation: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfArrayCreation(IOperation e)
+        {
+            switch (e)
+            {
                 // (a rectangular array: each size not negative (CSV1003), its lengths, and its initializer's cells)
                 case IArrayCreationOperation mc when IsMultiArray(mc.Type) && mc.DimensionSizes.Length == ((IArrayTypeSymbol)mc.Type).Rank:
                     return NewRectangularArray(mc);
                 case IArrayCreationOperation ac when IsArray(ac.Type) && ac.DimensionSizes.Length == 1:
                     return NewArray(ac);
-                case IInvocationOperation call:
-                    return Call(call);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a await: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfAwait(IOperation e)
+        {
+            switch (e)
+            {
                 case IAwaitOperation aw:
                     return Await(aw) ?? throw new NotTranslated("an await of nothing, as a value");
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a is null: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfIsNull(IOperation e)
+        {
+            switch (e)
+            {
                 case IIsNullOperation isNull:
                     return new KOp("==", Expr(Unconverted(isNull.Operand)), new KLit("null"));
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a delegate creation: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfDelegateCreation(IOperation e)
+        {
+            switch (e)
+            {
                 // (a method group made a delegate of a contract: its contract checked against the type's, CSV1029;
                 // the delegate a new reference, its code not known)
                 case IDelegateCreationOperation cg when Contracted(cg.Type) && cg.Target is IMethodReferenceOperation cgm:
@@ -520,26 +741,56 @@ namespace CsVerify.Verifier.Boogie
                                                        (mr.Method.IsStatic || mr.Instance != null && IsRef(mr.Instance.Type)) &&
                                                        !SymbolEqualityComparer.Default.Equals(mr.Method.OriginalDefinition, _m.OriginalDefinition):
                     return MethodGroup(mg, mr.Method, mr.Method.IsStatic ? null : mr.Instance);
+                default: return ExprOther(e);
+            }
+        }
+
+        /// <summary>Expr of a interpolated string: its forms, in order; any other as ExprOther.</summary>
+        private KExpr ExprOfInterpolatedString(IOperation e)
+        {
+            switch (e)
+            {
                 // ($"...{x}...": its holes evaluated, in order, as they'd throw; a string, not null, of contents not known)
                 case IInterpolatedStringOperation istr:
                     return InterpolatedString(istr);
-                // (anonymous objects compared as objects: their references, not known (the kernel's values are one per contents))
-                case IBinaryOperation ac when ac.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && AnonymousAsObject(ac.LeftOperand) && AnonymousAsObject(ac.RightOperand):
-                    return AnonymousObjectsCompared(ac);
-                // (a library value the kernel doesn't look into, new TimeSpan(...), new DateTime(...): its arguments read, its value not known)
-                case IObjectCreationOperation ov when IsOpaqueValue(ov.Type) && ov.Initializer == null && ov.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type)):
-                    return NewOpaqueValue(ov);
-                // (a value boxed, as object or an interface it has: an object of its own, not null, which no other is known to be)
-                case IConversionOperation bx when bx.IsImplicit && bx.Operand.Type?.IsValueType == true && !bx.Type.IsValueType && InSubset(bx.Operand.Type) && TypeOf(bx.Type) == "Ref":
-                    return Boxed(bx);
-                // (a task, or a library's object, as object or an interface it has: the same reference)
-                case IConversionOperation tr when tr.IsImplicit && tr.Conversion.IsReference && (IsGivenTask(tr.Operand.Type) || IsLibraryObject(tr.Operand.Type) ||
-                                                  IsSequence(tr.Type) && (IsCollection(tr.Operand.Type) || IsArray(tr.Operand.Type))) && TypeOf(tr.Type) == "Ref":
-                    return Expr(tr.Operand);
-                default:
-                    if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type)) return new KLit("null");
-                    throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
+                default: return ExprOther(e);
             }
+        }
+
+        /// <summary>Expr of an operation none of the forms above is.</summary>
+        private KExpr ExprOther(IOperation e)
+        {
+            if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type)) return new KLit("null");
+            throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
+        }
+
+        /// <summary>A lock's object read as a value: some object, not null where declared so (no state of the kernel's).</summary>
+        private KExpr LockObjectRead(IFieldReferenceOperation lockRead)
+        {
+            if (lockRead.Instance != null && !(lockRead.Instance is IInstanceReferenceOperation)) Expr(lockRead.Instance);
+            var lt = Declare("t$" + _temps++, lockRead.Type);
+            Emit(new KHavoc { Var = lt });
+            if (NotNullable(lockRead.Field.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lt), new KLit("null")) });
+            return new KVar(lt);
+        }
+
+        /// <summary>A cancellation token of whatever state.</summary>
+        private KExpr AnyToken(IOperation e)
+        {
+            var tt = Declare("t$" + _temps++, e.Type);
+            Emit(new KHavoc { Var = tt });
+            return new KVar(tt);
+        }
+
+        /// <summary>A context's table: its context not null; a reference, not null, that changes nothing.</summary>
+        private KExpr ContextTable(IOperation e, IOperation ctx)
+        {
+            var cv = Expr(ctx);
+            Emit(new KCheck { Cond = new KOp("!=", cv, new KLit("null")), Id = "CSV1013", At = ctx.Syntax, Message = $"'{ctx.Syntax}' might be null in '{e.Syntax}'" });
+            var table = Declare("t$" + _temps++, e.Type);
+            Emit(new KHavoc { Var = table });
+            Emit(new KAssume { Cond = new KOp("!=", new KVar(table), new KLit("null")) });
+            return new KVar(table);
         }
 
         private KExpr MethodGroupOfContractType(IDelegateCreationOperation cg, IMethodReferenceOperation cgm)

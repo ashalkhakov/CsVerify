@@ -118,12 +118,39 @@ namespace CsVerify.Verifier.Boogie
             if (op is IFlowCaptureOperation spec && InSpec(spec.Value.Syntax)) return;
             switch (op)
             {
+                case IReturnOperation: StatementOfReturn(op); return;
+                case IInvocationOperation: StatementOfInvocation(op); return;
+                case IDeconstructionAssignmentOperation: StatementOfDeconstructionAssignment(op); return;
+                case IAwaitOperation: StatementOfAwait(op); return;
+                case ISimpleAssignmentOperation: StatementOfSimpleAssignment(op); return;
+                case ICompoundAssignmentOperation: StatementOfCompoundAssignment(op); return;
+                case IIncrementOrDecrementOperation: StatementOfIncrementOrDecrement(op); return;
+                case IFlowCaptureOperation: StatementOfFlowCapture(op); return;
+                case IObjectCreationOperation: StatementOfObjectCreation(op); return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        /// <summary>Statement of a return: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfReturn(IOperation op)
+        {
+            switch (op)
+            {
                 // (an iterator's yield return: its value evaluated, then the caller's code runs until the next MoveNext,
                 // which may change anything)
                 case IReturnOperation { Kind: OperationKind.YieldReturn } yr:
                     if (yr.ReturnedValue != null) Emit(new KAssign { Var = Declare("t$" + _temps++, yr.ReturnedValue.Type), Value = Expr(yr.ReturnedValue) });
                     CallersRun();
                     return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        /// <summary>Statement of a invocation: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfInvocation(IOperation op)
+        {
+            switch (op)
+            {
                 // (an interface's task as a statement: it runs on, alongside the rest of this method, never awaited)
                 case IInvocationOperation bareTask when IsTaskMethod(bareTask.TargetMethod) && bareTask.TargetMethod.IsAbstract && !_awaiting:
                     { InterfaceTaskStatement(bareTask); return; }
@@ -150,6 +177,56 @@ namespace CsVerify.Verifier.Boogie
                 case IInvocationOperation own when SpecSymbols.IsCsVerifyType(own.TargetMethod.ContainingType, "Own"):
                     Own(own);
                     return;
+                case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
+                    { SpecStatement(inv); return; }
+                case IInvocationOperation { TargetMethod.Name: "Start", Instance: ILocalReferenceOperation sl, Arguments.Length: 0 } when _threads.TryGetValue(sl.Local, out var startedLambda):
+                    Start(sl.Local, StartedCall(startedLambda), thread: true, at: op.Syntax, lambda: startedLambda);
+                    return;
+                case IInvocationOperation { TargetMethod.Name: "Join", Instance: ILocalReferenceOperation jl, Arguments.Length: 0 } when _tasks.TryGetValue(jl.Local, out Task joined):
+                    { ThreadJoin(joined); return; }
+                case IInvocationOperation call:
+                    Call(call);
+                    return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        private void ThreadJoin(Task joined)
+        {
+            JoinOf(joined);
+            Emit(new KAssign { Var = joined.Awaited, Value = new KLit("true") });
+            var jk = new KAwait();
+            if (!_opaque) foreach (var l in Confined()) jk.Keep.Add(Declare(Local(l), l.Type));
+            _p.Awaits = true;
+            _p.CallsDelegates = true;
+            Emit(jk);
+            return;
+        }
+
+        private void SpecStatement(IInvocationOperation inv)
+        {
+            switch (inv.TargetMethod.Name)
+            {
+                case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": case "EnsuresOnThrow": case "Reads": return; // (the contract; the loop heads)
+                case "Fold": case "Unfold":
+                {
+                    var whole = SpecArgument(inv);
+                    if (!(Spec(whole, null) is KInst instance)) throw new NotTranslated("Spec." + inv.TargetMethod.Name + " of what isn't a predicate instance");
+                    Emit(new KFold { Inst = instance, Unfold = inv.TargetMethod.Name == "Unfold", At = inv.Syntax, InstAt = whole.Syntax });
+                    return;
+                }
+                case "Assert": case "Assume":
+                    Emit(new KSpecStmt { Spec = Spec(SpecArgument(inv), null), Assume = inv.TargetMethod.Name == "Assume", At = inv.Syntax, ArgumentAt = inv.Arguments[0].Syntax });
+                    return;
+                default: throw new NotTranslated("Spec." + inv.TargetMethod.Name);
+            }
+        }
+
+        /// <summary>Statement of a deconstruction assignment: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfDeconstructionAssignment(IOperation op)
+        {
+            switch (op)
+            {
                 // (var (a, b) = p: a package taken apart, or a data value's fields; the views that come out are in hand)
                 // (var (a, b) = t, of a tuple: each element; of a tuple written here, (x, y), each value)
                 case IDeconstructionAssignmentOperation tdc when IsTuple(dc_Type(tdc)) && DeconstructedLocals(tdc.Target) is List<ILocalSymbol> tparts:
@@ -160,40 +237,27 @@ namespace CsVerify.Verifier.Boogie
                     { TupleSwap(gdc, gt); return; }
                 case IDeconstructionAssignmentOperation dc when IsData(dc.Value.Type) && DeconstructedLocals(dc.Target) is List<ILocalSymbol> parts:
                     { DataDeconstruction(dc, parts); return; }
-                case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType):
-                    switch (inv.TargetMethod.Name)
-                    {
-                        case "Requires": case "Ensures": case "Invariant": case "Decreases": case "Modifies": case "EnsuresOnThrow": case "Reads": return; // (the contract; the loop heads)
-                        case "Fold": case "Unfold":
-                        {
-                            var whole = SpecArgument(inv);
-                            if (!(Spec(whole, null) is KInst instance)) throw new NotTranslated("Spec." + inv.TargetMethod.Name + " of what isn't a predicate instance");
-                            Emit(new KFold { Inst = instance, Unfold = inv.TargetMethod.Name == "Unfold", At = inv.Syntax, InstAt = whole.Syntax });
-                            return;
-                        }
-                        case "Assert": case "Assume":
-                            Emit(new KSpecStmt { Spec = Spec(SpecArgument(inv), null), Assume = inv.TargetMethod.Name == "Assume", At = inv.Syntax, ArgumentAt = inv.Arguments[0].Syntax });
-                            return;
-                        default: throw new NotTranslated("Spec." + inv.TargetMethod.Name);
-                    }
-                case IInvocationOperation { TargetMethod.Name: "Start", Instance: ILocalReferenceOperation sl, Arguments.Length: 0 } when _threads.TryGetValue(sl.Local, out var startedLambda):
-                    Start(sl.Local, StartedCall(startedLambda), thread: true, at: op.Syntax, lambda: startedLambda);
-                    return;
-                case IInvocationOperation { TargetMethod.Name: "Join", Instance: ILocalReferenceOperation jl, Arguments.Length: 0 } when _tasks.TryGetValue(jl.Local, out var joined):
-                    JoinOf(joined);
-                    Emit(new KAssign { Var = joined.Awaited, Value = new KLit("true") });
-                    var jk = new KAwait();
-                    if (!_opaque) foreach (var l in Confined()) jk.Keep.Add(Declare(Local(l), l.Type));
-                    _p.Awaits = true;
-                    _p.CallsDelegates = true;
-                    Emit(jk);
-                    return;
-                case IInvocationOperation call:
-                    Call(call);
-                    return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        /// <summary>Statement of a await: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfAwait(IOperation op)
+        {
+            switch (op)
+            {
                 case IAwaitOperation aw:
                     Await(aw);
                     return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        /// <summary>Statement of a simple assignment: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfSimpleAssignment(IOperation op)
+        {
+            switch (op)
+            {
                 case ISimpleAssignmentOperation st when st.Target is ILocalReferenceOperation { Local: var tl } && IsTaskLike(tl.Type) &&
                                                         Unconverted(st.Value) is IInvocationOperation started && started.TargetMethod.IsAsync && started.TargetMethod.DeclaringSyntaxReferences.Length > 0:
                     Start(tl, started);
@@ -208,19 +272,9 @@ namespace CsVerify.Verifier.Boogie
                     Start(ol, null, at: oc.Syntax);
                     return;
                 // (an enumerator of a collection, var e = l.GetEnumerator(): its collection and version, as a foreach's)
-                case ISimpleAssignmentOperation en when en.Target is ILocalReferenceOperation { Local: var enl } && Unconverted(en.Value) is IInvocationOperation { TargetMethod.Name: "GetEnumerator", Instance: { } ec } &&
+                case ISimpleAssignmentOperation en when en.Target is ILocalReferenceOperation { Local: ILocalSymbol enl } && Unconverted(en.Value) is IInvocationOperation { TargetMethod.Name: "GetEnumerator", Instance: IOperation ec } &&
                                                         IsCollection(ec.Type) && ((INamedTypeSymbol)ec.Type).TypeArguments.Length >= 1 && !_enumerators.ContainsKey(enl):
-                {
-                    var coll = Expr(Unconverted(ec));
-                    Emit(new KCheck { Cond = new KOp("!=", coll, new KLit("null")), Id = "CSV1013", At = ec.Syntax, Message = $"'{ec.Syntax}' might be null in '{en.Value.Syntax}'" });
-                    foreach (var model in ModelsOf((INamedTypeSymbol)ec.Type)) _p.Models[model.Name] = model;
-                    var held = Declare("en$" + _enumerators.Count + "$c", ec.Type);
-                    var version = Declare("en$" + _enumerators.Count + "$v", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
-                    Emit(new KAssign { Var = held, Value = coll });
-                    Emit(new KAssign { Var = version, Value = new KOp("sel", new KVar(VersionMap), coll) });
-                    _enumerators[enl] = (held, version, (INamedTypeSymbol)ec.Type);
-                    return;
-                }
+                    { EnumeratorAssigned(en, enl, ec); return; }
                 // (a query kept in a local: read where it's enumerated)
                 case ISimpleAssignmentOperation lq when lq.Target is ILocalReferenceOperation { Local: var lql } && LazyQuery(lql, lq.Value):
                     return;
@@ -271,6 +325,28 @@ namespace CsVerify.Verifier.Boogie
                 case ISimpleAssignmentOperation a:
                     Assign(a.Target, Expr(a.Value));
                     return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        private void EnumeratorAssigned(ISimpleAssignmentOperation en, ILocalSymbol enl, IOperation ec)
+        {
+            var coll = Expr(Unconverted(ec));
+            Emit(new KCheck { Cond = new KOp("!=", coll, new KLit("null")), Id = "CSV1013", At = ec.Syntax, Message = $"'{ec.Syntax}' might be null in '{en.Value.Syntax}'" });
+            foreach (var model in ModelsOf((INamedTypeSymbol)ec.Type)) _p.Models[model.Name] = model;
+            var held = Declare("en$" + _enumerators.Count + "$c", ec.Type);
+            var version = Declare("en$" + _enumerators.Count + "$v", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+            Emit(new KAssign { Var = held, Value = coll });
+            Emit(new KAssign { Var = version, Value = new KOp("sel", new KVar(VersionMap), coll) });
+            _enumerators[enl] = (held, version, (INamedTypeSymbol)ec.Type);
+            return;
+        }
+
+        /// <summary>Statement of a compound assignment: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfCompoundAssignment(IOperation op)
+        {
+            switch (op)
+            {
                 case ICompoundAssignmentOperation ca:
                 {
                     var v = Operands(ca.Target, ca.Value);
@@ -278,35 +354,35 @@ namespace CsVerify.Verifier.Boogie
                                                                                          : Arith(Op(ca.OperatorKind), v[0], v[1], ca.Type, ca.Syntax, ca.IsChecked));
                     return;
                 }
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        /// <summary>Statement of a increment or decrement: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfIncrementOrDecrement(IOperation op)
+        {
+            switch (op)
+            {
                 case IIncrementOrDecrementOperation id:
                     Assign(id.Target, Arith(id.Kind == OperationKind.Increment ? "+" : "-", Expr(id.Target), new KLit("1"), id.Type, id.Syntax, id.IsChecked));
                     return;
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        /// <summary>Statement of a flow capture: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfFlowCapture(IOperation op)
+        {
+            switch (op)
+            {
                 case IFlowCaptureOperation qe when _forEach.TryGetValue(qe.Id, out var qf) && (qf.Query != null || qf.GroupOf != null || qf.JoinGroupOf != null):
                     StartQueryLoop(qf);
                     return;
                 case IFlowCaptureOperation ae when _asyncEach.ContainsKey(ae.Id):
                     AsyncStream((IInvocationOperation)ae.Value);
                     return;
-                case IFlowCaptureOperation en when _forEach.TryGetValue(en.Id, out var fe):
-                {
-                    // the collection, evaluated once (a null one throws), and the index at its start
-                    var coll = Expr(fe.Of ?? Unconverted(((IInvocationOperation)en.Value).Instance ?? ((IInvocationOperation)en.Value).Arguments[0].Value));
-                    Emit(new KAssign { Var = fe.Array, Value = coll });
-                    Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
-                    // (its length, read once: where a null one throws)
-                    if (fe.Collection != null || fe.Opaque)
-                        Emit(new KCheck { Cond = new KOp("!=", new KVar(fe.Array), new KLit("null")), Id = "CSV1013", At = fe.At, Message = $"'{fe.At}' might be null in '{fe.At}'" });
-                    if (fe.Opaque) return;
-                    if (fe.Version != null) Emit(new KAssign { Var = fe.Version, Value = new KOp("sel", new KVar(VersionMap), new KVar(fe.Array)) });
-                    if (fe.Size0 != null)
-                    {
-                        Emit(new KAssign { Var = fe.Size0, Value = LengthOf(fe) });
-                        // (its Count, an int)
-                        Emit(new KAssume { Cond = new KOp("<=", new KVar(fe.Size0), new KLit("2147483647")) });
-                    }
-                    else if (fe.Collection == null) Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
-                    return;
-                }
+                case IFlowCaptureOperation en when _forEach.TryGetValue(en.Id, out ForEach fe):
+                    { ForEachCapture(en, fe); return; }
                 case IFlowCaptureOperation lk when Unconverted(lk.Value) is IFieldReferenceOperation { Field: var lf } lkf && IsLockObject(lf):
                     _captured[lk.Id] = Unconverted(lk.Value);
                     // (a lock's object: no value of the kernel's; another object's lock field is read of it, which mustn't be null)
@@ -332,21 +408,61 @@ namespace CsVerify.Verifier.Boogie
                     _lvalues[fx.Id] = ix;
                     return;
                 case IFlowCaptureOperation fc:
-                    _captured[fc.Id] = fc.Value;
-                    // (a field captured as what an assignment writes, x.f = c ? a : b: its object, kept)
-                    if (fc.Value is IFieldReferenceOperation { Field.IsStatic: false } cf &&
-                        cf.Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation)
-                        _lvalues[fc.Id] = cf;
-                    var value = Expr(fc.Value);
-                    Emit(new KAssign { Var = Capture(fc.Id, fc.Value.Type), Value = value });
-                    return;
+                    { FlowCapture(fc); return; }
+                default: { StatementOther(op); return; }
+            }
+        }
+
+        private void ForEachCapture(IFlowCaptureOperation en, ForEach fe)
+        {
+            // the collection, evaluated once (a null one throws), and the index at its start
+            var coll = Expr(fe.Of ?? Unconverted(((IInvocationOperation)en.Value).Instance ?? ((IInvocationOperation)en.Value).Arguments[0].Value));
+            Emit(new KAssign { Var = fe.Array, Value = coll });
+            Emit(new KAssign { Var = fe.Index, Value = new KLit("0") });
+            // (its length, read once: where a null one throws)
+            if (fe.Collection != null || fe.Opaque)
+                Emit(new KCheck { Cond = new KOp("!=", new KVar(fe.Array), new KLit("null")), Id = "CSV1013", At = fe.At, Message = $"'{fe.At}' might be null in '{fe.At}'" });
+            if (fe.Opaque) return;
+            if (fe.Version != null) Emit(new KAssign { Var = fe.Version, Value = new KOp("sel", new KVar(VersionMap), new KVar(fe.Array)) });
+            if (fe.Size0 != null)
+            {
+                Emit(new KAssign { Var = fe.Size0, Value = LengthOf(fe) });
+                // (its Count, an int)
+                Emit(new KAssume { Cond = new KOp("<=", new KVar(fe.Size0), new KLit("2147483647")) });
+            }
+            else if (fe.Collection == null) Emit(new KAssign { Var = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)), Value = new KLen { String = fe.String, Array = new KVar(fe.Array), At = fe.At, ArrayAt = fe.At } });
+            return;
+        }
+
+        private void FlowCapture(IFlowCaptureOperation fc)
+        {
+            _captured[fc.Id] = fc.Value;
+            // (a field captured as what an assignment writes, x.f = c ? a : b: its object, kept)
+            if (fc.Value is IFieldReferenceOperation { Field.IsStatic: false } cf &&
+                cf.Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation)
+                _lvalues[fc.Id] = cf;
+            var value = Expr(fc.Value);
+            Emit(new KAssign { Var = Capture(fc.Id, fc.Value.Type), Value = value });
+            return;
+        }
+
+        /// <summary>Statement of a object creation: its forms, in order; any other as StatementOther.</summary>
+        private void StatementOfObjectCreation(IOperation op)
+        {
+            switch (op)
+            {
                 // (new C(...); as a statement: made, its constructor run, the object not kept)
                 case IObjectCreationOperation made when InSubset(made.Type):
                     Expr(made);
                     return;
-                default:
-                    throw new NotTranslated(op.Kind.ToString());
+                default: { StatementOther(op); return; }
             }
+        }
+
+        /// <summary>Statement of an operation none of the forms above is.</summary>
+        private void StatementOther(IOperation op)
+        {
+            throw new NotTranslated(op.Kind.ToString());
         }
 
         private void InterfaceTaskStatement(IInvocationOperation bareTask)
