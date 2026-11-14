@@ -22,7 +22,7 @@ namespace CsVerify.Verifier.Boogie
         private readonly HashSet<int> _writtenInvariants = new HashSet<int>();
 
         /// <summary>The variables in an expression (its KVars), by walking its parts.</summary>
-        public static IEnumerable<string> VarsIn(object e)
+        public static IEnumerable<string> VarsIn(KExpr e)
         {
             switch (e)
             {

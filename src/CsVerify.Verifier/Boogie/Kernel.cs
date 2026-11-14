@@ -4,13 +4,15 @@ using Microsoft.CodeAnalysis;
 
 namespace CsVerify.Verifier.Boogie
 {
-    // The kernel ("idealized C#"): what the passes between Roslyn and Boogie pass along (docs/boogie.md).
-    //   Lowering:  Roslyn's control-flow graph -> blocks of kernel statements; C#'s meaning kept in typed nodes
-    //              (KArith, KConv, KElem, KLen, KFnCall), checks not yet made
-    //   Checks:    each of those nodes -> mathematics, and the asserts (and assumes) it needs, in evaluation order;
-    //              well-definedness, postconditions at returns, invariants and measures, termination, non-null arguments
-    //   Heap:      arrays -> element maps and allocation; what each procedure modifies
-    //   Printer:   Boogie text, and which line is which check
+    // The passes from Roslyn to Boogie, each from one level's trees to the next's (docs/boogie.md):
+    //   level 0    Roslyn's operations and control-flow graph
+    //   Lowering:  level 0 -> level 1, the kernel ("idealized C#", this file): blocks of kernel statements, C#'s meaning
+    //              kept in typed nodes (KArith, KConv, KElem, KLen, KFnCall), checks not yet made
+    //   Checks:    level 1 -> level 2 (Math.cs): each of those nodes made mathematics, and the asserts (and assumes) it
+    //              needs, in evaluation order; well-definedness, postconditions at returns, invariants and measures,
+    //              termination, non-null arguments
+    //   Heap:      level 2 -> level 3 (the same types): stores and allocations made map updates; what each procedure modifies
+    //   Printer:   level 3 -> Boogie text, and which line is which check
 
     /// <summary>How integer arithmetic is meant where it is.</summary>
     internal enum KMode
@@ -109,7 +111,6 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
     }
 
-    /// <summary>An array's element (a read): checked for null and bounds in code, well-defined if so in a specification.</summary>
     /// <summary>
     /// A collection read through its interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection): its Count, or
     /// its element at Index. An array's, a modeled collection's, or else a value of the state (Fresh: unknown at each read).
@@ -139,6 +140,7 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
     }
 
+    /// <summary>An array's element (a read): checked for null and bounds in code, well-defined if so in a specification.</summary>
     internal sealed class KElem : KExpr
     {
         /// <summary>A string's character (s[i]), not an array's element.</summary>
@@ -342,7 +344,6 @@ namespace CsVerify.Verifier.Boogie
         public Check Check;
     }
 
-    /// <summary>A write of an array's element (checked for null and bounds, until Checks; a map's, after).</summary>
     /// <summary>A view's cells come into hand (Grant), or go (they're another's now, or freed).</summary>
     internal sealed class KMemCells : KStmt
     {
@@ -350,7 +351,6 @@ namespace CsVerify.Verifier.Boogie
         public bool Grant;
     }
 
-    /// <summary>Map[Ref] := Value, Value a specification (a new array's row, a new list's Items or Size: LINQ's copies).</summary>
     /// <summary>
     /// The arrays a library call may read or write (Checks, which knows whether the method holds cell permissions): without
     /// them, where it may write, every element map unknown (Fresh, a map each); with them, all the cells of each array
@@ -365,6 +365,7 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode At;
     }
 
+    /// <summary>Map[Ref] := Value, Value a specification (a new array's row, a new list's Items or Size: LINQ's copies).</summary>
     internal sealed class KRow : KStmt
     {
         public string Map;
@@ -380,6 +381,7 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Lo, Hi, Value;
     }
 
+    /// <summary>A write of an array's element (checked for null and bounds, until Checks; a map's, after).</summary>
     internal sealed class KStore : KStmt
     {
         /// <summary>A memory cell (the row at null), written through a view: no array to check.</summary>
@@ -430,12 +432,6 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public int Phase;
         public KCall Started;
-        /// <summary>(its start's, kept for its join: what Checks made of it)</summary>
-        public KExpr MathReceiver;
-        public KExpr[] MathArgs;
-        public Dictionary<string, KExpr> GivenMap;
-        public List<(KExpr, KExpr)> Gave;
-        public bool CellCall, Pure;
     }
 
     /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>
@@ -494,7 +490,6 @@ namespace CsVerify.Verifier.Boogie
         public bool ProgramState;
     }
 
-    /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
     /// <summary>Around a call of an async method: the objects of these (confined) locals, which no code can reach, are as they were.</summary>
     internal sealed class KKeep : KStmt
     {
@@ -511,6 +506,7 @@ namespace CsVerify.Verifier.Boogie
         public List<string> Maps = new List<string>();
     }
 
+    /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
     internal sealed class KAwait : KStmt
     {
         public List<string> Keep = new List<string>();
@@ -661,130 +657,115 @@ namespace CsVerify.Verifier.Boogie
     {
         public KExpr Expr;
         public SyntaxNode At;
-        /// <summary>After Checks, for a requires: what a failure of it at a call is about.</summary>
-        public Check Check;
     }
 
+    /// <summary>
+    /// One method at level 1, as Lowering makes it; Checks makes level 2's of it (MProcedure, Math.cs), which keeps this
+    /// one for what doesn't change: what method it is, how it is encoded, its effects and what it names. The fields are
+    /// grouped by what they are, each group saying who sets it.
+    /// </summary>
     internal sealed class KProcedure
     {
-        /// <summary>A lambda's or a local function's: the variables it captures, each some value of its type at entry.</summary>
-        public readonly List<(string input, ITypeSymbol type, bool notNull)> Captured = new List<(string, ITypeSymbol, bool)>();
-        /// <summary>Their symbols, in the same order (a call of a local function passes their values).</summary>
-        public readonly List<ISymbol> CapturedSymbols = new List<ISymbol>();
-        /// <summary>For the library report: each variable's causes (Lowering.Causes), and the variables its values were made from.</summary>
-        public readonly Dictionary<string, HashSet<string>> Causes = new Dictionary<string, HashSet<string>>();
-        public readonly Dictionary<string, HashSet<string>> Deps = new Dictionary<string, HashSet<string>>();
-        /// <summary>The roots of the trees it borrows through Spec.Modifies(Own.Tree(x)), over its parameters as on entry.</summary>
-        public readonly List<KExpr> LentRoots = new List<KExpr>();
-        /// <summary>A query of an [Owned] class without Spec.Reads: it reads only its object's tree (CSV1017).</summary>
-        public bool TreeReads;
-        /// <summary>It calls a delegate, which may change anything; the signatures of the delegates it speaks of.</summary>
-        public bool CallsDelegates;
-        /// <summary>It reads a collection through an interface: values of the state ($st), declared then.</summary>
-        public bool UsesState;
-        /// <summary>It holds memory views (ATS's): cells in hand as views say (array mode).</summary>
-        public bool MemViews;
-        /// <summary>A twin's: its preconditions free (a join's call, checked at its start).</summary>
-        public bool FreeRequires;
         public KProcedure Clone() => (KProcedure)MemberwiseClone();
-        /// <summary>The data types it names (their definitions): each case's constructor, fields and tag.</summary>
-        public HashSet<INamedTypeSymbol> DataTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>The data types with invariants whose values it takes to be valid.</summary>
-        public HashSet<INamedTypeSymbol> Valid = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>It calls code whose contract isn't known ($havoc).</summary>
-        public bool HavocsAll;
-        /// <summary>It awaits ($await).</summary>
-        public bool Awaits;
-        /// <summary>The library's members it calls (list members, by their stub contracts), and the kinds of lists whose models it names.</summary>
-        public HashSet<IMethodSymbol> LibCalls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-        public Dictionary<string, KernelTypes.ModelMap> Models = new Dictionary<string, KernelTypes.ModelMap>();
-        /// <summary>The kinds of the dictionaries' pairs it reads (key kind, value kind).</summary>
-        public HashSet<(string key, string value)> Pairs = new HashSet<(string, string)>();
+
+        // ---- what method it is: set by Lowering's constructor
+
+        public IMethodSymbol Method;
+        public Contract Contract;
+        public MethodResult Result;
+        public string Name;
+        public List<IParameterSymbol> Params;
+        /// <summary>Ghost code ([GhostFunction], a lemma): its arithmetic is mathematics.</summary>
+        public bool Ghost;
+        /// <summary>An instance method or constructor: its receiver is the parameter this.</summary>
+        public bool HasThis;
+        public bool IsCtor;
         /// <summary>A list's constructor, from its stub: a procedure that returns the new list.</summary>
         public bool ListCtor;
         /// <summary>A struct's constructor: it gives the value it makes (this, a value it writes, its default to begin with).</summary>
         public bool StructThis;
         /// <summary>A struct's method that writes this: this by reference, in as this$in, out as this (as a ref parameter).</summary>
         public bool StructRefThis;
-        /// <summary>Uninterpreted functions it names: their declarations.</summary>
-        public HashSet<string> Functions = new HashSet<string>();
-        public HashSet<string> DelegateKeys = new HashSet<string>();
-        public IMethodSymbol Method;
-        public Contract Contract;
-        public MethodResult Result;
-        /// <summary>The translation's warnings (CSV1900, not errors): reported if Boogie verifies the method.</summary>
-        public List<VerificationDiagnostic> Warnings = new List<VerificationDiagnostic>();
-        public string Name;
-        public bool Ghost;
-        public List<IParameterSymbol> Params;
-        /// <summary>An instance method or constructor: its receiver is the parameter this.</summary>
-        public bool HasThis;
-        public bool IsCtor;
         /// <summary>A method of an [Owned] class that isn't [Pure] (or its constructor): it holds this object's view.</summary>
         public bool ThisIsView;
-        /// <summary>It holds, gives or checks views: its permissions (perm, object to whether its view is in hand) are kept.</summary>
-        public bool UsesPerm;
         /// <summary>A [Predicate]: its body (FunctionBody, its arithmetic as code's) is checked self-framing, once.</summary>
         public bool IsPredicate;
+        /// <summary>An abstract member: a procedure with no body, which calls go to.</summary>
+        public bool Abstract;
+        /// <summary>A method whose body doesn't translate: its contract alone, for its callers (it may write what the effects analysis says).</summary>
+        public bool Opaque;
+        /// <summary>A twin's (BoogieTranslator): its preconditions free (a join's call, checked at its start).</summary>
+        public bool FreeRequires;
+
+        // ---- how it is encoded: UsesPerm and MemViews by Lowering.Modes before lowering; the rest by Checks.DecideCellModes
+
+        /// <summary>It holds, gives or checks views: its permissions (perm, object to whether its view is in hand) are kept.</summary>
+        public bool UsesPerm;
+        /// <summary>It holds memory views (ATS's): cells in hand as views say (array mode).</summary>
+        public bool MemViews;
         /// <summary>It keeps cell permissions (cells, cowner): it exchanges some, or names them.</summary>
         public bool UsesCells;
         /// <summary>Its contract names cells: it holds none but those it is given (else every cell, but those it gives away).</summary>
         public bool ArrayMode;
         /// <summary>It keeps single-field permissions (fperm, fowner): the program uses some.</summary>
         public bool UsesFields;
+
+        // ---- its contract, as kernel expressions: by Lowering (Checks makes level 2's of them)
+
+        public List<KSpec> Requires = new List<KSpec>(), Ensures = new List<KSpec>();
+        /// <summary>Spec.Decreases of the method: its parameters' measure.</summary>
+        public List<KExpr> Decreases;
+        /// <summary>Spec.EnsuresOnThrow&lt;E&gt;(Cond): what holds where it leaves by throwing an E.</summary>
+        public List<(ITypeSymbol type, KExpr cond, SyntaxNode at)> ThrowEnsures = new List<(ITypeSymbol, KExpr, SyntaxNode)>();
         /// <summary>Its Spec.Modifies: the objects (an ObjSet, a [Ref]bool) whose fields and cells it may write, as of entry.</summary>
         public KExpr Frame;
         /// <summary>A function's Spec.Reads: the objects whose fields and cells its value depends on (a frame axiom says so).</summary>
         public KExpr ReadsFrame;
-        /// <summary>
-        /// A function's reads, as its body says them where it gives none: the objects it reads the fields and cells of,
-        /// each its parameters' or their fields' (none under a quantifier's variable), for its frame axiom alone.
-        /// </summary>
-        public KExpr InferredReads;
-        /// <summary>An abstract member: a procedure with no body, which calls go to.</summary>
-        public bool Abstract;
-        /// <summary>A method whose body doesn't translate: its contract alone, for its callers (it may write what CsVerify's effects analysis says).</summary>
-        public bool Opaque;
+        /// <summary>A [Pure] or [GhostFunction] method of one expression: a function too, of this body.</summary>
+        public KExpr FunctionBody;
         /// <summary>An override that states its own precondition: it, and each base's, which must imply it (CSV1018).</summary>
         public List<KExpr> OwnRequires = new List<KExpr>();
         public List<(IMethodSymbol method, List<KExpr> requires)> BaseRequires = new List<(IMethodSymbol, List<KExpr>)>();
         /// <summary>A base's Spec.Modifies, which its own must lie within (CSV1018).</summary>
         public List<(IMethodSymbol method, KExpr frame)> BaseFrames = new List<(IMethodSymbol, KExpr)>();
-        /// <summary>Spec.EnsuresOnThrow&lt;E&gt;(Cond): what holds where it leaves by throwing an E.</summary>
-        public List<(ITypeSymbol type, KExpr cond, SyntaxNode at)> ThrowEnsures = new List<(ITypeSymbol, KExpr, SyntaxNode)>();
-        /// <summary>The exception types it names (catches, throws, clauses): the program declares them, and how they derive.</summary>
-        public HashSet<ITypeSymbol> ExceptionTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>The classes and interfaces whose dynamic types it tests or makes (KernelTypes.IsModeledClass).</summary>
-        public HashSet<ITypeSymbol> ClassTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
-        public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
+        /// <summary>The roots of the trees it borrows through Spec.Modifies(Own.Tree(x)), over its parameters as on entry.</summary>
+        public readonly List<KExpr> LentRoots = new List<KExpr>();
+        /// <summary>A query of an [Owned] class without Spec.Reads: it reads only its object's tree (CSV1017).</summary>
+        public bool TreeReads;
         /// <summary>The parameters the body assigns (by value): each a local of the body, its value at entry the parameter's.</summary>
         public Dictionary<string, string> AssignedParams = new Dictionary<string, string>();
-        /// <summary>The predicates it names.</summary>
-        public HashSet<IMethodSymbol> Preds = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>The library stubs it uses (functions of the program's).</summary>
-        public HashSet<IMethodSymbol> Stubs = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-        /// <summary>The fields it reads or writes (their maps are declared).</summary>
-        public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+
+        // ---- its body: by Lowering (its locals, Checks and Heap add to: the Boogie procedure's)
+
+        public List<KBlock> Blocks = new List<KBlock>();
         public List<KLocal> Locals = new List<KLocal>();
+        /// <summary>A lambda's or a local function's: the variables it captures, each some value of its type at entry.</summary>
+        public readonly List<(string input, ITypeSymbol type, bool notNull)> Captured = new List<(string, ITypeSymbol, bool)>();
+        /// <summary>Their symbols, in the same order (a call of a local function passes their values).</summary>
+        public readonly List<ISymbol> CapturedSymbols = new List<ISymbol>();
         /// <summary>The confined locals (their Boogie names): only ever objects the method made, never handed on.</summary>
         public List<string> Confined = new List<string>();
-        public List<KSpec> Requires = new List<KSpec>(), Ensures = new List<KSpec>();
-        /// <summary>Spec.Decreases of the method: its parameters' measure.</summary>
-        public List<KExpr> Decreases;
         /// <summary>Each loop head's invariants and measure (by the head's ordinal).</summary>
         public Dictionary<int, List<KSpec>> Invariants = new Dictionary<int, List<KSpec>>();
-        /// <summary>A loop without invariants: facts Houdini may keep at its head (the ones that hold on entry and at every back edge).</summary>
+        /// <summary>A loop without invariants: facts it may keep at its head (the ones that hold on entry and at every back edge).</summary>
         public Dictionary<int, List<KSpec>> Candidates = new Dictionary<int, List<KSpec>>();
         public Dictionary<int, List<KSpec>> Measures = new Dictionary<int, List<KSpec>>();
         /// <summary>Each loop head's last block (by ordinal): the loop is the blocks from the head to it.</summary>
         public Dictionary<int, int> LoopBodies = new Dictionary<int, int>();
-        /// <summary>A [Pure] or [GhostFunction] method of one expression: a function too, of this body.</summary>
-        public KExpr FunctionBody;
-        public List<KBlock> Blocks = new List<KBlock>();
-        /// <summary>After Checks: the asserts at entry (the preconditions well-defined).</summary>
-        public List<KStmt> Entry = new List<KStmt>();
+        /// <summary>Each loop head's statement (where a loop that exchanges permissions reports).</summary>
+        public Dictionary<int, SyntaxNode> LoopSyntax = new Dictionary<int, SyntaxNode>();
+
+        // ---- its effects: by Lowering (Calls), and Heap (Modifies, AnyWrites); BoogieTranslator closes them over calls
+
         public HashSet<IMethodSymbol> Calls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>It calls code whose contract isn't known ($havoc).</summary>
+        public bool HavocsAll;
+        /// <summary>It calls a delegate, which may change anything.</summary>
+        public bool CallsDelegates;
+        /// <summary>It awaits ($await).</summary>
+        public bool Awaits;
+        /// <summary>It reads a collection through an interface: values of the state ($st), declared then.</summary>
+        public bool UsesState;
         /// <summary>After Heap: the globals it writes (what it calls is the program's to add).</summary>
         public HashSet<string> Modifies = new HashSet<string>();
         /// <summary>
@@ -792,6 +773,40 @@ namespace CsVerify.Verifier.Boogie
         /// a constructor, nor a new object's (a field the rest is framed: unchanged at every object allocated before).
         /// </summary>
         public HashSet<string> AnyWrites = new HashSet<string>();
-        public int Obligations;
+
+        // ---- what it names, which the printer declares: by Lowering
+
+        /// <summary>The fields it reads or writes (their maps are declared).</summary>
+        public HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The data types it names (their definitions): each case's constructor, fields and tag.</summary>
+        public HashSet<INamedTypeSymbol> DataTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The data types with invariants whose values it takes to be valid.</summary>
+        public HashSet<INamedTypeSymbol> Valid = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The exception types it names (catches, throws, clauses): the program declares them, and how they derive.</summary>
+        public HashSet<ITypeSymbol> ExceptionTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The classes and interfaces whose dynamic types it tests or makes (KernelTypes.IsModeledClass).</summary>
+        public HashSet<ITypeSymbol> ClassTypes = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The library's members it calls (list members, by their stub contracts).</summary>
+        public HashSet<IMethodSymbol> LibCalls = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The collections' models it names.</summary>
+        public Dictionary<string, KernelTypes.ModelMap> Models = new Dictionary<string, KernelTypes.ModelMap>();
+        /// <summary>The kinds of the dictionaries' pairs it reads (key kind, value kind).</summary>
+        public HashSet<(string key, string value)> Pairs = new HashSet<(string, string)>();
+        /// <summary>The predicates it names.</summary>
+        public HashSet<IMethodSymbol> Preds = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The library stubs it uses (functions of the program's).</summary>
+        public HashSet<IMethodSymbol> Stubs = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        /// <summary>The signatures of the delegates it makes, calls or speaks of ($pre, $post, $call of each).</summary>
+        public HashSet<string> DelegateKeys = new HashSet<string>();
+        /// <summary>Uninterpreted functions it names: their declarations.</summary>
+        public HashSet<string> Functions = new HashSet<string>();
+
+        // ---- for reporting: by Lowering (warnings, causes)
+
+        /// <summary>The translation's warnings (CSV1900, not errors): reported if Boogie verifies the method.</summary>
+        public List<VerificationDiagnostic> Warnings = new List<VerificationDiagnostic>();
+        /// <summary>For the library report: each variable's causes (Lowering.Causes), and the variables its values were made from.</summary>
+        public readonly Dictionary<string, HashSet<string>> Causes = new Dictionary<string, HashSet<string>>();
+        public readonly Dictionary<string, HashSet<string>> Deps = new Dictionary<string, HashSet<string>>();
     }
 }

@@ -336,5 +336,23 @@ public static class P
             Assert.Equal(new[] { "CSV1002" }, r.Errors("P.Bad"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("P.NoFalse"));
         }
+
+        // (a predicate's facts hold in its instance's snapshot, a library function's arguments read there too: what a
+        // function over it gives, the predicate's facts speak of)
+        [Fact]
+        public void PredicateFactsInTheSnapshot()
+        {
+            var r = Harness.Verify(@"
+[Owned] public sealed class Box { public string S = ""a""; }
+public static class P
+{
+    [Predicate] public static bool Has(Box b) => b != null && Spec.Acc(b) && b.S != null && b.S.Contains(""a"");
+    [Pure] public static string Get(Box b) { Spec.Requires(Has(b)); Spec.Unfold(Has(b)); return b.S; }
+    public static void Use(Box b) { Spec.Requires(Has(b)); Spec.Ensures(Has(b)); Spec.Assert(Get(b).Contains(""a"")); }
+    public static void Bad(Box b) { Spec.Requires(Has(b)); Spec.Ensures(Has(b)); Spec.Assert(Get(b).Contains(""b"")); }
+}");
+            Assert.True(r["P.Use"].Verified, "P.Use: " + string.Join("; ", r["P.Use"].Diagnostics.Select(d => d.Message)));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Bad"));
+        }
 }
 }
