@@ -36,139 +36,113 @@ namespace CsVerify.Verifier.Boogie
         private bool _awaiting;
         /// <summary>The call being lowered is a task's or thread's start (1): it returns at its join.</summary>
         private int _phase;
-
         /// <summary>
         /// await t: other code may run, so what the method doesn't hold is forgotten (all but its confined locals'
         /// objects). An awaited async method of the program is a call, its contract of the task's result; a library's
-        /// Task.Yield, Task.Delay, Task.CompletedTask gives nothing. ConfigureAwait is seen through.
+        /// Task.Yield, Task.Delay, Task.CompletedTask gives nothing. ConfigureAwait is seen through. In three parts: what
+        /// is awaited, lowered up to the await (Awaiting); other code running (OthersRun); what comes after it (here).
         /// </summary>
         private KExpr Await(IAwaitOperation aw)
         {
             if (_p.Ghost || _contract.IsPure || _contract.IsLemma) throw new NotTranslated("an await in a proof");
             var op = aw.Operation;
-            IFieldSymbol gate = null; KExpr gateOwner = null;
             while (op is IInvocationOperation ca && ca.TargetMethod.Name == "ConfigureAwait" && ca.Instance != null) op = ca.Instance;
             // (a task of a nullable type, checked not null: the task)
             if (op is IConversionOperation { IsImplicit: true } nc && IsGivenTask(nc.Operand.Type)) op = nc.Operand;
-            KExpr value = null;
-            // (what's made of what it gave, once the others have run: Task.WhenAll's array, which nobody else has)
-            System.Action after = null;
-            IInvocationOperation efQuery = null, efTracker = null;
-            bool forkedBeforeJoin = false;
+            var awaited = Awaiting(op, aw);
+            OthersRun(aw);
+            var value = awaited.ValueAfter != null ? awaited.ValueAfter() : awaited.Value;
+            // (where exceptions are seen: a library's await may throw, a cancellation say; not an async method of the
+            // program's, whose call says how it throws, nor what says so itself)
+            if (!(op is IInvocationOperation call && IsTaskMethod(call.TargetMethod) && call.TargetMethod.DeclaringSyntaxReferences.Length > 0) && !awaited.ThrowsAlready &&
+                _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
+                Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
+            awaited.After?.Invoke();
+            if (awaited.Gate != null) Take(awaited.Gate, aw.Syntax, awaited.GateOwner);
+            return value;
+        }
+
+        /// <summary>What is awaited, lowered up to the await: what it gives, and what it needs once the others have run.</summary>
+        private sealed class Awaited
+        {
+            /// <summary>Its value (null: none, or not used).</summary>
+            public KExpr Value;
+            /// <summary>Its value, read once the others have run (an EF query's, the tracker's), in place of Value.</summary>
+            public System.Func<KExpr> ValueAfter;
+            /// <summary>What's made of what it gave, once the others have run (Task.WhenAll's array, which nobody else has).</summary>
+            public System.Action After;
+            /// <summary>A gate it takes (a semaphore's, a lock wrapper's), and whose.</summary>
+            public IFieldSymbol Gate;
+            public KExpr GateOwner;
+            /// <summary>Its way of throwing is made already, or is its own (the tracker's): no other.</summary>
+            public bool ThrowsAlready;
+        }
+
+        /// <summary>What gives nothing and needs nothing after.</summary>
+        private static Awaited Nothing => new Awaited();
+
+        /// <summary>What is awaited: a task started here and kept in a local, a call, a property, a task one is given.</summary>
+        private Awaited Awaiting(IOperation op, IAwaitOperation aw) => op switch
+        {
+            ILocalReferenceOperation tl when _tasks.TryGetValue(tl.Local, out var task) => AwaitedTask(task),
+            IInvocationOperation call => AwaitedCall(call, aw),
+            IPropertyReferenceOperation { Property.Name: "CompletedTask" } done when done.Property.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" => Nothing,
+            // (a task one is given: other code runs meanwhile; what it gives isn't known)
+            IParameterReferenceOperation or ILocalReferenceOperation when IsGivenTask(op.Type) && !(op is ILocalReferenceOperation gl && _tasks.ContainsKey(gl.Local)) =>
+                new Awaited { Value = Unknown(op, op.Type is INamedTypeSymbol { Arity: 1 } gt ? gt.TypeArguments[0] : null, notNull: false) },
+            _ => throw new NotTranslated("an await of " + op.Syntax),
+        };
+
+        /// <summary>A task started here, kept in a local: its join (a task that failed gives nothing back: the way it throws leaves before it).</summary>
+        private Awaited AwaitedTask(Task task)
+        {
+            bool forked = false;
+            if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string failed)
+            {
+                // (awaited all the same: its failure is seen)
+                Emit(new KAssign { Var = task.Awaited, Value = new KLit("true") });
+                Emit(new KFork { Overflow = new KLit("false"), Target = failed, Exception = null });
+                forked = true;
+            }
+            JoinOf(task);
+            Emit(new KAssign { Var = task.Awaited, Value = new KLit("true") });
+            return new Awaited { Value = task.Result == null ? null : new KVar(task.Result), ThrowsAlready = forked };
+        }
+
+        /// <summary>A value nothing is known of but its type's (not null, where it says so): what a task one is given gives.</summary>
+        private KExpr Unknown(IOperation of, ITypeSymbol type, bool notNull)
+        {
+            if (of != null) Expr(of);
+            if (type == null) return null;
+            var r = Declare("t$" + _temps++, type);
+            Emit(new KHavoc { Var = r });
+            if (notNull && IsNullable(type) && NotNullable(type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
+            return new KVar(r);
+        }
+
+        /// <summary>What awaiting a call is, by what it calls.</summary>
+        private Awaited AwaitedCall(IInvocationOperation op, IAwaitOperation aw)
+        {
             switch (op)
             {
-                case ILocalReferenceOperation tl when _tasks.TryGetValue(tl.Local, out var task):
-                    // (a task that failed gives nothing back: the way it throws leaves before the join)
-                    if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string failed)
-                    {
-                        // (awaited all the same: its failure is seen)
-                        Emit(new KAssign { Var = task.Awaited, Value = new KLit("true") });
-                        Emit(new KFork { Overflow = new KLit("false"), Target = failed, Exception = null });
-                        forkedBeforeJoin = true;
-                    }
-                    JoinOf(task);
-                    Emit(new KAssign { Var = task.Awaited, Value = new KLit("true") });
-                    value = task.Result == null ? null : new KVar(task.Result);
-                    break;
                 case IInvocationOperation all when all.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && all.TargetMethod.Name == "WhenAll":
-                {
-                    // (every one started before any is joined: those written in it start here, the others already run)
-                    var inlineStarts = new List<Task>();
-                    var joins = new List<Task>();
-                    var order = new List<Task>();
-                    foreach (var a in all.Arguments.SelectMany(x => x.Value is IArrayCreationOperation ac ? ac.Initializer?.ElementValues.AsEnumerable() ?? new IOperation[0]
-                                                                  : x.Value is ICollectionExpressionOperation ce ? ce.Elements.AsEnumerable() : new[] { x.Value }))
-                        if (Unconverted(a is IFlowCaptureReferenceOperation wc && _captured.TryGetValue(wc.Id, out var wv) ? wv : a) is ILocalReferenceOperation wl &&
-                            _tasks.TryGetValue(wl.Local, out var wt)) { joins.Add(wt); order.Add(wt); }
-                        else if (a is IFlowCaptureReferenceOperation wr && _startedCaptures.TryGetValue(wr.Id, out var wst)) { joins.Add(wst); order.Add(wst); }
-                        // (a batch of tasks: all joined; how many, and what they give, isn't known)
-                        else if (Unconverted(a is IFlowCaptureReferenceOperation bc && _captured.TryGetValue(bc.Id, out var bv) ? bv : a) is ILocalReferenceOperation bl && _batches.TryGetValue(bl.Local, out var batch))
-                        {
-                            Emit(new KAssign { Var = batch.Awaited, Value = new KLit("true") });
-                            order.Add(null);
-                        }
-                        // (a call written in it: started with the others, joined with them)
-                        else if (Unconverted(a) is IInvocationOperation inline && inline.TargetMethod.IsAsync && inline.TargetMethod.DeclaringSyntaxReferences.Length > 0)
-                        {
-                            var started = StartInline(inline);
-                            started.Effects = EffectsOfCall(inline);
-                            foreach (var o in inlineStarts) WarnIfMayRace(inline.Syntax, started.Effects, o.Effects, new KLit("false"));
-                            foreach (var o in _tasks.Values.Where(t => t.Effects != null)) WarnIfMayRace(inline.Syntax, started.Effects, o.Effects, new KVar(o.Awaited));
-                            inlineStarts.Add(started);
-                            order.Add(started);
-                        }
-                        // (Task.Run(lambda) written in it: started with the others, as a Task.Run in a variable is)
-                        else if (Unconverted(a) is IInvocationOperation trn && trn.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && trn.TargetMethod.Name == "Run" &&
-                                 trn.Arguments.Length == 1 && LambdaSyntax(trn.Arguments[0]) is AnonymousFunctionExpressionSyntax rlam)
-                        {
-                            var started = RunInline(trn, rlam);
-                            foreach (var o in inlineStarts) WarnIfMayRace(trn.Syntax, started.Effects, o.Effects, new KLit("false"));
-                            foreach (var o in _tasks.Values.Where(t => t.Effects != null)) WarnIfMayRace(trn.Syntax, started.Effects, o.Effects, new KVar(o.Awaited));
-                            inlineStarts.Add(started);
-                            order.Add(started);
-                        }
-                        // (a task one is given, a library's: other code runs meanwhile, as awaiting it does, and nothing is known of it)
-                        else if (Unconverted(a is IFlowCaptureReferenceOperation gc && _captured.TryGetValue(gc.Id, out var gv) ? gv : a) is var given &&
-                                 (given is ILocalReferenceOperation gl && !StartedByProgram(gl.Local) || given is IParameterReferenceOperation) && IsGivenTask(given.Type)) Expr(given);
-                        else throw new NotTranslated("Task.WhenAll of a task not started here");
-                    foreach (var t in joins) { JoinOf(t); Emit(new KAssign { Var = t.Awaited, Value = new KLit("true") }); }
-                    foreach (var t in inlineStarts) JoinOf(t);
-                    // (its value, where it's used: an array of what each gives, in order)
-                    if (!(aw.Parent is IExpressionStatementOperation || aw.Parent == null) && aw.Type is IArrayTypeSymbol rat)
-                    {
-                        if (!InSubset(rat)) throw new NotTranslated("Task.WhenAll's results of " + rat.ElementType);
-                        var arr = Declare("t$" + _temps++, rat);
-                        // (of a batch: as many as it has, what each gave not known)
-                        if (order.Contains(null))
-                        {
-                            var n = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
-                            Emit(new KHavoc { Var = n });
-                            Emit(new KAssume { Cond = new KOp("<=", new KLit("0"), new KVar(n)) });
-                            var barr = Declare("t$" + _temps++, rat);
-                            var map = Elements(rat);
-                            after = () =>
-                            {
-                                Emit(new KNew { Var = barr, ArrayType = rat, Size = new KVar(n) });
-                                Emit(new KRow { Map = map, Ref = new KVar(barr), Value = new KVar(LinqMap("[int]" + ElementValue(map))) });
-                            };
-                            value = new KVar(barr);
-                            break;
-                        }
-                        var elements = order.Select(t =>
-                        {
-                            if (t.Result != null) return (KExpr)new KVar(t.Result);
-                            var u = Declare("t$" + _temps++, rat.ElementType);
-                            Emit(new KHavoc { Var = u });
-                            return new KVar(u);
-                        }).ToArray();
-                        after = () => Emit(new KNew { Var = arr, ArrayType = rat, Size = new KLit(order.Count.ToString()), Elements = elements });
-                        value = new KVar(arr);
-                    }
-                    else if (!(aw.Parent is IExpressionStatementOperation || aw.Parent == null)) throw new NotTranslated("Task.WhenAll's value");
-                    break;
-                }
+                    return AwaitedWhenAll(all, aw);
                 // (Task.Run(lambda) awaited where it starts: its code verified on its own, other code running meanwhile, as at
                 // any await; what it gives not known. Not where the lambda writes this method's locals or parameters)
                 case IInvocationOperation run when run.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && run.TargetMethod.Name == "Run" &&
                                                    run.Arguments.Length == 1 && LambdaSyntax(run.Arguments[0]) is AnonymousFunctionExpressionSyntax awaitedLambda && !WritesOutside(awaitedLambda) &&
                                                    // (not one call, proved where it starts, nor in a method with permissions: a task as Start has it)
                                                    StartedCall(awaitedLambda) == null && !Permissions(_m):
-                    if (op.Type is INamedTypeSymbol { Arity: 1 } rt && aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void)
+                    if (op.Type is INamedTypeSymbol { Arity: 1 } && aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void)
                     {
                         if (!InSubset(aw.Type)) throw new NotTranslated("Task.Run of " + aw.Type);
-                        var r = Declare("t$" + _temps++, aw.Type);
-                        Emit(new KHavoc { Var = r });
-                        if (IsNullable(aw.Type) && NotNullable(aw.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
-                        value = new KVar(r);
+                        return new Awaited { Value = Unknown(null, aw.Type, notNull: true) };
                     }
-                    break;
+                    return Nothing;
                 // (a library member with an async stub, awaited: its stub's contract, of what the task gives)
                 case IInvocationOperation las when las.TargetMethod.DeclaringSyntaxReferences.Length == 0 && KernelTypes.AsyncStub?.Invoke(las.TargetMethod.OriginalDefinition) == true &&
                                                    LibraryStub(las.TargetMethod.OriginalDefinition):
-                    _awaiting = true;
-                    try { value = Call(las); }
-                    finally { _awaiting = false; }
-                    break;
+                    return new Awaited { Value = AwaitedCallOf(las) };
                 // (a method of the program's that isn't async but gives a task, awaited: its call, a procedure's, then the
                 // task it gave awaited as one is given: what it gives not known)
                 case IInvocationOperation pt when pt.TargetMethod.DeclaringSyntaxReferences.Length > 0 && !pt.TargetMethod.IsAsync && !pt.TargetMethod.IsAbstract &&
@@ -178,75 +152,73 @@ namespace CsVerify.Verifier.Boogie
                     if (pt.Type is INamedTypeSymbol { Arity: 1 } ptt && aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void)
                     {
                         if (!InSubset(ptt.TypeArguments[0])) throw new NotTranslated("an await of a task of " + ptt.TypeArguments[0]);
-                        var r = Declare("t$" + _temps++, ptt.TypeArguments[0]);
-                        Emit(new KHavoc { Var = r });
-                        if (IsNullable(ptt.TypeArguments[0]) && NotNullable(ptt.TypeArguments[0])) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
-                        value = new KVar(r);
+                        return new Awaited { Value = Unknown(null, ptt.TypeArguments[0], notNull: true) };
                     }
-                    break;
+                    return Nothing;
                 }
                 // (Task.Run(() => F(...)) awaited where it starts: the call, as if awaited itself)
                 case IInvocationOperation run1 when run1.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && run1.TargetMethod.Name == "Run" &&
                                                     run1.Arguments.Length == 1 && LambdaSyntax(run1.Arguments[0]) is AnonymousFunctionExpressionSyntax oneCall && StartedCall(oneCall) is IInvocationOperation theCall:
-                    _awaiting = true;
-                    try { value = Call(theCall); }
-                    finally { _awaiting = false; }
-                    if (aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void) value = null;
-                    break;
-                // (EF's tracker's ...Async operations: read after the others have run, as a query is)
+                {
+                    var value = AwaitedCallOf(theCall);
+                    return new Awaited { Value = aw.Type == null || aw.Type.SpecialType == SpecialType.System_Void ? null : value };
+                }
+                // (EF's tracker's ...Async operations: read after the others have run, as a query is; they say how they throw)
                 case IInvocationOperation eft when _failed != null && eft.TargetMethod.Name.EndsWith("Async") &&
                                                    (IsEfMethod(eft.TargetMethod) || KernelTypes.Ef.IsContextType(eft.TargetMethod.ContainingType) || IsTransactionType(eft.TargetMethod.ContainingType) ||
                                                     eft.TargetMethod.Name == "DisposeAsync" && eft.Instance != null && IsTransactionType(TrackerReceiverOf(eft.Instance)?.Type) ||
                                                     eft.TargetMethod.Name == "CreateDbContextAsync" && eft.Instance != null && IsEfFactory(Unconverted(eft.Instance).Type)) &&
                                                    (EfAsyncTwin(eft.TargetMethod) == null || eft.TargetMethod.Name.StartsWith("Execute")):
-                    efTracker = eft;
-                    break;
-                // (an EF query operator's ...Async form, awaited where it's called: the operator's value)
+                    return new Awaited
+                    {
+                        ThrowsAlready = true,
+                        ValueAfter = () =>
+                        {
+                            var (handled, tv) = TrackerCall(eft, awaited: true);
+                            if (!handled) throw new NotTranslated("an await of " + eft.Syntax);
+                            return tv;
+                        },
+                    };
+                // (an EF query operator's ...Async form, awaited where it's called: the operator's value, read after the others have run)
                 case IInvocationOperation efq when EfAsyncTwin(efq.TargetMethod) is string && efq.Type is INamedTypeSymbol { Arity: 1 }:
-                    // (it runs while the method awaits: what it gives is read after the others have run)
-                    efQuery = efq;
-                    break;
+                    return new Awaited
+                    {
+                        ValueAfter = () =>
+                        {
+                            _tableReads = null;
+                            return Linq(efq, EfAsyncTwin(efq.TargetMethod), ((INamedTypeSymbol)efq.Type).TypeArguments[0]);
+                        },
+                    };
                 // (a library's lock wrapper, awaited: its lock taken)
                 case IInvocationOperation libw when libw.TargetMethod.DeclaringSyntaxReferences.Length == 0 && KernelTypes.Locks?.Acquires(libw.TargetMethod) == true:
                     LockReceiver(libw.Instance);
-                    gate = WrapperGate(libw, acquiring: true);
-                    break;
+                    return new Awaited { Gate = WrapperGate(libw, acquiring: true) };
                 case IInvocationOperation call when IsTaskMethod(call.TargetMethod) && call.TargetMethod.DeclaringSyntaxReferences.Length > 0:
-                    _awaiting = true;
-                    try { value = Call(call); }
-                    finally { _awaiting = false; }
+                {
+                    var value = AwaitedCallOf(call);
                     // (a lock wrapper's [Acquires], awaited: its gate is taken, as WaitAsync's is)
-                    gate = WrapperGate(call, acquiring: true);
-                    break;
+                    return new Awaited { Value = value, Gate = WrapperGate(call, acquiring: true) };
+                }
                 // (in a lock wrapper itself, its semaphore is its callers' to hold: waiting on it here changes nothing the kernel knows of)
                 case IInvocationOperation wait when IsSemaphore(wait.TargetMethod.ContainingType) && wait.TargetMethod.Name == "WaitAsync" && wait.Arguments.All(a => IsToken(a.Value.Type)) && InWrapper:
                     if (wait.Instance != null) Expr(Unconverted(wait.Instance));
                     foreach (var a in wait.Arguments) Expr(a.Value);
-                    break;
+                    return Nothing;
                 case IInvocationOperation wait when IsSemaphore(wait.TargetMethod.ContainingType) && wait.TargetMethod.Name == "WaitAsync" && wait.Arguments.All(a => IsToken(a.Value.Type)):
-                    gate = GateOf(wait);
-                    gateOwner = _gateOwner;
-                    break;
+                {
+                    var gate = GateOf(wait);
+                    return new Awaited { Gate = gate, GateOwner = _gateOwner };
+                }
                 // (a wait with a timeout: it may not take the gate, so nothing is held after; what it gives is unknown)
                 case IInvocationOperation timed when IsSemaphore(timed.TargetMethod.ContainingType) && timed.TargetMethod.Name == "WaitAsync" && timed.Arguments.Any(a => !IsToken(a.Value.Type)) && InSubset(aw.Type ?? timed.Type):
-                {
                     if (timed.Instance != null) Expr(Unconverted(timed.Instance));
                     foreach (var a in timed.Arguments) if (InSubset(a.Value.Type)) Expr(a.Value);
-                    if (aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void)
-                    {
-                        var r = Declare("t$" + _temps++, aw.Type);
-                        Emit(new KHavoc { Var = r });
-                        value = new KVar(r);
-                    }
-                    break;
-                }
+                    return new Awaited { Value = aw.Type != null && aw.Type.SpecialType != SpecialType.System_Void ? Unknown(null, aw.Type, notNull: false) : null };
                 case IInvocationOperation lib when lib.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && lib.TargetMethod.Name is "Yield" or "Delay":
                     foreach (var a in lib.Arguments.Select(x => x.Value))
                         if (InSubset(a.Type)) Expr(a);
                         else if (!(Unconverted(a) is IParameterReferenceOperation or ILocalReferenceOperation)) throw new NotTranslated("an argument of " + lib.TargetMethod.Name);
-                    break;
-                case IPropertyReferenceOperation { Property.Name: "CompletedTask" } done when done.Property.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task":
-                    break;
+                    return Nothing;
                 // (await using's IAsyncDisposable.DisposeAsync of a class's object: that class's code, its contract a library
                 // interface's, so what it does isn't known: anything, as for Dispose)
                 case IInvocationOperation da when da.TargetMethod.Name == "DisposeAsync" && da.TargetMethod.ContainingType?.ToDisplayString() == "System.IAsyncDisposable" &&
@@ -256,37 +228,13 @@ namespace CsVerify.Verifier.Boogie
                     Expr(Unconverted(da.Instance));
                     _p.HavocsAll = true;
                     Emit(new KHavocAll());
-                    break;
+                    return Nothing;
                 // (a task a delegate gives: its call, then as a task one is given)
                 case IInvocationOperation dt when dt.TargetMethod.MethodKind == MethodKind.DelegateInvoke && IsGivenTask(dt.Type):
-                    Expr(dt);
-                    if (dt.Type is INamedTypeSymbol { Arity: 1 } dtt)
-                    {
-                        var r = Declare("t$" + _temps++, dtt.TypeArguments[0]);
-                        Emit(new KHavoc { Var = r });
-                        // (not null, where its type says so)
-                        if (IsNullable(dtt.TypeArguments[0]) && NotNullable(dtt.TypeArguments[0])) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
-                        value = new KVar(r);
-                    }
-                    break;
-                // (a task one is given: other code runs meanwhile; what it gives isn't known)
-                case IParameterReferenceOperation or ILocalReferenceOperation when IsGivenTask(op.Type) && !(op is ILocalReferenceOperation gl && _tasks.ContainsKey(gl.Local)):
-                    Expr(op);
-                    if (op.Type is INamedTypeSymbol { Arity: 1 } gt)
-                    {
-                        var r = Declare("t$" + _temps++, gt.TypeArguments[0]);
-                        Emit(new KHavoc { Var = r });
-                        value = new KVar(r);
-                    }
-                    break;
+                    return new Awaited { Value = Unknown(dt, dt.Type is INamedTypeSymbol { Arity: 1 } dtt ? dtt.TypeArguments[0] : null, notNull: true) };
                 // (await foreach's next round: whether there's another isn't known; it may throw, as any library await)
                 case IInvocationOperation mna when mna.TargetMethod.Name == "MoveNextAsync" && mna.Instance is IFlowCaptureReferenceOperation mc && _asyncEach.ContainsKey(mc.Id):
-                {
-                    var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
-                    Emit(new KHavoc { Var = more });
-                    value = new KVar(more);
-                    break;
-                }
+                    return new Awaited { Value = Unknown(null, _model.Compilation.GetSpecialType(SpecialType.System_Boolean), notNull: false) };
                 // (a library's task or value task without a stub (a channel's ReadAsync): its receiver not null; other code
                 // runs meanwhile, as at any await; what it gives isn't known (not null where its type says so); it may throw)
                 case IInvocationOperation la when la.TargetMethod.DeclaringSyntaxReferences.Length == 0 && IsTaskLike(la.Type) && !SpecSymbols.IsSpecClass(la.TargetMethod.ContainingType) &&
@@ -304,15 +252,110 @@ namespace CsVerify.Verifier.Boogie
                     if (la.Type is INamedTypeSymbol { Arity: 1 } lt)
                     {
                         if (!InSubset(lt.TypeArguments[0])) throw new NotTranslated("an await of " + lt);
-                        var r = Declare("t$" + _temps++, lt.TypeArguments[0]);
-                        Emit(new KHavoc { Var = r });
-                        if (IsNullable(lt.TypeArguments[0]) && NotNullable(lt.TypeArguments[0])) Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
-                        value = new KVar(r);
+                        return new Awaited { Value = Unknown(null, lt.TypeArguments[0], notNull: true) };
                     }
-                    break;
+                    return Nothing;
                 }
                 default: throw new NotTranslated("an await of " + op.Syntax);
             }
+        }
+
+        /// <summary>An awaited call: lowered as one, where its await is.</summary>
+        private KExpr AwaitedCallOf(IInvocationOperation call)
+        {
+            _awaiting = true;
+            try { return Call(call); }
+            finally { _awaiting = false; }
+        }
+
+        /// <summary>
+        /// Task.WhenAll(...): every one started before any is joined (those written in it start here, the others already
+        /// run), then all joined; its value, where it's used, an array of what each gives, in order.
+        /// </summary>
+        private Awaited AwaitedWhenAll(IInvocationOperation all, IAwaitOperation aw)
+        {
+            var inlineStarts = new List<Task>();
+            var joins = new List<Task>();
+            var order = new List<Task>();
+            foreach (var a in all.Arguments.SelectMany(x => x.Value is IArrayCreationOperation ac ? ac.Initializer?.ElementValues.AsEnumerable() ?? new IOperation[0]
+                                                          : x.Value is ICollectionExpressionOperation ce ? ce.Elements.AsEnumerable() : new[] { x.Value }))
+                if (Unconverted(a is IFlowCaptureReferenceOperation wc && _captured.TryGetValue(wc.Id, out var wv) ? wv : a) is ILocalReferenceOperation wl &&
+                    _tasks.TryGetValue(wl.Local, out var wt)) { joins.Add(wt); order.Add(wt); }
+                else if (a is IFlowCaptureReferenceOperation wr && _startedCaptures.TryGetValue(wr.Id, out var wst)) { joins.Add(wst); order.Add(wst); }
+                // (a batch of tasks: all joined; how many, and what they give, isn't known)
+                else if (Unconverted(a is IFlowCaptureReferenceOperation bc && _captured.TryGetValue(bc.Id, out var bv) ? bv : a) is ILocalReferenceOperation bl && _batches.TryGetValue(bl.Local, out var batch))
+                {
+                    Emit(new KAssign { Var = batch.Awaited, Value = new KLit("true") });
+                    order.Add(null);
+                }
+                // (a call written in it: started with the others, joined with them)
+                else if (Unconverted(a) is IInvocationOperation inline && inline.TargetMethod.IsAsync && inline.TargetMethod.DeclaringSyntaxReferences.Length > 0)
+                {
+                    var started = StartInline(inline);
+                    started.Effects = EffectsOfCall(inline);
+                    foreach (var o in inlineStarts) WarnIfMayRace(inline.Syntax, started.Effects, o.Effects, new KLit("false"));
+                    foreach (var o in _tasks.Values.Where(t => t.Effects != null)) WarnIfMayRace(inline.Syntax, started.Effects, o.Effects, new KVar(o.Awaited));
+                    inlineStarts.Add(started);
+                    order.Add(started);
+                }
+                // (Task.Run(lambda) written in it: started with the others, as a Task.Run in a variable is)
+                else if (Unconverted(a) is IInvocationOperation trn && trn.TargetMethod.ContainingType?.ToDisplayString() == "System.Threading.Tasks.Task" && trn.TargetMethod.Name == "Run" &&
+                         trn.Arguments.Length == 1 && LambdaSyntax(trn.Arguments[0]) is AnonymousFunctionExpressionSyntax rlam)
+                {
+                    var started = RunInline(trn, rlam);
+                    foreach (var o in inlineStarts) WarnIfMayRace(trn.Syntax, started.Effects, o.Effects, new KLit("false"));
+                    foreach (var o in _tasks.Values.Where(t => t.Effects != null)) WarnIfMayRace(trn.Syntax, started.Effects, o.Effects, new KVar(o.Awaited));
+                    inlineStarts.Add(started);
+                    order.Add(started);
+                }
+                // (a task one is given, a library's: other code runs meanwhile, as awaiting it does, and nothing is known of it)
+                else if (Unconverted(a is IFlowCaptureReferenceOperation gc && _captured.TryGetValue(gc.Id, out var gv) ? gv : a) is var given &&
+                         (given is ILocalReferenceOperation gl && !StartedByProgram(gl.Local) || given is IParameterReferenceOperation) && IsGivenTask(given.Type)) Expr(given);
+                else throw new NotTranslated("Task.WhenAll of a task not started here");
+            foreach (var t in joins) { JoinOf(t); Emit(new KAssign { Var = t.Awaited, Value = new KLit("true") }); }
+            foreach (var t in inlineStarts) JoinOf(t);
+            bool used = !(aw.Parent is IExpressionStatementOperation || aw.Parent == null);
+            if (used && aw.Type is IArrayTypeSymbol rat)
+            {
+                if (!InSubset(rat)) throw new NotTranslated("Task.WhenAll's results of " + rat.ElementType);
+                var arr = Declare("t$" + _temps++, rat);
+                // (of a batch: as many as it has, what each gave not known)
+                if (order.Contains(null))
+                {
+                    var n = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    Emit(new KHavoc { Var = n });
+                    Emit(new KAssume { Cond = new KOp("<=", new KLit("0"), new KVar(n)) });
+                    var barr = Declare("t$" + _temps++, rat);
+                    var map = Elements(rat);
+                    return new Awaited
+                    {
+                        Value = new KVar(barr),
+                        After = () =>
+                        {
+                            Emit(new KNew { Var = barr, ArrayType = rat, Size = new KVar(n) });
+                            Emit(new KRow { Map = map, Ref = new KVar(barr), Value = new KVar(LinqMap("[int]" + ElementValue(map))) });
+                        },
+                    };
+                }
+                var elements = order.Select(t =>
+                {
+                    if (t.Result != null) return (KExpr)new KVar(t.Result);
+                    var u = Declare("t$" + _temps++, rat.ElementType);
+                    Emit(new KHavoc { Var = u });
+                    return new KVar(u);
+                }).ToArray();
+                return new Awaited { Value = new KVar(arr), After = () => Emit(new KNew { Var = arr, ArrayType = rat, Size = new KLit(order.Count.ToString()), Elements = elements }) };
+            }
+            if (used) throw new NotTranslated("Task.WhenAll's value");
+            return Nothing;
+        }
+
+        /// <summary>
+        /// At an await, other code runs: the method awaits (its effects so marked), what it doesn't hold is forgotten
+        /// (KAwait), but what a gate held here guards, which nobody else can have, and the confined locals' objects.
+        /// </summary>
+        private void OthersRun(IAwaitOperation aw)
+        {
             _p.Awaits = true;
             _p.CallsDelegates = true;
             // (what a gate held here guards stays, as nobody else can have it)
@@ -335,25 +378,6 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (f, t, owner) in kept)
                 Emit(new KAssume { Cond = new KOp("==", new KField { Field = f, Instance = owner, OnThis = owner is KVar { Name: "this" }, NoNull = true, At = aw.Syntax, InstanceAt = aw.Syntax }, new KVar(t)) });
             ForgetCaptured();
-            if (efQuery != null)
-            {
-                _tableReads = null;
-                value = Linq(efQuery, EfAsyncTwin(efQuery.TargetMethod), ((INamedTypeSymbol)efQuery.Type).TypeArguments[0]);
-            }
-            if (efTracker != null)
-            {
-                var (handled, tv) = TrackerCall(efTracker, awaited: true);
-                if (!handled) throw new NotTranslated("an await of " + efTracker.Syntax);
-                value = tv;
-            }
-            // (where exceptions are seen: a library's await may throw, a cancellation say)
-            // (not the tracker's operations, which say how they throw)
-            if (!(op is IInvocationOperation awaited && IsTaskMethod(awaited.TargetMethod) && awaited.TargetMethod.DeclaringSyntaxReferences.Length > 0) && efTracker == null && !forkedBeforeJoin &&
-                _cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
-                Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
-            after?.Invoke();
-            if (gate != null) Take(gate, aw.Syntax, gateOwner);
-            return value;
         }
 
         /// <summary>A task started and kept in a local, awaited later: whether it has been, and its result.</summary>
