@@ -197,9 +197,12 @@ namespace CsVerify.Verifier.Boogie
             Emit(KHavoc.Of(n));
             var len = new KVar(n);
             LinqFact(Le(KLit.Zero, len), at);
-            LinqFact(Over(KLit.Zero, len, i => NotNull(Sel(rows, i))), at);
+            var i2 = Atom();
+            LinqFact(Over(KLit.Zero, len, i2, NotNull(Sel(rows, i2))), at);
             // (a different object at each index)
-            LinqFact(Over(KLit.Zero, len, i => Over(KLit.Zero, len, j => OrElse(Eq(i, j), Ne(Sel(rows, i), Sel(rows, j))))), at);
+            var i3 = Atom();
+            var j2 = Atom();
+            LinqFact(Over(KLit.Zero, len, i3, Over(KLit.Zero, len, j2, OrElse(Eq(i3, j2), Ne(Sel(rows, i3), Sel(rows, j2))))), at);
             // no two rows share a key, or a unique index's value
             foreach (var key in e.Identifying.Where(k => k.All(IsField)))
             {
@@ -207,7 +210,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _p.AddField(p.OriginalDefinition);
                 }
-                LinqFact(Over(KLit.Zero, len, i => Over(KLit.Zero, len, j => OrElse(Eq(i, j),
+                var i = Atom();
+                var j = Atom();
+                LinqFact(Over(KLit.Zero, len, i, Over(KLit.Zero, len, j, OrElse(Eq(i, j),
                     Not(AndAll(key.Select(p => SameColumn(p, Column(p, Sel(rows, i)), Column(p, Sel(rows, j))))))))), at);
             }
             // each passes the entity's query filters, unless the query ignores them
@@ -217,14 +222,17 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body })
                     {
-                        LinqFact(Over(KLit.Zero, len, i => Apply((body, filter.Symbol.Parameters[0], null), Sel(rows, i))), at);
+                        var i = Atom();
+                        LinqFact(Over(KLit.Zero, len, i, Apply((body, filter.Symbol.Parameters[0], null), Sel(rows, i))), at);
                     }
                 }
             }
             // (each an entity of the type; which row an object is, the inverse of Row)
-            LinqFact(Over(KLit.Zero, len, i => Isa(Sel(rows, i), e)), at);
+            var i4 = Atom();
+            LinqFact(Over(KLit.Zero, len, i4, Isa(Sel(rows, i4), e)), at);
             var index = new KVar(LinqMap("[Ref]int"));
-            LinqFact(Over(KLit.Zero, len, i => Eq(Sel(index, Sel(rows, i)), i)), at);
+            var i5 = Atom();
+            LinqFact(Over(KLit.Zero, len, i5, Eq(Sel(index, Sel(rows, i5)), i5)), at);
             var y = new KVar("y$");
             var isRow = AndAlso(Between(KLit.Zero, Sel(index, y), len), Eq(Sel(rows, Sel(index, y)), y));
             // (a query that gives no entity of the type, Count, Any, a projection of columns: the database's values, no objects)
@@ -250,10 +258,11 @@ namespace CsVerify.Verifier.Boogie
                 _known = outer == null ? new KVar(k) : (KExpr)AndAlso(outer, new KVar(k));
                 TrackedRows(t.Context, isRow);
             }
+            var i6 = Atom();
             var seq = new LSeq
             {
                 Length = len,
-                Elem = i => Sel(rows, i),
+                Elem = KAbs.Of(i6, Sel(rows, i6)),
                 Type = e.Type,
             };
             _tableReads[t.Key] = seq;
@@ -261,59 +270,150 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// Objects a read without tracking made, of one level: every one (All of a body), some one (Any), their entity.
-        /// The rows; what a path's navigation loads of each object of the level above.
+        /// Objects a read without tracking made, of one level, their entity: the rows (Rows at each index below Length,
+        /// Index its inverse); or, of each object of the level above (Parent), what a path's navigation loads: its value
+        /// (Of, a term over the object; maybe null where MaybeNull), the elements of the list it is (Size over the list, El
+        /// over it and an index), or the members of the set it is (Member over it and an object). ParentOf, IndexOf: the
+        /// inverse maps, which object of the level above, which index of its list.
         /// </summary>
         private sealed class Made
         {
-            public System.Func<System.Func<KExpr, KExpr>, KExpr> All, Any;
-            /// <summary>An object is one of them: quantifier-free, by inverse maps (which row, which of its list).</summary>
-            public System.Func<KExpr, KExpr> Has;
             public EfModel.Entity Entity;
+            public Made Parent;
+            public KVar Rows, Index;
+            public KExpr Length;
+            public KAbs Of;
+            public bool MaybeNull;
+            public KAbs Size, El;
+            public KAbs Member;
+            public KVar ParentOf, IndexOf;
         }
 
-        /// <summary>What one navigation of each object of a level holds (where not null): a level of its own, each with its parent known.</summary>
-        private Made ChildOf(Made parent, System.Func<KExpr, KExpr> of, bool maybeNull, EfModel.Entity entity, SyntaxNode at)
+        private static Made RowsMade(EfModel.Entity entity, KVar rows, KExpr length, KVar index) => new Made
+        {
+            Entity = entity,
+            Rows = rows,
+            Length = length,
+            Index = index,
+        };
+
+        /// <summary>forall (or exists) z: Ref :: body, z an atom in it.</summary>
+        private static KNameless Objects(KVar z, KExpr body, bool forall = true) => new KNameless
+        {
+            Forall = forall,
+            Type = "Ref",
+            Body = Nameless.Close(body, z),
+        };
+
+        /// <summary>body (a term over an object) of each object of the level (forall), or of some one (exists).</summary>
+        private KExpr Each(Made m, KAbs body, bool forall)
+        {
+            if (m.Parent == null)
+            {
+                var i = Atom();
+                return Over(KLit.Zero, m.Length, i, body.At(Sel(m.Rows, i)), forall);
+            }
+            var x = Atom();
+            KExpr ofX;
+            if (m.Of != null)
+            {
+                var o = m.Of.At(x);
+                var b = body.At(o);
+                ofX = !m.MaybeNull ? b : forall ? Implies(Ne(o, KLit.Null), b) : AndAlso(Ne(o, KLit.Null), b);
+            }
+            else if (m.El != null)
+            {
+                var j = Atom();
+                ofX = Over(KLit.Zero, m.Size.At(x), j, body.At(m.El.At(x, j)), forall);
+            }
+            else
+            {
+                var z = Atom();
+                var member = m.Member.At(x, z);
+                ofX = Objects(z, forall ? Implies(member, body.At(z)) : AndAlso(member, body.At(z)), forall);
+            }
+            return Each(m.Parent, KAbs.Of(x, ofX), forall);
+        }
+
+        /// <summary>body (a term over x, an atom) of every object x of the level.</summary>
+        private KExpr All(Made m, KVar x, KExpr body) => Each(m, KAbs.Of(x, body), forall: true);
+
+        /// <summary>body (a term over x, an atom) of some object x of the level.</summary>
+        private KExpr Any(Made m, KVar x, KExpr body) => Each(m, KAbs.Of(x, body), forall: false);
+
+        /// <summary>An object is one of the level's: quantifier-free, by the inverse maps (which row, which of its list).</summary>
+        private static KExpr Has(Made m, KExpr r)
+        {
+            if (m.Parent == null)
+            {
+                return AndAlso(Between(KLit.Zero, Sel(m.Index, r), m.Length), Eq(Sel(m.Rows, Sel(m.Index, r)), r));
+            }
+            var parent = Sel(m.ParentOf, r);
+            var inParent = Has(m.Parent, parent);
+            if (m.Of != null)
+            {
+                return AndAlso(AndAlso(Ne(r, KLit.Null), inParent), Eq(m.Of.At(parent), r));
+            }
+            if (m.El != null)
+            {
+                var index = Sel(m.IndexOf, r);
+                return AndAlso(AndAlso(inParent, Between(KLit.Zero, index, m.Size.At(parent))), Eq(m.El.At(parent, index), r));
+            }
+            return AndAlso(inParent, m.Member.At(parent, r));
+        }
+
+        /// <summary>What one navigation of each object of a level holds (of, over the object; where not null): a level of its own, each with its parent known.</summary>
+        private Made ChildOf(Made parent, KAbs of, bool maybeNull, EfModel.Entity entity, SyntaxNode at)
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
-            KExpr Null = KLit.Null;
-            LinqFact(parent.All(x => maybeNull ? Implies(Ne(of(x), Null), Eq(Sel(parentOf, of(x)), x))
-                                               : Eq(Sel(parentOf, of(x)), x)), at);
+            var x = Atom();
+            var o = of.At(x);
+            var known = Eq(Sel(parentOf, o), x);
+            LinqFact(All(parent, x, maybeNull ? Implies(Ne(o, KLit.Null), known) : known), at);
             return new Made
             {
                 Entity = entity,
-                All = maybeNull ? body => parent.All(x => Implies(Ne(of(x), Null), body(of(x)))) : body => parent.All(x => body(of(x))),
-                Any = maybeNull ? body => parent.Any(x => AndAlso(Ne(of(x), Null), body(of(x)))) : body => parent.Any(x => body(of(x))),
-                Has = r => AndAlso(AndAlso(Ne(r, Null), parent.Has(Sel(parentOf, r))), Eq(of(Sel(parentOf, r)), r)),
+                Parent = parent,
+                Of = of,
+                MaybeNull = maybeNull,
+                ParentOf = parentOf,
             };
         }
 
-        /// <summary>The elements of a list each object of a level holds: a level, each with its list's object and its index known.</summary>
-        private Made ElementsOf(Made parent, System.Func<KExpr, KExpr> size, System.Func<KExpr, KExpr, KExpr> el, EfModel.Entity entity, SyntaxNode at)
+        /// <summary>The elements of a list each object of a level holds (size, over it; el, over it and an index): a level, each with its list's object and its index known.</summary>
+        private Made ElementsOf(Made parent, KAbs size, KAbs el, EfModel.Entity entity, SyntaxNode at)
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
             var indexOf = new KVar(LinqMap("[Ref]int"));
-            LinqFact(parent.All(x => Over(KLit.Zero, size(x), j => AndAlso(Eq(Sel(parentOf, el(x, j)), x), Eq(Sel(indexOf, el(x, j)), j)))), at);
+            var x = Atom();
+            var j = Atom();
+            var element = el.At(x, j);
+            var known = AndAlso(Eq(Sel(parentOf, element), x), Eq(Sel(indexOf, element), j));
+            LinqFact(All(parent, x, Over(KLit.Zero, size.At(x), j, known)), at);
             return new Made
             {
                 Entity = entity,
-                All = body => parent.All(x => Over(KLit.Zero, size(x), j => body(el(x, j)))),
-                Any = body => parent.Any(x => Over(KLit.Zero, size(x), j => body(el(x, j)), forall: false)),
-                Has = r => AndAlso(AndAlso(parent.Has(Sel(parentOf, r)), Between(KLit.Zero, Sel(indexOf, r), size(Sel(parentOf, r)))), Eq(el(Sel(parentOf, r), Sel(indexOf, r)), r)),
+                Parent = parent,
+                Size = size,
+                El = el,
+                ParentOf = parentOf,
+                IndexOf = indexOf,
             };
         }
 
-        /// <summary>The members of a set each object of a level holds: a level, each with its set's object known.</summary>
-        private Made MembersOf(Made parent, System.Func<KExpr, KExpr, KExpr> member, EfModel.Entity entity, SyntaxNode at)
+        /// <summary>The members of a set each object of a level holds (member, over it and an object): a level, each with its set's object known.</summary>
+        private Made MembersOf(Made parent, KAbs member, EfModel.Entity entity, SyntaxNode at)
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
-            LinqFact(parent.All(x => KQuant.ForAll("z$", "Ref", Implies(member(x, new KVar("z$")), Eq(Sel(parentOf, new KVar("z$")), x)))), at);
+            var x = Atom();
+            var z = Atom();
+            LinqFact(All(parent, x, Objects(z, Implies(member.At(x, z), Eq(Sel(parentOf, z), x)))), at);
             return new Made
             {
                 Entity = entity,
-                All = body => parent.All(x => KQuant.ForAll("z$", "Ref", Implies(member(x, new KVar("z$")), body(new KVar("z$"))))),
-                Any = body => parent.Any(x => KQuant.Exists("z$", "Ref", AndAlso(member(x, new KVar("z$")), body(new KVar("z$"))))),
-                Has = r => AndAlso(parent.Has(Sel(parentOf, r)), member(Sel(parentOf, r), r)),
+                Parent = parent,
+                Member = member,
+                ParentOf = parentOf,
             };
         }
 
@@ -330,14 +430,9 @@ namespace CsVerify.Verifier.Boogie
             var e = t.Entity;
             KExpr Zero = KLit.Zero;
             KExpr Null = KLit.Null;
-            LinqFact(Over(Zero, len, i => Not(Sel("$Alloc", Sel(rows, i)))), at);
-            var top = new Made
-            {
-                Entity = e,
-                All = body => Over(Zero, len, i => body(Sel(rows, i))),
-                Any = body => Over(Zero, len, i => body(Sel(rows, i)), forall: false),
-                Has = r => AndAlso(Between(Zero, Sel(index, r), len), Eq(Sel(rows, Sel(index, r)), r)),
-            };
+            var i2 = Atom();
+            LinqFact(Over(Zero, len, i2, Not(Sel("$Alloc", Sel(rows, i2)))), at);
+            var top = RowsMade(e, rows, len, index);
             var made = new List<Made> { top };
             var loadedTypes = new HashSet<ITypeSymbol>(t.IncludePaths.SelectMany(x => x).Select(nav => EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition)
                 .Where(x => x != null), SymbolEqualityComparer.Default);
@@ -350,7 +445,8 @@ namespace CsVerify.Verifier.Boogie
                     {
                         continue;
                     }
-                    LinqFact(top.All(x => Eq(Column(nav, x), Null)), at);
+                    var x = Atom();
+                    LinqFact(All(top, x, Eq(Column(nav, x), Null)), at);
                 }
                 foreach (var nav in e.Collections.Where(IsField))
                 {
@@ -362,7 +458,8 @@ namespace CsVerify.Verifier.Boogie
                     switch (EmptyListInitializer(nav))
                     {
                         case false:
-                            LinqFact(top.All(x => Eq(Column(nav, x), Null)), at);
+                            var x2 = Atom();
+                            LinqFact(All(top, x2, Eq(Column(nav, x2), Null)), at);
                             break;
                         case true when MadeAsList(nav) is INamedTypeSymbol list:
                         {
@@ -371,9 +468,12 @@ namespace CsVerify.Verifier.Boogie
                                 _p.Models[m.Name] = m;
                             }
                             // a new list at each row, empty
-                            LinqFact(top.All(x => ListMade(Column(nav, x))), at);
-                            LinqFact(top.All(x => Eq(Sel(SizeMap, Column(nav, x)), Zero)), at);
-                            made.Add(ChildOf(top, x => Column(nav, x), false, null, at));
+                            var x3 = Atom();
+                            LinqFact(All(top, x3, ListMade(Column(nav, x3))), at);
+                            var x4 = Atom();
+                            LinqFact(All(top, x4, Eq(Sel(SizeMap, Column(nav, x4)), Zero)), at);
+                            var x = Atom();
+                            made.Add(ChildOf(top, KAbs.Of(x, Column(nav, x)), false, null, at));
                             break;
                         }
                         case true when MadeAsSet(nav) is INamedTypeSymbol set:
@@ -384,13 +484,15 @@ namespace CsVerify.Verifier.Boogie
                                 _p.Models[m.Name] = m;
                             }
                             var members = ModelOf("Members", set).Name;
-                            LinqFact(top.All(x => ListMade(Column(nav, x))), at);
-                            LinqFact(top.All(x => Eq(Sel(SizeMap, Column(nav, x)), Zero)), at);
-                            LinqFact(top.All(x => KQuant.ForAll(
-                                "z$",
-                                "Ref",
-                                Not(Sel(members, Column(nav, x), new KVar("z$"))))), at);
-                            made.Add(ChildOf(top, x => Column(nav, x), false, null, at));
+                            var x3 = Atom();
+                            LinqFact(All(top, x3, ListMade(Column(nav, x3))), at);
+                            var x4 = Atom();
+                            LinqFact(All(top, x4, Eq(Sel(SizeMap, Column(nav, x4)), Zero)), at);
+                            var x5 = Atom();
+                            var z = Atom();
+                            LinqFact(All(top, x5, Objects(z, Not(Sel(members, Column(nav, x5), z)))), at);
+                            var x = Atom();
+                            made.Add(ChildOf(top, KAbs.Of(x, Column(nav, x)), false, null, at));
                             break;
                         }
                         case true:
@@ -432,20 +534,15 @@ namespace CsVerify.Verifier.Boogie
             }
             var e = t.Entity;
             KExpr Null = KLit.Null;
-            var top = new Made
-            {
-                Entity = e,
-                All = body => Over(KLit.Zero, len, i => body(Sel(rows, i))),
-                Any = body => Over(KLit.Zero, len, i => body(Sel(rows, i)), forall: false),
-                Has = r => AndAlso(Between(KLit.Zero, Sel(index, r), len), Eq(Sel(rows, Sel(index, r)), r)),
-            };
+            var top = RowsMade(e, rows, len, index);
             _known = known;
             foreach (var nav in e.References.Where(r => t.Includes.Contains(r.OriginalDefinition) && IsField(r)))
             {
                 if (e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 && KeyMatches(fk, p.Key[0]))
                 {
                     _p.AddField(nav.OriginalDefinition);
-                    LinqFact(top.All(x => OrElse(Eq(Column(nav, x), Null), AndAlso(Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))))), at);
+                    var x = Atom();
+                    LinqFact(All(top, x, OrElse(Eq(Column(nav, x), Null), AndAlso(Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))))), at);
                 }
                 else
                 {
@@ -502,7 +599,7 @@ namespace CsVerify.Verifier.Boogie
             var after = new KVar(LinqMap("[Ref]bool"));
             var r = new KVar("r$");
             // (what's made: by the inverse maps, no quantifier in it, so the solver finds no more objects than these)
-            KExpr isMade = OrAny(made.Select(m => m.Has(r)));
+            KExpr isMade = OrAny(made.Select(m => Has(m, r)));
             if (guard != null)
             {
                 isMade = AndAlso(guard, isMade);
@@ -518,7 +615,8 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var p in EfModel.PropertiesOf(m.Entity.Type).Where(p => IsField(p) && IsRef(p.Type)))
                 {
                     _p.AddField(p.OriginalDefinition);
-                    LinqFact(m.All(x => OrElse(Eq(Column(p, x), Null), Sel("$Alloc", Column(p, x)))), at);
+                    var x = Atom();
+                    LinqFact(All(m, x, OrElse(Eq(Column(p, x), Null), Sel("$Alloc", Column(p, x)))), at);
                 }
             }
             _known = known;
@@ -576,16 +674,20 @@ namespace CsVerify.Verifier.Boogie
                 if (e.References.Contains(nav) && e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 &&
                     KeyMatches(fk, p.Key[0]))
                 {
-                    LinqFact(level.All(x => IsNullableValue(fk.Type) ? OrElse(Eq(Column(nav, x), Null), NavigationLoadedByKey(x, nav, Null, p, fk, t)) : NavigationLoadedByKey(x, nav, Null, p, fk, t)), at);
-                    child = ChildOf(level, x => Column(nav, x), IsNullableValue(fk.Type), p, at);
+                    var x2 = Atom();
+                    LinqFact(All(level, x2, IsNullableValue(fk.Type) ? OrElse(Eq(Column(nav, x2), Null), NavigationLoadedByKey(x2, nav, Null, p, fk, t)) : NavigationLoadedByKey(x2, nav, Null, p, fk, t)), at);
+                    var x = Atom();
+                    child = ChildOf(level, KAbs.Of(x, Column(nav, x)), IsNullableValue(fk.Type), p, at);
                     made.Add(child);
                 }
                 // (a reference whose foreign key is EF's own, a shadow property: a row of its type, through its filters, a
                 // new object; or null, where nothing says there is one)
                 else if (e.References.Contains(nav) && !e.ForeignKeys.ContainsKey(nav) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity sp)
                 {
-                    LinqFact(level.All(x => OrElse(Eq(Column(nav, x), Null), NavigationLoaded(x, nav, Null, sp, t))), at);
-                    child = ChildOf(level, x => Column(nav, x), true, sp, at);
+                    var x2 = Atom();
+                    LinqFact(All(level, x2, OrElse(Eq(Column(nav, x2), Null), NavigationLoaded(x2, nav, Null, sp, t))), at);
+                    var x = Atom();
+                    child = ChildOf(level, KAbs.Of(x, Column(nav, x)), true, sp, at);
                     made.Add(child);
                 }
                 else if (e.Collections.Contains(nav) && MadeAsList(nav) is INamedTypeSymbol list && e.CollectionKeys.TryGetValue(nav, out var cfk) && e.Key.Count == 1 &&
@@ -596,12 +698,18 @@ namespace CsVerify.Verifier.Boogie
                         _p.Models[m.Name] = m;
                     }
                     var items = ModelOf("Items", list).Name;
-                    LinqFact(level.All(x => ListMade(Column(nav, x))), at);
-                    LinqFact(level.All(x => Over(KLit.Zero, Sel(SizeMap, Column(nav, x)), j => AndAlso(AndAlso(Ne(Sel(items, Column(nav, x), j), Null), Not(Sel("$Alloc", Sel(items, Column(nav, x), j)))),
-                        AndAlso(AndAlso(Isa(Sel(items, Column(nav, x), j), d), ForeignKey(cfk, Sel(items, Column(nav, x), j), e.Key[0], x)), Filtered(t, d, Sel(items, Column(nav, x), j)))))), at);
-                    var lists = ChildOf(level, x => Column(nav, x), false, null, at);
+                    var x2 = Atom();
+                    LinqFact(All(level, x2, ListMade(Column(nav, x2))), at);
+                    var j2 = Atom();
+                    var x3 = Atom();
+                    LinqFact(All(level, x3, Over(KLit.Zero, Sel(SizeMap, Column(nav, x3)), j2, AndAlso(AndAlso(Ne(Sel(items, Column(nav, x3), j2), Null), Not(Sel("$Alloc", Sel(items, Column(nav, x3), j2)))),
+                        AndAlso(AndAlso(Isa(Sel(items, Column(nav, x3), j2), d), ForeignKey(cfk, Sel(items, Column(nav, x3), j2), e.Key[0], x3)), Filtered(t, d, Sel(items, Column(nav, x3), j2)))))), at);
+                    var x = Atom();
+                    var lists = ChildOf(level, KAbs.Of(x, Column(nav, x)), false, null, at);
                     made.Add(lists);
-                    child = ElementsOf(lists, l => Sel(SizeMap, l), (l, j) => Sel(items, l, j), d, at);
+                    var l = Atom();
+                    var j = Atom();
+                    child = ElementsOf(lists, KAbs.Of(l, Sel(SizeMap, l)), KAbs.Of(l, j, Sel(items, l, j)), d, at);
                     made.Add(child);
                 }
                 else if (e.Collections.Contains(nav) && MadeAsSet(nav) is INamedTypeSymbol set && e.CollectionKeys.TryGetValue(nav, out var sfk) && e.Key.Count == 1 &&
@@ -613,16 +721,19 @@ namespace CsVerify.Verifier.Boogie
                         _p.Models[m.Name] = m;
                     }
                     var members = ModelOf("Members", set).Name;
-                    LinqFact(level.All(x => ListMade(Column(nav, x))), at);
-                    LinqFact(level.All(x => KQuant.ForAll(
-                        "z$",
-                        "Ref",
-                        Implies(Sel(members, Column(nav, x), new KVar("z$")),
-                        AndAlso(AndAlso(Ne(new KVar("z$"), Null), Not(Sel("$Alloc", new KVar("z$")))),
-                            AndAlso(AndAlso(Isa(new KVar("z$"), sd), ForeignKey(sfk, new KVar("z$"), e.Key[0], x)), Filtered(t, sd, new KVar("z$"))))))), at);
-                    var sets = ChildOf(level, x => Column(nav, x), false, null, at);
+                    var x2 = Atom();
+                    LinqFact(All(level, x2, ListMade(Column(nav, x2))), at);
+                    var x3 = Atom();
+                    var z = Atom();
+                    var fresh = AndAlso(Ne(z, Null), Not(Sel("$Alloc", z)));
+                    var row = AndAlso(AndAlso(Isa(z, sd), ForeignKey(sfk, z, e.Key[0], x3)), Filtered(t, sd, z));
+                    LinqFact(All(level, x3, Objects(z, Implies(Sel(members, Column(nav, x3), z), AndAlso(fresh, row)))), at);
+                    var x = Atom();
+                    var sets = ChildOf(level, KAbs.Of(x, Column(nav, x)), false, null, at);
                     made.Add(sets);
-                    child = MembersOf(sets, (set, z) => Sel(members, set, z), sd, at);
+                    var s = Atom();
+                    var member = Atom();
+                    child = MembersOf(sets, KAbs.Of(s, member, Sel(members, s, member)), sd, at);
                     made.Add(child);
                 }
                 else
@@ -1417,10 +1528,11 @@ namespace CsVerify.Verifier.Boogie
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
             Emit(KHavoc.Of(n));
             ShapeFact(Le(KLit.Zero, new KVar(n)), call.Syntax);
+            var i = Atom();
             return new LSeq
             {
                 Length = new KVar(n),
-                Elem = i => Sel(items, i),
+                Elem = KAbs.Of(i, Sel(items, i)),
                 Type = elem,
             };
         }
