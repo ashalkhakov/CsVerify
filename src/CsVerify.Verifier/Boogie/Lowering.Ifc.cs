@@ -17,35 +17,48 @@ namespace CsVerify.Verifier.Boogie
         private static bool IsListInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && n.Name is "IList" or "ICollection";
 
-        /// <summary>Two ways from here, each lowered by its own, joined after: the current block ends in a choice.</summary>
-        private void Branch(KExpr cond, System.Action then, System.Action otherwise)
+        /// <summary>The blocks of a two-way choice: where cond holds, where it doesn't, and where they join.</summary>
+        private sealed class IfBlocks
+        {
+            public KBlock Yes, No, Join;
+        }
+
+        /// <summary>
+        /// Two ways from here, joined after: the current block ends in a choice, and what's lowered next is the way where
+        /// cond holds (until Else, then the other way, until EndIf).
+        /// </summary>
+        private IfBlocks If(KExpr cond)
         {
             var from = _block;
             var name = $"{from.Label}$if{_temps++}";
-            var yes = new KBlock
+            var b = new IfBlocks
             {
-                Label = name + "t",
-                Ordinal = from.Ordinal,
-                Stmts = { KAssume.Of(cond) },
+                Yes = KBlock.Of(name + "t", from.Ordinal),
+                No = KBlock.Of(name + "f", from.Ordinal),
+                Join = KBlock.Of(name + "j", from.Ordinal),
             };
-            var no = new KBlock
-            {
-                Label = name + "f",
-                Ordinal = from.Ordinal,
-                Stmts = { KAssume.Of(Not(cond)) },
-            };
-            var join = KBlock.Of(name + "j", from.Ordinal);
-            from.Jump = new KGoto(yes.Label, no.Label);
-            _p.AddBlock(yes);
-            _block = yes;
-            then();
-            _block.Jump = new KGoto(join.Label);
-            _p.AddBlock(no);
-            _block = no;
-            otherwise();
-            _block.Jump = new KGoto(join.Label);
-            _p.AddBlock(join);
-            _block = join;
+            b.Yes.AddStmt(KAssume.Of(cond));
+            b.No.AddStmt(KAssume.Of(Not(cond)));
+            from.Jump = new KGoto(b.Yes.Label, b.No.Label);
+            _p.AddBlock(b.Yes);
+            _block = b.Yes;
+            return b;
+        }
+
+        /// <summary>The way where the condition holds ends (on to the join); the other way's is lowered next.</summary>
+        private void Else(IfBlocks b)
+        {
+            _block.Jump = new KGoto(b.Join.Label);
+            _p.AddBlock(b.No);
+            _block = b.No;
+        }
+
+        /// <summary>The other way ends (on to the join), and lowering goes on after the choice.</summary>
+        private void EndIf(IfBlocks b)
+        {
+            _block.Jump = new KGoto(b.Join.Label);
+            _p.AddBlock(b.Join);
+            _block = b.Join;
         }
 
         /// <summary>An array's member that would change its size: NotSupportedException (where exceptions are seen, to their handlers), and nothing after.</summary>
@@ -93,30 +106,34 @@ namespace CsVerify.Verifier.Boogie
             Emit(KCheck.Of(NotNull(receiver), "CSV1013", call.Instance.Syntax, $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'"));
             KExpr value = null;
             string result = m.ReturnsVoid ? null : Declare("t$" + _temps++, m.ReturnType);
-            Branch(new KOp("$arr", receiver), FixedSize, () =>
-                Branch(new KOp("$coll", receiver), () =>
-                {
-                    foreach (var md in ModelsOf(list))
-                    {
-                        _p.Models[md.Name] = md;
-                    }
-                    var v = Invoke(target, call.Instance, call.Arguments, call.Syntax, null);
-                    if (result != null)
-                    {
-                        Emit(KAssign.Of(result, v));
-                    }
-                }, () =>
-                {
-                    var (handled, v) = LibraryCall(call);
-                    if (!handled)
-                    {
-                        throw new NotTranslated($"{m.Name} through {ifc.Name} of a collection the kernel doesn't model");
-                    }
-                    if (result != null)
-                    {
-                        Emit(KAssign.Of(result, v));
-                    }
-                }));
+            // (an array: its size is fixed)
+            var isArray = If(new KOp("$arr", receiver));
+            FixedSize();
+            Else(isArray);
+            // (a List: its own member)
+            var isList = If(new KOp("$coll", receiver));
+            foreach (var md in ModelsOf(list))
+            {
+                _p.Models[md.Name] = md;
+            }
+            var listValue = Invoke(target, call.Instance, call.Arguments, call.Syntax, null);
+            if (result != null)
+            {
+                Emit(KAssign.Of(result, listValue));
+            }
+            Else(isList);
+            // (any other collection: the library's)
+            var (handled, otherValue) = LibraryCall(call);
+            if (!handled)
+            {
+                throw new NotTranslated($"{m.Name} through {ifc.Name} of a collection the kernel doesn't model");
+            }
+            if (result != null)
+            {
+                Emit(KAssign.Of(result, otherValue));
+            }
+            EndIf(isList);
+            EndIf(isArray);
             if (result != null)
             {
                 value = new KVar(result);
@@ -153,33 +170,33 @@ namespace CsVerify.Verifier.Boogie
             Emit(KAssign.Of(v, value));
             Emit(KCheck.Of(NotNull(receiver), "CSV1013", pr.Instance.Syntax, $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'"));
             var array = KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            Branch(new KOp("$arr", receiver), () =>
+            // (an array: its element)
+            var isArray = If(new KOp("$arr", receiver));
+            HeldCell(receiver, pr.Syntax, write: true);
+            Emit(new KStore
             {
-                HeldCell(receiver, pr.Syntax, write: true);
-                Emit(new KStore
-                {
-                    Array = receiver,
-                    Index = index,
-                    Value = new KVar(v),
-                    ArrayType = array,
-                    At = pr.Syntax,
-                    ArrayAt = pr.Instance.Syntax,
-                });
-            }, () =>
-                Branch(new KOp("$coll", receiver), () =>
-                {
-                    foreach (var md in ModelsOf(list))
-                    {
-                        _p.Models[md.Name] = md;
-                    }
-                    Invoke(setter, pr.Instance, pr.Arguments, pr.Syntax, new KVar(v));
-                }, () =>
-                {
-                    // (another collection's setter: code the kernel doesn't know, which may change anything)
-                    _p.HavocsAll = true;
-                    _p.CallsDelegates = true;
-                    Emit(new KHavocAll());
-                }));
+                Array = receiver,
+                Index = index,
+                Value = new KVar(v),
+                ArrayType = array,
+                At = pr.Syntax,
+                ArrayAt = pr.Instance.Syntax,
+            });
+            Else(isArray);
+            // (a List: its setter)
+            var isList = If(new KOp("$coll", receiver));
+            foreach (var md in ModelsOf(list))
+            {
+                _p.Models[md.Name] = md;
+            }
+            Invoke(setter, pr.Instance, pr.Arguments, pr.Syntax, new KVar(v));
+            Else(isList);
+            // (another collection's setter: code the kernel doesn't know, which may change anything)
+            _p.HavocsAll = true;
+            _p.CallsDelegates = true;
+            Emit(new KHavocAll());
+            EndIf(isList);
+            EndIf(isArray);
             return true;
         }
     }
