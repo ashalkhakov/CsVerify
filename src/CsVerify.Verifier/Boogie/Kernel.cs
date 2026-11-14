@@ -198,17 +198,6 @@ namespace CsVerify.Verifier.Boogie
             Body = body,
             Trigger = trigger,
         };
-
-        /// <summary>Over a level 2 quantifier's variable (forall or exists as it is), of these parts.</summary>
-        public static KQuant Of(MQuant binder, KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant
-        {
-            Forall = binder.Forall,
-            Var = binder.Var,
-            Type = binder.Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
-        };
     }
 
     /// <summary>

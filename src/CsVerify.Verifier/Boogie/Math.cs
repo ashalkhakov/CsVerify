@@ -141,12 +141,14 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class MQuant : MExpr
     {
         public bool Forall;
-        public string Var;
-        /// <summary>Its variable's Boogie type (int, unless said).</summary>
+        /// <summary>Its variable's Boogie type (int, unless said); the variable itself is index 0 in its parts (MBound).</summary>
         public string Type = "int";
         public MExpr Range, Body;
         /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
         public MExpr[] Trigger;
+
+        /// <summary>A quantifier's parts as they are of its variable's name: closed over it, the name an index.</summary>
+        private static MExpr Close(MExpr part, string var) => part?.CloseOver(var);
 
         /// <summary>forall var: int, (range ==>) body.</summary>
         public static MQuant ForAll(string var, MExpr body, MExpr range = null) => ForAll(var, "int", body, range);
@@ -163,33 +165,41 @@ namespace CsVerify.Verifier.Boogie
         private static MQuant Quant(bool forall, string var, string type, MExpr body, MExpr range) => new MQuant
         {
             Forall = forall,
-            Var = var,
             Type = type,
-            Range = range,
-            Body = body,
+            Range = Close(range, var),
+            Body = Close(body, var),
         };
 
-        /// <summary>Over the same variable (forall or exists as this is), of these parts.</summary>
+        /// <summary>Of the same kind and type as this, of these parts (each already of the variable as index 0).</summary>
         public MQuant WithParts(MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant
         {
             Forall = Forall,
-            Var = Var,
             Type = Type,
             Range = range,
             Body = body,
             Trigger = trigger,
         };
 
-        /// <summary>Over a kernel quantifier's variable (forall or exists as it is), of these parts.</summary>
+        /// <summary>A kernel quantifier at level 2: its parts, of its variable's name, closed over it.</summary>
         public static MQuant Of(KQuant binder, MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant
         {
             Forall = binder.Forall,
-            Var = binder.Var,
             Type = binder.Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
+            Range = Close(range, binder.Var),
+            Body = Close(body, binder.Var),
+            Trigger = trigger?.Select(t => Close(t, binder.Var)).ToArray(),
         };
+    }
+
+    /// <summary>A quantifier's variable: of the index-th quantifier out from here (0, the nearest).</summary>
+    internal sealed class MBound : MExpr
+    {
+        public readonly int Index;
+
+        public MBound(int index)
+        {
+            Index = index;
+        }
     }
 
     /// <summary>

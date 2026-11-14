@@ -97,7 +97,8 @@ namespace CsVerify.Verifier.Boogie
             MLit l => new KLit(l.Text),
             MVar v => new KVar(v.Name),
             MOp op => new KOp(op.Op, op.Args.Select(Of).ToArray()),
-            MQuant q => KQuant.Of(q, Of(q.Range), Of(q.Body), q.Trigger?.Select(Of).ToArray()),
+            // (what comes back to the kernel is literals and defaults: no quantifier)
+            MQuant => throw new System.InvalidOperationException("a level 2 quantifier back in the kernel"),
             MFnApp f => KFnApp.Of(f, f.Args.Select(Of).ToArray(), Of(f.Snap)),
             _ => throw new System.InvalidOperationException("not mathematics: " + e.GetType().Name),
         };

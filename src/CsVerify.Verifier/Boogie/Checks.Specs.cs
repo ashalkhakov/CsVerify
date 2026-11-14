@@ -19,8 +19,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var objects = new List<MExpr>();
             var keys = new HashSet<string>();
-            var bound = new HashSet<string>();
-            if (!InferReadsWalk(body, bound, keys, objects) || objects.Count == 0)
+            if (!InferReadsWalk(body, keys, objects) || objects.Count == 0)
             {
                 return null;
             }
@@ -33,14 +32,15 @@ namespace CsVerify.Verifier.Boogie
             return union;
         }
 
-        private static bool InferReadsWalk(MExpr e, HashSet<string> bound, HashSet<string> keys, List<MExpr> objects)
+        private static bool InferReadsWalk(MExpr e, HashSet<string> keys, List<MExpr> objects)
         {
             switch (e)
             {
-                case MLit _: return true;
+                case MLit or MBound: return true;
                 case MVar v: return v.Name != "$Alloc";
                 case MOp { Op: "sel" } s when s.Args[0] is MVar map && (map.Name.StartsWith("$F.") || map.Name.StartsWith("$E.")):
-                    if (s.Args[1].Mentions(bound))
+                    // (an object named by a quantifier's variable: no set of objects says which)
+                    if (s.Args[1].HasLooseBound())
                     {
                         return false;
                     }
@@ -48,18 +48,9 @@ namespace CsVerify.Verifier.Boogie
                     {
                         objects.Add(s.Args[1]);
                     }
-                    return s.Args.Skip(1).All(e => InferReadsWalk(e, bound, keys, objects));
-                case MOp op: return op.Args.All(e => InferReadsWalk(e, bound, keys, objects));
-                case MQuant q:
-                    bound.Add(q.Var);
-                    try
-                    {
-                        return (q.Range == null || InferReadsWalk(q.Range, bound, keys, objects)) && InferReadsWalk(q.Body, bound, keys, objects);
-                    }
-                    finally
-                    {
-                        bound.Remove(q.Var);
-                    }
+                    return s.Args.Skip(1).All(e => InferReadsWalk(e, keys, objects));
+                case MOp op: return op.Args.All(e => InferReadsWalk(e, keys, objects));
+                case MQuant q: return (q.Range == null || InferReadsWalk(q.Range, keys, objects)) && InferReadsWalk(q.Body, keys, objects);
                 default: return false;
             }
         }

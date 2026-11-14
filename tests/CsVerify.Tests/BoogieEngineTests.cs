@@ -807,6 +807,18 @@ public static class Pw
         }
 
         [Fact]
+        public void AFunctionUnfoldedUnderAQuantifier_KeepsItsOwnQuantifiersVariable()
+        {
+            // (Zeros's j and the assertion's j are two variables: unfolded, Zeros(a, j) says a[0..j) are 0, not just 0 <= j <= a.Length)
+            var b = Harness.Verify(Harness.Usings + @"public static class C
+{
+    [GhostFunction] public static bool Zeros(int[] a, int k) => 0 <= k && k <= a.Length && Spec.Forall(0, k, j => a[j] == 0);
+    public static void M(int[] a) { Spec.Assert(Spec.Forall(0, a.Length + 1, j => Zeros(a, j))); }
+}");
+            Assert.NotEmpty(b.Errors("M"));
+        }
+
+        [Fact]
         public void Exceptions_AreBoogies()
         {
             // throw, try/catch by type, rethrow, checked overflow caught, EnsuresOnThrow

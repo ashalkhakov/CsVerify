@@ -15,10 +15,10 @@ namespace CsVerify.Verifier.Boogie
     /// </summary>
     internal sealed class BoogiePrinter
     {
-        /// <summary>Arithmetic of variables and literals alone, as an index is (a heap's parent, (j - 1) / 2).</summary>
+        /// <summary>Arithmetic of variables (free or bound) and literals alone, as an index is (a heap's parent, (j - 1) / 2).</summary>
         private static bool IndexArithmetic(MExpr e) => e switch
         {
-            MVar or MLit => true,
+            MVar or MBound or MLit => true,
             MOp { Op: "+" or "-" or "*" or "neg" } o => o.Args.All(IndexArithmetic),
             _ => false,
         };
@@ -422,6 +422,9 @@ namespace CsVerify.Verifier.Boogie
 
         private static readonly Context InProcedure = new Context();
 
+        /// <summary>The names of the quantifiers' variables around what is being printed, the innermost last.</summary>
+        private readonly List<string> _binders = new List<string>();
+
         private static string Map(string name, Context cx) =>
             cx.MapAt != null && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? cx.MapAt(name) :
             cx.InFunction && (name.StartsWith("$E.") || name.StartsWith("$F.")) ? cx.Prefix + name : name;
@@ -460,14 +463,27 @@ namespace CsVerify.Verifier.Boogie
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
+                case MBound b: return _binders[_binders.Count - 1 - b.Index];
                 case MQuant q:
                 {
-                    var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
-                    if (q.Range == null)
+                    // (its variable named by how many quantifiers are around it: no name shadows another)
+                    var name = "bv$" + _binders.Count;
+                    _binders.Add(name);
+                    try
                     {
-                        return $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Body, cx)})";
+                        var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
+                        if (q.Range == null)
+                        {
+                            return $"(forall {name}: {q.Type} :: {trigger}{E(q.Body, cx)})";
+                        }
+                        var range = E(q.Range, cx);
+                        var body = E(q.Body, cx);
+                        return q.Forall ? $"(forall {name}: {q.Type} :: {trigger}{range} ==> {body})" : $"(exists {name}: {q.Type} :: {trigger}{range} && {body})";
                     }
-                    return q.Forall ? $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} && {E(q.Body, cx)})";
+                    finally
+                    {
+                        _binders.RemoveAt(_binders.Count - 1);
+                    }
                 }
                 case MOp op:
                 {
@@ -1184,10 +1200,10 @@ namespace CsVerify.Verifier.Boogie
         private bool Closed(MExpr e, HashSet<string> vars) => e switch
         {
             MVar v => vars.Contains(v.Name) || _stateMaps.Any(m => m.name == v.Name),
-            MLit _ => true,
+            MLit or MBound => true,
             MOp { Op: "old" } => false,
             MOp op => op.Args.All(a => Closed(a, vars)),
-            MQuant q => Closed(q.Range ?? MLit.True, new HashSet<string>(vars) { q.Var }) && Closed(q.Body, new HashSet<string>(vars) { q.Var }),
+            MQuant q => Closed(q.Range ?? MLit.True, vars) && Closed(q.Body, vars),
             MFnApp f => f.Snap == null && f.MapsAt == null && f.Args.All(a => Closed(a, vars)),
             _ => false,
         };
@@ -1585,7 +1601,7 @@ namespace CsVerify.Verifier.Boogie
         private static bool MentionsAny(MExpr e, IEnumerable<string> names) => names.Any() && e switch
         {
             MOp { Op: "old" } => false,
-            MLit => false,
+            MLit or MBound => false,
             MVar v => names.Contains(v.Name),
             MOp op => op.Args.Any(a => MentionsAny(a, names)),
             MQuant q => (q.Range != null && MentionsAny(q.Range, names)) || MentionsAny(q.Body, names),
