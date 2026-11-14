@@ -10,25 +10,84 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>Calls: arguments, the callee's precondition, what holds after; old(...) at entry and before a call; joins.</summary>
     internal sealed partial class Checks
     {
+        /// <summary>A call, as Checks has it so far: the kernel's, its receiver and arguments made, what its contract is of them.</summary>
+        private sealed class CallAt
+        {
+            public KCall C;
+            public IMethodSymbol Callee;
+            public MExpr Receiver;
+            public MExpr[] Args;
+            /// <summary>A method of an [Owned] class that isn't [Pure]: its receiver's view is handed over.</summary>
+            public bool OwnedReceiver;
+            public KProcedure Sig;
+            /// <summary>Its parameters, the receiver and the arguments.</summary>
+            public Dictionary<string, MExpr> Given;
+            public bool Pure;
+            /// <summary>The permissions its preconditions took, each under its condition.</summary>
+            public List<(MExpr, MExpr)> Gave;
+            /// <summary>It takes cells (its contract names some): the cells it was given are all it changes.</summary>
+            public bool CellCall;
+        }
+
+        /// <summary>
+        /// A call: its receiver and arguments checked; its termination; the views it gets handed over; what its preconditions
+        /// say read, their permissions given, its frame within ours; then the call (or, a task's start, its preconditions
+        /// checked here, and its join later); what it gives back.
+        /// </summary>
         private void Call(KCall c, List<MExpr> decreases)
         {
             if (c.Phase == 2) { Join(c); return; }
-            var callee = c.Callee;
-            MExpr receiver = null;
-            if (c.Receiver != null)
+            var call = new CallAt { C = c, Callee = c.Callee, Receiver = CallReceiver(c) };
+            call.Args = Arguments(call.Callee, c.Args, c.ArgsAt);
+            Termination(c, call.Receiver, call.Args, decreases);
+            HandOverViews(call);
+            // the permissions its preconditions ask for are given to it; what the caller keeps, the call can't change
+            call.Sig = _program.Signature(call.Callee);
+            call.Given = Given(call.Callee, call.Receiver, call.Args);
+            call.Pure = _program.ContractOf(call.Callee).IsPure;
+            ReadPreconditions(call);
+            LentTrees(call);
+            WithinOurFrame(call);
+            GivePermissions(call);
+            // (a task's or thread's start: its preconditions checked here, as no Boogie call will; it returns at its join)
+            if (c.Phase == 1)
             {
-                receiver = Code(c.Receiver);
-                // (a struct's member: its receiver is a value, never null)
-                if (!c.ReceiverIsThis && !IsStruct(callee.ContainingType)) Assert(new MOp("!=", receiver, new MLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+                StartPreconditions(call);
+                _started[c] = (call.Receiver, call.Args, call.Given, call.Gave, call.CellCall, call.Pure);
+                return;
             }
-            var args = Arguments(callee, c.Args, c.ArgsAt);
-            Termination(c, receiver, args, decreases);
-            // the views it gets are handed over: whole, their invariants holding (a method of an [Owned] class gets its receiver's)
-            bool ownedReceiver = receiver != null && IsOwnedClass(callee.ContainingType) && !_program.ContractOf(callee).IsPure;
-            if (ownedReceiver)
+            var frame = _p.UsesPerm ? new MCallFrame { Id = _frames++, Receiver = call.OwnedReceiver ? call.Receiver : null, Callee = call.Callee, Cells = call.CellCall, Given = call.Gave, Fields = _p.UsesFields } : null;
+            SnapshotPreconditions(call);
+            // (where exceptions are seen: or it throws, and gives back only what its EnsuresOnThrow says)
+            if (c.ThrowsTo != null)
+                Emit(new MFork { Call = new MCall { Callee = call.Callee, Receiver = call.Receiver, Args = call.Args, RefOuts = c.RefOuts }, Target = c.ThrowsTo });
+            if (frame != null) Emit(frame);
+            Emit(new MCall { Callee = call.Callee, Receiver = call.Receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = call.Args, Result = c.Result, ThisOut = c.ThisOut, At = c.At, ArgsAt = c.ArgsAt,
+                             RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
+            AfterCall(c, call.Callee, call.Receiver, call.Given, frame, call.Sig, call.Pure, call.OwnedReceiver);
+        }
+
+        /// <summary>A call's receiver, checked not null (a struct's member's is a value, never null; this is never null).</summary>
+        private MExpr CallReceiver(KCall c)
+        {
+            if (c.Receiver == null) return null;
+            var receiver = Code(c.Receiver);
+            if (!c.ReceiverIsThis && !IsStruct(c.Callee.ContainingType)) Assert(new MOp("!=", receiver, new MLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+            return receiver;
+        }
+
+        /// <summary>
+        /// The views it gets are handed over: whole, their invariants holding (a method of an [Owned] class gets its
+        /// receiver's); a share, or a view lent read-only, its invariant holding; a package's views go with it.
+        /// </summary>
+        private void HandOverViews(CallAt call)
+        {
+            var (c, callee, args) = (call.C, call.Callee, call.Args);
+            call.OwnedReceiver = call.Receiver != null && IsOwnedClass(callee.ContainingType) && !_program.ContractOf(callee).IsPure;
+            if (call.OwnedReceiver)
             {
-                Assert(new MOp("||", Whole(receiver), Lent(receiver)), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
-                ProveInvariant(callee.ContainingType, receiver, c.At, $"when '{callee.Name}' is called on it");
+                Assert(new MOp("||", Whole(call.Receiver), Lent(call.Receiver)), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                ProveInvariant(callee.ContainingType, call.Receiver, c.At, $"when '{callee.Name}' is called on it");
             }
             // (a share, or a view lent read-only: whoever gets it relies on the invariant; a share by value goes with it)
             foreach (var param in callee.Parameters.Where(HoldsShare))
@@ -48,83 +107,91 @@ namespace CsVerify.Verifier.Boogie
                 Assert(Whole(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
                 Emit(new MMapUpdate { Map = "perm", Ref = x, Value = new MLit("false") });
             }
-            // the permissions its preconditions ask for are given to it; what the caller keeps, the call can't change
-            var sig = _program.Signature(callee);
-            var given = Given(callee, receiver, args);
-            bool pure = _program.ContractOf(callee).IsPure;
-            // (what reading its preconditions here gives: the unfoldings of functions under their quantifiers)
-            foreach (var r in sig.Requires)
+        }
+
+        /// <summary>What reading its preconditions here gives: the unfoldings of functions under their quantifiers.</summary>
+        private void ReadPreconditions(CallAt call)
+        {
+            foreach (var r in call.Sig.Requires)
             {
                 _facts.Clear();
-                Subst(Spec(r.Expr, out _), given);
-                foreach (var f in _facts.ToList()) Assume(Subst(f, given));
+                Subst(Spec(r.Expr, out _), call.Given);
+                foreach (var f in _facts.ToList()) Assume(Subst(f, call.Given));
                 _facts.Clear();
             }
-            // (a tree it borrows through Spec.Modifies: its root's view in hand here, or a tree this method borrows)
-            foreach (var root in sig.LentRoots)
+        }
+
+        /// <summary>A tree it borrows through Spec.Modifies: its root's view in hand here, or a tree this method borrows.</summary>
+        private void LentTrees(CallAt call)
+        {
+            foreach (var root in call.Sig.LentRoots)
             {
-                var x = Subst(Spec(root, out _), given);
+                var x = Subst(Spec(root, out _), call.Given);
                 _facts.Clear();
-                Assert(new MOp("||", Whole(x), Lent(x)), At("CSV1016", c.At, $"'{callee.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here"));
+                Assert(new MOp("||", Whole(x), Lent(x)), At("CSV1016", call.C.At, $"'{call.Callee.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here"));
             }
-            // (a frame of ours: the callee's within it, or it changes nothing a frame would tell)
-            if (_p.Frame != null && !pure)
+        }
+
+        /// <summary>Under a frame of ours: the callee's within it, or it changes nothing a frame would tell (decided once the program's writes are).</summary>
+        private void WithinOurFrame(CallAt call)
+        {
+            if (_p.Frame == null || call.Pure) return;
+            var (c, callee) = (call.C, call.Callee);
+            if (call.Sig.Frame == null)
             {
-                if (sig.Frame == null)
-                {
-                    Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, UnlessKind = "arrays",
-                                       Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
-                    Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, UnlessKind = "fields",
-                                       Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
-                }
-                else
-                {
-                    var theirs = Subst(Spec(sig.Frame, out _), given);
-                    _facts.Clear();
-                    var r = new MVar("r$");
-                    Emit(new MAssert
-                    {
-                        Cond = new MQuant { Forall = true, Var = "r$", Type = "Ref", Range = null, Body = new MOp("==>", new MOp("sel", theirs, r),
-                            new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r)))) },
-                        UnlessWritesArrays = callee, UnlessKind = "any",
-                        Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),
-                    });
-                }
-            }
-            var gave = new List<(MExpr, MExpr)>();
-            if (_p.UsesPerm && !pure) foreach (var r in sig.Requires) Exhale(r.Expr, given, c.At, gave);
-            bool cellCall = _p.UsesCells && !pure && NamesCells(sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
-            // (in array mode, a call that may write any array: which cells it writes is unknown)
-            if (_p.ArrayMode && !cellCall && !pure)
-                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
-            // (a task's or thread's start: its preconditions checked here, as no Boogie call will; it returns at its join)
-            if (c.Phase == 1)
-            {
-                foreach (var r in sig.Requires)
-                {
-                    var math = Subst(Spec(r.Expr, out _), given);
-                    _facts.Clear();
-                    Assert(math, At("CSV1001", c.At, $"'{c.At}' might throw: its precondition (precondition '{r.At}' of '{callee.Name}') might not hold"));
-                }
-                _started[c] = (receiver, args, given, gave, cellCall, pure);
+                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, UnlessKind = "arrays",
+                                   Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
+                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, UnlessKind = "fields",
+                                   Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
                 return;
             }
-            var frame = _p.UsesPerm ? new MCallFrame { Id = _frames++, Receiver = ownedReceiver ? receiver : null, Callee = callee, Cells = cellCall, Given = gave, Fields = _p.UsesFields } : null;
-            // (what its preconditions say of snapshots: checked here, as Boogie's requires can't name them)
-            if (_p.UsesPerm)
-                foreach (var r in sig.Requires)
-                {
-                    var math = Subst(Spec(r.Expr, out _), given);
-                    _facts.Clear();
-                    if (Mentions(math, Snaps)) Assert(math, At("CSV1001", c.At, $"'{c.At}': its precondition '{r.At}'"));
-                }
-            // (where exceptions are seen: or it throws, and gives back only what its EnsuresOnThrow says)
-            if (c.ThrowsTo != null)
-                Emit(new MFork { Call = new MCall { Callee = callee, Receiver = receiver, Args = args, RefOuts = c.RefOuts }, Target = c.ThrowsTo });
-            if (frame != null) Emit(frame);
-            Emit(new MCall { Callee = callee, Receiver = receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = args, Result = c.Result, ThisOut = c.ThisOut, At = c.At, ArgsAt = c.ArgsAt,
-                             RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
-            AfterCall(c, callee, receiver, given, frame, sig, pure, ownedReceiver);
+            var theirs = Subst(Spec(call.Sig.Frame, out _), call.Given);
+            _facts.Clear();
+            var r = new MVar("r$");
+            Emit(new MAssert
+            {
+                Cond = new MQuant { Forall = true, Var = "r$", Type = "Ref", Range = null, Body = new MOp("==>", new MOp("sel", theirs, r),
+                    new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r)))) },
+                UnlessWritesArrays = callee, UnlessKind = "any",
+                Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),
+            });
+        }
+
+        /// <summary>
+        /// The permissions its preconditions ask for, given up (each must be in hand); whether it takes cells; in array mode,
+        /// a call that may write any array, of cells not known, reported.
+        /// </summary>
+        private void GivePermissions(CallAt call)
+        {
+            var (c, callee, sig) = (call.C, call.Callee, call.Sig);
+            call.Gave = new List<(MExpr, MExpr)>();
+            if (_p.UsesPerm && !call.Pure) foreach (var r in sig.Requires) Exhale(r.Expr, call.Given, c.At, call.Gave);
+            call.CellCall = _p.UsesCells && !call.Pure && NamesCells(sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
+            if (_p.ArrayMode && !call.CellCall && !call.Pure)
+                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
+        }
+
+        /// <summary>A task's or thread's start: its preconditions checked here, as no Boogie call will.</summary>
+        private void StartPreconditions(CallAt call)
+        {
+            foreach (var r in call.Sig.Requires)
+            {
+                var math = Subst(Spec(r.Expr, out _), call.Given);
+                _facts.Clear();
+                Assert(math, At("CSV1001", call.C.At, $"'{call.C.At}' might throw: its precondition (precondition '{r.At}' of '{call.Callee.Name}') might not hold"));
+            }
+        }
+
+        /// <summary>What its preconditions say of snapshots: checked here, as Boogie's requires can't name them.</summary>
+        private void SnapshotPreconditions(CallAt call)
+        {
+            if (!_p.UsesPerm) return;
+            foreach (var r in call.Sig.Requires)
+            {
+                var math = Subst(Spec(r.Expr, out _), call.Given);
+                _facts.Clear();
+                if (Mentions(math, Snaps)) Assert(math, At("CSV1001", call.C.At, $"'{call.C.At}': its precondition '{r.At}'"));
+            }
         }
 
         /// <summary>A task's or thread's join: its call, of its twin whose preconditions were checked at its start; what it gives back is in hand.</summary>
@@ -145,9 +212,19 @@ namespace CsVerify.Verifier.Boogie
         private readonly Dictionary<KCall, (MExpr receiver, MExpr[] args, Dictionary<string, MExpr> given, List<(MExpr, MExpr)> gave, bool cellCall, bool pure)> _started =
             new Dictionary<KCall, (MExpr, MExpr[], Dictionary<string, MExpr>, List<(MExpr, MExpr)>, bool, bool)>();
 
+        /// <summary>After a call: what it gives back by value (views, invariants, packages); then, around a call that exchanges permissions, what its postconditions give.</summary>
         private void AfterCall(KCall c, IMethodSymbol callee, MExpr receiver, Dictionary<string, MExpr> given, MCallFrame frame, KProcedure sig, bool pure, bool ownedReceiver)
         {
-            // and the views it gives back are in hand again, their invariants holding
+            GivenBack(c, callee, receiver, ownedReceiver);
+            if (frame != null) PostconditionsGiveBack(c, callee, given, frame, sig, pure);
+        }
+
+        /// <summary>
+        /// The views it gives back in hand again, their invariants holding (its receiver's too); the objects it gives back
+        /// holding their invariants; the packages it gives back arrived.
+        /// </summary>
+        private void GivenBack(KCall c, IMethodSymbol callee, MExpr receiver, bool ownedReceiver)
+        {
             foreach (var (ordinal, var) in c.RefOuts.Where(x => IsView(callee.Parameters[x.param].Type)))
             {
                 var v = new MVar(var);
@@ -161,23 +238,27 @@ namespace CsVerify.Verifier.Boogie
             // (the packages it gives back: its result, and its ref and out arguments)
             foreach (var (ordinal, var) in c.RefOuts.Where(x => IsPackage(callee.Parameters[x.param].Type))) Arrive(new MVar(var), callee.Parameters[ordinal].Type);
             if (c.Result != null && IsPackage(Returns(callee))) Arrive(new MVar(c.Result), Returns(callee));
-            if (frame != null)
+        }
+
+        /// <summary>
+        /// The call's frame closed; the permissions its postconditions give back in hand (of its result and ref and out
+        /// arguments, as they came back; old(...) of before the call), and what they say of snapshots.
+        /// </summary>
+        private void PostconditionsGiveBack(KCall c, IMethodSymbol callee, Dictionary<string, MExpr> given, MCallFrame frame, KProcedure sig, bool pure)
+        {
+            Emit(new MCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps, Fields = frame.Fields, FieldIds = frame.FieldIds });
+            var back = new Dictionary<string, MExpr>(given);
+            if (c.Result != null) back["result"] = new MVar(c.Result);
+            if (c.ThisOut != null) back["this"] = new MVar(c.ThisOut);
+            foreach (var (ordinal, var) in c.RefOuts) back[Local(callee.Parameters[ordinal])] = new MVar(var);
+            _old = x => OldBefore(x, frame);
+            try { if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null); }
+            finally { _old = null; }
+            foreach (var e in sig.Ensures)
             {
-                Emit(new MCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps, Fields = frame.Fields, FieldIds = frame.FieldIds });
-                // and those its postconditions give back are in hand (its result and ref and out arguments, as they came back)
-                var back = new Dictionary<string, MExpr>(given);
-                if (c.Result != null) back["result"] = new MVar(c.Result);
-                if (c.ThisOut != null) back["this"] = new MVar(c.ThisOut);
-                foreach (var (ordinal, var) in c.RefOuts) back[Local(callee.Parameters[ordinal])] = new MVar(var);
-                _old = x => OldBefore(x, frame);
-                try { if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null); }
-                finally { _old = null; }
-                foreach (var e in sig.Ensures)
-                {
-                    var math = Subst(Spec(e.Expr, out _), back);
-                    _facts.Clear();
-                    if (Mentions(math, Snaps)) Assume(OldBefore(math, frame));
-                }
+                var math = Subst(Spec(e.Expr, out _), back);
+                _facts.Clear();
+                if (Mentions(math, Snaps)) Assume(OldBefore(math, frame));
             }
         }
 

@@ -1102,10 +1102,14 @@ namespace CsVerify.Verifier.Boogie
         /// objects is reference equality.
         /// </summary>
         private static bool Upcast(IConversionOperation conv) =>
-            conv.IsImplicit && conv.Conversion.IsReference && (IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && (IsException(conv.Type) || conv.Type.SpecialType == SpecialType.System_Object) ||
-                                                               IsGivenTask(conv.Operand.Type) && conv.Type.SpecialType == SpecialType.System_Object || conv.Operand.ConstantValue is { HasValue: true, Value: null }) ||
+            conv.IsImplicit && conv.Conversion.IsReference && ReferenceUpcast(conv) ||
             // (a type parameter whose values are references, to object: C# calls it boxing, as T might be a struct; here it can't)
             conv.IsImplicit && conv.OperatorMethod == null && IsRefParameter(conv.Operand.Type) && conv.Type.SpecialType == SpecialType.System_Object;
+
+        /// <summary>An implicit reference conversion the kernel's references keep: of an object, of an exception (to one, or object), of a task to object, of null.</summary>
+        private static bool ReferenceUpcast(IConversionOperation conv) =>
+            IsRef(conv.Operand.Type) || IsException(conv.Operand.Type) && (IsException(conv.Type) || conv.Type.SpecialType == SpecialType.System_Object) ||
+            IsGivenTask(conv.Operand.Type) && conv.Type.SpecialType == SpecialType.System_Object || conv.Operand.ConstantValue is { HasValue: true, Value: null };
 
         private static bool RefOperand(IOperation op) => IsRef(op.Type) || op is IConversionOperation c && Upcast(c) && IsRef(c.Operand.Type);
 

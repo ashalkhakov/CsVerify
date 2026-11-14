@@ -30,16 +30,27 @@ namespace CsVerify.Verifier.Boogie
         /// anything the kernel reads otherwise), of the subset's types: unknown where code reads it.
         /// </summary>
         private bool LibraryProperty(IPropertyReferenceOperation p) =>
+            UnstubbedLibraryGetter(p) && (p.Instance == null || InSubset(p.Instance.Type) || IsLibraryObject(p.Instance.Type)) && !ReadOtherwise(p);
+
+        /// <summary>
+        /// A library's property with a getter, not a field, of the subset's type, not CsVerify's, with no stub that says
+        /// something of it (a stub that says nothing, CancellationTokenSource.Token's, is as none).
+        /// </summary>
+        private bool UnstubbedLibraryGetter(IPropertyReferenceOperation p) =>
             p.Property.DeclaringSyntaxReferences.Length == 0 && p.Property.GetMethod != null && !IsField(p.Property.OriginalDefinition) && InSubset(p.Type) &&
-            // (a stub that says nothing of it, CancellationTokenSource.Token's: as without one)
             !(_contractOf?.Invoke(p.Property.GetMethod.OriginalDefinition) is Contract c && c.IsStub && (c.Ensures.Count > 0 || c.Requires.Count > 0)) &&
-            p.Property.ContainingType.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            (p.Instance == null || InSubset(p.Instance.Type) || IsLibraryObject(p.Instance.Type)) &&
-            !IsString(p.Instance?.Type) && !IsString(p.Property.ContainingType) && !(p.Property.Name == "Length" && IsArray(ActualArray(p.Instance?.Type))) &&
-            CollectionOf(p.Instance?.Type) == null && !IsCollection(p.Property.ContainingType) && !IsCollectionInterface(p.Property.ContainingType) &&
-            !IsPair(p.Instance?.Type) && !IsMemValue(p.Instance?.Type) && !IsGivenTask(p.Instance?.Type) && !IsNullableValue(p.Instance?.Type) &&
-            !IsSpan(p.Instance?.Type) && !IsMultiArray(p.Instance?.Type) && !IsArray(p.Instance?.Type) && !IsData(p.Property.ContainingType) && !IsTuple(p.Instance?.Type) &&
-            !(KernelTypes.Ef != null && (KernelTypes.Ef.IsContextType(p.Property.ContainingType) || IsQueryHandle(p.Type) || IsEfTransaction(p.Instance?.Type) || IsEfTransaction(p.Type)));
+            p.Property.ContainingType.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace;
+
+        /// <summary>
+        /// A property the kernel reads another way: a string's, an array's Length (or anything of an array or span), a
+        /// collection's or its interface's, a pair's, a memory value's, a task's, an int?'s, a data value's, a tuple's, EF's.
+        /// </summary>
+        private bool ReadOtherwise(IPropertyReferenceOperation p) =>
+            IsString(p.Instance?.Type) || IsString(p.Property.ContainingType) || p.Property.Name == "Length" && IsArray(ActualArray(p.Instance?.Type)) ||
+            CollectionOf(p.Instance?.Type) != null || IsCollection(p.Property.ContainingType) || IsCollectionInterface(p.Property.ContainingType) ||
+            IsPair(p.Instance?.Type) || IsMemValue(p.Instance?.Type) || IsGivenTask(p.Instance?.Type) || IsNullableValue(p.Instance?.Type) ||
+            IsSpan(p.Instance?.Type) || IsMultiArray(p.Instance?.Type) || IsArray(p.Instance?.Type) || IsData(p.Property.ContainingType) || IsTuple(p.Instance?.Type) ||
+            KernelTypes.Ef != null && (KernelTypes.Ef.IsContextType(p.Property.ContainingType) || IsQueryHandle(p.Type) || IsEfTransaction(p.Instance?.Type) || IsEfTransaction(p.Type));
 
         /// <summary>
         /// A delegate handed to a library member: the member's call of it must be allowed. A
@@ -362,15 +373,21 @@ namespace CsVerify.Verifier.Boogie
             if (_p.Result != null && _contractOf?.Invoke(m) is Contract c && c.IsStub) lock (_p.Result.Assumptions) _p.Result.Assumptions.Add(c.Method.ToDisplayString());
         }
 
+        /// <summary>
+        /// A library member called as a procedure: a plain one (not a [Pure] stub's, which is a function), of a stub's
+        /// contract or none (its result unknown), where the effects analysis says what it may write, of the subset's
+        /// types, static or of a string, a library object or a token.
+        /// </summary>
         private bool LibraryStub(IMethodSymbol m) =>
-            // (a [Pure] one is a function, IsStub, whose contract is mathematics)
-            m.DeclaringSyntaxReferences.Length == 0 && !IsCollection(m.ContainingType) && !IsStub(m) && !m.IsGenericMethod && m.ContainingType is INamedTypeSymbol { IsGenericType: false } &&
-            m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsAsync &&
-            // (a stub's, or none: its result unknown)
-            _contractOf?.Invoke(m) is Contract c && (c.IsStub && c.Stub != null && (c.Modifies == null || c.Stub.IsAsync) || !c.IsStub && !c.HasSource) && !c.IsTrusted &&
+            PlainLibraryMember(m) && _contractOf?.Invoke(m) is Contract c && (c.IsStub && c.Stub != null && (c.Modifies == null || c.Stub.IsAsync) || !c.IsStub && !c.HasSource) && !c.IsTrusted &&
             KernelTypes.MayWriteHeap != null && KernelTypes.RunsUserCode != null &&
             m.Parameters.All(x => (x.RefKind == RefKind.None || x.RefKind == RefKind.Out && c.IsStub) && InSubset(x.Type)) && (m.ReturnsVoid || InSubset(m.ReturnType)) &&
             (m.IsStatic || IsString(m.ContainingType) || IsLibraryObject(m.ContainingType) || IsToken(m.ContainingType));
+
+        /// <summary>A library's method or getter, not a collection's, not a [Pure] stub's, not generic, not async.</summary>
+        private bool PlainLibraryMember(IMethodSymbol m) =>
+            m.DeclaringSyntaxReferences.Length == 0 && !IsCollection(m.ContainingType) && !IsStub(m) && !m.IsGenericMethod && m.ContainingType is INamedTypeSymbol { IsGenericType: false } &&
+            m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsAsync;
 
         /// <summary>
         /// A library member without a stub: it may write the arrays it is handed (or the

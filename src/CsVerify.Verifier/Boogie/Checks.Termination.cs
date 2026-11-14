@@ -19,35 +19,34 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!_program.Recursive(_p.Method, c.Callee)) return;
             var theirs = _program.ContractOf(c.Callee);
-            bool self = SymbolEqualityComparer.Default.Equals(c.Callee.OriginalDefinition, _p.Method.OriginalDefinition);
-            // (without measures on both, a proof doesn't terminate, other code isn't checked to;
-            // measures of different shapes can't be compared)
-            if ((mine == null || theirs?.Decreases == null) && (_p.Contract.IsPure || _p.Contract.IsLemma || _p.Ghost))
-            {
-                Assert(new MLit("false"), At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
-                                                                   : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' needs Spec.Decreases on both"));
-                return;
-            }
-            if (mine == null || theirs?.Decreases == null)
-            {
-                if (c.At != null)
-                    _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, self
-                        ? $"recursive call without Spec.Decreases in '{_p.Method.Name}'; termination is not checked"
-                        : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' without Spec.Decreases on both; termination is not checked", c.At.GetLocation().GetLineSpan()));
-                return;
-            }
+            if (mine == null || theirs?.Decreases == null) { WithoutMeasure(c); return; }
+            // (measures of different shapes can't be compared)
             if (theirs.Decreases.Count != mine.Count)
             {
                 Assert(new MLit("false"), At("CSV1008", c.At, $"cannot prove termination: '{c.Callee.Name}' and '{_p.Method.Name}' call each other but their measures have different numbers of components"));
                 return;
             }
+            var sig = _program.Signature(c.Callee);
+            var given = Given(c.Callee, receiver, args);
+            var next = sig.Decreases.Select(d => Subst(Spec(d, out _), given)).ToList();
+            Assert(Lexicographic(next, mine), At("CSV1008", c.At,
+                $"cannot prove termination: measure '{string.Join(", ", theirs.Decreases.Select(d => d.Syntax))}' of '{c.Callee.Name}' might not decrease or might be negative"));
+        }
+
+        /// <summary>A recursive call without measures on both: a proof doesn't terminate (CSV1011); other code isn't checked to (a warning).</summary>
+        private void WithoutMeasure(KCall c)
+        {
+            bool self = SymbolEqualityComparer.Default.Equals(c.Callee.OriginalDefinition, _p.Method.OriginalDefinition);
+            if (_p.Contract.IsPure || _p.Contract.IsLemma || _p.Ghost)
             {
-                var sig = _program.Signature(c.Callee);
-                var given = Given(c.Callee, receiver, args);
-                var next = sig.Decreases.Select(d => Subst(Spec(d, out _), given)).ToList();
-                Assert(Lexicographic(next, mine), At("CSV1008", c.At,
-                    $"cannot prove termination: measure '{string.Join(", ", theirs.Decreases.Select(d => d.Syntax))}' of '{c.Callee.Name}' might not decrease or might be negative"));
+                Assert(new MLit("false"), At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
+                                                                   : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' needs Spec.Decreases on both"));
+                return;
             }
+            if (c.At != null)
+                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, self
+                    ? $"recursive call without Spec.Decreases in '{_p.Method.Name}'; termination is not checked"
+                    : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' without Spec.Decreases on both; termination is not checked", c.At.GetLocation().GetLineSpan()));
         }
 
         private Dictionary<string, MExpr> Given(IMethodSymbol callee, MExpr receiver, MExpr[] args)

@@ -162,53 +162,72 @@ namespace CsVerify.Verifier.Boogie
             var args = fold.Inst.Args.Select(a => { var v = Spec(a, out _); _facts.Clear(); return v; }).ToArray();
             var given = fold.Inst.Pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
             var p = Instance(fold.Inst.Pred, args);
+            if (fold.Unfold) Unfold(fold, sig, given, args, p);
+            else FoldInto(fold, sig, given, args, p);
+        }
+
+        /// <summary>Spec.Fold: each permission of the body given into the instance p, each fact of it holding; then p in hand, new.</summary>
+        private void FoldInto(KFold fold, KProcedure sig, Dictionary<string, MExpr> given, MExpr[] args, MExpr p)
+        {
             var at = fold.At;
-            if (!fold.Unfold)
+            Walk(sig.FunctionBody, given, new MLit("true"), (g, a) => FoldAtom(fold, p, g, a),
+                (g, fact) => Assert(Implies(g, fact), At("CSV1019", at, $"'{fold.InstAt}' might not hold when folding it: its body's facts")));
+            // (folded now: a snapshot of its own, of which the functions over it are what their bodies say now)
+            Refresh(p, new MLit("true"));
+            SnapFacts(fold.Inst.Pred, args, new MLit("true"));
+            AddInst(p, new MLit("true"), +1);
+            Define(fold.Inst.Pred, args, p);
+        }
+
+        /// <summary>One permission of a body being folded into p, where g holds: in hand, then p's (its owner p).</summary>
+        private void FoldAtom(KFold fold, MExpr p, MExpr g, MExpr a)
+        {
+            var at = fold.At;
+            switch (a)
             {
-                Walk(sig.FunctionBody, given, new MLit("true"), (g, a) =>
+                case MFieldAcc fa:
                 {
-                    if (a is MFieldAcc fa)
-                    {
-                        GiveField(fa, g, at, $"folding needs '{fa.At}', but that permission is not in hand here");
-                        var k = new MLit(_program.FieldId(fa.Field).ToString());
-                        Emit(new MAssign { Var = "fowner", Value = new MOp("store", new MVar("fowner"), fa.Obj,
-                            new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), k, Ite(g, p, new MOp("sel", new MVar("fowner"), fa.Obj, k)))) });
-                        return;
-                    }
-                    if (a is MCells cl)
-                    {
-                        if (!_p.UsesCells) return;
-                        ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand");
-                        Emit(new MAssign { Var = "cowner", Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
-                            Ite(InCells(g, cl, new MVar("x$"), new MVar("i$")), p, new MOp("sel", new MVar("cowner"), new MVar("x$"), new MVar("i$"))))) });
-                        return;
-                    }
-                    if (a is MAcc acc)
-                    {
-                        Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"folding needs '{acc.At}', but that permission is not in hand here"));
-                        if (Invariant(acc.Type, acc.Obj) is MExpr inv)
-                            Assert(Implies(g, inv), At("CSV1015", at, $"invariant of {acc.Type.Name} might not hold when it is folded into '{fold.InstAt}'"));
-                        SetPerm(acc.Obj, new MOp("&&", Held(acc.Obj), new MOp("!", g)));
-                        Emit(new MAssign { Var = "owner", Value = new MOp("store", new MVar("owner"), acc.Obj, Ite(g, p, new MOp("sel", new MVar("owner"), acc.Obj))) });
-                    }
-                    else
-                    {
-                        var inst = (MInst)a;
-                        var q = Instance(inst.Pred, inst.Args);
-                        Assert(Implies(g, new MOp(">=", new MOp("sel", new MVar("pinst"), q), new MLit("1"))), At("CSV1016", at, $"folding needs '{inst.At}', which is not held here"));
-                        AddInst(q, g, -1);
-                        var y = new MVar("y$");
-                        Emit(new MAssign { Var = "owner", Value = new MOp("lambda", new MLit("y$: Ref"),
-                            Ite(Conj(g, new MOp("==", new MOp("sel", new MVar("owner"), y), q)), p, new MOp("sel", new MVar("owner"), y))) });
-                    }
-                }, (g, fact) => Assert(Implies(g, fact), At("CSV1019", at, $"'{fold.InstAt}' might not hold when folding it: its body's facts")));
-                // (folded now: a snapshot of its own, of which the functions over it are what their bodies say now)
-                Refresh(p, new MLit("true"));
-                SnapFacts(fold.Inst.Pred, args, new MLit("true"));
-                AddInst(p, new MLit("true"), +1);
-                Define(fold.Inst.Pred, args, p);
-                return;
+                    GiveField(fa, g, at, $"folding needs '{fa.At}', but that permission is not in hand here");
+                    var k = new MLit(_program.FieldId(fa.Field).ToString());
+                    Emit(new MAssign { Var = "fowner", Value = new MOp("store", new MVar("fowner"), fa.Obj,
+                        new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), k, Ite(g, p, new MOp("sel", new MVar("fowner"), fa.Obj, k)))) });
+                    return;
+                }
+                case MCells cl:
+                    if (!_p.UsesCells) return;
+                    ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand");
+                    Emit(new MAssign { Var = "cowner", Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
+                        Ite(InCells(g, cl, new MVar("x$"), new MVar("i$")), p, new MOp("sel", new MVar("cowner"), new MVar("x$"), new MVar("i$"))))) });
+                    return;
+                case MAcc acc:
+                    Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"folding needs '{acc.At}', but that permission is not in hand here"));
+                    if (Invariant(acc.Type, acc.Obj) is MExpr inv)
+                        Assert(Implies(g, inv), At("CSV1015", at, $"invariant of {acc.Type.Name} might not hold when it is folded into '{fold.InstAt}'"));
+                    SetPerm(acc.Obj, new MOp("&&", Held(acc.Obj), new MOp("!", g)));
+                    Emit(new MAssign { Var = "owner", Value = new MOp("store", new MVar("owner"), acc.Obj, Ite(g, p, new MOp("sel", new MVar("owner"), acc.Obj))) });
+                    return;
+                default:
+                {
+                    // (an instance in the body: held, then folded into p, and what it owns, p's)
+                    var inst = (MInst)a;
+                    var q = Instance(inst.Pred, inst.Args);
+                    Assert(Implies(g, new MOp(">=", new MOp("sel", new MVar("pinst"), q), new MLit("1"))), At("CSV1016", at, $"folding needs '{inst.At}', which is not held here"));
+                    AddInst(q, g, -1);
+                    var y = new MVar("y$");
+                    Emit(new MAssign { Var = "owner", Value = new MOp("lambda", new MLit("y$: Ref"),
+                        Ite(Conj(g, new MOp("==", new MOp("sel", new MVar("owner"), y), q)), p, new MOp("sel", new MVar("owner"), y))) });
+                    return;
+                }
             }
+        }
+
+        /// <summary>
+        /// Spec.Unfold: the instance p, held, gives the body's permissions back, its facts holding; the footprint splits: the
+        /// body's own objects and cells free, the rest each of one of the instances in it.
+        /// </summary>
+        private void Unfold(KFold fold, KProcedure sig, Dictionary<string, MExpr> given, MExpr[] args, MExpr p)
+        {
+            var at = fold.At;
             Assert(new MOp(">=", new MOp("sel", new MVar("pinst"), p), new MLit("1")), At("CSV1016", at, $"'{fold.InstAt}' is not held here"));
             AddInst(p, new MLit("true"), -1);
             foreach (var (name, raw) in new[] { ("footprint$", "[Ref]Inst"), ("choice$", "[Ref]int") })
@@ -223,27 +242,41 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var (name, raw) in new[] { ("cfootprint$", "[Ref][int]Inst"), ("cchoice$", "[Ref][int]int") })
                     if (!_p.Locals.Any(l => l.Name == name)) _p.Locals.Add(new KLocal { Name = name, Raw = raw });
             }
-            Walk(sig.FunctionBody, given, new MLit("true"), (g, a) =>
+            Walk(sig.FunctionBody, given, new MLit("true"), (g, a) => UnfoldAtom(p, g, a, own, nested, ownCells), (g, fact) => Assume(Implies(g, fact)));
+            // (what was folded hasn't changed: the functions over it are what their bodies say of it now)
+            Define(fold.Inst.Pred, args, p);
+            SplitFootprint(p, own, nested);
+            if (_p.UsesCells) SplitCells(p, ownCells, nested);
+        }
+
+        /// <summary>
+        /// One permission of a body being unfolded from p, where g holds: in hand again (it was p's, and nobody else's);
+        /// the objects, cells and instances the body holds, noted for the footprint's split.
+        /// </summary>
+        private void UnfoldAtom(MExpr p, MExpr g, MExpr a, List<(MExpr g, MExpr o)> own, List<(MExpr g, MExpr q)> nested, List<(MExpr g, MCells c)> ownCells)
+        {
+            switch (a)
             {
-                if (a is MCells cl) { if (_p.UsesCells) InhaleCells(g, cl); ownCells.Add((g, cl)); return; }
-                if (a is MFieldAcc fa)
-                {
+                case MCells cl:
+                    if (_p.UsesCells) InhaleCells(g, cl);
+                    ownCells.Add((g, cl));
+                    return;
+                case MFieldAcc fa:
                     Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("fowner"), fa.Obj, new MLit(_program.FieldId(fa.Field).ToString())), p)));
                     TakeField(fa, g);
                     // (folded nowhere now: the body's own)
                     Emit(new MAssign { Var = "fowner", Value = new MOp("store", new MVar("fowner"), fa.Obj,
                         new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), new MLit(_program.FieldId(fa.Field).ToString()), Ite(g, None, new MOp("sel", new MVar("fowner"), fa.Obj, new MLit(_program.FieldId(fa.Field).ToString()))))) });
                     return;
-                }
-                if (a is MAcc acc)
-                {
+                case MAcc acc:
                     Assume(Implies(g, new MOp("&&", new MOp("&&", new MOp("!=", acc.Obj, new MLit("null")), new MOp("==", new MOp("sel", new MVar("footprint$"), acc.Obj), p)), new MOp("!", Held(acc.Obj)))));
                     SetPerm(acc.Obj, new MOp("||", Held(acc.Obj), g));
                     if (Invariant(acc.Type, acc.Obj) is MExpr inv) Assume(Implies(g, inv));
                     own.Add((g, acc.Obj));
-                }
-                else
+                    return;
+                default:
                 {
+                    // (an instance in the body: in hand, of a snapshot of its own)
                     var inst = (MInst)a;
                     var q = Instance(inst.Pred, inst.Args);
                     var held = Hold(g);
@@ -252,11 +285,17 @@ namespace CsVerify.Verifier.Boogie
                     if (PredicateExclusive(inst.Pred)) Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("pinst"), q), new MLit("0"))));
                     AddInst(q, g, +1);
                     nested.Add((g, q));
+                    return;
                 }
-            }, (g, fact) => Assume(Implies(g, fact)));
-            // (what was folded hasn't changed: the functions over it are what their bodies say of it now)
-            Define(fold.Inst.Pred, args, p);
-            // the footprint splits: the body's own objects are free now, the rest belongs to one of its instances
+            }
+        }
+
+        /// <summary>
+        /// The footprint of p, unfolded, splits: the body's own objects are free now, the rest belongs to one of its
+        /// instances (which one not known, where there are several); what was another instance's stays so.
+        /// </summary>
+        private void SplitFootprint(MExpr p, List<(MExpr g, MExpr o)> own, List<(MExpr g, MExpr q)> nested)
+        {
             var yv = new MVar("y$");
             MExpr Footprint(MExpr y) => new MOp("sel", new MVar("footprint$"), y);
             if (nested.Count > 1) Emit(new MHavoc { Var = "choice$" });
@@ -271,8 +310,11 @@ namespace CsVerify.Verifier.Boogie
             if (nested.Count > 0)
                 elsewhere = Ite(nested.Select(n => (MExpr)new MOp("==", Footprint(yv), n.q)).Aggregate((a, b) => new MOp("||", a, b)), None, Footprint(yv));
             Emit(new MAssign { Var = "owner", Value = new MOp("lambda", new MLit("y$: Ref"), Ite(new MOp("==", Footprint(yv), p), to, elsewhere)) });
-            // cells likewise: the body's own are free, the rest go to its instances
-            if (!_p.UsesCells) return;
+        }
+
+        /// <summary>The cells of p's footprint, likewise: the body's own are free, the rest go to its instances.</summary>
+        private void SplitCells(MExpr p, List<(MExpr g, MCells c)> ownCells, List<(MExpr g, MExpr q)> nested)
+        {
             var (xv, iv) = (new MVar("x$"), new MVar("i$"));
             MExpr CFoot() => new MOp("sel", new MVar("cfootprint$"), xv, iv);
             if (nested.Count > 1) Emit(new MHavoc { Var = "cchoice$" });

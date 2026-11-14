@@ -558,53 +558,61 @@ namespace CsVerify.Verifier.Boogie
         /// captured by a lambda that isn't a query's, or yielded. (EF's calls and LINQ's take them without letting other
         /// code reach them.)
         /// </summary>
-        private bool EntitiesStayHere()
+        private bool EntitiesStayHere() => _entitiesStayHere ??= !_decl.DescendantNodes().Any(LetsAnEntityOut);
+
+        /// <summary>
+        /// Does this node of the method hand an entity to code that could keep it: a call (but EF's and LINQ's), a
+        /// constructor, a store anywhere but in a local, a yield, a lambda that isn't a query's?
+        /// </summary>
+        private bool LetsAnEntityOut(SyntaxNode n)
         {
-            if (_entitiesStayHere is bool known) return known;
-            bool stay = true;
-            bool IsEntity(ITypeSymbol t) => t != null && KernelTypes.Ef.Entities.Any(e => Mentions(t, e.Type));
-            bool Harmless(IMethodSymbol m) => IsEfMethod(m) || KernelTypes.Ef.IsContextType(m.ContainingType) || m.ContainingNamespace?.ToDisplayString() == "System.Linq";
-            // (a member of .NET's own)
-            bool Library(IMethodSymbol m)
+            switch (n)
             {
-                var type = m.ContainingType;
-                if (type == null || type.DeclaringSyntaxReferences.Length > 0) return false;
-                var ns = type.ContainingNamespace?.ToDisplayString() ?? "";
-                return (ns == "System" || ns.StartsWith("System.")) && !ns.StartsWith("System.Threading") && !ns.StartsWith("System.Runtime") && !ns.StartsWith("System.Reflection");
+                case Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call when _model.GetSymbolInfo(call).Symbol is IMethodSymbol m && !EntitySafe(m):
+                    return CallLetsAnEntityOut(call, m);
+                case Microsoft.CodeAnalysis.CSharp.Syntax.BaseObjectCreationExpressionSyntax made when made.ArgumentList != null &&
+                        made.ArgumentList.Arguments.Any(a => IsEntityType(_model.GetTypeInfo(a.Expression).Type)):
+                    return true;
+                case Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax assign when IsEntityType(_model.GetTypeInfo(assign.Right).Type) &&
+                        !(_model.GetSymbolInfo(assign.Left).Symbol is ILocalSymbol):
+                    return true;
+                case Microsoft.CodeAnalysis.CSharp.Syntax.YieldStatementSyntax y when y.Expression != null && IsEntityType(_model.GetTypeInfo(y.Expression).Type):
+                    return true;
+                case Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax lambda when !(lambda.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax arg &&
+                        arg.Parent?.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax q && _model.GetSymbolInfo(q).Symbol is IMethodSymbol qm && EntitySafe(qm)):
+                    return CapturesAnEntity(lambda);
+                default: return false;
             }
-            bool LocalReceiver(Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax e) => e is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id && _model.GetSymbolInfo(id).Symbol is ILocalSymbol;
-            foreach (var n in _decl.DescendantNodes())
-            {
-                switch (n)
-                {
-                    case Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call when _model.GetSymbolInfo(call).Symbol is IMethodSymbol m && !Harmless(m):
-                    {
-                        var receiver = call.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax ma ? ma.Expression : null;
-                        bool argOut = call.ArgumentList.Arguments.Any(a => IsEntity(_model.GetTypeInfo(a.Expression).Type));
-                        bool thisOut = receiver != null && !m.IsStatic && IsEntity(_model.GetTypeInfo(receiver).Type) && !Library(m);
-                        if (thisOut || argOut && (!Library(m) || m.IsStatic || receiver == null || !LocalReceiver(receiver))) stay = false;
-                        break;
-                    }
-                    case Microsoft.CodeAnalysis.CSharp.Syntax.BaseObjectCreationExpressionSyntax made when made.ArgumentList != null &&
-                            made.ArgumentList.Arguments.Any(a => IsEntity(_model.GetTypeInfo(a.Expression).Type)):
-                        stay = false; break;
-                    case Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax assign when IsEntity(_model.GetTypeInfo(assign.Right).Type) &&
-                            !(_model.GetSymbolInfo(assign.Left).Symbol is ILocalSymbol):
-                        stay = false; break;
-                    case Microsoft.CodeAnalysis.CSharp.Syntax.YieldStatementSyntax y when y.Expression != null && IsEntity(_model.GetTypeInfo(y.Expression).Type):
-                        stay = false; break;
-                    case Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax lambda when !(lambda.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax arg &&
-                            arg.Parent?.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax q && _model.GetSymbolInfo(q).Symbol is IMethodSymbol qm && Harmless(qm)):
-                        foreach (var id in lambda.Body.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>())
-                            if (_model.GetSymbolInfo(id).Symbol is ISymbol s && (s is ILocalSymbol || s is IParameterSymbol) &&
-                                IsEntity(s is ILocalSymbol l ? l.Type : ((IParameterSymbol)s).Type) && !s.DeclaringSyntaxReferences.Any(r => lambda.Span.Contains(r.Span)))
-                                stay = false;
-                        break;
-                }
-                if (!stay) break;
-            }
-            _entitiesStayHere = stay;
-            return stay;
+        }
+
+        /// <summary>A call, not EF's or LINQ's, handed an entity: as its receiver (but .NET's), or an argument (but to .NET's instance method of a local).</summary>
+        private bool CallLetsAnEntityOut(Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call, IMethodSymbol m)
+        {
+            var receiver = call.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax ma ? ma.Expression : null;
+            bool argOut = call.ArgumentList.Arguments.Any(a => IsEntityType(_model.GetTypeInfo(a.Expression).Type));
+            bool thisOut = receiver != null && !m.IsStatic && IsEntityType(_model.GetTypeInfo(receiver).Type) && !DotNets(m);
+            return thisOut || argOut && (!DotNets(m) || m.IsStatic || receiver == null || !(receiver is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id && _model.GetSymbolInfo(id).Symbol is ILocalSymbol));
+        }
+
+        /// <summary>A lambda that reads an entity of a local or parameter declared outside it.</summary>
+        private bool CapturesAnEntity(Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax lambda) =>
+            lambda.Body.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>().Any(id =>
+                _model.GetSymbolInfo(id).Symbol is ISymbol s && (s is ILocalSymbol || s is IParameterSymbol) &&
+                IsEntityType(s is ILocalSymbol l ? l.Type : ((IParameterSymbol)s).Type) && !s.DeclaringSyntaxReferences.Any(r => lambda.Span.Contains(r.Span)));
+
+        /// <summary>A type that is, or holds, one of the model's entities.</summary>
+        private bool IsEntityType(ITypeSymbol t) => t != null && KernelTypes.Ef.Entities.Any(e => Mentions(t, e.Type));
+
+        /// <summary>A member that takes entities without letting other code reach them: EF's, a context's, LINQ's.</summary>
+        private static bool EntitySafe(IMethodSymbol m) => IsEfMethod(m) || KernelTypes.Ef.IsContextType(m.ContainingType) || m.ContainingNamespace?.ToDisplayString() == "System.Linq";
+
+        /// <summary>A member of .NET's own (System's, but threading's, the runtime's, reflection's).</summary>
+        private static bool DotNets(IMethodSymbol m)
+        {
+            var type = m.ContainingType;
+            if (type == null || type.DeclaringSyntaxReferences.Length > 0) return false;
+            var ns = type.ContainingNamespace?.ToDisplayString() ?? "";
+            return (ns == "System" || ns.StartsWith("System.")) && !ns.StartsWith("System.Threading") && !ns.StartsWith("System.Runtime") && !ns.StartsWith("System.Reflection");
         }
 
         /// <summary>Lowering a database query: its lambdas are the database's to evaluate (strings compared by its collation).</summary>
@@ -836,10 +844,14 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = inv.TargetMethod;
             return _inDatabase > 0 && KernelTypes.Ef != null && m.DeclaringSyntaxReferences.Length == 0 && Translates(m) && !m.ReturnsVoid && InSubset(m.ReturnType) &&
-                   !m.IsGenericMethod && !IsStub(m.OriginalDefinition) && StringEquals(inv) == null && !IsEnumerableCall(m) && !IsQueryableMethod(m) &&
-                   m.ContainingType?.ToDisplayString() != "System.Math" && (inv.Instance == null || InSubset(inv.Instance.Type)) &&
-                   inv.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type) && !IsDelegate(a.Value.Type));
+                   !m.IsGenericMethod && !LoweredOtherwise(inv) &&
+                   (inv.Instance == null || InSubset(inv.Instance.Type)) && inv.Arguments.All(a => a.Parameter.RefKind == RefKind.None && InSubset(a.Value.Type) && !IsDelegate(a.Value.Type));
         }
+
+        /// <summary>A call the kernel lowers another way, in a query too: a stub's function, a string's equality, LINQ's, Math's.</summary>
+        private bool LoweredOtherwise(IInvocationOperation inv) =>
+            IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || IsEnumerableCall(inv.TargetMethod) || IsQueryableMethod(inv.TargetMethod) ||
+            inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Math";
 
         private static bool Translates(IMethodSymbol m)
         {

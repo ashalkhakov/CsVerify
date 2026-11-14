@@ -154,8 +154,28 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An array of references (Shape[], string?[]): its elements in $E.Object, null where it's made.</summary>
         public static bool IsRefArray(ITypeSymbol t) => IsArray(t) && !Scalar(((IArrayTypeSymbol)t).ElementType) && !IsFloating(((IArrayTypeSymbol)t).ElementType);
 
-        public static bool InSubset(ITypeSymbol t) => Scalar(t) || IsArray(t) || IsClass(t) || IsInterface(t) || IsCollectionInterface(t) || t?.SpecialType == SpecialType.System_Object || IsView(t) || IsShare(t) || IsString(t) || IsException(t) || IsDelegate(t) || IsCollection(t) || IsPair(t) ||
-                                                    IsData(t) || IsGenericParameter(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsToken(t) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsGivenTask(t) || IsTuple(t) || IsFloating(t) || IsLinqGroup(t) || IsLibraryObject(t) || IsSequence(t) || IsNullableValue(t) || IsQueryHandle(t) || IsEfTransaction(t) || IsEfFactory(t) || IsOpaqueValue(t) || IsStruct(t) || IsMultiArray(t) || IsSpan(t) || IsSemaphore(t);
+        /// <summary>A type of the subset: a value's, an object's, a collection's, one of CsVerify's specifications', a library's the kernel models.</summary>
+        public static bool InSubset(ITypeSymbol t) => IsValueType(t) || IsObjectType(t) || IsCollectionType(t) || IsSpecType(t) || IsModeledLibraryType(t);
+
+        /// <summary>Values: integers and bools, floats, structs, tuples, int?, data types, values the kernel knows only by equality.</summary>
+        private static bool IsValueType(ITypeSymbol t) =>
+            Scalar(t) || IsFloating(t) || IsStruct(t) || IsTuple(t) || IsNullableValue(t) || IsData(t) || IsOpaqueValue(t) || IsGenericParameter(t);
+
+        /// <summary>Objects: arrays (and spans of them), classes and interfaces of the program's, object, strings, exceptions, delegates.</summary>
+        private static bool IsObjectType(ITypeSymbol t) =>
+            IsArray(t) || IsMultiArray(t) || IsSpan(t) || IsClass(t) || IsInterface(t) || t?.SpecialType == SpecialType.System_Object || IsString(t) || IsException(t) || IsDelegate(t);
+
+        /// <summary>Collections, as their models: the BCL's, their interfaces, a dictionary's pairs, sequences, LINQ's groups and queries.</summary>
+        private static bool IsCollectionType(ITypeSymbol t) =>
+            IsCollection(t) || IsCollectionInterface(t) || IsPair(t) || IsSequence(t) || IsLinqGroup(t) || IsQueryHandle(t);
+
+        /// <summary>CsVerify's own: views and shares, ghosts of the subset's, object sets, memory values, sequences of values.</summary>
+        private static bool IsSpecType(ITypeSymbol t) =>
+            IsView(t) || IsShare(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t);
+
+        /// <summary>The library's the kernel models by what they do: cancellation tokens, tasks one is given, library objects, EF's transactions and factories, semaphores.</summary>
+        private static bool IsModeledLibraryType(ITypeSymbol t) =>
+            IsToken(t) || IsGivenTask(t) || IsLibraryObject(t) || IsEfTransaction(t) || IsEfFactory(t) || IsSemaphore(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -554,9 +574,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An object of a library class the program has no model of (Random, TextWriter): a reference, whose members are library calls.</summary>
         public static bool IsLibraryObject(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Class } n && n.DeclaringSyntaxReferences.Length == 0 && n.SpecialType == SpecialType.None &&
-            n.ContainingNamespace?.ToDisplayString() is string ns && ns != SpecSymbols.Namespace && !ns.StartsWith("CsVerify") &&
-            !IsCollection(t) && !IsException(t) && !IsDelegate(t) && !IsString(t) && !IsGivenTask(t) && !IsTaskLike(t) && !IsSemaphore(t) && CollectionKind(t) == null &&
-            !(n.IsGenericType && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic");
+            n.ContainingNamespace?.ToDisplayString() is string ns && ns != SpecSymbols.Namespace && !ns.StartsWith("CsVerify") && !ModeledOtherwise(n);
+
+        /// <summary>A library class the kernel models another way: a collection (or a generic one of System.Collections.Generic), an exception, a delegate, a string, a task, a semaphore.</summary>
+        private static bool ModeledOtherwise(INamedTypeSymbol n) =>
+            IsCollection(n) || IsException(n) || IsDelegate(n) || IsString(n) || IsGivenTask(n) || IsTaskLike(n) || IsSemaphore(n) || CollectionKind(n) != null ||
+            n.IsGenericType && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic";
 
         /// <summary>The program has ownership trees ([Owns] fields): each object's tree root is the ghost map $root.</summary>
         [System.ThreadStatic] public static bool Trees;
@@ -752,9 +775,14 @@ namespace CsVerify.Verifier.Boogie
             n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
             // (its implementations may run concurrently: [RunsConcurrently], as a class may be)
             !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("RunsConcurrentlyAttribute" or "TakesNoLocksAttribute")) &&
-            // (a member [RunsConcurrently]: its task runs alongside its caller, which the concurrency checks see)
-            n.GetMembers().All(m => m.IsAbstract && !m.IsStatic && !m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace &&
-                                                                                                  a.AttributeClass.Name is not ("RunsConcurrentlyAttribute" or "PureAttribute"))) && n.AllInterfaces.All(IsInterface);
+            n.GetMembers().All(InterfaceMemberOfTheSubset) && n.AllInterfaces.All(IsInterface);
+
+        /// <summary>
+        /// An interface's member of the subset: abstract, not static, none of CsVerify's attributes but [Pure] and
+        /// [RunsConcurrently] (its task runs alongside its caller, which the concurrency checks see).
+        /// </summary>
+        private static bool InterfaceMemberOfTheSubset(ISymbol m) =>
+            m.IsAbstract && !m.IsStatic && !m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("RunsConcurrentlyAttribute" or "PureAttribute"));
 
         /// <summary>
         /// A property computed by code (or an abstract or an interface one, specified by its contract): its getter and
@@ -769,28 +797,46 @@ namespace CsVerify.Verifier.Boogie
         /// see), and none of CsVerify's attributes on it or its fields ([Owned], [Invariant], locks, atomics, models).
         /// </summary>
         public static bool IsClass(ITypeSymbol t) =>
-            // (an anonymous type's values are tuples)
-            t is INamedTypeSymbol n && n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && !n.IsAnonymousType && GenericClassArguments(n) &&
-            (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0 &&
-            // (derived from object, or from a class of the subset; an [Owned] one from object)
-            (n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n)) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
-            (n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i)) || IsContext(n)) && !SpecSymbols.IsContractsClass(n) &&
-            !n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute")) &&
-            // (virtual members, of methods: an override only of a member of the program's, whose contract it inherits)
-            // (ToString may be overridden: what the library makes of an object's text, it doesn't know anyway)
-            // (an override of a library base's member: the library may call it, whenever it is handed the object)
-            n.GetMembers().All(m => (m is IMethodSymbol mm ? !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0 || IsContext(n) ||
-                                                             IsLibraryBase(mm.OverriddenMethod?.ContainingType) ||
-                                                             mm.OverriddenMethod?.ContainingType.SpecialType == SpecialType.System_Object &&
-                                                             (mm.Name == "ToString" && mm.Parameters.Length == 0 || mm.Name == "GetHashCode" && mm.Parameters.Length == 0 ||
-                                                              mm.Name == "Equals" && mm.Parameters.Length == 1)
-                                     : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0
-                                     : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-                                    !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
-                                    // (a property may be [Pure]: a function; or run concurrently, as a method may)
-                                    !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute")))) &&
+            t is INamedTypeSymbol n && PlainClassOfTheProgram(n) && BaseOfTheSubset(n) && n.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace &&
+            InterfacesOfTheSubset(n) && !SpecSymbols.IsContractsClass(n) && !HasSpecAttributes(n) && n.GetMembers().All(m => MemberOfTheSubset(n, m)) &&
             // (an invariant of an [Owned] class travels with its view; any other's is an immutable object's, assumed of every one)
             (SpecSymbols.IsOwned(n) || !HasInvariantMethods(n) || Immutable(n));
+
+        /// <summary>A class declared in the program: not static, not a record, not generic but as the subset allows, not nested in a generic one (an anonymous type's values are tuples).</summary>
+        private static bool PlainClassOfTheProgram(INamedTypeSymbol n) =>
+            n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && !n.IsAnonymousType && GenericClassArguments(n) &&
+            (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0;
+
+        /// <summary>Derived from object, or from a class of the subset, a library base or a library exception (an [Owned] one from object); or an EF context.</summary>
+        private static bool BaseOfTheSubset(INamedTypeSymbol n) =>
+            n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n);
+
+        /// <summary>Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's; any, of an EF context.</summary>
+        private static bool InterfacesOfTheSubset(INamedTypeSymbol n) =>
+            n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i)) || IsContext(n);
+
+        /// <summary>One of CsVerify's attributes on the class but [Owned], [RunsConcurrently] and the lock order's.</summary>
+        private static bool HasSpecAttributes(INamedTypeSymbol n) =>
+            n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("OwnedAttribute" or "RunsConcurrentlyAttribute" or "LockLevelAttribute" or "TakesNoLocksAttribute"));
+
+        /// <summary>
+        /// A member a class of the subset may have: no virtual one but overrides a call can see; a field with none of
+        /// CsVerify's attributes but [GuardedBy]; a property with none but [Pure], [GuardedBy], [RunsConcurrently].
+        /// </summary>
+        private static bool MemberOfTheSubset(INamedTypeSymbol n, ISymbol m) =>
+            (m is IMethodSymbol mm ? MethodOfTheSubset(n, mm) : m is IPropertySymbol pp ? !pp.IsOverride || pp.OverriddenProperty?.DeclaringSyntaxReferences.Length > 0 : !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
+            !(m is IFieldSymbol && CsVerifyAttributes(m) && !OnlyGuardedBy(m)) &&
+            !(m is IPropertySymbol && m.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && a.AttributeClass.Name is not ("PureAttribute" or "GuardedByAttribute" or "RunsConcurrentlyAttribute")));
+
+        /// <summary>
+        /// A method of a class of the subset: not an override, or one of a member of the program's (whose contract it
+        /// inherits), of a library base's (the library may call it, whenever it is handed the object), of object's
+        /// ToString, GetHashCode or Equals (what the library makes of them it doesn't know anyway); any, of an EF context.
+        /// </summary>
+        private static bool MethodOfTheSubset(INamedTypeSymbol n, IMethodSymbol mm) =>
+            !mm.IsOverride || mm.OverriddenMethod?.DeclaringSyntaxReferences.Length > 0 || IsContext(n) || IsLibraryBase(mm.OverriddenMethod?.ContainingType) ||
+            mm.OverriddenMethod?.ContainingType.SpecialType == SpecialType.System_Object &&
+            (mm.Name == "ToString" && mm.Parameters.Length == 0 || mm.Name == "GetHashCode" && mm.Parameters.Length == 0 || mm.Name == "Equals" && mm.Parameters.Length == 1);
 
         private static bool HasInvariantMethods(INamedTypeSymbol n) =>
             n.GetMembers().OfType<IMethodSymbol>().Any(m => m.GetAttributes().Any(a => a.AttributeClass?.Name == "InvariantAttribute"));
