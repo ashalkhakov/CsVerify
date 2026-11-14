@@ -19,7 +19,7 @@ namespace CsVerify.Verifier.Boogie
         public static string[] Globals => new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Append("$root").ToArray();
 
         /// <summary>Allocates t: not null, not allocated before (so no reference in hand), now allocated.</summary>
-        private static void Allocate(List<MStmt> stmts, string var, MExpr extra = null)
+        private static void Allocate(List<IHeapStmt> stmts, string var, MExpr extra = null)
         {
             var t = new MVar(var);
             stmts.Add(new MHavoc { Var = var });
@@ -28,12 +28,26 @@ namespace CsVerify.Verifier.Boogie
             stmts.Add(new MMapUpdate { Map = "$Alloc", Ref = t, Value = new MLit("true") });
         }
 
-        public static void Run(MProcedure p)
+        /// <summary>Level 2 to level 3: each block's statements made level 3's, then the loop frames added.</summary>
+        public static HProcedure Run(MProcedure p)
         {
-            LoopFrames(p);
-            foreach (var b in p.Blocks)
+            var h = new HProcedure
             {
-                var stmts = new List<MStmt>();
+                Source = p.Source, Requires = p.Requires, Ensures = p.Ensures, Frame = p.Frame, ReadsFrame = p.ReadsFrame, InferredReads = p.InferredReads,
+                FunctionBody = p.FunctionBody, Obligations = p.Obligations,
+                // (what Checks asserts at entry is level 3's already: its well-definedness, nothing stored or allocated)
+                Entry = p.Entry.Select(s => s as IHeapStmt ?? throw new System.InvalidOperationException("a store or an allocation at entry: " + s.GetType().Name)).ToList(),
+                Blocks = p.Blocks.Select(b => new HBlock { Label = b.Label, Ordinal = b.Ordinal, Jump = b.Jump, Stmts = Statements(p, b) }).ToList(),
+            };
+            LoopFrames(p, h);
+            return h;
+        }
+
+        /// <summary>A block's statements at level 3: stores map updates, allocations made, the rest as they are.</summary>
+        private static List<IHeapStmt> Statements(MProcedure p, MBlock b)
+        {
+            {
+                var stmts = new List<IHeapStmt>();
                 foreach (var s in b.Stmts)
                     switch (s)
                     {
@@ -129,19 +143,22 @@ namespace CsVerify.Verifier.Boogie
                             Allocate(stmts, lam.Var);
                             stmts.Add(lam);
                             break;
-                        default:
-                            stmts.Add(s);
+                        case IHeapStmt same:
+                            stmts.Add(same);
                             break;
+                        default: throw new System.InvalidOperationException("a level 2 statement Heap doesn't know: " + s.GetType().Name);
                     }
-                b.Stmts = stmts;
+                return stmts;
             }
         }
 
         /// <summary>
         /// Each loop that writes arrays only through variables it doesn't change:
-        /// a frame at its head, and a snapshot on each way in. A write through anything else keeps nothing.
+        /// a frame at its head, and a snapshot on each way in. A write through anything else keeps nothing. What a loop
+        /// writes is read from level 2's blocks (its stores, allocations, calls); the frames go into level 3's, first in
+        /// its head and last in each block into it.
         /// </summary>
-        private static void LoopFrames(MProcedure p)
+        private static void LoopFrames(MProcedure p, HProcedure h)
         {
             foreach (var (head, last) in p.Source.LoopBodies)
             {
@@ -150,7 +167,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     MAssign a => a.Var, MCall c => c.Result, MInvoke iv => iv.Result, MLambda lam => lam.Var, MNew n => n.Var, MNewObj o => o.Var, MHavoc h => h.Var, _ => null,
                 }).Where(x => x != null));
-                var frame = new MLoopFrame { Head = head };
+                var frame = new HLoopFrame { Head = head };
                 bool keeps = true;
                 foreach (var s in body.SelectMany(b => b.Stmts))
                     switch (s)
@@ -164,12 +181,14 @@ namespace CsVerify.Verifier.Boogie
                         case MNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
                     }
                 var entry = p.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
+                var hEntry = h.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
+                var hInto = h.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")).ToList();
                 // (a loop that awaits or calls what may change anything: the confined objects it doesn't reassign still
                 // hold what they held, but what it writes through them)
                 var confined = p.Source.Confined.Where(c => !assigned.Contains(c)).ToList();
                 if (entry != null && confined.Count > 0)
                 {
-                    var cf = new MConfinedFrame { Head = head };
+                    var cf = new HConfinedFrame { Head = head };
                     foreach (var c in confined) cf.Locals[c] = new HashSet<string>();
                     foreach (var st in body.SelectMany(b => b.Stmts))
                         switch (st)
@@ -181,16 +200,15 @@ namespace CsVerify.Verifier.Boogie
                         }
                     if (cf.Locals.Count > 0)
                     {
-                        entry.Stmts.Insert(0, cf);
-                        foreach (var b in p.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")))
-                            b.Stmts.Add(new MConfinedSnapshot { Head = head });
+                        hEntry.Stmts.Insert(0, cf);
+                        foreach (var b in hInto) b.Stmts.Add(new HConfinedSnapshot { Head = head });
                     }
                 }
                 // (the atomic fields at the loop's head: steps since the loop was entered, of a snapshot taken on the way in)
                 if (entry?.Stmts.OfType<MAtomicSteps>().FirstOrDefault() is MAtomicSteps steps && steps.Head < 0)
                 {
                     var atomic = p.Source.Fields.Where(f => Atomics.IsAtomic(f) && Atomics.StepOf(f) != null && IsField(f)).Select(f => (map: FieldMap(f), type: TypeOf(FieldType(f)))).Distinct().ToList();
-                    var into = p.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")).ToList();
+                    var into = hInto;
                     if (atomic.Count > 0 && into.Count > 0)
                     {
                         steps.Head = head;
@@ -208,9 +226,8 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
                 if (!keeps || entry == null) continue;
-                entry.Stmts.Insert(0, frame);
-                foreach (var b in p.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")))
-                    b.Stmts.Add(new MSnapshot { Frame = frame });
+                hEntry.Stmts.Insert(0, frame);
+                foreach (var b in hInto) b.Stmts.Add(new HSnapshot { Frame = frame });
             }
         }
 

@@ -63,7 +63,7 @@ namespace CsVerify.Verifier.Boogie
         private readonly bool _checkOverflow;
 
         /// <summary>The procedures translated, written when all are (their modifies need what each calls).</summary>
-        private readonly List<MProcedure> _pending = new List<MProcedure>();
+        private readonly List<HProcedure> _pending = new List<HProcedure>();
 
         public BoogieTranslator(bool checkOverflow) { _checkOverflow = checkOverflow; }
 
@@ -284,19 +284,17 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The method as a procedure; throws <see cref="NotTranslated"/> for one outside the subset (then nothing is kept).</summary>
         public void Procedure(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result, ControlFlowGraph graph = null)
         {
+            // (the passes: level 0 to 1, 1 to 2, 2 to 3)
             var k = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, graph: graph);
-            var p = Checks.Run(k, this);
-            Heap.Run(p);
+            var p = Heap.Run(Checks.Run(k, this));
             // (the library members it calls: each a procedure of its stub's contract, once; one that doesn't translate refuses this)
-            var lib = new List<MProcedure>();
+            var lib = new List<HProcedure>();
             foreach (var callee in k.LibCalls.Where(c => !_libraries.Contains(c)))
             {
                 try
                 {
                     var lk = Lowering.Lower(callee, ContractOf(callee), null, null, new MethodResult(), x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
-                    var lp = Checks.Run(lk, this);
-                    Heap.Run(lp);
-                    lib.Add(lp);
+                    lib.Add(Heap.Run(Checks.Run(lk, this)));
                 }
                 catch (NotTranslated why) { throw new NotTranslated("a call of List's " + callee.Name + ": " + why.Message); }
             }
@@ -315,9 +313,7 @@ namespace CsVerify.Verifier.Boogie
         public void ContractOnly(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result, ControlFlowGraph graph = null)
         {
             var k = Lowering.Lower(m, contract, decl, model, result, x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf, contractOnly: true, graph: graph);
-            var p = Checks.Run(k, this);
-            Heap.Run(p);
-            _pending.Add(p);
+            _pending.Add(Heap.Run(Checks.Run(k, this)));
         }
 
         /// <summary>Writes the functions and the procedures: each modifies what it writes, and what what it calls does.</summary>
@@ -443,12 +439,12 @@ namespace CsVerify.Verifier.Boogie
                         p.Source.Locals.Add(new KLocal { Name = $"k${keep.Id}{name}", Raw = type });
             // (each confined frame's snapshot of every state map)
             foreach (var p in _pending)
-                foreach (var cf in p.Blocks.SelectMany(b => b.Stmts).OfType<MConfinedFrame>())
+                foreach (var cf in p.Blocks.SelectMany(b => b.Stmts).OfType<HConfinedFrame>())
                     foreach (var (name, type) in _printer.StateMaps)
                         p.Source.Locals.Add(new KLocal { Name = $"c${cf.Head}{name}", Raw = type });
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
-                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<MLoopFrame>())
+                foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<HLoopFrame>())
                 {
                     if (frame.Callees.Any(c => writes.TryGetValue(c, out var w) && w.Any(x => x.StartsWith("$E.")))) continue;
                     frame.Maps = writes[p.Source.Method].Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal).ToList();
@@ -619,7 +615,7 @@ namespace CsVerify.Verifier.Boogie
         private HashSet<string> _allMaps = new HashSet<string>();
 
         /// <summary>A set of globals of each procedure's, with those of everything it calls.</summary>
-        private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<MProcedure, HashSet<string>> own)
+        private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<HProcedure, HashSet<string>> own)
         {
             var sets = _pending.ToDictionary(p => p.Source.Method, p => new HashSet<string>(own(p)), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             // (a virtual member's call may run any override: what each does, it does; one of them not here, anything)

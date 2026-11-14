@@ -16,13 +16,6 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class MProcedure
     {
         public KProcedure Source;
-        /// <summary>A copy (a twin's), of a copy of its kernel procedure.</summary>
-        public MProcedure Clone()
-        {
-            var c = (MProcedure)MemberwiseClone();
-            c.Source = Source.Clone();
-            return c;
-        }
         public List<MSpec> Requires = new List<MSpec>(), Ensures = new List<MSpec>();
         public MExpr Frame, ReadsFrame, InferredReads, FunctionBody;
         /// <summary>The asserts at entry (the preconditions well-defined).</summary>
@@ -126,7 +119,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>Around a call that exchanges permissions, the caller keeps what it still holds (the program says which maps).</summary>
-    internal sealed class MCallFrame : MStmt
+    internal sealed class MCallFrame : MStmt, IHeapStmt
     {
         public int Id;
         public bool After;
@@ -145,7 +138,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>new E(...) of an exception type: a new exception of exactly that type (dtype).</summary>
-    internal sealed class MNewExc : MStmt
+    internal sealed class MNewExc : MStmt, IHeapStmt
     {
         public string Var;
         public ITypeSymbol Type;
@@ -155,7 +148,7 @@ namespace CsVerify.Verifier.Boogie
     /// The way a call (Call), or checked arithmetic (Overflow, out of range), throws instead: ex$ the
     /// exception, to the handlers at Target. The printer splits the block there.
     /// </summary>
-    internal sealed class MFork : MStmt
+    internal sealed class MFork : MStmt, IHeapStmt
     {
         public MCall Call;
         public MExpr Overflow;
@@ -164,9 +157,16 @@ namespace CsVerify.Verifier.Boogie
         public string Exception = "T#System.OverflowException";
     }
 
+    /// <summary>A statement of level 2 (Checks'): those Heap rewrites (stores, allocations) are level 2's alone.</summary>
     internal abstract class MStmt { }
 
-    internal sealed class MAssign : MStmt
+    /// <summary>
+    /// A statement of level 3 (Heap's, what the printer reads): level 2's but the stores and allocations, and the loop
+    /// frames Heap adds (HLoopFrame, HSnapshot, HConfinedFrame, HConfinedSnapshot), level 3's alone.
+    /// </summary>
+    internal interface IHeapStmt { }
+
+    internal sealed class MAssign : MStmt, IHeapStmt
     {
         public string Var;
         public MExpr Value;
@@ -182,7 +182,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>The tree roots change: Take's split (what was below the taken object is in its tree or the container's), Give's join.</summary>
-    internal sealed class MRoots : MStmt
+    internal sealed class MRoots : MStmt, IHeapStmt
     {
         public bool Join;
         public MExpr Container, Child;
@@ -234,7 +234,7 @@ namespace CsVerify.Verifier.Boogie
         public MExpr[] Elements;
     }
 
-    internal sealed class MCall : MStmt
+    internal sealed class MCall : MStmt, IHeapStmt
     {
         public IMethodSymbol Callee;
         /// <summary>The variables its ref and out arguments are (by parameter ordinal): they get what it gives back.</summary>
@@ -259,7 +259,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>
-    internal sealed class MInvoke : MStmt
+    internal sealed class MInvoke : MStmt, IHeapStmt
     {
         public string Result;
         public MExpr Delegate;
@@ -273,7 +273,7 @@ namespace CsVerify.Verifier.Boogie
     /// A lambda made a delegate: a new reference, and what it accepts ($pre: its Spec.Requires, or anything) and gives
     /// ($post: its postconditions and an expression's value), for every argument; whether it changes nothing.
     /// </summary>
-    internal sealed class MLambda : MStmt
+    internal sealed class MLambda : MStmt, IHeapStmt
     {
         public string Var, Key;
         public List<(string name, string type)> Params = new List<(string, string)>();
@@ -294,7 +294,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
-    internal sealed class MHavocAll : MStmt
+    internal sealed class MHavocAll : MStmt, IHeapStmt
     {
         /// <summary>Unless this holds (a delegate's $nochange): then nothing changes.</summary>
         public MExpr Unless;
@@ -303,7 +303,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>Around a call of an async method: the objects of these (confined) locals, which no code can reach, are as they were.</summary>
-    internal sealed class MKeep : MStmt
+    internal sealed class MKeep : MStmt, IHeapStmt
     {
         public int Id;
         public bool After;
@@ -311,7 +311,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>At a loop's head: every atomic field went by steps from where it was on entry (each change of it is one).</summary>
-    internal sealed class MAtomicSteps : MStmt
+    internal sealed class MAtomicSteps : MStmt, IHeapStmt
     {
         /// <summary>The loop head whose entry took a snapshot of these maps (as{Head}map, as{Head}$Alloc), the steps since then; -1: since the method's entry.</summary>
         public int Head = -1;
@@ -319,7 +319,7 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
-    internal sealed class MAwait : MStmt
+    internal sealed class MAwait : MStmt, IHeapStmt
     {
         public List<string> Keep = new List<string>();
         /// <summary>Only where this holds (a task it started still running); null: always.</summary>
@@ -328,7 +328,7 @@ namespace CsVerify.Verifier.Boogie
         public bool Cells, Perm;
     }
 
-    internal sealed class MAssert : MStmt
+    internal sealed class MAssert : MStmt, IHeapStmt
     {
         public MExpr Cond;
         public Check Check;
@@ -340,20 +340,20 @@ namespace CsVerify.Verifier.Boogie
         public bool NotAssumedAfter;
     }
 
-    internal sealed class MAssume : MStmt
+    internal sealed class MAssume : MStmt, IHeapStmt
     {
         public MExpr Cond;
         /// <summary>True in every state (what a field's type says of its value): not put under a guard or a quantifier.</summary>
         public bool Always;
     }
 
-    internal sealed class MHavoc : MStmt
+    internal sealed class MHavoc : MStmt, IHeapStmt
     {
         public string Var;
     }
 
     /// <summary>Level 3 (Heap's): map[Ref] := Value, or map[Ref][Index] := Value.</summary>
-    internal sealed class MMapUpdate : MStmt
+    internal sealed class MMapUpdate : MStmt, IHeapStmt
     {
         public string Map;
         public MExpr Ref, Index, Value;
@@ -368,11 +368,43 @@ namespace CsVerify.Verifier.Boogie
         public KJump Jump;
     }
 
+    // ------------------------------------------------------------------ level 3 (Heap's): what the printer reads
+
     /// <summary>
-    /// Level 3 (Heap's), at a loop head: the arrays the loop doesn't write (through a variable it doesn't change) are as
-    /// they were when it was entered; the program says which maps (none where the loop calls what writes arrays).
+    /// One method at level 3: its level 2's (MProcedure) with its blocks and entry Heap's, the stores and allocations
+    /// made map updates, the loop frames added.
     /// </summary>
-    internal sealed class MLoopFrame : MStmt
+    internal sealed class HProcedure
+    {
+        public KProcedure Source;
+        public List<MSpec> Requires, Ensures;
+        public MExpr Frame, ReadsFrame, InferredReads, FunctionBody;
+        public List<IHeapStmt> Entry = new List<IHeapStmt>();
+        public List<HBlock> Blocks = new List<HBlock>();
+        public int Obligations;
+        /// <summary>A copy (a twin's), of a copy of its kernel procedure.</summary>
+        public HProcedure Clone()
+        {
+            var c = (HProcedure)MemberwiseClone();
+            c.Source = Source.Clone();
+            return c;
+        }
+    }
+
+    internal sealed class HBlock
+    {
+        public string Label;
+        /// <summary>The control-flow graph's block it is (or a branch of): which jumps are back edges.</summary>
+        public int Ordinal;
+        public List<IHeapStmt> Stmts = new List<IHeapStmt>();
+        public KJump Jump;
+    }
+
+    /// <summary>
+    /// At a loop head: the arrays the loop doesn't write (through a variable it doesn't change) are as they were when it
+    /// was entered; the program says which maps (none where the loop calls what writes arrays).
+    /// </summary>
+    internal sealed class HLoopFrame : IHeapStmt
     {
         public int Head;
         public List<MExpr> Writers = new List<MExpr>();
@@ -381,24 +413,24 @@ namespace CsVerify.Verifier.Boogie
     }
 
     /// <summary>On the way into a loop: the maps its frame keeps, as they are now.</summary>
-    internal sealed class MSnapshot : MStmt
+    internal sealed class HSnapshot : IHeapStmt
     {
-        public MLoopFrame Frame;
+        public HLoopFrame Frame;
     }
 
     /// <summary>
     /// At a loop head: the objects of confined locals the loop doesn't reassign (nobody else can reach them) are as they
     /// were on its entry, but for what the loop writes through those locals.
     /// </summary>
-    internal sealed class MConfinedFrame : MStmt
+    internal sealed class HConfinedFrame : IHeapStmt
     {
         public int Head;
         /// <summary>Each local (its Boogie name), with the maps the loop writes through it ("$M." for any of a collection's models).</summary>
         public Dictionary<string, HashSet<string>> Locals = new Dictionary<string, HashSet<string>>();
     }
 
-    /// <summary>On the way into a loop: every state map, as it is now (for its MConfinedFrame).</summary>
-    internal sealed class MConfinedSnapshot : MStmt
+    /// <summary>On the way into a loop: every state map, as it is now (for its HConfinedFrame).</summary>
+    internal sealed class HConfinedSnapshot : IHeapStmt
     {
         public int Head;
     }

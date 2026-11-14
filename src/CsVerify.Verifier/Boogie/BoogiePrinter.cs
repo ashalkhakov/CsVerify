@@ -882,7 +882,7 @@ namespace CsVerify.Verifier.Boogie
         /// A function over a predicate: of the instance's snapshot and its arguments, its value what folding and unfolding
         /// the instance say (no axioms but its range).
         /// </summary>
-        public void FunctionOverPredicate(MProcedure p)
+        public void FunctionOverPredicate(HProcedure p)
         {
             var m = p.Source.Method;
             var name = FunctionName(m);
@@ -942,7 +942,7 @@ namespace CsVerify.Verifier.Boogie
             Line($"axiom (forall ly: LayerType{Sep(MapParams)}{ps} :: {{ {App(b, bFields)} }} dtype(this) == {TypeConst(o.ContainingType)} ==> {App(b, bFields)} == {App(o, oFields)});");
         }
 
-        public void Function(MProcedure p, List<string> fields, IEnumerable<ISymbol> symbols, bool overInstances = false)
+        public void Function(HProcedure p, List<string> fields, IEnumerable<ISymbol> symbols, bool overInstances = false)
         {
             var m = p.Source.Method;
             if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null && !ReadsArrays(p.FunctionBody))
@@ -987,7 +987,7 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ procedures
 
         /// <summary>A procedure: its header (what it modifies: <paramref name="modifies"/>, closed over calls), its locals, its blocks.</summary>
-        public void Procedure(MProcedure p, ISet<string> modifies, ISet<string> anyWrites, List<string> functionFields)
+        public void Procedure(HProcedure p, ISet<string> modifies, ISet<string> anyWrites, List<string> functionFields)
         {
             var m = p.Source.Method;
             var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
@@ -1116,7 +1116,7 @@ namespace CsVerify.Verifier.Boogie
                 Line($"  {b.Label}:");
                 // (a block's leading assertions and assumptions are a loop's invariants where it is a head: kept whole there)
                 // (elsewhere a check not assumed after is on a side branch: inline, a failing one would make what follows vacuous)
-                int lead = !p.Source.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is MAssert || x is MAssume || x is MLoopFrame || x is MAtomicSteps || x is MConfinedFrame).Count();
+                int lead = !p.Source.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is MAssert || x is MAssume || x is HLoopFrame || x is MAtomicSteps || x is HConfinedFrame).Count();
                 for (int k = 0; k < b.Stmts.Count; k++) { _leading = k < lead; Statement(b.Stmts[k], cx); }
                 _leading = false;
                 switch (b.Jump)
@@ -1140,7 +1140,7 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private static Check Undecided(MProcedure p) => new Check
+        private static Check Undecided(HProcedure p) => new Check
         {
             Id = BoogieTranslator.Undecided, Method = p.Source.Result, Message = "Boogie couldn't decide it",
             Span = (p.Source.Method.Locations.FirstOrDefault() ?? Location.None).GetLineSpan(),
@@ -1174,7 +1174,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>The reference-valued fields a procedure reads or writes, in order.</summary>
-        private static IEnumerable<ISymbol> RefFieldsOf(MProcedure p) =>
+        private static IEnumerable<ISymbol> RefFieldsOf(HProcedure p) =>
             p.Source.Fields.Where(f => IsField(f) && IsRef(FieldType(f)) && !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal);
 
         /// <summary>What an [Owns] field holds is in its container's tree, and isn't its root (Own.Give and Own.Take keep it so).</summary>
@@ -1185,7 +1185,7 @@ namespace CsVerify.Verifier.Boogie
             ? $"({FieldMap(f)}[null] == null || $Alloc[{FieldMap(f)}[null]])"
             : $"(forall o: Ref :: {{ {FieldMap(f)}[o] }} $Alloc[o] && {FieldMap(f)}[o] != null ==> $Alloc[{FieldMap(f)}[o]])";
 
-        private void Given(MProcedure p, Context cx)
+        private void Given(HProcedure p, Context cx)
         {
             var m = p.Source.Method;
             Line($"  free requires {InRangeOfMemory};");
@@ -1231,7 +1231,7 @@ namespace CsVerify.Verifier.Boogie
             if (IsData(type)) yield return DataFacts(local, type, cx);
         }
 
-        private void Statement(MStmt s, Context cx)
+        private void Statement(IHeapStmt s, Context cx)
         {
             switch (s)
             {
@@ -1417,19 +1417,19 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return;
                 }
-                case MSnapshot snap:
+                case HSnapshot snap:
                     if (snap.Frame.Maps.Count == 0) return;
                     foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps)) Line($"    s${snap.Frame.Head}{map} := {map};");
                     return;
-                case MConfinedSnapshot cs:
+                case HConfinedSnapshot cs:
                     foreach (var (name, _) in _stateMaps) Line($"    c${cs.Head}{name} := {name};");
                     return;
-                case MConfinedFrame cf:
+                case HConfinedFrame cf:
                     foreach (var (local, written) in cf.Locals.OrderBy(x => x.Key, System.StringComparer.Ordinal))
                         foreach (var (name, _) in _stateMaps.Where(m => !written.Contains(m.name) && !(written.Contains("$M.") && m.name.StartsWith("$F.$M."))))
                             Line($"    assume {local} != null ==> {name}[{local}] == c${cf.Head}{name}[{local}];");
                     return;
-                case MLoopFrame frame:
+                case HLoopFrame frame:
                     // (an assume at the head: what Boogie keeps across the loop's havoc, as an invariant)
                     foreach (var map in frame.Maps)
                     {
