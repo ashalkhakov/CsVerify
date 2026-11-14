@@ -13,13 +13,23 @@ namespace CsVerify.Verifier
     {
         internal static bool IsImmutableClass(ITypeSymbol type)
         {
-            if (!(type is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class || SpecSymbols.IsOwned(t) || t.IsRecord) return false;
+            if (!(type is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class || SpecSymbols.IsOwned(t) || t.IsRecord)
+            {
+                return false;
+            }
             for (var s = t.OriginalDefinition; s != null && s.SpecialType != SpecialType.System_Object; s = s.BaseType?.OriginalDefinition)
             {
-                if (s.DeclaringSyntaxReferences.Length == 0) return false;
+                if (s.DeclaringSyntaxReferences.Length == 0)
+                {
+                    return false;
+                }
                 foreach (var m in s.GetMembers().Where(x => !x.IsStatic && FieldEffects.IsHeapField(x)))
+                {
                     if (m is IFieldSymbol f && !f.IsReadOnly || m is IPropertySymbol p && p.SetMethod != null && !p.SetMethod.IsInitOnly)
+                    {
                         return false;
+                    }
+                }
             }
             return true;
         }

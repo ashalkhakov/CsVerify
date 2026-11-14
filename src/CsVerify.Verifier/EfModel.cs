@@ -108,38 +108,71 @@ namespace CsVerify.Verifier
             {
                 Contexts.Add(t);
                 foreach (var p in AllMembers(t).OfType<IPropertySymbol>())
+                {
                     if (p.Type is INamedTypeSymbol set && set.Name == "DbSet" && set.TypeArguments.Length == 1 && set.TypeArguments[0] is INamedTypeSymbol e)
+                    {
                         Add(e);
+                    }
+                }
             }
             // configured types are entity types too: modelBuilder.Entity<T>(), and what is called on its builder
             foreach (var (tree, inv, builder) in Configuration(compilation, userTrees))
-                if (builder.TypeArguments[0] is INamedTypeSymbol e) Add(e);
+            {
+                if (builder.TypeArguments[0] is INamedTypeSymbol e)
+                {
+                    Add(e);
+                }
+            }
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
                 foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                {
                     if (inv.Expression is MemberAccessExpressionSyntax { Name: GenericNameSyntax { Identifier.Text: "Entity" } } &&
                         model.GetSymbolInfo(inv).Symbol is IMethodSymbol { ContainingType.Name: "ModelBuilder", TypeArguments.Length: 1 } entity &&
                         entity.TypeArguments[0] is INamedTypeSymbol configured && IsSourceClass(configured, sourceTypes))
+                    {
                         Add(configured);
+                    }
+                }
             }
             // and what navigations reach
             for (bool grew = true; grew;)
             {
                 grew = false;
                 foreach (var e in _entities.Values.ToList())
+                {
                     foreach (var p in PropertiesOf(e.Type))
+                    {
                         if (NavigationTarget(p.Type, out _) is INamedTypeSymbol target && IsSourceClass(target, sourceTypes) && !_entities.ContainsKey(target) && !IsOwned(target))
-                        { Add(target); grew = true; }
+                        {
+                            Add(target);
+                            grew = true;
+                        }
+                    }
+                }
             }
-            foreach (var e in _entities.Values) ReadAttributes(e);
-            foreach (var (tree, inv, builder) in Configuration(compilation, userTrees)) ReadFluent(compilation, tree, inv, builder);
             foreach (var e in _entities.Values)
             {
-                if (e.Key.Count == 0) e.AddKey(ConventionKey(e.Type));
+                ReadAttributes(e);
+            }
+            foreach (var (tree, inv, builder) in Configuration(compilation, userTrees))
+            {
+                ReadFluent(compilation, tree, inv, builder);
+            }
+            foreach (var e in _entities.Values)
+            {
+                if (e.Key.Count == 0)
+                {
+                    e.AddKey(ConventionKey(e.Type));
+                }
                 foreach (var p in PropertiesOf(e.Type))
+                {
                     if (NavigationTarget(p.Type, out bool many) is INamedTypeSymbol target && _entities.ContainsKey(target))
+                    {
                         (many ? e.Collections : e.References).Add(p);
+                    }
+                }
             }
             Inherit();
             ReadRelationships();
@@ -168,11 +201,18 @@ namespace CsVerify.Verifier
         private void ReadRelationships()
         {
             foreach (var d in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
+            {
                 foreach (var nav in d.References)
                 {
-                    if (_unreadNavigations.Contains(nav) || Has(nav, "InversePropertyAttribute") || _unreadEntities.Contains(nav.Type.OriginalDefinition)) continue;
+                    if (_unreadNavigations.Contains(nav) || Has(nav, "InversePropertyAttribute") || _unreadEntities.Contains(nav.Type.OriginalDefinition))
+                    {
+                        continue;
+                    }
                     var p = EntityOf(nav.Type);
-                    if (p == null || p.Key.Count != 1) continue;
+                    if (p == null || p.Key.Count != 1)
+                    {
+                        continue;
+                    }
                     var key = p.Key[0];
                     var props = PropertiesOf(d.Type).ToList();
                     IPropertySymbol fk = _fluentKeys.TryGetValue(nav, out var fluent) ? fluent : null;
@@ -180,30 +220,60 @@ namespace CsVerify.Verifier
                     {
                         // (a composite key, "A,B", isn't followed)
                         fk = props.FirstOrDefault(x => x.Name == named);
-                        if (fk == null) continue;
+                        if (fk == null)
+                        {
+                            continue;
+                        }
                     }
                     fk ??= props.FirstOrDefault(x => Attribute(x, "ForeignKeyAttribute") == nav.Name);
                     if (fk == null && d.References.Count(r => ReferenceEquals(EntityOf(r.Type), p)) == 1)
+                    {
                         foreach (var name in new[] { nav.Name + key.Name, nav.Name + "Id", p.Type.Name + key.Name, p.Type.Name + "Id" })
-                            if ((fk = props.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase))) != null) break;
-                    if (fk == null) continue;
+                        {
+                            if ((fk = props.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase))) != null)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    if (fk == null)
+                    {
+                        continue;
+                    }
                     var t = fk.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : fk.Type;
-                    if (SymbolEqualityComparer.Default.Equals(t, key.Type)) d.ForeignKeys[nav] = fk;
+                    if (SymbolEqualityComparer.Default.Equals(t, key.Type))
+                    {
+                        d.ForeignKeys[nav] = fk;
+                    }
                 }
+            }
             foreach (var p in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
+            {
                 foreach (var nav in p.Collections)
                 {
-                    if (_unreadNavigations.Contains(nav) || Has(nav, "InversePropertyAttribute")) continue;
+                    if (_unreadNavigations.Contains(nav) || Has(nav, "InversePropertyAttribute"))
+                    {
+                        continue;
+                    }
                     var d = EntityOf(NavigationTarget(nav.Type, out _));
-                    if (d == null) continue;
+                    if (d == null)
+                    {
+                        continue;
+                    }
                     var inverse = _fluentInverse.TryGetValue(nav, out var paired) ? paired : null;
                     if (inverse == null)
                     {
                         var back = d.References.Where(r => ReferenceEquals(EntityOf(r.Type), p)).ToList();
                         int many = p.Collections.Count(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), d));
-                        if (back.Count == 1 && many == 1 && !_fluentInverse.Values.Contains(back[0], SymbolEqualityComparer.Default)) inverse = back[0];
+                        if (back.Count == 1 && many == 1 && !_fluentInverse.Values.Contains(back[0], SymbolEqualityComparer.Default))
+                        {
+                            inverse = back[0];
+                        }
                     }
-                    if (inverse != null && d.ForeignKeys.TryGetValue(inverse, out var fk)) p.CollectionKeys[nav] = fk;
+                    if (inverse != null && d.ForeignKeys.TryGetValue(inverse, out var fk))
+                    {
+                        p.CollectionKeys[nav] = fk;
+                    }
                     else if (inverse == null && p.Key.Count == 1 && !d.References.Any(r => ReferenceEquals(EntityOf(r.Type), p)) &&
                              p.Collections.Count(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), d)) == 1 &&
                              !_fluentInverse.ContainsKey(nav) && !_fluentKeys.Keys.Any(k => ReferenceEquals(EntityOf(k.ContainingType), d)))
@@ -214,9 +284,13 @@ namespace CsVerify.Verifier
                         var named = new[] { p.Type.Name + key.Name, p.Type.Name + "Id" }
                             .Select(n => props.FirstOrDefault(x => string.Equals(x.Name, n, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(x => x != null);
                         var t = named?.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nt ? nt.TypeArguments[0] : named?.Type;
-                        if (named != null && SymbolEqualityComparer.Default.Equals(t, key.Type)) p.CollectionKeys[nav] = named;
+                        if (named != null && SymbolEqualityComparer.Default.Equals(t, key.Type))
+                        {
+                            p.CollectionKeys[nav] = named;
+                        }
                     }
                 }
+            }
         }
 
         /// <summary>The string an attribute of this name is given ([ForeignKey("CustomerId")]), if any.</summary>
@@ -249,15 +323,30 @@ namespace CsVerify.Verifier
             {
                 var k = key.ArgumentList.Arguments.FirstOrDefault()?.Expression;
                 fk = (key.Expression as MemberAccessExpressionSyntax)?.Name is GenericNameSyntax || key.ArgumentList.Arguments.Count != 1 ? null : Nav(k, model);
-                if (fk == null) unread = true;
+                if (fk == null)
+                {
+                    unread = true;
+                }
             }
             if (unread)
             {
-                foreach (var nav in new[] { first, second }) if (nav != null) _unreadNavigations.Add(nav);
+                foreach (var nav in new[] { first, second })
+                {
+                    if (nav != null)
+                    {
+                        _unreadNavigations.Add(nav);
+                    }
+                }
                 return;
             }
-            if (reference != null && fk != null) _fluentKeys[reference] = fk;
-            if (reference != null && collection != null) _fluentInverse[collection] = reference;
+            if (reference != null && fk != null)
+            {
+                _fluentKeys[reference] = fk;
+            }
+            if (reference != null && collection != null)
+            {
+                _fluentInverse[collection] = reference;
+            }
         }
 
         private IPropertySymbol Nav(ExpressionSyntax x, SemanticModel model) =>
@@ -281,18 +370,34 @@ namespace CsVerify.Verifier
             {
                 var model = compilation.GetSemanticModel(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>())
+                {
                     if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (Has(t, "OwnedAttribute") || Has(t, "ComplexTypeAttribute")))
+                    {
                         _owned.Add(t.OriginalDefinition);
+                    }
+                }
                 foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     var name = inv.Expression is MemberAccessExpressionSyntax ma ? ma.Name : inv.Expression as SimpleNameSyntax;
-                    if (name == null || !OwningCalls.Contains(name.Identifier.Text)) continue;
+                    if (name == null || !OwningCalls.Contains(name.Identifier.Text))
+                    {
+                        continue;
+                    }
                     if (name is GenericNameSyntax g)
+                    {
                         foreach (var a in g.TypeArgumentList.Arguments)
-                            if (model.GetTypeInfo(a).Type is ITypeSymbol owned) _owned.Add(owned.OriginalDefinition);
+                        {
+                            if (model.GetTypeInfo(a).Type is ITypeSymbol owned)
+                            {
+                                _owned.Add(owned.OriginalDefinition);
+                            }
+                        }
+                    }
                     if (inv.ArgumentList.Arguments.FirstOrDefault()?.Expression is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax m } &&
                         model.GetSymbolInfo(m).Symbol is IPropertySymbol p)
+                    {
                         _owned.Add((NavigationTarget(p.Type, out _) ?? p.Type).OriginalDefinition);
+                    }
                 }
             }
         }
@@ -305,8 +410,15 @@ namespace CsVerify.Verifier
         {
             var seen = new HashSet<string>();
             for (var b = t; b != null && b.Locations.Any(l => l.IsInSource); b = b.BaseType)
+            {
                 foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
-                    if (seen.Add(p.Name)) yield return p;
+                {
+                    if (seen.Add(p.Name))
+                    {
+                        yield return p;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -318,22 +430,62 @@ namespace CsVerify.Verifier
             foreach (var e in _entities.Values.OrderBy(x => Depth(x.Type)))
             {
                 Entity b = null;
-                for (var up = e.Type.BaseType; up != null && b == null; up = up.BaseType) b = EntityOf(up);
-                if (b == null) continue;
-                if (b.Key.Count > 0) e.Key = new List<IPropertySymbol>(b.Key);
-                foreach (var filter in b.Filters) if (!e.Filters.Contains(filter)) e.AddFilter(filter);
-                foreach (var u in b.Unique) e.AddUnique(u);
-                foreach (var token in b.Tokens) if (!e.Tokens.Contains(token)) e.AddToken(token);
-                foreach (var v in b.RowVersions) e.AddRowVersion(v);
+                for (var up = e.Type.BaseType; up != null && b == null; up = up.BaseType)
+                {
+                    b = EntityOf(up);
+                }
+                if (b == null)
+                {
+                    continue;
+                }
+                if (b.Key.Count > 0)
+                {
+                    e.Key = new List<IPropertySymbol>(b.Key);
+                }
+                foreach (var filter in b.Filters)
+                {
+                    if (!e.Filters.Contains(filter))
+                    {
+                        e.AddFilter(filter);
+                    }
+                }
+                foreach (var u in b.Unique)
+                {
+                    e.AddUnique(u);
+                }
+                foreach (var token in b.Tokens)
+                {
+                    if (!e.Tokens.Contains(token))
+                    {
+                        e.AddToken(token);
+                    }
+                }
+                foreach (var v in b.RowVersions)
+                {
+                    e.AddRowVersion(v);
+                }
             }
         }
 
-        private int Depth(ITypeSymbol x) { int d = 0; for (var b = x.BaseType; b != null; b = b.BaseType) d++; return d; }
+        private int Depth(ITypeSymbol x)
+        {
+            int d = 0;
+            for (var b = x.BaseType; b != null; b = b.BaseType)
+            {
+                d++;
+            }
+            return d;
+        }
 
         public bool IsContextType(ITypeSymbol t)
         {
             for (var b = t as INamedTypeSymbol; b != null; b = b.BaseType)
-                if (SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, DbContextType)) return true;
+            {
+                if (SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, DbContextType))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -344,13 +496,21 @@ namespace CsVerify.Verifier
 
         private void Add(INamedTypeSymbol t)
         {
-            if (!_owned.Contains(t.OriginalDefinition) && !_entities.ContainsKey(t.OriginalDefinition)) _entities[t.OriginalDefinition] = new Entity { Type = t };
+            if (!_owned.Contains(t.OriginalDefinition) && !_entities.ContainsKey(t.OriginalDefinition))
+            {
+                _entities[t.OriginalDefinition] = new Entity { Type = t };
+            }
         }
 
         private static IEnumerable<ISymbol> AllMembers(INamedTypeSymbol t)
         {
             for (var b = t; b != null && b.Locations.Any(l => l.IsInSource); b = b.BaseType)
-                foreach (var m in b.GetMembers()) yield return m;
+            {
+                foreach (var m in b.GetMembers())
+                {
+                    yield return m;
+                }
+            }
         }
 
         private static bool IsSourceClass(INamedTypeSymbol t, IReadOnlyList<INamedTypeSymbol> sourceTypes) =>
@@ -388,20 +548,36 @@ namespace CsVerify.Verifier
         {
             var props = PropertiesOf(e.Type).ToList();
             var keys = props.Where(p => Has(p, "KeyAttribute")).ToList();
-            if (keys.Count > 0) e.Key = keys;
+            if (keys.Count > 0)
+            {
+                e.Key = keys;
+            }
             foreach (var p in props)
             {
-                if (Has(p, "ConcurrencyCheckAttribute")) e.AddToken(p);
-                if (Has(p, "TimestampAttribute")) { e.AddToken(p); e.AddRowVersion(p); }
+                if (Has(p, "ConcurrencyCheckAttribute"))
+                {
+                    e.AddToken(p);
+                }
+                if (Has(p, "TimestampAttribute"))
+                {
+                    e.AddToken(p);
+                    e.AddRowVersion(p);
+                }
             }
             // [Index(nameof(A), nameof(B), IsUnique = true)] on the class
             foreach (var a in e.Type.GetAttributes().Where(a => a.AttributeClass?.Name == "IndexAttribute"))
             {
                 bool unique = a.NamedArguments.Any(n => n.Key == "IsUnique" && n.Value.Value is true);
-                if (!unique) continue;
+                if (!unique)
+                {
+                    continue;
+                }
                 var names = a.ConstructorArguments.SelectMany(c => c.Kind == TypedConstantKind.Array ? (IEnumerable<TypedConstant>)c.Values : new[] { c }).Select(c => c.Value as string).ToList();
                 var set = names.Select(n => props.FirstOrDefault(p => p.Name == n)).ToList();
-                if (set.Count > 0 && set.All(p => p != null)) e.AddUnique(set);
+                if (set.Count > 0 && set.All(p => p != null))
+                {
+                    e.AddUnique(set);
+                }
             }
         }
 
@@ -416,12 +592,20 @@ namespace CsVerify.Verifier
                 var model = compilation.GetSemanticModel(tree);
                 foreach (var method in tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
                 {
-                    if (!(method.Identifier.Text == "OnModelCreating" || method.Identifier.Text == "Configure")) continue;
+                    if (!(method.Identifier.Text == "OnModelCreating" || method.Identifier.Text == "Configure"))
+                    {
+                        continue;
+                    }
                     foreach (var inv in method.DescendantNodes().OfType<InvocationExpressionSyntax>())
                     {
-                        if (!(inv.Expression is MemberAccessExpressionSyntax ma)) continue;
+                        if (!(inv.Expression is MemberAccessExpressionSyntax ma))
+                        {
+                            continue;
+                        }
                         if (model.GetTypeInfo(ma.Expression).Type is INamedTypeSymbol builder && builder.Name == "EntityTypeBuilder" && builder.TypeArguments.Length == 1)
+                        {
                             yield return (tree, inv, builder);
+                        }
                     }
                 }
             }
@@ -432,35 +616,60 @@ namespace CsVerify.Verifier
         {
             var model = compilation.GetSemanticModel(tree);
             var e = EntityOf(builder.TypeArguments[0]);
-            if (e == null) return;
+            if (e == null)
+            {
+                return;
+            }
             var name = ((MemberAccessExpressionSyntax)inv.Expression).Name.Identifier.Text;
             var arg = inv.ArgumentList.Arguments.FirstOrDefault()?.Expression;
             // what is called on the result: .IsUnique(), .IsConcurrencyToken(), .IsRowVersion()
             var next = new List<(string name, InvocationExpressionSyntax call)>();
             for (SyntaxNode n = inv; n.Parent is MemberAccessExpressionSyntax up && up.Parent is InvocationExpressionSyntax call; n = call)
+            {
                 next.Add((up.Name.Identifier.Text, call));
+            }
             switch (name)
             {
                 case "HasKey":
-                    if (Properties(model, arg, e) is List<IPropertySymbol> key) e.Key = key;
-                    else Unread.Add((inv.GetLocation(), "a key the verifier can't read"));
+                    if (Properties(model, arg, e) is List<IPropertySymbol> key)
+                    {
+                        e.Key = key;
+                    }
+                    else
+                    {
+                        Unread.Add((inv.GetLocation(), "a key the verifier can't read"));
+                    }
                     break;
                 case "HasAlternateKey":
-                    if (Properties(model, arg, e) is List<IPropertySymbol> alt) e.AddUnique(alt);
+                    if (Properties(model, arg, e) is List<IPropertySymbol> alt)
+                    {
+                        e.AddUnique(alt);
+                    }
                     break;
                 case "HasIndex":
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
                         && Properties(model, arg, e) is List<IPropertySymbol> index)
+                    {
                         e.AddUnique(index);
+                    }
                     break;
                 case "Property":
                     if (Properties(model, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
-                        if (Called("IsRowVersion", out _, next)) { if (!e.Tokens.Contains(p[0])) e.AddToken(p[0]); e.AddRowVersion(p[0]); }
+                        if (Called("IsRowVersion", out _, next))
+                        {
+                            if (!e.Tokens.Contains(p[0]))
+                            {
+                                e.AddToken(p[0]);
+                            }
+                            e.AddRowVersion(p[0]);
+                        }
                         else if (Called("IsConcurrencyToken", out var token, next) &&
                                  !(token.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax f && f.IsKind(SyntaxKind.FalseLiteralExpression)) &&
                                  !e.Tokens.Contains(p[0]))
+                        {
                             e.AddToken(p[0]);
+                        }
                     }
                     break;
                 case "HasOne":
@@ -470,11 +679,15 @@ namespace CsVerify.Verifier
                 case "OwnsOne":
                 case "OwnsMany":
                     if (arg is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax owned } && model.GetSymbolInfo(owned).Symbol is IPropertySymbol ownedNav)
+                    {
                         _unreadNavigations.Add(ownedNav);
+                    }
                     break;
                 case "HasQueryFilter":
                     if (arg is LambdaExpressionSyntax lambda && model.GetOperation(lambda) is IAnonymousFunctionOperation filter)
+                    {
                         e.AddFilter(filter);
+                    }
                     // (a filter that isn't a lambda only removes rows: it says nothing, which is what is assumed)
                     break;
             }
@@ -489,7 +702,10 @@ namespace CsVerify.Verifier
         /// <summary>The properties a lambda names: x => x.P, or x => new { x.A, x.B }.</summary>
         private static List<IPropertySymbol> Properties(SemanticModel model, ExpressionSyntax arg, Entity e)
         {
-            if (!(arg is SimpleLambdaExpressionSyntax lambda)) return null;
+            if (!(arg is SimpleLambdaExpressionSyntax lambda))
+            {
+                return null;
+            }
             switch (lambda.Body)
             {
                 case MemberAccessExpressionSyntax m:

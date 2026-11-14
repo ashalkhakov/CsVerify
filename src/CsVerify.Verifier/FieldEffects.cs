@@ -40,7 +40,10 @@ namespace CsVerify.Verifier
         private readonly Engine _engine;
         private readonly Dictionary<IMethodSymbol, Direct> _direct = new Dictionary<IMethodSymbol, Direct>(SymbolEqualityComparer.Default);
 
-        public FieldEffects(Engine engine) { _engine = engine; }
+        public FieldEffects(Engine engine)
+        {
+            _engine = engine;
+        }
 
         /// <summary>
         /// A member stored as mutable object state: an instance field or auto-property of a source class, or a mutable
@@ -48,15 +51,27 @@ namespace CsVerify.Verifier
         /// </summary>
         public static bool IsHeapField(ISymbol s)
         {
-            if (s == null || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class) return false;
-            if (t.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || s.DeclaringSyntaxReferences.Length == 0) return false;
-            if (s.IsStatic) return s is IFieldSymbol sf && !sf.IsConst && !sf.IsReadOnly && !sf.IsImplicitlyDeclared;
+            if (s == null || !(s.ContainingType is INamedTypeSymbol t) || t.TypeKind != TypeKind.Class)
+            {
+                return false;
+            }
+            if (t.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || s.DeclaringSyntaxReferences.Length == 0)
+            {
+                return false;
+            }
+            if (s.IsStatic)
+            {
+                return s is IFieldSymbol sf && !sf.IsConst && !sf.IsReadOnly && !sf.IsImplicitlyDeclared;
+            }
             switch (s)
             {
                 case IFieldSymbol f:
                     return !f.IsConst && !f.IsImplicitlyDeclared;
                 case IPropertySymbol p:
-                    if (p.IsIndexer || p.IsAbstract || p.IsVirtual || p.IsOverride) return false;
+                    if (p.IsIndexer || p.IsAbstract || p.IsVirtual || p.IsOverride)
+                    {
+                        return false;
+                    }
                     // an auto-property: accessors without bodies, declared as a property (positional ones are values)
                     return p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is PropertyDeclarationSyntax pd && pd.AccessorList != null &&
                                                                pd.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
@@ -104,16 +119,25 @@ namespace CsVerify.Verifier
         /// <summary>Could a value of this type be, or hold where a library can reach it, an object with [Model] functions?</summary>
         private bool ReachesModels(ITypeSymbol t)
         {
-            if (_engine.Models.Count == 0) return false;
+            if (_engine.Models.Count == 0)
+            {
+                return false;
+            }
             switch (t)
             {
                 case null: return false;
                 case IArrayTypeSymbol a: return ReachesModels(a.ElementType);
                 case ITypeParameterSymbol _: return true;
             }
-            if (t.SpecialType == SpecialType.System_String || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.Delegate) return t.SpecialType != SpecialType.System_String;
+            if (t.SpecialType == SpecialType.System_String || t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.Delegate)
+            {
+                return t.SpecialType != SpecialType.System_String;
+            }
             var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(x => x != null);
-            if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t))) return true;
+            if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t)))
+            {
+                return true;
+            }
             return t is INamedTypeSymbol n && n.TypeArguments.Any(ReachesModels);
         }
 
@@ -141,8 +165,15 @@ namespace CsVerify.Verifier
         public static IEnumerable<ISymbol> FieldsOf(ITypeSymbol type)
         {
             for (var t = (type as INamedTypeSymbol)?.OriginalDefinition; t != null; t = t.BaseType?.OriginalDefinition)
+            {
                 foreach (var m in t.GetMembers())
-                    if (!m.IsStatic && IsHeapField(m)) yield return Key(m);
+                {
+                    if (!m.IsStatic && IsHeapField(m))
+                    {
+                        yield return Key(m);
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -158,19 +189,35 @@ namespace CsVerify.Verifier
         private Direct DirectOf(IMethodSymbol m)
         {
             m = Normal(m);
-            if (_direct.TryGetValue(m, out var d)) return d;
+            if (_direct.TryGetValue(m, out var d))
+            {
+                return d;
+            }
             _direct[m] = d = new Direct();
             // which body a virtual or interface call runs is not known statically: anything may be written
             if ((m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface) &&
                 !m.IsSealed && m.ContainingType?.IsSealed != true && !m.IsStatic)
+            {
                 d.All = true;
+            }
             // a data value's constructor builds a value: it changes no state (its header's computed base arguments are pure)
-            if (m.MethodKind == MethodKind.Constructor && _engine.Data.IsData(m.ContainingType)) return d;
+            if (m.MethodKind == MethodKind.Constructor && _engine.Data.IsData(m.ContainingType))
+            {
+                return d;
+            }
             // a source class's implicit constructor only sets the new object's fields (defaults, initializers)
-            if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0) return d;
+            if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0)
+            {
+                return d;
+            }
             // a virtual member may run any override: they are all reachable from it
             if (Engine.IsOverridable(m))
-                foreach (var o in Overrides(m)) d.AddCallee(o);
+            {
+                foreach (var o in Overrides(m))
+                {
+                    d.AddCallee(o);
+                }
+            }
             var c = _engine.ContractOf(m.OriginalDefinition);
             if (!c.HasSource || c.IsStub)
             {
@@ -178,9 +225,18 @@ namespace CsVerify.Verifier
                 // (its receiver included: a delegate's Invoke)
                 d.All = RunsUserCode(m) && !c.IsPure; // (a [Pure] stub says it has no effects: trusted, like all it says)
                 // model state: a stub says what it changes (Spec.Modifies, or nothing); without one, anything it reaches
-                if (!c.IsStub && MayTouchModels(m)) d.AddWrites(MutableModels());
-                if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor)) d.AddWrites(ModelsOf(m.ContainingType));
-                if (c.IsStub) AddModelReads(d, c);
+                if (!c.IsStub && MayTouchModels(m))
+                {
+                    d.AddWrites(MutableModels());
+                }
+                if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor))
+                {
+                    d.AddWrites(ModelsOf(m.ContainingType));
+                }
+                if (c.IsStub)
+                {
+                    AddModelReads(d, c);
+                }
                 return d;
             }
             bool ctor = m.MethodKind == MethodKind.Constructor;
@@ -194,12 +250,21 @@ namespace CsVerify.Verifier
                         ExpressionSyntax access = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : (ExpressionSyntax)name;
                         var (read, write) = Usage(access);
                         var key = Key(s);
-                        if (read) d.AddRead(key);
+                        if (read)
+                        {
+                            d.AddRead(key);
+                        }
                         // (reading an atomic field moves what the reader knows of it on, past the others' steps)
                         if (write || read && Atomics.IsAtomic(s))
                         {
                             bool onThis = access is SimpleNameSyntax || access is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax;
-                            if (ctor && onThis) d.AddSelfWrite(key); else d.AddWrite(key);
+                            if (ctor && onThis)
+                            {
+                                d.AddSelfWrite(key);
+                            } else
+                            {
+                                d.AddWrite(key);
+                            }
                         }
                         break;
                     }
@@ -209,13 +274,25 @@ namespace CsVerify.Verifier
                     {
                         ExpressionSyntax access = pe.Parent is MemberAccessExpressionSyntax pm && pm.Name == pe ? pm : pe;
                         var (read, write) = Usage(access);
-                        if (read && sp.GetMethod != null && _engine.HasStub(sp.GetMethod)) AddCallee(d, sp.GetMethod);
-                        if (write && sp.SetMethod != null) AddCallee(d, sp.SetMethod);
+                        if (read && sp.GetMethod != null && _engine.HasStub(sp.GetMethod))
+                        {
+                            AddCallee(d, sp.GetMethod);
+                        }
+                        if (write && sp.SetMethod != null)
+                        {
+                            AddCallee(d, sp.SetMethod);
+                        }
                         break;
                     }
                     case InvocationExpressionSyntax inv when c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
-                        if (SpecSymbols.IsModel(callee.ReducedFrom ?? callee.OriginalDefinition)) d.AddRead((callee.ReducedFrom ?? callee).OriginalDefinition);
-                        else if (!SpecSymbols.IsSpecClass(callee.ContainingType)) AddCallee(d, callee);
+                        if (SpecSymbols.IsModel(callee.ReducedFrom ?? callee.OriginalDefinition))
+                        {
+                            d.AddRead((callee.ReducedFrom ?? callee).OriginalDefinition);
+                        }
+                        else if (!SpecSymbols.IsSpecClass(callee.ContainingType))
+                        {
+                            AddCallee(d, callee);
+                        }
                         break;
                     case BaseObjectCreationExpressionSyntax oc when c.Model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctorCallee:
                         AddCallee(d, ctorCallee);
@@ -232,16 +309,28 @@ namespace CsVerify.Verifier
         private void AddModelReads(Direct d, Contract stub)
         {
             foreach (var inv in stub.Declaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
                 if (stub.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)
                 {
                     var key = (callee.ReducedFrom ?? callee).OriginalDefinition;
-                    if (SpecSymbols.IsModel(key)) d.AddRead(key);
-                    else if (!SpecSymbols.IsSpecClass(callee.ContainingType) && !SpecSymbols.IsSeqType(callee.ContainingType)) AddCallee(d, callee);
+                    if (SpecSymbols.IsModel(key))
+                    {
+                        d.AddRead(key);
+                    }
+                    else if (!SpecSymbols.IsSpecClass(callee.ContainingType) && !SpecSymbols.IsSeqType(callee.ContainingType))
+                    {
+                        AddCallee(d, callee);
+                    }
                 }
+            }
             // (and the stubbed members its contract names: list.Count)
             foreach (var name in stub.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
+            {
                 if (stub.Model.GetSymbolInfo(name).Symbol is IPropertySymbol p && p.GetMethod != null && _engine.HasStub(p.GetMethod))
+                {
                     AddCallee(d, p.GetMethod);
+                }
+            }
         }
 
         /// <summary>The source methods that override or implement <paramref name="m"/>.</summary>
@@ -256,8 +345,12 @@ namespace CsVerify.Verifier
             {
                 var b = work.Pop();
                 foreach (var o in all)
+                {
                     if (!SymbolEqualityComparer.Default.Equals(o, b) && _engine.BaseMembers(o).Contains(b, SymbolEqualityComparer.Default) && found.Add(o.OriginalDefinition))
+                    {
                         work.Push(o.OriginalDefinition);
+                    }
+                }
             }
             return found;
         }
@@ -283,8 +376,14 @@ namespace CsVerify.Verifier
         {
             var m = inv.TargetMethod;
             if ((m.MethodKind != MethodKind.Constructor || m.Parameters.Length > 0 && !m.Parameters.All(p => p.Type.SpecialType != SpecialType.None)) &&
-                m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(t => HandsOver(t) || ReachesModels(t))) return true;
-            if (!m.IsStatic && m.MethodKind != MethodKind.Constructor && May(m.ContainingType, inv.Instance)) return true;
+                m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(t => HandsOver(t) || ReachesModels(t)))
+            {
+                return true;
+            }
+            if (!m.IsStatic && m.MethodKind != MethodKind.Constructor && May(m.ContainingType, inv.Instance))
+            {
+                return true;
+            }
             return inv.Arguments.Any(a => a.Parameter != null && May(a.Parameter.Type, a.ArgumentKind == ArgumentKind.Explicit ? a.Value : null));
         }
 
@@ -300,13 +399,32 @@ namespace CsVerify.Verifier
         public bool RunsOtherCodeAt(IInvocationOperation inv, System.Func<IOperation, bool> delegateOk)
         {
             var m = inv.TargetMethod;
-            if (m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver)) return true;
-            if (!m.IsStatic && inv.Instance != null && HandsOver(Handed(inv.Instance))) return true;
+            if (m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(HandsOver))
+            {
+                return true;
+            }
+            if (!m.IsStatic && inv.Instance != null && HandsOver(Handed(inv.Instance)))
+            {
+                return true;
+            }
             foreach (var a in inv.Arguments)
             {
-                if (a.Parameter == null) return true;
-                if (a.Parameter.Type.TypeKind == TypeKind.Delegate) { if (!delegateOk(a.Value)) return true; continue; }
-                if (a.ArgumentKind != ArgumentKind.Explicit ? HandsOver(a.Parameter.Type) : HandsOver(Handed(a.Value))) return true;
+                if (a.Parameter == null)
+                {
+                    return true;
+                }
+                if (a.Parameter.Type.TypeKind == TypeKind.Delegate)
+                {
+                    if (!delegateOk(a.Value))
+                    {
+                        return true;
+                    }
+                    continue;
+                }
+                if (a.ArgumentKind != ArgumentKind.Explicit ? HandsOver(a.Parameter.Type) : HandsOver(Handed(a.Value)))
+                {
+                    return true;
+                }
             }
             return false;
         }
@@ -314,7 +432,10 @@ namespace CsVerify.Verifier
         /// <summary>The type of what is handed over: under implicit reference conversions (to object, to a base class).</summary>
         private static ITypeSymbol Handed(IOperation op)
         {
-            while (op is IConversionOperation c && c.IsImplicit && c.Conversion.IsReference && c.Operand.Type != null) op = c.Operand;
+            while (op is IConversionOperation c && c.IsImplicit && c.Conversion.IsReference && c.Operand.Type != null)
+            {
+                op = c.Operand;
+            }
             // a program class's object: only its class and subclasses can be there; a library type or interface: anything
             return op.Type is INamedTypeSymbol t && t.TypeKind == TypeKind.Class && t.DeclaringSyntaxReferences.Length > 0 ? t : op.Type;
         }
@@ -332,8 +453,14 @@ namespace CsVerify.Verifier
                 case IArrayTypeSymbol a: return HandsOver(a.ElementType);
                 case ITypeParameterSymbol _: return true;
             }
-            if (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object) return true;
-            if (t.TypeKind != TypeKind.Class) return t is INamedTypeSymbol v && v.TypeArguments.Any(HandsOver); // a struct holding them
+            if (t.TypeKind == TypeKind.Delegate || t.TypeKind == TypeKind.Interface || t.SpecialType == SpecialType.System_Object)
+            {
+                return true;
+            }
+            if (t.TypeKind != TypeKind.Class)
+            {
+                return t is INamedTypeSymbol v && v.TypeArguments.Any(HandsOver); // a struct holding them
+            } // a struct holding them
             return _engine.SourceTypes.Any(s => DataTypes.Derives(s, t) && RunsUserCode(s)) || ((INamedTypeSymbol)t).TypeArguments.Any(HandsOver);
         }
 
@@ -351,7 +478,10 @@ namespace CsVerify.Verifier
         private static (bool read, bool write) Usage(ExpressionSyntax access)
         {
             var e = access;
-            while (e.Parent is ParenthesizedExpressionSyntax p) e = p;
+            while (e.Parent is ParenthesizedExpressionSyntax p)
+            {
+                e = p;
+            }
             switch (e.Parent)
             {
                 case AssignmentExpressionSyntax a when a.Left == e:
@@ -376,8 +506,14 @@ namespace CsVerify.Verifier
             while (work.Count > 0)
             {
                 var next = work.Pop();
-                if (!seen.Add(next)) continue;
-                foreach (var callee in DirectOf(next).Callees) work.Push(callee);
+                if (!seen.Add(next))
+                {
+                    continue;
+                }
+                foreach (var callee in DirectOf(next).Callees)
+                {
+                    work.Push(callee);
+                }
             }
             return seen.ToList();
         }
@@ -413,11 +549,16 @@ namespace CsVerify.Verifier
             foreach (var m in Reachable(invariant))
             {
                 var c = _engine.ContractOf(m);
-                if (!c.HasSource) continue;
+                if (!c.HasSource)
+                {
+                    continue;
+                }
                 // array contents can be written by anyone holding the array (lengths never change)
                 if (owned && c.Declaration.DescendantNodes().OfType<ElementAccessExpressionSyntax>()
                         .FirstOrDefault(e => c.Model.GetTypeInfo(e.Expression).Type is IArrayTypeSymbol) is ElementAccessExpressionSyntax element)
+                {
                     return $"it reads '{element}', an array element, which anyone holding the array can change";
+                }
                 foreach (var name in c.Declaration.DescendantNodes().OfType<SimpleNameSyntax>())
                 {
                     var s = c.Model.GetSymbolInfo(name).Symbol;
@@ -425,16 +566,29 @@ namespace CsVerify.Verifier
                     bool onOther = m.IsStatic || access != null && !(access.Expression is ThisExpressionSyntax);
                     if (s != null && IsHeapField(s))
                     {
-                        if (!owned) return $"it reads '{access ?? (SyntaxNode)name}', a mutable field";
+                        if (!owned)
+                        {
+                            return $"it reads '{access ?? (SyntaxNode)name}', a mutable field";
+                        }
                         bool fixedField = s is IFieldSymbol rf && rf.IsReadOnly || s is IPropertySymbol rp && (rp.SetMethod == null || rp.SetMethod.IsInitOnly);
-                        if (!SpecSymbols.IsOwned(s.ContainingType) && !fixedField) return $"it reads '{access ?? (SyntaxNode)name}', which code without this object's view can change";
-                        if (m.IsStatic) return $"'{m.Name}' reads '{access ?? (SyntaxNode)name}' of whatever object it is given; read owned fields through this";
+                        if (!SpecSymbols.IsOwned(s.ContainingType) && !fixedField)
+                        {
+                            return $"it reads '{access ?? (SyntaxNode)name}', which code without this object's view can change";
+                        }
+                        if (m.IsStatic)
+                        {
+                            return $"'{m.Name}' reads '{access ?? (SyntaxNode)name}' of whatever object it is given; read owned fields through this";
+                        }
                         if (onOther && !OwnedChild(access.Expression, c.Model))
+                        {
                             return $"it reads '{access ?? (SyntaxNode)name}' of another object, whose view someone else may hold";
+                        }
                     }
                     else if (s is IMethodSymbol callee && !callee.IsStatic && access != null && !(access.Expression is ThisExpressionSyntax) &&
                              ReadsOf(callee).Count > 0)
+                    {
                         return $"it calls '{access}', which reads the mutable state of another object";
+                    }
                 }
             }
             return null;
@@ -446,7 +600,10 @@ namespace CsVerify.Verifier
         /// </summary>
         private static bool OwnedChild(ExpressionSyntax e, SemanticModel model)
         {
-            if (!(e is IdentifierNameSyntax || e is MemberAccessExpressionSyntax m && m.Expression is ThisExpressionSyntax)) return false;
+            if (!(e is IdentifierNameSyntax || e is MemberAccessExpressionSyntax m && m.Expression is ThisExpressionSyntax))
+            {
+                return false;
+            }
             return model.GetSymbolInfo(e).Symbol is ISymbol s && SpecSymbols.IsOwnsField(s);
         }
 

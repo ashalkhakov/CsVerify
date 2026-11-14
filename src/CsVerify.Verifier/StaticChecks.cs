@@ -52,13 +52,25 @@ namespace CsVerify.Verifier
         {
             var body = _model.GetOperation(_contract.Declaration);
             ControlFlowGraph cfg;
-            if (NestedGraph != null) cfg = NestedGraph;
-            else switch (body)
+            if (NestedGraph != null)
             {
-                case IMethodBodyOperation mb: cfg = ControlFlowGraph.Create(mb); break;
-                case IConstructorBodyOperation cb: cfg = ControlFlowGraph.Create(cb); break;
-                case IBlockOperation block: cfg = ControlFlowGraph.Create(block); break; // an expression-bodied property
-                default: return;
+                cfg = NestedGraph;
+            }
+            else
+            {
+                switch (body)
+                {
+                    case IMethodBodyOperation mb:
+                        cfg = ControlFlowGraph.Create(mb);
+                        break;
+                    case IConstructorBodyOperation cb:
+                        cfg = ControlFlowGraph.Create(cb);
+                        break;
+                    case IBlockOperation block:
+                        cfg = ControlFlowGraph.Create(block);
+                        break; // an expression-bodied property // an expression-bodied property
+                    default: return;
+                }
             }
             FindContractStatements();
             CheckLocking();
@@ -67,23 +79,40 @@ namespace CsVerify.Verifier
             CheckFlagUses();
             CheckContextConcurrency();
             CheckConcurrentMarks();
-            if (SpecSymbols.IsPredicate(_method)) return;
+            if (SpecSymbols.IsPredicate(_method))
+            {
+                return;
+            }
             if (SpecSymbols.IsInvariant(_method) && !Data.IsData(_method.ContainingType) && !SpecSymbols.IsOwned(_method.ContainingType) && !IsImmutableClass(_method.ContainingType))
+            {
                 Warn(MethodLocationNode(), $"[Invariant] '{_method.Name}' is not used: {_method.ContainingType.Name} is mutable. Make it immutable (readonly fields) or [Owned], or state the invariant as a Valid() precondition (Dafny style)");
+            }
             if (SpecSymbols.IsInvariant(_method) && (Data.IsData(_method.ContainingType) || SpecSymbols.IsOwned(_method.ContainingType) || IsImmutableClass(_method.ContainingType)) &&
                 _engine.Fields.InvariantDependence(_method, !Data.IsData(_method.ContainingType)) is string why)
+            {
                 Report("CSV1015", MethodLocationNode(), $"invariant '{_method.Name}' could be broken behind its back: {why}", isError: true);
-            if (ProofCode && _method.IsAsync) NotModeled(MethodLocationNode(), "a lemma or [Pure] function cannot be async");
+            }
+            if (ProofCode && _method.IsAsync)
+            {
+                NotModeled(MethodLocationNode(), "a lemma or [Pure] function cannot be async");
+            }
         }
 
         private void FindContractStatements()
         {
             BlockSyntax block = (_contract.Declaration as BaseMethodDeclarationSyntax)?.Body ?? (_contract.Declaration as AccessorDeclarationSyntax)?.Body ??
                                 (_contract.Declaration as LocalFunctionStatementSyntax)?.Body ?? (_contract.Declaration as AnonymousFunctionExpressionSyntax)?.Block;
-            if (block == null) return;
+            if (block == null)
+            {
+                return;
+            }
             foreach (var s in block.Statements.OfType<ExpressionStatementSyntax>())
+            {
                 if (s.Expression is InvocationExpressionSyntax inv && SpecName(inv) is string n && (n == "Requires" || n == "Ensures" || n == "EnsuresOnThrow" || n == "Decreases" || n == "Modifies" || n == "Reads"))
+                {
                     _contractStatements.Add(inv);
+                }
+            }
         }
 
         private string SpecName(InvocationExpressionSyntax inv) =>
@@ -93,8 +122,14 @@ namespace CsVerify.Verifier
 
         private void Report(string id, SyntaxNode at, string message, bool isError, IReadOnlyCollection<string> causes = null)
         {
-            if (isError && !_engine.Options.Checked(id)) return;
-            if (!_reported.Add((id, at.Span))) return;
+            if (isError && !_engine.Options.Checked(id))
+            {
+                return;
+            }
+            if (!_reported.Add((id, at.Span)))
+            {
+                return;
+            }
             _result.AddDiagnostic(new VerificationDiagnostic(id, isError, message, at.GetLocation().GetLineSpan())
             {
                 Causes = causes ?? (IReadOnlyCollection<string>)Array.Empty<string>(),
@@ -115,7 +150,10 @@ namespace CsVerify.Verifier
             bool degrade = _engine.Options.CheckKinds != null;
             int before = _result.Diagnostics.Count;
             Report("CSV1901", at, degrade ? message + " (not modeled: treated as unknown)" : message, isError: !degrade);
-            if (degrade && _result.Diagnostics.Count > before) _result.Unmodeled++;
+            if (degrade && _result.Diagnostics.Count > before)
+            {
+                _result.Unmodeled++;
+            }
         }
 
         internal static bool IsSequence(ITypeSymbol t) =>
@@ -133,7 +171,10 @@ namespace CsVerify.Verifier
         /// <summary>The operand under implicit reference conversions (reference == converts both sides to object).</summary>
         private static IOperation Unconverted(IOperation op)
         {
-            while (op is IConversionOperation c && c.IsImplicit && c.Conversion.IsReference) op = c.Operand;
+            while (op is IConversionOperation c && c.IsImplicit && c.Conversion.IsReference)
+            {
+                op = c.Operand;
+            }
             return op;
         }
 

@@ -23,13 +23,21 @@ namespace CsVerify.Verifier
 
         public DataTypes(Compilation compilation, IEnumerable<SyntaxTree> userTrees)
         {
-            foreach (var i in compilation.GetSpecialType(SpecialType.System_String).AllInterfaces) _stringInterfaces.Add(i.OriginalDefinition);
+            foreach (var i in compilation.GetSpecialType(SpecialType.System_String).AllInterfaces)
+            {
+                _stringInterfaces.Add(i.OriginalDefinition);
+            }
             var candidates = new List<INamedTypeSymbol>();
             foreach (var tree in userTrees)
             {
                 var model = compilation.GetSemanticModel(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<RecordDeclarationSyntax>())
-                    if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (t.TypeKind == TypeKind.Class || SpecSymbols.IsLinearPackage(t))) candidates.Add(t);
+                {
+                    if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (t.TypeKind == TypeKind.Class || SpecSymbols.IsLinearPackage(t)))
+                    {
+                        candidates.Add(t);
+                    }
+                }
             }
             // a record is data if its own state is positional and its base (if any) is data too
             bool changed = true;
@@ -38,20 +46,33 @@ namespace CsVerify.Verifier
             {
                 changed = false;
                 foreach (var t in candidates)
+                {
                     if (!data.Contains(t) && HasDataShape(t) && (t.BaseType?.SpecialType == SpecialType.System_Object ||
                         t.BaseType?.SpecialType == SpecialType.System_ValueType || data.Contains(Def(t.BaseType))))
+                    {
                         changed = data.Add(t) || changed;
+                    }
+                }
             }
             int tag = 1;
-            foreach (var t in candidates.Where(data.Contains)) _tags[t] = tag++;
+            foreach (var t in candidates.Where(data.Contains))
+            {
+                _tags[t] = tag++;
+            }
         }
 
         private static bool HasDataShape(INamedTypeSymbol t)
         {
-            if (!(t.IsSealed || t.IsAbstract)) return false;
+            if (!(t.IsSealed || t.IsAbstract))
+            {
+                return false;
+            }
             foreach (var m in t.GetMembers())
             {
-                if (m.IsStatic || m.IsImplicitlyDeclared && !(m is IFieldSymbol)) continue;
+                if (m.IsStatic || m.IsImplicitlyDeclared && !(m is IFieldSymbol))
+                {
+                    continue;
+                }
                 switch (m)
                 {
                     // every field is the backing field of a positional property
@@ -61,7 +82,9 @@ namespace CsVerify.Verifier
                         if (!t.IsAbstract || c.Parameters.Length > 0 ||
                             c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ConstructorDeclarationSyntax cd &&
                                 ((cd.Body?.Statements.Count ?? 0) > 0 || cd.ExpressionBody != null || cd.Initializer != null)))
+                        {
                             return false;
+                        }
                         break;
                 }
             }
@@ -109,17 +132,31 @@ namespace CsVerify.Verifier
             t = Def(t);
             var name = PrimaryConstructor(t)?.Parameters[ordinal].Name;
             for (var s = t; s != null; s = Def(s.BaseType))
-                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p) return p.OriginalDefinition;
+            {
+                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p)
+                {
+                    return p.OriginalDefinition;
+                }
+            }
             return null;
         }
 
         /// <summary>A closed type's cases: the non-abstract data records derived from it (itself, if not abstract).</summary>
         public IReadOnlyList<INamedTypeSymbol> Cases(INamedTypeSymbol t)
         {
-            if (!IsData(t)) return null;
+            if (!IsData(t))
+            {
+                return null;
+            }
             t = Def(t);
-            if (!t.IsAbstract) return new[] { t };
-            if (!IsClosed(t)) return null;
+            if (!t.IsAbstract)
+            {
+                return new[] { t };
+            }
+            if (!IsClosed(t))
+            {
+                return null;
+            }
             return _tags.Keys.Where(c => !c.IsAbstract && Derives(c, t)).ToList();
         }
 
@@ -135,11 +172,18 @@ namespace CsVerify.Verifier
             // (the record's synthesized copy constructor is protected; deriving through it from another assembly is
             // not considered)
             if (t.InstanceConstructors.All(c => c.DeclaredAccessibility == Accessibility.Private ||
-                                               c.IsImplicitlyDeclared && c.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(c.Parameters[0].Type, t))) return true;
+                                               c.IsImplicitlyDeclared && c.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(c.Parameters[0].Type, t)))
+            {
+                return true;
+            }
             for (ISymbol s = t; s is INamedTypeSymbol n; s = s.ContainingType)
+            {
                 if (n.DeclaredAccessibility == Accessibility.Private || n.DeclaredAccessibility == Accessibility.Internal ||
                     n.DeclaredAccessibility == Accessibility.ProtectedAndInternal)
+                {
                     return true;
+                }
+            }
             return false;
         }
 
@@ -147,7 +191,12 @@ namespace CsVerify.Verifier
         public static bool Derives(ITypeSymbol t, ITypeSymbol from)
         {
             for (var s = t; s != null; s = s.BaseType)
-                if (SymbolEqualityComparer.Default.Equals(s, from) || from is INamedTypeSymbol && SymbolEqualityComparer.Default.Equals(Def(s), Def(from))) return true;
+            {
+                if (SymbolEqualityComparer.Default.Equals(s, from) || from is INamedTypeSymbol && SymbolEqualityComparer.Default.Equals(Def(s), Def(from)))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -155,10 +204,16 @@ namespace CsVerify.Verifier
         public static IEnumerable<IMethodSymbol> Invariants(ITypeSymbol t)
         {
             for (var s = t as INamedTypeSymbol; s != null; s = s.BaseType)
+            {
                 foreach (var m in s.GetMembers().OfType<IMethodSymbol>())
+                {
                     if (SpecSymbols.IsInvariant(m) && !m.IsStatic && m.Parameters.Length == 0 &&
                         m.ReturnType.SpecialType == SpecialType.System_Boolean && SpecSymbols.IsPure(m))
+                    {
                         yield return m;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -170,15 +225,26 @@ namespace CsVerify.Verifier
         public bool HasValueEquality(INamedTypeSymbol t, HashSet<string> seen = null)
         {
             seen ??= new HashSet<string>();
-            if (!seen.Add(t.ToDisplayString())) return true;
+            if (!seen.Add(t.ToDisplayString()))
+            {
+                return true;
+            }
             var cases = Cases(t);
-            if (cases == null) return false;
+            if (cases == null)
+            {
+                return false;
+            }
             var rootArgs = Arguments(t);
             foreach (var c in cases)
             {
                 var subst = CaseArguments(c, Def(t), rootArgs);
                 foreach (var p in Fields(c))
-                    if (!(Substitute(p.Type, subst) is ITypeSymbol ft) || !ComparesAsModeled(ft, seen)) return false;
+                {
+                    if (!(Substitute(p.Type, subst) is ITypeSymbol ft) || !ComparesAsModeled(ft, seen))
+                    {
+                        return false;
+                    }
+                }
             }
             return true;
         }
@@ -193,8 +259,12 @@ namespace CsVerify.Verifier
         {
             var map = new Dictionary<ITypeParameterSymbol, ITypeSymbol>(SymbolEqualityComparer.Default);
             for (var s = t; s != null; s = s.ContainingType)
+            {
                 for (int i = 0; i < s.TypeArguments.Length; i++)
+                {
                     map[s.OriginalDefinition.TypeParameters[i]] = s.TypeArguments[i];
+                }
+            }
             return map;
         }
 
@@ -207,10 +277,18 @@ namespace CsVerify.Verifier
         {
             var map = new Dictionary<ITypeParameterSymbol, ITypeSymbol>(rootArgs, SymbolEqualityComparer.Default);
             for (var s = c; s != null && !SymbolEqualityComparer.Default.Equals(Def(s), root); s = s.BaseType)
+            {
                 if (s.BaseType is INamedTypeSymbol b && SymbolEqualityComparer.Default.Equals(Def(b), root))
+                {
                     for (int i = 0; i < b.TypeArguments.Length; i++)
+                    {
                         if (b.TypeArguments[i] is ITypeParameterSymbol own && rootArgs.TryGetValue(root.TypeParameters[i], out var arg))
+                        {
                             map[own] = arg;
+                        }
+                    }
+                }
+            }
             return map;
         }
 
@@ -228,7 +306,10 @@ namespace CsVerify.Verifier
                 case INamedTypeSymbol n when n.ContainingType?.IsGenericType == true:
                 {
                     // a type nested in a generic one (List<T>.Cons): rebuild the container, then find the member
-                    if (!(Substitute(n.ContainingType, map) is INamedTypeSymbol outer) || n.TypeArguments.Length > 0) return null;
+                    if (!(Substitute(n.ContainingType, map) is INamedTypeSymbol outer) || n.TypeArguments.Length > 0)
+                    {
+                        return null;
+                    }
                     return outer.GetTypeMembers(n.Name).FirstOrDefault();
                 }
                 default: return t;

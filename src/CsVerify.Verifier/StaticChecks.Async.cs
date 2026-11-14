@@ -27,12 +27,19 @@ namespace CsVerify.Verifier
         /// </summary>
         private void CheckConcurrentMarks()
         {
-            if (SpecSymbols.HasAttribute(_method, "TrustedAttribute")) return;
+            if (SpecSymbols.HasAttribute(_method, "TrustedAttribute"))
+            {
+                return;
+            }
             foreach (var (at, callee, why) in _engine.StartedDelegates.UnmarkedIn(_contract.Declaration))
+            {
                 if (_engine.StartedDelegates.Claim(at))
+                {
                     Report("CSV1028", at, callee.MethodKind == MethodKind.DelegateInvoke
                         ? $"a '{callee.ContainingType.Name}' runs concurrently ({why}), but the delegate type isn't marked so: say [RunsConcurrently] on it, and every lambda made one is checked as such"
                         : $"'{callee.Name}' runs concurrently ({why}), but isn't marked so: say [RunsConcurrently] on it or its class, and it is checked as such", isError: true);
+                }
+            }
         }
     }
 }

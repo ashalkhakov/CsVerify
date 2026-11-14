@@ -18,10 +18,16 @@ namespace CsVerify.Verifier
         internal static (SyntaxNode at, string message)? FormatProblem(IInvocationOperation inv)
         {
             var m = inv.TargetMethod;
-            if (!IsFormatMethod(m)) return null;
+            if (!IsFormatMethod(m))
+            {
+                return null;
+            }
             var format = inv.Arguments.FirstOrDefault(a => a.Parameter?.Name == "format");
             if (format == null || format.Parameter.Type.SpecialType != SpecialType.System_String ||
-                !(format.Value.ConstantValue is { HasValue: true, Value: string text })) return null;
+                !(format.Value.ConstantValue is { HasValue: true, Value: string text }))
+            {
+                return null;
+            }
             int given = 0;
             foreach (var a in inv.Arguments.Where(a => a.Parameter != null && a.Parameter.Ordinal > format.Parameter.Ordinal))
             {
@@ -29,27 +35,44 @@ namespace CsVerify.Verifier
                 {
                     switch (a.Value)
                     {
-                        case IArrayCreationOperation ac when ac.Initializer != null: given += ac.Initializer.ElementValues.Length; break;
-                        case ICollectionExpressionOperation ce: given += ce.Elements.Length; break;
+                        case IArrayCreationOperation ac when ac.Initializer != null:
+                            given += ac.Initializer.ElementValues.Length;
+                            break;
+                        case ICollectionExpressionOperation ce:
+                            given += ce.Elements.Length;
+                            break;
                         default: return null; // (an array or span of arguments: how many is not counted)
                     }
                 }
-                else if (a.Parameter.IsParams) return null; // (an array passed as the params array)
-                else given++;
+                else if (a.Parameter.IsParams)
+                {
+                    return null; // (an array passed as the params array)
+                } // (an array passed as the params array)
+                else
+                {
+                    given++;
+                }
             }
             int needed = FormatStrings.Arity(text);
             var call = $"{m.ContainingType.Name}.{m.Name}";
             if (needed < 0)
+            {
                 return (format.Value.Syntax, $"'{format.Value.Syntax}' is not a well-formed format string: {call} would throw FormatException");
+            }
             if (needed > given)
+            {
                 return (inv.Syntax, $"the format string names {needed} argument(s), and {given} {(given == 1 ? "is" : "are")} given: {call} would throw FormatException");
+            }
             return null;
         }
 
         private static bool IsFormatMethod(IMethodSymbol m)
         {
             var type = m.ContainingType;
-            if (type == null || type.DeclaringSyntaxReferences.Length > 0) return false;
+            if (type == null || type.DeclaringSyntaxReferences.Length > 0)
+            {
+                return false;
+            }
             switch (type.ToDisplayString())
             {
                 case "string": return m.Name == "Format";
@@ -57,7 +80,12 @@ namespace CsVerify.Verifier
                 case "System.Console": return m.Name == "Write" || m.Name == "WriteLine";
             }
             for (var t = type; t != null; t = t.BaseType)
-                if (t.ToDisplayString() == "System.IO.TextWriter") return m.Name == "Write" || m.Name == "WriteLine";
+            {
+                if (t.ToDisplayString() == "System.IO.TextWriter")
+                {
+                    return m.Name == "Write" || m.Name == "WriteLine";
+                }
+            }
             return false;
         }
     }
@@ -77,36 +105,82 @@ namespace CsVerify.Verifier
                 char c = s[i++];
                 if (c == '}')
                 {
-                    if (i < s.Length && s[i] == '}') { i++; continue; }
+                    if (i < s.Length && s[i] == '}')
+                    {
+                        i++;
+                        continue;
+                    }
                     return -1;
                 }
-                if (c != '{') continue;
-                if (i < s.Length && s[i] == '{') { i++; continue; }
+                if (c != '{')
+                {
+                    continue;
+                }
+                if (i < s.Length && s[i] == '{')
+                {
+                    i++;
+                    continue;
+                }
                 // an item: the index
                 int start = i, index = 0;
-                while (i < s.Length && char.IsDigit(s[i]) && s[i] <= '9') { index = index * 10 + (s[i] - '0'); i++; if (index >= 1000000) return -1; }
-                if (i == start) return -1;
-                while (i < s.Length && s[i] == ' ') i++;
+                while (i < s.Length && char.IsDigit(s[i]) && s[i] <= '9')
+                {
+                    index = index * 10 + (s[i] - '0');
+                    i++;
+                    if (index >= 1000000)
+                    {
+                        return -1;
+                    }
+                }
+                if (i == start)
+                {
+                    return -1;
+                }
+                while (i < s.Length && s[i] == ' ')
+                {
+                    i++;
+                }
                 if (i < s.Length && s[i] == ',')
                 {
                     i++;
-                    while (i < s.Length && s[i] == ' ') i++;
-                    if (i < s.Length && s[i] == '-') i++;
+                    while (i < s.Length && s[i] == ' ')
+                    {
+                        i++;
+                    }
+                    if (i < s.Length && s[i] == '-')
+                    {
+                        i++;
+                    }
                     int digits = i;
-                    while (i < s.Length && s[i] >= '0' && s[i] <= '9') i++;
-                    if (i == digits) return -1;
-                    while (i < s.Length && s[i] == ' ') i++;
+                    while (i < s.Length && s[i] >= '0' && s[i] <= '9')
+                    {
+                        i++;
+                    }
+                    if (i == digits)
+                    {
+                        return -1;
+                    }
+                    while (i < s.Length && s[i] == ' ')
+                    {
+                        i++;
+                    }
                 }
                 if (i < s.Length && s[i] == ':')
                 {
                     i++;
                     while (i < s.Length && s[i] != '}')
                     {
-                        if (s[i] == '{') return -1;
+                        if (s[i] == '{')
+                        {
+                            return -1;
+                        }
                         i++;
                     }
                 }
-                if (i >= s.Length || s[i] != '}') return -1;
+                if (i >= s.Length || s[i] != '}')
+                {
+                    return -1;
+                }
                 i++;
                 arity = System.Math.Max(arity, index + 1);
             }

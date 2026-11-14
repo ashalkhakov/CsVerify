@@ -14,7 +14,12 @@ namespace CsVerify.Verifier
         private void CheckAtomics()
         {
             foreach (var (at, message) in _engine.Atomics.Misdeclared(_engine.Fields, _engine.Locks))
-                if (_engine.Atomics.Claim(at)) Report(AtomicId, at, message, isError: true);
+            {
+                if (_engine.Atomics.Claim(at))
+                {
+                    Report(AtomicId, at, message, isError: true);
+                }
+            }
             // (a step's transitivity: Boogie's, Lowering)
         }
     }

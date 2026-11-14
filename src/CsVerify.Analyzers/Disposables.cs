@@ -18,28 +18,48 @@ namespace CsVerify.Analyzers
         private readonly ContractStubs _stubs;
         private readonly Dictionary<ITypeSymbol, bool> _must = new Dictionary<ITypeSymbol, bool>(SymbolEqualityComparer.Default);
 
-        private Disposables(Compilation compilation) { _stubs = ContractStubs.For(compilation); }
+        private Disposables(Compilation compilation)
+        {
+            _stubs = ContractStubs.For(compilation);
+        }
 
         // the types being decided on this thread (a class owning a field of its own type): no to them meanwhile
         [System.ThreadStatic] private static HashSet<ITypeSymbol> _deciding;
 
         public bool MustDispose(ITypeSymbol type)
         {
-            if (type == null || type.TypeKind != TypeKind.Class) return false;
+            if (type == null || type.TypeKind != TypeKind.Class)
+            {
+                return false;
+            }
             var key = type.OriginalDefinition;
-            lock (_must) if (_must.TryGetValue(key, out var known)) return known;
+            lock (_must) if (_must.TryGetValue(key, out var known))
+            {
+                return known;
+            }
             _deciding ??= new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-            if (!_deciding.Add(key)) return false;
+            if (!_deciding.Add(key))
+            {
+                return false;
+            }
             bool result = false;
             try
             {
                 for (var t = type as INamedTypeSymbol; t != null && !result; t = t.BaseType)
+                {
                     result = SpecSymbols.HasAttribute(t.OriginalDefinition, "MustDisposeAttribute") || _stubs.MustDisposeTargets.Contains(t.OriginalDefinition) ||
                              t.DeclaringSyntaxReferences.Length > 0 && OwnedFields(t).Any();
+                }
             }
-            finally { _deciding.Remove(key); }
+            finally
+            {
+                _deciding.Remove(key);
+            }
             // (only a decision made outside any other is final: inside one, a type being decided counted as no)
-            if (_deciding.Count == 0) lock (_must) _must[key] = result;
+            if (_deciding.Count == 0)
+            {
+                lock (_must) _must[key] = result;
+            }
             return result;
         }
 
@@ -55,10 +75,19 @@ namespace CsVerify.Analyzers
         /// <summary>Does this parameter take the disposable it is handed (so the caller is done with it)?</summary>
         public bool TakesOwnership(IParameterSymbol p)
         {
-            if (p == null) return false;
-            if (SpecSymbols.HasAttribute(p.OriginalDefinition, "TakesOwnershipAttribute")) return true;
+            if (p == null)
+            {
+                return false;
+            }
+            if (SpecSymbols.HasAttribute(p.OriginalDefinition, "TakesOwnershipAttribute"))
+            {
+                return true;
+            }
             var m = p.ContainingSymbol as IMethodSymbol;
-            if (m == null || !(_stubs.StubOf(m.OriginalDefinition) is IMethodSymbol stub)) return false;
+            if (m == null || !(_stubs.StubOf(m.OriginalDefinition) is IMethodSymbol stub))
+            {
+                return false;
+            }
             int i = p.Ordinal + (ContractStubs.TakesReceiver(stub) ? 1 : 0);
             return i < stub.Parameters.Length && SpecSymbols.HasAttribute(stub.Parameters[i], "TakesOwnershipAttribute");
         }

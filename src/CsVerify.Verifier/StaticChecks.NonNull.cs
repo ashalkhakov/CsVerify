@@ -33,13 +33,25 @@ namespace CsVerify.Verifier
         /// </summary>
         internal static IEnumerable<(ISymbol field, SyntaxNode at, string message)> ImplicitConstructorNulls(INamedTypeSymbol type, System.Func<SyntaxTree, SemanticModel> modelOf)
         {
-            if (type.TypeKind != TypeKind.Class || type.IsStatic || type.IsRecord) yield break;
-            if (type.InstanceConstructors.Any(c => c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ConstructorDeclarationSyntax))) yield break;
+            if (type.TypeKind != TypeKind.Class || type.IsStatic || type.IsRecord)
+            {
+                yield break;
+            }
+            if (type.InstanceConstructors.Any(c => c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ConstructorDeclarationSyntax)))
+            {
+                yield break;
+            }
             foreach (var field in FieldEffects.FieldsOf(type).Where(x => !x.IsStatic && SymbolEqualityComparer.Default.Equals(x.ContainingType, type)))
             {
-                if (!FieldEffects.IsHeapField(field) || !IsNonNullableType(FieldType(field)) || IsRequired(field)) continue;
+                if (!FieldEffects.IsHeapField(field) || !IsNonNullableType(FieldType(field)) || IsRequired(field))
+                {
+                    continue;
+                }
                 var decl = field.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).FirstOrDefault();
-                if (decl == null) continue;
+                if (decl == null)
+                {
+                    continue;
+                }
                 var init = decl switch
                 {
                     VariableDeclaratorSyntax v => v.Initializer?.Value,
@@ -47,9 +59,13 @@ namespace CsVerify.Verifier
                     _ => null,
                 };
                 if (init == null)
+                {
                     yield return (field, decl, $"'{field.Name}' is not nullable, but {type.Name}'s constructor leaves it null: give it an initializer, make it required, or write a constructor that sets it");
+                }
                 else if (!StartsNotNull(init, modelOf(init.SyntaxTree)))
+                {
                     yield return (field, init, $"'{field.Name}' is not nullable, but its initializer '{init}' might be null when {type.Name}'s constructor returns");
+                }
             }
         }
 
