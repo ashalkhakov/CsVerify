@@ -451,39 +451,17 @@ namespace CsVerify.Verifier.Boogie
                     frame.OldGlobals.Add(v.Name);
                     return new MVar($"s{frame.Id}{v.Name}");
                 // (a function over a predicate: of the snapshot as it was, at no layer and of no maps)
-                case MFnApp f when f.Snap != null: return new MFnApp
-                {
-                    Callee = f.Callee,
-                    Function = f.Function,
-                    Plain = f.Plain,
-                    MapsAt = f.MapsAt,
-                    Args = ArgsBefore(f, frame),
-                    Snap = Before(f.Snap, frame),
-                };
+                case MFnApp f when f.Snap != null:
+                    return f.AtSnapshot(ArgsBefore(f, frame), Before(f.Snap, frame));
                 // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
                 case MFnApp f when !f.Plain:
                     foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields))
                     {
                         frame.OldGlobals.Add(map);
                     }
-                    return new MFnApp
-                    {
-                        Callee = f.Callee,
-                        Function = f.Function,
-                        Plain = f.Plain,
-                        Layer = f.Layer,
-                        Fields = f.Fields,
-                        Args = ArgsBefore(f, frame),
-                        MapsAt = $"s{frame.Id}",
-                    };
+                    return f.ReadingMapsAt($"s{frame.Id}", ArgsBefore(f, frame));
                 case MFnApp f:
-                    return new MFnApp
-                    {
-                        Callee = f.Callee,
-                        Function = f.Function,
-                        Plain = true,
-                        Args = ArgsBefore(f, frame),
-                    };
+                    return f.AsPlain(ArgsBefore(f, frame));
                 default: return null;
             }
         });

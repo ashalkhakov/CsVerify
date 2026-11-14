@@ -25,26 +25,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 MLit or MVar => this,
                 MOp op => new MOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
-                MQuant q => new MQuant
-                {
-                    Forall = q.Forall,
-                    Var = q.Var,
-                    Type = q.Type,
-                    Range = q.Range == null ? null : q.Range.Rewrite(at),
-                    Body = q.Body.Rewrite(at),
-                    Trigger = q.Trigger?.Select(x => x.Rewrite(at)).ToArray(),
-                },
-                MFnApp f => new MFnApp
-                {
-                    Callee = f.Callee,
-                    Function = f.Function,
-                    Plain = f.Plain,
-                    MapsAt = f.MapsAt,
-                    Layer = f.Layer,
-                    Fields = f.Fields,
-                    Args = f.Args.Select(x => x.Rewrite(at)).ToArray(),
-                    Snap = f.Snap == null ? null : f.Snap.Rewrite(at),
-                },
+                MQuant q => q.WithParts(q.Range?.Rewrite(at), q.Body.Rewrite(at), q.Trigger?.Select(x => x.Rewrite(at)).ToArray()),
+                MFnApp f => f.WithArgs(f.Args.Select(x => x.Rewrite(at)).ToArray(), f.Snap?.Rewrite(at)),
                 _ => throw MathTerms.NotMath(this),
             };
         }
@@ -130,15 +112,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         return null;
                     }
-                    return new MQuant
-                    {
-                        Forall = q.Forall,
-                        Var = q.Var,
-                        Type = q.Type,
-                        Range = range,
-                        Body = body,
-                        Trigger = trigger,
-                    };
+                    return MQuant.Of(q, range, body, trigger);
                 }
                 case KFnApp f:
                 {
@@ -148,17 +122,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         return null;
                     }
-                    return new MFnApp
-                    {
-                        Callee = f.Callee,
-                        Function = f.Function,
-                        Layer = f.Layer,
-                        Fields = f.Fields,
-                        Args = args,
-                        Snap = snap,
-                        Plain = f.Plain,
-                        MapsAt = f.MapsAt,
-                    };
+                    return MFnApp.Of(f, args, snap);
                 }
                 default: return null;
             }

@@ -156,14 +156,7 @@ namespace CsVerify.Verifier.Boogie
                             });
                         }
                     }
-                    return new MQuant
-                    {
-                        Forall = q.Forall,
-                        Var = q.Var,
-                        Type = q.Type,
-                        Range = mathRange,
-                        Body = body,
-                    };
+                    return MQuant.Of(q, mathRange, body);
                 }
                 case KFnCall fc when !fc.Stub:
                 {

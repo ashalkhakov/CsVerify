@@ -166,6 +166,28 @@ namespace CsVerify.Verifier.Boogie
             Range = range,
             Body = body,
         };
+
+        /// <summary>Over the same variable (forall or exists as this is), of these parts.</summary>
+        public MQuant WithParts(MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant
+        {
+            Forall = Forall,
+            Var = Var,
+            Type = Type,
+            Range = range,
+            Body = body,
+            Trigger = trigger,
+        };
+
+        /// <summary>Over a kernel quantifier's variable (forall or exists as it is), of these parts.</summary>
+        public static MQuant Of(KQuant binder, MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant
+        {
+            Forall = binder.Forall,
+            Var = binder.Var,
+            Type = binder.Type,
+            Range = range,
+            Body = body,
+            Trigger = trigger,
+        };
     }
 
     /// <summary>
@@ -181,6 +203,64 @@ namespace CsVerify.Verifier.Boogie
         public MExpr[] Args;
         /// <summary>A function over a predicate: the snapshot of the instance its value is of (in place of the memory).</summary>
         public MExpr Snap;
+
+        /// <summary>The same application at these arguments and snapshot.</summary>
+        public MFnApp WithArgs(MExpr[] args, MExpr snap) => new MFnApp
+        {
+            Callee = Callee,
+            Function = Function,
+            Layer = Layer,
+            Fields = Fields,
+            Args = args,
+            Snap = snap,
+            Plain = Plain,
+            MapsAt = MapsAt,
+        };
+
+        /// <summary>Of the snapshot as it was: at no layer, and of no maps.</summary>
+        public MFnApp AtSnapshot(MExpr[] args, MExpr snap) => new MFnApp
+        {
+            Callee = Callee,
+            Function = Function,
+            Args = args,
+            Snap = snap,
+            Plain = Plain,
+            MapsAt = MapsAt,
+        };
+
+        /// <summary>Of the maps a call frame kept (their names prefixed by mapsAt), at these arguments.</summary>
+        public MFnApp ReadingMapsAt(string mapsAt, MExpr[] args) => new MFnApp
+        {
+            Callee = Callee,
+            Function = Function,
+            Layer = Layer,
+            Fields = Fields,
+            Args = args,
+            Plain = Plain,
+            MapsAt = mapsAt,
+        };
+
+        /// <summary>The same function, of its arguments alone.</summary>
+        public MFnApp AsPlain(MExpr[] args) => new MFnApp
+        {
+            Callee = Callee,
+            Function = Function,
+            Args = args,
+            Plain = true,
+        };
+
+        /// <summary>A kernel application at level 2, at these arguments and snapshot.</summary>
+        public static MFnApp Of(KFnApp f, MExpr[] args, MExpr snap) => new MFnApp
+        {
+            Callee = f.Callee,
+            Function = f.Function,
+            Layer = f.Layer,
+            Fields = f.Fields,
+            Args = args,
+            Snap = snap,
+            Plain = f.Plain,
+            MapsAt = f.MapsAt,
+        };
         /// <summary>Of its arguments alone (a library stub's): no layer, no memory.</summary>
         public bool Plain;
         /// <summary>Of a snapshot of the memory (a call frame's, s<i>n</i>): its maps' names, so prefixed (null: the memory now).</summary>

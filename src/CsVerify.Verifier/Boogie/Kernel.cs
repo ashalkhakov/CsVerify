@@ -187,6 +187,28 @@ namespace CsVerify.Verifier.Boogie
             Range = range,
             Body = body,
         };
+
+        /// <summary>Over the same variable (forall or exists as this is), of these parts.</summary>
+        public KQuant WithParts(KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant
+        {
+            Forall = Forall,
+            Var = Var,
+            Type = Type,
+            Range = range,
+            Body = body,
+            Trigger = trigger,
+        };
+
+        /// <summary>Over a level 2 quantifier's variable (forall or exists as it is), of these parts.</summary>
+        public static KQuant Of(MQuant binder, KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant
+        {
+            Forall = binder.Forall,
+            Var = binder.Var,
+            Type = binder.Type,
+            Range = range,
+            Body = body,
+            Trigger = trigger,
+        };
     }
 
     /// <summary>
@@ -206,6 +228,32 @@ namespace CsVerify.Verifier.Boogie
         public bool Plain;
         /// <summary>Of a snapshot of the memory (a call frame's, s<i>n</i>): its maps' names, so prefixed (null: the memory now).</summary>
         public string MapsAt;
+
+        /// <summary>The same application at these arguments and snapshot.</summary>
+        public KFnApp WithArgs(KExpr[] args, KExpr snap) => new KFnApp
+        {
+            Callee = Callee,
+            Function = Function,
+            Layer = Layer,
+            Fields = Fields,
+            Args = args,
+            Snap = snap,
+            Plain = Plain,
+            MapsAt = MapsAt,
+        };
+
+        /// <summary>A level 2 application in the kernel, at these arguments and snapshot.</summary>
+        public static KFnApp Of(MFnApp f, KExpr[] args, KExpr snap) => new KFnApp
+        {
+            Callee = f.Callee,
+            Function = f.Function,
+            Layer = f.Layer,
+            Fields = f.Fields,
+            Args = args,
+            Snap = snap,
+            Plain = f.Plain,
+            MapsAt = f.MapsAt,
+        };
     }
 
     // (C#'s meaning, until Checks)

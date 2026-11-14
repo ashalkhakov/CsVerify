@@ -408,13 +408,8 @@ namespace CsVerify.Verifier.Boogie
                     bool added = _bound.Add(q.Var);
                     try
                     {
-                        return new MQuant
-                        {
-                            Forall = q.Forall,
-                            Var = q.Var,
-                            Type = q.Type,
-                            Body = Spec(q.Body, new List<MExpr>(), new List<MExpr>()),
-                        };
+                        var body = Spec(q.Body, new List<MExpr>(), new List<MExpr>());
+                        return MQuant.Of(q, null, body);
                     }
                     finally
                     {
@@ -455,15 +450,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Unfoldings(q.Var, range, body);
                     }
-                    return new MQuant
-                    {
-                        Forall = q.Forall,
-                        Var = q.Var,
-                        Type = q.Type,
-                        Range = range,
-                        Body = body,
-                        Trigger = trigger,
-                    };
+                    return MQuant.Of(q, range, body, trigger);
                 }
                 case KFnCall fn:
                 {

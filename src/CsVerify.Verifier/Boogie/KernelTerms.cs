@@ -25,26 +25,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 KLit or KVar => this,
                 KOp op => new KOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
-                KQuant q => new KQuant
-                {
-                    Forall = q.Forall,
-                    Var = q.Var,
-                    Type = q.Type,
-                    Range = q.Range == null ? null : q.Range.Rewrite(at),
-                    Body = q.Body.Rewrite(at),
-                    Trigger = q.Trigger?.Select(x => x.Rewrite(at)).ToArray(),
-                },
-                KFnApp f => new KFnApp
-                {
-                    Callee = f.Callee,
-                    Function = f.Function,
-                    Plain = f.Plain,
-                    MapsAt = f.MapsAt,
-                    Layer = f.Layer,
-                    Fields = f.Fields,
-                    Args = f.Args.Select(x => x.Rewrite(at)).ToArray(),
-                    Snap = f.Snap == null ? null : f.Snap.Rewrite(at),
-                },
+                KQuant q => q.WithParts(q.Range?.Rewrite(at), q.Body.Rewrite(at), q.Trigger?.Select(x => x.Rewrite(at)).ToArray()),
+                KFnApp f => f.WithArgs(f.Args.Select(x => x.Rewrite(at)).ToArray(), f.Snap?.Rewrite(at)),
                 _ => throw KernelTerms.NotMath(this),
             };
         }
@@ -115,26 +97,8 @@ namespace CsVerify.Verifier.Boogie
             MLit l => new KLit(l.Text),
             MVar v => new KVar(v.Name),
             MOp op => new KOp(op.Op, op.Args.Select(Of).ToArray()),
-            MQuant q => new KQuant
-            {
-                Forall = q.Forall,
-                Var = q.Var,
-                Type = q.Type,
-                Range = Of(q.Range),
-                Body = Of(q.Body),
-                Trigger = q.Trigger?.Select(Of).ToArray(),
-            },
-            MFnApp f => new KFnApp
-            {
-                Callee = f.Callee,
-                Function = f.Function,
-                Layer = f.Layer,
-                Fields = f.Fields,
-                Args = f.Args.Select(Of).ToArray(),
-                Snap = Of(f.Snap),
-                Plain = f.Plain,
-                MapsAt = f.MapsAt,
-            },
+            MQuant q => KQuant.Of(q, Of(q.Range), Of(q.Body), q.Trigger?.Select(Of).ToArray()),
+            MFnApp f => KFnApp.Of(f, f.Args.Select(Of).ToArray(), Of(f.Snap)),
             _ => throw new System.InvalidOperationException("not mathematics: " + e.GetType().Name),
         };
 
