@@ -55,8 +55,8 @@ namespace CsVerify.Verifier.Boogie
 
     /// <summary>
     /// A rewrite of kernel expressions: each node rebuilt of its parts rewritten (a literal, a variable or an index kept),
-    /// unless an override says otherwise. Binders: a quantifier's parts are visited one level deeper (Depth); a let's at
-    /// the same (it binds a name, not an index). Any other kind is an error.
+    /// unless an override says otherwise. Binders (a quantifier, a let, a lambda): their bodies are visited one level
+    /// deeper (Depth). Any other kind is an error.
     /// </summary>
     internal abstract class KRewriter
     {
@@ -69,6 +69,8 @@ namespace CsVerify.Verifier.Boogie
             KVar v => VisitVar(v),
             KLit => e,
             KQuant q => VisitQuant(q),
+            KLet l => new KLet(Visit(l.Value), Under(l.Body)),
+            KMapLambda l => l.WithBody(Under(l.Body)),
             _ => Rebuild(e),
         };
 
@@ -89,13 +91,26 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>A binder's body, one level deeper.</summary>
+        private KExpr Under(KExpr body)
+        {
+            Depth++;
+            try
+            {
+                return Visit(body);
+            }
+            finally
+            {
+                Depth--;
+            }
+        }
+
         protected KExpr[] All(KExpr[] es) => es?.Select(Visit).ToArray();
 
         private KExpr Rebuild(KExpr e) => e switch
         {
             KOp op => new KOp(op.Op, All(op.Args)),
             KFnApp f => f.WithArgs(All(f.Args), Visit(f.Snap)),
-            KLet l => KLet.Of(l.Var, Visit(l.Value), Visit(l.Body)),
             KArith a => new KArith
             {
                 Op = a.Op,

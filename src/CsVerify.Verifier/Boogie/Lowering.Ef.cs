@@ -504,7 +504,7 @@ namespace CsVerify.Verifier.Boogie
             // (no other code reaches them, if the method lets none out: an await leaves their columns as they were)
             if (_unshared != null)
             {
-                Emit(KAssign.Of(_unshared, MapLambda("r$: Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"), before)))));
+                Emit(KAssign.Of(_unshared, MapLambda("r$", "Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"), before)))));
                 foreach (var p in KernelTypes.Ef.Entities.SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField))
                 {
                     _p.AddField(p.OriginalDefinition);
@@ -569,7 +569,7 @@ namespace CsVerify.Verifier.Boogie
             var maybe = new KVar(LinqMap("[Ref]bool"));
             var y = new KVar("y$");
             KExpr ofTypes = OrAny(types.Select(d => Isa(y, d)));
-            SetStates(t.Context, MapLambda("y$: Ref", Ite(AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
+            SetStates(t.Context, MapLambda("y$", "Ref", Ite(AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
                 Ite(Sel(maybe, y), I(Unchanged), I(EfDetached)), State(t.Context, y))));
         }
 

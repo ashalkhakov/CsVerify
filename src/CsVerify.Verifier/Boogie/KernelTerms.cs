@@ -5,7 +5,7 @@ using System.Linq;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// The traversal of the kernel's mathematics (KLit, KVar, KOp, KQuant, KFnApp), in one place: Rewrite rewrites, Subterms
+    /// The traversal of the kernel's mathematics (KLit, KVar, KBound, KOp, KQuant, KMapLambda, KFnApp), in one place: Rewrite rewrites, Subterms
     /// queries. Any other kind, met here, is an error: no walk skips one it doesn't know.
     /// </summary>
     internal abstract partial class KExpr
@@ -26,6 +26,7 @@ namespace CsVerify.Verifier.Boogie
                 KLit or KVar or KBound => this,
                 KOp op => new KOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
                 KQuant q => q.WithParts(q.Range?.Rewrite(at), q.Body.Rewrite(at), q.Trigger?.Select(x => x.Rewrite(at)).ToArray()),
+                KMapLambda l => l.WithBody(l.Body.Rewrite(at)),
                 KFnApp f => f.WithArgs(f.Args.Select(x => x.Rewrite(at)).ToArray(), f.Snap?.Rewrite(at)),
                 _ => throw KernelTerms.NotMath(this),
             };
@@ -61,6 +62,7 @@ namespace CsVerify.Verifier.Boogie
             KLit or KVar or KBound => Enumerable.Empty<KExpr>(),
             KOp op => op.Args,
             KQuant q => q.Range == null ? new[] { q.Body } : new[] { q.Range, q.Body },
+            KMapLambda l => new[] { l.Body },
             KFnApp f => f.Snap == null ? f.Args : f.Args.Append(f.Snap),
             _ => throw KernelTerms.NotMath(this),
         };
@@ -71,6 +73,7 @@ namespace CsVerify.Verifier.Boogie
             KLit or KVar or KBound => true,
             KOp op => op.Args.All(a => a.IsMath()),
             KQuant q => (q.Range == null || q.Range.IsMath()) && q.Body.IsMath() && (q.Trigger == null || q.Trigger.All(t => t.IsMath())),
+            KMapLambda l => l.Body.IsMath(),
             KFnApp f => f.Args.All(a => a.IsMath()) && (f.Snap == null || f.Snap.IsMath()),
             _ => false,
         };

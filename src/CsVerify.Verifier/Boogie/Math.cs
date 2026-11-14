@@ -108,8 +108,8 @@ namespace CsVerify.Verifier.Boogie
         public static MOp Length(MExpr a) => new MOp("len", a);
         public static MOp Old(MExpr a) => new MOp("old", a);
 
-        /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
-        public static MOp MapLambda(string binder, MExpr body) => new MOp("lambda", new MLit(binder), body);
+        /// <summary>A map as Boogie's lambda: (lambda var: type :: body), closed over var.</summary>
+        public static MMapLambda MapLambda(string var, string type, MExpr body) => MMapLambda.Of(var, type, body);
 
         /// <summary>The conjunction of these, left to right; true, of none.</summary>
         public static MExpr AndAll(IEnumerable<MExpr> xs)
@@ -185,7 +185,25 @@ namespace CsVerify.Verifier.Boogie
             Of(binder, Close(range, var), Close(body, var), trigger?.Select(t => Close(t, var)).ToArray());
     }
 
-    /// <summary>A quantifier's variable: of the index-th quantifier out from here (0, the nearest).</summary>
+    /// <summary>A map as Boogie's lambda, over one variable of its type: index 0 in its body (MBound).</summary>
+    internal sealed class MMapLambda : MExpr
+    {
+        public readonly string Type;
+        public readonly MExpr Body;
+
+        public MMapLambda(string type, MExpr body)
+        {
+            Type = type;
+            Body = body;
+        }
+
+        /// <summary>(lambda var: type :: body), closed over var.</summary>
+        public static MMapLambda Of(string var, string type, MExpr body) => new MMapLambda(type, body.CloseOver(var));
+
+        public MMapLambda WithBody(MExpr body) => new MMapLambda(Type, body);
+    }
+
+    /// <summary>A bound variable: of the index-th binder (quantifier or lambda) out from here (0, the nearest).</summary>
     internal sealed class MBound : MExpr
     {
         public readonly int Index;

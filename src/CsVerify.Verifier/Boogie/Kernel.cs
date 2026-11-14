@@ -103,8 +103,8 @@ namespace CsVerify.Verifier.Boogie
         public static KOp Length(KExpr a) => new KOp("len", a);
         public static KOp Old(KExpr a) => new KOp("old", a);
 
-        /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
-        public static KOp MapLambda(string binder, KExpr body) => new KOp("lambda", new KLit(binder), body);
+        /// <summary>A map as Boogie's lambda: (lambda var: type :: body), closed over var.</summary>
+        public static KMapLambda MapLambda(string var, string type, KExpr body) => KMapLambda.Of(var, type, body);
 
         /// <summary>The conjunction of these, left to right; true, of none.</summary>
         public static KExpr AndAll(IEnumerable<KExpr> xs)
@@ -295,15 +295,41 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>let Var = Value in Body: a local of a [Pure] body of statements (Checks substitutes it).</summary>
     internal sealed class KLet : KExpr
     {
-        public string Var;
-        public KExpr Value, Body;
+        /// <summary>Its value, and its body of the variable as index 0 (KBound).</summary>
+        public readonly KExpr Value, Body;
 
-        public static KLet Of(string var, KExpr value, KExpr body) => new KLet
+        public KLet(KExpr value, KExpr body)
         {
-            Var = var,
-            Value = value,
-            Body = body,
-        };
+            Value = value;
+            Body = body;
+        }
+
+        /// <summary>let var := value in body, closed over var.</summary>
+        public static KLet Of(string var, KExpr value, KExpr body) => new KLet(value, Nameless.CloseName(body, var));
+
+        /// <summary>Its body of its variable as this name (opened at it).</summary>
+        public KExpr BodyAt(string var) => Nameless.Open(Body, new KExpr[] { new KVar(var) });
+    }
+
+    /// <summary>A map as Boogie's lambda, over one variable of its type: index 0 in its body (KBound).</summary>
+    internal sealed class KMapLambda : KExpr
+    {
+        public readonly string Type;
+        public readonly KExpr Body;
+
+        public KMapLambda(string type, KExpr body)
+        {
+            Type = type;
+            Body = body;
+        }
+
+        /// <summary>(lambda var: type :: body), closed over var.</summary>
+        public static KMapLambda Of(string var, string type, KExpr body) => new KMapLambda(type, Nameless.CloseName(body, var));
+
+        public KMapLambda WithBody(KExpr body) => new KMapLambda(Type, body);
+
+        /// <summary>Its body of its variable as this name (opened at it).</summary>
+        public KExpr BodyAt(string var) => Nameless.Open(Body, new KExpr[] { new KVar(var) });
     }
 
     /// <summary>Spec.Multiset(a, n): the multiset of an integer array's a[0..n), unfolded Levels elements where it's used.</summary>

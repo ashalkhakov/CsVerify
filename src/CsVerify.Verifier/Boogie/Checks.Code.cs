@@ -47,6 +47,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 case null: return null;
                 case KLit _: case KVar _: case KFnApp _: return MathTerms.Math(e);
+                case KMapLambda lam:
+                {
+                    var name = Opened();
+                    return MMapLambda.Of(name, lam.Type, Code(lam.BodyAt(name)));
+                }
                 case KOp { Op: "scat" } cat:
                 {
                     var (l, r) = (Code(cat.Args[0]), Code(cat.Args[1]));

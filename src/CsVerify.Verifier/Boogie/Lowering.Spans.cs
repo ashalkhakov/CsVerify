@@ -162,7 +162,7 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                     var copied = Ite(AndAlso(Le(lo, y), Lt(y, hi)),
                         Sel(map, SBase(s), Plus(SOff(s), Minus(y, lo))), Sel(map, SBase(d), y));
                     var row = cp.TargetMethod.Name == "CopyTo" ? copied : Ite(fits, copied, Sel(map, SBase(d), y));
-                    Emit(KRow.Of(map, SBase(d), MapLambda("y$: int", row), at: cp.Syntax));
+                    Emit(KRow.Of(map, SBase(d), MapLambda("y$", "int", row), at: cp.Syntax));
                     return cp.TargetMethod.Name == "CopyTo" ? KLit.True : fits;
                 }
                 // (MemoryExtensions' IndexOf(span, v) and StartsWith(span, prefix) of a scalar span, in code: as their stubs say)
@@ -213,7 +213,7 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                     var map = Elements(CellsOf(fl.Instance.Type));
                     var y = new KVar("y$");
                     var row = Ite(AndAlso(Le(SOff(s), y), Lt(y, Plus(SOff(s), Length(s)))), v, Sel(map, SBase(s), y));
-                    Emit(KRow.Of(map, SBase(s), MapLambda("y$: int", row), at: fl.Syntax));
+                    Emit(KRow.Of(map, SBase(s), MapLambda("y$", "int", row), at: fl.Syntax));
                     return KLit.True;
                 }
             }

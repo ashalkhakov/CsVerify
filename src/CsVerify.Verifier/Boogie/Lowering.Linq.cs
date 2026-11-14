@@ -1570,7 +1570,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(KRow.Of(
                         Elements(callType),
                         new KVar(t),
-                        MapLambda("j$: int", Ite(Between(KLit.Zero, new KVar("j$"), s.Length), s.Elem.At(new KVar("j$")), new KLit(Default(s.Type) is KLit d ? d.Text : "0")))));
+                        MapLambda("j$", "int", Ite(Between(KLit.Zero, new KVar("j$"), s.Length), s.Elem.At(new KVar("j$")), new KLit(Default(s.Type) is KLit d ? d.Text : "0")))));
                     return new KVar(t);
                 }
                 case "ToList" when args.Count == 1 && IsList(callType):
@@ -1581,7 +1581,7 @@ namespace CsVerify.Verifier.Boogie
                     var t = Declare("t$" + _temps++, callType);
                     Emit(KAssign.Of(t, list));
                     var items = ModelOf("Items", (INamedTypeSymbol)callType);
-                    Emit(KRow.Of(items.Name, new KVar(t), MapLambda("j$: int", s.Elem.At(new KVar("j$")))));
+                    Emit(KRow.Of(items.Name, new KVar(t), MapLambda("j$", "int", s.Elem.At(new KVar("j$")))));
                     Emit(KRow.Of(SizeMap, new KVar(t), s.Length));
                     return new KVar(t);
                 }

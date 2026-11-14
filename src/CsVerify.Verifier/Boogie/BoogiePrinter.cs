@@ -464,6 +464,19 @@ namespace CsVerify.Verifier.Boogie
                     return $"{f.Function}({string.Join(", ", parts)})";
                 }
                 case MBound b: return _binders[_binders.Count - 1 - b.Index];
+                case MMapLambda l:
+                {
+                    var name = "bv$" + _binders.Count;
+                    _binders.Add(name);
+                    try
+                    {
+                        return $"(lambda {name}: {l.Type} :: {E(l.Body, cx)})";
+                    }
+                    finally
+                    {
+                        _binders.RemoveAt(_binders.Count - 1);
+                    }
+                }
                 case MQuant q:
                 {
                     // (its variable named by how many quantifiers are around it: no name shadows another)
@@ -530,7 +543,6 @@ namespace CsVerify.Verifier.Boogie
                         case "sub": return $"sub({a[0]}, {a[1]})";
                         case "streq": return $"({a[0]} == {a[1]})";
                         case "$collate": return $"($ckey({a[0]}) == $ckey({a[1]}))";
-                        case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
                         case var f when f.StartsWith("$tup."):
                             _tuples.Add(f);
@@ -1204,6 +1216,7 @@ namespace CsVerify.Verifier.Boogie
             MOp { Op: "old" } => false,
             MOp op => op.Args.All(a => Closed(a, vars)),
             MQuant q => Closed(q.Range ?? MLit.True, vars) && Closed(q.Body, vars),
+            MMapLambda l => Closed(l.Body, vars),
             MFnApp f => f.Snap == null && f.MapsAt == null && f.Args.All(a => Closed(a, vars)),
             _ => false,
         };
@@ -1605,6 +1618,7 @@ namespace CsVerify.Verifier.Boogie
             MVar v => names.Contains(v.Name),
             MOp op => op.Args.Any(a => MentionsAny(a, names)),
             MQuant q => (q.Range != null && MentionsAny(q.Range, names)) || MentionsAny(q.Body, names),
+            MMapLambda l => MentionsAny(l.Body, names),
             MFnApp f => f.Args.Any(a => MentionsAny(a, names)),
             _ => throw MathTerms.NotMath(e),
         };
