@@ -816,13 +816,13 @@ namespace CsVerify.Verifier.Boogie
             return _contractOf?.Invoke(m) is Contract c && c.IsStub && c.IsPure && c.Stub != null ? m : null;
         }
 
-        private KFnCall StubCall(IInvocationOperation call, Func<IOperation, KExpr> eval)
+        private KFnCall StubCall(IInvocationOperation call, LowerMode mode)
         {
             _p.AddStub(call.TargetMethod.OriginalDefinition);
             var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToList();
             KExpr receiver = null;
             KExpr[] args;
-            if (eval == null)
+            if (!mode.InSpec)
             {
                 var v = Operands((call.Instance == null ? new IOperation[0] : new[] { call.Instance }).Concat(ordered).ToArray());
                 receiver = call.Instance == null ? null : v[0];
@@ -830,8 +830,8 @@ namespace CsVerify.Verifier.Boogie
             }
             else
             {
-                receiver = call.Instance == null ? null : eval(call.Instance);
-                args = ordered.Select(eval).ToArray();
+                receiver = call.Instance == null ? null : Lower(call.Instance, mode);
+                args = ordered.Select(x => Lower(x, mode)).ToArray();
             }
             return new KFnCall
             {
@@ -846,7 +846,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Call(IInvocationOperation call)
         {
-            if (SpanExpr(call, Expr, inSpec: false) is KExpr span)
+            if (SpanExpr(call, LowerMode.Code) is KExpr span)
             {
                 return span;
             }
@@ -1214,7 +1214,7 @@ namespace CsVerify.Verifier.Boogie
             if (!_isProcedure(callee) && IsStub(callee))
             {
                 Assumed(callee);
-                return StubCall(call, null);
+                return StubCall(call, LowerMode.Code);
             }
             // (a collection interface's Contains and IndexOf: of its elements, as the sequence they are)
             if (call.Instance != null && IsCollectionInterface(call.TargetMethod.ContainingType) && call.TargetMethod.Name is "Contains" or "IndexOf" && call.Arguments.Length == 1)

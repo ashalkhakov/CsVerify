@@ -62,13 +62,13 @@ namespace CsVerify.Verifier.Boogie
         /// The data types' operations, in code or in a specification (each lowers its operands its own way): a case's
         /// construction, a field's read, type tests and patterns, casts, a record's ==; null where it is none.
         /// </summary>
-        private KExpr DataExpr(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec = false)
+        private KExpr DataExpr(IOperation e, LowerMode mode)
         {
             var wasSpec = _inSpecTest;
-            _inSpecTest = inSpec;
+            _inSpecTest = mode.InSpec;
             try
             {
-                return DataExprCore(e, lower, bind, inSpec);
+                return DataExprCore(e, mode);
             }
             finally
             {
@@ -76,218 +76,218 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private KExpr DataExprCore(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCore(IOperation e, LowerMode mode)
         {
             // (a span: Lowering.Spans)
-            if (SpanExpr(e, lower, inSpec) is KExpr span)
+            if (SpanExpr(e, mode) is KExpr span)
             {
                 return span;
             }
             switch (e)
             {
-                case IArrayElementReferenceOperation: return DataExprCoreOfArrayElementReference(e, lower, bind, inSpec);
-                case IInvocationOperation: return DataExprCoreOfInvocation(e, lower, bind, inSpec);
-                case IPropertyReferenceOperation: return DataExprCoreOfPropertyReference(e, lower, bind, inSpec);
-                case IFieldReferenceOperation: return DataExprCoreOfFieldReference(e, lower, bind, inSpec);
-                case IMethodReferenceOperation: return DataExprCoreOfMethodReference(e, lower, bind, inSpec);
-                case IEventReferenceOperation: return DataExprCoreOfEventReference(e, lower, bind, inSpec);
-                case IDefaultValueOperation: return DataExprCoreOfDefaultValue(e, lower, bind, inSpec);
-                case IObjectCreationOperation: return DataExprCoreOfObjectCreation(e, lower, bind, inSpec);
-                case IConversionOperation: return DataExprCoreOfConversion(e, lower, bind, inSpec);
-                case IBinaryOperation: return DataExprCoreOfBinary(e, lower, bind, inSpec);
-                case IIsPatternOperation: return DataExprCoreOfIsPattern(e, lower, bind, inSpec);
-                case IUnaryOperation: return DataExprCoreOfUnary(e, lower, bind, inSpec);
-                case ITupleBinaryOperation: return DataExprCoreOfTupleBinary(e, lower, bind, inSpec);
-                case IAnonymousObjectCreationOperation: return DataExprCoreOfAnonymousObjectCreation(e, lower, bind, inSpec);
-                case ITupleOperation: return DataExprCoreOfTuple(e, lower, bind, inSpec);
-                case IIsTypeOperation: return DataExprCoreOfIsType(e, lower, bind, inSpec);
-                case ISwitchExpressionOperation: return DataExprCoreOfSwitchExpression(e, lower, bind, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                case IArrayElementReferenceOperation: return DataExprCoreOfArrayElementReference(e, mode);
+                case IInvocationOperation: return DataExprCoreOfInvocation(e, mode);
+                case IPropertyReferenceOperation: return DataExprCoreOfPropertyReference(e, mode);
+                case IFieldReferenceOperation: return DataExprCoreOfFieldReference(e, mode);
+                case IMethodReferenceOperation: return DataExprCoreOfMethodReference(e, mode);
+                case IEventReferenceOperation: return DataExprCoreOfEventReference(e, mode);
+                case IDefaultValueOperation: return DataExprCoreOfDefaultValue(e, mode);
+                case IObjectCreationOperation: return DataExprCoreOfObjectCreation(e, mode);
+                case IConversionOperation: return DataExprCoreOfConversion(e, mode);
+                case IBinaryOperation: return DataExprCoreOfBinary(e, mode);
+                case IIsPatternOperation: return DataExprCoreOfIsPattern(e, mode);
+                case IUnaryOperation: return DataExprCoreOfUnary(e, mode);
+                case ITupleBinaryOperation: return DataExprCoreOfTupleBinary(e, mode);
+                case IAnonymousObjectCreationOperation: return DataExprCoreOfAnonymousObjectCreation(e, mode);
+                case ITupleOperation: return DataExprCoreOfTuple(e, mode);
+                case IIsTypeOperation: return DataExprCoreOfIsType(e, mode);
+                case ISwitchExpressionOperation: return DataExprCoreOfSwitchExpression(e, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a array element reference: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfArrayElementReference(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfArrayElementReference(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (a rectangular array's cell: each index within its dimension)
                 case IArrayElementReferenceOperation me when IsMultiArray(me.ArrayReference.Type) && me.Indices.Length == ((IArrayTypeSymbol)me.ArrayReference.Type).Rank:
                 {
-                    var a = lower(me.ArrayReference);
-                    var ix = me.Indices.Select(lower).ToList();
+                    var a = Lower(me.ArrayReference, mode);
+                    var ix = me.Indices.Select(o => Lower(o, mode)).ToList();
                     var cell = new KElem
                     {
                         Unchecked = true,
                         Array = a,
                         Index = CellOf(ix),
                         ArrayType = me.ArrayReference.Type,
-                        InSpec = inSpec,
+                        InSpec = mode.InSpec,
                         At = me.Syntax,
                         ArrayAt = me.ArrayReference.Syntax,
                     };
-                    return MultiIndices(a, ix, me.Syntax, cell, inSpec);
+                    return MultiIndices(a, ix, me.Syntax, cell, mode.InSpec);
                 }
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a invocation: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfInvocation(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfInvocation(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (its length of a dimension, d within its rank; and its Length, their product)
                 case IInvocationOperation gl when gl.TargetMethod.Name == "GetLength" && gl.TargetMethod.ContainingType?.SpecialType == SpecialType.System_Array && gl.Instance != null &&
                                                  Unconverted(gl.Instance) is IOperation gli && IsMultiArray(gli.Type) && gl.Arguments.Length == 1:
-                    return MultiArrayLength(gl, gli, lower, inSpec);
+                    return MultiArrayLength(gl, gli, mode);
                 case IInvocationOperation ng when ng.Instance != null && IsNullableValue(ng.Instance.Type) && ng.TargetMethod.Name == "GetValueOrDefault":
                 {
-                    var v = lower(ng.Instance);
-                    var otherwise = ng.Arguments.Length == 1 ? lower(ng.Arguments[0].Value) : Default(Underlying(ng.Instance.Type));
+                    var v = Lower(ng.Instance, mode);
+                    var otherwise = ng.Arguments.Length == 1 ? Lower(ng.Arguments[0].Value, mode) : Default(Underlying(ng.Instance.Type));
                     return Ite(NotNull(v), NullableValue(v, ng.Instance.Type), otherwise);
                 }
                 case IInvocationOperation fm when FloatMember(fm.TargetMethod) is string member:
                 {
-                    var args = fm.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => lower(a.Value)).ToArray();
-                    return FloatCall(member, fm.TargetMethod.Parameters[0].Type, args, fm.Type, inSpec);
+                    var args = fm.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Lower(a.Value, mode)).ToArray();
+                    return FloatCall(member, fm.TargetMethod.Parameters[0].Type, args, fm.Type, mode.InSpec);
                 }
                 // (a ghost value: the value itself)
                 // (ghost code: mathematics, in code too)
                 case IInvocationOperation go when SpecSymbols.IsCsVerifyType(go.TargetMethod.ContainingType, "Ghost") && go.TargetMethod.Name == "Of" && go.Arguments.Length == 1:
-                    return inSpec ? lower(go.Arguments[0].Value) : Spec(go.Arguments[0].Value, null);
+                    return mode.InSpec ? Lower(go.Arguments[0].Value, mode) : Spec(go.Arguments[0].Value, null);
                 // (a ghost set of objects' members, ObjSet.Empty, ==: mathematics in code too)
-                case IInvocationOperation os when !inSpec && IsObjSet(os.TargetMethod.ContainingType):
+                case IInvocationOperation os when !mode.InSpec && IsObjSet(os.TargetMethod.ContainingType):
                     return Spec(os, null);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
-        private KExpr MultiArrayLength(IInvocationOperation gl, IOperation gli, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr MultiArrayLength(IInvocationOperation gl, IOperation gli, LowerMode mode)
         {
             int rank = ((IArrayTypeSymbol)gli.Type).Rank;
-            var a = lower(gli);
-            var d = lower(gl.Arguments[0].Value);
+            var a = Lower(gli, mode);
+            var d = Lower(gl.Arguments[0].Value, mode);
             KExpr len = new KOp("$dim", a, new KLit((rank - 1).ToString()));
             for (int k = rank - 2; k >= 0; k--)
             {
                 len = Ite(Eq(d, new KLit(k.ToString())), new KOp("$dim", a, new KLit(k.ToString())), len);
             }
             return Defined(AndAlso(NotNull(a), AndAlso(Le(KLit.Zero, d), Lt(d, new KLit(rank.ToString())))), len,
-                           "CSV1003", gl.Syntax, $"dimension in '{gl.Syntax}' might be out of range", inSpec);
+                           "CSV1003", gl.Syntax, $"dimension in '{gl.Syntax}' might be out of range", mode.InSpec);
         }
 
         /// <summary>DataExprCore of a property reference: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfPropertyReference(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfPropertyReference(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 case IPropertyReferenceOperation ml when ml.Property.Name == "Length" && ml.Instance != null && IsMultiArray(ml.Instance.Type):
                 {
-                    var a = lower(ml.Instance);
+                    var a = Lower(ml.Instance, mode);
                     KExpr len = new KOp("$dim", a, KLit.Zero);
                     for (int k = 1; k < ((IArrayTypeSymbol)ml.Instance.Type).Rank; k++)
                     {
                         len = Times(len, new KOp("$dim", a, new KLit(k.ToString())));
                     }
-                    return Defined(NotNull(a), len, "CSV1013", ml.Syntax, $"'{ml.Instance.Syntax}' might be null in '{ml.Syntax}'", inSpec);
+                    return Defined(NotNull(a), len, "CSV1013", ml.Syntax, $"'{ml.Instance.Syntax}' might be null in '{ml.Syntax}'", mode.InSpec);
                 }
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(lower(si), si.Type, sk);
+                    return TupleItem(Lower(si, mode), si.Type, sk);
                 case IPropertyReferenceOperation np when np.Instance != null && IsNullableValue(np.Instance.Type) && np.Property.Name is "HasValue" or "Value":
                 {
-                    var v = lower(np.Instance);
+                    var v = Lower(np.Instance, mode);
                     if (np.Property.Name == "HasValue")
                     {
                         return NotNull(v);
                     }
-                    if (!inSpec)
+                    if (!mode.InSpec)
                     {
                         Emit(KCheck.Of(NotNull(v), "CSV1013", np.Syntax, $"'{np.Syntax}' might be read when '{np.Instance.Syntax}' is null"));
                     }
                     return NullableValue(v, np.Instance.Type);
                 }
                 case IPropertyReferenceOperation dp when dp.Instance != null && IsData(dp.Instance.Type) && DataTypes.IsPositional(dp.Property.OriginalDefinition):
-                    return PositionalProperty(dp, lower, inSpec);
+                    return PositionalProperty(dp, mode);
                 case IPropertyReferenceOperation tk when tk.Property.Name == "Ticks" && tk.Instance != null && IsOpaqueTicks(tk.Instance.Type):
-                    return lower(tk.Instance);
+                    return Lower(tk.Instance, mode);
                 // (a tuple written here: a value of its elements; an element of one: a function of it)
                 // (a GroupBy group's Key: its first element's key)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: ILocalReferenceOperation gk } when IsLinqGroup(gk.Type):
                     return GroupKey(gk.Local);
                 // (the first group's key: its first element's; no group, it throws)
                 case IPropertyReferenceOperation { Property.Name: "Key", Instance: IInvocationOperation { TargetMethod.Name: "First", Arguments.Length: 1 } fg } when IsLinqGroup(fg.Type) &&
-                        Unconverted(fg.Arguments[0].Value) is IInvocationOperation gb && IsEnumerableCall(gb.TargetMethod) && gb.TargetMethod.Name == "GroupBy" && gb.Arguments.Length == 2 && !inSpec:
+                        Unconverted(fg.Arguments[0].Value) is IInvocationOperation gb && IsEnumerableCall(gb.TargetMethod) && gb.TargetMethod.Name == "GroupBy" && gb.Arguments.Length == 2 && !mode.InSpec:
                     return FirstGroupKey(gb, fg);
                 case IPropertyReferenceOperation jrm when jrm.Instance is ILocalReferenceOperation jrl && _joinRows.ContainsKey(jrl.Local) && JoinRowMember(jrm) is KExpr jrv:
                     return jrv;
                 case IPropertyReferenceOperation ap when ap.Instance != null && ap.Instance.Type?.IsAnonymousType == true && IsTuple(ap.Instance.Type) && PartIndex(ap.Instance.Type, ap.Property.Name) is int pi && pi >= 0:
-                    return TupleItem(lower(ap.Instance), ap.Instance.Type, pi);
+                    return TupleItem(Lower(ap.Instance, mode), ap.Instance.Type, pi);
                 // (a pointer's or a memory view's ghost property: a function of it)
                 case IPropertyReferenceOperation mp when mp.Instance != null && IsMemValue(mp.Instance.Type) && mp.Property.Name is "Addr" or "Length" or "Index" or "Value" or "Elems":
                     _p.MemViews |= IsMemView(mp.Instance.Type);
-                    return MemProp(mp.Property.Name, lower(mp.Instance), mp.Instance.Type);
-                case IPropertyReferenceOperation { Property.Name: "Empty", Instance: null } oe when !inSpec && IsObjSet(oe.Type):
+                    return MemProp(mp.Property.Name, Lower(mp.Instance, mode), mp.Instance.Type);
+                case IPropertyReferenceOperation { Property.Name: "Empty", Instance: null } oe when !mode.InSpec && IsObjSet(oe.Type):
                     return Spec(oe, null);
                 case IPropertyReferenceOperation gv when gv.Property.Name == "Value" && IsGhost(gv.Instance?.Type) &&
                                                          !(gv.Instance is IPropertyReferenceOperation { Property.Name: "Obj" } obj && (IsView(obj.Instance?.Type) || IsShare(obj.Instance?.Type))):
-                    return lower(gv.Instance);
+                    return Lower(gv.Instance, mode);
                 // (a view's object, v.Obj.Value: the view itself, in code too)
                 case IPropertyReferenceOperation { Property.Name: "Value", Instance: IPropertyReferenceOperation { Property.Name: "Obj" } vo } when IsView(vo.Instance?.Type) || IsShare(vo.Instance?.Type):
-                    return lower(vo.Instance);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return Lower(vo.Instance, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a field reference: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfFieldReference(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfFieldReference(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(lower(si), si.Type, sk);
+                    return TupleItem(Lower(si, mode), si.Type, sk);
                 case IFieldReferenceOperation { Instance: null, ConstantValue: { HasValue: true } fcv } ff when IsFloating(ff.Type):
                     return FloatLiteral(fcv.Value, ff.Type);
                 case IFieldReferenceOperation tf when tf.Instance != null && IsTuple(tf.Instance.Type) && tf.Field.ContainingType is INamedTypeSymbol { IsTupleType: true } tt &&
                                                       tt.TupleElements.Select(x => x.CorrespondingTupleField ?? x).ToList().FindIndex(x => x.Name == (tf.Field.CorrespondingTupleField ?? tf.Field).Name) is int ti && ti >= 0:
-                    return TupleItem(lower(tf.Instance), tf.Instance.Type, ti);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return TupleItem(Lower(tf.Instance, mode), tf.Instance.Type, ti);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a method reference: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfMethodReference(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfMethodReference(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(lower(si), si.Type, sk);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return TupleItem(Lower(si, mode), si.Type, sk);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a event reference: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfEventReference(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfEventReference(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(lower(si), si.Type, sk);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return TupleItem(Lower(si, mode), si.Type, sk);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a default value: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfDefaultValue(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfDefaultValue(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (a memory value made by default, a forged one (CSV0006): its address, length and index 0, nothing else known)
-                case IDefaultValueOperation md when IsMemValue(md.Type) && !inSpec:
+                case IDefaultValueOperation md when IsMemValue(md.Type) && !mode.InSpec:
                     return ForgedMemValue(md);
                 // (a struct made without a constructor of its own, default(S): its default value)
                 case IDefaultValueOperation sd when IsStruct(sd.Type):
@@ -295,7 +295,7 @@ namespace CsVerify.Verifier.Boogie
                 // (default(T) of another type of the kernel's, int? or a reference: null, 0, false; ?. makes one)
                 case IDefaultValueOperation dd when dd.Type != null && (IsNullableValue(dd.Type) || Scalar(dd.Type) || IsNullable(dd.Type)) && !IsMemValue(dd.Type):
                     return Default(dd.Type);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
@@ -311,31 +311,31 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>DataExprCore of a object creation: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfObjectCreation(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfObjectCreation(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 case IObjectCreationOperation so when IsStruct(so.Type) && so.Initializer == null && (so.Constructor == null || so.Constructor.IsImplicitlyDeclared) && so.Arguments.Length == 0:
                     return StructDefault(so.Type);
                 case IObjectCreationOperation oc when IsData(oc.Type) && oc.Initializer == null && oc.Constructor != null:
-                    return NewData(oc, lower, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return NewData(oc, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a conversion: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfConversion(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfConversion(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (a nullable value, int?: null, or the reference of its value)
                 case IConversionOperation nc when IsNullableValue(nc.Type) && !IsNullableValue(nc.Operand.Type) && nc.OperatorMethod == null:
-                    return NullableOfValue(nc, lower);
+                    return NullableOfValue(nc, mode);
                 // (int? to long?: null stays null, a value widens)
                 case IConversionOperation nn when IsNullableValue(nn.Type) && IsNullableValue(nn.Operand.Type) && nn.OperatorMethod == null && nn.Conversion.IsImplicit &&
                                                   IsIntegral(Underlying(nn.Type)) && IsIntegral(Underlying(nn.Operand.Type)):
                 {
-                    var v = Operand(nn.Operand, lower, inSpec);
+                    var v = Operand(nn.Operand, mode);
                     return Ite(IsNull(v), KLit.Null, NullableOf(NullableValue(v, nn.Operand.Type), nn.Type));
                 }
                 case IConversionOperation nu when IsNullableValue(nu.Operand.Type) && !IsNullableValue(nu.Type) && nu.OperatorMethod == null:
@@ -344,43 +344,43 @@ namespace CsVerify.Verifier.Boogie
                     {
                         throw new NotTranslated("a conversion of " + nu.Operand.Type + " to " + nu.Type);
                     }
-                    var v = lower(nu.Operand);
-                    if (!inSpec)
+                    var v = Lower(nu.Operand, mode);
+                    if (!mode.InSpec)
                     {
                         Emit(KCheck.Of(NotNull(v), "CSV1013", nu.Syntax, $"'{nu.Operand.Syntax}' might be null where '{nu.Syntax}' unwraps it"));
                     }
                     return NullableValue(v, nu.Operand.Type);
                 }
                 case IConversionOperation fc when (IsFloating(fc.Type) || IsFloating(fc.Operand.Type)) && fc.Conversion.IsNumeric && fc.OperatorMethod == null:
-                    return FloatConversion(fc, lower(fc.Operand), inSpec);
+                    return FloatConversion(fc, Lower(fc.Operand, mode), mode.InSpec);
                 case IConversionOperation tc when IsTuple(tc.Type) && Unconverted(tc.Operand) is ITupleOperation tlit && ((INamedTypeSymbol)tc.Type).IsTupleType && tlit.Elements.Length == ((INamedTypeSymbol)tc.Type).TupleElements.Length:
-                    return TupleConverted(tc, tlit, lower, inSpec);
+                    return TupleConverted(tc, tlit, mode);
                 case IConversionOperation up when up.IsImplicit && IsData(up.Type) && IsData(up.Operand.Type):
-                    return lower(up.Operand);
+                    return Lower(up.Operand, mode);
                 // (o as C: o where it's an instance of C, else null)
                 case IConversionOperation tc when tc.IsTryCast && tc.Conversion.IsReference && IsModeledClass(tc.Type) && (IsRef(tc.Operand.Type) || IsString(tc.Operand.Type)):
                 {
-                    var v = Operand(tc.Operand, lower, inSpec);
-                    StaticType(v, tc.Operand.Type, inSpec);
+                    var v = Operand(tc.Operand, mode);
+                    StaticType(v, tc.Operand.Type, mode.InSpec);
                     return Ite(ClassTest(v, tc.Type), v, KLit.Null);
                 }
                 // ((C)o, a downcast: o, which must be null or an instance of C)
                 case IConversionOperation dc when !dc.IsImplicit && !dc.IsTryCast && dc.Conversion.IsReference && !dc.Conversion.IsImplicit && IsModeledClass(dc.Type) && (IsRef(dc.Operand.Type) || IsString(dc.Operand.Type)):
-                    return DataCast(dc, lower, inSpec);
+                    return DataCast(dc, mode);
                 // ((object)o, an upcast written as a cast: o)
                 // (a string as an object, in code: a reference of its own, which another equal string's may or may not be)
-                case IConversionOperation so when !inSpec && so.Conversion.IsReference && IsString(so.Operand.Type) && so.Type.SpecialType == SpecialType.System_Object:
-                    return StringUpcast(so, lower);
+                case IConversionOperation so when !mode.InSpec && so.Conversion.IsReference && IsString(so.Operand.Type) && so.Type.SpecialType == SpecialType.System_Object:
+                    return StringUpcast(so, mode);
                 // (not a string's: as an object, one isn't its value, which another equal string may be)
                 case IConversionOperation uc when !uc.IsImplicit && uc.Conversion.IsReference && uc.Conversion.IsImplicit && (IsRef(uc.Type) || IsString(uc.Type)) && IsRef(uc.Operand.Type):
-                    return lower(uc.Operand);
+                    return Lower(uc.Operand, mode);
                 case IConversionOperation down when !down.IsImplicit && down.Conversion.IsReference && IsData(down.Type) && IsData(down.Operand.Type):
-                    return DataDownCast(down, lower, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return DataDownCast(down, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
-        private KExpr NullableOfValue(IConversionOperation nc, Func<IOperation, KExpr> lower)
+        private KExpr NullableOfValue(IConversionOperation nc, LowerMode mode)
         {
             if (nc.Operand.Type == null || nc.Operand.ConstantValue is { HasValue: true, Value: null } || nc.Operand is IDefaultValueOperation)
             {
@@ -391,15 +391,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 throw new NotTranslated("a conversion of " + nc.Operand.Type + " to " + nc.Type);
             }
-            return NullableOf(lower(nc.Operand), nc.Type);
+            return NullableOf(Lower(nc.Operand, mode), nc.Type);
         }
 
-        private KExpr DataCast(IConversionOperation dc, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr DataCast(IConversionOperation dc, LowerMode mode)
         {
-            var v = Operand(dc.Operand, lower, inSpec);
-            StaticType(v, dc.Operand.Type, inSpec);
+            var v = Operand(dc.Operand, mode);
+            StaticType(v, dc.Operand.Type, mode.InSpec);
             var castOk = OrElse(IsNull(v), ClassTest(v, dc.Type));
-            CastThrows(castOk, inSpec);
+            CastThrows(castOk, mode.InSpec);
             return new KCast
             {
                 Value = v,
@@ -408,12 +408,12 @@ namespace CsVerify.Verifier.Boogie
             };
         }
 
-        private KExpr DataDownCast(IConversionOperation down, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr DataDownCast(IConversionOperation down, LowerMode mode)
         {
             Data(down.Type);
-            var v = Operand(down.Operand, lower, inSpec);
+            var v = Operand(down.Operand, mode);
             var downOk = OrElse(IsNull(v), IsCase(v, down.Type));
-            CastThrows(downOk, inSpec);
+            CastThrows(downOk, mode.InSpec);
             return new KCast
             {
                 Value = v,
@@ -423,7 +423,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>DataExprCore of a binary: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfBinary(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfBinary(IOperation e, LowerMode mode)
         {
             switch (e)
             {
@@ -433,77 +433,77 @@ namespace CsVerify.Verifier.Boogie
                                               rb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               Unconverted(rb.LeftOperand).Type is { IsReferenceType: true } lt && !IsString(lt) && IsRef(lt) &&
                                               Unconverted(rb.RightOperand).Type is { IsReferenceType: true } rt && !IsString(rt) && IsRef(rt):
-                    return RelationalNullsCompared(rb, lower);
+                    return RelationalNullsCompared(rb, mode);
                 // (lifted: == on the values, or both null; the comparisons false where either is null)
                 case IBinaryOperation nb when nb.OperatorMethod == null && (IsNullableValue(nb.LeftOperand.Type) || nb.LeftOperand.Type == null) && (IsNullableValue(nb.RightOperand.Type) || nb.RightOperand.Type == null) &&
                                               (IsNullableValue(nb.LeftOperand.Type) || IsNullableValue(nb.RightOperand.Type)):
-                    return LiftedBinary(nb, lower, inSpec);
+                    return LiftedBinary(nb, mode);
                 // (DateTime and TimeSpan compared: their ticks, the int the kernel keeps for them, are what C# compares)
                 case IBinaryOperation dt when IsOpaqueTicks(dt.LeftOperand.Type) && SymbolEqualityComparer.Default.Equals(dt.LeftOperand.Type, dt.RightOperand.Type) &&
                                               dt.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals or BinaryOperatorKind.LessThan or BinaryOperatorKind.LessThanOrEqual
                                                   or BinaryOperatorKind.GreaterThan or BinaryOperatorKind.GreaterThanOrEqual:
-                    return TicksCompared(dt, lower);
+                    return TicksCompared(dt, mode);
                 // (float and double, as IEEE 754: operations round to nearest; == is IEEE's, < and the rest false at NaN)
                 case IBinaryOperation fb when fb.OperatorMethod == null && IsFloating(fb.LeftOperand.Type) && IsFloating(fb.RightOperand.Type):
-                    return FloatBinary(fb, lower);
-                case IBinaryOperation ob when !inSpec && ob.OperatorMethod != null && IsObjSet(ob.OperatorMethod.ContainingType):
+                    return FloatBinary(fb, mode);
+                case IBinaryOperation ob when !mode.InSpec && ob.OperatorMethod != null && IsObjSet(ob.OperatorMethod.ContainingType):
                     return Spec(ob, null);
                 // (an anonymous object compared with null: its reference, null where an OrDefault found none, never one made)
                 case IBinaryOperation an when AnonymousVsNull(an) is var (anon, anonEq):
-                    return new KOp(anonEq ? "==" : "!=", lower(anon), KLit.Null);
+                    return new KOp(anonEq ? "==" : "!=", Lower(anon, mode), KLit.Null);
                 // (a record's == and !=: its values' equality, which is its references', a value being its constructor's)
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
-                    return RecordEquality(eq, lower, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return RecordEquality(eq, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a is pattern: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfIsPattern(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfIsPattern(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 case IIsPatternOperation nip when IsNullableValue(Unconverted(nip.Value).Type):
-                    return NullablePattern(nip.Pattern, Operand(Unconverted(nip.Value), lower, inSpec), Unconverted(nip.Value).Type, lower, bind);
+                    return NullablePattern(nip.Pattern, Operand(Unconverted(nip.Value), mode), Unconverted(nip.Value).Type, mode);
                 case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type) ||
                                                  (IsRef(ip.Value.Type) || IsString(ip.Value.Type)) && NullPattern(ip.Pattern) ||
                                                  IsArray(Unconverted(ip.Value).Type) && ip.Pattern is IListPatternOperation ||
                                                  IsTuple(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  IsClass(Unconverted(ip.Value).Type) && !IsData(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  (IsRef(Unconverted(ip.Value).Type) || IsString(Unconverted(ip.Value).Type) || IsException(Unconverted(ip.Value).Type)) && !IsData(Unconverted(ip.Value).Type):
-                    return IsPattern(ip, lower, bind, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return IsPattern(ip, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a unary: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfUnary(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfUnary(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 case IUnaryOperation fu when IsFloating(fu.Operand.Type) && fu.OperatorKind is UnaryOperatorKind.Minus or UnaryOperatorKind.Plus:
-                    return fu.OperatorKind == UnaryOperatorKind.Minus ? new KOp("$fp.neg" + FloatSize(fu.Operand.Type), lower(fu.Operand)) : lower(fu.Operand);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return fu.OperatorKind == UnaryOperatorKind.Minus ? new KOp("$fp.neg" + FloatSize(fu.Operand.Type), Lower(fu.Operand, mode)) : Lower(fu.Operand, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a tuple binary: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfTupleBinary(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfTupleBinary(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (t == u of tuples: the left's elements, then the right's, compared element by element)
                 case ITupleBinaryOperation tb when TupleComparable(tb.LeftOperand.Type) && TupleComparable(tb.RightOperand.Type):
-                    return TuplesCompared(tb, lower, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return TuplesCompared(tb, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
-        private KExpr TuplesCompared(ITupleBinaryOperation tb, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr TuplesCompared(ITupleBinaryOperation tb, LowerMode mode)
         {
-            var l = TupleParts(tb.LeftOperand, lower, inSpec);
-            var r = TupleParts(tb.RightOperand, lower, inSpec);
+            var l = TupleParts(tb.LeftOperand, mode);
+            var r = TupleParts(tb.RightOperand, mode);
             KExpr same = KLit.True;
             for (int k = l.Count - 1; k >= 0; k--)
             {
@@ -513,75 +513,75 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>DataExprCore of a anonymous object creation: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfAnonymousObjectCreation(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfAnonymousObjectCreation(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (an anonymous object, new { s, b = e }: a tuple of its members; a member read, an element)
                 case IAnonymousObjectCreationOperation ao when IsTuple(ao.Type):
-                    return AnonymousObject(ao, lower, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return AnonymousObject(ao, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a tuple: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfTuple(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfTuple(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 case ITupleOperation tu when IsTuple(tu.Type):
-                    return NewTuple(tu, lower, inSpec);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return NewTuple(tu, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a is type: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfIsType(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfIsType(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 // (o is C of a class: not null, an instance of C; a value of its static type is an instance of that)
                 case IIsTypeOperation ct when IsModeledClass(ct.TypeOperand) && (IsRef(ct.ValueOperand.Type) || IsString(ct.ValueOperand.Type) || IsException(ct.ValueOperand.Type)):
                 {
-                    var v = Operand(ct.ValueOperand, lower, inSpec);
-                    StaticType(v, ct.ValueOperand.Type, inSpec);
+                    var v = Operand(ct.ValueOperand, mode);
+                    StaticType(v, ct.ValueOperand.Type, mode.InSpec);
                     var test = ClassTest(v, ct.TypeOperand);
                     return ct.IsNegated ? Not(test) : test;
                 }
                 case IIsTypeOperation it when IsData(it.TypeOperand) && !it.IsNegated:
                     Data(it.TypeOperand);
-                    return IsCase(Operand(it.ValueOperand, lower, inSpec), it.TypeOperand);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                    return IsCase(Operand(it.ValueOperand, mode), it.TypeOperand);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of a switch expression: its forms, in order; any other as DataExprCoreOther.</summary>
-        private KExpr DataExprCoreOfSwitchExpression(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOfSwitchExpression(IOperation e, LowerMode mode)
         {
             switch (e)
             {
-                case ISwitchExpressionOperation sw when inSpec:
-                    return SpecSwitchExpression(sw, lower, bind);
-                default: return DataExprCoreOther(e, lower, bind, inSpec);
+                case ISwitchExpressionOperation sw when mode.InSpec:
+                    return SpecSwitchExpression(sw, mode);
+                default: return DataExprCoreOther(e, mode);
             }
         }
 
         /// <summary>DataExprCore of an operation none of the forms above is.</summary>
-        private KExpr DataExprCoreOther(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr DataExprCoreOther(IOperation e, LowerMode mode)
         {
             return null;
         }
 
-        private KExpr RelationalNullsCompared(IBinaryOperation rb, Func<IOperation, KExpr> lower)
+        private KExpr RelationalNullsCompared(IBinaryOperation rb, LowerMode mode)
         {
-            var (l, r) = (lower(Unconverted(rb.LeftOperand)), lower(Unconverted(rb.RightOperand)));
+            var (l, r) = (Lower(Unconverted(rb.LeftOperand), mode), Lower(Unconverted(rb.RightOperand), mode));
             var same = Eq(l, r);
             return RelationalStrings(rb, rb.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same), l, r);
         }
 
-        private KExpr LiftedBinary(IBinaryOperation nb, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr LiftedBinary(IBinaryOperation nb, LowerMode mode)
         {
-            var (l, r) = (LoweredSide(nb.LeftOperand, lower), LoweredSide(nb.RightOperand, lower));
+            var (l, r) = (LoweredSide(nb.LeftOperand, mode), LoweredSide(nb.RightOperand, mode));
             var t = nb.LeftOperand.Type;
             // (in a database query's lambda, with SQL's nulls (UseRelationalNulls): == and != where either is null are
             // unknown, SQL's unknown, for each comparison; as in C# where neither is)
@@ -598,15 +598,15 @@ namespace CsVerify.Verifier.Boogie
             if (nb.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract or BinaryOperatorKind.Multiply &&
                 IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
             {
-                if (!inSpec)
+                if (!mode.InSpec)
                 {
-                    l = Operand(nb.LeftOperand, lower, false);
-                    r = Operand(nb.RightOperand, lower, false);
+                    l = Operand(nb.LeftOperand, mode);
+                    r = Operand(nb.RightOperand, mode);
                 }
                 var both = AndAlso(NotNull(l), NotNull(r));
                 var u = Underlying(nb.Type);
-                var sum = inSpec ? new KOp(Op(nb.OperatorKind), Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero)) : Arith(Op(nb.OperatorKind), Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero), u, nb.Syntax, nb.IsChecked);
-                if (!inSpec)
+                var sum = mode.InSpec ? new KOp(Op(nb.OperatorKind), Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero)) : Arith(Op(nb.OperatorKind), Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero), u, nb.Syntax, nb.IsChecked);
+                if (!mode.InSpec)
                 {
                     var tv = Declare("t$" + _temps++, u);
                     Emit(KAssign.Of(tv, sum));
@@ -618,15 +618,15 @@ namespace CsVerify.Verifier.Boogie
             if (nb.OperatorKind is BinaryOperatorKind.And or BinaryOperatorKind.Or or BinaryOperatorKind.ExclusiveOr &&
                 IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
             {
-                if (!inSpec)
+                if (!mode.InSpec)
                 {
-                    l = Operand(nb.LeftOperand, lower, false);
-                    r = Operand(nb.RightOperand, lower, false);
+                    l = Operand(nb.LeftOperand, mode);
+                    r = Operand(nb.RightOperand, mode);
                 }
                 var both = AndAlso(NotNull(l), NotNull(r));
                 var u = Underlying(nb.Type);
-                var bits = Bitwise(nb.OperatorKind, Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero), u, inSpec);
-                if (!inSpec)
+                var bits = Bitwise(nb.OperatorKind, Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero), u, mode.InSpec);
+                if (!mode.InSpec)
                 {
                     var tv = Declare("t$" + _temps++, u);
                     Emit(KAssign.Of(tv, bits));
@@ -647,16 +647,16 @@ namespace CsVerify.Verifier.Boogie
             ? AndAlso(AndAlso(NotNull(l), NotNull(r)), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
             : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
 
-        private KExpr LoweredSide(IOperation x, Func<IOperation, KExpr> lower) => x.Type == null ? KLit.Null : lower(x);
+        private KExpr LoweredSide(IOperation x, LowerMode mode) => x.Type == null ? KLit.Null : Lower(x, mode);
 
-        private KExpr NewData(IObjectCreationOperation oc, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr NewData(IObjectCreationOperation oc, LowerMode mode)
         {
             Data(oc.Type);
             var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-            var values = inSpec ? ordered.Select(a => lower(a.Value)).ToArray() : Operands(ordered.Select(a => a.Value).ToArray());
+            var values = mode.InSpec ? ordered.Select(a => Lower(a.Value, mode)).ToArray() : Operands(ordered.Select(a => a.Value).ToArray());
             var def = oc.Constructor.OriginalDefinition;
             // (a non-nullable field isn't null: each construction says so)
-            if (!inSpec)
+            if (!mode.InSpec)
             {
                 for (int k = 0; k < ordered.Count; k++)
                 {
@@ -671,7 +671,7 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             // (a package built: the views that go in are handed over to it)
-            if (!inSpec && IsPackage(oc.Type))
+            if (!mode.InSpec && IsPackage(oc.Type))
             {
                 CheckPackage(oc.Type);
                 for (int k = 0; k < ordered.Count; k++)
@@ -691,7 +691,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray();
             var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args);
-            if (inSpec || !HasInvariants(oc.Type))
+            if (mode.InSpec || !HasInvariants(oc.Type))
             {
                 return made;
             }
@@ -717,10 +717,10 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(t);
         }
 
-        private KExpr PositionalProperty(IPropertyReferenceOperation dp, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr PositionalProperty(IPropertyReferenceOperation dp, LowerMode mode)
         {
             Data(dp.Instance.Type);
-            var v = lower(dp.Instance);
+            var v = Lower(dp.Instance, mode);
             var prop = dp.Property.OriginalDefinition;
             var read = Unbox(new KDataField
             {
@@ -731,14 +731,14 @@ namespace CsVerify.Verifier.Boogie
                 Struct = dp.Instance.Type.IsValueType,
             }, prop.Type, dp.Type);
             // (a non-nullable field isn't null: each construction checked it)
-            if (!inSpec && IsNullable(dp.Type) && NotNullable(prop.Type))
+            if (!mode.InSpec && IsNullable(dp.Type) && NotNullable(prop.Type))
             {
                 var nn = Declare("t$" + _temps++, dp.Type);
                 Emit(KAssign.Of(nn, read));
                 Emit(KAssume.Of(NotNull(new KVar(nn))));
                 read = new KVar(nn);
             }
-            if (inSpec || !HasInvariants(dp.Type))
+            if (mode.InSpec || !HasInvariants(dp.Type))
             {
                 return read;
             }
@@ -748,9 +748,9 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(t);
         }
 
-        private KExpr TicksCompared(IBinaryOperation dt, Func<IOperation, KExpr> lower)
+        private KExpr TicksCompared(IBinaryOperation dt, LowerMode mode)
         {
-            var (l, r) = (lower(dt.LeftOperand), lower(dt.RightOperand));
+            var (l, r) = (Lower(dt.LeftOperand, mode), Lower(dt.RightOperand, mode));
             var op = dt.OperatorKind switch
             {
                 BinaryOperatorKind.Equals => "==", BinaryOperatorKind.NotEquals => "!=", BinaryOperatorKind.LessThan => "<",
@@ -759,10 +759,10 @@ namespace CsVerify.Verifier.Boogie
             return new KOp(op, l, r);
         }
 
-        private KExpr FloatBinary(IBinaryOperation fb, Func<IOperation, KExpr> lower)
+        private KExpr FloatBinary(IBinaryOperation fb, LowerMode mode)
         {
             var n = FloatSize(fb.LeftOperand.Type);
-            var (l, r) = (lower(fb.LeftOperand), lower(fb.RightOperand));
+            var (l, r) = (Lower(fb.LeftOperand, mode), Lower(fb.RightOperand, mode));
             return fb.OperatorKind switch
             {
                 BinaryOperatorKind.Add => new KOp("$fp.add" + n, l, r), BinaryOperatorKind.Subtract => new KOp("$fp.sub" + n, l, r),
@@ -790,10 +790,10 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(kv);
         }
 
-        private KExpr AnonymousObject(IAnonymousObjectCreationOperation ao, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr AnonymousObject(IAnonymousObjectCreationOperation ao, LowerMode mode)
         {
-            var items = ao.Initializers.Select(x => lower(x is IAssignmentOperation asg ? asg.Value : x)).ToList();
-            if (inSpec)
+            var items = ao.Initializers.Select(x => Lower(x is IAssignmentOperation asg ? asg.Value : x, mode)).ToList();
+            if (mode.InSpec)
             {
                 return new KOp(TupleMaker(ao.Type), items.ToArray());
             }
@@ -806,11 +806,11 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(t);
         }
 
-        private KExpr TupleConverted(IConversionOperation tc, ITupleOperation tlit, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr TupleConverted(IConversionOperation tc, ITupleOperation tlit, LowerMode mode)
         {
             // (a tuple literal at the type it's converted to: (null, k) as (SlNode?, int))
-            var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? KLit.Null : lower(x)).ToList();
-            if (inSpec)
+            var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? KLit.Null : Lower(x, mode)).ToList();
+            if (mode.InSpec)
             {
                 throw new NotTranslated("a tuple made in a specification");
             }
@@ -823,11 +823,11 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(t);
         }
 
-        private KExpr NewTuple(ITupleOperation tu, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr NewTuple(ITupleOperation tu, LowerMode mode)
         {
-            var items = tu.Elements.Select(x => lower(x)).ToList();
+            var items = tu.Elements.Select(x => Lower(x, mode)).ToList();
             // (in a specification, or a lambda: the tuple of its elements, a function of them)
-            if (inSpec)
+            if (mode.InSpec)
             {
                 return new KOp(TupleMaker(tu.Type), items.ToArray());
             }
@@ -840,25 +840,25 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(t);
         }
 
-        private KExpr IsPattern(IIsPatternOperation ip, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
+        private KExpr IsPattern(IIsPatternOperation ip, LowerMode mode)
         {
-            var v = Operand(Unconverted(ip.Value), lower, inSpec);
-            StaticType(v, Unconverted(ip.Value).Type, inSpec);
-            return Pattern(ip.Pattern, v, Unconverted(ip.Value).Type, lower, bind);
+            var v = Operand(Unconverted(ip.Value), mode);
+            StaticType(v, Unconverted(ip.Value).Type, mode.InSpec);
+            return Pattern(ip.Pattern, v, Unconverted(ip.Value).Type, mode);
         }
 
-        private KExpr SpecSwitchExpression(ISwitchExpressionOperation sw, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
+        private KExpr SpecSwitchExpression(ISwitchExpressionOperation sw, LowerMode mode)
         {
-            var v = lower(sw.Value);
+            var v = Lower(sw.Value, mode);
             KExpr acc = null;
             var arms = sw.Arms.Select(arm =>
             {
-                var cond = Pattern(arm.Pattern, v, sw.Value.Type, lower, bind);
+                var cond = Pattern(arm.Pattern, v, sw.Value.Type, mode);
                 if (arm.Guard != null)
                 {
-                    cond = AndAlso(cond, lower(arm.Guard));
+                    cond = AndAlso(cond, Lower(arm.Guard, mode));
                 }
-                return (cond, value: lower(arm.Value));
+                return (cond, value: Lower(arm.Value, mode));
             }).ToList();
             // (where no arm matches, the definition throws: its check says so; the value is the last arm's)
             for (int k = arms.Count - 1; k >= 0; k--)
@@ -883,9 +883,9 @@ namespace CsVerify.Verifier.Boogie
             };
         }
 
-        private KExpr StringUpcast(IConversionOperation so, Func<IOperation, KExpr> lower)
+        private KExpr StringUpcast(IConversionOperation so, LowerMode mode)
         {
-            var sv = Operand(so.Operand, lower, false);
+            var sv = HoistedOperand(so.Operand, mode);
             var o = Declare("t$" + _temps++, so.Type);
             Emit(KHavoc.Of(o));
             Emit(KAssume.Of(Eq(IsNull(new KVar(o)), IsNull(sv))));
@@ -894,7 +894,7 @@ namespace CsVerify.Verifier.Boogie
             return new KVar(o);
         }
 
-        private KExpr RecordEquality(IBinaryOperation eq, Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr RecordEquality(IBinaryOperation eq, LowerMode mode)
         {
             // (with null: whether it is null, whatever its fields are)
             bool withNull = Unconverted(eq.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(eq.RightOperand).ConstantValue is { HasValue: true, Value: null };
@@ -902,19 +902,19 @@ namespace CsVerify.Verifier.Boogie
             if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType))
             {
                 // (in a specification: some relation, not known, between them)
-                if (inSpec)
+                if (mode.InSpec)
                 {
-                    var eqv = new KOp("$dataEq", lower(eq.LeftOperand), lower(eq.RightOperand));
+                    var eqv = new KOp("$dataEq", Lower(eq.LeftOperand, mode), Lower(eq.RightOperand, mode));
                     return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
                 }
-                lower(eq.LeftOperand);
-                lower(eq.RightOperand);
+                Lower(eq.LeftOperand, mode);
+                Lower(eq.RightOperand, mode);
                 var unknown = Declare("t$" + _temps++, eq.Type);
                 Emit(KHavoc.Of(unknown));
                 return new KVar(unknown);
             }
-            var l = lower(eq.LeftOperand);
-            var r = lower(eq.RightOperand);
+            var l = Lower(eq.LeftOperand, mode);
+            var r = Lower(eq.RightOperand, mode);
             return new KOp(eq.OperatorKind == BinaryOperatorKind.Equals ? "==" : "!=", l, r);
         }
     }

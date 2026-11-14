@@ -548,7 +548,7 @@ namespace CsVerify.Verifier.Boogie
                 case "Append" or "Prepend" when args.Count == 2 && _inDatabase == 0:
                 {
                     var src = Sequence(args[0].Value);
-                    var x = Operand(args[1].Value, Expr, inSpec: false);
+                    var x = Operand(args[1].Value, LowerMode.Code);
                     bool end = m.Name == "Append";
                     return new LSeq
                     {

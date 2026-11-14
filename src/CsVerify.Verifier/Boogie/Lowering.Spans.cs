@@ -66,18 +66,18 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
         }
 
         /// <summary>A span's member or a span made, as a value (code, or a specification's Length and cells); else null.</summary>
-        private KExpr SpanExpr(IOperation e, System.Func<IOperation, KExpr> lower, bool inSpec)
+        private KExpr SpanExpr(IOperation e, LowerMode mode)
         {
             switch (e)
             {
                 case IPropertyReferenceOperation { Property.Name: "Length" or "Count", Instance: { } si } when IsSpan(si.Type):
-                    return Length(lower(si));
+                    return Length(Lower(si, mode));
                 case IPropertyReferenceOperation { Property.Name: "IsEmpty", Instance: { } se } when IsSpan(se.Type):
-                    return Eq(Length(lower(se)), KLit.Zero);
+                    return Eq(Length(Lower(se, mode)), KLit.Zero);
                 case IPropertyReferenceOperation { Property.IsIndexer: true, Instance: { } sx, Arguments.Length: 1 } ix when IsSpan(sx.Type):
                 {
-                    var s = lower(sx);
-                    var (a, i) = SpanCell(s, lower(ix.Arguments[0].Value), ix.Syntax, inSpec, out var within);
+                    var s = Lower(sx, mode);
+                    var (a, i) = SpanCell(s, Lower(ix.Arguments[0].Value, mode), ix.Syntax, mode.InSpec, out var within);
                     var cell = new KElem
                     {
                         Unchecked = true,
@@ -85,14 +85,14 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                         Array = a,
                         Index = i,
                         ArrayType = CellsOf(sx.Type),
-                        InSpec = inSpec,
+                        InSpec = mode.InSpec,
                         At = ix.Syntax,
                         ArrayAt = sx.Syntax,
                     };
-                    return inSpec ? new KOp("$need", within, cell) : cell;
+                    return mode.InSpec ? new KOp("$need", within, cell) : cell;
                 }
             }
-            if (inSpec)
+            if (mode.InSpec)
             {
                 return null;
             }
@@ -105,9 +105,9 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                     return StackAlloc(sa, sa.Type);
                 // (an array as a span; a span as a read-only one)
                 case IConversionOperation c when IsSpan(c.Type) && c.Operand.Type is IArrayTypeSymbol && IsElement(((IArrayTypeSymbol)c.Operand.Type).ElementType):
-                    return SpanOfArray(c.Type, lower(c.Operand));
+                    return SpanOfArray(c.Type, Lower(c.Operand, mode));
                 case IConversionOperation c when IsSpan(c.Type) && IsSpan(c.Operand.Type):
-                    return lower(c.Operand);
+                    return Lower(c.Operand, mode);
                 case IObjectCreationOperation oc when IsSpan(oc.Type) && oc.Constructor is { } ctor && ctor.Parameters.Length is 1 or 3 && ctor.Parameters[0].Type is IArrayTypeSymbol &&
                                                       ctor.Parameters.Skip(1).All(p => p.Type.SpecialType == SpecialType.System_Int32) && oc.Initializer == null:
                 {
@@ -138,14 +138,14 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                 }
                 case IInvocationOperation sl when sl.Instance != null && IsSpan(sl.Instance.Type) && sl.TargetMethod.Name == "Slice" && sl.Arguments.Length is 1 or 2:
                 {
-                    var s = lower(sl.Instance);
+                    var s = Lower(sl.Instance, mode);
                     var args = Operands(sl.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray());
                     return Subspan(sl.Type, s, args[0], args.Length == 2 ? args[1] : Minus(Length(s), args[0]), sl.Syntax);
                 }
                 case IInvocationOperation cp when cp.Instance != null && IsSpan(cp.Instance.Type) && cp.TargetMethod.Name is "CopyTo" or "TryCopyTo" && cp.Arguments.Length == 1 && IsSpan(cp.Arguments[0].Value.Type):
                 {
-                    var s = lower(cp.Instance);
-                    var d = lower(cp.Arguments[0].Value);
+                    var s = Lower(cp.Instance, mode);
+                    var d = Lower(cp.Arguments[0].Value, mode);
                     var fits = Le(Length(s), Length(d));
                     if (cp.TargetMethod.Name == "CopyTo")
                     {
@@ -166,13 +166,13 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                     return cp.TargetMethod.Name == "CopyTo" ? KLit.True : fits;
                 }
                 // (MemoryExtensions' IndexOf(span, v) and StartsWith(span, prefix) of a scalar span, in code: as their stubs say)
-                case IInvocationOperation se when !inSpec && se.TargetMethod.IsStatic && se.TargetMethod.ContainingType?.ToDisplayString() == "System.MemoryExtensions" &&
+                case IInvocationOperation se when !mode.InSpec && se.TargetMethod.IsStatic && se.TargetMethod.ContainingType?.ToDisplayString() == "System.MemoryExtensions" &&
                                                   se.TargetMethod.Name is "IndexOf" or "StartsWith" && se.Arguments.Length == 2 &&
                                                   IsSpan(Unconverted(se.Arguments.First(a => a.Parameter.Ordinal == 0).Value).Type):
                 {
                     var ordered = se.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
                     var st = Unconverted(ordered[0].Value).Type;
-                    var sp = lower(Unconverted(ordered[0].Value));
+                    var sp = Lower(Unconverted(ordered[0].Value), mode);
                     var map = Elements(CellsOf(st));
                     var i = new KVar("i$m");
                     var r = Declare("t$" + _temps++, se.Type);
@@ -184,7 +184,7 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                         {
                             return null;
                         }
-                        var v = lower(ordered[1].Value);
+                        var v = Lower(ordered[1].Value, mode);
                         Emit(KAssume.Of(AndAlso(Le(KLit.MinusOne, rv), Lt(rv, Length(sp)))));
                         Emit(KAssume.Of(Implies(Ge(rv, KLit.Zero), Eq(SpanElementAt(sp, rv, map), v))));
                         Emit(KSpecStmt.AssumedFree(
@@ -198,7 +198,7 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                         {
                             return null;
                         }
-                        var pre = lower(Unconverted(ordered[1].Value));
+                        var pre = Lower(Unconverted(ordered[1].Value), mode);
                         Emit(KSpecStmt.AssumedFree(
                             Eq(rv, AndAlso(Le(Length(pre), Length(sp)), Within(KLit.Zero, Length(pre), Eq(SpanElementAt(sp, i, map), SpanElementAt(pre, i, map)), i))),
                             se.Syntax,
@@ -208,8 +208,8 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                 }
                 case IInvocationOperation fl when fl.Instance != null && IsSpan(fl.Instance.Type) && (fl.TargetMethod.Name == "Fill" && fl.Arguments.Length == 1 || fl.TargetMethod.Name == "Clear" && fl.Arguments.Length == 0):
                 {
-                    var s = lower(fl.Instance);
-                    var v = fl.TargetMethod.Name == "Fill" ? lower(fl.Arguments[0].Value) : Default(SpanElement(fl.Instance.Type));
+                    var s = Lower(fl.Instance, mode);
+                    var v = fl.TargetMethod.Name == "Fill" ? Lower(fl.Arguments[0].Value, mode) : Default(SpanElement(fl.Instance.Type));
                     var map = Elements(CellsOf(fl.Instance.Type));
                     var y = new KVar("y$");
                     var row = Ite(AndAlso(Le(SOff(s), y), Lt(y, Plus(SOff(s), Length(s)))), v, Sel(map, SBase(s), y));

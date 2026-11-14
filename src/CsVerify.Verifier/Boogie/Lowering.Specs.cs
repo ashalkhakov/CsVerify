@@ -60,7 +60,7 @@ namespace CsVerify.Verifier.Boogie
                 var eqv = new KOp("$refEq", Spec(Unconverted(ao.LeftOperand), result), Spec(Unconverted(ao.RightOperand), result));
                 return ao.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
             }
-            if (DataExpr(e, x => Spec(x, result), (l, v) => _bound[l] = v, inSpec: true) is KExpr data)
+            if (DataExpr(e, LowerMode.Spec(result)) is KExpr data)
             {
                 return data;
             }
@@ -428,7 +428,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Assumed(st.TargetMethod.OriginalDefinition);
                     }
-                    return StubCall(st, x => Spec(x, result));
+                    return StubCall(st, LowerMode.Spec(result));
                 // (a list's model: its size, its version, its elements; Count and the indexer as their contracts say)
                 case IInvocationOperation mo when SpecSymbols.IsModel(mo.TargetMethod.OriginalDefinition) && mo.Arguments.Length == 1 &&
                                                   CollectionOf(Unconverted(mo.Arguments[0].Value).Type) is INamedTypeSymbol mc && ModelOf(mo.TargetMethod.Name, mc) != null:

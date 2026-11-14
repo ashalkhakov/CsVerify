@@ -52,7 +52,7 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>A pattern of a nullable value: null, or a pattern of its value where it has one.</summary>
-        private KExpr NullablePattern(IPatternOperation p, KExpr v, ITypeSymbol nullable, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
+        private KExpr NullablePattern(IPatternOperation p, KExpr v, ITypeSymbol nullable, LowerMode mode)
         {
             var has = NotNull(v);
             var u = Underlying(nullable);
@@ -60,28 +60,28 @@ namespace CsVerify.Verifier.Boogie
             {
                 case IDiscardPatternOperation _: return KLit.True;
                 case IConstantPatternOperation c when c.Value.ConstantValue is { HasValue: true, Value: null }: return IsNull(v);
-                case INegatedPatternOperation n: return Not(SubPattern(n.Pattern, v, nullable, lower, bind, u));
-                case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", SubPattern(b.LeftPattern, v, nullable, lower, bind, u), SubPattern(b.RightPattern, v, nullable, lower, bind, u));
+                case INegatedPatternOperation n: return Not(SubPattern(n.Pattern, v, nullable, mode, u));
+                case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", SubPattern(b.LeftPattern, v, nullable, mode, u), SubPattern(b.RightPattern, v, nullable, mode, u));
                 case IDeclarationPatternOperation d when d.MatchesNull:
                     if (d.DeclaredSymbol is ILocalSymbol dl)
                     {
-                        bind(dl, v);
+                        Bind(dl, v, mode);
                     }
                     return KLit.True;
                 case IDeclarationPatternOperation d:
                     if (d.DeclaredSymbol is ILocalSymbol dv)
                     {
-                        bind(dv, NullableValue(v, nullable));
+                        Bind(dv, NullableValue(v, nullable), mode);
                     }
                     return has;
                 case ITypePatternOperation _: return has;
-                default: return AndAlso(has, Pattern(p, NullableValue(v, nullable), u, lower, bind));
+                default: return AndAlso(has, Pattern(p, NullableValue(v, nullable), u, mode));
             }
         }
 
-        private KExpr SubPattern(IPatternOperation q, KExpr v, ITypeSymbol nullable, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, ITypeSymbol u) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, lower, bind) : Pattern(q, NullableValue(v, nullable), u, lower, bind);
+        private KExpr SubPattern(IPatternOperation q, KExpr v, ITypeSymbol nullable, LowerMode mode, ITypeSymbol u) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, mode) : Pattern(q, NullableValue(v, nullable), u, mode);
 
-        private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
+        private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, LowerMode mode)
         {
             switch (p)
             {
@@ -90,7 +90,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (d.DeclaredSymbol is ILocalSymbol l)
                     {
-                        bind(l, v);
+                        Bind(l, v, mode);
                     }
                     return d.MatchesNull ? KLit.True : IsData(d.MatchedType) ? TypeTest(d.MatchedType, type, v) :
                            IsModeledClass(d.MatchedType) && !SymbolEqualityComparer.Default.Equals(d.MatchedType.OriginalDefinition, type.OriginalDefinition) ? ClassTest(v, d.MatchedType) :
@@ -98,8 +98,8 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case ITypePatternOperation tp: return TypeTest(tp.MatchedType, type, v);
                 case IConstantPatternOperation sc when IsString(type) && sc.Value.ConstantValue is { HasValue: true, Value: string }:
-                    return AndAlso(NotNull(v), new KOp("streq", v, lower(sc.Value)));
-                case IConstantPatternOperation cp: return Eq(v, lower(cp.Value));
+                    return AndAlso(NotNull(v), new KOp("streq", v, Lower(sc.Value, mode)));
+                case IConstantPatternOperation cp: return Eq(v, Lower(cp.Value, mode));
                 case IRelationalPatternOperation rp:
                 {
                     var op = rp.OperatorKind switch
@@ -108,16 +108,16 @@ namespace CsVerify.Verifier.Boogie
                         BinaryOperatorKind.GreaterThanOrEqual => ">=", BinaryOperatorKind.Equals => "==", BinaryOperatorKind.NotEquals => "!=",
                         _ => throw new NotTranslated("the pattern " + rp.Syntax),
                     };
-                    return new KOp(op, v, lower(rp.Value));
+                    return new KOp(op, v, Lower(rp.Value, mode));
                 }
-                case INegatedPatternOperation np: return Not(Pattern(np.Pattern, v, type, lower, bind));
+                case INegatedPatternOperation np: return Not(Pattern(np.Pattern, v, type, mode));
                 case IBinaryPatternOperation bp:
-                    return new KOp(bp.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Pattern(bp.LeftPattern, v, type, lower, bind), Pattern(bp.RightPattern, v, type, lower, bind));
+                    return new KOp(bp.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Pattern(bp.LeftPattern, v, type, mode), Pattern(bp.RightPattern, v, type, mode));
                 // (x is { } y of a reference: not null)
                 case IRecursivePatternOperation rn when !IsData(type) && NullPattern(rn):
                     if (rn.DeclaredSymbol is ILocalSymbol rl)
                     {
-                        bind(rl, v);
+                        Bind(rl, v, mode);
                     }
                     return NotNull(v);
                 // (a class's property pattern, p is { F: 3 }: not null, and each field as its pattern says)
@@ -126,7 +126,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (cp.DeclaredSymbol is ILocalSymbol cl)
                     {
-                        bind(cl, v);
+                        Bind(cl, v, mode);
                     }
                     KExpr cond = NotNull(v);
                     foreach (var sp in cp.PropertySubpatterns)
@@ -144,7 +144,7 @@ namespace CsVerify.Verifier.Boogie
                             At = sp.Syntax,
                             InstanceAt = sp.Syntax,
                         };
-                        cond = AndAlso(cond, Pattern(sp.Pattern, read, FieldType(member), lower, bind));
+                        cond = AndAlso(cond, Pattern(sp.Pattern, read, FieldType(member), mode));
                     }
                     return cond;
                 }
@@ -153,13 +153,13 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (tup.DeclaredSymbol is ILocalSymbol tl)
                     {
-                        bind(tl, v);
+                        Bind(tl, v, mode);
                     }
                     KExpr cond = KLit.True;
                     var parts = PartsOf(type).ToList();
                     for (int k = 0; k < parts.Count; k++)
                     {
-                        cond = AndAlso(cond, Pattern(tup.DeconstructionSubpatterns[k], TupleItem(v, type, k), parts[k], lower, bind));
+                        cond = AndAlso(cond, Pattern(tup.DeconstructionSubpatterns[k], TupleItem(v, type, k), parts[k], mode));
                     }
                     return cond;
                 }
@@ -173,13 +173,13 @@ namespace CsVerify.Verifier.Boogie
                     KExpr cond = TypeTest(matched, type, v);
                     if (rp.DeclaredSymbol is ILocalSymbol l)
                     {
-                        bind(l, v);
+                        Bind(l, v, mode);
                     }
                     for (int k = 0; k < rp.DeconstructionSubpatterns.Length; k++)
                     {
                         var prop = DataTypes.PositionalProperty((INamedTypeSymbol)matched, k) ?? throw new NotTranslated("a deconstruction of " + matched);
                         var actual = Actual(matched, prop.Name);
-                        cond = AndAlso(cond, Pattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, lower, bind));
+                        cond = AndAlso(cond, Pattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, mode));
                     }
                     foreach (var sp in rp.PropertySubpatterns)
                     {
@@ -187,7 +187,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
                         }
-                        cond = AndAlso(cond, Pattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, lower, bind));
+                        cond = AndAlso(cond, Pattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, mode));
                     }
                     return cond;
                 }
@@ -198,7 +198,7 @@ namespace CsVerify.Verifier.Boogie
                     // (a is [1, ..] b: b is the array matched)
                     if (lp.DeclaredSymbol is ILocalSymbol whole)
                     {
-                        bind(whole, v);
+                        Bind(whole, v, mode);
                     }
                     else if (lp.DeclaredSymbol != null)
                     {
@@ -220,14 +220,13 @@ namespace CsVerify.Verifier.Boogie
                     // the length, an empty one nothing reads)
                     if (sliceInSpec)
                     {
-                        bind(((IDeclarationPatternOperation)slicePattern).DeclaredSymbol as ILocalSymbol,
-                             new KOp("$slice", v, new KLit(slice.ToString()), Minus(len, new KLit(fixedCount.ToString()))));
+                        Bind(((IDeclarationPatternOperation)slicePattern).DeclaredSymbol as ILocalSymbol, new KOp("$slice", v, new KLit(slice.ToString()), Minus(len, new KLit(fixedCount.ToString()))), mode);
                     }
                     else if (slicePattern != null)
                     {
                         var between = Ite(cond, Minus(len, new KLit(fixedCount.ToString())), KLit.Zero);
                         var rest = CopyOf(v, new KLit(slice.ToString()), between, type, lp.Syntax);
-                        cond = AndAlso(cond, Pattern(slicePattern, rest, type, lower, bind));
+                        cond = AndAlso(cond, Pattern(slicePattern, rest, type, mode));
                     }
                     for (int k = 0; k < lp.Patterns.Length; k++)
                     {
@@ -247,7 +246,7 @@ namespace CsVerify.Verifier.Boogie
                             At = lp.Syntax,
                             ArrayAt = lp.Syntax,
                         };
-                        cond = AndAlso(cond, Pattern(lp.Patterns[k], element, at.ElementType, lower, bind));
+                        cond = AndAlso(cond, Pattern(lp.Patterns[k], element, at.ElementType, mode));
                     }
                     return cond;
                 }

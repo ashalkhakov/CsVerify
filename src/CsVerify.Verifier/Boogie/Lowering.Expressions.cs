@@ -45,13 +45,13 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { IsTupleType: true } n && n.TupleElements.All(e => IsIntegral(e.Type) || e.Type.SpecialType == SpecialType.System_Boolean);
 
         /// <summary>A tuple's elements, in order: a tuple written here, (x, y), each value; any other, each item of it.</summary>
-        private List<KExpr> TupleParts(IOperation op, Func<IOperation, KExpr> lower, bool inSpec)
+        private List<KExpr> TupleParts(IOperation op, LowerMode mode)
         {
             if (Unconverted(op) is ITupleOperation lit)
             {
-                return lit.Elements.Select(e => Operand(e, lower, inSpec)).ToList();
+                return lit.Elements.Select(e => Operand(e, mode)).ToList();
             }
-            var v = Operand(op, lower, inSpec);
+            var v = Operand(op, mode);
             return Enumerable.Range(0, ((INamedTypeSymbol)op.Type).TupleElements.Length).Select(k => TupleItem(v, op.Type, k)).ToList();
         }
 
@@ -102,15 +102,62 @@ namespace CsVerify.Verifier.Boogie
             return null;
         }
 
-        /// <summary>An operand that's tested more than once: in code, in a variable of its own.</summary>
-        private KExpr Operand(IOperation op, Func<IOperation, KExpr> lower, bool inSpec)
+        /// <summary>
+        /// How an expression is lowered: as code (Expr; a pattern's variable a local of the procedure), or as a
+        /// specification's (Spec, of this result; a pattern's variable bound to what it matched).
+        /// </summary>
+        private sealed class LowerMode
         {
-            var v = lower(op);
-            if (inSpec || v is KVar || v is KLit)
+            public readonly bool InSpec;
+            public readonly IParameterSymbol Result;
+
+            private LowerMode(bool inSpec, IParameterSymbol result)
+            {
+                InSpec = inSpec;
+                Result = result;
+            }
+
+            public static readonly LowerMode Code = new LowerMode(false, null);
+
+            public static LowerMode Spec(IParameterSymbol result) => new LowerMode(true, result);
+        }
+
+        private KExpr Lower(IOperation e, LowerMode mode) => mode.InSpec ? Spec(e, mode.Result) : Expr(e);
+
+        /// <summary>A pattern's variable given what it matched.</summary>
+        private void Bind(ILocalSymbol l, KExpr v, LowerMode mode)
+        {
+            if (mode.InSpec)
+            {
+                _bound[l] = v;
+            }
+            else
+            {
+                BindInCode(l, v);
+            }
+        }
+
+        /// <summary>An operand that's tested more than once: in code, in a variable of its own.</summary>
+        private KExpr Operand(IOperation op, LowerMode mode)
+        {
+            var v = Lower(op, mode);
+            if (mode.InSpec || v is KVar || v is KLit)
             {
                 return v;
             }
-            var t = Declare("t$" + _temps++, op.Type);
+            return Hoisted(v, op.Type);
+        }
+
+        /// <summary>An operand in a variable of its own (unless it's one, or a literal), in code or not.</summary>
+        private KExpr HoistedOperand(IOperation op, LowerMode mode)
+        {
+            var v = Lower(op, mode);
+            return v is KVar || v is KLit ? v : Hoisted(v, op.Type);
+        }
+
+        private KExpr Hoisted(KExpr v, ITypeSymbol type)
+        {
+            var t = Declare("t$" + _temps++, type);
             Emit(KAssign.Of(t, v));
             return new KVar(t);
         }
@@ -344,7 +391,7 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Expr(IOperation e)
         {
             // (a data value's, a span's: Lowering.Data's and Lowering.Spans')
-            if (DataExpr(e, Expr, BindInCode) is KExpr data)
+            if (DataExpr(e, LowerMode.Code) is KExpr data)
             {
                 return data;
             }
@@ -1288,7 +1335,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
 
         private KExpr NewString(IObjectCreationOperation ns)
         {
-            var vs = ns.Arguments.OrderBy(x => x.Parameter.Ordinal).Select(x => Operand(x.Value, Expr, false)).ToList();
+            var vs = ns.Arguments.OrderBy(x => x.Parameter.Ordinal).Select(x => Operand(x.Value, LowerMode.Code)).ToList();
             var t = Declare("t$" + _temps++, ns.Type);
             Emit(KHavoc.Of(t));
             Emit(KAssume.Of(NotNull(new KVar(t))));
