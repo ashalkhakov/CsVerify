@@ -29,10 +29,10 @@ namespace CsVerify.Verifier.Boogie
         private static readonly MExpr None = new MLit("i#none");
 
         private static MExpr Ite(MExpr c, MExpr a, MExpr b) => new MOp("ite", c, a, b);
-        private static MExpr Implies(MExpr g, MExpr c) => g is MLit { Text: "true" } ? c : new MOp("==>", g, c);
-        private static MExpr Conj(MExpr a, MExpr b) => a is MLit { Text: "true" } ? b : b is MLit { Text: "true" } ? a : AndAlso(a, b);
+        private static MExpr Implies(MExpr g, MExpr c) => g.IsTrue ? c : new MOp("==>", g, c);
+        private static MExpr Conj(MExpr a, MExpr b) => a.IsTrue ? b : b.IsTrue ? a : AndAlso(a, b);
 
-        private static bool HasAtoms(KExpr e) => Atoms(e).Any();
+        private static bool HasAtoms(KExpr e) => e.Atoms().Any();
 
         /// <summary>
         /// Walks a permission assertion left to right: &amp;&amp; and the branches of ?: are
@@ -49,7 +49,7 @@ namespace CsVerify.Verifier.Boogie
                 _facts.Clear();
                 MExpr At(MExpr y)
                 {
-                    y = given == null ? y : Subst(y, given);
+                    y = given == null ? y : y.Substitute(given);
                     return _old == null ? y : _old(y);
                 }
                 foreach (var k in known)
@@ -80,7 +80,7 @@ namespace CsVerify.Verifier.Boogie
                         Type = acc.Type,
                         At = acc.At,
                     });
-                    return new MLit("true");
+                    return MLit.True;
                 case KInst inst:
                     atom(guard, new MInst
                     {
@@ -88,7 +88,7 @@ namespace CsVerify.Verifier.Boogie
                         Args = inst.Args.Select(M).ToArray(),
                         At = inst.At,
                     });
-                    return new MLit("true");
+                    return MLit.True;
                 case KCells cl:
                     atom(guard, new MCells
                     {
@@ -98,7 +98,7 @@ namespace CsVerify.Verifier.Boogie
                         Read = cl.Read,
                         At = cl.At,
                     });
-                    return new MLit("true");
+                    return MLit.True;
                 case KFieldAcc fa:
                     atom(guard, new MFieldAcc
                     {
@@ -107,8 +107,8 @@ namespace CsVerify.Verifier.Boogie
                         Type = fa.Type,
                         At = fa.At,
                     });
-                    return new MLit("true");
-                case KLit { Text: "true" }: return new MLit("true");
+                    return MLit.True;
+                case KLit { Text: "true" }: return MLit.True;
             }
             if (HasAtoms(e))
             {
@@ -130,7 +130,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Var = "pinst",
                 Value = Store("pinst", q,
-                new MOp(by > 0 ? "+" : "-", Sel("pinst", q), Ite(guard, new MLit("1"), new MLit("0")))),
+                new MOp(by > 0 ? "+" : "-", Sel("pinst", q), Ite(guard, MLit.One, MLit.Zero))),
             });
 
         /// <summary>Receives an assertion's permissions (a precondition at entry, a postcondition after a call, an invariant at a loop head).</summary>
@@ -142,7 +142,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Walk(e, given, new MLit("true"), (g, a) =>
+            Walk(e, given, MLit.True, (g, a) =>
             {
                 if (a is MCells cl)
                 {
@@ -182,7 +182,7 @@ namespace CsVerify.Verifier.Boogie
                     // (one that holds an object's Spec.Acc can't be held twice: the object's permission is one)
                     if (PredicateExclusive(inst.Pred))
                     {
-                        Assume(Implies(g, Eq(Sel("pinst", Instance(inst.Pred, inst.Args)), new MLit("0"))));
+                        Assume(Implies(g, Eq(Sel("pinst", Instance(inst.Pred, inst.Args)), MLit.Zero)));
                     }
                     AddInst(Instance(inst.Pred, inst.Args), g, +1);
                 }
@@ -196,7 +196,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Walk(e, given, new MLit("true"), (g, a) =>
+            Walk(e, given, MLit.True, (g, a) =>
             {
                 gave?.Add((g, a));
                 if (a is MCells cl)
@@ -225,7 +225,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var inst = (MInst)a;
                     var q = Instance(inst.Pred, inst.Args);
-                    Assert(Implies(g, new MOp(">=", Sel("pinst", q), new MLit("1"))), At("CSV1016", at, $"'{inst.At}' is needed here, but it is not held"));
+                    Assert(Implies(g, new MOp(">=", Sel("pinst", q), MLit.One)), At("CSV1016", at, $"'{inst.At}' is needed here, but it is not held"));
                     AddInst(q, g, -1);
                 }
             }, null);
@@ -265,12 +265,12 @@ namespace CsVerify.Verifier.Boogie
         private void FoldInto(KFold fold, KProcedure sig, Dictionary<string, MExpr> given, MExpr[] args, MExpr p)
         {
             var at = fold.At;
-            Walk(sig.FunctionBody, given, new MLit("true"), (g, a) => FoldAtom(fold, p, g, a),
+            Walk(sig.FunctionBody, given, MLit.True, (g, a) => FoldAtom(fold, p, g, a),
                 (g, fact) => Assert(Implies(g, fact), At("CSV1019", at, $"'{fold.InstAt}' might not hold when folding it: its body's facts")));
             // (folded now: a snapshot of its own, of which the functions over it are what their bodies say now)
-            Refresh(p, new MLit("true"));
-            SnapFacts(fold.Inst.Pred, args, new MLit("true"));
-            AddInst(p, new MLit("true"), +1);
+            Refresh(p, MLit.True);
+            SnapFacts(fold.Inst.Pred, args, MLit.True);
+            AddInst(p, MLit.True, +1);
             Define(fold.Inst.Pred, args, p);
         }
 
@@ -323,7 +323,7 @@ namespace CsVerify.Verifier.Boogie
                     // (an instance in the body: held, then folded into p, and what it owns, p's)
                     var inst = (MInst)a;
                     var q = Instance(inst.Pred, inst.Args);
-                    Assert(Implies(g, new MOp(">=", Sel("pinst", q), new MLit("1"))), At("CSV1016", at, $"folding needs '{inst.At}', which is not held here"));
+                    Assert(Implies(g, new MOp(">=", Sel("pinst", q), MLit.One)), At("CSV1016", at, $"folding needs '{inst.At}', which is not held here"));
                     AddInst(q, g, -1);
                     var y = new MVar("y$");
                     Emit(new MAssign
@@ -344,8 +344,8 @@ namespace CsVerify.Verifier.Boogie
         private void Unfold(KFold fold, KProcedure sig, Dictionary<string, MExpr> given, MExpr[] args, MExpr p)
         {
             var at = fold.At;
-            Assert(new MOp(">=", Sel("pinst", p), new MLit("1")), At("CSV1016", at, $"'{fold.InstAt}' is not held here"));
-            AddInst(p, new MLit("true"), -1);
+            Assert(new MOp(">=", Sel("pinst", p), MLit.One), At("CSV1016", at, $"'{fold.InstAt}' is not held here"));
+            AddInst(p, MLit.True, -1);
             foreach (var (name, raw) in new[] { ("footprint$", "[Ref]Inst"), ("choice$", "[Ref]int") })
             {
                 if (!_p.Locals.Any(l => l.Name == name))
@@ -384,7 +384,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
             }
-            Walk(sig.FunctionBody, given, new MLit("true"), (g, a) => UnfoldAtom(p, g, a, own, nested, ownCells), (g, fact) => Assume(Implies(g, fact)));
+            Walk(sig.FunctionBody, given, MLit.True, (g, a) => UnfoldAtom(p, g, a, own, nested, ownCells), (g, fact) => Assume(Implies(g, fact)));
             // (what was folded hasn't changed: the functions over it are what their bodies say of it now)
             Define(fold.Inst.Pred, args, p);
             SplitFootprint(p, own, nested);
@@ -439,7 +439,7 @@ namespace CsVerify.Verifier.Boogie
                     SnapFacts(inst.Pred, inst.Args, held);
                     if (PredicateExclusive(inst.Pred))
                     {
-                        Assume(Implies(g, Eq(Sel("pinst", q), new MLit("0"))));
+                        Assume(Implies(g, Eq(Sel("pinst", q), MLit.Zero)));
                     }
                     AddInst(q, g, +1);
                     nested.Add((g, q));
@@ -531,8 +531,8 @@ namespace CsVerify.Verifier.Boogie
             _unfolding++;
             try
             {
-                foreach (var app in Apps(body).Where(a => a.Snap == null && !a.Plain && a.Layer == null && a.Args.Any(x => Mentions(x, new HashSet<string> { var })) &&
-                                                         !a.Args.Any(x => Mentions(x, _bound))).ToList())
+                foreach (var app in body.Applications().Where(a => a.Snap == null && !a.Plain && a.Layer == null && a.Args.Any(x => x.Mentions(new HashSet<string> { var })) &&
+                                                         !a.Args.Any(x => x.Mentions(_bound))).ToList())
                 {
                     var sig = _program.Signature(app.Callee);
                     if (sig.FunctionBody == null || !app.Callee.IsStatic)
@@ -544,11 +544,11 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var v = Spec(x, out _);
                         _facts.Clear();
-                        return Subst(v, given);
+                        return v.Substitute(given);
                     }
                     // (the facts so far kept: the definition's own are left out)
                     var saved = _facts.ToList();
-                    var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)new MLit("true"), Conj);
+                    var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)MLit.True, Conj);
                     var definition = Eq(app, M(sig.FunctionBody));
                     _facts.Clear();
                     _facts.AddRange(saved);
@@ -560,14 +560,6 @@ namespace CsVerify.Verifier.Boogie
                 _unfolding--;
             }
         }
-
-        private static IEnumerable<MFnApp> Apps(MExpr e) => e switch
-        {
-            MFnApp f => new[] { f }.Concat(f.Args.SelectMany(Apps)),
-            MOp op => op.Args.SelectMany(Apps),
-            // (not into a nested quantifier: its applications are of its own variable, unfolded there)
-            _ => Enumerable.Empty<MFnApp>(),
-        };
 
         // ------------------------------------------------------------------ frames (Dafny's Spec.Modifies)
 
@@ -587,7 +579,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A condition's value now, in a local of its own (true stays true).</summary>
         private MExpr Hold(MExpr g)
         {
-            if (g is MLit { Text: "true" })
+            if (g.IsTrue)
             {
                 return g;
             }
@@ -607,7 +599,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void Refresh(MExpr q, MExpr g)
         {
-            g = Conj(g, Eq(Sel("pinst", q), new MLit("0")));
+            g = Conj(g, Eq(Sel("pinst", q), MLit.Zero));
             if (!_p.Locals.Any(l => l.Name == "snap$"))
             {
                 _p.Locals.Add(new KLocal
@@ -719,13 +711,11 @@ namespace CsVerify.Verifier.Boogie
 
         private static MExpr Amount(bool read) => new MLit(read ? Share : "1.0");
 
-        /// <summary>Does a predicate's body (or one it names) hold cells?</summary>
         /// <summary>Does a predicate hold an object's Spec.Acc unconditionally (a conjunct of its body's)?</summary>
         private bool PredicateExclusive(IMethodSymbol pred)
         {
             var body = _program.Signature(pred).FunctionBody;
-            IEnumerable<KExpr> Conjuncts(KExpr e) => e is KOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
-            return body != null && Conjuncts(body).Any(c => c is KAcc);
+            return body != null && body.Conjuncts().Any(c => c is KAcc);
         }
 
         /// <summary>Does the loop at this head exchange permissions (fold, unfold, or call what gives or takes them)?</summary>

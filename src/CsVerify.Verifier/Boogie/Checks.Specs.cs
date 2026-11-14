@@ -27,7 +27,7 @@ namespace CsVerify.Verifier.Boogie
                     case MLit _: return true;
                     case MVar v: return v.Name != "$Alloc";
                     case MOp { Op: "sel" } s when s.Args[0] is MVar map && (map.Name.StartsWith("$F.") || map.Name.StartsWith("$E.")):
-                        if (Mentions(s.Args[1], bound))
+                        if (s.Args[1].Mentions(bound))
                         {
                             return false;
                         }
@@ -64,7 +64,6 @@ namespace CsVerify.Verifier.Boogie
             return objects.Select(o => (MExpr)new MOp("set.of", o)).Aggregate((a, b) => new MOp("set.union", a, b));
         }
 
-        private static bool Mentions(MExpr e, HashSet<string> vars) => MathTerms.Subterms(e).Any(x => x is MVar v && vars.Contains(v.Name));
 
         /// <summary>A specification's well-definedness, asserted (CSV1012) where it is evaluated, under what holds before it.</summary>
         private void WellDefined(List<MExpr> wf, SyntaxNode at, List<MExpr> before)
@@ -86,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Is the exception of this type (any is a System.Exception)?</summary>
         internal static MExpr Is(MExpr ex, ITypeSymbol type) =>
-            type.ToDisplayString() == "System.Exception" ? new MLit("true") : new MOp("sub", new MOp("dtype", ex), new MLit(TypeConst(type)));
+            type.ToDisplayString() == "System.Exception" ? MLit.True : new MOp("sub", new MOp("dtype", ex), new MLit(TypeConst(type)));
 
         // ------------------------------------------------------------------ strings
 
@@ -98,7 +97,7 @@ namespace CsVerify.Verifier.Boogie
             var at = new MOp("sdiff", x, y);
             return new MOp("==>", AndAlso(AndAlso(AndAlso(NotNull(x), NotNull(y)), Ne(x, y)),
                                              Eq(new MOp("slen", x), new MOp("slen", y))),
-                AndAlso(AndAlso(new MOp("<=", new MLit("0"), at), new MOp("<", at, new MOp("slen", x))), Ne(new MOp("sat", x, at), new MOp("sat", y, at))));
+                AndAlso(AndAlso(new MOp("<=", MLit.Zero, at), new MOp("<", at, new MOp("slen", x))), Ne(new MOp("sat", x, at), new MOp("sat", y, at))));
         }
 
         /// <summary>A stub's parameters given values: its receiver (@this, first), then the member's arguments.</summary>
@@ -228,7 +227,7 @@ namespace CsVerify.Verifier.Boogie
                 case KOp { Op: "streq" } eq:
                 {
                     var (l, r) = (Spec(eq.Args[0], wf, guard), Spec(eq.Args[1], wf, guard));
-                    if (!Mentions(l, _bound) && !Mentions(r, _bound))
+                    if (!l.Mentions(_bound) && !r.Mentions(_bound))
                     {
                         _facts.Add(Extensional(l, r));
                     }
@@ -244,7 +243,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var l = Spec(ar.Left, wf, guard);
                     var r = Spec(ar.Right, wf, guard);
-                    Need(Ne(r, new MLit("0")));
+                    Need(Ne(r, MLit.Zero));
                     return new MOp(ar.Op == "/" ? "div" : "rem", l, r);
                 }
                 case KIfc si:
@@ -252,7 +251,7 @@ namespace CsVerify.Verifier.Boogie
                     var x = Spec(si.Of, wf, guard);
                     var i = si.Index == null ? null : Spec(si.Index, wf, guard);
                     var count = MathTypes.IfcRead(x, null, si.Element);
-                    Need(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, count))));
+                    Need(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, count))));
                     return i == null ? count : MathTypes.IfcRead(x, i, si.Element);
                 }
                 case KLet let:
@@ -264,28 +263,28 @@ namespace CsVerify.Verifier.Boogie
                     var bound = new Dictionary<string, MExpr> { [let.Var] = value };
                     for (int k = from; k < wf.Count; k++)
                     {
-                        wf[k] = Subst(wf[k], bound);
+                        wf[k] = wf[k].Substitute(bound);
                     }
                     for (int k = facts; k < _facts.Count; k++)
                     {
-                        _facts[k] = Subst(_facts[k], bound);
+                        _facts[k] = _facts[k].Substitute(bound);
                     }
                     // (a fact of the local's value that now names a quantifier's variable isn't one of the state: dropped)
                     for (int k = _facts.Count - 1; k >= facts; k--)
                     {
-                        if (Mentions(_facts[k], _bound))
+                        if (_facts[k].Mentions(_bound))
                         {
                             _facts.RemoveAt(k);
                         }
                     }
-                    return Subst(body, bound);
+                    return body.Substitute(bound);
                 }
                 case KMultiset ms:
                 {
                     // (well-defined within the array: 0 <= n <= a.Length; its contents as of where it's read)
                     var a = Spec(ms.Array, wf, guard);
                     var n = Spec(ms.Count, wf, guard);
-                    Need(AndAlso(AndAlso(NotNull(a), new MOp("<=", new MLit("0"), n)), new MOp("<=", n, new MOp("len", a))));
+                    Need(AndAlso(AndAlso(NotNull(a), new MOp("<=", MLit.Zero, n)), new MOp("<=", n, new MOp("len", a))));
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
@@ -300,14 +299,14 @@ namespace CsVerify.Verifier.Boogie
                     var i = Spec(le.Index, wf, guard);
                     Need(le.Domain != null
                         ? AndAlso(NotNull(a), Sel(le.Domain, a, i))
-                        : AndAlso(AndAlso(NotNull(a), new MOp("<=", new MLit("0"), i)), new MOp("<", i, Sel(SizeMap, a))));
+                        : AndAlso(AndAlso(NotNull(a), new MOp("<=", MLit.Zero, i)), new MOp("<", i, Sel(SizeMap, a))));
                     return Sel(model, a, i);
                 }
                 case KElem el:
                 {
                     var a = Spec(el.Array, wf, guard);
                     var i = Spec(el.Index, wf, guard);
-                    Need(el.Unchecked ? (el.NoNull ? new MLit("true") : NotNull(a)) : AndAlso(AndAlso(NotNull(a), new MOp("<=", new MLit("0"), i)), new MOp("<", i, new MOp(el.String ? "slen" : "len", a))));
+                    Need(el.Unchecked ? (el.NoNull ? MLit.True : NotNull(a)) : AndAlso(AndAlso(NotNull(a), new MOp("<=", MLit.Zero, i)), new MOp("<", i, new MOp(el.String ? "slen" : "len", a))));
                     return el.String ? new MOp("sat", a, i) : Sel(Elements(el.ArrayType), a, i);
                 }
                 case KDataField df:
@@ -344,7 +343,7 @@ namespace CsVerify.Verifier.Boogie
                     var saved = _facts.ToList();
                     foreach (var r in _program.Signature(st.Callee).Requires)
                     {
-                        Need(Subst(Spec(r.Expr, out _), given));
+                        Need(Spec(r.Expr, out _).Substitute(given));
                     }
                     _facts.Clear();
                     _facts.AddRange(saved);
@@ -354,12 +353,12 @@ namespace CsVerify.Verifier.Boogie
                 case KAcc acc:
                 {
                     var o = Spec(acc.Obj, wf, guard);
-                    return _held ? Held(o) : new MLit("true");
+                    return _held ? Held(o) : MLit.True;
                 }
                 case KFieldAcc fa:
                 {
                     var o = Spec(fa.Obj, wf, guard);
-                    return _held ? CanWrite(o, fa.Field) : new MLit("true");
+                    return _held ? CanWrite(o, fa.Field) : MLit.True;
                 }
                 case KCells cl:
                 {
@@ -369,7 +368,7 @@ namespace CsVerify.Verifier.Boogie
                     // (in hand, as a condition: a method that keeps no cell permissions holds every cell)
                     if (!_held || !_p.UsesCells)
                     {
-                        return new MLit("true");
+                        return MLit.True;
                     }
                     var i = new MVar("i$");
                     return MQuant.ForAll(
@@ -379,13 +378,13 @@ namespace CsVerify.Verifier.Boogie
                 case KInst inst:
                 {
                     var q = Instance(inst.Pred, inst.Args.Select(a => Spec(a, wf, guard)).ToArray());
-                    return _held ? new MOp(">=", Sel("pinst", q), new MLit("1")) : new MLit("true");
+                    return _held ? new MOp(">=", Sel("pinst", q), MLit.One) : MLit.True;
                 }
                 case KField fd:
                 {
                     if (fd.Instance == null)
                     {
-                        var sv = Sel(FieldMap(fd.Field), new MLit("null"));
+                        var sv = Sel(FieldMap(fd.Field), MLit.Null);
                         if (NonNullField(fd.Field))
                         {
                             _facts.Add(NotNull(sv));
@@ -398,11 +397,11 @@ namespace CsVerify.Verifier.Boogie
                         Need(NotNull(o));
                     }
                     var v = Sel(FieldMap(fd.Field), o);
-                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !Mentions(o, _bound))
+                    if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !o.Mentions(_bound))
                     {
                         _facts.Add(new MOp("==>", NotNull(o), NotNull(v)));
                     }
-                    if (IsRef(FieldType(fd.Field)) && !Mentions(o, _bound))
+                    if (IsRef(FieldType(fd.Field)) && !o.Mentions(_bound))
                     {
                         _facts.Add(Allocated(o, v));
                     }
@@ -457,7 +456,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Need(MQuant.ForAll(q.Var, c));
                     }
-                    if (!Mentions(range, _bound))
+                    if (!range.Mentions(_bound))
                     {
                         Unfoldings(q.Var, range, body);
                     }
@@ -497,7 +496,7 @@ namespace CsVerify.Verifier.Boogie
             var saved = _facts.ToList();
             foreach (var r in _program.Signature(fn.Callee).Requires)
             {
-                need(Subst(Spec(r.Expr, out _), given));
+                need(Spec(r.Expr, out _).Substitute(given));
             }
             _facts.Clear();
             _facts.AddRange(saved);
@@ -525,12 +524,5 @@ namespace CsVerify.Verifier.Boogie
                 Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray(),
             };
         }
-
-        /// <summary>A variable given a value (mathematics).</summary>
-        internal static MExpr Rename(MExpr e, string name, MExpr value) => Subst(e, new Dictionary<string, MExpr> { [name] = value });
-        internal static MExpr Rename(MExpr e, Dictionary<string, MExpr> given) => Subst(e, given);
-
-        /// <summary>Parameters given values (mathematics in, mathematics out).</summary>
-        private static MExpr Subst(MExpr e, Dictionary<string, MExpr> given) => MathTerms.Map(e, x => x is MVar v && given.TryGetValue(v.Name, out var value) ? value : null);
     }
 }

@@ -68,7 +68,7 @@ namespace CsVerify.Verifier.Boogie
             KExpr Sub(IPatternOperation q) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, lower, bind) : Pattern(q, NullableValue(v, nullable), u, lower, bind);
             switch (p)
             {
-                case IDiscardPatternOperation _: return new KLit("true");
+                case IDiscardPatternOperation _: return KLit.True;
                 case IConstantPatternOperation c when c.Value.ConstantValue is { HasValue: true, Value: null }: return IsNull(v);
                 case INegatedPatternOperation n: return Not(Sub(n.Pattern));
                 case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Sub(b.LeftPattern), Sub(b.RightPattern));
@@ -77,7 +77,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         bind(dl, v);
                     }
-                    return new KLit("true");
+                    return KLit.True;
                 case IDeclarationPatternOperation d:
                     if (d.DeclaredSymbol is ILocalSymbol dv)
                     {
@@ -95,7 +95,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (t == null || SymbolEqualityComparer.Default.Equals(DataTypes.Def(t), DataTypes.Def(type)) && !IsData(t))
                 {
-                    return new KLit("true");
+                    return KLit.True;
                 }
                 if (IsData(t))
                 {
@@ -104,7 +104,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 if (Scalar(t) && SymbolEqualityComparer.Default.Equals(t, type))
                 {
-                    return new KLit("true");
+                    return KLit.True;
                 }
                 if (IsModeledClass(t))
                 {
@@ -114,16 +114,16 @@ namespace CsVerify.Verifier.Boogie
             }
             switch (p)
             {
-                case IDiscardPatternOperation _: return new KLit("true");
+                case IDiscardPatternOperation _: return KLit.True;
                 case IDeclarationPatternOperation d:
                 {
                     if (d.DeclaredSymbol is ILocalSymbol l)
                     {
                         bind(l, v);
                     }
-                    return d.MatchesNull ? new KLit("true") : IsData(d.MatchedType) ? TypeTest(d.MatchedType) :
+                    return d.MatchesNull ? KLit.True : IsData(d.MatchedType) ? TypeTest(d.MatchedType) :
                            IsModeledClass(d.MatchedType) && !SymbolEqualityComparer.Default.Equals(d.MatchedType.OriginalDefinition, type.OriginalDefinition) ? ClassTest(v, d.MatchedType) :
-                           IsNullable(type) ? NotNull(v) : new KLit("true");
+                           IsNullable(type) ? NotNull(v) : KLit.True;
                 }
                 case ITypePatternOperation tp: return TypeTest(tp.MatchedType);
                 case IConstantPatternOperation sc when IsString(type) && sc.Value.ConstantValue is { HasValue: true, Value: string }:
@@ -184,7 +184,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         bind(tl, v);
                     }
-                    KExpr cond = new KLit("true");
+                    KExpr cond = KLit.True;
                     var parts = PartsOf(type).ToList();
                     for (int k = 0; k < parts.Count; k++)
                     {
@@ -254,7 +254,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     else if (slicePattern != null)
                     {
-                        var between = new KOp("ite", cond, new KOp("-", len, new KLit(fixedCount.ToString())), new KLit("0"));
+                        var between = new KOp("ite", cond, new KOp("-", len, new KLit(fixedCount.ToString())), KLit.Zero);
                         var rest = CopyOf(v, new KLit(slice.ToString()), between, type, lp.Syntax);
                         cond = AndAlso(cond, Pattern(slicePattern, rest, type, lower, bind));
                     }

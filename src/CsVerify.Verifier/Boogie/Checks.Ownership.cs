@@ -37,7 +37,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Map = "pkg",
                     Ref = v,
-                    Value = new MLit("true"),
+                    Value = MLit.True,
                 });
             }
         }
@@ -49,7 +49,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An object in a tree this method borrows (Spec.Modifies(Own.Tree(x))): writable without its view.</summary>
         private MExpr Lent(MExpr o)
         {
-            MExpr any = new MLit("false");
+            MExpr any = MLit.False;
             foreach (var root in _p.LentRoots)
             {
                 var x = Code(root);
@@ -59,7 +59,7 @@ namespace CsVerify.Verifier.Boogie
             return any;
         }
 
-        private static MExpr Whole(MExpr o) => AndAlso(Held(o), new MOp(">=", Sel("pk", o), new MLit("0")));
+        private static MExpr Whole(MExpr o) => AndAlso(Held(o), new MOp(">=", Sel("pk", o), MLit.Zero));
 
         private void Shares(MExpr o, int by) =>
             Emit(new MMapUpdate
@@ -78,7 +78,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Map = "perm",
                 Ref = o,
-                Value = new MLit("true"),
+                Value = MLit.True,
             });
             // (an object whose view is in hand is its tree's root: no [Owns] field holds it)
             if (KernelTypes.Trees)
@@ -140,7 +140,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Map = "perm",
                     Ref = new MVar("this"),
-                    Value = new MLit("true"),
+                    Value = MLit.True,
                 });
             }
             ViewsAtEntry(grant: true);

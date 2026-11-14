@@ -29,7 +29,7 @@ namespace CsVerify.Verifier.Boogie
 
     // ------------------------------------------------------------------ expressions
 
-    internal abstract class KExpr { }
+    internal abstract partial class KExpr { }
 
     /// <summary>A literal, as Boogie writes it ("5", "(-3)", "true", "null").</summary>
     internal sealed class KLit : KExpr
@@ -39,6 +39,12 @@ namespace CsVerify.Verifier.Boogie
         {
             Text = text;
         }
+
+        public static KLit True => new KLit("true");
+        public static KLit False => new KLit("false");
+        public static KLit Null => new KLit("null");
+        public static KLit Zero => new KLit("0");
+        public static KLit One => new KLit("1");
     }
 
     /// <summary>A variable: a parameter, a local, a quantifier's variable, "result".</summary>

@@ -27,23 +27,29 @@ namespace CsVerify.Verifier.Boogie
             switch (e)
             {
                 case null: yield break;
-                case KVar v: yield return v.Name; yield break;
+                case KVar v:
+                    yield return v.Name;
+                    yield break;
                 case KExpr x:
                     foreach (var f in Parts(x.GetType()))
                     {
                         switch (f.GetValue(x))
                         {
-                            case KExpr k: foreach (var n in VarsIn(k))
-                            {
-                                yield return n;
-                            } break;
-                            case IEnumerable<KExpr> ks: foreach (var k in ks)
-                            {
+                            case KExpr k:
                                 foreach (var n in VarsIn(k))
                                 {
                                     yield return n;
                                 }
-                            } break;
+                                break;
+                            case IEnumerable<KExpr> ks:
+                                foreach (var k in ks)
+                                {
+                                    foreach (var n in VarsIn(k))
+                                    {
+                                        yield return n;
+                                    }
+                                }
+                                break;
                         }
                     }
                     yield break;
@@ -90,8 +96,12 @@ namespace CsVerify.Verifier.Boogie
                     }
                     deps.UnionWith(VarsIn(a.Value));
                     break;
-                case KHavoc h: Cause(h.Var, _cause); break;
-                case KCall c when c.Result != null: Cause(c.Result, _cause); break;
+                case KHavoc h:
+                    Cause(h.Var, _cause);
+                    break;
+                case KCall c when c.Result != null:
+                    Cause(c.Result, _cause);
+                    break;
             }
         }
 

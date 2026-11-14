@@ -141,7 +141,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KFork
                 {
-                    Overflow = new KLit("false"),
+                    Overflow = KLit.False,
                     Target = throwsTo,
                     Exception = null,
                 });
@@ -191,7 +191,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1029",
                         NotAssumedAfter = true,
                         At = dc.Syntax,
@@ -451,9 +451,9 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (a contract of code's reads, an element or a call, isn't compared: its well-definedness is Checks')
                 var spec = Spec(op, result);
-                return KernelTerms.IsMath(spec) ? KernelTerms.Map(spec, x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
+                return spec.IsMath() ? spec.Rewrite(x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
             }
-            KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)new KLit("true"), (a, b) => AndAlso(a, b));
+            KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)KLit.True, (a, b) => AndAlso(a, b));
             var dPre = dc.Requires.Select(r => Of(r, null)).ToList();
             var mPre = mc.Requires.Select(r => Of(r, null)).ToList();
             var mPost = mc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();

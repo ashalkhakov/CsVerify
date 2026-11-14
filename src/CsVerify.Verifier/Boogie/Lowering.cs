@@ -422,7 +422,7 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KAssign
                         {
                             Var = _unshared,
-                            Value = new KOp("lambda", new KLit("r$: Ref"), new KLit("false")),
+                            Value = new KOp("lambda", new KLit("r$: Ref"), KLit.False),
                         });
                     }
                     TrackerEntry();
@@ -454,7 +454,7 @@ namespace CsVerify.Verifier.Boogie
                             Args = new KExpr[] { new KVar(x), new KVar(y) },
                             At = _decl,
                         };
-                        KExpr R(string x) => IsIntegral(ft) ? InRange(new KVar(x), ft) : new KLit("true");
+                        KExpr R(string x) => IsIntegral(ft) ? InRange(new KVar(x), ft) : KLit.True;
                         KExpr body = new KOp("==>", AndAlso(S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
                         foreach (var v in new[] { "q$c", "q$b", "q$a" })
                         {
@@ -473,7 +473,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Emit(new KCheck
                         {
-                            Cond = new KLit("false"),
+                            Cond = KLit.False,
                             Id = "CSV1017",
                             At = _decl,
                             NotAssumedAfter = true,
@@ -485,7 +485,7 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new KAssign
                         {
                             Var = Declare(Local(cl), cl.Type),
-                            Value = new KLit("null"),
+                            Value = KLit.Null,
                         });
                     }
                     if (_p.HasThis && HasInvariants(_m.ContainingType))
@@ -531,7 +531,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1011",
                         At = _p.LoopSyntax.TryGetValue(b.Ordinal, out var ls0) ? ls0 : b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
                         NotAssumedAfter = true,
@@ -542,7 +542,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1901",
                         At = b.Operations.FirstOrDefault()?.Syntax ?? b.BranchValue?.Syntax ?? _decl,
                         Message = "a cycle with no single entry (a goto into a loop) is not supported",
@@ -588,7 +588,7 @@ namespace CsVerify.Verifier.Boogie
                 _p.Blocks[0].Stmts.Insert(0, new KAssign
                 {
                     Var = aw,
-                    Value = new KLit("true"),
+                    Value = KLit.True,
                 });
                 foreach (var (h, last) in _p.LoopBodies.Where(lb => lb.Key <= block && block <= lb.Value))
                 {

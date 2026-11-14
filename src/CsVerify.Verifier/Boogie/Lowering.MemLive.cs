@@ -245,7 +245,7 @@ namespace CsVerify.Verifier.Boogie
                 case "AllocArray":
                 {
                     var n = In("length"); var fill = In("fill");
-                    Need(new KOp(">=", n, new KLit("0")), "length >= 0");
+                    Need(new KOp(">=", n, KLit.Zero), "length >= 0");
                     var p = New(m.ReturnType);
                     var view = Out("view"); var gc = Out("gc");
                     Emit(new KHavoc { Var = view }); Emit(new KHavoc { Var = gc });
@@ -270,12 +270,12 @@ namespace CsVerify.Verifier.Boogie
                     return true;
                 }
                 case "LengthIsNatural":
-                    Assume(new KOp(">=", P("Length", In("view"), "view"), new KLit("0")));
+                    Assume(new KOp(">=", P("Length", In("view"), "view"), KLit.Zero));
                     return true;
                 case "Get":
                 {
                     var v = In("view"); var p = In("p"); var i = In("i");
-                    Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), new KOp("<=", new KLit("0"), i), new KOp("<", i, P("Length", v, "view"))),
+                    Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), new KOp("<=", KLit.Zero, i), new KOp("<", i, P("Length", v, "view"))),
                          "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
                     value = new KOp("sel", P("Elems", v, "view"), i);
                     return true;
@@ -283,7 +283,7 @@ namespace CsVerify.Verifier.Boogie
                 case "Set":
                 {
                     var v = In("view"); var p = In("p"); var i = In("i"); var x = In("value");
-                    Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), new KOp("<=", new KLit("0"), i), new KOp("<", i, P("Length", v, "view"))),
+                    Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), new KOp("<=", KLit.Zero, i), new KOp("<", i, P("Length", v, "view"))),
                          "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
                     var old = Declare("t$" + _temps++, TypeOfParam("view"));
                     Emit(new KAssign
@@ -310,12 +310,12 @@ namespace CsVerify.Verifier.Boogie
                 case "Split":
                 {
                     var w = In("whole"); var cut = In("at");
-                    Need(And(new KOp("<=", new KLit("0"), cut), new KOp("<=", cut, P("Length", w, "whole"))), "0 <= at.Value && at.Value <= whole.Length.Value");
+                    Need(And(new KOp("<=", KLit.Zero, cut), new KOp("<=", cut, P("Length", w, "whole"))), "0 <= at.Value && at.Value <= whole.Length.Value");
                     var left = Out("left"); var right = Out("right");
                     Emit(new KHavoc { Var = left }); Emit(new KHavoc { Var = right });
                     var l = new KVar(left); var r = new KVar(right);
                     Assume(And(Eq(P("Addr", l, "left"), P("Addr", w, "whole")), Eq(P("Length", l, "left"), cut), Eq(P("Elems", l, "left"), P("Elems", w, "whole")),
-                               new KOp(">=", P("Length", r, "right"), new KLit("0"))));
+                               new KOp(">=", P("Length", r, "right"), KLit.Zero)));
                     Assume(And(Eq(P("Addr", r, "right"), Plus(P("Addr", w, "whole"), cut)), Eq(P("Length", r, "right"), new KOp("-", P("Length", w, "whole"), cut)),
                                Eq(P("Elems", r, "right"), new KOp("seq.drop", P("Elems", w, "whole"), cut))));
                     Revoke(w, TypeOfParam("whole"));
@@ -338,7 +338,7 @@ namespace CsVerify.Verifier.Boogie
                 case "TakeOut":
                 {
                     var w = In("whole"); var i = In("i");
-                    Need(And(new KOp("<=", new KLit("0"), i), new KOp("<", i, P("Length", w, "whole"))), "0 <= i.Value && i.Value < whole.Length.Value");
+                    Need(And(new KOp("<=", KLit.Zero, i), new KOp("<", i, P("Length", w, "whole"))), "0 <= i.Value && i.Value < whole.Length.Value");
                     var cell = Out("cell"); var rest = Out("rest");
                     Emit(new KHavoc { Var = cell }); Emit(new KHavoc { Var = rest });
                     var c = new KVar(cell); var h = new KVar(rest);

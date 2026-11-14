@@ -76,14 +76,14 @@ namespace CsVerify.Verifier.Boogie
                     if (ic.Fresh)
                     {
                         var c = Fresh("int");
-                        Assume(new MOp("<=", new MLit("0"), c));
+                        Assume(new MOp("<=", MLit.Zero, c));
                         count = c;
                     }
                     if (i == null)
                     {
                         return count;
                     }
-                    Assert(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
+                    Assert(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
                     return ic.Fresh ? Fresh(TypeOf(ic.Element)) : MathTypes.IfcRead(x, i, ic.Element);
                 }
                 case KMultiset ms:
@@ -91,7 +91,7 @@ namespace CsVerify.Verifier.Boogie
                     var a = Code(ms.Array);
                     var n = Code(ms.Count);
                     Assert(NotNull(a), At("CSV1013", ms.At, $"'{ms.At}' might dereference null"));
-                    Assert(AndAlso(new MOp("<=", new MLit("0"), n), new MOp("<=", n, new MOp("len", a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
+                    Assert(AndAlso(new MOp("<=", MLit.Zero, n), new MOp("<=", n, new MOp("len", a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
@@ -161,7 +161,7 @@ namespace CsVerify.Verifier.Boogie
                                     Check = a.Check,
                                     NotAssumedAfter = a.NotAssumedAfter,
                                 },
-                                MAssume { Always: true } a when !Mentions(a.Cond, new HashSet<string> { q.Var }) => a,
+                                MAssume { Always: true } a when !a.Cond.Mentions(new HashSet<string> { q.Var }) => a,
                                 MAssume a => new MAssume { Cond = MQuant.ForAll(q.Var, a.Cond) },
                                 _ => throw new NotTranslated("a quantifier whose body changes state"),
                             });
@@ -208,7 +208,7 @@ namespace CsVerify.Verifier.Boogie
                     var given = StubGiven(st.Callee, receiver, args);
                     foreach (var r in _program.Signature(st.Callee).Requires)
                     {
-                        var pre = Subst(Spec(r.Expr, out _), given);
+                        var pre = Spec(r.Expr, out _).Substitute(given);
                         _facts.Clear();
                         Assert(pre, At("CSV1001", st.At, $"'{st.At}' might throw: its precondition '{r.At}' might not hold"));
                     }
@@ -226,7 +226,7 @@ namespace CsVerify.Verifier.Boogie
         private MExpr StringChar(KElem sc, MExpr s, MExpr i)
         {
             Assert(NotNull(s), NullAt(sc.At, sc.ArrayAt, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
-            Assert(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
+            Assert(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
             return new MOp("sat", s, i);
         }
 
@@ -272,7 +272,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (fd.Instance == null)
             {
-                var sv = Sel(FieldMap(fd.Field), new MLit("null"));
+                var sv = Sel(FieldMap(fd.Field), MLit.Null);
                 if (NonNullField(fd.Field))
                 {
                     Assume(NotNull(sv));
@@ -326,7 +326,7 @@ namespace CsVerify.Verifier.Boogie
         private void InBounds(MExpr a, MExpr i, SyntaxNode at, SyntaxNode arrayAt)
         {
             Assert(NotNull(a), NullAt(at, arrayAt, $"'{arrayAt}' might be null in '{at}'"));
-            Assert(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
+            Assert(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
         }
 
         /// <summary>
@@ -338,7 +338,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (ar.Op == "/" || ar.Op == "%")
             {
-                Assert(Ne(r, new MLit("0")), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
+                Assert(Ne(r, MLit.Zero), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
                 if (ar.ThrowsTo != null)
                 {
                     Emit(new MFork

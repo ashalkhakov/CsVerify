@@ -30,7 +30,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Map = "$Alloc",
                 Ref = t,
-                Value = new MLit("true"),
+                Value = MLit.True,
             });
         }
 
@@ -167,9 +167,9 @@ namespace CsVerify.Verifier.Boogie
                             stmts.Add(new MMapUpdate
                             {
                                 Map = fill.Map,
-                                Ref = new MLit("null"),
+                                Ref = MLit.Null,
                                 Value = new MOp("lambda", new MLit("j$: int"),
-                                new MOp("ite", AndAlso(new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, Sel(fill.Map, new MLit("null"), j))),
+                                new MOp("ite", AndAlso(new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, Sel(fill.Map, MLit.Null, j))),
                             });
                             break;
                         }
@@ -196,7 +196,7 @@ namespace CsVerify.Verifier.Boogie
                             p.Source.AnyWrites.Add("$Alloc");
                             p.Source.AnyWrites.Add(map);
                             // (a negative size throws: the path ends)
-                            stmts.Add(new MAssume { Cond = new MOp(">=", n.Size, new MLit("0")) });
+                            stmts.Add(new MAssume { Cond = new MOp(">=", n.Size, MLit.Zero) });
                             Allocate(stmts, n.Var, Eq(new MOp("len", t), n.Size));
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
@@ -268,10 +268,18 @@ namespace CsVerify.Verifier.Boogie
                                 frame.Writers.Add(v);
                             }
                             break;
-                        case MStore _: keeps = false; break;
-                        case MInvoke _: case MHavocAll _: case MAwait _: keeps = false; break; // (a delegate, or unknown code, may write any array)
-                        case MCall c: frame.Callees.Add(c.Callee); break;
-                        case MNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
+                        case MStore _:
+                            keeps = false;
+                            break;
+                        case MInvoke _: case MHavocAll _: case MAwait _:
+                            keeps = false;
+                            break; // (a delegate, or unknown code, may write any array) // (a delegate, or unknown code, may write any array)
+                        case MCall c:
+                            frame.Callees.Add(c.Callee);
+                            break;
+                        case MNewObj o when o.Ctor != null:
+                            frame.Callees.Add(o.Ctor);
+                            break;
                     }
                 }
                 var entry = p.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
@@ -291,13 +299,21 @@ namespace CsVerify.Verifier.Boogie
                     {
                         switch (st)
                         {
-                            case MStore ks when ks.Array is MVar kv && cf.Locals.ContainsKey(kv.Name): cf.Locals[kv.Name].Add(Elements(ks.ArrayType)); break;
-                            case MFieldStore kf when kf.Instance is MVar fv && cf.Locals.ContainsKey(fv.Name): cf.Locals[fv.Name].Add(FieldMap(kf.Field)); break;
-                            case MCall kc when kc.Receiver is MVar rv && cf.Locals.ContainsKey(rv.Name): cf.Locals[rv.Name].Add("$M."); break;
-                            case MCall kc2: foreach (var a in kc2.Args.OfType<MVar>().Where(a => cf.Locals.ContainsKey(a.Name)))
-                            {
-                                cf.Locals.Remove(a.Name);
-                            } break;
+                            case MStore ks when ks.Array is MVar kv && cf.Locals.ContainsKey(kv.Name):
+                                cf.Locals[kv.Name].Add(Elements(ks.ArrayType));
+                                break;
+                            case MFieldStore kf when kf.Instance is MVar fv && cf.Locals.ContainsKey(fv.Name):
+                                cf.Locals[fv.Name].Add(FieldMap(kf.Field));
+                                break;
+                            case MCall kc when kc.Receiver is MVar rv && cf.Locals.ContainsKey(rv.Name):
+                                cf.Locals[rv.Name].Add("$M.");
+                                break;
+                            case MCall kc2:
+                                foreach (var a in kc2.Args.OfType<MVar>().Where(a => cf.Locals.ContainsKey(a.Name)))
+                                {
+                                    cf.Locals.Remove(a.Name);
+                                }
+                                break;
                         }
                     }
                     if (cf.Locals.Count > 0)

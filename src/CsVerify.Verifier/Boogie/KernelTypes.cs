@@ -367,14 +367,14 @@ namespace CsVerify.Verifier.Boogie
             var addr = MemProp("Addr", v, type);
             KCells Of(KExpr lo, KExpr hi) => new KCells
             {
-                Arr = new KLit("null"),
+                Arr = KLit.Null,
                 Lo = lo,
                 Hi = hi,
                 At = at,
             };
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
             {
-                return new List<KCells> { Of(addr, new KOp("+", addr, new KLit("1"))) };
+                return new List<KCells> { Of(addr, new KOp("+", addr, KLit.One)) };
             }
             var end = new KOp("+", addr, MemProp("Length", v, type));
             if (SpecSymbols.IsCsVerifyType(type, "ArrayView`1"))
@@ -382,7 +382,7 @@ namespace CsVerify.Verifier.Boogie
                 return new List<KCells> { Of(addr, end) };
             }
             var hole = new KOp("+", addr, MemProp("Index", v, type));
-            return new List<KCells> { Of(addr, hole), Of(new KOp("+", hole, new KLit("1")), end) };
+            return new List<KCells> { Of(addr, hole), Of(new KOp("+", hole, KLit.One), end) };
         }
 
         /// <summary>What a view says is what its cells hold (true while it's in hand: nobody else writes them).</summary>
@@ -392,11 +392,11 @@ namespace CsVerify.Verifier.Boogie
             var addr = MemProp("Addr", v, type);
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
             {
-                return Eq(new KOp("sel", map, new KLit("null"), addr), MemProp("Value", v, type));
+                return Eq(new KOp("sel", map, KLit.Null, addr), MemProp("Value", v, type));
             }
             var i = new KVar("m$i");
-            KExpr range = AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<", i, MemProp("Length", v, type)));
-            KExpr body = Eq(new KOp("sel", map, new KLit("null"), new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
+            KExpr range = AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<", i, MemProp("Length", v, type)));
+            KExpr body = Eq(new KOp("sel", map, KLit.Null, new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
             // (a hole's: all but its index)
             if (SpecSymbols.IsCsVerifyType(type, "ArrayHole`1"))
             {
@@ -491,7 +491,7 @@ namespace CsVerify.Verifier.Boogie
                 return NotNull(v);
             }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (KExpr)new KOp("$is." + CaseName(c).Substring(3), v)).ToList();
-            var any = tags.Count == 0 ? new KLit("false") : tags.Aggregate((a, b) => OrElse(a, b));
+            var any = tags.Count == 0 ? KLit.False : tags.Aggregate((a, b) => OrElse(a, b));
             return AndAlso(NotNull(v), any);
         }
 

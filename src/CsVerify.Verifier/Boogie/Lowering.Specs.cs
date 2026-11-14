@@ -43,7 +43,7 @@ namespace CsVerify.Verifier.Boogie
                     At = sae.Syntax,
                     ArrayAt = sae.Syntax,
                 };
-                return new KOp("$need", AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<", i, seo.Args[2])), elem);
+                return new KOp("$need", AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<", i, seo.Args[2])), elem);
             }
             if (e is ILocalReferenceOperation bl && _bound.TryGetValue(bl.Local, out var bv))
             {
@@ -345,7 +345,7 @@ namespace CsVerify.Verifier.Boogie
                                                     (conv.IsImplicit || Range(conv.Operand.Type).lo >= Range(conv.Type).lo && Range(conv.Operand.Type).hi <= Range(conv.Type).hi):
                     return Spec(conv.Operand, result);
                 case IConversionOperation conv when Upcast(conv):
-                    return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Spec(conv.Operand, result);
+                    return conv.Operand.ConstantValue.HasValue ? KLit.Null : Spec(conv.Operand, result);
                 // (an unchecked cast to an integer type that doesn't hold all of the operand's, (uint)n: modulo its size, from its least)
                 case IConversionOperation nc when !nc.IsChecked && nc.OperatorMethod == null && IsIntegral(nc.Type) && IsIntegral(nc.Operand.Type) && nc.Conversion.IsNumeric:
                     return SpecUncheckedNarrowing(nc, result);
@@ -362,8 +362,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return Not(Spec(u.Operand, result));
                 case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Spec(bn.Operand, result), bn.Type);
-                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && _codeArith: return Arith("-", new KLit("0"), Spec(u.Operand, result), u.Type, u.Syntax, u.IsChecked);
-                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus: return new KOp("-", new KLit("0"), Spec(u.Operand, result));
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && _codeArith: return Arith("-", KLit.Zero, Spec(u.Operand, result), u.Type, u.Syntax, u.IsChecked);
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus: return new KOp("-", KLit.Zero, Spec(u.Operand, result));
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Spec(u.Operand, result);
                 default: return SpecOther(e, result);
             }
@@ -613,7 +613,7 @@ namespace CsVerify.Verifier.Boogie
                         Arr = arr,
                         Read = inv.TargetMethod.Name == "AccRead",
                         At = inv.Syntax,
-                        Lo = inv.Arguments.Length == 1 ? new KLit("0") : Spec(inv.Arguments[1].Value, result),
+                        Lo = inv.Arguments.Length == 1 ? KLit.Zero : Spec(inv.Arguments[1].Value, result),
                         Hi = inv.Arguments.Length == 1 ? new KOp("len", arr) : Spec(inv.Arguments[2].Value, result),
                     };
                 }
@@ -649,7 +649,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case "Of" when self == null && arg != null: return new KOp("$badd", new KLit("$bag.empty"), arg);
                 case "Count" when self != null: return new KOp("sel", self, arg);
-                case "Contains" when self != null: return new KOp("<", new KLit("0"), new KOp("sel", self, arg));
+                case "Contains" when self != null: return new KOp("<", KLit.Zero, new KOp("sel", self, arg));
                 case "Add" when self != null: return new KOp("$badd", self, arg);
                 case "Union" when self != null: return new KOp("$bunion", self, arg);
                 default: throw new NotTranslated("Bag's " + bo.TargetMethod.Name);
@@ -729,7 +729,7 @@ namespace CsVerify.Verifier.Boogie
             return AndAlso(NotNull(of), KQuant.Exists(
                 v,
                 SameValue(Sel(items.Name, of, new KVar(v)), x, lcl.TypeArguments[0]),
-                range: AndAlso(new KOp("<=", new KLit("0"), new KVar(v)), new KOp("<", new KVar(v), Sel(SizeMap, of)))));
+                range: AndAlso(new KOp("<=", KLit.Zero, new KVar(v)), new KOp("<", new KVar(v), Sel(SizeMap, of)))));
         }
 
         private KExpr SpecContainsKey(IInvocationOperation ck, INamedTypeSymbol cd, IParameterSymbol result)
@@ -820,7 +820,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 then = NullableOf(then, ca.Type);
             }
-            return new KOp("ite", NotNull(r), then, new KLit("null"));
+            return new KOp("ite", NotNull(r), then, KLit.Null);
         }
 
         private KExpr SpecCoalesce(ICoalesceOperation co, IParameterSymbol result)
@@ -864,7 +864,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _p.Warnings.Add(new VerificationDiagnostic("CSV1016", true, $"Spec.Acc of a single field: {why}", span));
                 }
-                return new KLit("true");
+                return KLit.True;
             }
             return new KFieldAcc
             {
@@ -925,7 +925,7 @@ namespace CsVerify.Verifier.Boogie
         private KExpr SpecIntegerMath(IInvocationOperation sm, IParameterSymbol result)
         {
             var v = sm.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray();
-            return sm.TargetMethod.Name == "Abs" ? new KOp("ite", new KOp(">=", v[0], new KLit("0")), v[0], new KOp("-", new KLit("0"), v[0])) : MinMax(sm.TargetMethod.Name, v[0], v[1]);
+            return sm.TargetMethod.Name == "Abs" ? new KOp("ite", new KOp(">=", v[0], KLit.Zero), v[0], new KOp("-", KLit.Zero, v[0])) : MinMax(sm.TargetMethod.Name, v[0], v[1]);
         }
 
         private KExpr SpecBinary(IBinaryOperation b, IParameterSymbol result)

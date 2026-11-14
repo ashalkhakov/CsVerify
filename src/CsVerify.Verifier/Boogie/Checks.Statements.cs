@@ -219,13 +219,13 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Map = "perm",
                         Ref = x,
-                        Value = new MLit("false"),
+                        Value = MLit.False,
                     });
                     Emit(new MMapUpdate
                     {
                         Map = "pkg",
                         Ref = x,
-                        Value = new MLit("true"),
+                        Value = MLit.True,
                     });
                     return;
                 }
@@ -256,7 +256,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Map = "perm",
                         Ref = Code(drop.Obj),
-                        Value = new MLit("false"),
+                        Value = MLit.False,
                     });
                     return;
                 case KNewObj n:
@@ -267,7 +267,7 @@ namespace CsVerify.Verifier.Boogie
                 case KStore { Memory: true } ms:
                     Emit(new MStore
                     {
-                        Array = new MLit("null"),
+                        Array = MLit.Null,
                         Index = Code(ms.Index),
                         Value = Code(ms.Value),
                         ArrayType = ms.ArrayType,
@@ -306,18 +306,18 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var cells = new MCells
                         {
-                            Arr = new MLit("null"),
+                            Arr = MLit.Null,
                             Lo = Code(c.Lo),
                             Hi = Code(c.Hi),
                             At = c.At,
                         };
                         if (mc.Grant)
                         {
-                            InhaleCells(new MLit("true"), cells);
+                            InhaleCells(MLit.True, cells);
                         }
                         else
                         {
-                            ChangeCells(new MLit("true"), cells, "-");
+                            ChangeCells(MLit.True, cells, "-");
                         }
                     }
                     return;
@@ -416,7 +416,7 @@ namespace CsVerify.Verifier.Boogie
         private void FieldStore(KFieldStore fs)
         {
             var value = Code(fs.Value);
-            var o = fs.Instance == null ? new MLit("null") : Code(fs.Instance);
+            var o = fs.Instance == null ? MLit.Null : Code(fs.Instance);
             if (fs.Instance != null && !fs.OnThis)
             {
                 Assert(NotNull(o), NullAt(fs.At, fs.InstanceAt, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
@@ -505,7 +505,7 @@ namespace CsVerify.Verifier.Boogie
                 Field = take.Field,
                 Instance = c,
                 OnThis = true,
-                Value = new MLit("null"),
+                Value = MLit.Null,
                 At = take.At,
                 InstanceAt = take.At,
             });
@@ -545,7 +545,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Map = "perm",
                 Ref = x,
-                Value = new MLit("false"),
+                Value = MLit.False,
             });
             Emit(new MFieldStore
             {
@@ -598,7 +598,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var v = Spec(x, out _);
                 _facts.Clear();
-                return Subst(v, r);
+                return v.Substitute(r);
             }
             Emit(new MLambda
             {
@@ -627,13 +627,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 Map = "pkg",
                 Ref = x,
-                Value = new MLit("false"),
+                Value = MLit.False,
             });
             Emit(new MMapUpdate
             {
                 Map = "perm",
                 Ref = x,
-                Value = new MLit("true"),
+                Value = MLit.True,
             });
             AssumeInvariant(unpack.Type, x);
             if (KernelTypes.Trees)
@@ -706,7 +706,7 @@ namespace CsVerify.Verifier.Boogie
                 var i = new MVar("i$");
                 Assert(OrElse(IsNull(r), MQuant.ForAll(
                     "i$",
-                    Implies(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))))),
+                    Implies(AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))))),
                        At("CSV1016", row.At, $"'{row.At}' writes the whole array: this method needs Spec.Acc of all its cells"));
             }
             var v = Spec(row.Value, out _);
@@ -775,7 +775,7 @@ namespace CsVerify.Verifier.Boogie
             // method can't hold: CSV1016, and every array unknown after; one that only reads them, as any read)
             if (!la.Plain && la.Write)
             {
-                Assert(new MLit("false"), At("CSV1016", la.At, $"'{la.At}' may write arrays it reaches through the objects it's handed, whose cells this method can't hold"), notAssumedAfter: true);
+                Assert(MLit.False, At("CSV1016", la.At, $"'{la.At}' may write arrays it reaches through the objects it's handed, whose cells this method can't hold"), notAssumedAfter: true);
                 foreach (var (map, fresh) in la.Fresh)
                 {
                     Emit(new MRow
@@ -791,7 +791,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var a = Code(array);
                 var i = new MVar("i$");
-                var inRange = AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a)));
+                var inRange = AndAlso(new MOp("<=", MLit.Zero, i), new MOp("<", i, new MOp("len", a)));
                 Assert(OrElse(IsNull(a),
                                MQuant.ForAll(
                                    "i$",
@@ -844,7 +844,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A postcondition at a return: of the parameters the body assigns, their values now (in old(...), at entry).</summary>
-        private MExpr AtReturn(MExpr e) => _p.AssignedParams.Count == 0 ? e : MathTerms.Map(e, x => x switch
+        private MExpr AtReturn(MExpr e) => _p.AssignedParams.Count == 0 ? e : e.Rewrite(x => x switch
         {
             MOp { Op: "old" } => x,
             MVar v when _p.AssignedParams.TryGetValue(v.Name, out var now) => new MVar(now),

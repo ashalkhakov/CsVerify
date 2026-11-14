@@ -47,9 +47,9 @@ namespace CsVerify.Verifier.Boogie
             }
             var snap = new MOp("$sst", Sel("psnap", Instance(pred, args)));
             // (every map read, a library function's arguments' too: those Plain lets through are of its arguments alone)
-            MExpr In(MExpr e) => MathTerms.Map(e, x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
+            MExpr In(MExpr e) => e.Rewrite(x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
             // (of no memory now, no old(...), no other snapshot)
-            bool Plain(MExpr e) => MathTerms.Subterms(e).All(x => x is not (MFnApp { Plain: false } or MOp { Op: "old" } or MVar { Name: "psnap" }));
+            bool Plain(MExpr e) => e.Subterms().All(x => x is not (MFnApp { Plain: false } or MOp { Op: "old" } or MVar { Name: "psnap" }));
             var given = pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
             var facts = new List<(MExpr g, MExpr f)>();
             var saved = _old;
@@ -85,9 +85,9 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Spec(x, out _);
                     _facts.Clear();
-                    return Subst(v, given);
+                    return v.Substitute(given);
                 }
-                var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)new MLit("true"), Conj);
+                var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)MLit.True, Conj);
                 var app = new MFnApp
                 {
                     Callee = f,

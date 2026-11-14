@@ -38,8 +38,8 @@ namespace CsVerify.Verifier.Boogie
             var t = Declare("t$" + _temps++, type);
             var s = new KVar(t);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("ite", IsNull(a), Eq(Len(s), new KLit("0")),
-                AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), new KLit("0")), Eq(Len(s), Len(a))))) });
+            Emit(new KAssume { Cond = new KOp("ite", IsNull(a), Eq(Len(s), KLit.Zero),
+                AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Len(s), Len(a))))) });
             return s;
         }
 
@@ -48,7 +48,7 @@ namespace CsVerify.Verifier.Boogie
         {
             Emit(new KCheck
             {
-                Cond = AndAlso(AndAlso(new KOp("<=", new KLit("0"), start), new KOp("<=", new KLit("0"), length)), new KOp("<=", new KOp("+", start, length), Len(s))),
+                Cond = AndAlso(AndAlso(new KOp("<=", KLit.Zero, start), new KOp("<=", KLit.Zero, length)), new KOp("<=", new KOp("+", start, length), Len(s))),
                 Id = "CSV1001",
                 At = at,
                 Message = $"'{at}': the range might not be within the span (it would throw ArgumentOutOfRangeException)",
@@ -59,7 +59,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>s[i]: i within the span (CSV1003); the base's cell.</summary>
         private (KExpr array, KExpr index) SpanCell(KExpr s, KExpr i, SyntaxNode at, bool inSpec, out KExpr within)
         {
-            within = AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(s)));
+            within = AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<", i, Len(s)));
             if (!inSpec)
             {
                 Emit(new KCheck
@@ -81,7 +81,7 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation { Property.Name: "Length" or "Count", Instance: { } si } when IsSpan(si.Type):
                     return Len(lower(si));
                 case IPropertyReferenceOperation { Property.Name: "IsEmpty", Instance: { } se } when IsSpan(se.Type):
-                    return Eq(Len(lower(se)), new KLit("0"));
+                    return Eq(Len(lower(se)), KLit.Zero);
                 case IPropertyReferenceOperation { Property.IsIndexer: true, Instance: { } sx, Arguments.Length: 1 } ix when IsSpan(sx.Type):
                 {
                     var s = lower(sx);
@@ -181,7 +181,7 @@ namespace CsVerify.Verifier.Boogie
                         Value = new KOp("lambda", new KLit("y$: int"), row),
                         At = cp.Syntax,
                     });
-                    return cp.TargetMethod.Name == "CopyTo" ? new KLit("true") : fits;
+                    return cp.TargetMethod.Name == "CopyTo" ? KLit.True : fits;
                 }
                 // (MemoryExtensions' IndexOf(span, v) and StartsWith(span, prefix) of a scalar span, in code: as their stubs say)
                 case IInvocationOperation se when !inSpec && se.TargetMethod.IsStatic && se.TargetMethod.ContainingType?.ToDisplayString() == "System.MemoryExtensions" &&
@@ -208,10 +208,10 @@ namespace CsVerify.Verifier.Boogie
                         }
                         var v = lower(ordered[1].Value);
                         Emit(new KAssume { Cond = AndAlso(new KOp("<=", new KLit("-1"), rv), new KOp("<", rv, Len(sp))) });
-                        Emit(new KAssume { Cond = new KOp("==>", new KOp(">=", rv, new KLit("0")), Eq(At(sp, rv), v)) });
+                        Emit(new KAssume { Cond = new KOp("==>", new KOp(">=", rv, KLit.Zero), Eq(At(sp, rv), v)) });
                         Emit(new KSpecStmt
                         {
-                            Spec = Within(new KLit("0"), new KOp("ite", new KOp("<", rv, new KLit("0")), Len(sp), rv), Ne(At(sp, i), v)),
+                            Spec = Within(KLit.Zero, new KOp("ite", new KOp("<", rv, KLit.Zero), Len(sp), rv), Ne(At(sp, i), v)),
                             Assume = true,
                             Free = true,
                             At = se.Syntax,
@@ -227,7 +227,7 @@ namespace CsVerify.Verifier.Boogie
                         var pre = lower(Unconverted(ordered[1].Value));
                         Emit(new KSpecStmt
                         {
-                            Spec = Eq(rv, AndAlso(new KOp("<=", Len(pre), Len(sp)), Within(new KLit("0"), Len(pre), Eq(At(sp, i), At(pre, i))))),
+                            Spec = Eq(rv, AndAlso(new KOp("<=", Len(pre), Len(sp)), Within(KLit.Zero, Len(pre), Eq(At(sp, i), At(pre, i))))),
                             Assume = true,
                             Free = true,
                             At = se.Syntax,
@@ -250,7 +250,7 @@ namespace CsVerify.Verifier.Boogie
                         Value = new KOp("lambda", new KLit("y$: int"), row),
                         At = fl.Syntax,
                     });
-                    return new KLit("true");
+                    return KLit.True;
                 }
             }
             return null;
@@ -267,7 +267,7 @@ namespace CsVerify.Verifier.Boogie
             var size = Expr(n);
             Emit(new KCheck
             {
-                Cond = new KOp("<=", new KLit("0"), size),
+                Cond = new KOp("<=", KLit.Zero, size),
                 Id = "CSV1003",
                 At = sa,
                 Message = $"'{sa}': the size might be negative",

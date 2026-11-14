@@ -85,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1030",
                     At = at,
                     NotAssumedAfter = true,
@@ -102,7 +102,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1030",
                     At = at,
                     NotAssumedAfter = true,
@@ -140,7 +140,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1901",
                     At = ordered[0].Syntax,
                     NotAssumedAfter = true,
@@ -204,11 +204,13 @@ namespace CsVerify.Verifier.Boogie
             switch (name)
             {
                 case "Volatile.Read": case "Read": return cur;
-                case "Volatile.Write": Write(args[0]); return null;
+                case "Volatile.Write":
+                    Write(args[0]);
+                    return null;
                 case "Increment": case "Decrement": case "Add":
                 {
                     // (wrapping at the type's ends, as at run time)
-                    var delta = name == "Increment" ? new KLit("1") : name == "Decrement" ? new KLit("(-1)") : args[0];
+                    var delta = name == "Increment" ? KLit.One : name == "Decrement" ? new KLit("(-1)") : args[0];
                     var t = Declare("t$" + _temps++, type);
                     Emit(new KAssign
                     {
@@ -226,8 +228,12 @@ namespace CsVerify.Verifier.Boogie
                     Write(new KVar(t));
                     return new KVar(t);
                 }
-                case "Exchange": Write(args[0]); return cur;
-                case "CompareExchange": Write(args[0], Eq(cur, args[1])); return cur;
+                case "Exchange":
+                    Write(args[0]);
+                    return cur;
+                case "CompareExchange":
+                    Write(args[0], Eq(cur, args[1]));
+                    return cur;
                 // (bitwise, at once: the old value given back)
                 case "And" or "Or" when IsIntegral(type):
                 {

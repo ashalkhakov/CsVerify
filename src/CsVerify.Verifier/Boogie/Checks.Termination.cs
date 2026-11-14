@@ -31,12 +31,12 @@ namespace CsVerify.Verifier.Boogie
             // (measures of different shapes can't be compared)
             if (theirs.Decreases.Count != mine.Count)
             {
-                Assert(new MLit("false"), At("CSV1008", c.At, $"cannot prove termination: '{c.Callee.Name}' and '{_p.Method.Name}' call each other but their measures have different numbers of components"));
+                Assert(MLit.False, At("CSV1008", c.At, $"cannot prove termination: '{c.Callee.Name}' and '{_p.Method.Name}' call each other but their measures have different numbers of components"));
                 return;
             }
             var sig = _program.Signature(c.Callee);
             var given = Given(c.Callee, receiver, args);
-            var next = sig.Decreases.Select(d => Subst(Spec(d, out _), given)).ToList();
+            var next = sig.Decreases.Select(d => Spec(d, out _).Substitute(given)).ToList();
             Assert(Lexicographic(next, mine), At("CSV1008", c.At,
                 $"cannot prove termination: measure '{string.Join(", ", theirs.Decreases.Select(d => d.Syntax))}' of '{c.Callee.Name}' might not decrease or might be negative"));
         }
@@ -47,7 +47,7 @@ namespace CsVerify.Verifier.Boogie
             bool self = SymbolEqualityComparer.Default.Equals(c.Callee.OriginalDefinition, _p.Method.OriginalDefinition);
             if (_p.Contract.IsPure || _p.Contract.IsLemma || _p.Ghost)
             {
-                Assert(new MLit("false"), At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
+                Assert(MLit.False, At("CSV1011", c.At, self ? $"recursive lemma or [Pure] function '{_p.Method.Name}' needs Spec.Decreases"
                                                                    : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' needs Spec.Decreases on both"));
                 return;
             }
@@ -91,10 +91,10 @@ namespace CsVerify.Verifier.Boogie
             int n = Math.Min(next.Count, before.Count);
             MExpr Below(int k)
             {
-                var down = AndAlso(new MOp("<=", new MLit("0"), before[k]), new MOp("<", next[k], before[k]));
+                var down = AndAlso(new MOp("<=", MLit.Zero, before[k]), new MOp("<", next[k], before[k]));
                 return k == n - 1 ? down : OrElse(down, AndAlso(Eq(next[k], before[k]), Below(k + 1)));
             }
-            return n == 0 ? new MLit("false") : Below(0);
+            return n == 0 ? MLit.False : Below(0);
         }
     }
 }

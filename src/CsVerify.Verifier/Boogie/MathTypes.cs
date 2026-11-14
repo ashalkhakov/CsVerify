@@ -58,7 +58,7 @@ namespace CsVerify.Verifier.Boogie
                 return NotNull(v);
             }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (MExpr)new MOp("$is." + CaseName(c).Substring(3), v)).ToList();
-            var any = tags.Count == 0 ? new MLit("false") : tags.Aggregate((a, b) => OrElse(a, b));
+            var any = tags.Count == 0 ? MLit.False : tags.Aggregate((a, b) => OrElse(a, b));
             return AndAlso(NotNull(v), any);
         }
 

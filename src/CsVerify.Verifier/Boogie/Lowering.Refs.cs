@@ -30,7 +30,7 @@ namespace CsVerify.Verifier.Boogie
         private void ArrayCellLent(IArgumentOperation a, IMethodSymbol callee) =>
             Emit(new KCheck
             {
-                Cond = new KLit("false"),
+                Cond = KLit.False,
                 Id = "CSV1901",
                 At = a.Syntax,
                 NotAssumedAfter = true,
@@ -57,7 +57,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1901",
                     At = at,
                     NotAssumedAfter = true,
@@ -115,7 +115,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1901",
                         At = at,
                         NotAssumedAfter = true,
@@ -211,7 +211,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1901",
                         At = a.Syntax,
                         NotAssumedAfter = true,

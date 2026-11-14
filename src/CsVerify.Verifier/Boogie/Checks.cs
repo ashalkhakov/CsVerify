@@ -198,8 +198,6 @@ namespace CsVerify.Verifier.Boogie
         private int _unfoldingAssert;
         private readonly List<MExpr> _unfoldedFacts = new List<MExpr>();
 
-        private static IEnumerable<MExpr> Conjuncts(MExpr e) =>
-            e is MOp { Op: "&&", Args: { Length: 2 } a } ? Conjuncts(a[0]).Concat(Conjuncts(a[1])) : new[] { e };
 
         /// <summary>
         /// A condition with each function application among its conjuncts (a static function of the program's with a body
@@ -228,9 +226,9 @@ namespace CsVerify.Verifier.Boogie
                     _facts.Clear();
                     try
                     {
-                        var body = Subst(Spec(sig.FunctionBody, out _), given);
+                        var body = Spec(sig.FunctionBody, out _).Substitute(given);
                         // (what reading the body lets one assume, a field's array allocated: known where it's asserted)
-                        _unfoldedFacts.AddRange(_facts.Select(f => Subst(f, given)));
+                        _unfoldedFacts.AddRange(_facts.Select(f => f.Substitute(given)));
                         return body;
                     }
                     catch (NotTranslated)
@@ -266,7 +264,7 @@ namespace CsVerify.Verifier.Boogie
                     _unfoldingAssert++;
                     try
                     {
-                        foreach (var c in Conjuncts(unfolded))
+                        foreach (var c in unfolded.Conjuncts())
                         {
                             Assert(c, check);
                         }
@@ -302,7 +300,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var seen = new HashSet<string>();
             var causes = new HashSet<string>();
-            var todo = new Stack<string>(MathTerms.Subterms(cond).OfType<MVar>().Select(v => v.Name));
+            var todo = new Stack<string>(cond.Subterms().OfType<MVar>().Select(v => v.Name));
             while (todo.Count > 0)
             {
                 var v = todo.Pop();
@@ -367,7 +365,7 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr And(IEnumerable<MExpr> xs)
         {
             var list = xs.ToList();
-            return list.Count == 0 ? new MLit("true") : list.Aggregate((a, b) => AndAlso(a, b));
+            return list.Count == 0 ? MLit.True : list.Aggregate((a, b) => AndAlso(a, b));
         }
 
         /// <summary>A clause of the contract as mathematics: the clause, its value, what makes it well-defined, what reading it gives.</summary>
@@ -461,8 +459,12 @@ namespace CsVerify.Verifier.Boogie
                 _headInto = null;
                 switch (b.Jump)
                 {
-                    case KReturn ret: Return(ret, contract.Ensures); break;
-                    case KGoto g: Goto(b, g, contract); break;
+                    case KReturn ret:
+                        Return(ret, contract.Ensures);
+                        break;
+                    case KGoto g:
+                        Goto(b, g, contract);
+                        break;
                 }
             }
             _m.Obligations = _m.Entry.Concat(_m.Blocks.SelectMany(b => b.Stmts)).Count(s => s is MAssert a && a.Check != null || s is MCall)
@@ -532,13 +534,13 @@ namespace CsVerify.Verifier.Boogie
             }
             // (a function's axioms are about every state: what they say can't be of a procedure's snapshots. One whose body
             // reads them is a function of its contract alone: its procedure proves the contract, its calls give it)
-            if (_m.FunctionBody != null && _program.OverPredicate(m) == null && Mentions(_m.FunctionBody, Snaps))
+            if (_m.FunctionBody != null && _program.OverPredicate(m) == null && _m.FunctionBody.Mentions(Snaps))
             {
                 _m.FunctionBody = null;
                 _m.InferredReads = null;
             }
             if (_program.OverPredicate(m) == null && _program.IsFunction(m) &&
-                requires.Select(r => r.Math).Concat(ensures.Select(e => e.Math)).Any(x => Mentions(x, Snaps)))
+                requires.Select(r => r.Math).Concat(ensures.Select(e => e.Math)).Any(x => x.Mentions(Snaps)))
             {
                 throw new NotTranslated("a function whose contract reads a function over a predicate");
             }
@@ -572,7 +574,7 @@ namespace CsVerify.Verifier.Boogie
                 var v = Spec(x, out _);
                 _facts.Clear();
                 return v;
-            }).Aggregate((MExpr)new MLit("true"), Conj);
+            }).Aggregate((MExpr)MLit.True, Conj);
             foreach (var (b, reqs) in _p.BaseRequires)
             {
                 Assert(new MOp("==>", Conjunction(reqs), Conjunction(_p.OwnRequires)),
@@ -606,7 +608,7 @@ namespace CsVerify.Verifier.Boogie
                     Var = "psnap$entry",
                     Value = new MVar("psnap"),
                 });
-                foreach (var r in contract.Requires.Where(r => Mentions(r.Math, Snaps)))
+                foreach (var r in contract.Requires.Where(r => r.Math.Mentions(Snaps)))
                 {
                     Assume(r.Math);
                 }
@@ -631,7 +633,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Assume(f);
                     }
-                    foreach (var c in Conjuncts(unfolded))
+                    foreach (var c in unfolded.Conjuncts())
                     {
                         Assume(c);
                     }
@@ -659,7 +661,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new MAssign
                 {
                     Var = "alloc$entry",
-                    Value = _p.IsCtor ? Store("$Alloc", new MVar("this"), new MLit("false")) : new MVar("$Alloc"),
+                    Value = _p.IsCtor ? Store("$Alloc", new MVar("this"), MLit.False) : new MVar("$Alloc"),
                 });
             }
         }

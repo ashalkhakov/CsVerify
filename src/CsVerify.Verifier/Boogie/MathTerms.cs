@@ -5,35 +5,35 @@ using System.Linq;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// The traversal of mathematics (what Checks makes of the kernel's expressions: KLit, KVar, KOp, KQuant, KFnApp), in
-    /// one place: Map rewrites, Subterms queries. Any other kind, met here, is an error: no walk skips one it doesn't know.
+    /// The traversal of level 2's mathematics (MLit, MVar, MOp, MQuant, MFnApp), in one place: Rewrite rewrites, Subterms
+    /// queries, and the queries made of them. Any other kind, met here, is an error: no walk skips one it doesn't know.
     /// </summary>
-    internal static class MathTerms
+    internal abstract partial class MExpr
     {
         /// <summary>
-        /// e rewritten: a node for which <paramref name="at"/> gives an expression is replaced by it; any other is rebuilt
+        /// This rewritten: a node for which <paramref name="at"/> gives an expression is replaced by it; any other is rebuilt
         /// of its rewritten parts (a new node, but a literal or variable, which is kept). A quantifier's triggers are
         /// rewritten too; a function application keeps all but its arguments and snapshot.
         /// </summary>
-        public static MExpr Map(MExpr e, Func<MExpr, MExpr> at)
+        public MExpr Rewrite(Func<MExpr, MExpr> at)
         {
-            if (at(e) is MExpr given)
+            if (at(this) is MExpr given)
             {
                 return given;
             }
-            MExpr M(MExpr x) => Map(x, at);
-            return e switch
+            MExpr R(MExpr x) => x.Rewrite(at);
+            return this switch
             {
-                MLit or MVar => e,
-                MOp op => new MOp(op.Op, op.Args.Select(M).ToArray()),
+                MLit or MVar => this,
+                MOp op => new MOp(op.Op, op.Args.Select(R).ToArray()),
                 MQuant q => new MQuant
                 {
                     Forall = q.Forall,
                     Var = q.Var,
                     Type = q.Type,
-                    Range = q.Range == null ? null : M(q.Range),
-                    Body = M(q.Body),
-                    Trigger = q.Trigger?.Select(M).ToArray(),
+                    Range = q.Range == null ? null : R(q.Range),
+                    Body = R(q.Body),
+                    Trigger = q.Trigger?.Select(R).ToArray(),
                 },
                 MFnApp f => new MFnApp
                 {
@@ -43,21 +43,21 @@ namespace CsVerify.Verifier.Boogie
                     MapsAt = f.MapsAt,
                     Layer = f.Layer,
                     Fields = f.Fields,
-                    Args = f.Args.Select(M).ToArray(),
-                    Snap = f.Snap == null ? null : M(f.Snap),
+                    Args = f.Args.Select(R).ToArray(),
+                    Snap = f.Snap == null ? null : R(f.Snap),
                 },
-                _ => throw NotMath(e),
+                _ => throw MathTerms.NotMath(this),
             };
         }
 
         /// <summary>
-        /// e and every expression in it, outermost first; below a node <paramref name="into"/> refuses, nothing (it is
+        /// This and every expression in it, outermost first; below a node <paramref name="into"/> refuses, nothing (it is
         /// still given). A quantifier's triggers are left out: hints to the solver, not part of what it says.
         /// </summary>
-        public static IEnumerable<MExpr> Subterms(MExpr e, Func<MExpr, bool> into = null)
+        public IEnumerable<MExpr> Subterms(Func<MExpr, bool> into = null)
         {
             var stack = new Stack<MExpr>();
-            stack.Push(e);
+            stack.Push(this);
             while (stack.Count > 0)
             {
                 var x = stack.Pop();
@@ -66,7 +66,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     continue;
                 }
-                var children = Children(x).ToList();
+                var children = x.Children().ToList();
                 for (int k = children.Count - 1; k >= 0; k--)
                 {
                     stack.Push(children[k]);
@@ -75,15 +75,42 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Its immediate parts, as Subterms takes them.</summary>
-        public static IEnumerable<MExpr> Children(MExpr e) => e switch
+        public IEnumerable<MExpr> Children() => this switch
         {
             MLit or MVar => Enumerable.Empty<MExpr>(),
             MOp op => op.Args,
             MQuant q => q.Range == null ? new[] { q.Body } : new[] { q.Range, q.Body },
             MFnApp f => f.Snap == null ? f.Args : f.Args.Append(f.Snap),
-            _ => throw NotMath(e),
+            _ => throw MathTerms.NotMath(this),
         };
 
+        public bool IsTrue => this is MLit { Text: "true" };
+
+        /// <summary>Its conjuncts: the operands of its &&s, left to right (itself, if it isn't one).</summary>
+        public IEnumerable<MExpr> Conjuncts() => this is MOp { Op: "&&" } and ? and.Args.SelectMany(a => a.Conjuncts()) : new[] { this };
+
+        /// <summary>Does it mention any of these variables?</summary>
+        public bool Mentions(HashSet<string> vars) => Subterms().Any(x => x is MVar v && vars.Contains(v.Name));
+
+        /// <summary>Variables given values (mathematics in, mathematics out).</summary>
+        public MExpr Substitute(Dictionary<string, MExpr> given) => Rewrite(x => x is MVar v && given.TryGetValue(v.Name, out var value) ? value : null);
+
+        /// <summary>A variable given a value.</summary>
+        public MExpr Substitute(string name, MExpr value) => Substitute(new Dictionary<string, MExpr> { [name] = value });
+
+        /// <summary>Its function applications, outermost first, through its operators (not into a quantifier or a snapshot).</summary>
+        public IEnumerable<MFnApp> Applications() => this switch
+        {
+            MFnApp f => new[] { f }.Concat(f.Args.SelectMany(a => a.Applications())),
+            MOp op => op.Args.SelectMany(a => a.Applications()),
+            // (not into a nested quantifier: its applications are of its own variable, unfolded there)
+            _ => Enumerable.Empty<MFnApp>(),
+        };
+    }
+
+    /// <summary>Level 1's mathematics as level 2's.</summary>
+    internal static class MathTerms
+    {
         /// <summary>
         /// A kernel expression that is mathematics through and through (what Lowering makes as such: a check's condition,
         /// a lambda's contract), as level 2's; null where it holds code (an element, a field, a call), which Checks lowers.

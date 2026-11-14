@@ -179,7 +179,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 len = new KOp("ite", Eq(d, new KLit(k.ToString())), new KOp("$dim", a, new KLit(k.ToString())), len);
             }
-            return Defined(AndAlso(NotNull(a), AndAlso(new KOp("<=", new KLit("0"), d), new KOp("<", d, new KLit(rank.ToString())))), len,
+            return Defined(AndAlso(NotNull(a), AndAlso(new KOp("<=", KLit.Zero, d), new KOp("<", d, new KLit(rank.ToString())))), len,
                            "CSV1003", gl.Syntax, $"dimension in '{gl.Syntax}' might be out of range", inSpec);
         }
 
@@ -191,7 +191,7 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation ml when ml.Property.Name == "Length" && ml.Instance != null && IsMultiArray(ml.Instance.Type):
                 {
                     var a = lower(ml.Instance);
-                    KExpr len = new KOp("$dim", a, new KLit("0"));
+                    KExpr len = new KOp("$dim", a, KLit.Zero);
                     for (int k = 1; k < ((IArrayTypeSymbol)ml.Instance.Type).Rank; k++)
                     {
                         len = new KOp("*", len, new KOp("$dim", a, new KLit(k.ToString())));
@@ -317,7 +317,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KHavoc { Var = t });
             foreach (var prop in SpecSymbols.IsCsVerifyType(md.Type, "PointsTo`1") || SpecSymbols.IsCsVerifyType(md.Type, "Ptr`1") ? new[] { "Addr" } : new[] { "Addr", "Length" })
             {
-                Emit(new KAssume { Cond = Eq(MemProp(prop, new KVar(t), md.Type), new KLit("0")) });
+                Emit(new KAssume { Cond = Eq(MemProp(prop, new KVar(t), md.Type), KLit.Zero) });
             }
             return new KVar(t);
         }
@@ -348,7 +348,7 @@ namespace CsVerify.Verifier.Boogie
                                                   IsIntegral(Underlying(nn.Type)) && IsIntegral(Underlying(nn.Operand.Type)):
                 {
                     var v = Operand(nn.Operand, lower, inSpec);
-                    return new KOp("ite", IsNull(v), new KLit("null"), NullableOf(NullableValue(v, nn.Operand.Type), nn.Type));
+                    return new KOp("ite", IsNull(v), KLit.Null, NullableOf(NullableValue(v, nn.Operand.Type), nn.Type));
                 }
                 case IConversionOperation nu when IsNullableValue(nu.Operand.Type) && !IsNullableValue(nu.Type) && nu.OperatorMethod == null:
                 {
@@ -380,7 +380,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Operand(tc.Operand, lower, inSpec);
                     StaticType(v, tc.Operand.Type, inSpec);
-                    return new KOp("ite", ClassTest(v, tc.Type), v, new KLit("null"));
+                    return new KOp("ite", ClassTest(v, tc.Type), v, KLit.Null);
                 }
                 // ((C)o, a downcast: o, which must be null or an instance of C)
                 case IConversionOperation dc when !dc.IsImplicit && !dc.IsTryCast && dc.Conversion.IsReference && !dc.Conversion.IsImplicit && IsModeledClass(dc.Type) && (IsRef(dc.Operand.Type) || IsString(dc.Operand.Type)):
@@ -402,7 +402,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (nc.Operand.Type == null || nc.Operand.ConstantValue is { HasValue: true, Value: null } || nc.Operand is IDefaultValueOperation)
             {
-                return new KLit("null");
+                return KLit.Null;
             }
             var u = Underlying(nc.Type);
             if (!(SymbolEqualityComparer.Default.Equals(nc.Operand.Type, u) || IsIntegral(u) && IsIntegral(nc.Operand.Type) && nc.Conversion.IsImplicit))
@@ -468,7 +468,7 @@ namespace CsVerify.Verifier.Boogie
                     return Spec(ob, null);
                 // (an anonymous object compared with null: its reference, null where an OrDefault found none, never one made)
                 case IBinaryOperation an when AnonymousVsNull(an) is var (anon, anonEq):
-                    return new KOp(anonEq ? "==" : "!=", lower(anon), new KLit("null"));
+                    return new KOp(anonEq ? "==" : "!=", lower(anon), KLit.Null);
                 // (a record's == and !=: its values' equality, which is its references', a value being its constructor's)
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
@@ -522,7 +522,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var l = TupleParts(tb.LeftOperand, lower, inSpec);
             var r = TupleParts(tb.RightOperand, lower, inSpec);
-            KExpr same = new KLit("true");
+            KExpr same = KLit.True;
             for (int k = l.Count - 1; k >= 0; k--)
             {
                 same = k == l.Count - 1 ? Eq(l[k], r[k]) : AndAlso(Eq(l[k], r[k]), same);
@@ -599,7 +599,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr LiftedBinary(IBinaryOperation nb, Func<IOperation, KExpr> lower, bool inSpec)
         {
-            KExpr Side(IOperation x) => x.Type == null ? new KLit("null") : lower(x);
+            KExpr Side(IOperation x) => x.Type == null ? KLit.Null : lower(x);
             var (l, r) = (Side(nb.LeftOperand), Side(nb.RightOperand));
             var t = nb.LeftOperand.Type;
             KExpr Both(string op) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
@@ -627,7 +627,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var both = AndAlso(NotNull(l), NotNull(r));
                 var u = Underlying(nb.Type);
-                KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
+                KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), KLit.Zero);
                 var sum = inSpec ? new KOp(Op(nb.OperatorKind), V(l), V(r)) : Arith(Op(nb.OperatorKind), V(l), V(r), u, nb.Syntax, nb.IsChecked);
                 if (!inSpec)
                 {
@@ -639,7 +639,7 @@ namespace CsVerify.Verifier.Boogie
                     });
                     sum = new KVar(tv);
                 }
-                return new KOp("ite", both, NullableOf(sum, nb.Type), new KLit("null"));
+                return new KOp("ite", both, NullableOf(sum, nb.Type), KLit.Null);
             }
             // (&, |, ^ of two values of one integral type: null where either is, else the values' bits')
             if (nb.OperatorKind is BinaryOperatorKind.And or BinaryOperatorKind.Or or BinaryOperatorKind.ExclusiveOr &&
@@ -652,7 +652,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var both = AndAlso(NotNull(l), NotNull(r));
                 var u = Underlying(nb.Type);
-                KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
+                KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), KLit.Zero);
                 var bits = Bitwise(nb.OperatorKind, V(l), V(r), u, inSpec);
                 if (!inSpec)
                 {
@@ -664,7 +664,7 @@ namespace CsVerify.Verifier.Boogie
                     });
                     bits = new KVar(tv);
                 }
-                return new KOp("ite", both, NullableOf(bits, nb.Type), new KLit("null"));
+                return new KOp("ite", both, NullableOf(bits, nb.Type), KLit.Null);
             }
             return nb.OperatorKind switch
             {
@@ -826,14 +826,14 @@ namespace CsVerify.Verifier.Boogie
             var gkey = LambdaArg(gb, 1);
             Emit(new KCheck
             {
-                Cond = new KOp(">", gsrc.Length, new KLit("0")),
+                Cond = new KOp(">", gsrc.Length, KLit.Zero),
                 Id = "CSV1001",
                 At = fg.Syntax,
                 Message = "precondition 'Q.Count(source) > 0' of 'First' might not hold",
             });
             var kv = Declare("t$" + _temps++, gkey.body.Type);
             Emit(new KHavoc { Var = kv });
-            ShapeFact(Eq(new KVar(kv), Apply(gkey, gsrc.Elem(new KLit("0")))), fg.Syntax);
+            ShapeFact(Eq(new KVar(kv), Apply(gkey, gsrc.Elem(KLit.Zero))), fg.Syntax);
             return new KVar(kv);
         }
 
@@ -856,7 +856,7 @@ namespace CsVerify.Verifier.Boogie
         private KExpr TupleConverted(IConversionOperation tc, ITupleOperation tlit, Func<IOperation, KExpr> lower, bool inSpec)
         {
             // (a tuple literal at the type it's converted to: (null, k) as (SlNode?, int))
-            var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? new KLit("null") : lower(x)).ToList();
+            var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? KLit.Null : lower(x)).ToList();
             if (inSpec)
             {
                 throw new NotTranslated("a tuple made in a specification");

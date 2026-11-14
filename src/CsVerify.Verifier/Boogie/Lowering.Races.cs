@@ -282,9 +282,9 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Two objects told apart: both known, and not equal (a condition, false where either isn't known).</summary>
-        private static KExpr Apart(KExpr x, KExpr y) => x == null || y == null ? new KLit("false") : KeyOf(x) == KeyOf(y) && KeyOf(x) != "" ? new KLit("false") : Ne(x, y);
+        private static KExpr Apart(KExpr x, KExpr y) => x == null || y == null ? KLit.False : KeyOf(x) == KeyOf(y) && KeyOf(x) != "" ? KLit.False : Ne(x, y);
 
-        private static KExpr All(IEnumerable<KExpr> parts) => parts.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => AndAlso(a, b));
+        private static KExpr All(IEnumerable<KExpr> parts) => parts.DefaultIfEmpty(KLit.True).Aggregate((a, b) => AndAlso(a, b));
 
         /// <summary>The unguarded fields one writes and the other uses, with the condition that each such pair is on two objects.</summary>
         private static List<(ISymbol field, KExpr apart)> FieldRaces(Effects writer, Effects other)

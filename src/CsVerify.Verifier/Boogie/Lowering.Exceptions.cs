@@ -189,7 +189,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _p.ExceptionTypes.Add(h.ExceptionType);
                 }
-                var test = all ? (KExpr)new KLit("true") : new KOp("sub", new KOp("dtype", ex), new KLit(TypeConst(h.ExceptionType)));
+                var test = all ? (KExpr)KLit.True : new KOp("sub", new KOp("dtype", ex), new KLit(TypeConst(h.ExceptionType)));
                 string here = k == 0 ? label : $"{label}$n{k - 1}", take = $"{label}$h{k}", pass = $"{label}$t{k}";
                 if (k > 0)
                 {

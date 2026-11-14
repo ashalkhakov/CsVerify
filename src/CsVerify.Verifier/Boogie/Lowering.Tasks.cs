@@ -69,7 +69,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KFork
                 {
-                    Overflow = new KLit("false"),
+                    Overflow = KLit.False,
                     Target = target,
                     Exception = null,
                 });
@@ -123,11 +123,11 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KAssign
                 {
                     Var = task.Awaited,
-                    Value = new KLit("true"),
+                    Value = KLit.True,
                 });
                 Emit(new KFork
                 {
-                    Overflow = new KLit("false"),
+                    Overflow = KLit.False,
                     Target = failed,
                     Exception = null,
                 });
@@ -137,7 +137,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = task.Awaited,
-                Value = new KLit("true"),
+                Value = KLit.True,
             });
             return new Awaited
             {
@@ -406,7 +406,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign
                     {
                         Var = batch.Awaited,
-                        Value = new KLit("true"),
+                        Value = KLit.True,
                     });
                     order.Add(null);
                 }
@@ -417,7 +417,7 @@ namespace CsVerify.Verifier.Boogie
                     started.Effects = EffectsOfCall(inline);
                     foreach (var o in inlineStarts)
                     {
-                        WarnIfMayRace(inline.Syntax, started.Effects, o.Effects, new KLit("false"));
+                        WarnIfMayRace(inline.Syntax, started.Effects, o.Effects, KLit.False);
                     }
                     foreach (var o in _tasks.Values.Where(t => t.Effects != null))
                     {
@@ -433,7 +433,7 @@ namespace CsVerify.Verifier.Boogie
                     var started = RunInline(trn, rlam);
                     foreach (var o in inlineStarts)
                     {
-                        WarnIfMayRace(trn.Syntax, started.Effects, o.Effects, new KLit("false"));
+                        WarnIfMayRace(trn.Syntax, started.Effects, o.Effects, KLit.False);
                     }
                     foreach (var o in _tasks.Values.Where(t => t.Effects != null))
                     {
@@ -459,7 +459,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KAssign
                 {
                     Var = t.Awaited,
-                    Value = new KLit("true"),
+                    Value = KLit.True,
                 });
             }
             foreach (var t in inlineStarts)
@@ -479,7 +479,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var n = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
                     Emit(new KHavoc { Var = n });
-                    Emit(new KAssume { Cond = new KOp("<=", new KLit("0"), new KVar(n)) });
+                    Emit(new KAssume { Cond = new KOp("<=", KLit.Zero, new KVar(n)) });
                     var barr = Declare("t$" + _temps++, rat);
                     var map = Elements(rat);
                     return new Awaited
@@ -688,7 +688,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1016",
                     At = call.Syntax,
                     NotAssumedAfter = true,
@@ -783,7 +783,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1023",
                     At = call.Syntax,
                     NotAssumedAfter = true,
@@ -808,7 +808,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1901",
                     At = call.Syntax,
                     NotAssumedAfter = true,
@@ -929,7 +929,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = task.Awaited,
-                Value = new KLit("false"),
+                Value = KLit.False,
             });
             // (the locals its code writes, which it captured: changed by it, whenever, while it runs)
             if (lambda != null && call == null)
@@ -963,7 +963,7 @@ namespace CsVerify.Verifier.Boogie
             }
             Emit(new KCheck
             {
-                Cond = new KLit("false"),
+                Cond = KLit.False,
                 Id = "CSV1901",
                 At = at,
                 NotAssumedAfter = true,
@@ -1151,7 +1151,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = t.Awaited,
-                Value = new KLit("false"),
+                Value = KLit.False,
             });
             _detached.Add(t);
         }
@@ -1245,7 +1245,7 @@ namespace CsVerify.Verifier.Boogie
                 WarnIfMayRace(select.Syntax, effects, o.Effects, new KVar(o.Awaited));
             }
             // (two of the batch run at once too)
-            WarnIfMayRace(select.Syntax, effects, effects, new KLit("false"));
+            WarnIfMayRace(select.Syntax, effects, effects, KLit.False);
             _opaque = true;
             var t = new Task
             {
@@ -1258,7 +1258,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = t.Awaited,
-                Value = new KLit("false"),
+                Value = KLit.False,
             });
             _batches[local] = t;
             _detached.Add(t);
@@ -1336,7 +1336,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = task.Awaited,
-                Value = new KLit("false"),
+                Value = KLit.False,
             });
             _startedCaptures[id] = task;
         }
@@ -1471,7 +1471,9 @@ namespace CsVerify.Verifier.Boogie
                         case AssignmentExpressionSyntax asg when asg.Left == id && Fresh(asg.Right): continue;
                         case ArgumentSyntax arg when InSpec(arg): continue;
                         case ReturnStatementSyntax _: continue;
-                        default: ok = false; break;
+                        default:
+                            ok = false;
+                            break;
                     }
                     if (!ok)
                     {

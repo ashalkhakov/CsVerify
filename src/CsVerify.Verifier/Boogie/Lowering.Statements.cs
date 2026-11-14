@@ -43,15 +43,25 @@ namespace CsVerify.Verifier.Boogie
             {
                 switch (o)
                 {
-                    case IAssignmentOperation a when !(a is IDeconstructionAssignmentOperation): Target(a.Target); break;
-                    case IIncrementOrDecrementOperation i: Target(i.Target); break;
-                    case IDeconstructionAssignmentOperation d when d.Target is ITupleOperation tt: foreach (var e in tt.Elements)
-                    {
-                        Target(e);
-                    } break;
-                    case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } arg: Target(arg.Value); break;
+                    case IAssignmentOperation a when !(a is IDeconstructionAssignmentOperation):
+                        Target(a.Target);
+                        break;
+                    case IIncrementOrDecrementOperation i:
+                        Target(i.Target);
+                        break;
+                    case IDeconstructionAssignmentOperation d when d.Target is ITupleOperation tt:
+                        foreach (var e in tt.Elements)
+                        {
+                            Target(e);
+                        }
+                        break;
+                    case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } arg:
+                        Target(arg.Value);
+                        break;
                     // (a struct's method that writes its receiver: the parameter it's called on)
-                    case IInvocationOperation { Instance: { } wi } wc when WritesStructThis(wc.TargetMethod): Target(wi); break;
+                    case IInvocationOperation { Instance: { } wi } wc when WritesStructThis(wc.TargetMethod):
+                        Target(wi);
+                        break;
                 }
             }
             // (one a lambda or local function writes: assigned too, and forgotten after each call that may run it, as a
@@ -102,9 +112,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 switch (e)
                 {
-                    case ILocalReferenceOperation l: parts.Add(l.Local); break;
-                    case IDeclarationExpressionOperation { Expression: ILocalReferenceOperation dl }: parts.Add(dl.Local); break;
-                    case IDiscardOperation: parts.Add(null); break;
+                    case ILocalReferenceOperation l:
+                        parts.Add(l.Local);
+                        break;
+                    case IDeclarationExpressionOperation { Expression: ILocalReferenceOperation dl }:
+                        parts.Add(dl.Local);
+                        break;
+                    case IDiscardOperation:
+                        parts.Add(null);
+                        break;
                     default: return null;
                 }
             }
@@ -181,15 +197,33 @@ namespace CsVerify.Verifier.Boogie
             }
             switch (op)
             {
-                case IReturnOperation: StatementOfReturn(op); return;
-                case IInvocationOperation: StatementOfInvocation(op); return;
-                case IDeconstructionAssignmentOperation: StatementOfDeconstructionAssignment(op); return;
-                case IAwaitOperation: StatementOfAwait(op); return;
-                case ISimpleAssignmentOperation: StatementOfSimpleAssignment(op); return;
-                case ICompoundAssignmentOperation: StatementOfCompoundAssignment(op); return;
-                case IIncrementOrDecrementOperation: StatementOfIncrementOrDecrement(op); return;
-                case IFlowCaptureOperation: StatementOfFlowCapture(op); return;
-                case IObjectCreationOperation: StatementOfObjectCreation(op); return;
+                case IReturnOperation:
+                    StatementOfReturn(op);
+                    return;
+                case IInvocationOperation:
+                    StatementOfInvocation(op);
+                    return;
+                case IDeconstructionAssignmentOperation:
+                    StatementOfDeconstructionAssignment(op);
+                    return;
+                case IAwaitOperation:
+                    StatementOfAwait(op);
+                    return;
+                case ISimpleAssignmentOperation:
+                    StatementOfSimpleAssignment(op);
+                    return;
+                case ICompoundAssignmentOperation:
+                    StatementOfCompoundAssignment(op);
+                    return;
+                case IIncrementOrDecrementOperation:
+                    StatementOfIncrementOrDecrement(op);
+                    return;
+                case IFlowCaptureOperation:
+                    StatementOfFlowCapture(op);
+                    return;
+                case IObjectCreationOperation:
+                    StatementOfObjectCreation(op);
+                    return;
                 default:
                 {
                     StatementOther(op);
@@ -294,7 +328,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = joined.Awaited,
-                Value = new KLit("true"),
+                Value = KLit.True,
             });
             var jk = new KAwait();
             if (!_opaque)
@@ -546,7 +580,7 @@ namespace CsVerify.Verifier.Boogie
             switch (op)
             {
                 case IIncrementOrDecrementOperation id:
-                    Assign(id.Target, Arith(id.Kind == OperationKind.Increment ? "+" : "-", Expr(id.Target), new KLit("1"), id.Type, id.Syntax, id.IsChecked));
+                    Assign(id.Target, Arith(id.Kind == OperationKind.Increment ? "+" : "-", Expr(id.Target), KLit.One, id.Type, id.Syntax, id.IsChecked));
                     return;
                 default:
                 {
@@ -628,7 +662,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = fe.Index,
-                Value = new KLit("0"),
+                Value = KLit.Zero,
             });
             // (its length, read once: where a null one throws)
             if (fe.Collection != null || fe.Opaque)
@@ -736,7 +770,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = t.Awaited,
-                Value = new KLit("false"),
+                Value = KLit.False,
             });
             _detached.Add(t);
             return;
@@ -938,10 +972,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A rectangular array's cell: each index within its dimension (CSV1003).</summary>
         private KExpr MultiIndices(KExpr a, List<KExpr> ix, SyntaxNode at, KExpr cell, bool inSpec)
         {
-            KExpr all = new KLit("true");
+            KExpr all = KLit.True;
             for (int d = 0; d < ix.Count; d++)
             {
-                var within = AndAlso(new KOp("<=", new KLit("0"), ix[d]), new KOp("<", ix[d], new KOp("$dim", a, new KLit(d.ToString()))));
+                var within = AndAlso(new KOp("<=", KLit.Zero, ix[d]), new KOp("<", ix[d], new KOp("$dim", a, new KLit(d.ToString()))));
                 // (null first: a null array's check is its own)
                 var cond = OrElse(IsNull(a), within);
                 if (inSpec)
@@ -978,31 +1012,35 @@ namespace CsVerify.Verifier.Boogie
             var now = new KOp(TupleMaker(whole.Type), parts);
             switch (whole)
             {
-                case IInstanceReferenceOperation when _p.StructThis: Emit(new KAssign
-                {
-                    Var = "this",
-                    Value = now,
-                }); return;
+                case IInstanceReferenceOperation when _p.StructThis:
+                    Emit(new KAssign
+                    {
+                        Var = "this",
+                        Value = now,
+                    });
+                    return;
                 case IInstanceReferenceOperation:
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1901",
                         At = whole.Syntax.Parent ?? whole.Syntax,
                         NotAssumedAfter = true,
                         Message = $"a struct's method that writes its own members is not supported: make it return a new value",
                     });
                     return;
-                case IFlowCaptureReferenceOperation c: Emit(new KAssign
-                {
-                    Var = Capture(c.Id, c.Type),
-                    Value = now,
-                }); return;
+                case IFlowCaptureReferenceOperation c:
+                    Emit(new KAssign
+                    {
+                        Var = Capture(c.Id, c.Type),
+                        Value = now,
+                    });
+                    return;
                 // (a struct in a class's field isn't written in place)
                 case IFieldReferenceOperation or IPropertyReferenceOperation when StructMember(whole) is null:
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1901",
                         At = whole.Syntax.Parent ?? whole.Syntax,
                         NotAssumedAfter = true,
@@ -1010,7 +1048,9 @@ namespace CsVerify.Verifier.Boogie
                     });
                     return;
                 case IParameterReferenceOperation { Parameter.RefKind: RefKind.None } p when !_assigned.ContainsKey(p.Parameter): throw new NotTranslated("a struct parameter written");
-                default: Assign(whole, now); return;
+                default:
+                    Assign(whole, now);
+                    return;
             }
         }
 
@@ -1125,7 +1165,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Emit(new KCheck
                         {
-                            Cond = new KLit("false"),
+                            Cond = KLit.False,
                             Id = "CSV1016",
                             At = target.Syntax,
                             NotAssumedAfter = true,
@@ -1291,7 +1331,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1022",
                         At = missed,
                         Message = $"switch expression '{missed.GoverningExpression} switch' might not cover every value: it would throw SwitchExpressionException",
@@ -1305,7 +1345,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1011",
                         At = b.BranchValue?.Syntax ?? b.Operations.LastOrDefault()?.Syntax ?? _decl,
                         Message = "a lemma or [Pure] function must not throw",
@@ -1361,7 +1401,7 @@ namespace CsVerify.Verifier.Boogie
                 edge.Stmts.Add(new KAssign
                 {
                     Var = fe.Index,
-                    Value = new KOp("+", new KVar(fe.Index), new KLit("1")),
+                    Value = new KOp("+", new KVar(fe.Index), KLit.One),
                 });
             }
         }

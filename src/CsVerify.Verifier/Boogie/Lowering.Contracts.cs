@@ -35,7 +35,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 // (one that reads mutable state is reported, from its declaration, by StaticChecks;
                 // a value's validity then says nothing of it, which is sound, and a construction still checks it)
-                return new KLit("true");
+                return KLit.True;
             }
             var l = new Lowering(inv, c, null, c.Model, null, _ => false, isFunction, literal, contractOf);
             return l.Spec(c.PureBody, null);
@@ -92,7 +92,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static void ContractOf(Lowering l, Contract contract)
         {
-            KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => AndAlso(a, b));
+            KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(KLit.True).Aggregate((a, b) => AndAlso(a, b));
             foreach (var r in contract.Requires)
             {
                 l._p.Requires.Add(new KSpec
@@ -403,9 +403,15 @@ namespace CsVerify.Verifier.Boogie
                 {
                     switch (op.TargetMethod.Name)
                     {
-                        case "Pre": case "Post": case "Total": named.Add(pr.Parameter.OriginalDefinition); break;
-                        case "Reads" when op.Arguments.Length == 2: reading.Add(pr.Parameter.OriginalDefinition); break;
-                        case "ReadsOf": reading.Add(pr.Parameter.OriginalDefinition); break;
+                        case "Pre": case "Post": case "Total":
+                            named.Add(pr.Parameter.OriginalDefinition);
+                            break;
+                        case "Reads" when op.Arguments.Length == 2:
+                            reading.Add(pr.Parameter.OriginalDefinition);
+                            break;
+                        case "ReadsOf":
+                            reading.Add(pr.Parameter.OriginalDefinition);
+                            break;
                     }
                 }
             }

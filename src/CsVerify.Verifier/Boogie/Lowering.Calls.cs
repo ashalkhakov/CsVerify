@@ -86,7 +86,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1029",
                         At = a.Syntax,
                         NotAssumedAfter = true,
@@ -247,7 +247,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     each = KQuant.ForAll(
                         "q$i",
-                        new KOp("==>", AndAlso(new KOp("<=", new KLit("0"), new KVar("q$i")), new KOp("<", new KVar("q$i"), len)), new KOp("$pre." + key, d, Elem(new KVar("q$i")))));
+                        new KOp("==>", AndAlso(new KOp("<=", KLit.Zero, new KVar("q$i")), new KOp("<", new KVar("q$i"), len)), new KOp("$pre." + key, d, Elem(new KVar("q$i")))));
                     what = $"each element of {srcOp.Syntax}";
                 }
                 if (each != null)
@@ -387,7 +387,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (model0Size(callee) is string size)
             {
-                Emit(new KAssume { Cond = new KOp(">=", Sel(size, recv), new KLit("0")) });
+                Emit(new KAssume { Cond = new KOp(">=", Sel(size, recv), KLit.Zero) });
             }
             if (callee.ReturnsVoid)
             {
@@ -483,8 +483,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Spec = KQuant.ForAll(
                         "i$r",
-                        new KOp("==>", AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(a))),
-                                                                                                   Eq(new KOp("sel", row, i), new KOp("sel", old, new KOp("-", new KOp("-", Len(a), new KLit("1")), i))))),
+                        new KOp("==>", AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<", i, Len(a))),
+                                                                                                   Eq(new KOp("sel", row, i), new KOp("sel", old, new KOp("-", new KOp("-", Len(a), KLit.One), i))))),
                     Assume = true,
                     Free = true,
                     At = call.Syntax,
@@ -497,14 +497,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 var src = Expr(Unconverted(ordered[0].Value));
                 CheckNotNull(ordered[0],src);
-                KExpr si = ordered.Count == 5 ? Expr(ordered[1].Value) : new KLit("0");
+                KExpr si = ordered.Count == 5 ? Expr(ordered[1].Value) : KLit.Zero;
                 var dstArg = ordered[ordered.Count == 3 ? 1 : 2];
                 var dst = Expr(Unconverted(dstArg.Value));
                 CheckNotNull(dstArg, dst);
-                KExpr di = ordered.Count == 5 ? Expr(ordered[3].Value) : new KLit("0");
+                KExpr di = ordered.Count == 5 ? Expr(ordered[3].Value) : KLit.Zero;
                 var n = Expr(ordered[ordered.Count - 1].Value);
-                Pre(AndAlso(AndAlso(new KOp("<=", new KLit("0"), si), new KOp("<=", new KLit("0"), di)),
-                            AndAlso(new KOp("<=", new KLit("0"), n), AndAlso(new KOp("<=", si, new KOp("-", Len(src), n)), new KOp("<=", di, new KOp("-", Len(dst), n))))),
+                Pre(AndAlso(AndAlso(new KOp("<=", KLit.Zero, si), new KOp("<=", KLit.Zero, di)),
+                            AndAlso(new KOp("<=", KLit.Zero, n), AndAlso(new KOp("<=", si, new KOp("-", Len(src), n)), new KOp("<=", di, new KOp("-", Len(dst), n))))),
                     "0 <= sourceIndex && 0 <= destinationIndex && 0 <= length && sourceIndex <= sourceArray.Length - length && destinationIndex <= destinationArray.Length - length");
                 var dt = Unconverted(dstArg.Value).Type;
                 var map = Elements(dt);
@@ -542,7 +542,7 @@ namespace CsVerify.Verifier.Boogie
             if (m.Name == "Resize" && ordered.Count == 2 && ordered[0].Parameter.RefKind == RefKind.Ref && m.IsGenericMethod && IsArray(ordered[0].Value.Type))
             {
                 var n = Expr(ordered[1].Value);
-                Pre(new KOp(">=", n, new KLit("0")), "newSize >= 0");
+                Pre(new KOp(">=", n, KLit.Zero), "newSize >= 0");
                 var target = RefVariable(ordered[0]);
                 var t = Declare("t$" + _temps++, ordered[0].Value.Type);
                 Emit(new KNew
@@ -708,7 +708,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1027",
                         At = a.Syntax,
                         NotAssumedAfter = true,
@@ -874,7 +874,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KFork
                 {
-                    Overflow = new KLit("false"),
+                    Overflow = KLit.False,
                     Target = throwsTo,
                     Exception = null,
                 });
@@ -1093,7 +1093,7 @@ namespace CsVerify.Verifier.Boogie
                 Waited(call);
                 if (ordered.Count == 1)
                 {
-                    return new KLit("true");
+                    return KLit.True;
                 }
                 var pulsed = Declare("t$" + _temps++, call.TargetMethod.ReturnType);
                 Emit(new KHavoc { Var = pulsed });
@@ -1225,7 +1225,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1001",
                         At = cfat,
                         Message = cfmessage,
@@ -1273,14 +1273,14 @@ namespace CsVerify.Verifier.Boogie
                     At = call.Syntax,
                     ArrayAt = call.Instance.Syntax,
                 };
-                return AndAlso(new KOp(">=", deref, new KLit("0")), new KOp("streq", v[0], v[1]));
+                return AndAlso(new KOp(">=", deref, KLit.Zero), new KOp("streq", v[0], v[1]));
             }
             // (a constant format string that would throw: CSV1001)
             if (!_p.Ghost && !_contract.IsPure && !_contract.IsLemma && StaticChecks.FormatProblem(call) is var (fat, fmessage))
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1001",
                     At = fat,
                     Message = fmessage,
@@ -1330,16 +1330,16 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KFork
                     {
-                        Overflow = new KLit("false"),
+                        Overflow = KLit.False,
                         Target = gt,
                         Exception = null,
                     });
                 }
                 KExpr fact = gm.Name switch
                 {
-                    "ThrowIfNegative" => new KOp(">=", v, new KLit("0")),
-                    "ThrowIfNegativeOrZero" => new KOp(">", v, new KLit("0")),
-                    "ThrowIfZero" => Ne(v, new KLit("0")),
+                    "ThrowIfNegative" => new KOp(">=", v, KLit.Zero),
+                    "ThrowIfNegativeOrZero" => new KOp(">", v, KLit.Zero),
+                    "ThrowIfZero" => Ne(v, KLit.Zero),
                     _ => new KOp(rel, v, o),
                 };
                 Emit(new KAssume { Cond = fact });
@@ -1361,7 +1361,7 @@ namespace CsVerify.Verifier.Boogie
                     Var = x,
                     Value = Expr(call.Arguments[0].Value),
                 });
-                var has = new KQuantOver(this, new KLit("0"), src.Length, k => SameValue(src.Elem(k), new KVar(x), src.Type), forall: false).Q;
+                var has = new KQuantOver(this, KLit.Zero, src.Length, k => SameValue(src.Elem(k), new KVar(x), src.Type), forall: false).Q;
                 var r = Declare("t$" + _temps++, call.Type);
                 Emit(new KHavoc { Var = r });
                 KExpr fact;
@@ -1372,8 +1372,8 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     var rv = new KVar(r);
-                    var at = AndAlso(AndAlso(new KOp("<=", new KLit("0"), rv), new KOp("<", rv, src.Length)), SameValue(src.Elem(rv), new KVar(x), src.Type));
-                    var first = new KQuantOver(this, new KLit("0"), rv, j => Not(SameValue(src.Elem(j), new KVar(x), src.Type)), forall: true).Q;
+                    var at = AndAlso(AndAlso(new KOp("<=", KLit.Zero, rv), new KOp("<", rv, src.Length)), SameValue(src.Elem(rv), new KVar(x), src.Type));
+                    var first = new KQuantOver(this, KLit.Zero, rv, j => Not(SameValue(src.Elem(j), new KVar(x), src.Type)), forall: true).Q;
                     fact = OrElse(AndAlso(Eq(rv, new KLit("(-1)")), Not(has)), AndAlso(at, first));
                 }
                 Emit(new KSpecStmt
@@ -1393,7 +1393,7 @@ namespace CsVerify.Verifier.Boogie
                 var v = Operands(gi, call.Arguments[0].Value);
                 Emit(new KCheck
                 {
-                    Cond = Eq(v[1], new KLit("0")),
+                    Cond = Eq(v[1], KLit.Zero),
                     Id = "CSV1003",
                     At = call.Syntax,
                     Message = $"dimension in '{call.Syntax}' might be out of range",
@@ -1583,13 +1583,13 @@ namespace CsVerify.Verifier.Boogie
                         // twice, nothing to go on with)
                         if (IsView(x.Parameter.Type) || IsMemView(x.Parameter.Type) || IsPackage(x.Parameter.Type))
                         {
-                            Emit(new KAssume { Cond = new KLit("false") });
+                            Emit(new KAssume { Cond = KLit.False });
                         }
                         else
                         {
                             Emit(new KCheck
                             {
-                                Cond = new KLit("false"),
+                                Cond = KLit.False,
                                 Id = "CSV1020",
                                 At = at,
                                 Message = string.Format(message, "variable"),
@@ -1622,7 +1622,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             Emit(new KCheck
                             {
-                                Cond = new KLit("false"),
+                                Cond = KLit.False,
                                 Id = "CSV1901",
                                 At = ia.Syntax,
                                 NotAssumedAfter = true,
@@ -1635,7 +1635,7 @@ namespace CsVerify.Verifier.Boogie
                     default:
                         Emit(new KCheck
                         {
-                            Cond = new KLit("false"),
+                            Cond = KLit.False,
                             Id = "CSV1901",
                             At = ia.Syntax,
                             NotAssumedAfter = true,
@@ -1819,8 +1819,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 switch (n)
                 {
-                    case VariableDeclaratorSyntax v when v.Initializer != null && SymbolEqualityComparer.Default.Equals(_model.GetDeclaredSymbol(v), local): writes.Add(v.Initializer.Value); break;
-                    case AssignmentExpressionSyntax asg when SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(asg.Left).Symbol, local): writes.Add(asg.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SimpleAssignmentExpression) ? asg.Right : null); break;
+                    case VariableDeclaratorSyntax v when v.Initializer != null && SymbolEqualityComparer.Default.Equals(_model.GetDeclaredSymbol(v), local):
+                        writes.Add(v.Initializer.Value);
+                        break;
+                    case AssignmentExpressionSyntax asg when SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(asg.Left).Symbol, local):
+                        writes.Add(asg.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.SimpleAssignmentExpression) ? asg.Right : null);
+                        break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) && arg.Expression is IdentifierNameSyntax or DeclarationExpressionSyntax &&
                                                  SymbolEqualityComparer.Default.Equals(arg.Expression is DeclarationExpressionSyntax { Designation: SingleVariableDesignationSyntax d } ? _model.GetDeclaredSymbol(d) : _model.GetSymbolInfo(arg.Expression).Symbol, local):
                         writes.Add(null); break;

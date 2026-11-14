@@ -59,12 +59,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KFork
                 {
-                    Overflow = new KLit("false"),
+                    Overflow = KLit.False,
                     Target = target,
                     Exception = null,
                 });
             }
-            Emit(new KAssume { Cond = new KLit("false") });
+            Emit(new KAssume { Cond = KLit.False });
         }
 
         /// <summary>A call through IList or ICollection of a member that changes the collection: its value, handled; else (false, null).</summary>

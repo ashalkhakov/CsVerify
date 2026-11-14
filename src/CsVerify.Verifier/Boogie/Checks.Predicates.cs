@@ -48,7 +48,7 @@ namespace CsVerify.Verifier.Boogie
                     Value = new MLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))"),
                 });
             }
-            CWalk(_p.FunctionBody, new MLit("true"));
+            CWalk(_p.FunctionBody, MLit.True);
             _m.Obligations = _m.Blocks[0].Stmts.Count(s => s is MAssert a && a.Check != null);
         }
 
@@ -81,14 +81,14 @@ namespace CsVerify.Verifier.Boogie
                     // (no permission to null is ever held)
                     Assume(Implies(guard, NotNull(o)));
                     SetPerm(o, OrElse(Held(o), guard));
-                    return new MLit("true");
+                    return MLit.True;
                 }
                 case KInst inst:
                     foreach (var a in inst.Args)
                     {
                         CWalk(a, guard);
                     }
-                    return new MLit("true");
+                    return MLit.True;
                 case KFieldAcc fa:
                 {
                     var o = CWalk(fa.Obj, guard);
@@ -97,7 +97,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         SetField(o, fa.Field, OrElse(FieldHeld(o, fa.Field), guard));
                     }
-                    return new MLit("true");
+                    return MLit.True;
                 }
                 case KCells cl:
                 {
@@ -111,13 +111,13 @@ namespace CsVerify.Verifier.Boogie
                     };
                     if (cl.Read)
                     {
-                        Assert(new MLit("false"), At("CSV1016", cl.At, "a predicate holds whole permissions: Spec.AccRead is for contracts"));
+                        Assert(MLit.False, At("CSV1016", cl.At, "a predicate holds whole permissions: Spec.AccRead is for contracts"));
                     }
                     if (_p.UsesCells)
                     {
                         ChangeCells(guard, c, "+");
                     }
-                    return new MLit("true");
+                    return MLit.True;
                 }
                 case KElem el:
                 {

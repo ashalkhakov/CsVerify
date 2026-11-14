@@ -36,7 +36,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1016",
                         At = own.Syntax,
                         NotAssumedAfter = true,

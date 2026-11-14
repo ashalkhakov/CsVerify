@@ -403,7 +403,7 @@ namespace CsVerify.Verifier.Boogie
                 if (f.IsStatic && IsFunction(f) && ContractOf(f).Requires.Any(Lowering.HasAtoms))
                 {
                     var sig = ((IProgramFacts)this).Signature(f);
-                    var atoms = sig.Requires.SelectMany(r => Checks.Atoms(r.Expr)).ToList();
+                    var atoms = sig.Requires.SelectMany(r => r.Expr.Atoms()).ToList();
                     if (atoms.Count == 1 && atoms[0] is KInst q && q.Args.All(a => a is KVar))
                     {
                         var names = q.Args.Select(a => ((KVar)a).Name).ToList();
@@ -600,7 +600,7 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     _printer.Function(p, FunctionFields(p.Source.Method), fields,
-                                           ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => Checks.Atoms(r.Expr)).Any(a => a is KInst));
+                                           ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => r.Expr.Atoms()).Any(a => a is KInst));
                 }
             }
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
@@ -756,7 +756,7 @@ namespace CsVerify.Verifier.Boogie
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
                 if (!stands)
                 {
-                    a.Cond = new MLit("true");
+                    a.Cond = MLit.True;
                 }
             }
             // (around a call of an async method: a copy of each map, for the confined objects it can't reach)
@@ -960,7 +960,7 @@ namespace CsVerify.Verifier.Boogie
             var validity = new List<(string name, MExpr invariant, List<(string isCase, MExpr part)> parts)>();
             foreach (var t in valid.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
             {
-                var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.Rename(Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition), "this", dv)).ToList();
+                var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition).Substitute("this", dv)).ToList();
                 var parts = new List<(string, MExpr)>();
                 foreach (var c in Data.KnownCases(t).Where(c => !SymbolEqualityComparer.Default.Equals(c, t) && HasInvariants(c)))
                 {
@@ -973,7 +973,7 @@ namespace CsVerify.Verifier.Boogie
                         parts.Add(("$is." + CaseName(c).Substring(3), OrElse(IsNull(new MOp(FieldFunction(f), dv)), new MOp(ValidName(f.Type), new MOp(FieldFunction(f), dv)))));
                     }
                 }
-                validity.Add((ValidName(t), invs.Count == 0 ? new MLit("true") : invs.Aggregate((a, b) => AndAlso(a, b)), parts));
+                validity.Add((ValidName(t), invs.Count == 0 ? MLit.True : invs.Aggregate((a, b) => AndAlso(a, b)), parts));
             }
             _printer.Valid(validity);
         }

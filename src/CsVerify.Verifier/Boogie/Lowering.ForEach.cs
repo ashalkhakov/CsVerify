@@ -428,10 +428,10 @@ namespace CsVerify.Verifier.Boogie
                 // (through an enumerator: at most as many as the collection had where the loop began)
                 list.Insert(0, new KSpec
                 {
-                    Expr = fe.Opaque ? new KOp("<=", new KLit("0"), i)
-                         : fe.Version == null ? AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true)))
-                         : fe.Size0 != null ? AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<=", i, new KVar(fe.Size0)))
-                         : new KOp("<=", new KLit("0"), i),
+                    Expr = fe.Opaque ? new KOp("<=", KLit.Zero, i)
+                         : fe.Version == null ? AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<=", i, LengthOf(fe, true)))
+                         : fe.Size0 != null ? AndAlso(new KOp("<=", KLit.Zero, i), new KOp("<=", i, new KVar(fe.Size0)))
+                         : new KOp("<=", KLit.Zero, i),
                     At = fe.At,
                 });
             }

@@ -74,7 +74,7 @@ namespace CsVerify.Verifier.Boogie
                 bool foldsCells = stmts.OfType<KFold>().Any(f => PredicateHasCells(f.Inst.Pred));
                 bool callsCells(Func<KProcedure, IEnumerable<KExpr>> specs) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
                 _p.ArrayMode = _p.MemViews || NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
-                               callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(Atoms).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
+                               callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(x => x.Atoms()).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
                 _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
                 if (_p.UsesCells)
                 {
@@ -92,18 +92,10 @@ namespace CsVerify.Verifier.Boogie
                 return false;
             }
             var body = _program.Signature(pred).FunctionBody;
-            return body != null && Atoms(body).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred, seen));
+            return body != null && body.Atoms().Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred, seen));
         }
 
-        /// <summary>A permission assertion's permissions: its atoms, through its operators (not into a quantifier).</summary>
-        internal static IEnumerable<KExpr> Atoms(KExpr e) => e switch
-        {
-            KCells _ or KAcc _ or KInst _ or KFieldAcc _ => new[] { e },
-            KOp op => op.Args.SelectMany(Atoms),
-            _ => Enumerable.Empty<KExpr>(),
-        };
-
         /// <summary>Do these specifications name cells (directly, or in a predicate that holds some)?</summary>
-        private bool NamesCells(IEnumerable<KExpr> specs) => specs.SelectMany(Atoms).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred));
+        private bool NamesCells(IEnumerable<KExpr> specs) => specs.SelectMany(x => x.Atoms()).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred));
     }
 }

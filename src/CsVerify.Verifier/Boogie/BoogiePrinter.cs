@@ -512,9 +512,15 @@ namespace CsVerify.Verifier.Boogie
                         case "$collate": return $"($ckey({a[0]}) == $ckey({a[1]}))";
                         case "lambda": return $"(lambda {a[0]} :: {a[1]})";
                         case "inst": return $"{a[0]}({string.Join(", ", a.Skip(1))})";
-                        case var f when f.StartsWith("$tup."): _tuples.Add(f); return $"{f}({string.Join(", ", a)})";
-                        case var f when f.StartsWith("$tupmk."): _tupleMakers.Add(f); return $"{f}({string.Join(", ", a)})";
-                        case var f when f.StartsWith("$nv.") || f.StartsWith("$nmk."): _nullables.Add(f.Substring(f.IndexOf('.') + 1)); return $"{f}({string.Join(", ", a)})";
+                        case var f when f.StartsWith("$tup."):
+                            _tuples.Add(f);
+                            return $"{f}({string.Join(", ", a)})";
+                        case var f when f.StartsWith("$tupmk."):
+                            _tupleMakers.Add(f);
+                            return $"{f}({string.Join(", ", a)})";
+                        case var f when f.StartsWith("$nv.") || f.StartsWith("$nmk."):
+                            _nullables.Add(f.Substring(f.IndexOf('.') + 1));
+                            return $"{f}({string.Join(", ", a)})";
                         case var f when f.StartsWith("$") || f.StartsWith("mk."): return $"{f}({string.Join(", ", a)})";
                         default:
                             if (a.Length != 2)
@@ -553,8 +559,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 var at = models.Select((x, k) => (x.Name, k)).ToDictionary(x => x.Name, x => (MExpr)new MVar("m$" + x.k));
                 at["this"] = new MVar(Local(contract.Stub.Parameters[0]));
-                requires = requires.Select(r => Checks.Rename(r, at)).ToList();
-                ensures = ensures.Select(e => Checks.Rename(e, at)).ToList();
+                requires = requires.Select(r => r.Substitute(at)).ToList();
+                ensures = ensures.Select(e => e.Substitute(at)).ToList();
             }
             var bound = string.Join(", ", ps.Select(x => $"{x.name}: {x.type}"));
             var app = $"{name}({string.Join(", ", ps.Select(x => x.name))})";
@@ -1063,7 +1069,7 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var map in maps.Where(AtomicSteps.ContainsKey).OrderBy(x => x, System.StringComparer.Ordinal))
             {
-                string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new MLit($"old({map}[{o}])")), "x$now", new MLit($"{map}[{o}]")), InProcedure);
+                string At(string o) => E(AtomicSteps[map].Substitute("x$old", new MLit($"old({map}[{o}])")).Substitute("x$now", new MLit($"{map}[{o}]")), InProcedure);
                 yield return $"{(free ? "free ensures" : "assume")} (forall o: Ref :: old($Alloc[o]) ==> {At("o")});";
                 yield return $"{(free ? "free ensures" : "assume")} {At("null")};";
             }
@@ -1113,12 +1119,11 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         /// <summary>Does it read memory, or a procedure's state (a global, a snapshot, a function of the memory)?</summary>
         private static bool ReadsMemory(MExpr e) =>
-            MathTerms.Subterms(e).Any(x => x is MFnApp or MOp { Op: "old" } || x is MVar v && (v.Name.StartsWith("$") || v.Name == "psnap"));
+            e.Subterms().Any(x => x is MFnApp or MOp { Op: "old" } || x is MVar v && (v.Name.StartsWith("$") || v.Name == "psnap"));
 
-        private static IEnumerable<MExpr> Conjuncts(MExpr e) => e is MOp { Op: "&&" } and ? and.Args.SelectMany(Conjuncts) : new[] { e };
 
         /// <summary>Does it speak of snapshots (a function over a predicate)?</summary>
-        private static bool Snapshots(MExpr e) => MathTerms.Subterms(e).Any(x => x is MFnApp { Snap: not null } or MVar { Name: "psnap" });
+        private static bool Snapshots(MExpr e) => e.Subterms().Any(x => x is MFnApp { Snap: not null } or MVar { Name: "psnap" });
 
         /// <summary>
         /// A function over a predicate: of the instance's snapshot and its arguments, its value what folding and unfolding
@@ -1140,7 +1145,7 @@ namespace CsVerify.Verifier.Boogie
             var cx = new Context { Result = app };
             var pre = p.Requires.Where(r => !ReadsMemory(r.Expr)).Select(r => E(r.Expr, cx)).DefaultIfEmpty("true");
             // (conjunct by conjunct: those of them that read no memory)
-            foreach (var e in p.Ensures.SelectMany(e => Conjuncts(e.Expr)).Where(e => !ReadsMemory(e)))
+            foreach (var e in p.Ensures.SelectMany(e => e.Expr.Conjuncts()).Where(e => !ReadsMemory(e)))
             {
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
             }
@@ -1165,7 +1170,7 @@ namespace CsVerify.Verifier.Boogie
             MLit _ => true,
             MOp { Op: "old" } => false,
             MOp op => op.Args.All(a => Closed(a, vars)),
-            MQuant q => Closed(q.Range ?? new MLit("true"), new HashSet<string>(vars) { q.Var }) && Closed(q.Body, new HashSet<string>(vars) { q.Var }),
+            MQuant q => Closed(q.Range ?? MLit.True, new HashSet<string>(vars) { q.Var }) && Closed(q.Body, new HashSet<string>(vars) { q.Var }),
             MFnApp f => f.Snap == null && f.MapsAt == null && f.Args.All(a => Closed(a, vars)),
             _ => false,
         };
@@ -1508,9 +1513,16 @@ namespace CsVerify.Verifier.Boogie
                 _leading = false;
                 switch (b.Jump)
                 {
-                    case KGoto g: Line($"    goto {string.Join(", ", g.Targets)};"); break;
-                    case KReturn _: Line("    return;"); break;
-                    default: Line("    assume false;"); Line("    return;"); break;
+                    case KGoto g:
+                        Line($"    goto {string.Join(", ", g.Targets)};");
+                        break;
+                    case KReturn _:
+                        Line("    return;");
+                        break;
+                    default:
+                        Line("    assume false;");
+                        Line("    return;");
+                        break;
                 }
             }
             Line("}");
@@ -1693,11 +1705,17 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (s)
             {
-                case MAssign a: Line($"    {a.Var} := {E(a.Value, cx)};"); return;
-                case MMapUpdate u: Line($"    {u.Map}[{E(u.Ref, cx)}]{(u.Index == null ? "" : $"[{E(u.Index, cx)}]")} := {E(u.Value, cx)};"); return;
+                case MAssign a:
+                    Line($"    {a.Var} := {E(a.Value, cx)};");
+                    return;
+                case MMapUpdate u:
+                    Line($"    {u.Map}[{E(u.Ref, cx)}]{(u.Index == null ? "" : $"[{E(u.Index, cx)}]")} := {E(u.Value, cx)};");
+                    return;
                 // (a check not assumed after: on a branch of its own that ends, so that, reported, it isn't assumed where
                 // Boogie looks for the next failure either, which would hide those after it on the same path)
-                case MAssert a when a.NotAssumedAfter && _leading: Line($"    assert {{:subsumption 0}} {E(a.Cond, cx)};", a.Check); return;
+                case MAssert a when a.NotAssumedAfter && _leading:
+                    Line($"    assert {{:subsumption 0}} {E(a.Cond, cx)};", a.Check);
+                    return;
                 case MAssert a when a.NotAssumedAfter:
                 {
                     var side = $"nc${_sides++}";
@@ -1709,9 +1727,15 @@ namespace CsVerify.Verifier.Boogie
                     Line($"  {side}$go:");
                     return;
                 }
-                case MAssert a: Line($"    assert {E(a.Cond, cx)};", a.Check); return;
-                case MAssume a: Line($"    assume {E(a.Cond, cx)};"); return;
-                case MHavoc h: Line($"    havoc {h.Var};"); return;
+                case MAssert a:
+                    Line($"    assert {E(a.Cond, cx)};", a.Check);
+                    return;
+                case MAssume a:
+                    Line($"    assume {E(a.Cond, cx)};");
+                    return;
+                case MHavoc h:
+                    Line($"    havoc {h.Var};");
+                    return;
                 case MRoots roots when roots.Join:
                     Line($"    $root := (lambda y: Ref :: (if $root[y] == {E(roots.Child, cx)} then $root[{E(roots.Container, cx)}] else $root[y]));");
                     return;
@@ -1727,7 +1751,7 @@ namespace CsVerify.Verifier.Boogie
                     // (since the loop's entry: of its snapshot)
                     foreach (var map in st.Maps.Where(AtomicSteps.ContainsKey).OrderBy(x => x, System.StringComparer.Ordinal))
                     {
-                        string At(string o) => E(Checks.Rename(Checks.Rename(AtomicSteps[map], "x$old", new MLit($"as{st.Head}{map}[{o}]")), "x$now", new MLit($"{map}[{o}]")), InProcedure);
+                        string At(string o) => E(AtomicSteps[map].Substitute("x$old", new MLit($"as{st.Head}{map}[{o}]")).Substitute("x$now", new MLit($"{map}[{o}]")), InProcedure);
                         Line($"    assume (forall o: Ref :: as{st.Head}$Alloc[o] ==> {At("o")});");
                         Line($"    assume {At("null")};");
                     }

@@ -91,7 +91,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign
                     {
                         Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()),
-                        Value = new KLit("true"),
+                        Value = KLit.True,
                     });
                 }
                 return;
@@ -103,7 +103,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KAssign
                     {
                         Var = RefVariable(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Last()),
-                        Value = new KLit("true"),
+                        Value = KLit.True,
                     });
                 }
                 ProveOrderAt(stmt);
@@ -220,7 +220,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KLit("false"),
+                        Cond = KLit.False,
                         Id = "CSV1025",
                         At = inner,
                         NotAssumedAfter = true,
@@ -735,7 +735,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = Alongside(new KLit("false")),
+                    Cond = Alongside(KLit.False),
                     Id = "CSV1027",
                     At = at,
                     NotAssumedAfter = true,
@@ -782,7 +782,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>An object only this code has: a confined local's.</summary>
         private KExpr InHand(KExpr o) =>
-            Confined().Select(l => (KExpr)Eq(o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(new KLit("false")).Aggregate((a, b) => OrElse(a, b));
+            Confined().Select(l => (KExpr)Eq(o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(KLit.False).Aggregate((a, b) => OrElse(a, b));
 
         /// <summary>
         /// A call under a lock of what may enter it again, which relies on its invariants: they hold at the call (CSV1024),
@@ -884,7 +884,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Emit(new KCheck
                         {
-                            Cond = new KLit("false"),
+                            Cond = KLit.False,
                             Id = "CSV1025",
                             At = at,
                             NotAssumedAfter = true,

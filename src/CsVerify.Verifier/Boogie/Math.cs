@@ -26,7 +26,7 @@ namespace CsVerify.Verifier.Boogie
 
     // ------------------------------------------------------------------ expressions
 
-    internal abstract class MExpr { }
+    internal abstract partial class MExpr { }
 
     /// <summary>A literal, as Boogie writes it ("5", "(-3)", "true", "null").</summary>
     internal sealed class MLit : MExpr
@@ -36,6 +36,12 @@ namespace CsVerify.Verifier.Boogie
         {
             Text = text;
         }
+
+        public static MLit True => new MLit("true");
+        public static MLit False => new MLit("false");
+        public static MLit Null => new MLit("null");
+        public static MLit Zero => new MLit("0");
+        public static MLit One => new MLit("1");
     }
 
     /// <summary>A variable: a parameter, a local, a quantifier's variable, "result".</summary>

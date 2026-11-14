@@ -159,7 +159,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Map = "pkg",
                         Ref = new MOp(FieldFunction(f), args[param.Ordinal]),
-                        Value = new MLit("false"),
+                        Value = MLit.False,
                     });
                 }
             }
@@ -172,7 +172,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Map = "perm",
                     Ref = x,
-                    Value = new MLit("false"),
+                    Value = MLit.False,
                 });
             }
         }
@@ -183,10 +183,10 @@ namespace CsVerify.Verifier.Boogie
             foreach (var r in call.Sig.Requires)
             {
                 _facts.Clear();
-                Subst(Spec(r.Expr, out _), call.Given);
+                Spec(r.Expr, out _).Substitute(call.Given);
                 foreach (var f in _facts.ToList())
                 {
-                    Assume(Subst(f, call.Given));
+                    Assume(f.Substitute(call.Given));
                 }
                 _facts.Clear();
             }
@@ -197,7 +197,7 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var root in call.Sig.LentRoots)
             {
-                var x = Subst(Spec(root, out _), call.Given);
+                var x = Spec(root, out _).Substitute(call.Given);
                 _facts.Clear();
                 Assert(OrElse(Whole(x), Lent(x)), At("CSV1016", call.C.At, $"'{call.Callee.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here"));
             }
@@ -215,21 +215,21 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new MAssert
                 {
-                    Cond = new MLit("false"),
+                    Cond = MLit.False,
                     UnlessWritesArrays = callee,
                     UnlessKind = "arrays",
                     Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked"),
                 });
                 Emit(new MAssert
                 {
-                    Cond = new MLit("false"),
+                    Cond = MLit.False,
                     UnlessWritesArrays = callee,
                     UnlessKind = "fields",
                     Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked"),
                 });
                 return;
             }
-            var theirs = Subst(Spec(call.Sig.Frame, out _), call.Given);
+            var theirs = Spec(call.Sig.Frame, out _).Substitute(call.Given);
             _facts.Clear();
             var r = new MVar("r$");
             Emit(new MAssert
@@ -265,7 +265,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new MAssert
                 {
-                    Cond = new MLit("false"),
+                    Cond = MLit.False,
                     UnlessWritesArrays = callee,
                     Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes"),
                 });
@@ -277,7 +277,7 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var r in call.Sig.Requires)
             {
-                var math = Subst(Spec(r.Expr, out _), call.Given);
+                var math = Spec(r.Expr, out _).Substitute(call.Given);
                 _facts.Clear();
                 Assert(math, At("CSV1001", call.C.At, $"'{call.C.At}' might throw: its precondition (precondition '{r.At}' of '{call.Callee.Name}') might not hold"));
             }
@@ -292,9 +292,9 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var r in call.Sig.Requires)
             {
-                var math = Subst(Spec(r.Expr, out _), call.Given);
+                var math = Spec(r.Expr, out _).Substitute(call.Given);
                 _facts.Clear();
-                if (Mentions(math, Snaps))
+                if (math.Mentions(Snaps))
                 {
                     Assert(math, At("CSV1001", call.C.At, $"'{call.C.At}': its precondition '{r.At}'"));
                 }
@@ -437,9 +437,9 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var e in sig.Ensures)
             {
-                var math = Subst(Spec(e.Expr, out _), back);
+                var math = Spec(e.Expr, out _).Substitute(back);
                 _facts.Clear();
-                if (Mentions(math, Snaps))
+                if (math.Mentions(Snaps))
                 {
                     Assume(OldBefore(math, frame));
                 }
@@ -447,22 +447,22 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>old(...) of a procedure's snapshots is of those it had at entry.</summary>
-        private static MExpr OldAtEntry(MExpr e) => MathTerms.Map(e, x => x switch
+        private static MExpr OldAtEntry(MExpr e) => e.Rewrite(x => x switch
         {
             // (also an old(...) in a function's argument: Key(t, Spec.Old(Count(t))))
-            MOp { Op: "old" } old => new MOp("old", Subst(old.Args[0], new Dictionary<string, MExpr> { ["psnap"] = new MVar("psnap$entry") })),
+            MOp { Op: "old" } old => new MOp("old", old.Args[0].Substitute(new Dictionary<string, MExpr> { ["psnap"] = new MVar("psnap$entry") })),
             _ => null,
         });
 
         /// <summary>A callee's postcondition, in the caller after the call: old(...) of its snapshots is of the caller's before it (and of nothing else, here).</summary>
-        private static MExpr OldBefore(MExpr e, MCallFrame frame) => MathTerms.Map(e, x => x switch
+        private static MExpr OldBefore(MExpr e, MCallFrame frame) => e.Rewrite(x => x switch
         {
             MOp { Op: "old" } old => Before(old.Args[0], frame),
             _ => null,
         });
 
         /// <summary>What a callee's old(...) reads, as it was just before the call: the snapshots the frame took then.</summary>
-        private static MExpr Before(MExpr e, MCallFrame frame) => MathTerms.Map(e, x =>
+        private static MExpr Before(MExpr e, MCallFrame frame) => e.Rewrite(x =>
         {
             MExpr[] Args(MFnApp f) => f.Args.Select(a => Before(a, frame)).ToArray();
             switch (x)

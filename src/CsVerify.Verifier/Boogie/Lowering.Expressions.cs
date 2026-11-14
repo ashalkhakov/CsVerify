@@ -216,8 +216,12 @@ namespace CsVerify.Verifier.Boogie
                 switch (o)
                 {
                     case IConversionOperation { IsImplicit: true } c: return Simple(c.Operand);
-                    case ILocalReferenceOperation l: names.Add(l.Local.Name); return true;
-                    case IParameterReferenceOperation pr: names.Add(pr.Parameter.Name); return true;
+                    case ILocalReferenceOperation l:
+                        names.Add(l.Local.Name);
+                        return true;
+                    case IParameterReferenceOperation pr:
+                        names.Add(pr.Parameter.Name);
+                        return true;
                     case IInstanceReferenceOperation _: return true;
                     case IFieldReferenceOperation { Field.IsReadOnly: true } f: return f.Instance == null || Simple(f.Instance);
                     case IArrayElementReferenceOperation ae: return Simple(ae.ArrayReference) && ae.Indices.All(Simple);
@@ -647,7 +651,7 @@ namespace CsVerify.Verifier.Boogie
                 case IConversionOperation ci when ci.IsImplicit && IsCollectionInterface(ci.Type) && (IsArray(ci.Operand.Type) || IsCollection(ci.Operand.Type)):
                     return AsCollectionInterface(ci);
                 case IConversionOperation conv when Upcast(conv):
-                    return conv.Operand.ConstantValue.HasValue ? new KLit("null") : Expr(conv.Operand);
+                    return conv.Operand.ConstantValue.HasValue ? KLit.Null : Expr(conv.Operand);
                 // (a target-typed conditional, Sh s = c ? new S1() : new S2(): each branch already converted)
                 case IConversionOperation tt when tt.IsImplicit && tt.OperatorMethod == null && SymbolEqualityComparer.Default.Equals(tt.Type, tt.Operand.Type):
                     return Expr(tt.Operand);
@@ -673,7 +677,7 @@ namespace CsVerify.Verifier.Boogie
                         At = ci.Syntax,
                         Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'",
                     });
-                    return CopyOf(src, new KLit("0"), new KOp("len", src), cc.Type, cc.Syntax);
+                    return CopyOf(src, KLit.Zero, new KOp("len", src), cc.Type, cc.Syntax);
                 }
                 // (a value boxed, as object or an interface it has: an object of its own, not null, which no other is known to be)
                 case IConversionOperation bx when bx.IsImplicit && bx.Operand.Type?.IsValueType == true && !bx.Type.IsValueType && InSubset(bx.Operand.Type) && TypeOf(bx.Type) == "Ref":
@@ -705,7 +709,7 @@ namespace CsVerify.Verifier.Boogie
                         ArrayType = ra.ArrayType,
                         At = rr.Syntax,
                         ArrayAt = rr.Syntax,
-                        Alongside = InSpec(rr.Syntax) ? null : Concurrent ? new KLit("true") : Running(),
+                        Alongside = InSpec(rr.Syntax) ? null : Concurrent ? KLit.True : Running(),
                     };
                 default: return ExprOther(e);
             }
@@ -825,7 +829,7 @@ namespace CsVerify.Verifier.Boogie
                 case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
-                    return Arith("-", new KLit("0"), Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
+                    return Arith("-", KLit.Zero, Expr(u.Operand), u.Type, u.Syntax, u.IsChecked);
                 default: return ExprOther(e);
             }
         }
@@ -952,7 +956,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type))
             {
-                return new KLit("null");
+                return KLit.Null;
             }
             throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
         }
@@ -1026,7 +1030,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1029",
                     At = cg.Syntax,
                     NotAssumedAfter = true,
@@ -1140,7 +1144,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KOp("<=", new KLit("0"), s),
+                    Cond = new KOp("<=", KLit.Zero, s),
                     Id = "CSV1003",
                     At = mc.Syntax,
                     Message = $"array size in '{mc.Syntax}' might be negative",
@@ -1222,7 +1226,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = after,
-                Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), new KLit("1"), iv.Type, iv.Syntax, iv.IsChecked),
+                Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), KLit.One, iv.Type, iv.Syntax, iv.IsChecked),
             });
             Assign(iv.Target, new KVar(after));
             return new KVar(iv.IsPostfix ? before : after);
@@ -1260,7 +1264,7 @@ namespace CsVerify.Verifier.Boogie
                 ArrayType = el.ArrayReference.Type,
                 At = el.Syntax,
                 ArrayAt = el.ArrayReference.Syntax,
-                Alongside = InSpec(el.Syntax) ? null : Concurrent ? new KLit("true") : Running(),
+                Alongside = InSpec(el.Syntax) ? null : Concurrent ? KLit.True : Running(),
             };
         }
 
@@ -1389,7 +1393,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KOp(">=", vs[1], new KLit("0")),
+                    Cond = new KOp(">=", vs[1], KLit.Zero),
                     Id = "CSV1001",
                     At = ns.Syntax,
                     Message = $"'{ns.Syntax}' might throw: its count might be negative",
@@ -1450,7 +1454,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KLit("false"),
+                    Cond = KLit.False,
                     Id = "CSV1015",
                     At = ti.Syntax,
                     NotAssumedAfter = true,
@@ -1496,7 +1500,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var v = Operands(im.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray());
             return im.TargetMethod.Name == "Abs"
-                ? new KOp("ite", new KOp(">=", v[0], new KLit("0")), v[0], Arith("-", new KLit("0"), v[0], im.Type, im.Syntax, isChecked: true))
+                ? new KOp("ite", new KOp(">=", v[0], KLit.Zero), v[0], Arith("-", KLit.Zero, v[0], im.Type, im.Syntax, isChecked: true))
                 : MinMax(im.TargetMethod.Name, v[0], v[1]);
         }
 
@@ -1528,7 +1532,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (v == null && IsNullable(type))
             {
-                return new KLit("null");
+                return KLit.Null;
             }
             // (a string literal: one value per contents)
             if (v is string str)
@@ -1538,11 +1542,29 @@ namespace CsVerify.Verifier.Boogie
             System.Numerics.BigInteger n;
             switch (v)
             {
-                case char c: n = c; break;
-                case sbyte b: n = b; break; case byte b: n = b; break;
-                case short h: n = h; break; case ushort h: n = h; break;
-                case int i: n = i; break; case uint i: n = i; break;
-                case long l: n = l; break; case ulong l: n = l; break;
+                case char c:
+                    n = c;
+                    break;
+                case sbyte b:
+                    n = b;
+                    break; case byte b:
+                        n = b;
+                        break;
+                case short h:
+                    n = h;
+                    break; case ushort h:
+                        n = h;
+                        break;
+                case int i:
+                    n = i;
+                    break; case uint i:
+                        n = i;
+                        break;
+                case long l:
+                    n = l;
+                    break; case ulong l:
+                        n = l;
+                        break;
                 default: throw new NotTranslated("a constant " + v);
             }
             return Number(n);
