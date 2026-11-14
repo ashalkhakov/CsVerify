@@ -37,27 +37,41 @@ namespace CsVerify.Analyzers
         private static void CheckSignature(SymbolAnalysisContext context)
         {
             var m = (IMethodSymbol)context.Symbol;
-            if (!SpecSymbols.IsProofMethod(m) || SpecSymbols.IsTrusted(m)) return;
+            if (!SpecSymbols.IsProofMethod(m) || SpecSymbols.IsTrusted(m))
+            {
+                return;
+            }
             // a lemma or ghost function is one fixed proof or definition; a [Pure] query may be virtual (its overrides
             // are [Pure] too, and honour its contract)
             if ((SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m)) &&
                 (m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType?.TypeKind == TypeKind.Interface))
+            {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureGhost, m.Locations.FirstOrDefault(),
                     $"'{m.Name}' is virtual, abstract or an interface member; a lemma or ghost function must have one fixed body"));
+            }
             foreach (var p in m.Parameters.Where(p => p.RefKind == RefKind.Ref || p.RefKind == RefKind.Out))
+            {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureGhost, p.Locations.FirstOrDefault(),
                     $"'{p.Name}' is passed by {(p.RefKind == RefKind.Ref ? "ref" : "out")}"));
+            }
         }
 
         private static void CheckWrite(OperationAnalysisContext context)
         {
             var op = context.Operation;
-            if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel)) return;
+            if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel))
+            {
+                return;
+            }
             IOperation target;
             switch (op)
             {
-                case IAssignmentOperation a: target = a.Target; break;
-                case IIncrementOrDecrementOperation inc: target = inc.Target; break;
+                case IAssignmentOperation a:
+                    target = a.Target;
+                    break;
+                case IIncrementOrDecrementOperation inc:
+                    target = inc.Target;
+                    break;
                 default: return;
             }
             var member = SpecSymbols.EnclosingMember(op.Syntax, op.SemanticModel);
@@ -67,35 +81,59 @@ namespace CsVerify.Analyzers
                 bool own = SpecSymbols.IsProofMethod(member) &&
                            (t is ILocalReferenceOperation || (t is IParameterReferenceOperation p && p.Parameter.RefKind == RefKind.None));
                 if (!own && !(t is IDiscardOperation))
+                {
                     Report(context, op, $"assignment to '{t.Syntax}'");
+                }
             }
         }
 
         private static System.Collections.Generic.IEnumerable<IOperation> Targets(IOperation target)
         {
-            if (target is IDeclarationExpressionOperation d) target = d.Expression;
+            if (target is IDeclarationExpressionOperation d)
+            {
+                target = d.Expression;
+            }
             if (target is ITupleOperation tuple)
             {
                 foreach (var e in tuple.Elements)
-                    foreach (var t in Targets(e)) yield return t;
+                {
+                    foreach (var t in Targets(e))
+                    {
+                        yield return t;
+                    }
+                }
             }
-            else yield return target;
+            else
+            {
+                yield return target;
+            }
         }
 
         private static void CheckCall(OperationAnalysisContext context)
         {
             var op = (IInvocationOperation)context.Operation;
-            if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel)) return;
+            if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel))
+            {
+                return;
+            }
             if (!SpecSymbols.IsPureCallee(op.TargetMethod) && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod))
+            {
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
+            }
         }
 
         private static void CheckAllocation(OperationAnalysisContext context)
         {
             var op = context.Operation;
-            if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel)) return;
+            if (!SpecSymbols.MustBePure(op.Syntax, op.SemanticModel))
+            {
+                return;
+            }
             // building an immutable value (a positional record) is not an effect: it is a data constructor
-            if (op is IObjectCreationOperation oc && oc.Initializer == null && SpecSymbols.IsValueRecord(oc.Type)) return;
+            if (op is IObjectCreationOperation oc && oc.Initializer == null && SpecSymbols.IsValueRecord(oc.Type))
+            {
+                return;
+            }
             Report(context, op, $"allocation '{op.Syntax}'");
         }
     }

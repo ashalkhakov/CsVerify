@@ -28,6 +28,8 @@ namespace CsVerify.Tests
         [InlineData(C + "static void M() { Step s = x => { Spec.Requires(x > 0 && x < 2000); return x + 1; }; } }")]
         // a method group, wrapped
         [InlineData(C + "static int F(int x) { Spec.Requires(x < 1000); Spec.Ensures<int>(r => r == x + 2); return x + 2; } static void M() { Step s = x => F(x); } }")]
+        // a method group, compared with the type: it accepts all the type does, and gives what the type says
+        [InlineData(C + "static int F(int x) { Spec.Requires(x < 1000); Spec.Ensures<int>(r => r == x + 2); return x + 2; } static void M() { Step s = F; var z = s(5); Spec.Assert(z > 5); } }")]
         // permissions: what it's given may change, what is kept doesn't
         [InlineData(C + "static void M(Fill g) { var a = new int[3]; g(a); Spec.Assert(a[0] == 1); } }")]
         [InlineData(C + "static void M(Fill g, int[] b) { Spec.Requires(Spec.Acc(b)); Spec.Ensures(Spec.Acc(b)); Spec.Requires(b.Length == 2); var a = new int[3]; b[0] = 5; g(a); Spec.Assert(b[0] == 5); } }")]
@@ -45,8 +47,9 @@ namespace CsVerify.Tests
         [InlineData("CSV1016", C + "static void M() { var b = new int[3]; Fill f = a => { a[0] = 1; b[0] = 1; }; } }")]
         // a delegate's code isn't known: it may change any field
         [InlineData("CSV1004", C + "static void M(Step g, Cell c) { c.V = 1; g(1); Spec.Assert(c.V == 1); } }")]
-        // a method group's contract isn't compared with the type's
+        // a method group that gives less than the type says, or accepts less
         [InlineData("CSV1029", C + "static int F(int x) => 2; static void M() { Step s = F; } }")]
+        [InlineData("CSV1029", C + "static int F(int x) { Spec.Requires(0 < x && x < 10); Spec.Ensures<int>(r => r == x + 1); return x + 1; } static void M() { Step s = F; } }")]
         // concurrency: a lambda made a marked delegate is concurrent code; calling an unmarked one from it needs the mark
         [InlineData("CSV1027", C + "static Cell X = new Cell(); static void M() { Job j = () => { X.V = 1; }; } }")]
         [InlineData("CSV1028", C + "static async Task M(Plain p) { var t = Task.Run(() => p()); await t; } }")]

@@ -395,7 +395,8 @@ namespace CsVerify.Tests
             var sep = Path.DirectorySeparatorChar;
             var files = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains($"{sep}obj{sep}") && !f.Contains($"{sep}bin{sep}"));
-            return Engine.VerifyFiles(files, new VerifierOptions());
+            // (Boogie's time limit long enough for a loaded machine, where Z3 giving up reads as a method not verified)
+            return Engine.VerifyFiles(files, new VerifierOptions { TimeoutMs = 120000 });
         }
 
         [Fact]
@@ -848,6 +849,29 @@ namespace CsVerify.Tests
             Assert.Empty(Errors("M", "static int M(string? s) { if (string.IsNullOrEmpty(s)) return 0; return s.Length; }"));
             Assert.Empty(Errors("M", "static int M(string? s) { ArgumentNullException.ThrowIfNull(s); return s.Length; }"));
             Assert.Empty(Errors("M", "static int M(string s) => s.Trim().Length;")); // Trim returns string, not string?
+        }
+
+        [Fact]
+        public void Tuples_CompareElementByElement()
+        {
+            Assert.Empty(Errors("M", "static bool M(long a, int b) { Spec.Ensures((bool r) => r == (a == 1 && b == 2)); return (a, b) == (1, 2); }"));
+            Assert.Empty(Errors("M", "static bool M((int, bool) t) { Spec.Ensures((bool r) => r == (t.Item1 != 3 || !t.Item2)); return t != (3, true); }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static bool M(int a, int b) { Spec.Ensures((bool r) => r == (a == 1)); return (a, b) == (1, 2); }"));
+        }
+
+        [Fact]
+        public void DatesAndSpans_CompareByTheirTicks()
+        {
+            Assert.Empty(Errors("M", "static System.DateTime M(System.DateTime a, System.DateTime b) { Spec.Ensures((System.DateTime r) => r >= a && r >= b); return a > b ? a : b; }"));
+            Assert.Empty(Errors("M", "static bool M(System.TimeSpan a, System.TimeSpan b) { Spec.Requires(a < b); Spec.Ensures((bool r) => r); return a != b && a.Ticks < b.Ticks; }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static System.DateTime M(System.DateTime a, System.DateTime b) { Spec.Ensures((System.DateTime r) => r >= a && r >= b); return a < b ? a : b; }"));
+        }
+
+        [Fact]
+        public void LiftedArithmetic_IsNullWhereAnOperandIs()
+        {
+            Assert.Empty(Errors("M", "static int? M(int? x) { Spec.Requires(x == null || x.Value < 100 && x.Value > -100); Spec.Ensures((int? r) => (r == null) == (x == null)); return x + 1; }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static int? M(int? x) { Spec.Requires(x == null || x.Value < 100 && x.Value > -100); Spec.Ensures((int? r) => r != null); return x + 1; }"));
         }
     }
 }

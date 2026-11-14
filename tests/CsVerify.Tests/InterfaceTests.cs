@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -113,6 +114,59 @@ public static class P
     public static int Out() { var d = new Dictionary<int, int>(); d[3] = 9; var ok = d.Remove(3, out var v); Spec.Assert(ok && v == 9 && d.Count == 0); return v; }
 }");
             Assert.True(r.Success, string.Join("\n", r.Diagnostics));
+        }
+
+        [Fact]
+        public void ExplicitImplementations_KeepTheInterfacesContract()
+        {
+            var r = Harness.Verify(@"
+public interface ICounter { int Next(); }
+[ContractClassFor(typeof(ICounter))]
+internal abstract class CounterContract : ICounter { public int Next() { Spec.Ensures<int>(r => r > 0); return default; } }
+public class One : ICounter { int ICounter.Next() { return 1; } }
+public class Zero : ICounter { int ICounter.Next() { return 0; } }
+public static class P { public static int Ask(ICounter c) { Spec.Ensures<int>(r => r > 0); return c.Next(); } }");
+            Assert.Empty(r.Errors("One.ICounter.Next"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Zero.ICounter.Next"));
+            Assert.Empty(r.Errors("P.Ask"));
+        }
+
+        [Fact]
+        public void GenericInterfaces_AndSelfConstrainedTypeParameters()
+        {
+            var r = Harness.Verify(@"
+using System.Threading.Tasks;
+public interface IKey<T> where T : IKey<T> { int K(); }
+[ContractClassFor(typeof(IKey<>))]
+internal abstract class KeyContract<T> : IKey<T> where T : IKey<T> { public int K() { Spec.Ensures<int>(r => r > 0); return default; } }
+public sealed class Kk : IKey<Kk> { public Kk() { } public int K() => 1; }
+public sealed class Kz : IKey<Kz> { public Kz() { } public int K() => 0; }
+public static class G
+{
+    public static int Gen<T>(T x) where T : IKey<T> { Spec.Requires(x != null); Spec.Ensures<int>(r => r > 0); return x.K(); }
+    public static int GenBad<T>(T x) where T : IKey<T> { Spec.Requires(x != null); Spec.Ensures<int>(r => r > 1); return x.K(); }
+    public static int Use() { Spec.Ensures<int>(r => r > 0); return Gen(new Kk()); }
+    public static async Task Both(Task a, Task b) { Spec.Requires(a != null && b != null); await Task.WhenAll(a, b); }
+}");
+            foreach (var good in new[] { "Kk.K", "G.Gen", "G.Use", "G.Both" })
+                Assert.True(r[good].Verified, good + ": " + string.Join("; ", r[good].Diagnostics.Select(d => d.Message)));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Kz.K"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("G.GenBad"));
+        }
+
+        [Fact]
+        public void OtherMembersAndForeach_ThroughTheInterfaces()
+        {
+            var r = Harness.Verify(Common + @"
+public static class P
+{
+    public static bool Has(ICollection<int> l) { Spec.Requires(l != null); return l.Contains(3); }
+    public static int Last(IList<int> l) { Spec.Requires(l != null); int s = 0; foreach (var x in l) { s = x; } return s; }
+    public static void Guess(IList<int> l) { Spec.Requires(l != null); foreach (var x in l) { Spec.Assert(x == 5); } }
+}");
+            Assert.Empty(r.Errors("P.Has"));
+            Assert.Empty(r.Errors("P.Last"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Guess"));
         }
     }
 }

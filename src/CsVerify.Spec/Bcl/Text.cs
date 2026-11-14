@@ -1,7 +1,6 @@
 #nullable enable
 namespace CsVerify.Bcl
 {
-    using System;
     using System.IO;
     using System.Text;
 

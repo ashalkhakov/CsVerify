@@ -44,97 +44,49 @@
 
 The verifier runs all three analyzers over the compilation it verifies: a method with an analyzer error is not verified.
 
-## Layer 2: the verifier (Z3, separate process)
+## Layer 2: the verifier (Boogie and Z3)
 
-The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined. It compiles them against the Spec library's *sources* (embedded in the tool), so library contracts such as `Mem.*` are read like any other. Then it verifies each method on its own:
+The verifier (`dotnet csverify`) loads the sources with `CSVERIFY_SPEC` defined. It compiles them against the Spec
+library's *sources* (embedded in the tool), so library contracts such as `Mem.*` are read like any other. Then it
+translates every method to [Boogie](https://github.com/boogie-org/boogie), an intermediate verification language,
+and Boogie proves each procedure with Z3. [The Boogie engine](boogie.md) describes the translation construct by
+construct; in outline:
 
-1. **Contract.** Read from the `Spec.Requires`/`Ensures`/`Decreases` statements at the top level of the body.
-2. **Symbolic execution.** Walk the method's `IOperation` control-flow graph from an entry state where the parameters are fresh SMT constants and the preconditions are assumed. This is forward verification-condition generation, equivalent to weakest precondition per path.
-   - `int`-like values are SMT integers, `bool`s are SMT booleans, and `Ghost<T>` is its `T`.
-   - Arrays and spans are references with an uninterpreted `length` and contents in a heap `Array Int (Array Int Int)`.
-   - A rectangular array (`int[,]`, `int[,,]`) also has a length per dimension (`GetLength(d)`, fixed at creation; `Length` is their product). Cell `[i, j]` is at `cv_cell(i, j)` in the same heap row, and `[i, j, k]` at `cv_cell(cv_cell(i, j), k)`. `cv_cell` is uninterpreted, with inverses `cv_row`/`cv_col` given by an axiom triggered on `cv_cell` terms. *Soundness:* the axiom has a model (ℤ² is countable, so an injection of pairs into ℤ with inverses exists), so it adds nothing false. It makes `cv_cell` injective, so two cells are equal exactly when all their indices are, as for real cells. Each index is checked against its own dimension (CSV1003), and `GetLength(d)` against `0 ≤ d < Rank`. Writes, loop havoc and callee frames treat the array like any other. `Spec.Acc` permissions cover one-dimensional arrays only.
-   - Fields of source classes, and their auto-properties, are heap fields (see [Mutable objects](objects.md#mutable-objects)). Other fields and properties that never change (readonly ones, properties of immutable types) are uninterpreted functions of their object, so `view.Addr == p.Addr` is a constraint about addresses, as in ATS.
-3. **Obligations.** Every proof obligation is a query to Z3: "path condition ∧ ¬goal" must be unsatisfiable. Obligations are:
-   - callee preconditions,
-   - array/span bounds (implicit on every `a[i]`),
-   - division by zero,
-   - null references (see [Null references](semantics.md#null-references) below),
-   - `Spec.Assert`,
-   - loop invariants (on entry and when maintained),
-   - loop and recursion measures. A measure goes down lexicographically: some component decreases from a non-negative value, and every component before it is unchanged. A call is recursive when the callee can reach the caller again through source methods (calls inside specifications don't count), so mutually recursive methods are checked against each other's measures. Their measures must have the same number of components.
-   - postconditions at each return,
-   - well-definedness of the method's own specifications (CSV1012). Every array index in a spec must be in bounds, every dereference must be of a non-null reference, every `[Pure]` call must be within its precondition, every divisor must be non-zero, and every cast of a float to an integer type must fit. Each condition is guarded by what protects it:
-     - the left side of `&&`/`||`;
-     - the branch of `?:`;
-     - the range of `Spec.Forall`/`Exists` (the obligation becomes `forall i. lo ≤ i < hi ⇒ …`);
-     - earlier preconditions and invariants.
-
-     So `a.Length > 0 && a[0] > 0` is fine, and `a[0] > 0` alone is not. Outside its precondition a pure function's value is unspecified, so a spec using it there could be proved vacuously. Preconditions are checked at entry, invariants and measures at an arbitrary iteration, and postconditions at each return. A callee's contract is not re-checked at the call site, since it is checked when the callee is verified.
-   - overflow of run-time integer arithmetic and narrowing conversions (see [Bounded integers](semantics.md#bounded-integers)).
-4. **Loops.** Each loop is cut at its head. The invariant is checked, the variables and arrays the loop assigns are havocked, and the invariant is assumed. A back edge re-checks the invariant and that the measure decreases while staying ≥ 0.
-   - **`foreach` over a one-dimensional array** is modeled as what C# compiles it to: `for (int i = 0; i < a.Length; i++) { var x = a[i]; body }`, with `a` evaluated once (null throws, CSV1013) and no enumerator or finally. The hidden index is `Spec.Index(x)`, a ghost (CSV0010 outside specifications). In the loop's invariants it is the number of elements gone through, and in the body it is the index of `x`, so `Spec.Invariant(s == Sum(a, Spec.Index(x)))` is the usual prefix invariant. *Soundness:* this is the C# compiler's own lowering for arrays, so the model runs exactly what executes. At the head the index is havocked to some value in `0 ≤ i ≤ a.Length`. That range is an inductive invariant the verifier proves itself: `i = 0` on entry, and a back edge comes from an iteration where `i < a.Length` held, giving `i + 1 ≤ a.Length`. It only needs `a.Length`, which cannot change, and the array reference the loop holds, which is not the variable `a` and so is not affected by reassigning it. Each element is read from the heap when its iteration starts, as the compiled code does, so writes made earlier in the loop are seen. The index rises to a fixed bound, so such a loop terminates, and lemmas need no `Spec.Decreases` for it.
-   - **`foreach` over a `List<T>`** whose loop changes no model state is the same loop over the list's model (CsVerify.Bcl's `Items()` and `Size()`; see [Contracts for code without sources](library-contracts.md#csverifys-bcl-contracts-csverifybcl)): the index runs from 0 to `Size()`, `x` is `Items()[i]`, and `Spec.Index(x)` is `i`. *Soundness:* a completed `foreach` over a list saw a list nobody changed, since a change makes the next `MoveNext` throw; here the loop changes no list, so its `Size()` and `Items()` stay as they were at its start, and the index argument for arrays applies. The trusted part is the model itself, counted as an assumption (`List<T>.GetEnumerator()`). A loop that may change a list goes through the enumerator, as below.
-   - **`foreach` over a `string`** is the same loop over its characters: `for (int i = 0; i < s.Length; i++) { var c = s[i]; body }`.
-   - **`foreach` over anything else** (`List<T>` whose loop may change a list, spans, your own enumerables) is the enumerator pattern the flow graph shows. `GetEnumerator()` runs once before the loop. Each iteration calls `MoveNext()` and `Current`, and `Dispose()` runs in a finally. Each is an ordinary modular call, so a library's elements are unknown values (CSV1900). *Soundness:* this is the C# specification's expansion of `foreach`, and the calls are havocked at the head like any call in a loop body: the heap if `MoveNext`/`Current` may write it, and the fields they write. The enumerator is captured once and is the same object in every iteration, so it is kept across the head. `Spec.Index` of such a loop is unknown, with a CSV1900 warning. In a lemma it needs `Spec.Decreases`, like `while`. `await foreach` is rejected (CSV1901).
-   - **Loops without invariants** (`while` and `for` loops with no `Spec.Invariant`) get facts inferred, as Houdini
-     does. The candidates come from two places:
-     - the loop's condition: each integer comparison `l < r` in its conjunction suggests `l <= r` at the head, `l <= r`
-       suggests `l <= r + 1`, `l > r` suggests `l >= r`, and so on;
-     - what the loop changes: each operand of those comparisons may never go below, or never above, its value on entry.
-
-     Operands are reads only: locals, parameters, fields and auto-properties of those, lengths, `+` and `-`. A
-     candidate that holds on entry is assumed at the head, and checked again at every back edge. If one might not hold
-     there, the method is verified again without it, until a run assumes only candidates it also proved there (after
-     eight rounds, a last run assumes none). So `for (int i = 0; i < a.Length; i++) s += a[i];` needs no invariant
-     for its bounds. *Soundness:* every fact assumed at a head held on every path into the loop and was re-established
-     on every back edge of the same run, which makes the facts together an inductive invariant. A loop with
-     invariants of its own is left as it is: they say what is kept.
-   - **`goto` cycles** are cut at the head of each natural loop of the flow graph, the block that dominates every block jumping back to it. That is the labelled statement a backward `goto` targets. The loop's invariants and measure are the `Spec.Invariant`/`Spec.Decreases` statements right after the label (`again: Spec.Invariant(x < 3); x++; if (x < 3) goto again;`). *Soundness:* every cycle through a head passes through it. The invariant is proved on the paths that enter it and on every back edge, the measure decreases on every back edge, and everything the loop's blocks may change is havocked at the head. Those blocks include the handlers and finally blocks of any `try` the loop runs through (a `try` around the whole loop is not), and the calls the flow graph makes (`Dispose`, `MoveNext`). So this is the same argument as for loop statements, made over the graph instead of the syntax. A `goto` back to the head of a `while`/`for`/`do` adds the code on the goto's path to that loop's havoc. A cycle with no such head is a jump into the middle of a loop (irreducible flow), and it is still rejected (CSV1901).
-   - **Raises are merged at their handler.** Inside a `try` with a catch, a raise that reaches the handler does not run it at once. It is recorded with its state and the facts assumed since the `try` began. Once the body is explored, the recorded raises are grouped by shape and each group runs the handler once, from one merged state: a fresh selector `sel` picks the raise, each raise's facts are assumed under `sel == i`, and values that differ become `ite` terms on `sel`. *Soundness:* this is KeY's merge rule with if-then-else merging (Scheurer, Hähnle & Bubel 2016), as in Viper's Silicon: the merged state's models are exactly the union of the raises' models, so whatever is proved from it holds after every raise. Views and other resources are kept only if every raise holds them, which can only reject more. Raises whose pending `finally` blocks, active loops or the like differ are in different groups.
-5. **Calls are modular.** At a call the verifier:
-   - checks the callee's `Requires`;
-   - havocs `ref`/`out` arguments, and the heap if the callee (transitively) writes array elements (an inferred frame condition). Taking a `ref` to an element counts as writing it. Writes through a local that only ever holds arrays the callee allocated don't count: everything assigned to it must be a `new` array or another such local, and neither a `ref` to it nor a lambda or local function capturing it is allowed. A callee with `Spec.Modifies` changes only the arrays in its frame and those it allocates, and it is checked to: see [objects](objects.md). A library method writes only the arrays (or spans) it is handed, and reaches fields and other arrays only by running user code it is handed: a delegate, an interface, or an object whose class overrides something (a dictionary's key with its own `Equals`). Strings are never written;
-   - assumes the callee's `Ensures`.
-   - **Array elements by reference** (`Swap(ref a[i], ref a[j])`, `int.TryParse(s, out a[k])`, `in a[i]`) are copied into the callee's parameter and, for `ref`/`out`, back into the cell after the call. The index is checked, and the cell is written after any heap havoc, so the callee's postconditions speak of the heap as it left it. Two arguments passed by reference, one of them `ref` or `out`, must not be the same cell (proved) or the same variable (CSV1020). *Soundness:* the callee is verified with its parameters as variables of their own. That matches the real call only when nothing else looks at the cell while the callee holds it. So a callee given a cell by `ref`/`out` must not read or write array or span contents at all in code, directly or through anything it calls: operators, accessors, constructors, enumerators, overridable or user-code-running callees all count, and specifications and lemmas do not. A library callee qualifies only when every parameter and its receiver are values or strings, so it cannot reach an array. A callee given a cell only by `in` may read arrays but must not write them. Otherwise it is CSV1901. Under these conditions copy-in/copy-out and by-reference passing give the same final state. Two distinct cells and variables cannot interfere through the callee's parameters, so its contract describes the call exactly.
-   A library member with a `[ContractsFor]` stub is called the same way, with the stub's contract: its preconditions are proved, its postconditions assumed (trusted, and counted in the summary line), and its `Spec.Modifies` frames the `[Model]` functions, the ghost fields of library objects (see [Contracts for code without sources](library-contracts.md)). A library method without a stub that is handed something that may lead to an object with model functions may change their values.
-   Lemma calls are the same, so they add their postconditions. `[Pure]` calls are also equal to an uninterpreted function whose body is unfolded once: a single expression or `return`, or local declarations, `if`s and `return`s (as a conditional term). That is what lets a lemma prove `2 * Tri(n) == n * (n + 1)` by induction.
+1. **Contract.** Read from the `Spec.Requires`/`Ensures`/`Decreases` statements at the top level of the body (and a
+   delegate type's or an interface's contract class, a base member's contract, a library member's stub).
+2. **Lowering.** Each method's Roslyn control-flow graph becomes a kernel procedure: blocks of assignments, heap
+   reads and writes, calls, assumptions and checks. Integers are mathematical, with their ranges checked; arrays,
+   fields and the models of collections are maps of a heap; data records are tagged values; lambdas and local
+   functions are procedures of their own, with what they capture as inputs.
+3. **Obligations.** The checks pass makes each obligation an assertion, labelled with its diagnostic: callee
+   preconditions (CSV1001), postconditions at each return (CSV1002), array bounds (CSV1003), `Spec.Assert` (CSV1004),
+   loop invariants on entry and maintained (CSV1005, CSV1006), measures of loops and recursion (CSV1008), division by
+   zero (CSV1009), overflow of run-time arithmetic and narrowing conversions (CSV1010), proof code's termination
+   (CSV1011), well-definedness of the method's own specifications (CSV1012), null references (CSV1013, CSV1014),
+   frames (CSV1017), and the rest the [diagnostics](specifications.md) list. A specification's own checks are guarded
+   by what protects them: the left side of `&&` and `||`, the branch of `?:`, a quantifier's range, earlier
+   preconditions and invariants.
+4. **Loops** are cut at their heads, as Boogie does: the invariant is checked on entry and on every back edge, and
+   what the loop may change is forgotten at the head. A loop without invariants gets facts inferred from its
+   condition and from what it changes (Houdini's way): a fact that doesn't hold on entry or at a back edge is left out
+   and the procedure verified again, until those assumed all held. `foreach` over an array, a string or a List that
+   the loop doesn't change is the index loop C# compiles it to; `Spec.Index(x)` is that index.
+5. **Calls are modular**: the callee's preconditions are checked and its postconditions assumed; what it may change
+   is its `Spec.Modifies` frame, or what an effects analysis says it writes (the fields it and its callees write, the
+   arrays it is handed). A library member with a `[ContractsFor]` stub is called with the stub's contract (trusted,
+   and counted in the summary line); `[Pure]` methods are Boogie functions, unfolded one level per use.
 6. **Trusted bodies** are skipped. Their contracts are still used.
-7. **Proofs are total** (CSV1011). Ordinary methods are verified for partial correctness: a path that loops forever or throws proves nothing, and doesn't need to. A lemma or a `[Pure]`/`[GhostFunction]` definition must terminate, though. A lemma that loops forever would "prove" its postcondition, and `f(x) = f(x) + 1` has no solution, so assuming it would prove anything. So in proof code:
-   - every recursive call, including mutual recursion, needs `Spec.Decreases` on both ends;
-   - every loop needs `Spec.Decreases`;
-   - a `throw` is an error.
-   `[GhostFunction]` bodies are verified too, for this.
-8. **What it cannot model, it rejects** (CSV1901, an error): the method is reported as not verified rather than "ok". This covers:
-   - a `goto` into the middle of a loop (a cycle with two entries), and hitting the path limit;
-   - an async method of the program called without being awaited at once, and async lemmas or `[Pure]` functions (see [Async and concurrency](semantics.md#async-and-concurrency));
-   - fields of library classes, a struct held in a class's field written in place (`o.p.X = 1`), and a struct method other than a constructor that writes `this`;
-   - in specifications, library properties that may change and have no `[Pure]` stub (`MemoryStream.Position` is not a function of its object). Read in code, each is a value of its own, of its declared type (a CSV1900 warning). Properties with code in the sources are calls (see [Object-oriented code](objects.md#object-oriented-code)), and so are stubbed ones (`List<T>.Count`);
-   - assignments to anything but locals, parameters, array elements and heap fields;
-   - `ref` locals bound to anything but locals, parameters and array elements, or rebound inside a loop; passing fields by `ref`/`in`; an array element by reference to a callee that may touch arrays (see *Calls*);
-   - other unsupported operations.
-   **Ref locals** name a location: a variable, or an array cell fixed when the local is bound (`ref int r = ref a[i]` keeps naming that cell after `a` is reassigned, as in C#). Reading and writing `r` read and write the location, so an alias is never out of date. *Soundness:* the binding is evaluated once, as C# does, and every access goes to the current value of the location. A loop that writes through `r` havocs every location `r` is ever bound to in the method. A loop that rebinds `r` makes its location unknown at the head, and a later use is CSV1901.
-   **Mutable struct members** (fields and settable auto-properties of the program's structs, not data records or views) are uninterpreted functions of the struct's value, as readonly ones are. `s.X = v` makes `s` a fresh value whose `X` is `v` and whose other members are `s`'s, and writes it back to where `s` lives: a local, a parameter (a `ref` one is the caller's variable), a ref local, an array cell, an enclosing struct's member, or `this` in the struct's constructor. *Soundness:* this is value semantics, because a copy (`var t = s`, an argument by value) holds the old value, which no later write changes. A write inside an array element is a heap write for callers' frames (`a[i].X = 1` counts like `a[i] = …`), and a loop writing a member havocs the struct that holds it. In-place writes the caller could not see are rejected: through a class's field, or to `this` outside a constructor.
-   Constructors are calls (see [Mutable objects](objects.md#mutable-objects)). **Spans** are views of memory: two functions of a span, its base and its offset, with its `length`. `s[i]` is
-   the base's cell at offset + i, read from and written to the heap as an array's cell is. So a write through a span is
-   seen in its array, and a write to the array is seen through the span. A span made from an array (a conversion,
-   `new Span<T>(a, start, length)`, `a.AsSpan(start, length)`) has the array as its base. `Slice` keeps the base
-   and moves the offset, and `CopyTo` (as `memmove`: overlapping spans copy right), `TryCopyTo`, `Fill` and `Clear` write
-   the cells they cover. `ToArray` makes a new array of the same cells, and `stackalloc` a new base. The ranges are
-   checked as C# checks them (CSV1001: they would throw). A span from elsewhere (a parameter, a library call) has some
-   base and offset, its cells within that base's length. *Soundness:* the base stands for whatever memory the span
-   views: an array, a string's characters, stack or native memory, each a row of the heap that only what can reach
-   it writes. Under array permissions (`Spec.Acc`), spans are as before: a read is an unknown value, and a write is
-   refused. Constructs whose result is merely unknown, such as `decimal` arithmetic and library properties without a stub, are still sound and stay CSV1900 warnings.
+7. **Proofs are total** (CSV1011): a lemma or a `[Pure]`/`[GhostFunction]` definition must terminate, so recursion
+   and loops in proof code need `Spec.Decreases`, and a `throw` there is an error. Ordinary methods are verified for
+   partial correctness.
+8. **What it doesn't translate, or Boogie can't decide in time, is not verified** (CSV1902, an error, saying why),
+   with what is checked from the syntax and the declarations alone (locking, lock levels, atomics, concurrency
+   marks; `StaticChecks`) still reported. Constructs it can't model soundly are rejected (CSV1901).
 
-Multisets (`Bag`) are SMT arrays from value to count. `Spec.Multiset(a, n)` is a function of the array's contents and `n`, and three axioms say what a write does to it:
-- the empty prefix is the empty multiset;
-- writing `v` at `i` inside the prefix trades the old element for `v`;
-- a write outside the prefix changes nothing.
+Each method is verified as a procedure of its own (Boogie's modular verification), with every procedure's contract
+in the same program. Boogie first verifies each procedure whole, in a quarter of the time limit; one it can't decide
+is verified one assertion at a time, and a failure found only that way is confirmed by a whole run with more time.
 
-So a swap keeps the multiset with no lemma. Each axiom is triggered only by the multiset of a written array, so they can't loop. A use unfolds one element, and all of them when `n` is a small constant (a concrete array).
-
-Ghost sequences are SMT arrays. `Drop` and `Concat` are defined as array lambdas rather than quantified axioms. Quantifiers (`Spec.Forall`) are instantiated by e-matching only (`smt.mbqi false`): when Z3 cannot decide a query it answers "unknown" at once instead of searching until the timeout, and CsVerify reports "unknown" like "sat", as not proved.
-
-Z3 is reset before each method (`(reset)`, then the options and theory again), and fresh names are numbered from zero again, so a method's result never depends on which methods were verified before it. Z3's search is history-dependent, and an "unknown" from e-matching could otherwise come and go with unrelated code.
-
-Z3 runs as a separate process speaking SMT-LIB2, by design. Neither the analyzer nor MSBuild loads native code, any Z3 build for any OS or CPU works (including arm64, where the `Microsoft.Z3` NuGet package's x64-only binaries cannot load), you can upgrade Z3 independently of CsVerify, a solver crash or hang cannot take the build down with it, and `--smt-log` shows exactly what was asked.
+Z3 runs as a separate process, by design: neither the analyzer nor MSBuild loads native code, any Z3 build for any OS
+or CPU works, you can upgrade Z3 independently of CsVerify, and a solver crash cannot take the build down with it.
+`--boogie-out` writes the Boogie program that was verified.

@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -96,5 +97,85 @@ public static class C {
         [Fact]
         public void ImmutableClasses_KeepTheirInvariants() =>
             Assert.Empty(Errors("M", "static void M(Square s) { Spec.Assert(s.Side >= 0); }"));
+
+        [Fact]
+        public void AConstructorMayLetThisEscape()
+        {
+            var r = Harness.Verify(@"
+public class Item
+{
+    public int V;
+    public Item(Item[] a) { Spec.Requires(a != null && a.Length > 0); Spec.Ensures(V == 4 && a[0] == this); a[0] = this; V = 4; }
+}
+public static class U
+{
+    public static void Make() { var a = new Item[1]; var i = new Item(a); Spec.Assert(i.V == 4 && a[0] == i); }
+    public static void MakeBad() { var a = new Item[1]; var i = new Item(a); Spec.Assert(i.V == 5); }
+}");
+            Assert.Empty(r.Errors("Item..ctor"));
+            Assert.Empty(r.Errors("U.Make"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("U.MakeBad"));
+        }
+
+        [Fact]
+        public void ATargetTypedConditional_AndAnAssignedParameterALambdaReads()
+        {
+            var r = Harness.Verify(@"
+public abstract class Sh { public abstract int A(); }
+public sealed class S1 : Sh { public S1() { } public override int A() => 1; }
+public sealed class S2 : Sh { public S2() { } public override int A() => 2; }
+public static class U
+{
+    public static Sh Pick(bool c) { Spec.Ensures((Sh r) => r != null); Sh s = c ? new S1() : new S2(); return s; }
+    public static int Cap(int x) { Spec.Requires(x == 1); Spec.Ensures((int r) => r == 2); x = x + 1; System.Func<int> f = () => x; return x; }
+    public static int CapWrong(int x) { Spec.Requires(x == 1); Spec.Ensures((int r) => r == 1); x = x + 1; System.Func<int> f = () => x; return x; }
+}");
+            Assert.Empty(r.Errors("U.Pick"));
+            Assert.Empty(r.Errors("U.Cap"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("U.CapWrong"));
+        }
+
+        // (a parameter a lambda or local function writes: forgotten after each call that may run it, as a local is)
+        [Fact]
+        public void AParameterALambdaWrites_IsForgottenAfterItRuns()
+        {
+            var r = Harness.Verify(@"
+public static class U
+{
+    public static int Before(int x) { Spec.Requires(x == 1); System.Action a = () => { x = 5; }; Spec.Assert(x == 1); return x; }
+    public static int After(int x) { Spec.Requires(x == 1); System.Action a = () => { x = 5; }; a(); Spec.Assert(x == 1); return x; }
+    public static int Local(int x) { Spec.Requires(x == 1); void Set() { x = 7; } Set(); Spec.Assert(x == 1); return x; }
+}");
+            Assert.Empty(r.Errors("U.Before"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("U.After"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("U.Local"));
+        }
+
+        // (-x in a postcondition's lambda reads x: its callers still assume the postcondition)
+        [Fact]
+        public void ANegationInAPostcondition_IsNoWrite()
+        {
+            var r = Harness.Verify(@"
+public static class U
+{
+    public static int Abs(int x) { Spec.Requires(x > int.MinValue); Spec.Ensures<int>(r => r >= 0 && (r == x || r == -x)); return x < 0 ? -x : x; }
+    public static int Use(int y) { Spec.Ensures<int>(r => r >= 0); return y == int.MinValue ? 0 : Abs(y); }
+}");
+            Assert.Empty(r.Errors("U.Use"));
+        }
+
+        // (a lambda's postcondition of a captured variable it writes: its value at the lambda's return)
+        [Fact]
+        public void ALambdasPostcondition_OfAVariableItWrites()
+        {
+            var r = Harness.Verify(@"
+public static class U
+{
+    public static int Inc() { int k = 0; System.Action a = () => { Spec.Ensures(k == Spec.Old(k) + 1); k = k + 1; }; return k; }
+    public static int IncBad() { int k = 0; System.Action a = () => { Spec.Ensures(k == Spec.Old(k) + 2); k = k + 1; }; return k; }
+}", overflow: false);
+            Assert.True(r.Methods.Where(m => m.Name.StartsWith("U.Inc.")).All(m => m.Verified));
+            Assert.Contains(r.Methods, m => m.Name.StartsWith("U.IncBad.") && m.Diagnostics.Any(d => d.Id == "CSV1002"));
+        }
     }
 }

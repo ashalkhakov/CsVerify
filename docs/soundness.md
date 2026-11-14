@@ -26,14 +26,16 @@ for the whole program, by induction on the call tree for terminating runs, and b
 correctness (Hoare's rule for recursive procedures) otherwise.
 
 "Not proved" is never "proved": a solver answer of `unknown` or a timeout is reported as a failure, as is a construct
-the verifier cannot model (CSV1901) and a method that hits the path limit. Every gap below is therefore a gap in what
+the verifier cannot model (CSV1901), and a method the verifier doesn't translate or Boogie can't decide in time
+(CSV1902). Every gap below is therefore a gap in what
 is assumed, never in what is reported.
 
 ## The assumptions (the trusted base)
 
-- **A1. The solver.** Z3 answers `unsat` only for unsatisfiable queries.
+- **A1. The solver.** Boogie generates verification conditions as its papers say, and Z3 answers `unsat` only for
+  unsatisfiable queries.
 - **A2. The front end.** Roslyn's `IOperation` trees and control-flow graphs mean what C# means (ECMA-334 and the
-  compiler's own lowering). CsVerify symbolically executes Roslyn's lowering, so it inherits it. No formal semantics
+  compiler's own lowering). CsVerify translates Roslyn's lowering to Boogie, so it inherits it. No formal semantics
   of C# exists to check this against; see N1.
 - **A3. The runtime.** .NET runs the program as the C# and CLI specifications say. In particular `float` and
   `double` arithmetic is IEEE 754 binary32/binary64 with round-to-nearest-even and no extended intermediate
@@ -65,7 +67,7 @@ holds, which CsVerify must (and does) meet.
 
 | Mechanism | Sound because | Condition CsVerify meets |
 |---|---|---|
-| Verification conditions by forward symbolic execution of the CFG, path by path | Strongest postconditions, dual to weakest preconditions: Dijkstra 1975; for unstructured graphs, Barnett & Leino 2005 | Every path is explored or the method is rejected (path limit); every obligation is a query |
+| Verification conditions by Boogie, from each method's CFG translated to a procedure | Weakest preconditions of unstructured programs, passified (Barnett & Leino 2005); Boogie's own soundness (Leino 2008) | Every block and edge of the CFG is a block and edge of the procedure; every obligation is an assertion; a method not translated is reported not verified (CSV1902) |
 | Loops: cut at the head, havoc what the loop changes, assume the invariant | Hoare's while rule (1969), as desugared in Boogie (Barnett et al. 2005) | The havoc covers everything the loop may change: variables, fields, heap rows, handlers' and `finally` code, the calls the CFG makes |
 | `goto` cycles | Natural loops of a reducible graph, cut at their heads (Barnett & Leino 2005) | Every cycle passes through a head; irreducible graphs are rejected |
 | Inferred loop facts | Houdini (Flanagan & Leino 2001): the greatest fixpoint of candidates that hold on entry and are re-established is an inductive invariant | A run assumes only candidates it also proves at every back edge, else it is re-run without them |

@@ -46,8 +46,15 @@ namespace CsVerify.Verifier
             var kinds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var k in list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (k == "all") { kinds.UnionWith(All); continue; }
-                if (!All.Contains(k)) throw new ArgumentException($"unknown check '{k}' (the checks are {string.Join(", ", All)}, or all)");
+                if (k == "all")
+                {
+                    kinds.UnionWith(All);
+                    continue;
+                }
+                if (!All.Contains(k))
+                {
+                    throw new ArgumentException($"unknown check '{k}' (the checks are {string.Join(", ", All)}, or all)");
+                }
                 kinds.Add(k);
             }
             return kinds;

@@ -87,5 +87,17 @@ public static class C {
             Assert.Empty(r.Errors("Scaled"));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("Needs")); // x may be infinite (an infinity times 0 is NaN)
         }
+
+        [Fact]
+        public void Remainder_IsFmod()
+        {
+            var r = Harness.Verify(@"public static class C {
+    static void Exact() { double a = 7.5 % 2.0; Spec.Assert(a == 1.5); double b = -7.5 % 2.0; Spec.Assert(b == -1.5);
+        double c = 7.0 % -2.0; Spec.Assert(c == 1.0); float d = 5.5f % 1.0f; Spec.Assert(d == 0.5f); Spec.Assert(double.IsNaN(1.0 % 0.0)); }
+    static void Wrong() { double a = -7.5 % 2.0; Spec.Assert(a == 0.5); }
+}");
+            Assert.Empty(r.Errors("Exact"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong")); // IEEE's remainder would be 0.5; C#'s keeps x's sign
+        }
 }
 }

@@ -1,7 +1,3 @@
-using System;
-using System.IO;
-using System.Linq;
-using CsVerify.Verifier;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -125,53 +121,11 @@ namespace CsVerify.Tests
         public void Foreach_OverNull_IsReported() => Assert.NotEmpty(Errors(
             "static void M(string? s) { foreach (char c in s!) { } }"));
 
-        // ---- a solver that stops answering ----------------------------------------------------------------------
-
-        [Fact]
-        public void HungSolver_IsStopped_AndTheNextMethodGetsAFreshOne()
-        {
-            if (OperatingSystem.IsWindows()) return;
-            var script = Path.Combine(Path.GetTempPath(), "csverify-silent-z3-" + Guid.NewGuid() + ".sh");
-            File.WriteAllText(script, "#!/bin/sh\ncat > /dev/null\n");
-            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            try
-            {
-                using var solver = new SmtSolver(script, 10) { HangMs = 200 };
-                Assert.Equal("unknown", solver.Check(T.True));
-                Assert.Contains("did not answer", Assert.Single(solver.Hangs));
-                // the rest of the method: nothing is proved, and no time is spent
-                var clock = System.Diagnostics.Stopwatch.StartNew();
-                Assert.Equal("unknown", solver.Check(T.True));
-                Assert.True(clock.ElapsedMilliseconds < 200);
-                Assert.Single(solver.Hangs);
-                Assert.Empty(solver.Errors);
-                // the next method asks a new process
-                solver.Hangs.Clear();
-                solver.Reset();
-                Assert.Equal("unknown", solver.Check(T.True));
-                Assert.Contains("did not answer", Assert.Single(solver.Hangs));
-            }
-            finally { File.Delete(script); }
-        }
-
-        [Fact]
-        public void SolverWarnings_AreRead_AndReported()
-        {
-            // Far more warnings than a pipe holds (about 130 KB of them): unread, they would stop Z3, and this solver with it.
-            var lines = new System.Text.StringBuilder("(declare-fun cv_w (Int) Int)\n(declare-const cv_wb Bool)\n");
-            for (int i = 0; i < 2000; i++)
-                lines.Append($"(assert (forall ((x Int)) (! (> (cv_w x) {-i}) :pattern ((cv_w (ite cv_wb x {i}))))))\n");
-            var run = System.Threading.Tasks.Task.Run(() =>
-            {
-                using var solver = new SmtSolver(SmtSolver.FindZ3(null), 10000);
-                solver.Preamble(lines.ToString().TrimEnd('\n'));
-                return (solver.Check(T.True), solver.Hangs.Count, solver.Errors.ToList());
-            });
-            Assert.True(run.Wait(TimeSpan.FromSeconds(60)), "the solver stopped answering");
-            var (result, hangs, errors) = run.Result;
-            Assert.Contains(result, new[] { "sat", "unknown" }); // (unknown: quantifiers, and no model-based instantiation)
-            Assert.Equal(0, hangs);
-            Assert.Contains(errors, e => e.Contains("cannot be used in patterns"));
-        }
+        // (the same object is the same string; equal strings may be different objects)
+        [Theory]
+        [InlineData("static bool M(string a, string b) { Spec.Ensures((bool r) => !r || a == b); return (object)a == (object)b; }", true)]
+        [InlineData("static bool M(string a, string b) { Spec.Ensures((bool r) => !r || a == b); return ReferenceEquals(a, b); }", true)]
+        [InlineData("static bool M(string a, string b) { Spec.Ensures((bool r) => r == (a == b)); return ReferenceEquals(a, b); }", false)]
+        public void ComparedAsObjects(string body, bool verifies) => Assert.Equal(verifies, Errors(body).Length == 0);
     }
 }

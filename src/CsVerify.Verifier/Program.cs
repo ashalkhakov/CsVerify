@@ -21,9 +21,9 @@ options:
   --timeout <ms>      per-query Z3 timeout (default 10000)
   --method-budget <ms> the most one method may take (all rounds); past it, the rest is not verified (default: none)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
+  --boogie-out <file> write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
-  --smt-log <file>    write the SMT-LIB2 conversation with Z3
   --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
@@ -42,7 +42,10 @@ options:
 
         public static int Main(string[] args)
         {
-            if (args.Length > 0 && args[0] == "erase") return Erase(ExpandResponseFiles(args.Skip(1)).ToList());
+            if (args.Length > 0 && args[0] == "erase")
+            {
+                return Erase(ExpandResponseFiles(args.Skip(1)).ToList());
+            }
             // @file.rsp: a path, or an option and its value, per line (what the MSBuild target passes)
             args = ExpandResponseFiles(args).ToArray();
             var options = new VerifierOptions();
@@ -50,57 +53,103 @@ options:
             bool verbose = false;
             bool libraryReport = false;
             bool each = false;
-            string smtLog = null;
             try
             {
                 for (int i = 0; i < args.Length; i++)
                 {
                     switch (args[i])
                     {
-                        case "--overflow": options.CheckOverflow = true; break; // the default
-                        case "--no-overflow": options.CheckOverflow = false; break;
+                        case "--overflow":
+                            options.CheckOverflow = true;
+                            break; // the default // the default
+                        case "--no-overflow":
+                            options.CheckOverflow = false;
+                            break;
                         case "--nullable":
                             options.Nullable = (Microsoft.CodeAnalysis.NullableContextOptions)Enum.Parse(typeof(Microsoft.CodeAnalysis.NullableContextOptions), args[++i], ignoreCase: true);
                             break;
-                        case "--timeout": options.TimeoutMs = int.Parse(args[++i]); break;
-                        case "--method-budget": options.MethodBudgetMs = int.Parse(args[++i]); break;
-                        case "--z3": options.Z3Path = args[++i]; break;
-                        case "-d": options.Defines.Add(args[++i]); break;
-                        case "-r": options.References.Add(args[++i]); break;
-                        case "--smt-log": smtLog = args[++i]; options.SmtLog = new System.Text.StringBuilder(); break;
-                        case "--only": options.Only.Add(args[++i]); break;
-                        case "-v": verbose = true; break;
-                        case "--library-report": libraryReport = true; break;
-                        case "--each": each = true; break;
-                        case "--checks": options.CheckKinds = Checks.Parse(args[++i]); break;
-                        case "-h": case "--help": Console.WriteLine(Usage); return 0;
+                        case "--timeout":
+                            options.TimeoutMs = int.Parse(args[++i]);
+                            break;
+                        case "--method-budget":
+                            options.MethodBudgetMs = int.Parse(args[++i]);
+                            break;
+                        case "--z3":
+                            options.Z3Path = args[++i];
+                            break;
+                        case "--boogie-out":
+                            options.BoogieOut = args[++i];
+                            break;
+                        case "-d":
+                            options.AddDefine(args[++i]);
+                            break;
+                        case "-r":
+                            options.AddReference(args[++i]);
+                            break;
+                        case "--only":
+                            options.AddOnly(args[++i]);
+                            break;
+                        case "-v":
+                            verbose = true;
+                            break;
+                        case "--library-report":
+                            libraryReport = true;
+                            break;
+                        case "--each":
+                            each = true;
+                            break;
+                        case "--checks":
+                            options.CheckKinds = Checks.Parse(args[++i]);
+                            break;
+                        case "-h": case "--help":
+                            Console.WriteLine(Usage);
+                            return 0;
                         default:
-                            if (args[i].StartsWith("-")) throw new ArgumentException("unknown option " + args[i]);
+                            if (args[i].StartsWith("-"))
+                            {
+                                throw new ArgumentException("unknown option " + args[i]);
+                            }
                             inputs.Add(args[i]);
                             break;
                     }
                 }
-                if (inputs.Count == 0) { Console.Error.WriteLine(Usage); return 2; }
+                if (inputs.Count == 0)
+                {
+                    Console.Error.WriteLine(Usage);
+                    return 2;
+                }
 
                 var programs = each
                     ? inputs.Select(i => i.Split(',', StringSplitOptions.RemoveEmptyEntries)).ToList()
                     : new List<string[]> { inputs.ToArray() };
                 var result = VerificationResult.Combine(programs.Select(p => Engine.VerifyFiles(p.SelectMany(Expand).Distinct().ToList(), options)).ToList());
-                if (smtLog != null) File.WriteAllText(smtLog, options.SmtLog.ToString());
 
-                foreach (var d in result.Diagnostics) Console.WriteLine(d);
+                foreach (var d in result.Diagnostics)
+                {
+                    Console.WriteLine(d);
+                }
                 if (verbose)
+                {
                     foreach (var m in result.Methods)
+                    {
                         Console.WriteLine($"  {(m.Verified ? "ok  " : "FAIL")} {m.Name}: {m.Proved}/{m.Obligations} obligations proved");
+                    }
+                }
                 // the stub contracts the proofs relied on: trusted, not proved
                 if (verbose)
-                    foreach (var a in result.Assumptions) Console.WriteLine($"  assumed {a}");
+                {
+                    foreach (var a in result.Assumptions)
+                    {
+                        Console.WriteLine($"  assumed {a}");
+                    }
+                }
                 int failed = result.Methods.Count(m => !m.Verified);
                 Console.WriteLine(result.CompilationErrors.Count > 0
                     ? $"csverify: {result.CompilationErrors.Count} compilation error(s); nothing verified"
                     : $"csverify: {result.Methods.Count - failed} of {result.Methods.Count} methods verified, " +
                       $"{result.Methods.Sum(m => m.Proved)}/{result.Methods.Sum(m => m.Obligations)} obligations proved" +
                       (result.Assumptions.Count > 0 ? $", {result.Assumptions.Count} library contract(s) assumed" : "") +
+                      "" +
                       (options.CheckKinds != null ? $"; checks: {string.Join(",", Checks.All.Where(options.CheckKinds.Contains))}" +
                                                     $", {result.Methods.Sum(m => m.AssumedObligations)} obligation(s) outside them assumed" +
                                                     $", {result.Methods.Sum(m => m.Unmodeled)} construct(s) not modeled" : ""));
@@ -113,7 +162,7 @@ options:
             }
             catch (Exception e) when (e is ArgumentException || e is FileNotFoundException || e is DirectoryNotFoundException || e is FormatException)
             {
-                Console.Error.WriteLine("csverify: " + e.Message);
+                Console.Error.WriteLine("csverify: " + (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null ? e.ToString() : e.Message));
                 return 2;
             }
         }
@@ -123,12 +172,23 @@ options:
         {
             foreach (var a in args)
             {
-                if (!a.StartsWith("@")) { yield return a; continue; }
+                if (!a.StartsWith("@"))
+                {
+                    yield return a;
+                    continue;
+                }
                 foreach (var line in File.ReadAllLines(a.Substring(1)).Select(l => l.Trim()).Where(l => l.Length > 0))
                 {
                     int space = line.IndexOf(' ');
-                    if (line.StartsWith("-") && space > 0) { yield return line.Substring(0, space); yield return line.Substring(space + 1).Trim(); }
-                    else yield return line;
+                    if (line.StartsWith("-") && space > 0)
+                    {
+                        yield return line.Substring(0, space);
+                        yield return line.Substring(space + 1).Trim();
+                    }
+                    else
+                    {
+                        yield return line;
+                    }
                 }
             }
         }
@@ -157,28 +217,51 @@ used for the check; without, the shared framework.
                 {
                     switch (args[i])
                     {
-                        case "--out": outDir = args[++i]; break;
-                        case "--checked": checkedBuild = true; break;
-                        case "-r": references.Add(args[++i]); break;
-                        case "-d": defines.Add(args[++i]); break;
-                        case "-h": case "--help": Console.WriteLine(EraseUsage); return 0;
+                        case "--out":
+                            outDir = args[++i];
+                            break;
+                        case "--checked":
+                            checkedBuild = true;
+                            break;
+                        case "-r":
+                            references.Add(args[++i]);
+                            break;
+                        case "-d":
+                            defines.Add(args[++i]);
+                            break;
+                        case "-h": case "--help":
+                            Console.WriteLine(EraseUsage);
+                            return 0;
                         default:
-                            if (args[i].StartsWith("-")) throw new ArgumentException("unknown option " + args[i]);
+                            if (args[i].StartsWith("-"))
+                            {
+                                throw new ArgumentException("unknown option " + args[i]);
+                            }
                             inputs.Add(args[i]);
                             break;
                     }
                 }
-                if (outDir == null || inputs.Count == 0) { Console.Error.WriteLine(EraseUsage); return 2; }
+                if (outDir == null || inputs.Count == 0)
+                {
+                    Console.Error.WriteLine(EraseUsage);
+                    return 2;
+                }
                 var files = inputs.SelectMany(Expand).Distinct().ToList();
                 var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines, checkedBuild);
-                if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: true);
+                if (Directory.Exists(outDir))
+                {
+                    Directory.Delete(outDir, recursive: true);
+                }
                 foreach (var f in result.Files)
                 {
                     var path = Path.Combine(outDir, f.OutputName);
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllText(path, f.Text);
                 }
-                foreach (var d in result.Errors) Console.WriteLine(d);
+                foreach (var d in result.Errors)
+                {
+                    Console.WriteLine(d);
+                }
                 Console.WriteLine(result.Success
                     ? $"csverify erase: {result.Files.Count} files written to {outDir}; the {(checkedBuild ? "checked" : "erased")} program compiles"
                     : $"csverify erase: {result.Errors.Count} error(s)");
@@ -193,9 +276,18 @@ used for the check; without, the shared framework.
 
         private static IEnumerable<string> Expand(string input)
         {
-            if (input.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) input = Path.GetDirectoryName(Path.GetFullPath(input));
-            if (File.Exists(input)) return new[] { Path.GetFullPath(input) };
-            if (!Directory.Exists(input)) throw new FileNotFoundException("no such file or directory: " + input);
+            if (input.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            {
+                input = Path.GetDirectoryName(Path.GetFullPath(input));
+            }
+            if (File.Exists(input))
+            {
+                return new[] { Path.GetFullPath(input) };
+            }
+            if (!Directory.Exists(input))
+            {
+                throw new FileNotFoundException("no such file or directory: " + input);
+            }
             var sep = Path.DirectorySeparatorChar;
             return Directory.EnumerateFiles(Path.GetFullPath(input), "*.cs", SearchOption.AllDirectories)
                 .Where(p => !p.Contains($"{sep}bin{sep}") && !p.Contains($"{sep}obj{sep}"))

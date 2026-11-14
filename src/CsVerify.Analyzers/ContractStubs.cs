@@ -35,7 +35,10 @@ namespace CsVerify.Analyzers
             var models = new List<IMethodSymbol>();
             var assemblies = new List<IAssemblySymbol> { compilation.Assembly };
             var spec = compilation.GetTypeByMetadataName(SpecSymbols.Namespace + ".ContractsForAttribute")?.ContainingAssembly;
-            if (spec != null && !SymbolEqualityComparer.Default.Equals(spec, compilation.Assembly)) assemblies.Add(spec);
+            if (spec != null && !SymbolEqualityComparer.Default.Equals(spec, compilation.Assembly))
+            {
+                assemblies.Add(spec);
+            }
             // the user's first: theirs win (and the CsVerify library's, compiled from source here, come after)
             var types = assemblies.SelectMany(a => AllTypes(a.GlobalNamespace)).OrderBy(t => IsLibrary(t) ? 1 : 0).ToList();
             foreach (var type in types)
@@ -43,16 +46,31 @@ namespace CsVerify.Analyzers
                 foreach (var m in type.GetMembers().OfType<IMethodSymbol>().Where(SpecSymbols.IsModel))
                 {
                     if (!m.IsStatic || m.Parameters.Length < 1 || m.Parameters.Length > 2 || m.ReturnsVoid || m.Parameters.Any(p => p.RefKind != RefKind.None))
+                    {
                         errors.Add((m, $"[Model] '{m.Name}' must be static, return a value, and take the object (and at most one key)"));
+                    }
                     else if (m.Parameters[0].Type.IsValueType)
+                    {
                         errors.Add((m, $"[Model] '{m.Name}': its first parameter, the object, must be of a reference type"));
+                    }
                     else if (m.Parameters.Length == 2 && SpecSymbols.IsSeqType(m.ReturnType))
+                    {
                         errors.Add((m, $"[Model] '{m.Name}' with a key cannot return a ghost collection"));
-                    else models.Add(m);
+                    }
+                    else
+                    {
+                        models.Add(m);
+                    }
                 }
                 var target = SpecSymbols.ContractsForTarget(type)?.OriginalDefinition;
-                if (target == null) continue;
-                if (SpecSymbols.HasAttribute(type, "MustDisposeAttribute")) MustDisposeTargets.Add(target);
+                if (target == null)
+                {
+                    continue;
+                }
+                if (SpecSymbols.HasAttribute(type, "MustDisposeAttribute"))
+                {
+                    MustDisposeTargets.Add(target);
+                }
                 if (type.TypeParameters.Length != target.TypeParameters.Length)
                 {
                     errors.Add((type.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(), $"stub {type.Name} must have the type parameters of {target.Name} ({target.TypeParameters.Length})"));
@@ -61,7 +79,10 @@ namespace CsVerify.Analyzers
                 foreach (var m in type.GetMembers().OfType<IMethodSymbol>())
                 {
                     if (m.MethodKind != MethodKind.Ordinary || m.IsImplicitlyDeclared || SpecSymbols.IsModel(m) || SpecSymbols.IsGhostFunction(m) ||
-                        SpecSymbols.IsLemma(m) || SpecSymbols.IsPredicate(m)) continue;
+                        SpecSymbols.IsLemma(m) || SpecSymbols.IsPredicate(m))
+                    {
+                        continue;
+                    }
                     var member = Match(target, m);
                     if (member == null)
                     {
@@ -70,9 +91,15 @@ namespace CsVerify.Analyzers
                     }
                     // a [Comprehensions] class defines its members (as queries), and is not their contract
                     var into = SpecSymbols.HasAttribute(type, "ComprehensionsAttribute") ? _queryOf : _stubOf;
-                    if (into.ContainsKey(member)) continue; // (a source stub came first)
+                    if (into.ContainsKey(member))
+                    {
+                        continue; // (a source stub came first)
+                    } // (a source stub came first)
                     into[member] = m;
-                    if (into == _stubOf) _stubs.Add(m);
+                    if (into == _stubOf)
+                    {
+                        _stubs.Add(m);
+                    }
                 }
             }
             Models = models.OrderBy(m => m.ToDisplayString()).ToList();
@@ -85,20 +112,41 @@ namespace CsVerify.Analyzers
 
         private static IEnumerable<INamedTypeSymbol> AllTypes(INamespaceSymbol ns)
         {
-            foreach (var t in ns.GetTypeMembers()) foreach (var x in WithNested(t)) yield return x;
-            foreach (var sub in ns.GetNamespaceMembers()) foreach (var x in AllTypes(sub)) yield return x;
+            foreach (var t in ns.GetTypeMembers())
+            {
+                foreach (var x in WithNested(t))
+                {
+                    yield return x;
+                }
+            }
+            foreach (var sub in ns.GetNamespaceMembers())
+            {
+                foreach (var x in AllTypes(sub))
+                {
+                    yield return x;
+                }
+            }
         }
 
         private static IEnumerable<INamedTypeSymbol> WithNested(INamedTypeSymbol t)
         {
             yield return t;
-            foreach (var n in t.GetTypeMembers()) foreach (var x in WithNested(n)) yield return x;
+            foreach (var n in t.GetTypeMembers())
+            {
+                foreach (var x in WithNested(n))
+                {
+                    yield return x;
+                }
+            }
         }
 
         /// <summary>The stub method giving <paramref name="member"/> its contract, if any.</summary>
         public IMethodSymbol StubOf(IMethodSymbol member)
         {
-            if (member == null) return null;
+            if (member == null)
+            {
+                return null;
+            }
             member = (member.ReducedFrom ?? member).OriginalDefinition;
             return _stubOf.TryGetValue(member, out var s) ? s : null;
         }
@@ -106,7 +154,10 @@ namespace CsVerify.Analyzers
         /// <summary>The [Comprehensions] method defining <paramref name="member"/> (a LINQ method), if any.</summary>
         public IMethodSymbol QueryOf(IMethodSymbol member)
         {
-            if (member == null) return null;
+            if (member == null)
+            {
+                return null;
+            }
             member = (member.ReducedFrom ?? member).OriginalDefinition;
             return _queryOf.TryGetValue(member, out var s) ? s : null;
         }
@@ -131,27 +182,51 @@ namespace CsVerify.Analyzers
             bool ctor = stub.Name == "new";
             bool instance = TakesReceiver(stub);
             var parameters = instance ? stub.Parameters.Skip(1).ToList() : stub.Parameters.ToList();
-            if (instance && !Same(stub.Parameters[0].Type, target, null)) return null;
+            if (instance && !Same(stub.Parameters[0].Type, target, null))
+            {
+                return null;
+            }
             IEnumerable<IMethodSymbol> candidates;
-            if (ctor) candidates = target.InstanceConstructors;
+            if (ctor)
+            {
+                candidates = target.InstanceConstructors;
+            }
             else
             {
                 candidates = target.GetMembers(stub.Name).OfType<IMethodSymbol>();
                 // a getter by its property's name
                 if (instance && parameters.Count == 0)
+                {
                     candidates = candidates.Concat(target.GetMembers(stub.Name).OfType<IPropertySymbol>().Where(p => !p.IsIndexer && p.GetMethod != null).Select(p => p.GetMethod));
+                }
                 else if (!instance && parameters.Count == 0)
+                {
                     candidates = candidates.Concat(target.GetMembers(stub.Name).OfType<IPropertySymbol>().Where(p => p.IsStatic && p.GetMethod != null).Select(p => p.GetMethod));
+                }
             }
             foreach (var c in candidates)
             {
-                if (!ctor && c.IsStatic == instance) continue;
-                if (c.Parameters.Length != parameters.Count || c.TypeParameters.Length != stub.TypeParameters.Length) continue;
+                if (!ctor && c.IsStatic == instance)
+                {
+                    continue;
+                }
+                if (c.Parameters.Length != parameters.Count || c.TypeParameters.Length != stub.TypeParameters.Length)
+                {
+                    continue;
+                }
                 bool ok = true;
                 for (int i = 0; i < parameters.Count && ok; i++)
+                {
                     ok = parameters[i].RefKind == c.Parameters[i].RefKind && Same(parameters[i].Type, c.Parameters[i].Type, c);
-                if (!ok) continue;
-                if (ctor ? !Same(stub.ReturnType, target, null) : !(stub.ReturnsVoid == c.ReturnsVoid && (c.ReturnsVoid || Same(stub.ReturnType, c.ReturnType, c)))) continue;
+                }
+                if (!ok)
+                {
+                    continue;
+                }
+                if (ctor ? !Same(stub.ReturnType, target, null) : !(stub.ReturnsVoid == c.ReturnsVoid && (c.ReturnsVoid || Same(stub.ReturnType, c.ReturnType, c))))
+                {
+                    continue;
+                }
                 return c.OriginalDefinition;
             }
             return null;
@@ -170,12 +245,20 @@ namespace CsVerify.Analyzers
                 case IArrayTypeSymbol sa:
                     return t is IArrayTypeSymbol ta && ta.Rank == sa.Rank && Same(sa.ElementType, ta.ElementType, member);
                 case INamedTypeSymbol sn:
-                    if (!(t is INamedTypeSymbol tn) || !SymbolEqualityComparer.Default.Equals(sn.OriginalDefinition, tn.OriginalDefinition)) return false;
+                    if (!(t is INamedTypeSymbol tn) || !SymbolEqualityComparer.Default.Equals(sn.OriginalDefinition, tn.OriginalDefinition))
+                    {
+                        return false;
+                    }
                     var sargs = sn.TypeArguments;
                     // the target itself, as typeof(List<>) gives it: its own type parameters
                     var targs = tn.IsUnboundGenericType ? tn.OriginalDefinition.TypeArguments : tn.TypeArguments;
                     for (int i = 0; i < sargs.Length; i++)
-                        if (!Same(sargs[i], targs[i], member)) return false;
+                    {
+                        if (!Same(sargs[i], targs[i], member))
+                        {
+                            return false;
+                        }
+                    }
                     return true;
                 default:
                     return SymbolEqualityComparer.Default.Equals(s, t);

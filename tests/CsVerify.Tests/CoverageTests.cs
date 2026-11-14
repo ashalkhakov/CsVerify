@@ -106,6 +106,54 @@ public static class P
             Assert.True(r.Success, string.Join("\n", r.Diagnostics));
         }
 
+        // (.. var rest: a new array of the elements between)
+        [Fact]
+        public void Patterns_SliceWithAPatternOfItsOwn()
+        {
+            var r = Harness.Verify(@"
+public static class P
+{
+    public static int Rest(int[] a) { Spec.Requires(a != null); if (a is [1, .. var rest, 9]) { Spec.Assert(rest.Length == a.Length - 2 && (rest.Length == 0 || rest[0] == a[1])); return rest.Length; } return -1; }
+    public static bool Nested(int[] a) { Spec.Requires(a != null); Spec.Ensures<bool>(r => !r || a.Length >= 3 && a[1] == 2); return a is [_, .. [2, ..], _]; }
+    public static int Wrong(int[] a) { Spec.Requires(a != null); if (a is [1, .. var rest]) { Spec.Assert(rest.Length == a.Length); return 0; } return -1; }
+}");
+            Assert.Empty(r.Errors("Rest"));
+            Assert.Empty(r.Errors("Nested"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
+        // (in a specification, .. var rest is the slice itself: its Length, and rest[i] a[start + i] where 0 <= i < Length)
+        [Fact]
+        public void Patterns_SliceInASpecification()
+        {
+            var r = Harness.Verify(@"
+public static class P
+{
+    public static int Mid(int[] a) { Spec.Requires(a is [1, .. var rest, 9] && rest.Length > 0 && rest[0] == 5); return a[1]; }
+    public static void Use() { Mid(new int[] { 1, 5, 9 }); }
+    public static void UseBad() { Mid(new int[] { 1, 6, 9 }); }
+    public static void OutOf(int[] a) { Spec.Requires(a is [1, .. var rest] && rest[3] == 0); }
+}");
+            Assert.Empty(r.Errors("Mid"));
+            Assert.Empty(r.Errors("Use"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("UseBad"));
+            Assert.Equal(new[] { "CSV1012" }, r.Errors("OutOf"));
+        }
+
+        // (a is [1, ..] b: b is the array matched)
+        [Fact]
+        public void Patterns_ListThatDeclaresItsValue()
+        {
+            var r = Harness.Verify(@"
+public static class P
+{
+    public static int Whole(int[] a) { Spec.Requires(a != null); if (a is [1, ..] b) { Spec.Assert(b == a && b[0] == 1); return b.Length; } return 0; }
+    public static int Wrong(int[] a) { Spec.Requires(a != null); if (a is [1, ..] b) { Spec.Assert(b[0] == 2); return b.Length; } return 0; }
+}");
+            Assert.Empty(r.Errors("Whole"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
         [Fact]
         public void With_OnAStruct_CopiesIt()
         {

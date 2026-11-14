@@ -34,11 +34,11 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 |---|---|
 | `--nullable <ctx>` | the nullable context: `enable` (default), `disable`, `annotations`, `warnings`; only non-nullable reference types are known not to be null |
 | `--no-overflow` | make every integer mathematical, which is unsound where code can overflow (by default integers are bounded: see [Bounded integers](semantics.md#bounded-integers)) |
-| `--timeout <ms>` | per-query Z3 timeout (default 10000) |
+| `--timeout <ms>` | Boogie's time limit for a procedure (default 10000; a procedure it can't decide is retried assertion by assertion, then whole with more time) |
 | `--method-budget <ms>` | the most time one method's verification may take, all rounds included; past it, its remaining obligations are not proved (CSV1901), so the method is reported not verified (default: no limit) |
 | `--z3 <path>` | Z3 executable |
+| `--boogie-out <file>` | write the Boogie program it verified ([the Boogie engine](boogie.md)) |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
-| `--smt-log <file>` | dump the whole SMT-LIB2 conversation |
 | `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
 | `-v` | list every method with its proved/total obligations, and the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed |
 | `--checks <kinds>` | prove only these kinds of obligation: a comma-separated list of `null`, `linear`, `bounds`, `overflow`, `contracts` (or `all`). See [Check profiles](#check-profiles) |
@@ -169,6 +169,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1025 | verifier | could deadlock: a lock taken, a call, or a wait while a lock is held might take a lock that isn't of a higher level (`[LockLevel]`), or wait for what only another thread can end; a lock taken out of its form; a `Monitor.Wait` holding another lock; blocking on async code that resumes on its context; one object leveled twice |
 | CSV1026 | verifier | a task an async method started in a local might not be awaited on every path, so a failure in it would be lost; or its `Result` is read before it is awaited |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
+| CSV1902 | verifier | error: the method is not verified: its body isn't translated to Boogie (the message says what), or Boogie couldn't decide it in time |
 | CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |
 | CSV1028 | verifier | a method of the program that runs concurrently (started and not awaited in the same method, handed to a thread, or called by concurrent code), or a delegate type called by concurrent code, but isn't marked `[RunsConcurrently]` |
 | CSV1029 | verifier | a delegate handed to a library that may call it with any arguments (not just a list's elements, `Parallel.For`'s indices, or what a stub says), but that isn't known to accept them all (`Spec.Total`); a lambda's precondition that reads state without a `Spec.Reads` frame, or outside it; or a method group made a delegate whose type has a contract |
