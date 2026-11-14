@@ -26,14 +26,26 @@ namespace CsVerify.Verifier.Boogie
                     case MLit _: return true;
                     case MVar v: return v.Name != "$Alloc";
                     case MOp { Op: "sel" } s when s.Args[0] is MVar map && (map.Name.StartsWith("$F.") || map.Name.StartsWith("$E.")):
-                        if (Mentions(s.Args[1], bound)) return false;
-                        if (keys.Add(Key(s.Args[1]))) objects.Add(s.Args[1]);
+                        if (Mentions(s.Args[1], bound))
+                        {
+                            return false;
+                        }
+                        if (keys.Add(Key(s.Args[1])))
+                        {
+                            objects.Add(s.Args[1]);
+                        }
                         return s.Args.Skip(1).All(Walk);
                     case MOp op: return op.Args.All(Walk);
                     case MQuant q:
                         bound.Add(q.Var);
-                        try { return (q.Range == null || Walk(q.Range)) && Walk(q.Body); }
-                        finally { bound.Remove(q.Var); }
+                        try
+                        {
+                            return (q.Range == null || Walk(q.Range)) && Walk(q.Body);
+                        }
+                        finally
+                        {
+                            bound.Remove(q.Var);
+                        }
                     default: return false;
                 }
             }
@@ -44,7 +56,10 @@ namespace CsVerify.Verifier.Boogie
                 MOp op => op.Op + "(" + string.Join(",", op.Args.Select(Key)) + ")",
                 _ => "?" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e),
             };
-            if (!Walk(body) || objects.Count == 0) return null;
+            if (!Walk(body) || objects.Count == 0)
+            {
+                return null;
+            }
             return objects.Select(o => (MExpr)new MOp("set.of", o)).Aggregate((a, b) => new MOp("set.union", a, b));
         }
 
@@ -53,9 +68,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification's well-definedness, asserted (CSV1012) where it is evaluated, under what holds before it.</summary>
         private void WellDefined(List<MExpr> wf, SyntaxNode at, List<MExpr> before)
         {
-            if (wf.Count == 0) return;
+            if (wf.Count == 0)
+            {
+                return;
+            }
             var cond = And(wf);
-            if (before != null && before.Count > 0) cond = new MOp("==>", And(before), cond);
+            if (before != null && before.Count > 0)
+            {
+                cond = new MOp("==>", And(before), cond);
+            }
             // (checked, not assumed after: what an ill-defined specification says is unknown)
             Assert(cond, At("CSV1012", at, $"specification might not be well-defined: '{at}'"), true);
         }
@@ -86,13 +107,21 @@ namespace CsVerify.Verifier.Boogie
             var values = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray();
             var given = stub.Parameters.Select((x, k) => (x, k)).Where(x => x.k < values.Length).ToDictionary(x => Local(x.x), x => values[x.k]);
             // (an instance member's stub, @this: this, as its contract reads it)
-            if (receiver != null && !callee.IsStatic) given["this"] = receiver;
+            if (receiver != null && !callee.IsStatic)
+            {
+                given["this"] = receiver;
+            }
             return given;
         }
 
         private MExpr StubApp(IMethodSymbol callee, MExpr receiver, MExpr[] args) =>
-            new MFnApp { Callee = callee, Function = StubName(callee), Plain = true,
-                         Args = StubModels(callee, _program.ContractOf(callee)).Select(m => (MExpr)new MVar(m.Name)).Concat(receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
+            new MFnApp
+            {
+                Callee = callee,
+                Function = StubName(callee),
+                Plain = true,
+                Args = StubModels(callee, _program.ContractOf(callee)).Select(m => (MExpr)new MVar(m.Name)).Concat(receiver == null ? args : new[] { receiver }.Concat(args)).ToArray(),
+            };
 
         /// <summary>The models a collection's [Pure] member is a function of (its version aside); none for another stub's.</summary>
         public static List<ModelMap> StubModels(IMethodSymbol callee, Contract contract)
@@ -100,10 +129,17 @@ namespace CsVerify.Verifier.Boogie
             var models = IsCollection(callee.ContainingType) ? ModelsOf((INamedTypeSymbol)callee.ContainingType).Where(m => m.Name != VersionMap).ToList() : new List<ModelMap>();
             // (and the models its stub declares, that its contract reads)
             if (contract != null)
+            {
                 foreach (var m in contract.Requires.Concat(contract.Ensures.Select(e => e.Expr)).Where(x => x != null).SelectMany(x => Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(x)).OfType<Microsoft.CodeAnalysis.Operations.IInvocationOperation>()
                              .Where(i => SpecSymbols.IsModel(i.TargetMethod.OriginalDefinition) && i.TargetMethod.IsStatic && i.Arguments.Length >= 1 && (!IsCollection(callee.ContainingType) || ModelOf(i.TargetMethod.Name, (INamedTypeSymbol)callee.ContainingType) == null))
                              .Select(i => UserModel(i.TargetMethod.OriginalDefinition)).OrderBy(x => x.Name, System.StringComparer.Ordinal))
-                    if (!models.Any(x => x.Name == m.Name)) models.Add(m);
+                {
+                    if (!models.Any(x => x.Name == m.Name))
+                    {
+                        models.Add(m);
+                    }
+                }
+            }
             return models;
         }
 
@@ -143,8 +179,14 @@ namespace CsVerify.Verifier.Boogie
             MExpr Under(MExpr g, KExpr x)
             {
                 guard.Add(g);
-                try { return Spec(x, wf, guard); }
-                finally { guard.RemoveAt(guard.Count - 1); }
+                try
+                {
+                    return Spec(x, wf, guard);
+                }
+                finally
+                {
+                    guard.RemoveAt(guard.Count - 1);
+                }
             }
             switch (e)
             {
@@ -170,7 +212,10 @@ namespace CsVerify.Verifier.Boogie
                     // (what it needs to be well-defined, it needs in the old state too)
                     var inner = new List<MExpr>();
                     var v = Spec(old.Args[0], inner, new List<MExpr>());
-                    foreach (var c in inner) Need(new MOp("old", c));
+                    foreach (var c in inner)
+                    {
+                        Need(new MOp("old", c));
+                    }
                     return new MOp("old", v);
                 }
                 // (a value defined only where its condition holds: a float cast to an integer, which must fit)
@@ -182,7 +227,10 @@ namespace CsVerify.Verifier.Boogie
                 case KOp { Op: "streq" } eq:
                 {
                     var (l, r) = (Spec(eq.Args[0], wf, guard), Spec(eq.Args[1], wf, guard));
-                    if (!Mentions(l, _bound) && !Mentions(r, _bound)) _facts.Add(Extensional(l, r));
+                    if (!Mentions(l, _bound) && !Mentions(r, _bound))
+                    {
+                        _facts.Add(Extensional(l, r));
+                    }
                     return new MOp("==", l, r);
                 }
                 case KOp op:
@@ -213,10 +261,22 @@ namespace CsVerify.Verifier.Boogie
                     var body = Spec(let.Body, wf, guard);
                     // (what makes the body well-defined, and what it knows, are of the local's value too)
                     var bound = new Dictionary<string, MExpr> { [let.Var] = value };
-                    for (int k = from; k < wf.Count; k++) wf[k] = Subst(wf[k], bound);
-                    for (int k = facts; k < _facts.Count; k++) _facts[k] = Subst(_facts[k], bound);
+                    for (int k = from; k < wf.Count; k++)
+                    {
+                        wf[k] = Subst(wf[k], bound);
+                    }
+                    for (int k = facts; k < _facts.Count; k++)
+                    {
+                        _facts[k] = Subst(_facts[k], bound);
+                    }
                     // (a fact of the local's value that now names a quantifier's variable isn't one of the state: dropped)
-                    for (int k = _facts.Count - 1; k >= facts; k--) if (Mentions(_facts[k], _bound)) _facts.RemoveAt(k);
+                    for (int k = _facts.Count - 1; k >= facts; k--)
+                    {
+                        if (Mentions(_facts[k], _bound))
+                        {
+                            _facts.RemoveAt(k);
+                        }
+                    }
                     return Subst(body, bound);
                 }
                 case KMultiset ms:
@@ -226,7 +286,10 @@ namespace CsVerify.Verifier.Boogie
                     var n = Spec(ms.Count, wf, guard);
                     Need(new MOp("&&", new MOp("&&", new MOp("!=", a, new MLit("null")), new MOp("<=", new MLit("0"), n)), new MOp("<=", n, new MOp("len", a))));
                     MExpr fuel = new MLit("$LZ");
-                    for (int k = 0; k < ms.Levels; k++) fuel = new MOp("$LS", fuel);
+                    for (int k = 0; k < ms.Levels; k++)
+                    {
+                        fuel = new MOp("$LS", fuel);
+                    }
                     return new MOp("$bag", fuel, new MOp("sel", new MVar(Elements(ms.ArrayType)), a), n);
                 }
                 case KElem { Model: string model } le:
@@ -249,7 +312,10 @@ namespace CsVerify.Verifier.Boogie
                 case KDataField df:
                 {
                     var v = Spec(df.Value, wf, guard);
-                    if (!df.Struct) Need(new MOp("!=", v, new MLit("null")));
+                    if (!df.Struct)
+                    {
+                        Need(new MOp("!=", v, new MLit("null")));
+                    }
                     return new MOp(df.Function, v);
                 }
                 case KCast cast:
@@ -275,7 +341,10 @@ namespace CsVerify.Verifier.Boogie
                     var args = st.Args.Select(a => Spec(a, wf, guard)).ToArray();
                     var given = StubGiven(st.Callee, receiver, args);
                     var saved = _facts.ToList();
-                    foreach (var r in _program.Signature(st.Callee).Requires) Need(Subst(Spec(r.Expr, out _), given));
+                    foreach (var r in _program.Signature(st.Callee).Requires)
+                    {
+                        Need(Subst(Spec(r.Expr, out _), given));
+                    }
                     _facts.Clear();
                     _facts.AddRange(saved);
                     _p.Stubs.Add(st.Callee);
@@ -297,10 +366,18 @@ namespace CsVerify.Verifier.Boogie
                     var lo = Spec(cl.Lo, wf, guard);
                     var hi = Spec(cl.Hi, wf, guard);
                     // (in hand, as a condition: a method that keeps no cell permissions holds every cell)
-                    if (!_held || !_p.UsesCells) return new MLit("true");
+                    if (!_held || !_p.UsesCells)
+                    {
+                        return new MLit("true");
+                    }
                     var i = new MVar("i$");
-                    return new MQuant { Forall = true, Var = "i$", Range = null,
-                        Body = Implies(new MOp("&&", new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))) };
+                    return new MQuant
+                    {
+                        Forall = true,
+                        Var = "i$",
+                        Range = null,
+                        Body = Implies(new MOp("&&", new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))),
+                    };
                 }
                 case KInst inst:
                 {
@@ -312,23 +389,49 @@ namespace CsVerify.Verifier.Boogie
                     if (fd.Instance == null)
                     {
                         var sv = new MOp("sel", new MVar(FieldMap(fd.Field)), new MLit("null"));
-                        if (NonNullField(fd.Field)) _facts.Add(new MOp("!=", sv, new MLit("null")));
+                        if (NonNullField(fd.Field))
+                        {
+                            _facts.Add(new MOp("!=", sv, new MLit("null")));
+                        }
                         return sv;
                     }
                     var o = Spec(fd.Instance, wf, guard);
-                    if (!fd.OnThis && !fd.NoNull) Need(new MOp("!=", o, new MLit("null")));
+                    if (!fd.OnThis && !fd.NoNull)
+                    {
+                        Need(new MOp("!=", o, new MLit("null")));
+                    }
                     var v = new MOp("sel", new MVar(FieldMap(fd.Field)), o);
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !Mentions(o, _bound))
+                    {
                         _facts.Add(new MOp("==>", new MOp("!=", o, new MLit("null")), new MOp("!=", v, new MLit("null"))));
-                    if (IsRef(FieldType(fd.Field)) && !Mentions(o, _bound)) _facts.Add(Allocated(o, v));
+                    }
+                    if (IsRef(FieldType(fd.Field)) && !Mentions(o, _bound))
+                    {
+                        _facts.Add(Allocated(o, v));
+                    }
                     return v;
                 }
                 case KQuant q when q.Range == null:
                 {
                     // (over all of its type: a delegate's arguments)
                     bool added = _bound.Add(q.Var);
-                    try { return new MQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Body = Spec(q.Body, new List<MExpr>(), new List<MExpr>()) }; }
-                    finally { if (added) _bound.Remove(q.Var); }
+                    try
+                    {
+                        return new MQuant
+                        {
+                            Forall = q.Forall,
+                            Var = q.Var,
+                            Type = q.Type,
+                            Body = Spec(q.Body, new List<MExpr>(), new List<MExpr>()),
+                        };
+                    }
+                    finally
+                    {
+                        if (added)
+                        {
+                            _bound.Remove(q.Var);
+                        }
+                    }
                 }
                 case KQuant q:
                 {
@@ -346,10 +449,36 @@ namespace CsVerify.Verifier.Boogie
                         body = Spec(q.Body, inner, new List<MExpr> { range });
                         trigger = q.Trigger?.Select(t => Spec(t, new List<MExpr>(), new List<MExpr>())).ToArray();
                     }
-                    finally { if (added) _bound.Remove(q.Var); }
-                    foreach (var c in inner) Need(new MQuant { Forall = true, Var = q.Var, Range = null, Body = c });
-                    if (!Mentions(range, _bound)) Unfoldings(q.Var, range, body);
-                    return new MQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = range, Body = body, Trigger = trigger };
+                    finally
+                    {
+                        if (added)
+                        {
+                            _bound.Remove(q.Var);
+                        }
+                    }
+                    foreach (var c in inner)
+                    {
+                        Need(new MQuant
+                        {
+                            Forall = true,
+                            Var = q.Var,
+                            Range = null,
+                            Body = c,
+                        });
+                    }
+                    if (!Mentions(range, _bound))
+                    {
+                        Unfoldings(q.Var, range, body);
+                    }
+                    return new MQuant
+                    {
+                        Forall = q.Forall,
+                        Var = q.Var,
+                        Type = q.Type,
+                        Range = range,
+                        Body = body,
+                        Trigger = trigger,
+                    };
                 }
                 case KFnCall fn:
                 {
@@ -357,7 +486,10 @@ namespace CsVerify.Verifier.Boogie
                     if (fn.Receiver != null)
                     {
                         receiver = Spec(fn.Receiver, wf, guard);
-                        if (!fn.ReceiverIsThis && !IsStruct(fn.Callee.ContainingType)) Need(new MOp("!=", receiver, new MLit("null")));
+                        if (!fn.ReceiverIsThis && !IsStruct(fn.Callee.ContainingType))
+                        {
+                            Need(new MOp("!=", receiver, new MLit("null")));
+                        }
                     }
                     var args = fn.Args.Select(a => Spec(a, wf, guard)).ToArray();
                     return FunctionApp(fn, receiver, args, Need);
@@ -372,16 +504,35 @@ namespace CsVerify.Verifier.Boogie
             // (well-defined where its precondition holds, at the arguments)
             var given = Given(fn.Callee, receiver, args);
             var saved = _facts.ToList();
-            foreach (var r in _program.Signature(fn.Callee).Requires) need(Subst(Spec(r.Expr, out _), given));
+            foreach (var r in _program.Signature(fn.Callee).Requires)
+            {
+                need(Subst(Spec(r.Expr, out _), given));
+            }
             _facts.Clear();
             _facts.AddRange(saved);
             // (over a predicate: its value is of the instance's snapshot)
             if (_program.OverPredicate(fn.Callee) is (IMethodSymbol pred, int[] map))
-                return new MFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Args = args, Snap = Snap(pred, map, args) };
+            {
+                return new MFnApp
+                {
+                    Callee = fn.Callee,
+                    Function = FunctionName(fn.Callee),
+                    Args = args,
+                    Snap = Snap(pred, map, args),
+                };
+            }
             // (the fields it reads are the procedure's too: what's known of them, a reference field's object allocated, holds)
-            foreach (var ff in _program.FunctionFieldSymbols(fn.Callee)) _p.Fields.Add(ff);
-            return new MFnApp { Callee = fn.Callee, Function = FunctionName(fn.Callee), Fields = _program.FunctionFields(fn.Callee),
-                                Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray() };
+            foreach (var ff in _program.FunctionFieldSymbols(fn.Callee))
+            {
+                _p.Fields.Add(ff);
+            }
+            return new MFnApp
+            {
+                Callee = fn.Callee,
+                Function = FunctionName(fn.Callee),
+                Fields = _program.FunctionFields(fn.Callee),
+                Args = (receiver == null ? args : new[] { receiver }.Concat(args)).ToArray(),
+            };
         }
 
         /// <summary>A variable given a value (mathematics).</summary>

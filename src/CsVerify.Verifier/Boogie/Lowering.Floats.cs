@@ -18,9 +18,14 @@ namespace CsVerify.Verifier.Boogie
         private static string FloatMember(IMethodSymbol m)
         {
             var owner = m.ContainingType?.ToDisplayString();
-            if (m.Parameters.Length == 0 || !IsFloating(m.Parameters[0].Type)) return null;
+            if (m.Parameters.Length == 0 || !IsFloating(m.Parameters[0].Type))
+            {
+                return null;
+            }
             if (owner is "double" or "float" or "System.Double" or "System.Single")
+            {
                 return m.Name is "IsNaN" or "IsInfinity" or "IsFinite" or "IsPositiveInfinity" or "IsNegativeInfinity" or "IsNormal" or "IsSubnormal" ? m.Name : null;
+            }
             return owner is "System.Math" or "System.MathF" ? m.Name : null;
         }
 
@@ -56,7 +61,10 @@ namespace CsVerify.Verifier.Boogie
                         new KOp("ite", less, a[0], new KOp("ite", more, a[1], new KOp("ite", keepA, a[0], a[1]))));
                 }
                 default:
-                    if (inSpec || !InSubset(result)) throw new NotTranslated("Math." + name + " of floats");
+                    if (inSpec || !InSubset(result))
+                    {
+                        throw new NotTranslated("Math." + name + " of floats");
+                    }
                     var r = Declare("t$" + _temps++, result);
                     Emit(new KHavoc { Var = r });
                     return new KVar(r);
@@ -71,13 +79,21 @@ namespace CsVerify.Verifier.Boogie
         {
             ITypeSymbol from = c.Operand.Type, to = c.Type;
             if (IsFloating(from) && IsFloating(to))
+            {
                 return from.SpecialType == to.SpecialType ? v : to.SpecialType == SpecialType.System_Double ? new KOp("$fp.widen", v) : new KOp("$fp.narrow", v);
+            }
             if (IsFloating(to))
             {
-                if (!IsIntegral(from)) throw new NotTranslated("a conversion of " + from + " to " + to);
+                if (!IsIntegral(from))
+                {
+                    throw new NotTranslated("a conversion of " + from + " to " + to);
+                }
                 return new KOp("$fp.ofReal" + FloatSize(to), new KOp("$toreal", v));
             }
-            if (!IsIntegral(to)) throw new NotTranslated("a conversion of " + from + " to " + to);
+            if (!IsIntegral(to))
+            {
+                throw new NotTranslated("a conversion of " + from + " to " + to);
+            }
             var n = FloatSize(from);
             var (lo, hi) = Range(to);
             var t = new KOp("$fp.trunc" + n, v);
@@ -86,23 +102,53 @@ namespace CsVerify.Verifier.Boogie
             var value = new KOp("$toint", new KOp("$fp.real" + n, t));
             // (in a specification, a cast that doesn't fit has no value: it must be shown to fit, as a divisor isn't zero)
             // (where it doesn't, a value of the type all the same, which nothing is then concluded from)
-            if (inSpec) return new KOp("$need", fits, new KOp("ite", new KOp("&&", fits, new KOp("&&", new KOp("<=", Number(lo), value), new KOp("<=", value, Number(hi)))), value, Number(lo)));
+            if (inSpec)
+            {
+                return new KOp("$need", fits, new KOp("ite", new KOp("&&", fits, new KOp("&&", new KOp("<=", Number(lo), value), new KOp("<=", value, Number(hi)))), value, Number(lo)));
+            }
             var mode = Mode(c.Syntax, c.IsChecked);
             // (checked: where it doesn't fit, it throws an OverflowException, which the handlers may catch; in a proof, it may not)
             if (mode == KMode.Checked)
             {
                 if (_contract.IsPure || _contract.IsLemma)
-                    Emit(new KCheck { Cond = fits, Id = "CSV1010", At = c.Syntax, Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)" });
+                {
+                    Emit(new KCheck
+                    {
+                        Cond = fits,
+                        Id = "CSV1010",
+                        At = c.Syntax,
+                        Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)",
+                    });
+                }
                 else
                 {
-                    if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string overflowTo) Emit(new KFork { Overflow = fits, Target = overflowTo, Exception = null });
+                    if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string overflowTo)
+                    {
+                        Emit(new KFork
+                        {
+                            Overflow = fits,
+                            Target = overflowTo,
+                            Exception = null,
+                        });
+                    }
                     Emit(new KAssume { Cond = fits });
                 }
                 return value;
             }
             if (mode == KMode.Default)
-                Emit(new KCheck { Cond = fits, Id = "CSV1010", At = c.Syntax, Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)" });
-            if (mode == KMode.Default) return value;
+            {
+                Emit(new KCheck
+                {
+                    Cond = fits,
+                    Id = "CSV1010",
+                    At = c.Syntax,
+                    Message = $"conversion '{c.Syntax}' to {to.Name} might not fit (it might be NaN, infinite, or out of range)",
+                });
+            }
+            if (mode == KMode.Default)
+            {
+                return value;
+            }
             var r = Declare("t$" + _temps++, to);
             Emit(new KHavoc { Var = r });
             return new KOp("ite", fits, value, new KVar(r));

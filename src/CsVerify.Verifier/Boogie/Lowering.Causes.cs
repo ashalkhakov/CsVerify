@@ -30,11 +30,22 @@ namespace CsVerify.Verifier.Boogie
                 case KVar v: yield return v.Name; yield break;
                 case KExpr x:
                     foreach (var f in Parts(x.GetType()))
+                    {
                         switch (f.GetValue(x))
                         {
-                            case KExpr k: foreach (var n in VarsIn(k)) yield return n; break;
-                            case IEnumerable<KExpr> ks: foreach (var k in ks) foreach (var n in VarsIn(k)) yield return n; break;
+                            case KExpr k: foreach (var n in VarsIn(k))
+                            {
+                                yield return n;
+                            } break;
+                            case IEnumerable<KExpr> ks: foreach (var k in ks)
+                            {
+                                foreach (var n in VarsIn(k))
+                                {
+                                    yield return n;
+                                }
+                            } break;
                         }
+                    }
                     yield break;
             }
         }
@@ -45,7 +56,10 @@ namespace CsVerify.Verifier.Boogie
         {
             lock (_parts)
             {
-                if (_parts.TryGetValue(t, out var known)) return known;
+                if (_parts.TryGetValue(t, out var known))
+                {
+                    return known;
+                }
                 return _parts[t] = t.GetFields(BindingFlags.Public | BindingFlags.Instance)
                     .Where(f => typeof(KExpr).IsAssignableFrom(f.FieldType) || typeof(IEnumerable<KExpr>).IsAssignableFrom(f.FieldType)).ToArray();
             }
@@ -53,8 +67,14 @@ namespace CsVerify.Verifier.Boogie
 
         private void Cause(string var, string cause)
         {
-            if (var == null || cause == null) return;
-            if (!_p.Causes.TryGetValue(var, out var set)) _p.Causes[var] = set = new HashSet<string>();
+            if (var == null || cause == null)
+            {
+                return;
+            }
+            if (!_p.Causes.TryGetValue(var, out var set))
+            {
+                _p.Causes[var] = set = new HashSet<string>();
+            }
             set.Add(cause);
         }
 
@@ -64,7 +84,10 @@ namespace CsVerify.Verifier.Boogie
             switch (s)
             {
                 case KAssign a:
-                    if (!_p.Deps.TryGetValue(a.Var, out var deps)) _p.Deps[a.Var] = deps = new HashSet<string>();
+                    if (!_p.Deps.TryGetValue(a.Var, out var deps))
+                    {
+                        _p.Deps[a.Var] = deps = new HashSet<string>();
+                    }
                     deps.UnionWith(VarsIn(a.Value));
                     break;
                 case KHavoc h: Cause(h.Var, _cause); break;
@@ -75,22 +98,44 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What a call's unknown values are charged to: null where nothing is.</summary>
         private string CallCause(IMethodSymbol m)
         {
-            if (SpecSymbols.IsSpecClass(m.ContainingType) || m.ContainingNamespace?.ToDisplayString()?.StartsWith("CsVerify") == true) return null;
-            if (m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object) return null;
-            if (m.IsImplicitlyDeclared && m.ContainingType.Locations.Any(l => l.IsInSource)) return null;
+            if (SpecSymbols.IsSpecClass(m.ContainingType) || m.ContainingNamespace?.ToDisplayString()?.StartsWith("CsVerify") == true)
+            {
+                return null;
+            }
+            if (m.MethodKind == MethodKind.Constructor && m.ContainingType.SpecialType == SpecialType.System_Object)
+            {
+                return null;
+            }
+            if (m.IsImplicitlyDeclared && m.ContainingType.Locations.Any(l => l.IsInSource))
+            {
+                return null;
+            }
             var c = _contractOf?.Invoke(m.OriginalDefinition);
-            if (m.DeclaringSyntaxReferences.Length == 0 && !(c?.OfDelegate ?? false)) return "library " + m.OriginalDefinition.ToDisplayString();
-            if (c == null || c.IsStub || c.IsPure || c.IsLemma || c.Ensures.Count > 0 || c.ThrowEnsures.Count > 0) return null;
+            if (m.DeclaringSyntaxReferences.Length == 0 && !(c?.OfDelegate ?? false))
+            {
+                return "library " + m.OriginalDefinition.ToDisplayString();
+            }
+            if (c == null || c.IsStub || c.IsPure || c.IsLemma || c.Ensures.Count > 0 || c.ThrowEnsures.Count > 0)
+            {
+                return null;
+            }
             return "source " + m.OriginalDefinition.ToDisplayString();
         }
 
         /// <summary>The library's members the method's code calls, for the report.</summary>
         private void LibraryCalls()
         {
-            if (_p.Result == null || _decl == null || _model == null || !(_model.GetOperation(_decl) is IOperation root)) return;
+            if (_p.Result == null || _decl == null || _model == null || !(_model.GetOperation(_decl) is IOperation root))
+            {
+                return;
+            }
             foreach (var call in root.DescendantsAndSelf().OfType<Microsoft.CodeAnalysis.Operations.IInvocationOperation>())
+            {
                 if (!InSpec(call.Syntax) && CallCause(call.TargetMethod) is string lib && lib.StartsWith("library "))
+                {
                     lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((lib.Substring("library ".Length), call.Syntax.SyntaxTree.FilePath + ":" + call.Syntax.SpanStart));
+                }
+            }
         }
 
         /// <summary>At the end: what a loop without invariants assigns is charged to it.</summary>
@@ -98,9 +143,17 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var (h, last) in _p.LoopBodies)
             {
-                if (_writtenInvariants.Contains(h)) continue;
+                if (_writtenInvariants.Contains(h))
+                {
+                    continue;
+                }
                 foreach (var b in _p.Blocks.Where(x => x.Ordinal >= h && x.Ordinal <= last))
-                    foreach (var a in b.Stmts.OfType<KAssign>()) Cause(a.Var, "a loop without invariants");
+                {
+                    foreach (var a in b.Stmts.OfType<KAssign>())
+                    {
+                        Cause(a.Var, "a loop without invariants");
+                    }
+                }
             }
         }
     }

@@ -17,8 +17,14 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Does the method keep permissions? Of its parameters, its contract, and what its body does.</summary>
         private bool KeepsPermissions(IEnumerable<IOperation> body)
         {
-            if (_p.ThisIsView || _m.Parameters.Any(x => IsView(x.Type) || IsShare(x.Type) || IsPackage(x.Type))) return true;
-            if (_contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr))) return true;
+            if (_p.ThisIsView || _m.Parameters.Any(x => IsView(x.Type) || IsShare(x.Type) || IsPackage(x.Type)))
+            {
+                return true;
+            }
+            if (_contract.Requires.Any(HasAtoms) || _contract.Ensures.Any(e => HasAtoms(e.Expr)))
+            {
+                return true;
+            }
             return body.Any(KeepsPermissions);
         }
 
@@ -38,13 +44,31 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var m = i.TargetMethod;
                     // (Spec.Fold and Spec.Unfold; Own's operations; Spec.Acc of an object or a field; a predicate instance)
-                    if (SpecSymbols.IsSpecClass(m.ContainingType) && m.Name is "Fold" or "Unfold") return true;
-                    if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own")) return true;
-                    if (SpecSymbols.IsSpecClass(m.ContainingType) && m.Name is "Acc" or "AccRead") return true;
-                    if (SpecSymbols.IsPredicate(m.OriginalDefinition) && m.IsStatic) return true;
+                    if (SpecSymbols.IsSpecClass(m.ContainingType) && m.Name is "Fold" or "Unfold")
+                    {
+                        return true;
+                    }
+                    if (SpecSymbols.IsCsVerifyType(m.ContainingType, "Own"))
+                    {
+                        return true;
+                    }
+                    if (SpecSymbols.IsSpecClass(m.ContainingType) && m.Name is "Acc" or "AccRead")
+                    {
+                        return true;
+                    }
+                    if (SpecSymbols.IsPredicate(m.OriginalDefinition) && m.IsStatic)
+                    {
+                        return true;
+                    }
                     // (a call that gives or takes views, shares or packages, of an [Owned] object's, or that borrows a tree)
-                    if (InSpec(i.Syntax)) return false;
-                    if (m.Parameters.Any(x => IsView(x.Type) || IsShare(x.Type) || IsPackage(x.Type)) || IsPackage(Returns(m)) || IsOwnedClass(m.ContainingType) && !m.IsStatic) return true;
+                    if (InSpec(i.Syntax))
+                    {
+                        return false;
+                    }
+                    if (m.Parameters.Any(x => IsView(x.Type) || IsShare(x.Type) || IsPackage(x.Type)) || IsPackage(Returns(m)) || IsOwnedClass(m.ContainingType) && !m.IsStatic)
+                    {
+                        return true;
+                    }
                     return _contractOf?.Invoke(m.OriginalDefinition) is Contract c && c.Modifies != null &&
                            c.Modifies.DescendantsAndSelf().OfType<IInvocationOperation>().Any(t => SpecSymbols.IsCsVerifyType(t.TargetMethod.ContainingType, "Own") && t.TargetMethod.Name == "Tree");
                 }

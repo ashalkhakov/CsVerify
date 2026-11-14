@@ -65,7 +65,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The procedures translated, written when all are (their modifies need what each calls).</summary>
         private readonly List<HProcedure> _pending = new List<HProcedure>();
 
-        public BoogieTranslator(bool checkOverflow) { _checkOverflow = checkOverflow; }
+        public BoogieTranslator(bool checkOverflow)
+        {
+            _checkOverflow = checkOverflow;
+        }
 
         public string Text => _printer.Text;
 
@@ -132,7 +135,10 @@ namespace CsVerify.Verifier.Boogie
         {
             var list = procedures.ToList();
             // (a lambda: nothing calls it as a procedure; a local function's calls do)
-            foreach (var p in list.Where(x => x.method.MethodKind != MethodKind.AnonymousFunction)) _procedures.Add(p.method.OriginalDefinition);
+            foreach (var p in list.Where(x => x.method.MethodKind != MethodKind.AnonymousFunction))
+            {
+                _procedures.Add(p.method.OriginalDefinition);
+            }
             var calls = new Dictionary<IMethodSymbol, HashSet<IMethodSymbol>>(SymbolEqualityComparer.Default);
             foreach (var (m, decl, model) in list)
             {
@@ -151,8 +157,17 @@ namespace CsVerify.Verifier.Boogie
                 while (work.Count > 0)
                 {
                     var x = work.Pop();
-                    if (!seen.Add(x)) continue;
-                    if (calls.TryGetValue(x, out var next)) foreach (var y in next) work.Push(y);
+                    if (!seen.Add(x))
+                    {
+                        continue;
+                    }
+                    if (calls.TryGetValue(x, out var next))
+                    {
+                        foreach (var y in next)
+                        {
+                            work.Push(y);
+                        }
+                    }
                 }
                 _reaches[m] = seen;
             }
@@ -184,9 +199,21 @@ namespace CsVerify.Verifier.Boogie
             m = m.OriginalDefinition;
             var all = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             // (one an override may answer reads what any of them might: every field the program names)
-            if (Engine.IsOverridable(m)) { foreach (var f in _fieldsRead.Values) all.UnionWith(f); return all; }
+            if (Engine.IsOverridable(m))
+            {
+                foreach (var f in _fieldsRead.Values)
+                {
+                    all.UnionWith(f);
+                }
+                return all;
+            }
             foreach (var x in new[] { m }.Concat(_reaches.TryGetValue(m, out var r) ? r : Enumerable.Empty<IMethodSymbol>()))
-                if (_fieldsRead.TryGetValue(x, out var f)) all.UnionWith(f);
+            {
+                if (_fieldsRead.TryGetValue(x, out var f))
+                {
+                    all.UnionWith(f);
+                }
+            }
             return all;
         }
 
@@ -211,7 +238,10 @@ namespace CsVerify.Verifier.Boogie
 
         private string Literal(string s)
         {
-            if (!_literals.TryGetValue(s, out var name)) _literals[s] = name = "s#" + _literals.Count;
+            if (!_literals.TryGetValue(s, out var name))
+            {
+                _literals[s] = name = "s#" + _literals.Count;
+            }
             return name;
         }
 
@@ -220,7 +250,10 @@ namespace CsVerify.Verifier.Boogie
         public (IMethodSymbol pred, int[] arg)? OverPredicate(IMethodSymbol f)
         {
             f = f.OriginalDefinition;
-            if (_over.TryGetValue(f, out var known)) return known;
+            if (_over.TryGetValue(f, out var known))
+            {
+                return known;
+            }
             (IMethodSymbol, int[])? over = null;
             try
             {
@@ -235,13 +268,20 @@ namespace CsVerify.Verifier.Boogie
                         var names = q.Args.Select(a => ((KVar)a).Name).ToList();
                         var map = f.Parameters.Select(x => names.IndexOf(Local(x))).ToArray();
                         var used = map.Where(j => j >= 0).ToList();
-                        if (used.Distinct().Count() == used.Count && used.Count == names.Count && names.Distinct().Count() == names.Count) over = (q.Pred, map);
+                        if (used.Distinct().Count() == used.Count && used.Count == names.Count && names.Distinct().Count() == names.Count)
+                        {
+                            over = (q.Pred, map);
+                        }
                     }
                     // (over more than one instance, or one not of its parameters: an ordinary function of the memory, framed
                     // by what it reads, as Dafny's are, defined in every state)
                 }
             }
-            catch (NotTranslated) { _over[f] = null; throw; }
+            catch (NotTranslated)
+            {
+                _over[f] = null;
+                throw;
+            }
             return _over[f] = over;
         }
 
@@ -250,9 +290,18 @@ namespace CsVerify.Verifier.Boogie
             foreach (var f in _procedures)
             {
                 (IMethodSymbol pred, int[] arg)? over;
-                try { over = OverPredicate(f); }
-                catch (NotTranslated) { continue; }
-                if (over is (IMethodSymbol p, _) && SymbolEqualityComparer.Default.Equals(p, pred.OriginalDefinition)) yield return f;
+                try
+                {
+                    over = OverPredicate(f);
+                }
+                catch (NotTranslated)
+                {
+                    continue;
+                }
+                if (over is (IMethodSymbol p, _) && SymbolEqualityComparer.Default.Equals(p, pred.OriginalDefinition))
+                {
+                    yield return f;
+                }
             }
         }
 
@@ -261,7 +310,10 @@ namespace CsVerify.Verifier.Boogie
         public int FieldId(ISymbol field)
         {
             field = field.OriginalDefinition;
-            if (!_fieldIds.TryGetValue(field, out var id)) _fieldIds[field] = id = _fieldIds.Count + 1;
+            if (!_fieldIds.TryGetValue(field, out var id))
+            {
+                _fieldIds[field] = id = _fieldIds.Count + 1;
+            }
             return id;
         }
 
@@ -271,8 +323,14 @@ namespace CsVerify.Verifier.Boogie
 
         KProcedure IProgramFacts.Signature(IMethodSymbol m)
         {
-            if (!IsCollection(m.ContainingType)) m = m.OriginalDefinition;
-            if (!_signatures.TryGetValue(m, out var sig)) _signatures[m] = sig = Lowering.Signature(m, ContractOf(m), IsFunction, Literal, ContractOf);
+            if (!IsCollection(m.ContainingType))
+            {
+                m = m.OriginalDefinition;
+            }
+            if (!_signatures.TryGetValue(m, out var sig))
+            {
+                _signatures[m] = sig = Lowering.Signature(m, ContractOf(m), IsFunction, Literal, ContractOf);
+            }
             return sig;
         }
 
@@ -296,9 +354,16 @@ namespace CsVerify.Verifier.Boogie
                     var lk = Lowering.Lower(callee, ContractOf(callee), null, null, new MethodResult(), x => _procedures.Contains(x.OriginalDefinition), IsFunction, Literal, ContractOf);
                     lib.Add(Heap.Run(Checks.Run(lk, this)));
                 }
-                catch (NotTranslated why) { throw new NotTranslated("a call of List's " + callee.Name + ": " + why.Message); }
+                catch (NotTranslated why)
+                {
+                    throw new NotTranslated("a call of List's " + callee.Name + ": " + why.Message);
+                }
             }
-            foreach (var lp in lib) { _libraries.Add(lp.Source.Method); _pending.Add(lp); }
+            foreach (var lp in lib)
+            {
+                _libraries.Add(lp.Source.Method);
+                _pending.Add(lp);
+            }
             _pending.Add(p);
         }
 
@@ -320,7 +385,10 @@ namespace CsVerify.Verifier.Boogie
         public void Finish()
         {
             var fields = new HashSet<ISymbol>(_pending.SelectMany(p => p.Source.Fields), SymbolEqualityComparer.Default);
-            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method))) fields.UnionWith(FieldsOf(p.Source.Method));
+            foreach (var p in _pending.Where(p => IsFunction(p.Source.Method)))
+            {
+                fields.UnionWith(FieldsOf(p.Source.Method));
+            }
             // the predicates named, and those their bodies name
             var preds = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Source.Preds), SymbolEqualityComparer.Default);
             for (var work = new Stack<IMethodSymbol>(preds); work.Count > 0;)
@@ -328,12 +396,26 @@ namespace CsVerify.Verifier.Boogie
                 var pred = work.Pop();
                 // (a predicate whose body isn't translated: its procedure was refused, and so were those that name it)
                 IEnumerable<IMethodSymbol> inner;
-                try { inner = ((IProgramFacts)this).Signature(pred).Preds; }
-                catch (NotTranslated) { inner = Enumerable.Empty<IMethodSymbol>(); }
+                try
+                {
+                    inner = ((IProgramFacts)this).Signature(pred).Preds;
+                }
+                catch (NotTranslated)
+                {
+                    inner = Enumerable.Empty<IMethodSymbol>();
+                }
                 foreach (var q in inner)
-                    if (preds.Add(q)) work.Push(q);
+                {
+                    if (preds.Add(q))
+                    {
+                        work.Push(q);
+                    }
+                }
             }
-            if (_pending.Any(p => p.Source.UsesPerm)) _printer.Instances(preds);
+            if (_pending.Any(p => p.Source.UsesPerm))
+            {
+                _printer.Instances(preds);
+            }
             // the library stubs used (a string's [Pure] members): functions their contracts describe
             // (and the stubs those stubs' contracts call)
             var stubs = new HashSet<IMethodSymbol>(_pending.SelectMany(p => p.Source.Stubs).Concat(_signatures.Values.SelectMany(s => s.Stubs)), SymbolEqualityComparer.Default);
@@ -344,10 +426,17 @@ namespace CsVerify.Verifier.Boogie
                 var sig = ((IProgramFacts)this).Signature(s);
                 stubMath[s] = (sig.Requires.Select(r => Checks.MathOf(r.Expr, this, s)).ToList(), sig.Ensures.Select(e => Checks.MathOf(e.Expr, this, s)).ToList());
                 foreach (var t in sig.Stubs.Concat(_signatures.Values.SelectMany(x => x.Stubs)))
-                    if (stubs.Add(t)) work.Push(t);
+                {
+                    if (stubs.Add(t))
+                    {
+                        work.Push(t);
+                    }
+                }
             }
             foreach (var s in stubs.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
+            {
                 _printer.Stub(s, ContractOf(s), stubMath[s].requires, stubMath[s].ensures);
+            }
             // (the literals last: the stubs' contracts may have some)
             _printer.Literals(_literals);
             _printer.Fields(fields);
@@ -362,20 +451,38 @@ namespace CsVerify.Verifier.Boogie
             _printer.OwnedMaps = fields.Where(IsOwnedField).Select(FieldMap).ToHashSet();
             _printer.Recursive = (a, b) => Recursive(a.OriginalDefinition, b.OriginalDefinition);
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate))
-                if (OverPredicate(p.Source.Method) != null) _printer.FunctionOverPredicate(p);
-                else _printer.Function(p, FunctionFields(p.Source.Method), fields,
-                                       ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => Checks.Atoms(r.Expr)).Any(a => a is KInst));
+            {
+                if (OverPredicate(p.Source.Method) != null)
+                {
+                    _printer.FunctionOverPredicate(p);
+                }
+                else
+                {
+                    _printer.Function(p, FunctionFields(p.Source.Method), fields,
+                                           ((IProgramFacts)this).Signature(p.Source.Method).Requires.SelectMany(r => Checks.Atoms(r.Expr)).Any(a => a is KInst));
+                }
+            }
             // (a [Pure] override, of an object whose dynamic type is exactly its class: the base member's value is its)
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && p.Source.Method.IsOverride))
+            {
                 for (var b = p.Source.Method.OverriddenMethod?.OriginalDefinition; b != null; b = b.OverriddenMethod?.OriginalDefinition)
+                {
                     if (IsFunction(b) && OverPredicate(b) == null && IsModeledClass(p.Source.Method.ContainingType))
+                    {
                         _printer.Dispatch(b, FunctionFields(b), p.Source.Method, FunctionFields(p.Source.Method), fields);
+                    }
+                }
+            }
             // (the atomic fields' steps, kept wherever the fields are forgotten)
             foreach (var f in fields.Where(f => Atomics.IsAtomic(f) && Atomics.StepOf(f) != null && IsFunction(Atomics.StepOf(f).OriginalDefinition)))
             {
                 var step = Atomics.StepOf(f).OriginalDefinition;
                 var (a, b) = (new MVar("x$old"), new MVar("x$now"));
-                _printer.AtomicSteps[FieldMap(f)] = new MOp("||", new MOp("==", a, b), Checks.MathOf(new KFnCall { Callee = step, Args = new KExpr[] { new KVar("x$old"), new KVar("x$now") } }, this, step));
+                _printer.AtomicSteps[FieldMap(f)] = new MOp("||", new MOp("==", a, b), Checks.MathOf(new KFnCall
+                {
+                    Callee = step,
+                    Args = new KExpr[] { new KVar("x$old"), new KVar("x$now") },
+                }, this, step));
             }
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
                 .Concat(models.Select(m => m.Name)).Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).ToHashSet();
@@ -383,44 +490,117 @@ namespace CsVerify.Verifier.Boogie
             var any = Closed(p => p.Source.CallsDelegates ? new HashSet<string>(p.Source.AnyWrites.Concat(_allMaps)) : p.Source.AnyWrites);
             _printer.UsesState |= _pending.Any(p => p.Source.UsesState);
             _printer.Delegates(_pending.SelectMany(p => p.Source.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
-            if (_pending.Any(p => p.Source.HavocsAll)) _printer.Havoc(_allMaps);
-            if (_pending.Any(p => p.Source.Awaits)) _printer.Await(_allMaps);
+            if (_pending.Any(p => p.Source.HavocsAll))
+            {
+                _printer.Havoc(_allMaps);
+            }
+            if (_pending.Any(p => p.Source.Awaits))
+            {
+                _printer.Await(_allMaps);
+            }
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
             foreach (var p in _pending)
+            {
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<MCallFrame>().Where(f => !f.After))
                 {
                     frame.Maps.AddRange((writes.TryGetValue(frame.Callee.OriginalDefinition, out var w) ? w : new HashSet<string>())
                         .Where(_printer.OwnedMaps.Contains).OrderBy(x => x, StringComparer.Ordinal));
-                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$perm", Raw = "[Ref]bool" });
-                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$pinst", Raw = "[Inst]int" });
-                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$owner", Raw = "[Ref]Inst" });
-                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$psnap", Raw = "[Inst]int" });
-                    p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$Alloc", Raw = "[Ref]bool" });
-                    if (KernelTypes.Trees) p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$root", Raw = "[Ref]Ref" });
+                    p.Source.Locals.Add(new KLocal
+                    {
+                        Name = $"s{frame.Id}$perm",
+                        Raw = "[Ref]bool",
+                    });
+                    p.Source.Locals.Add(new KLocal
+                    {
+                        Name = $"s{frame.Id}$pinst",
+                        Raw = "[Inst]int",
+                    });
+                    p.Source.Locals.Add(new KLocal
+                    {
+                        Name = $"s{frame.Id}$owner",
+                        Raw = "[Ref]Inst",
+                    });
+                    p.Source.Locals.Add(new KLocal
+                    {
+                        Name = $"s{frame.Id}$psnap",
+                        Raw = "[Inst]int",
+                    });
+                    p.Source.Locals.Add(new KLocal
+                    {
+                        Name = $"s{frame.Id}$Alloc",
+                        Raw = "[Ref]bool",
+                    });
+                    if (KernelTypes.Trees)
+                    {
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s{frame.Id}$root",
+                            Raw = "[Ref]Ref",
+                        });
+                    }
                     foreach (var map in frame.Maps)
-                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}" });
-                    foreach (var map in frame.Maps) frame.FieldIds[map] = FieldId(fields.First(f => FieldMap(f) == map));
+                    {
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s{frame.Id}{map}",
+                            Raw = $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}",
+                        });
+                    }
+                    foreach (var map in frame.Maps)
+                    {
+                        frame.FieldIds[map] = FieldId(fields.First(f => FieldMap(f) == map));
+                    }
                     if (frame.Fields)
                     {
-                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$fperm", Raw = "[Ref][int]bool" });
-                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$fowner", Raw = "[Ref][int]Inst" });
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s{frame.Id}$fperm",
+                            Raw = "[Ref][int]bool",
+                        });
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s{frame.Id}$fowner",
+                            Raw = "[Ref][int]Inst",
+                        });
                     }
                     if (frame.Cells)
                     {
                         frame.ElementMaps.AddRange((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));
-                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$cells", Raw = "[Ref][int]real" });
-                        p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}$cowner", Raw = "[Ref][int]Inst" });
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s{frame.Id}$cells",
+                            Raw = "[Ref][int]real",
+                        });
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s{frame.Id}$cowner",
+                            Raw = "[Ref][int]Inst",
+                        });
                         foreach (var map in frame.ElementMaps)
-                            p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}{map}", Raw = "[Ref][int]" + ElementValue(map) });
+                        {
+                            p.Source.Locals.Add(new KLocal
+                            {
+                                Name = $"s{frame.Id}{map}",
+                                Raw = "[Ref][int]" + ElementValue(map),
+                            });
+                        }
                     }
                     // (and the globals its postconditions read as they were)
                     foreach (var g in frame.OldGlobals.Where(g => !p.Source.Locals.Any(l => l.Name == $"s{frame.Id}{g}")).ToList())
                     {
                         var raw = g.StartsWith("$E.") ? ("[Ref][int]" + ElementValue(g))
                                 : fields.FirstOrDefault(f => FieldMap(f) == g) is ISymbol fs ? $"[Ref]{TypeOf(FieldType(fs))}" : null;
-                        if (raw != null) p.Source.Locals.Add(new KLocal { Name = $"s{frame.Id}{g}", Raw = raw });
+                        if (raw != null)
+                        {
+                            p.Source.Locals.Add(new KLocal
+                            {
+                                Name = $"s{frame.Id}{g}",
+                                Raw = raw,
+                            });
+                        }
                     }
                 }
+            }
             // (a call, in array mode, that may write any array: reported only if it may)
             foreach (var a in _pending.SelectMany(p => p.Blocks).SelectMany(b => b.Stmts).OfType<MAssert>().Where(a => a.UnlessWritesArrays != null))
             {
@@ -428,40 +608,91 @@ namespace CsVerify.Verifier.Boogie
                 bool arrays = cw.Any(x => x.StartsWith("$E.")), writesFields = cw.Any(x => x.StartsWith("$F.") && !_printer.OwnedMaps.Contains(x));
                 // (a callee of the program's that writes only arrays it makes, as the Engine's MayWriteHeap infers it: none of ours)
                 var uw = a.UnlessWritesArrays;
-                if (arrays && uw.DeclaringSyntaxReferences.Length > 0 && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(uw)) arrays = false;
+                if (arrays && uw.DeclaringSyntaxReferences.Length > 0 && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(uw))
+                {
+                    arrays = false;
+                }
                 bool stands = a.UnlessKind switch { "fields" => writesFields && !arrays, "any" => writesFields || arrays, _ => arrays };
-                if (!stands) a.Cond = new MLit("true");
+                if (!stands)
+                {
+                    a.Cond = new MLit("true");
+                }
             }
             // (around a call of an async method: a copy of each map, for the confined objects it can't reach)
             foreach (var p in _pending)
+            {
                 foreach (var keep in p.Blocks.SelectMany(b => b.Stmts).OfType<MKeep>().Where(k => !k.After))
+                {
                     foreach (var (name, type) in _printer.StateMaps)
-                        p.Source.Locals.Add(new KLocal { Name = $"k${keep.Id}{name}", Raw = type });
+                    {
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"k${keep.Id}{name}",
+                            Raw = type,
+                        });
+                    }
+                }
+            }
             // (each confined frame's snapshot of every state map)
             foreach (var p in _pending)
+            {
                 foreach (var cf in p.Blocks.SelectMany(b => b.Stmts).OfType<HConfinedFrame>())
+                {
                     foreach (var (name, type) in _printer.StateMaps)
-                        p.Source.Locals.Add(new KLocal { Name = $"c${cf.Head}{name}", Raw = type });
+                    {
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"c${cf.Head}{name}",
+                            Raw = type,
+                        });
+                    }
+                }
+            }
             // each loop frame keeps the element maps, unless the loop calls what writes arrays
             foreach (var p in _pending)
+            {
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<HLoopFrame>())
                 {
-                    if (frame.Callees.Any(c => writes.TryGetValue(c, out var w) && w.Any(x => x.StartsWith("$E.")))) continue;
+                    if (frame.Callees.Any(c => writes.TryGetValue(c, out var w) && w.Any(x => x.StartsWith("$E."))))
+                    {
+                        continue;
+                    }
                     frame.Maps = writes[p.Source.Method].Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal).ToList();
-                    if (frame.Maps.Count == 0) continue;
-                    p.Source.Locals.Add(new KLocal { Name = $"s${frame.Head}$Alloc", Raw = "[Ref]bool" });
+                    if (frame.Maps.Count == 0)
+                    {
+                        continue;
+                    }
+                    p.Source.Locals.Add(new KLocal
+                    {
+                        Name = $"s${frame.Head}$Alloc",
+                        Raw = "[Ref]bool",
+                    });
                     foreach (var map in frame.Maps)
-                        p.Source.Locals.Add(new KLocal { Name = $"s${frame.Head}{map}", Raw = "[Ref][int]" + ElementValue(map) });
+                    {
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"s${frame.Head}{map}",
+                            Raw = "[Ref][int]" + ElementValue(map),
+                        });
+                    }
                 }
+            }
             // the exception types named, and how they derive
             var exceptions = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.Source.ExceptionTypes).Concat(_signatures.Values.SelectMany(s => s.ExceptionTypes)), SymbolEqualityComparer.Default);
             // (a throw and a way out by one are Checks' to make into these: an exception assigned, a fork)
             bool throws = _pending.Any(p => p.Blocks.SelectMany(b => b.Stmts).Any(s => s is MFork || s is MNewExc));
             var classes = new HashSet<ITypeSymbol>(_pending.SelectMany(p => p.Source.ClassTypes).Concat(_signatures.Values.SelectMany(s => s.ClassTypes)), SymbolEqualityComparer.Default);
             foreach (var p in _pending.Where(p => IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && p.Source.Method.IsOverride && IsModeledClass(p.Source.Method.ContainingType)))
-                if (p.Source.Method.OverriddenMethod is IMethodSymbol ob && IsFunction(ob.OriginalDefinition)) classes.Add(p.Source.Method.ContainingType.OriginalDefinition);
+            {
+                if (p.Source.Method.OverriddenMethod is IMethodSymbol ob && IsFunction(ob.OriginalDefinition))
+                {
+                    classes.Add(p.Source.Method.ContainingType.OriginalDefinition);
+                }
+            }
             if (_compilationException != null && (exceptions.Count > 0 || throws) || classes.Count > 0)
+            {
                 _printer.ExceptionTypes(exceptions, _compilationException != null && (exceptions.Count > 0 || throws) ? _compilationException : null, classes);
+            }
             foreach (var p in _pending)
             {
                 // (the function's value is its body's: not where an override may answer the call)
@@ -480,7 +711,10 @@ namespace CsVerify.Verifier.Boogie
             foreach (var callee in _printer.Started.ToList())
             {
                 var p = _pending.FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.Source.Method, callee.OriginalDefinition));
-                if (p == null) continue;
+                if (p == null)
+                {
+                    continue;
+                }
                 var twin = p.Clone();
                 twin.Source.Name = p.Source.Name + "$started";
                 twin.Source.Abstract = true;
@@ -491,7 +725,9 @@ namespace CsVerify.Verifier.Boogie
             _printer.Tuples();
             _printer.StaticReadonlyFacts();
             foreach (var p in _pending.Where(p => p.Source.Result != null && p.Source.Warnings.Count > 0))
+            {
                 (_warnings.TryGetValue(p.Source.Result, out var w) ? w : _warnings[p.Source.Result] = new List<VerificationDiagnostic>()).AddRange(p.Source.Warnings);
+            }
             _pending.Clear();
         }
 
@@ -501,23 +737,39 @@ namespace CsVerify.Verifier.Boogie
             var defs = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Source.DataTypes).Concat(_signatures.Values.SelectMany(s => s.DataTypes)), SymbolEqualityComparer.Default);
             // (the types of the procedures' parameters and results: their facts name them, a body or none)
             foreach (var t in _pending.Select(p => p.Source).Concat(_signatures.Values).SelectMany(p => p.Method.Parameters.Select(x => x.Type).Append(Returns(p.Method))).Where(t => t != null && IsData(t)))
+            {
                 defs.Add(Verifier.DataTypes.Def(t));
-            if (defs.Count == 0) return;
+            }
+            if (defs.Count == 0)
+            {
+                return;
+            }
             var cases = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
             for (var work = new Stack<INamedTypeSymbol>(defs); work.Count > 0;)
             {
                 var d = work.Pop();
                 foreach (var c in Data.KnownCases(Verifier.DataTypes.Def(d)) ?? new INamedTypeSymbol[0])
+                {
                     if (cases.Add(c))
+                    {
                         foreach (var f in Data.Fields(c).Where(f => IsData(f.Type)))
+                        {
                             work.Push(Verifier.DataTypes.Def(f.Type));
+                        }
+                    }
+                }
             }
             var list = new List<BoogiePrinter.DataCase>();
             var fields = new Dictionary<string, (string type, MExpr fact)>();
             foreach (var c in cases.OrderBy(x => Data.TagOf(x)))
             {
                 var ctor = Verifier.DataTypes.PrimaryConstructor(c) ?? throw new NotTranslated("a data case without its primary constructor: " + c.Name);
-                var dc = new BoogiePrinter.DataCase { Type = c, Name = CaseName(c), Tag = Data.TagOf(c) };
+                var dc = new BoogiePrinter.DataCase
+                {
+                    Type = c,
+                    Name = CaseName(c),
+                    Tag = Data.TagOf(c),
+                };
                 foreach (var p in ctor.Parameters)
                 {
                     var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
@@ -533,10 +785,12 @@ namespace CsVerify.Verifier.Boogie
                     // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
                     // an integer one in its type's range)
                     if (!fields.ContainsKey(fn))
+                    {
                         fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
                             ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
                               : new MOp("||", new MOp("==", new MOp(fn, new MVar("d")), new MLit("null")), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
                             : IsIntegral(prop.OriginalDefinition.Type) ? MathTypes.InRange(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type) : null);
+                    }
                 }
                 list.Add(dc);
             }
@@ -544,13 +798,23 @@ namespace CsVerify.Verifier.Boogie
             // (valid values: their invariants hold, and their parts with invariants are valid, case by case)
             var valid = new HashSet<INamedTypeSymbol>(_pending.SelectMany(p => p.Source.Valid).Concat(_signatures.Values.SelectMany(s => s.Valid)), SymbolEqualityComparer.Default);
             for (var work = new Stack<INamedTypeSymbol>(valid); work.Count > 0;)
+            {
                 foreach (var c in Data.KnownCases(work.Pop()) ?? new INamedTypeSymbol[0])
                 {
                     // (a base's value is valid as the case it is)
-                    if (HasInvariants(c) && valid.Add(c)) work.Push(c);
+                    if (HasInvariants(c) && valid.Add(c))
+                    {
+                        work.Push(c);
+                    }
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
-                        if (valid.Add(Verifier.DataTypes.Def(f.Type))) work.Push(Verifier.DataTypes.Def(f.Type));
+                    {
+                        if (valid.Add(Verifier.DataTypes.Def(f.Type)))
+                        {
+                            work.Push(Verifier.DataTypes.Def(f.Type));
+                        }
+                    }
                 }
+            }
             var dv = new MVar("d");
             var validity = new List<(string name, MExpr invariant, List<(string isCase, MExpr part)> parts)>();
             foreach (var t in valid.OrderBy(x => x.ToDisplayString(), StringComparer.Ordinal))
@@ -558,10 +822,16 @@ namespace CsVerify.Verifier.Boogie
                 var invs = Verifier.DataTypes.Invariants(t).Select(inv => Checks.Rename(Checks.MathOf(Lowering.InvariantBody(inv.OriginalDefinition, IsFunction, Literal, ContractOf), this, inv.OriginalDefinition), "this", dv)).ToList();
                 var parts = new List<(string, MExpr)>();
                 foreach (var c in Data.KnownCases(t).Where(c => !SymbolEqualityComparer.Default.Equals(c, t) && HasInvariants(c)))
+                {
                     parts.Add(("$is." + CaseName(c).Substring(3), new MOp(ValidName(c), dv)));
+                }
                 foreach (var c in Data.KnownCases(t))
+                {
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
+                    {
                         parts.Add(("$is." + CaseName(c).Substring(3), new MOp("||", new MOp("==", new MOp(FieldFunction(f), dv), new MLit("null")), new MOp(ValidName(f.Type), new MOp(FieldFunction(f), dv)))));
+                    }
+                }
                 validity.Add((ValidName(t), invs.Count == 0 ? new MLit("true") : invs.Aggregate((a, b) => new MOp("&&", a, b)), parts));
             }
             _printer.Valid(validity);
@@ -623,34 +893,68 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending.Where(p => p.Source.Method.IsVirtual || p.Source.Method.IsAbstract || p.Source.Method.IsOverride))
             {
                 // (a [Pure] member whose every override is [Pure] too: no call of it writes anything, whichever runs)
-                if (IsFunction(p.Source.Method) && OverridesOf(p.Source.Method).All(o => ContractOf(o.OriginalDefinition) is Contract oc && oc.IsPure)) continue;
+                if (IsFunction(p.Source.Method) && OverridesOf(p.Source.Method).All(o => ContractOf(o.OriginalDefinition) is Contract oc && oc.IsPure))
+                {
+                    continue;
+                }
                 foreach (var o in OverridesOf(p.Source.Method).Select(o => o.OriginalDefinition))
-                    if (sets.ContainsKey(o)) edges[p.Source.Method].Add(o);
-                    else sets[p.Source.Method].UnionWith(_allMaps);
+                {
+                    if (sets.ContainsKey(o))
+                    {
+                        edges[p.Source.Method].Add(o);
+                    }
+                    else
+                    {
+                        sets[p.Source.Method].UnionWith(_allMaps);
+                    }
+                }
                 // (a call that may run an override changes what the member's Spec.Modifies
                 // allows, and without one, anything)
                 // (a library member's stub: what it says, unless it may run the program's code)
                 bool library = p.Source.Method.DeclaringSyntaxReferences.Length == 0 && ContractOf(p.Source.Method) is Contract pc && pc.IsStub;
-                if (Engine.IsOverridable(p.Source.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Source.Method))) sets[p.Source.Method].UnionWith(_allMaps);
+                if (Engine.IsOverridable(p.Source.Method) && p.Frame == null && !(library && KernelTypes.RunsUserCode != null && !KernelTypes.RunsUserCode(p.Source.Method)))
+                {
+                    sets[p.Source.Method].UnionWith(_allMaps);
+                }
             }
             // (a body not translated: what CsVerify's effects analysis says it writes, which is anything but the fields it doesn't)
             foreach (var p in _pending.Where(p => p.Source.Opaque))
             {
                 var (written, all) = KernelTypes.FieldEffectsOf?.Invoke(p.Source.Method) ?? (null, true);
                 var kept = all ? new HashSet<string>() : new HashSet<string>(_allMaps.Where(x => x.StartsWith("$F.")));
-                if (!all) foreach (var f in written) kept.Remove(FieldMap(f));
+                if (!all)
+                {
+                    foreach (var f in written)
+                    {
+                        kept.Remove(FieldMap(f));
+                    }
+                }
                 sets[p.Source.Method].UnionWith(_allMaps.Where(x => !kept.Contains(x)));
             }
             // (a delegate's call runs whichever body it was made of: anything)
-            foreach (var p in _pending.Where(p => p.Source.Method.MethodKind == MethodKind.DelegateInvoke)) sets[p.Source.Method].UnionWith(_allMaps);
+            foreach (var p in _pending.Where(p => p.Source.Method.MethodKind == MethodKind.DelegateInvoke))
+            {
+                sets[p.Source.Method].UnionWith(_allMaps);
+            }
             for (bool grew = true; grew;)
             {
                 grew = false;
                 foreach (var p in _pending)
+                {
                     foreach (var c in edges[p.Source.Method])
+                    {
                         if (sets.TryGetValue(c, out var w))
+                        {
                             foreach (var g in w.ToList())
-                                if (sets[p.Source.Method].Add(g)) grew = true;
+                            {
+                                if (sets[p.Source.Method].Add(g))
+                                {
+                                    grew = true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             return sets;
         }

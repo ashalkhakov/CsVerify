@@ -40,30 +40,81 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The tracker's maps, models of the program (Lowering.Ef's EfNotYet calls this first).</summary>
         private void TrackerModels()
         {
-            _p.Models[StateMap] = new ModelMap { Name = StateMap, Type = "[Ref][Ref]int" };
-            _p.Models[UnsavedMap] = new ModelMap { Name = UnsavedMap, Type = "[Ref]bool" };
-            _p.Models[InTxMap] = new ModelMap { Name = InTxMap, Type = "[Ref]bool" };
+            _p.Models[StateMap] = new ModelMap
+            {
+                Name = StateMap,
+                Type = "[Ref][Ref]int",
+            };
+            _p.Models[UnsavedMap] = new ModelMap
+            {
+                Name = UnsavedMap,
+                Type = "[Ref]bool",
+            };
+            _p.Models[InTxMap] = new ModelMap
+            {
+                Name = InTxMap,
+                Type = "[Ref]bool",
+            };
             _failed = "ef$failed"; _savedAlone = "ef$savedAlone"; _stale = "ef$stale"; _read = "ef$read";
-            _p.Locals.Add(new KLocal { Name = _failed, Raw = "[Ref]bool" });
-            _p.Locals.Add(new KLocal { Name = _savedAlone, Raw = "[Ref]bool" });
-            _p.Locals.Add(new KLocal { Name = _stale, Raw = "[Ref][Ref]bool" });
-            _p.Locals.Add(new KLocal { Name = _read, Raw = "[Ref][Ref]bool" });
+            _p.Locals.Add(new KLocal
+            {
+                Name = _failed,
+                Raw = "[Ref]bool",
+            });
+            _p.Locals.Add(new KLocal
+            {
+                Name = _savedAlone,
+                Raw = "[Ref]bool",
+            });
+            _p.Locals.Add(new KLocal
+            {
+                Name = _stale,
+                Raw = "[Ref][Ref]bool",
+            });
+            _p.Locals.Add(new KLocal
+            {
+                Name = _read,
+                Raw = "[Ref][Ref]bool",
+            });
         }
 
         /// <summary>At entry: nothing of the method's own record (each, for every context, false).</summary>
         private void TrackerEntry()
         {
-            if (_failed == null) return;
-            foreach (var x in new[] { _failed, _savedAlone }) Emit(new KAssign { Var = x, Value = new KOp("lambda", new KLit("c$: Ref"), new KLit("false")) });
+            if (_failed == null)
+            {
+                return;
+            }
+            foreach (var x in new[] { _failed, _savedAlone })
+            {
+                Emit(new KAssign
+                {
+                    Var = x,
+                    Value = new KOp("lambda", new KLit("c$: Ref"), new KLit("false")),
+                });
+            }
             foreach (var x in new[] { _stale, _read })
-                Emit(new KAssign { Var = x, Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("lambda", new KLit("o$: Ref"), new KLit("false"))) });
+            {
+                Emit(new KAssign
+                {
+                    Var = x,
+                    Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("lambda", new KLit("o$: Ref"), new KLit("false"))),
+                });
+            }
         }
 
         private string TokenRead(EfModel.Entity e, int j)
         {
-            if (_tokenRead.TryGetValue((e, j), out var name)) return name;
+            if (_tokenRead.TryGetValue((e, j), out var name))
+            {
+                return name;
+            }
             name = "ef$token" + _tokenRead.Count;
-            _p.Locals.Add(new KLocal { Name = name, Raw = "[Ref][Ref]" + TypeOf(e.Tokens[j].Type) });
+            _p.Locals.Add(new KLocal
+            {
+                Name = name,
+                Raw = "[Ref][Ref]" + TypeOf(e.Tokens[j].Type),
+            });
             _tokenRead[(e, j)] = name;
             return name;
         }
@@ -72,15 +123,38 @@ namespace CsVerify.Verifier.Boogie
 
         private static KExpr States(KExpr c) => new KOp("sel", new KVar(StateMap), c);
         private static KExpr State(KExpr c, KExpr o) => new KOp("sel", new KVar(StateMap), c, o);
-        private void SetStates(KExpr c, KExpr row) => Emit(new KRow { Map = StateMap, Ref = c, Value = row });
+        private void SetStates(KExpr c, KExpr row) => Emit(new KRow
+        {
+            Map = StateMap,
+            Ref = c,
+            Value = row,
+        });
         private static KExpr Unsaved(KExpr c) => new KOp("sel", new KVar(UnsavedMap), c);
-        private void SetUnsaved(KExpr c, KExpr v) => Emit(new KRow { Map = UnsavedMap, Ref = c, Value = v });
+        private void SetUnsaved(KExpr c, KExpr v) => Emit(new KRow
+        {
+            Map = UnsavedMap,
+            Ref = c,
+            Value = v,
+        });
         private static KExpr InTx(KExpr c) => new KOp("sel", new KVar(InTxMap), c);
-        private void SetInTx(KExpr c, KExpr v) => Emit(new KRow { Map = InTxMap, Ref = c, Value = v });
+        private void SetInTx(KExpr c, KExpr v) => Emit(new KRow
+        {
+            Map = InTxMap,
+            Ref = c,
+            Value = v,
+        });
         private KExpr Failed(KExpr c) => new KOp("sel", new KVar(_failed), c);
-        private void SetLocal(string map, KExpr c, KExpr v) => Emit(new KAssign { Var = map, Value = new KOp("store", new KVar(map), c, v) });
+        private void SetLocal(string map, KExpr c, KExpr v) => Emit(new KAssign
+        {
+            Var = map,
+            Value = new KOp("store", new KVar(map), c, v),
+        });
         private void SetLocal(string map, KExpr c, KExpr o, KExpr v) =>
-            Emit(new KAssign { Var = map, Value = new KOp("store", new KVar(map), c, new KOp("store", new KOp("sel", new KVar(map), c), o, v)) });
+            Emit(new KAssign
+            {
+                Var = map,
+                Value = new KOp("store", new KVar(map), c, new KOp("store", new KOp("sel", new KVar(map), c), o, v)),
+            });
 
         /// <summary>An object of the entity's type (or one derived from it).</summary>
         private static KExpr Isa(KExpr o, EfModel.Entity e) => new KOp(IsaFunction(e.Type), o);
@@ -91,7 +165,10 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr KeyColumnsEqual(EfModel.Entity e, KExpr a, KExpr b)
         {
-            foreach (var p in e.Key) _p.Fields.Add(p.OriginalDefinition);
+            foreach (var p in e.Key)
+            {
+                _p.Fields.Add(p.OriginalDefinition);
+            }
             return And(e.Key.Select(p => IsString(p.Type) ? new KOp("streq", Column(p, a), Column(p, b)) : (KExpr)new KOp("==", Column(p, a), Column(p, b))));
         }
 
@@ -102,11 +179,23 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>No other instance of the type with o's key is tracked by the context.</summary>
         private KExpr NoOtherWithKey(KExpr c, KExpr o, EfModel.Entity e)
         {
-            if (e.Key.Count == 0) return new KLit("true");
-            if (!e.Key.All(IsField)) return new KLit("false");
+            if (e.Key.Count == 0)
+            {
+                return new KLit("true");
+            }
+            if (!e.Key.All(IsField))
+            {
+                return new KLit("false");
+            }
             var y = new KVar("y$");
             var clash = And(new KExpr[] { new KOp("!=", State(c, y), I(EfDetached)), new KOp("!=", y, o), Isa(y, e), KeyColumnsEqual(e, y, o) });
-            return new KQuant { Forall = true, Var = "y$", Type = "Ref", Body = new KOp("!", clash) };
+            return new KQuant
+            {
+                Forall = true,
+                Var = "y$",
+                Type = "Ref",
+                Body = new KOp("!", clash),
+            };
         }
 
         /// <summary>What o's navigations hold: nothing (each reference null, each collection null or empty)?</summary>
@@ -115,27 +204,45 @@ namespace CsVerify.Verifier.Boogie
             var parts = new List<KExpr>();
             foreach (var p in e.References)
             {
-                if (!IsField(p)) return new KLit("false");
+                if (!IsField(p))
+                {
+                    return new KLit("false");
+                }
                 _p.Fields.Add(p.OriginalDefinition);
                 parts.Add(new KOp("==", Column(p, o), Null));
             }
             foreach (var p in e.Collections)
             {
-                if (!IsField(p)) return new KLit("false");
+                if (!IsField(p))
+                {
+                    return new KLit("false");
+                }
                 _p.Fields.Add(p.OriginalDefinition);
                 var l = Column(p, o);
                 if (IsList(p.Type))
                 {
-                    foreach (var m in ModelsOf((INamedTypeSymbol)p.Type)) _p.Models[m.Name] = m;
+                    foreach (var m in ModelsOf((INamedTypeSymbol)p.Type))
+                    {
+                        _p.Models[m.Name] = m;
+                    }
                     parts.Add(new KOp("||", new KOp("==", l, Null), new KOp("==", new KOp("sel", new KVar(SizeMap), l), new KLit("0"))));
                 }
-                else parts.Add(new KOp("==", l, Null));
+                else
+                {
+                    parts.Add(new KOp("==", l, Null));
+                }
             }
             return And(parts);
         }
 
         private void TrackerCheck(KExpr cond, string id, SyntaxNode at, string message) =>
-            Emit(new KCheck { Cond = cond, Id = id, At = at, Message = message });
+            Emit(new KCheck
+            {
+                Cond = cond,
+                Id = id,
+                At = at,
+                Message = message,
+            });
 
         /// <summary>A context SaveChanges failed on, or whose transaction rolled back, is done with (CSV1033).</summary>
         private void UsableContext(KExpr c, SyntaxNode at) =>
@@ -148,7 +255,12 @@ namespace CsVerify.Verifier.Boogie
             if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
             {
                 thrown?.Invoke();
-                Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
+                Emit(new KFork
+                {
+                    Overflow = new KLit("false"),
+                    Target = target,
+                    Exception = null,
+                });
             }
             notThrown?.Invoke();
         }
@@ -156,9 +268,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A context just made (new, or from an IDbContextFactory): it tracks nothing, and has nothing open.</summary>
         private void NewContext(KExpr c)
         {
-            if (_failed == null) return;
+            if (_failed == null)
+            {
+                return;
+            }
             SetStates(c, new KOp("lambda", new KLit("o$: Ref"), I(EfDetached)));
-            Emit(new KAssign { Var = _stale, Value = new KOp("store", new KVar(_stale), c, new KOp("lambda", new KLit("o$: Ref"), new KLit("false"))) });
+            Emit(new KAssign
+            {
+                Var = _stale,
+                Value = new KOp("store", new KVar(_stale), c, new KOp("lambda", new KLit("o$: Ref"), new KLit("false"))),
+            });
             SetUnsaved(c, new KLit("false"));
             SetInTx(c, new KLit("false"));
             SetLocal(_failed, c, new KLit("false"));
@@ -170,20 +289,36 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Once(IOperation op, ITypeSymbol type = null)
         {
             var v = Expr(op);
-            if (v is KVar || v is KLit) return v;
+            if (v is KVar || v is KLit)
+            {
+                return v;
+            }
             var t = Declare("t$" + _temps++, type ?? op.Type);
-            Emit(new KAssign { Var = t, Value = v });
+            Emit(new KAssign
+            {
+                Var = t,
+                Value = v,
+            });
             return new KVar(t);
         }
 
         private void NotNullHere(KExpr v, IOperation op, SyntaxNode at) =>
-            Emit(new KCheck { Cond = new KOp("!=", v, Null), Id = "CSV1013", At = op.Syntax, Message = $"'{op.Syntax}' might be null in '{at}'" });
+            Emit(new KCheck
+            {
+                Cond = new KOp("!=", v, Null),
+                Id = "CSV1013",
+                At = op.Syntax,
+                Message = $"'{op.Syntax}' might be null in '{at}'",
+            });
 
         /// <summary>The context a receiver stands for (a context, or a DbSet of one), with the DbSet's entity.</summary>
         private KExpr ContextOf(IOperation receiver, out EfModel.Entity setEntity)
         {
             setEntity = null;
-            if (receiver == null) return null;
+            if (receiver == null)
+            {
+                return null;
+            }
             receiver = Unconverted(receiver);
             if (KernelTypes.Ef.IsContextType(receiver.Type))
             {
@@ -209,16 +344,26 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private (bool handled, KExpr value) TrackerCall(IInvocationOperation inv, bool awaited = false)
         {
-            if (_failed == null || KernelTypes.Ef == null) return (false, null);
+            if (_failed == null || KernelTypes.Ef == null)
+            {
+                return (false, null);
+            }
             var m = inv.TargetMethod;
             // (an ...Async one not awaited where it's called: what it does, and its task; CSV1036
             // is its static check's)
             if (m.Name.EndsWith("Async") && !awaited)
             {
                 var (h, _) = TrackerCall(inv, awaited: true);
-                if (!h) return (false, null);
+                if (!h)
+                {
+                    return (false, null);
+                }
                 var task = "t$" + _temps++;
-                _p.Locals.Add(new KLocal { Name = task, Raw = "Ref" });
+                _p.Locals.Add(new KLocal
+                {
+                    Name = task,
+                    Raw = "Ref",
+                });
                 Emit(new KHavoc { Var = task });
                 Emit(new KAssume { Cond = new KOp("!=", new KVar(task), Null) });
                 return (true, new KVar(task));
@@ -226,7 +371,10 @@ namespace CsVerify.Verifier.Boogie
             var name = Plain(m);
             var at = inv.Syntax;
             var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
-            if (name is "ExecuteUpdate" or "ExecuteDelete" && IsEfMethod(m)) return (true, BulkUpdate(inv, args));
+            if (name is "ExecuteUpdate" or "ExecuteDelete" && IsEfMethod(m))
+            {
+                return (true, BulkUpdate(inv, args));
+            }
             var receiver = TrackerReceiverOf(inv.Instance);
             // (a context disposed, by using or await using: nothing the kernel keeps of it changes)
             if (name == "Dispose" && args.Count == 0 && receiver != null && KernelTypes.Ef.IsContextType(receiver.Type))
@@ -243,7 +391,14 @@ namespace CsVerify.Verifier.Boogie
                     _p.Fields.Add(p.OriginalDefinition);
                     var v = Declare("t$" + _temps++, p.Type);
                     Emit(new KHavoc { Var = v });
-                    Emit(new KFieldStore { Field = p.OriginalDefinition, Instance = eo, Value = new KVar(v), At = at, InstanceAt = at });
+                    Emit(new KFieldStore
+                    {
+                        Field = p.OriginalDefinition,
+                        Instance = eo,
+                        Value = new KVar(v),
+                        At = at,
+                        InstanceAt = at,
+                    });
                 }
                 SetLocal(_stale, ec, eo, new KLit("false"));
                 SetStates(ec, new KOp("store", States(ec), eo, I(Unchanged)));
@@ -267,7 +422,11 @@ namespace CsVerify.Verifier.Boogie
                 if (facade.Property.Name == "ChangeTracker" && name == "Clear" && args.Count == 0)
                 {
                     SetStates(c, new KOp("lambda", new KLit("o$: Ref"), I(EfDetached)));
-                    Emit(new KAssign { Var = _stale, Value = new KOp("store", new KVar(_stale), c, new KOp("lambda", new KLit("o$: Ref"), new KLit("false"))) });
+                    Emit(new KAssign
+                    {
+                        Var = _stale,
+                        Value = new KOp("store", new KVar(_stale), c, new KOp("lambda", new KLit("o$: Ref"), new KLit("false"))),
+                    });
                     SetUnsaved(c, new KLit("false"));
                     return (true, null);
                 }
@@ -298,9 +457,21 @@ namespace CsVerify.Verifier.Boogie
                     {
                         TrackerCheck(new KOp("!", Unsaved(c)), "CSV1035", at, $"'{at}' commits with changes the context hasn't saved: they aren't in the transaction. SaveChanges first");
                         var was = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-                        Emit(new KAssign { Var = was, Value = Failed(c) });
-                        MayThrow(() => { SetLocal(_failed, c, new KLit("true")); SetInTx(c, new KLit("false")); },
-                                 () => { SetLocal(_failed, c, new KVar(was)); SetInTx(c, new KLit("false")); });
+                        Emit(new KAssign
+                        {
+                            Var = was,
+                            Value = Failed(c),
+                        });
+                        MayThrow(() =>
+                        {
+                            SetLocal(_failed, c, new KLit("true"));
+                            SetInTx(c, new KLit("false"));
+                        },
+                                 () =>
+                                 {
+                                     SetLocal(_failed, c, new KVar(was));
+                                     SetInTx(c, new KLit("false"));
+                                 });
                         return (true, null);
                     }
                     case "Rollback" when args.Count == 0:
@@ -313,21 +484,30 @@ namespace CsVerify.Verifier.Boogie
                 return (false, null);
             }
             var ctx = ContextOf(receiver, out var setEntity);
-            if (ctx == null) return (false, null);
+            if (ctx == null)
+            {
+                return (false, null);
+            }
             switch (name)
             {
                 case "Add" or "Attach" or "Update" or "Remove" when args.Count == 1:
                 {
                     var arg = args[0].Value;
                     var e = KernelTypes.Ef.EntityOf(arg.Type is ITypeParameterSymbol ? m.TypeArguments.FirstOrDefault() ?? arg.Type : Unconverted(arg).Type) ?? setEntity;
-                    if (e == null) throw new NotTranslated("EF's " + m.Name + " of what isn't an entity");
+                    if (e == null)
+                    {
+                        throw new NotTranslated("EF's " + m.Name + " of what isn't an entity");
+                    }
                     var o = Once(Unconverted(arg));
                     NotNullHere(o, arg, at);
                     Track(name, ctx, o, e, at);
                     return (true, null);
                 }
                 case "SaveChanges" when args.Count == 0 || args.Count == 1 && args[0].Parameter.Type.SpecialType == SpecialType.System_Boolean:
-                    foreach (var a in args) Expr(a.Value);
+                    foreach (var a in args)
+                    {
+                        Expr(a.Value);
+                    }
                     return (true, SaveChanges(ctx, at));
                 case "Find" when setEntity != null:
                     return (true, Find(inv, args, ctx, setEntity));
@@ -338,9 +518,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A receiver, through what the control flow graph captured (a using's resource: its local).</summary>
         private IOperation TrackerReceiverOf(IOperation receiver)
         {
-            if (receiver == null) return null;
+            if (receiver == null)
+            {
+                return null;
+            }
             receiver = Unconverted(receiver);
-            while (receiver is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v)) receiver = Unconverted(v);
+            while (receiver is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v))
+            {
+                receiver = Unconverted(v);
+            }
             return receiver;
         }
 
@@ -358,10 +544,16 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Entry(o) on a context: the context, the entity, its type (null where it isn't one).</summary>
         private (KExpr c, KExpr o, EfModel.Entity e)? EntryOf(IInvocationOperation entry)
         {
-            if (entry.Instance == null || !KernelTypes.Ef.IsContextType(entry.Instance.Type) || entry.Arguments.Length != 1) return null;
+            if (entry.Instance == null || !KernelTypes.Ef.IsContextType(entry.Instance.Type) || entry.Arguments.Length != 1)
+            {
+                return null;
+            }
             var arg = Unconverted(entry.Arguments[0].Value);
             var e = KernelTypes.Ef.EntityOf(arg.Type);
-            if (e == null) return null;
+            if (e == null)
+            {
+                return null;
+            }
             var c = Once(entry.Instance);
             NotNullHere(c, entry.Instance, entry.Syntax);
             var o = Once(arg);
@@ -384,7 +576,10 @@ namespace CsVerify.Verifier.Boogie
                 switch (v)
                 {
                     case IAwaitOperation aw: Value(aw.Operation); return;
-                    case IConditionalOperation cond: Value(cond.WhenTrue); if (cond.WhenFalse != null) Value(cond.WhenFalse); return;
+                    case IConditionalOperation cond: Value(cond.WhenTrue); if (cond.WhenFalse != null)
+                    {
+                        Value(cond.WhenFalse);
+                    } return;
                     case ILiteralOperation { ConstantValue: { HasValue: true, Value: null } }: return;
                     case IDefaultValueOperation: return;
                     case IInvocationOperation { TargetMethod.Name: "BeginTransaction" or "BeginTransactionAsync", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } }:
@@ -398,19 +593,35 @@ namespace CsVerify.Verifier.Boogie
             {
                 db = Unconverted(db);
                 var s = db is IParameterReferenceOperation p ? (ISymbol)p.Parameter : db is ILocalReferenceOperation l ? l.Local : null;
-                if (s == null || of != null && !SymbolEqualityComparer.Default.Equals(of, s)) { ok = false; return; }
+                if (s == null || of != null && !SymbolEqualityComparer.Default.Equals(of, s))
+                {
+                    ok = false;
+                    return;
+                }
                 of = s; context = db;
             }
             var root = _model.GetOperation(_decl);
             foreach (var op in root.DescendantsAndSelf())
             {
-                if (op is IVariableDeclaratorOperation d && SymbolEqualityComparer.Default.Equals(d.Symbol, tx) && d.Initializer != null) Value(d.Initializer.Value);
-                if (op is ISimpleAssignmentOperation a && a.Target is ILocalReferenceOperation tl && SymbolEqualityComparer.Default.Equals(tl.Local, tx)) Value(a.Value);
+                if (op is IVariableDeclaratorOperation d && SymbolEqualityComparer.Default.Equals(d.Symbol, tx) && d.Initializer != null)
+                {
+                    Value(d.Initializer.Value);
+                }
+                if (op is ISimpleAssignmentOperation a && a.Target is ILocalReferenceOperation tl && SymbolEqualityComparer.Default.Equals(tl.Local, tx))
+                {
+                    Value(a.Value);
+                }
             }
             // (the context, not assigned again)
             if (of != null && root.DescendantsAndSelf().OfType<IAssignmentOperation>().Any(a => a.Target is ILocalReferenceOperation al && SymbolEqualityComparer.Default.Equals(al.Local, of) &&
-                !(a.Parent is IVariableInitializerOperation)) ) ok = false;
-            if (of is IParameterSymbol ps && root.DescendantsAndSelf().OfType<IAssignmentOperation>().Any(a => a.Target is IParameterReferenceOperation pr && SymbolEqualityComparer.Default.Equals(pr.Parameter, ps))) ok = false;
+                !(a.Parent is IVariableInitializerOperation)) )
+            {
+                ok = false;
+            }
+            if (of is IParameterSymbol ps && root.DescendantsAndSelf().OfType<IAssignmentOperation>().Any(a => a.Target is IParameterReferenceOperation pr && SymbolEqualityComparer.Default.Equals(pr.Parameter, ps)))
+            {
+                ok = false;
+            }
             return ok ? context : null;
         }
 
@@ -423,14 +634,21 @@ namespace CsVerify.Verifier.Boogie
             var unset = KeyUnset(e, o);
             // another instance of the same row already tracked: EF throws
             if (how != "Add" || e.Key.Count > 0)
+            {
                 TrackerCheck(new KOp("||", new KOp("||", new KOp("!=", state, I(EfDetached)), unset), NoOtherWithKey(c, o, e)), "CSV1033", at,
                     $"'{at}' may meet another {e.Type.Name} with the same key that the context already tracks, and EF throws: use the tracked one, or a context that tracks none");
+            }
             // Update and Attach take the whole graph: what o's navigations hold is tracked too (and Update marks it modified)
             if (how == "Update")
+            {
                 TrackerCheck(NavigationsEmpty(o, e), "CSV1033", at,
                     $"'{at}' also marks what the {e.Type.Name}'s navigations hold as modified, and SaveChanges then writes every column of each: " +
                     "update only this entity (Entry(e).State = EntityState.Modified), or load the graph tracked and change what changes");
-            if (how is "Update" or "Attach") TokensAsRead(c, o, e, at, "Attach first, then change it");
+            }
+            if (how is "Update" or "Attach")
+            {
+                TokensAsRead(c, o, e, at, "Attach first, then change it");
+            }
             KExpr next = how switch
             {
                 "Add" => I(Added),
@@ -440,9 +658,17 @@ namespace CsVerify.Verifier.Boogie
                 _ => state,
             };
             var empty = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign { Var = empty, Value = NavigationsEmpty(o, e) });
+            Emit(new KAssign
+            {
+                Var = empty,
+                Value = NavigationsEmpty(o, e),
+            });
             var unsetNow = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign { Var = unsetNow, Value = unset });
+            Emit(new KAssign
+            {
+                Var = unsetNow,
+                Value = unset,
+            });
             // what o's navigations lead to may be tracked now too (unless they hold nothing)
             var others = new KVar(LinqMap("[Ref]int"));
             SetStates(c, new KOp("store", new KOp("ite", new KVar(empty), States(c), others), o, next));
@@ -456,7 +682,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 var token = e.Tokens[j];
                 // (a token of a type the kernel doesn't have, a DateTime: not translated, CSV1902)
-                if (!IsField(token)) throw new NotTranslated($"{e.Type.Name}'s concurrency token {token.Name}, of {token.Type}");
+                if (!IsField(token))
+                {
+                    throw new NotTranslated($"{e.Type.Name}'s concurrency token {token.Name}, of {token.Type}");
+                }
                 _p.Fields.Add(token.OriginalDefinition);
                 var read = new KOp("sel", new KVar(_read), c, o);
                 TrackerCheck(new KOp("==>", read, new KOp("==", Column(token, o), new KOp("sel", new KVar(TokenRead(e, j)), c, o))), "CSV1034", at,
@@ -469,14 +698,24 @@ namespace CsVerify.Verifier.Boogie
             UsableContext(c, at);
             var y = new KVar("y$");
             // nothing ExecuteUpdate changed behind the tracker is written back
-            TrackerCheck(new KQuant { Forall = true, Var = "y$", Type = "Ref", Body = new KOp("==>", new KOp("==", State(c, y), I(Modified)), new KOp("!", new KOp("sel", new KVar(_stale), c, y))) },
+            TrackerCheck(new KQuant
+            {
+                Forall = true,
+                Var = "y$",
+                Type = "Ref",
+                Body = new KOp("==>", new KOp("==", State(c, y), I(Modified)), new KOp("!", new KOp("sel", new KVar(_stale), c, y))),
+            },
                 "CSV1033", at, $"'{at}' writes an entity that ExecuteUpdate or ExecuteDelete may have changed since it was read, overwriting what they wrote: reload it (Entry(e).Reload()) first");
             // two saves: one transaction around both, or the first stays if the second fails
             TrackerCheck(new KOp("||", InTx(c), new KOp("!", new KOp("sel", new KVar(_savedAlone), c))), "CSV1035", at,
                 $"'{at}' saves a second time on this context outside a transaction: if it fails, what the first saved stays. Begin a transaction before the first (Database.BeginTransaction), and commit after the last");
             // it may fail: then the context is done with
             var was = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(new KAssign { Var = was, Value = Failed(c) });
+            Emit(new KAssign
+            {
+                Var = was,
+                Value = Failed(c),
+            });
             MayThrow(() => SetLocal(_failed, c, new KLit("true")), () => SetLocal(_failed, c, new KVar(was)));
             // the database sets the row versions of what it writes
             KExpr Written(KExpr x) => new KOp("||", new KOp("==", State(c, x), I(Added)), new KOp("==", State(c, x), I(Modified)));
@@ -484,7 +723,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Fields.Add(p);
                 var fresh = new KVar(LinqMap("[Ref]" + TypeOf(p.Type)));
-                Emit(new KRow { Map = FieldMap(p), Ref = null, Value = new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", Written(y), new KOp("sel", fresh, y), new KOp("sel", new KVar(FieldMap(p)), y))) });
+                Emit(new KRow
+                {
+                    Map = FieldMap(p),
+                    Ref = null,
+                    Value = new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", Written(y), new KOp("sel", fresh, y), new KOp("sel", new KVar(FieldMap(p)), y))),
+                });
             }
             SetLocal(_savedAlone, c, new KOp("||", new KOp("sel", new KVar(_savedAlone), c), new KOp("!", InTx(c))));
             SetStates(c, new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", Written(y), I(Unchanged), new KOp("ite", new KOp("==", State(c, y), I(Deleted)), I(EfDetached), State(c, y)))));
@@ -498,23 +742,41 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Find(key), or Find(a, b) for a composite key, in the key's order: the tracked entity with that key, or the row read and tracked, or null.</summary>
         private KExpr Find(IInvocationOperation inv, List<IArgumentOperation> args, KExpr c, EfModel.Entity e)
         {
-            if (e.Key.Count == 0 || !e.Key.All(IsField) || args.Count != 1) throw new NotTranslated("EF's Find of " + e.Type.Name);
+            if (e.Key.Count == 0 || !e.Key.All(IsField) || args.Count != 1)
+            {
+                throw new NotTranslated("EF's Find of " + e.Type.Name);
+            }
             var keyArg = args[0].Value;
             var parts = keyArg is IArrayCreationOperation arr && arr.Initializer != null
                 ? arr.Initializer.ElementValues.Select(v => Unconverted(v)).ToList()
                 : e.Key.Count == 1 ? new List<IOperation> { Unconverted(keyArg) } : null;
-            if (parts == null || parts.Count != e.Key.Count) throw new NotTranslated("EF's Find of " + e.Type.Name + " by another key");
+            if (parts == null || parts.Count != e.Key.Count)
+            {
+                throw new NotTranslated("EF's Find of " + e.Type.Name + " by another key");
+            }
             // (each value of its column's type: EF throws for another, which is not read)
             for (int j = 0; j < parts.Count; j++)
-                if (!SymbolEqualityComparer.Default.Equals(parts[j].Type, e.Key[j].Type)) throw new NotTranslated("EF's Find by a value of another type");
+            {
+                if (!SymbolEqualityComparer.Default.Equals(parts[j].Type, e.Key[j].Type))
+                {
+                    throw new NotTranslated("EF's Find by a value of another type");
+                }
+            }
             UsableContext(c, inv.Syntax);
             var ks = parts.Select(p => Once(p)).ToList();
             // (a reference, which may be null)
             var r = "t$" + _temps++;
-            _p.Locals.Add(new KLocal { Name = r, Raw = "Ref" });
+            _p.Locals.Add(new KLocal
+            {
+                Name = r,
+                Raw = "Ref",
+            });
             Emit(new KHavoc { Var = r });
             var rv = new KVar(r);
-            foreach (var p in e.Key) _p.Fields.Add(p.OriginalDefinition);
+            foreach (var p in e.Key)
+            {
+                _p.Fields.Add(p.OriginalDefinition);
+            }
             // (the maps themselves: of what may be null)
             KExpr Col(IPropertySymbol p) => new KOp("sel", new KVar(FieldMap(p.OriginalDefinition)), rv);
             var match = And(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Col(p), ks[j]) : (KExpr)new KOp("==", Col(p), ks[j])));
@@ -529,13 +791,20 @@ namespace CsVerify.Verifier.Boogie
         {
             var source = args.FirstOrDefault()?.Value;
             var root = source == null ? null : RootTable(source);
-            if (root == null) throw new NotTranslated("EF's " + inv.TargetMethod.Name + " of a query not on a table");
+            if (root == null)
+            {
+                throw new NotTranslated("EF's " + inv.TargetMethod.Name + " of a query not on a table");
+            }
             var c = Once(root.Value.context);
             NotNullHere(c, root.Value.context, inv.Syntax);
             UsableContext(c, inv.Syntax);
             var y = new KVar("o$");
-            Emit(new KAssign { Var = _stale, Value = new KOp("store", new KVar(_stale), c, new KOp("lambda", new KLit("o$: Ref"),
-                new KOp("||", new KOp("&&", new KOp("!=", State(c, y), I(EfDetached)), Isa(y, root.Value.entity)), new KOp("sel", new KVar(_stale), c, y)))) });
+            Emit(new KAssign
+            {
+                Var = _stale,
+                Value = new KOp("store", new KVar(_stale), c, new KOp("lambda", new KLit("o$: Ref"),
+                new KOp("||", new KOp("&&", new KOp("!=", State(c, y), I(EfDetached)), Isa(y, root.Value.entity)), new KOp("sel", new KVar(_stale), c, y)))),
+            });
             MayThrow();
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
             Emit(new KHavoc { Var = n });
@@ -573,7 +842,10 @@ namespace CsVerify.Verifier.Boogie
         {
             var set = Unconverted(local.Instance);
             if (_failed == null || !(TableOf(set) is DbTable t) || t.NoTracking || t.IgnoreFilters ||
-                !(set is IPropertyReferenceOperation || set is IInvocationOperation { TargetMethod.Name: "Set" })) throw new NotTranslated("EF's Local of " + set.Syntax);
+                !(set is IPropertyReferenceOperation || set is IInvocationOperation { TargetMethod.Name: "Set" }))
+            {
+                throw new NotTranslated("EF's Local of " + set.Syntax);
+            }
             var e = t.Entity;
             var ctxOp = (set as IPropertyReferenceOperation)?.Instance ?? ((IInvocationOperation)set).Instance;
             var c = Once(ctxOp);
@@ -593,10 +865,21 @@ namespace CsVerify.Verifier.Boogie
             ShapeFact(Over(new KLit("0"), len, Each), at);
             ShapeFact(new KOp("==>", new KOp("<", new KLit("0"), len), Each(new KLit("0"))), at);
             var y = new KVar("y$");
-            ShapeFact(new KQuant { Forall = true, Var = "y$", Type = "Ref", Body = new KOp("==>", new KOp("&&", Isa(y, e), Live(y)),
-                And(new KExpr[] { new KOp("<=", new KLit("0"), new KOp("sel", idx, y)), new KOp("<", new KOp("sel", idx, y), len), new KOp("==", El(new KOp("sel", idx, y)), y) })) }, at);
+            ShapeFact(new KQuant
+            {
+                Forall = true,
+                Var = "y$",
+                Type = "Ref",
+                Body = new KOp("==>", new KOp("&&", Isa(y, e), Live(y)),
+                And(new KExpr[] { new KOp("<=", new KLit("0"), new KOp("sel", idx, y)), new KOp("<", new KOp("sel", idx, y), len), new KOp("==", El(new KOp("sel", idx, y)), y) })),
+            }, at);
             _known = known;
-            return new LSeq { Length = len, Elem = El, Type = e.Type };
+            return new LSeq
+            {
+                Length = len,
+                Elem = El,
+                Type = e.Type,
+            };
         }
 
         private static bool IsLocalView(IOperation op) =>
@@ -607,7 +890,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Database.CurrentTransaction, Entry(o).State: their values (null for another property).</summary>
         private KExpr TrackerRead(IPropertyReferenceOperation pr)
         {
-            if (_failed == null || pr.Instance == null) return null;
+            if (_failed == null || pr.Instance == null)
+            {
+                return null;
+            }
             if (pr.Property.Name == "CurrentTransaction" && Unconverted(pr.Instance) is IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } && KernelTypes.Ef.IsContextType(db.Type))
             {
                 var c = Once(db);
@@ -618,9 +904,14 @@ namespace CsVerify.Verifier.Boogie
                 return new KVar(t);
             }
             if (pr.Property.Name == "State" && Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry && EntryOf(entry) is var (c2, o, _))
+            {
                 return State(c2, o);
+            }
             // (a local view's Count)
-            if (pr.Property.Name == "Count" && IsLocalView(pr.Instance)) return LocalView((IPropertyReferenceOperation)Unconverted(pr.Instance)).Length;
+            if (pr.Property.Name == "Count" && IsLocalView(pr.Instance))
+            {
+                return LocalView((IPropertyReferenceOperation)Unconverted(pr.Instance)).Length;
+            }
             return null;
         }
 
@@ -628,10 +919,17 @@ namespace CsVerify.Verifier.Boogie
         private bool TrackerAssign(IOperation target, KExpr value)
         {
             if (_failed == null || !(target is IPropertyReferenceOperation { Property.Name: "State" } pr) ||
-                !(Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry)) return false;
-            if (!(EntryOf(entry) is var (c, o, e))) return false;
+                !(Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry))
+            {
+                return false;
+            }
+            if (!(EntryOf(entry) is var (c, o, e)))
+            {
+                return false;
+            }
             var at = target.Parent?.Syntax ?? target.Syntax;
             if (target.Parent is ISimpleAssignmentOperation a && a.Value.ConstantValue.HasValue && a.Value.ConstantValue.Value is int s)
+            {
                 switch (s)
                 {
                     case Modified: TrackAs(c, o, e, Modified, at); return true;
@@ -640,6 +938,7 @@ namespace CsVerify.Verifier.Boogie
                     case Unchanged: TrackAs(c, o, e, Unchanged, at); return true;
                     case EfDetached: SetStates(c, new KOp("store", States(c), o, I(EfDetached))); return true;
                 }
+            }
             // (a state not known here: anything)
             SetStates(c, new KOp("store", States(c), o, value));
             var u = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
@@ -655,9 +954,15 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssume { Cond = Isa(o, e) });
             TrackerCheck(new KOp("||", new KOp("!=", State(c, o), I(EfDetached)), NoOtherWithKey(c, o, e)), "CSV1033", at,
                 $"'{at}' may meet another {e.Type.Name} with the same key that the context already tracks, and EF throws: use the tracked one, or a context that tracks none");
-            if (state == Modified) TokensAsRead(c, o, e, at, "Mark it modified first, then change it");
+            if (state == Modified)
+            {
+                TokensAsRead(c, o, e, at, "Mark it modified first, then change it");
+            }
             SetStates(c, new KOp("store", States(c), o, I(state)));
-            if (state == Modified) SetUnsaved(c, new KLit("true"));
+            if (state == Modified)
+            {
+                SetUnsaved(c, new KLit("true"));
+            }
         }
 
         /// <summary>
@@ -666,22 +971,46 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void TrackerFieldWrite(ISymbol field, KExpr o, SyntaxNode at)
         {
-            if (_failed == null || o == null || !(field is IPropertySymbol p) || KernelTypes.Ef.EntityOf(p.ContainingType) is not EfModel.Entity entity) return;
+            if (_failed == null || o == null || !(field is IPropertySymbol p) || KernelTypes.Ef.EntityOf(p.ContainingType) is not EfModel.Entity entity)
+            {
+                return;
+            }
             // (a row version is the database's to set, CSV1034)
             if (entity.RowVersions.Contains(p.OriginalDefinition) || entity.RowVersions.Contains(p))
-                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1034", At = at, NotAssumedAfter = true,
-                                  Message = $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read" });
+            {
+                Emit(new KCheck
+                {
+                    Cond = new KLit("false"),
+                    Id = "CSV1034",
+                    At = at,
+                    NotAssumedAfter = true,
+                    Message = $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read",
+                });
+            }
             var c = new KVar("c$");
             KExpr Was(KExpr x) => new KOp("sel", new KVar(StateMap), x, o);
-            Emit(new KRow { Map = UnsavedMap, Ref = null, Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("||", new KOp("!=", Was(c), I(EfDetached)), Unsaved(c))) });
-            Emit(new KRow { Map = StateMap, Ref = null, Value = new KOp("lambda", new KLit("c$: Ref"),
-                new KOp("store", States(c), o, new KOp("ite", new KOp("==", Was(c), I(Unchanged)), I(Modified), Was(c)))) });
+            Emit(new KRow
+            {
+                Map = UnsavedMap,
+                Ref = null,
+                Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("||", new KOp("!=", Was(c), I(EfDetached)), Unsaved(c))),
+            });
+            Emit(new KRow
+            {
+                Map = StateMap,
+                Ref = null,
+                Value = new KOp("lambda", new KLit("c$: Ref"),
+                new KOp("store", States(c), o, new KOp("ite", new KOp("==", Was(c), I(Unchanged)), I(Modified), Was(c)))),
+            });
         }
 
         /// <summary>Rows read with tracking: tracked from here on (unchanged, those it didn't track).</summary>
         private void TrackedRows(KExpr c, KExpr isRow)
         {
-            if (_failed == null) return;
+            if (_failed == null)
+            {
+                return;
+            }
             var y = new KVar("y$");
             SetStates(c, new KOp("lambda", new KLit("y$: Ref"), new KOp("ite", new KOp("&&", isRow, new KOp("==", State(c, y), I(EfDetached))), I(Unchanged), State(c, y))));
         }
@@ -689,17 +1018,31 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Rows read without tracking: read by the context, with their tokens as they are (for CSV1034).</summary>
         private void ReadRows(KExpr c, EfModel.Entity e, KExpr isRow)
         {
-            if (_failed == null || e.Tokens.Count == 0) return;
+            if (_failed == null || e.Tokens.Count == 0)
+            {
+                return;
+            }
             var y = new KVar("y$");
-            Emit(new KAssign { Var = _read, Value = new KOp("store", new KVar(_read), c, new KOp("lambda", new KLit("y$: Ref"), new KOp("||", isRow, new KOp("sel", new KVar(_read), c, y)))) });
+            Emit(new KAssign
+            {
+                Var = _read,
+                Value = new KOp("store", new KVar(_read), c, new KOp("lambda", new KLit("y$: Ref"), new KOp("||", isRow, new KOp("sel", new KVar(_read), c, y)))),
+            });
             for (int j = 0; j < e.Tokens.Count; j++)
             {
                 // (a token of a type the kernel doesn't have isn't kept: an Attach or Update that would check it isn't translated)
-                if (!IsField(e.Tokens[j])) continue;
+                if (!IsField(e.Tokens[j]))
+                {
+                    continue;
+                }
                 var map = TokenRead(e, j);
                 _p.Fields.Add(e.Tokens[j].OriginalDefinition);
-                Emit(new KAssign { Var = map, Value = new KOp("store", new KVar(map), c, new KOp("lambda", new KLit("y$: Ref"),
-                    new KOp("ite", isRow, new KOp("sel", new KVar(FieldMap(e.Tokens[j].OriginalDefinition)), y), new KOp("sel", new KVar(map), c, y)))) });
+                Emit(new KAssign
+                {
+                    Var = map,
+                    Value = new KOp("store", new KVar(map), c, new KOp("lambda", new KLit("y$: Ref"),
+                    new KOp("ite", isRow, new KOp("sel", new KVar(FieldMap(e.Tokens[j].OriginalDefinition)), y), new KOp("sel", new KVar(map), c, y)))),
+                });
             }
         }
 
@@ -711,7 +1054,10 @@ namespace CsVerify.Verifier.Boogie
         private EfEffects EfEffectsOf(IMethodSymbol m)
         {
             m = m.OriginalDefinition;
-            lock (_efEffects) if (_efEffects.TryGetValue(m, out var known)) return known;
+            lock (_efEffects) if (_efEffects.TryGetValue(m, out var known))
+            {
+                return known;
+            }
             var e = new EfEffects();
             lock (_efEffects) _efEffects[m] = e; // (a recursive call adds nothing)
             foreach (var r in m.DeclaringSyntaxReferences)
@@ -720,16 +1066,32 @@ namespace CsVerify.Verifier.Boogie
                 var model = KernelTypes.Compilation.GetSemanticModel(node.SyntaxTree);
                 foreach (var inv in node.DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
-                    if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol called)) continue;
+                    if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol called))
+                    {
+                        continue;
+                    }
                     var name = Plain(called);
                     // (in a try whose catch doesn't throw again: a failure there may be swallowed)
                     bool swallowed = inv.Ancestors().OfType<TryStatementSyntax>().Any(t => t.Block.Span.Contains(inv.Span) &&
                         t.Catches.Any(c => !c.Block.DescendantNodes().OfType<ThrowStatementSyntax>().Any()));
                     if (IsEfMethod(called) || called.ContainingType != null && KernelTypes.Ef.IsContextType(called.ContainingType) || IsTransactionType(called.ContainingType))
                     {
-                        if (name == "SaveChanges") { e.Saves = true; if (swallowed) e.Breaks = true; }
-                        else if (name == "Commit" && swallowed || name == "Rollback") e.Breaks = true;
-                        else if (name is "ExecuteUpdate" or "ExecuteDelete") e.BulkUpdates = true;
+                        if (name == "SaveChanges")
+                        {
+                            e.Saves = true;
+                            if (swallowed)
+                            {
+                                e.Breaks = true;
+                            }
+                        }
+                        else if (name == "Commit" && swallowed || name == "Rollback")
+                        {
+                            e.Breaks = true;
+                        }
+                        else if (name is "ExecuteUpdate" or "ExecuteDelete")
+                        {
+                            e.BulkUpdates = true;
+                        }
                     }
                     else if (called.DeclaringSyntaxReferences.Length > 0 && !SymbolEqualityComparer.Default.Equals(called.OriginalDefinition, m))
                     {
@@ -749,25 +1111,40 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void TrackerCallEffects(IMethodSymbol callee)
         {
-            if (_failed == null || callee == null || callee.DeclaringSyntaxReferences.Length == 0) return;
+            if (_failed == null || callee == null || callee.DeclaringSyntaxReferences.Length == 0)
+            {
+                return;
+            }
             var e = EfEffectsOf(callee);
             var c = new KVar("c$");
             if (e.Breaks)
             {
                 var may = new KVar(LinqMap("[Ref]bool"));
-                Emit(new KAssign { Var = _failed, Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("||", new KOp("sel", may, c), Failed(c))) });
+                Emit(new KAssign
+                {
+                    Var = _failed,
+                    Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("||", new KOp("sel", may, c), Failed(c))),
+                });
             }
             if (e.Saves)
             {
                 var may = new KVar(LinqMap("[Ref]bool"));
-                Emit(new KAssign { Var = _savedAlone, Value = new KOp("lambda", new KLit("c$: Ref"),
-                    new KOp("||", new KOp("&&", new KOp("sel", may, c), new KOp("!", InTx(c))), new KOp("sel", new KVar(_savedAlone), c))) });
+                Emit(new KAssign
+                {
+                    Var = _savedAlone,
+                    Value = new KOp("lambda", new KLit("c$: Ref"),
+                    new KOp("||", new KOp("&&", new KOp("sel", may, c), new KOp("!", InTx(c))), new KOp("sel", new KVar(_savedAlone), c))),
+                });
             }
             if (e.BulkUpdates)
             {
                 var may = new KVar(LinqMap("[Ref][Ref]bool"));
-                Emit(new KAssign { Var = _stale, Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("lambda", new KLit("o$: Ref"),
-                    new KOp("||", new KOp("sel", may, c, new KVar("o$")), new KOp("sel", new KVar(_stale), c, new KVar("o$"))))) });
+                Emit(new KAssign
+                {
+                    Var = _stale,
+                    Value = new KOp("lambda", new KLit("c$: Ref"), new KOp("lambda", new KLit("o$: Ref"),
+                    new KOp("||", new KOp("sel", may, c, new KVar("o$")), new KOp("sel", new KVar(_stale), c, new KVar("o$"))))),
+                });
             }
         }
     }

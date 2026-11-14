@@ -21,16 +21,29 @@ namespace CsVerify.Verifier.Boogie
 
         private void BindInCode(ILocalSymbol l, KExpr v)
         {
-            Emit(new KAssign { Var = Declare(Local(l), l.Type), Value = v });
+            Emit(new KAssign
+            {
+                Var = Declare(Local(l), l.Type),
+                Value = v,
+            });
             // (a value a pattern binds is valid, as every data value is: its invariant was proved where it was built)
-            if (HasInvariants(l.Type)) AssumeValid(new KVar(Local(l)), l.Type);
+            if (HasInvariants(l.Type))
+            {
+                AssumeValid(new KVar(Local(l)), l.Type);
+            }
         }
 
         /// <summary>A value of a type with invariants: valid (where it isn't null).</summary>
         private void AssumeValid(KExpr v, ITypeSymbol t)
         {
-            if (!HasInvariants(t)) return;
-            foreach (var inv in DataTypes.Invariants(DataTypes.Def(t))) InvariantBody(inv.OriginalDefinition, _isFunction, _literal, _contractOf);
+            if (!HasInvariants(t))
+            {
+                return;
+            }
+            foreach (var inv in DataTypes.Invariants(DataTypes.Def(t)))
+            {
+                InvariantBody(inv.OriginalDefinition, _isFunction, _literal, _contractOf);
+            }
             Data(t);
             _p.Valid.Add(DataTypes.Def(t));
             Emit(new KAssume { Cond = new KOp("||", new KOp("==", v, new KLit("null")), new KOp(ValidName(t), v)) });
@@ -40,7 +53,10 @@ namespace CsVerify.Verifier.Boogie
         {
             var def = DataTypes.Def(t);
             _p.DataTypes.Add(def);
-            foreach (var c in KernelTypes.Data.KnownCases(def)) _p.DataTypes.Add(c);
+            foreach (var c in KernelTypes.Data.KnownCases(def))
+            {
+                _p.DataTypes.Add(c);
+            }
         }
 
         /// <summary>A data value's field, as the type it's read at has it (unboxed where generic).</summary>
@@ -55,14 +71,23 @@ namespace CsVerify.Verifier.Boogie
         {
             var wasSpec = _inSpecTest;
             _inSpecTest = inSpec;
-            try { return DataExprCore(e, lower, bind, inSpec); }
-            finally { _inSpecTest = wasSpec; }
+            try
+            {
+                return DataExprCore(e, lower, bind, inSpec);
+            }
+            finally
+            {
+                _inSpecTest = wasSpec;
+            }
         }
 
         private KExpr DataExprCore(IOperation e, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, bool inSpec)
         {
             // (a span: Lowering.Spans)
-            if (SpanExpr(e, lower, inSpec) is KExpr span) return span;
+            if (SpanExpr(e, lower, inSpec) is KExpr span)
+            {
+                return span;
+            }
             switch (e)
             {
                 case IArrayElementReferenceOperation: return DataExprCoreOfArrayElementReference(e, lower, bind, inSpec);
@@ -96,7 +121,16 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = lower(me.ArrayReference);
                     var ix = me.Indices.Select(lower).ToList();
-                    var cell = new KElem { Unchecked = true, Array = a, Index = CellOf(ix), ArrayType = me.ArrayReference.Type, InSpec = inSpec, At = me.Syntax, ArrayAt = me.ArrayReference.Syntax };
+                    var cell = new KElem
+                    {
+                        Unchecked = true,
+                        Array = a,
+                        Index = CellOf(ix),
+                        ArrayType = me.ArrayReference.Type,
+                        InSpec = inSpec,
+                        At = me.Syntax,
+                        ArrayAt = me.ArrayReference.Syntax,
+                    };
                     return MultiIndices(a, ix, me.Syntax, cell, inSpec);
                 }
                 default: return DataExprCoreOther(e, lower, bind, inSpec);
@@ -140,7 +174,10 @@ namespace CsVerify.Verifier.Boogie
             var a = lower(gli);
             var d = lower(gl.Arguments[0].Value);
             KExpr len = new KOp("$dim", a, new KLit((rank - 1).ToString()));
-            for (int k = rank - 2; k >= 0; k--) len = new KOp("ite", new KOp("==", d, new KLit(k.ToString())), new KOp("$dim", a, new KLit(k.ToString())), len);
+            for (int k = rank - 2; k >= 0; k--)
+            {
+                len = new KOp("ite", new KOp("==", d, new KLit(k.ToString())), new KOp("$dim", a, new KLit(k.ToString())), len);
+            }
             return Defined(new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("&&", new KOp("<=", new KLit("0"), d), new KOp("<", d, new KLit(rank.ToString())))), len,
                            "CSV1003", gl.Syntax, $"dimension in '{gl.Syntax}' might be out of range", inSpec);
         }
@@ -154,7 +191,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = lower(ml.Instance);
                     KExpr len = new KOp("$dim", a, new KLit("0"));
-                    for (int k = 1; k < ((IArrayTypeSymbol)ml.Instance.Type).Rank; k++) len = new KOp("*", len, new KOp("$dim", a, new KLit(k.ToString())));
+                    for (int k = 1; k < ((IArrayTypeSymbol)ml.Instance.Type).Rank; k++)
+                    {
+                        len = new KOp("*", len, new KOp("$dim", a, new KLit(k.ToString())));
+                    }
                     return Defined(new KOp("!=", a, new KLit("null")), len, "CSV1013", ml.Syntax, $"'{ml.Instance.Syntax}' might be null in '{ml.Syntax}'", inSpec);
                 }
                 // (a struct's member: its element)
@@ -163,8 +203,20 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation np when np.Instance != null && IsNullableValue(np.Instance.Type) && np.Property.Name is "HasValue" or "Value":
                 {
                     var v = lower(np.Instance);
-                    if (np.Property.Name == "HasValue") return new KOp("!=", v, new KLit("null"));
-                    if (!inSpec) Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1013", At = np.Syntax, Message = $"'{np.Syntax}' might be read when '{np.Instance.Syntax}' is null" });
+                    if (np.Property.Name == "HasValue")
+                    {
+                        return new KOp("!=", v, new KLit("null"));
+                    }
+                    if (!inSpec)
+                    {
+                        Emit(new KCheck
+                        {
+                            Cond = new KOp("!=", v, new KLit("null")),
+                            Id = "CSV1013",
+                            At = np.Syntax,
+                            Message = $"'{np.Syntax}' might be read when '{np.Instance.Syntax}' is null",
+                        });
+                    }
                     return NullableValue(v, np.Instance.Type);
                 }
                 case IPropertyReferenceOperation dp when dp.Instance != null && IsData(dp.Instance.Type) && DataTypes.IsPositional(dp.Property.OriginalDefinition):
@@ -263,7 +315,9 @@ namespace CsVerify.Verifier.Boogie
             var t = Declare("t$" + _temps++, md.Type);
             Emit(new KHavoc { Var = t });
             foreach (var prop in SpecSymbols.IsCsVerifyType(md.Type, "PointsTo`1") || SpecSymbols.IsCsVerifyType(md.Type, "Ptr`1") ? new[] { "Addr" } : new[] { "Addr", "Length" })
+            {
                 Emit(new KAssume { Cond = new KOp("==", MemProp(prop, new KVar(t), md.Type), new KLit("0")) });
+            }
             return new KVar(t);
         }
 
@@ -297,9 +351,21 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case IConversionOperation nu when IsNullableValue(nu.Operand.Type) && !IsNullableValue(nu.Type) && nu.OperatorMethod == null:
                 {
-                    if (!SymbolEqualityComparer.Default.Equals(nu.Type, Underlying(nu.Operand.Type))) throw new NotTranslated("a conversion of " + nu.Operand.Type + " to " + nu.Type);
+                    if (!SymbolEqualityComparer.Default.Equals(nu.Type, Underlying(nu.Operand.Type)))
+                    {
+                        throw new NotTranslated("a conversion of " + nu.Operand.Type + " to " + nu.Type);
+                    }
                     var v = lower(nu.Operand);
-                    if (!inSpec) Emit(new KCheck { Cond = new KOp("!=", v, new KLit("null")), Id = "CSV1013", At = nu.Syntax, Message = $"'{nu.Operand.Syntax}' might be null where '{nu.Syntax}' unwraps it" });
+                    if (!inSpec)
+                    {
+                        Emit(new KCheck
+                        {
+                            Cond = new KOp("!=", v, new KLit("null")),
+                            Id = "CSV1013",
+                            At = nu.Syntax,
+                            Message = $"'{nu.Operand.Syntax}' might be null where '{nu.Syntax}' unwraps it",
+                        });
+                    }
                     return NullableValue(v, nu.Operand.Type);
                 }
                 case IConversionOperation fc when (IsFloating(fc.Type) || IsFloating(fc.Operand.Type)) && fc.Conversion.IsNumeric && fc.OperatorMethod == null:
@@ -333,10 +399,15 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr NullableOfValue(IConversionOperation nc, Func<IOperation, KExpr> lower)
         {
-            if (nc.Operand.Type == null || nc.Operand.ConstantValue is { HasValue: true, Value: null } || nc.Operand is IDefaultValueOperation) return new KLit("null");
+            if (nc.Operand.Type == null || nc.Operand.ConstantValue is { HasValue: true, Value: null } || nc.Operand is IDefaultValueOperation)
+            {
+                return new KLit("null");
+            }
             var u = Underlying(nc.Type);
             if (!(SymbolEqualityComparer.Default.Equals(nc.Operand.Type, u) || IsIntegral(u) && IsIntegral(nc.Operand.Type) && nc.Conversion.IsImplicit))
+            {
                 throw new NotTranslated("a conversion of " + nc.Operand.Type + " to " + nc.Type);
+            }
             return NullableOf(lower(nc.Operand), nc.Type);
         }
 
@@ -346,7 +417,12 @@ namespace CsVerify.Verifier.Boogie
             StaticType(v, dc.Operand.Type, inSpec);
             var castOk = new KOp("||", new KOp("==", v, new KLit("null")), ClassTest(v, dc.Type));
             CastThrows(castOk, inSpec);
-            return new KCast { Value = v, Test = castOk, At = dc.Syntax };
+            return new KCast
+            {
+                Value = v,
+                Test = castOk,
+                At = dc.Syntax,
+            };
         }
 
         private KExpr DataDownCast(IConversionOperation down, Func<IOperation, KExpr> lower, bool inSpec)
@@ -355,7 +431,12 @@ namespace CsVerify.Verifier.Boogie
             var v = Operand(down.Operand, lower, inSpec);
             var downOk = new KOp("||", new KOp("==", v, new KLit("null")), IsCase(v, down.Type));
             CastThrows(downOk, inSpec);
-            return new KCast { Value = v, Test = downOk, At = down.Syntax };
+            return new KCast
+            {
+                Value = v,
+                Test = downOk,
+                At = down.Syntax,
+            };
         }
 
         /// <summary>DataExprCore of a binary: its forms, in order; any other as DataExprCoreOther.</summary>
@@ -441,7 +522,10 @@ namespace CsVerify.Verifier.Boogie
             var l = TupleParts(tb.LeftOperand, lower, inSpec);
             var r = TupleParts(tb.RightOperand, lower, inSpec);
             KExpr same = new KLit("true");
-            for (int k = l.Count - 1; k >= 0; k--) same = k == l.Count - 1 ? new KOp("==", l[k], r[k]) : new KOp("&&", new KOp("==", l[k], r[k]), same);
+            for (int k = l.Count - 1; k >= 0; k--)
+            {
+                same = k == l.Count - 1 ? new KOp("==", l[k], r[k]) : new KOp("&&", new KOp("==", l[k], r[k]), same);
+            }
             return tb.OperatorKind == BinaryOperatorKind.Equals ? same : new KOp("!", same);
         }
 
@@ -535,7 +619,11 @@ namespace CsVerify.Verifier.Boogie
             if (nb.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract or BinaryOperatorKind.Multiply &&
                 IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
             {
-                if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
+                if (!inSpec)
+                {
+                    l = Operand(nb.LeftOperand, lower, false);
+                    r = Operand(nb.RightOperand, lower, false);
+                }
                 var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
                 var u = Underlying(nb.Type);
                 KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
@@ -543,7 +631,11 @@ namespace CsVerify.Verifier.Boogie
                 if (!inSpec)
                 {
                     var tv = Declare("t$" + _temps++, u);
-                    Emit(new KAssign { Var = tv, Value = sum });
+                    Emit(new KAssign
+                    {
+                        Var = tv,
+                        Value = sum,
+                    });
                     sum = new KVar(tv);
                 }
                 return new KOp("ite", both, NullableOf(sum, nb.Type), new KLit("null"));
@@ -552,7 +644,11 @@ namespace CsVerify.Verifier.Boogie
             if (nb.OperatorKind is BinaryOperatorKind.And or BinaryOperatorKind.Or or BinaryOperatorKind.ExclusiveOr &&
                 IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type) && IsNullableValue(nb.Type))
             {
-                if (!inSpec) { l = Operand(nb.LeftOperand, lower, false); r = Operand(nb.RightOperand, lower, false); }
+                if (!inSpec)
+                {
+                    l = Operand(nb.LeftOperand, lower, false);
+                    r = Operand(nb.RightOperand, lower, false);
+                }
                 var both = new KOp("&&", new KOp("!=", l, new KLit("null")), new KOp("!=", r, new KLit("null")));
                 var u = Underlying(nb.Type);
                 KExpr V(KExpr x) => new KOp("ite", both, NullableValue(x, t), new KLit("0"));
@@ -560,7 +656,11 @@ namespace CsVerify.Verifier.Boogie
                 if (!inSpec)
                 {
                     var tv = Declare("t$" + _temps++, u);
-                    Emit(new KAssign { Var = tv, Value = bits });
+                    Emit(new KAssign
+                    {
+                        Var = tv,
+                        Value = bits,
+                    });
                     bits = new KVar(tv);
                 }
                 return new KOp("ite", both, NullableOf(bits, nb.Type), new KLit("null"));
@@ -582,29 +682,72 @@ namespace CsVerify.Verifier.Boogie
             var def = oc.Constructor.OriginalDefinition;
             // (a non-nullable field isn't null: each construction says so)
             if (!inSpec)
+            {
                 for (int k = 0; k < ordered.Count; k++)
+                {
                     if (IsNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type) && NotNullable(def.Parameters[ordered[k].Parameter.Ordinal].Type))
-                        Emit(new KCheck { Cond = new KOp("!=", values[k], new KLit("null")), Id = "CSV1014", At = ordered[k].Value.Syntax,
-                                          Message = $"'{ordered[k].Value.Syntax}' might be null, but parameter '{ordered[k].Parameter.Name}' of '{oc.Type.Name}' is not nullable" });
+                    {
+                        Emit(new KCheck
+                        {
+                            Cond = new KOp("!=", values[k], new KLit("null")),
+                            Id = "CSV1014",
+                            At = ordered[k].Value.Syntax,
+                            Message = $"'{ordered[k].Value.Syntax}' might be null, but parameter '{ordered[k].Parameter.Name}' of '{oc.Type.Name}' is not nullable",
+                        });
+                    }
+                }
+            }
             // (a package built: the views that go in are handed over to it)
             if (!inSpec && IsPackage(oc.Type))
             {
                 CheckPackage(oc.Type);
                 for (int k = 0; k < ordered.Count; k++)
+                {
                     if (IsView(def.Parameters[ordered[k].Parameter.Ordinal].Type))
-                        Emit(new KOwn { Kind = "pack", Obj = values[k], Type = ViewOf(ordered[k].Parameter.Type), Into = oc.Type, At = ordered[k].Value.Syntax });
+                    {
+                        Emit(new KOwn
+                        {
+                            Kind = "pack",
+                            Obj = values[k],
+                            Type = ViewOf(ordered[k].Parameter.Type),
+                            Into = oc.Type,
+                            At = ordered[k].Value.Syntax,
+                        });
+                    }
+                }
             }
             var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray();
             var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args);
-            if (inSpec || !HasInvariants(oc.Type)) return made;
+            if (inSpec || !HasInvariants(oc.Type))
+            {
+                return made;
+            }
             // (an immutable value's invariants: proved where it's built, assumed everywhere else)
             var t = Declare("t$" + _temps++, oc.Type);
-            Emit(new KAssign { Var = t, Value = made });
+            Emit(new KAssign
+            {
+                Var = t,
+                Value = made,
+            });
             foreach (var inv in DataTypes.Invariants(DataTypes.Def(oc.Type)))
             {
-                if (!_isFunction(inv.OriginalDefinition)) throw new NotTranslated("an invariant that isn't a function: " + inv.Name);
-                Emit(new KCheck { Cond = new KFnCall { Callee = inv.OriginalDefinition, Receiver = new KVar(t), Args = new KExpr[0], At = oc.Syntax }, Id = "CSV1015", At = oc.Syntax,
-                                  Message = $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'" });
+                if (!_isFunction(inv.OriginalDefinition))
+                {
+                    throw new NotTranslated("an invariant that isn't a function: " + inv.Name);
+                }
+                Emit(new KCheck
+                {
+                    Cond = new KFnCall
+                    {
+                        Callee = inv.OriginalDefinition,
+                        Receiver = new KVar(t),
+                        Args = new KExpr[0],
+                        At = oc.Syntax,
+                    },
+                    Id = "CSV1015",
+                    At = oc.Syntax,
+                    Message = $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'",
+                });
             }
             AssumeValid(new KVar(t), oc.Type);
             return new KVar(t);
@@ -615,18 +758,36 @@ namespace CsVerify.Verifier.Boogie
             Data(dp.Instance.Type);
             var v = lower(dp.Instance);
             var prop = dp.Property.OriginalDefinition;
-            var read = Unbox(new KDataField { Function = FieldFunction(prop), Value = v, At = dp.Syntax, ValueAt = dp.Instance.Syntax, Struct = dp.Instance.Type.IsValueType }, prop.Type, dp.Type);
+            var read = Unbox(new KDataField
+            {
+                Function = FieldFunction(prop),
+                Value = v,
+                At = dp.Syntax,
+                ValueAt = dp.Instance.Syntax,
+                Struct = dp.Instance.Type.IsValueType,
+            }, prop.Type, dp.Type);
             // (a non-nullable field isn't null: each construction checked it)
             if (!inSpec && IsNullable(dp.Type) && NotNullable(prop.Type))
             {
                 var nn = Declare("t$" + _temps++, dp.Type);
-                Emit(new KAssign { Var = nn, Value = read });
+                Emit(new KAssign
+                {
+                    Var = nn,
+                    Value = read,
+                });
                 Emit(new KAssume { Cond = new KOp("!=", new KVar(nn), new KLit("null")) });
                 read = new KVar(nn);
             }
-            if (inSpec || !HasInvariants(dp.Type)) return read;
+            if (inSpec || !HasInvariants(dp.Type))
+            {
+                return read;
+            }
             var t = Declare("t$" + _temps++, dp.Type);
-            Emit(new KAssign { Var = t, Value = read });
+            Emit(new KAssign
+            {
+                Var = t,
+                Value = read,
+            });
             AssumeValid(new KVar(t), dp.Type);
             return new KVar(t);
         }
@@ -662,7 +823,13 @@ namespace CsVerify.Verifier.Boogie
         {
             var gsrc = Sequence(gb.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
             var gkey = LambdaArg(gb, 1);
-            Emit(new KCheck { Cond = new KOp(">", gsrc.Length, new KLit("0")), Id = "CSV1001", At = fg.Syntax, Message = "precondition 'Q.Count(source) > 0' of 'First' might not hold" });
+            Emit(new KCheck
+            {
+                Cond = new KOp(">", gsrc.Length, new KLit("0")),
+                Id = "CSV1001",
+                At = fg.Syntax,
+                Message = "precondition 'Q.Count(source) > 0' of 'First' might not hold",
+            });
             var kv = Declare("t$" + _temps++, gkey.body.Type);
             Emit(new KHavoc { Var = kv });
             ShapeFact(new KOp("==", new KVar(kv), Apply(gkey, gsrc.Elem(new KLit("0")))), fg.Syntax);
@@ -672,10 +839,16 @@ namespace CsVerify.Verifier.Boogie
         private KExpr AnonymousObject(IAnonymousObjectCreationOperation ao, Func<IOperation, KExpr> lower, bool inSpec)
         {
             var items = ao.Initializers.Select(x => lower(x is IAssignmentOperation asg ? asg.Value : x)).ToList();
-            if (inSpec) return new KOp(TupleMaker(ao.Type), items.ToArray());
+            if (inSpec)
+            {
+                return new KOp(TupleMaker(ao.Type), items.ToArray());
+            }
             var t = Declare("t$" + _temps++, ao.Type);
             Emit(new KHavoc { Var = t });
-            for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), ao.Type, k), items[k]) });
+            for (int k = 0; k < items.Count; k++)
+            {
+                Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), ao.Type, k), items[k]) });
+            }
             return new KVar(t);
         }
 
@@ -683,10 +856,16 @@ namespace CsVerify.Verifier.Boogie
         {
             // (a tuple literal at the type it's converted to: (null, k) as (SlNode?, int))
             var items = tlit.Elements.Select(x => x.ConstantValue is { HasValue: true, Value: null } ? new KLit("null") : lower(x)).ToList();
-            if (inSpec) throw new NotTranslated("a tuple made in a specification");
+            if (inSpec)
+            {
+                throw new NotTranslated("a tuple made in a specification");
+            }
             var t = Declare("t$" + _temps++, tc.Type);
             Emit(new KHavoc { Var = t });
-            for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tc.Type, k), items[k]) });
+            for (int k = 0; k < items.Count; k++)
+            {
+                Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tc.Type, k), items[k]) });
+            }
             return new KVar(t);
         }
 
@@ -694,10 +873,16 @@ namespace CsVerify.Verifier.Boogie
         {
             var items = tu.Elements.Select(x => lower(x)).ToList();
             // (in a specification, or a lambda: the tuple of its elements, a function of them)
-            if (inSpec) return new KOp(TupleMaker(tu.Type), items.ToArray());
+            if (inSpec)
+            {
+                return new KOp(TupleMaker(tu.Type), items.ToArray());
+            }
             var t = Declare("t$" + _temps++, tu.Type);
             Emit(new KHavoc { Var = t });
-            for (int k = 0; k < items.Count; k++) Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tu.Type, k), items[k]) });
+            for (int k = 0; k < items.Count; k++)
+            {
+                Emit(new KAssume { Cond = new KOp("==", TupleItem(new KVar(t), tu.Type, k), items[k]) });
+            }
             return new KVar(t);
         }
 
@@ -715,16 +900,33 @@ namespace CsVerify.Verifier.Boogie
             var arms = sw.Arms.Select(arm =>
             {
                 var cond = Pattern(arm.Pattern, v, sw.Value.Type, lower, bind);
-                if (arm.Guard != null) cond = new KOp("&&", cond, lower(arm.Guard));
+                if (arm.Guard != null)
+                {
+                    cond = new KOp("&&", cond, lower(arm.Guard));
+                }
                 return (cond, value: lower(arm.Value));
             }).ToList();
             // (where no arm matches, the definition throws: its check says so; the value is the last arm's)
-            for (int k = arms.Count - 1; k >= 0; k--) acc = acc == null ? arms[k].value : new KOp("ite", arms[k].cond, arms[k].value, acc);
-            if (acc == null) throw new NotTranslated("a switch with no arms");
+            for (int k = arms.Count - 1; k >= 0; k--)
+            {
+                acc = acc == null ? arms[k].value : new KOp("ite", arms[k].cond, arms[k].value, acc);
+            }
+            if (acc == null)
+            {
+                throw new NotTranslated("a switch with no arms");
+            }
             // (well-defined only where some arm matches, CSV1012, unless the last arm matches everything)
             var last = sw.Arms.Last();
-            if (last.Guard == null && last.Pattern is IDiscardPatternOperation or IDeclarationPatternOperation { MatchesNull: true }) return acc;
-            return new KCast { Value = acc, Test = arms.Select(a => a.cond).Aggregate((a, b) => new KOp("||", a, b)), At = sw.Syntax };
+            if (last.Guard == null && last.Pattern is IDiscardPatternOperation or IDeclarationPatternOperation { MatchesNull: true })
+            {
+                return acc;
+            }
+            return new KCast
+            {
+                Value = acc,
+                Test = arms.Select(a => a.cond).Aggregate((a, b) => new KOp("||", a, b)),
+                At = sw.Syntax,
+            };
         }
 
         private KExpr StringUpcast(IConversionOperation so, Func<IOperation, KExpr> lower)

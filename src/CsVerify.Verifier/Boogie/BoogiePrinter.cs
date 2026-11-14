@@ -40,11 +40,20 @@ namespace CsVerify.Verifier.Boogie
             {
                 var lines = _text.ToString().Split('\n');
                 // (a loop's inferred fact that didn't hold: left out, its line kept)
-                foreach (var d in Disabled) if (d - 1 < lines.Length) lines[d - 1] = "    assert true;";
+                foreach (var d in Disabled)
+                {
+                    if (d - 1 < lines.Length)
+                    {
+                        lines[d - 1] = "    assert true;";
+                    }
+                }
                 var used = string.Join("\n", lines.Where(l => !(l.Length > 0 && l[0] == '\u0001')));
                 return Ascii(string.Join("\n", lines.Select(l =>
                 {
-                    if (!(l.Length > 0 && l[0] == '\u0001')) return l;
+                    if (!(l.Length > 0 && l[0] == '\u0001'))
+                    {
+                        return l;
+                    }
                     int end = l.IndexOf('\u0002');
                     var key = l.Substring(Tagged.Length, end - Tagged.Length);
                     return used.Contains(key) ? l.Substring(end + 1) : "";
@@ -58,9 +67,24 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static string Ascii(string text)
         {
-            if (text.All(c => c < 128)) return text;
+            if (text.All(c => c < 128))
+            {
+                return text;
+            }
             var b = new StringBuilder(text.Length);
-            foreach (var c in text) if (c < 128) b.Append(c); else if (char.IsLetterOrDigit(c)) b.Append('u').Append(((int)c).ToString("X4")); else b.Append('_');
+            foreach (var c in text)
+            {
+                if (c < 128)
+                {
+                    b.Append(c);
+                } else if (char.IsLetterOrDigit(c))
+                {
+                    b.Append('u').Append(((int)c).ToString("X4"));
+                } else
+                {
+                    b.Append('_');
+                }
+            }
             return b.ToString();
         }
 
@@ -80,7 +104,9 @@ namespace CsVerify.Verifier.Boogie
         public void StaticReadonlyFacts()
         {
             foreach (var k in (KernelTypes.StaticReadonlyNonNull ?? new HashSet<int>()).OrderBy(x => x).Where(_staticFacts.Add))
+            {
                 Line($"axiom $sfRef({k}) != null;");
+            }
         }
         private readonly HashSet<int> _staticFacts = new HashSet<int>();
 
@@ -112,7 +138,10 @@ namespace CsVerify.Verifier.Boogie
                 Line($"function $nmk.{u}(v: {ty}): Ref;");
                 Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {range} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
                 Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} x != null ==> $nmk.{u}($nv.{u}(x)) == x);");
-                if (st != SpecialType.System_Boolean) Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {Range(st).lo} <= $nv.{u}(x) && $nv.{u}(x) <= {Range(st).hi});");
+                if (st != SpecialType.System_Boolean)
+                {
+                    Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {Range(st).lo} <= $nv.{u}(x) && $nv.{u}(x) <= {Range(st).hi});");
+                }
             }
             foreach (var f in _tuples.OrderBy(x => x, System.StringComparer.Ordinal))
             {
@@ -127,7 +156,10 @@ namespace CsVerify.Verifier.Boogie
 
         private void Line(string text, Check check = null)
         {
-            if (check != null) Lines[_line] = check;
+            if (check != null)
+            {
+                Lines[_line] = check;
+            }
             _text.Append(text).Append('\n');
             _line++;
         }
@@ -162,9 +194,15 @@ namespace CsVerify.Verifier.Boogie
             Line("// bitwise operators of two variables, and a shift count's power of two");
             foreach (var w in new[] { 32, 64 })
             {
-                foreach (var op in new[] { "and", "or", "xor" }) Line($"function $bit.{op}{w}(x: int, y: int): int;");
+                foreach (var op in new[] { "and", "or", "xor" })
+                {
+                    Line($"function $bit.{op}{w}(x: int, y: int): int;");
+                }
                 var pow = (System.Numerics.BigInteger.One << (w - 1)).ToString();
-                for (int i = w - 2; i >= 0; i--) pow = $"(if n == {i} then {System.Numerics.BigInteger.One << i} else {pow})";
+                for (int i = w - 2; i >= 0; i--)
+                {
+                    pow = $"(if n == {i} then {System.Numerics.BigInteger.One << i} else {pow})";
+                }
                 Line($"function $pow{w}(n: int): int {{ {pow} }}");
             }
             Line("// fuel, as Dafny's: a function's definition unfolds once for each $LS");
@@ -219,33 +257,71 @@ namespace CsVerify.Verifier.Boogie
             if (KernelTypes.Ef != null)
             {
                 var entities = KernelTypes.Ef.Entities.Select(e => e.Type.OriginalDefinition).Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToList();
-                bool Derives(ITypeSymbol a, ITypeSymbol b) { for (var c = a.BaseType; c != null; c = c.BaseType) if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b)) return true; return false; }
-                foreach (var a in entities) Optional("$isa.", $"function {Lowering.IsaFunction(a)}(r: Ref): bool;");
+                bool Derives(ITypeSymbol a, ITypeSymbol b)
+                {
+                    for (var c = a.BaseType; c != null; c = c.BaseType)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
                 foreach (var a in entities)
+                {
+                    Optional("$isa.", $"function {Lowering.IsaFunction(a)}(r: Ref): bool;");
+                }
+                foreach (var a in entities)
+                {
                     foreach (var b in entities.Where(b => !SymbolEqualityComparer.Default.Equals(a, b)))
-                        if (Derives(a, b)) Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r) }} {Lowering.IsaFunction(a)}(r) ==> {Lowering.IsaFunction(b)}(r));");
+                    {
+                        if (Derives(a, b))
+                        {
+                            Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r) }} {Lowering.IsaFunction(a)}(r) ==> {Lowering.IsaFunction(b)}(r));");
+                        }
                         else if (!Derives(b, a) && string.CompareOrdinal(Lowering.IsaFunction(a), Lowering.IsaFunction(b)) < 0)
+                        {
                             Optional("$isa.", $"axiom (forall r: Ref :: {{ {Lowering.IsaFunction(a)}(r), {Lowering.IsaFunction(b)}(r) }} !({Lowering.IsaFunction(a)}(r) && {Lowering.IsaFunction(b)}(r)));");
+                        }
+                    }
+                }
             }
             // (strings as a database compares them, by its collation: an equivalence, as the same key; equal strings have
             // one: without axioms that make the solver go round)
             Optional("$ckey(", "function $ckey(s: Ref): int;");
             Line("axiom (forall a: Ref :: 0 <= len(a) && len(a) <= 2147483647); // (an array's Length is an int)");
-            foreach (var t in ElementTypes) Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
+            foreach (var t in ElementTypes)
+            {
+                Line($"var {ElementMap(t)}: [Ref][int]{ElementValue(t)};");
+            }
             // (float and double as IEEE 754: Z3's floating point, rounding to nearest as .NET does)
             foreach (var (n, t, size, bv) in new[] { ("32", "float24e8", "8 24", "bv32"), ("64", "float53e11", "11 53", "bv64") })
             {
-                string F(string name, string builtin, string ps, string ret) { return $"function {{:builtin \"{builtin}\"}} $fp.{name}{n}({ps}): {ret};"; }
+                string F(string name, string builtin, string ps, string ret)
+                {
+                    return $"function {{:builtin \"{builtin}\"}} $fp.{name}{n}({ps}): {ret};";
+                }
                 var x = $"x: {t}"; var xy = $"x: {t}, y: {t}";
-                foreach (var (name, op) in new[] { ("add", "fp.add RNE"), ("sub", "fp.sub RNE"), ("mul", "fp.mul RNE"), ("div", "fp.div RNE") }) Optional("$fp.", F(name, op, xy, t));
-                foreach (var (name, op) in new[] { ("eq", "fp.eq"), ("lt", "fp.lt"), ("leq", "fp.leq"), ("gt", "fp.gt"), ("geq", "fp.geq") }) Optional("$fp.", F(name, op, xy, "bool"));
+                foreach (var (name, op) in new[] { ("add", "fp.add RNE"), ("sub", "fp.sub RNE"), ("mul", "fp.mul RNE"), ("div", "fp.div RNE") })
+                {
+                    Optional("$fp.", F(name, op, xy, t));
+                }
+                foreach (var (name, op) in new[] { ("eq", "fp.eq"), ("lt", "fp.lt"), ("leq", "fp.leq"), ("gt", "fp.gt"), ("geq", "fp.geq") })
+                {
+                    Optional("$fp.", F(name, op, xy, "bool"));
+                }
                 foreach (var (name, op) in new[] { ("neg", "fp.neg"), ("abs", "fp.abs"), ("sqrt", "fp.sqrt RNE"), ("floor", "fp.roundToIntegral RTN"),
                                                     ("ceil", "fp.roundToIntegral RTP"), ("trunc", "fp.roundToIntegral RTZ"), ("round", "fp.roundToIntegral RNE") })
+                {
                     Optional("$fp.", F(name, op, x, t));
+                }
                 Optional("$fp.", F("fma", "fp.fma RNE", $"x: {t}, y: {t}, z: {t}", t));
                 foreach (var (name, op) in new[] { ("isNaN", "fp.isNaN"), ("isInf", "fp.isInfinite"), ("isPos", "fp.isPositive"), ("isNeg", "fp.isNegative"),
                                                     ("isNormal", "fp.isNormal"), ("isSubnormal", "fp.isSubnormal") })
+                {
                     Optional("$fp.", F(name, op, x, "bool"));
+                }
                 Optional("$fp.", F("rem", "fp.rem", xy, t));
                 Optional("$fp.", F("isZero", "fp.isZero", x, "bool"));
                 // (C's fmod, .NET's %: IEEE's remainder moved by |y| to x's sign, which is exact)
@@ -288,7 +364,11 @@ namespace CsVerify.Verifier.Boogie
             Optional("$keyed(", "axiom (forall a: Ref, b: Ref :: { $key(a), $key(b) } a != null && b != null && a != b && slen(a) == slen(b) ==> 0 <= sdiff(a, b) && sdiff(a, b) < slen(a) && sat(a, sdiff(a, b)) != sat(b, sdiff(a, b)));");
             Line("// what is read from memory is in its type's range");
             Line("function $InRange(" + string.Join(", ", IntegerMaps.Select(t => $"{Param(t)}: [Ref][int]int")) + "): bool { " +
-                 string.Join(" && ", IntegerMaps.Select(t => { var (lo, hi) = Range(t); return $"(forall r: Ref, j: int :: {lo} <= {Param(t)}[r][j] && {Param(t)}[r][j] <= {hi})"; })) + " }");
+                 string.Join(" && ", IntegerMaps.Select(t =>
+                 {
+                     var (lo, hi) = Range(t);
+                     return $"(forall r: Ref, j: int :: {lo} <= {Param(t)}[r][j] && {Param(t)}[r][j] <= {hi})";
+                 })) + " }");
         }
 
         // ------------------------------------------------------------------ expressions
@@ -340,7 +420,16 @@ namespace CsVerify.Verifier.Boogie
                 case MVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
                 case MVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
                 case MOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
-                    return $"old({E(old.Args[0], new Context { Ins = cx.Ins, AtEntry = true, Elems = cx.Elems, InFunction = cx.InFunction, Layer = cx.Layer, Result = cx.Result, Group = cx.Group })})";
+                    return $"old({E(old.Args[0], new Context
+                    {
+                        Ins = cx.Ins,
+                        AtEntry = true,
+                        Elems = cx.Elems,
+                        InFunction = cx.InFunction,
+                        Layer = cx.Layer,
+                        Result = cx.Result,
+                        Group = cx.Group,
+                    })})";
                 case MFnApp f when f.Plain:
                     return $"{f.Function}({string.Join(", ", f.Args.Select(a => E(a, cx)))})";
                 case MFnApp f when f.Snap != null:
@@ -354,8 +443,14 @@ namespace CsVerify.Verifier.Boogie
                     var parts = new List<string> { layer };
                     // (of a call frame's snapshot of the memory: its maps as they were then)
                     string At(string map) => f.MapsAt != null ? f.MapsAt + map : Map(map, cx);
-                    if (own == null) parts.Add(f.MapsAt != null ? string.Join(", ", ElementTypes.Select(t => At(ElementMap(t)))) : Maps(cx));
-                    else parts.AddRange(own.Select(o => f.MapsAt != null ? $"{At(o.map)}[{E(f.Args[o.arg], cx)}]" : Elements(o.map, f.Args[o.arg], cx)));
+                    if (own == null)
+                    {
+                        parts.Add(f.MapsAt != null ? string.Join(", ", ElementTypes.Select(t => At(ElementMap(t)))) : Maps(cx));
+                    }
+                    else
+                    {
+                        parts.AddRange(own.Select(o => f.MapsAt != null ? $"{At(o.map)}[{E(f.Args[o.arg], cx)}]" : Elements(o.map, f.Args[o.arg], cx)));
+                    }
                     parts.AddRange(f.Fields.Select(At));
                     parts.AddRange(f.Args.Select(a => E(a, cx)));
                     return $"{f.Function}({string.Join(", ", parts)})";
@@ -363,13 +458,19 @@ namespace CsVerify.Verifier.Boogie
                 case MQuant q:
                 {
                     var trigger = q.Trigger == null ? "" : string.Concat(q.Trigger.Select(t => $"{{ {E(t, cx)} }} "));
-                    if (q.Range == null) return $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Body, cx)})";
+                    if (q.Range == null)
+                    {
+                        return $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Body, cx)})";
+                    }
                     return q.Forall ? $"(forall {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} ==> {E(q.Body, cx)})" : $"(exists {q.Var}: {q.Type} :: {trigger}{E(q.Range, cx)} && {E(q.Body, cx)})";
                 }
                 case MOp op:
                 {
                     var a = op.Args.Select(x => E(x, cx)).ToArray();
-                    if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag)) return $"($tag({a[0]}) == {tag})";
+                    if (_tags != null && op.Args.Length == 1 && _tags.TryGetValue(op.Op, out var tag))
+                    {
+                        return $"($tag({a[0]}) == {tag})";
+                    }
                     switch (op.Op)
                     {
                         case "$pattern": return string.Join(", ", a);
@@ -415,7 +516,10 @@ namespace CsVerify.Verifier.Boogie
                         case var f when f.StartsWith("$nv.") || f.StartsWith("$nmk."): _nullables.Add(f.Substring(f.IndexOf('.') + 1)); return $"{f}({string.Join(", ", a)})";
                         case var f when f.StartsWith("$") || f.StartsWith("mk."): return $"{f}({string.Join(", ", a)})";
                         default:
-                            if (a.Length != 2) throw new NotTranslated("the kernel's operator " + op.Op);
+                            if (a.Length != 2)
+                            {
+                                throw new NotTranslated("the kernel's operator " + op.Op);
+                            }
                             return $"({a[0]} {op.Op} {a[1]})";
                     }
                 }
@@ -457,10 +561,19 @@ namespace CsVerify.Verifier.Boogie
             var cx = new Context { Result = app };
             var pre = requires.Count == 0 ? "true" : string.Join(" && ", requires.Select(r => E(r, cx)));
             string Axiom(string body) => ps.Count == 0 ? $"axiom {body};" : $"axiom (forall {bound} :: {{ {app} }} {body});";
-            foreach (var e in ensures) Line(Axiom($"{pre} ==> {E(e, cx)}"));
+            foreach (var e in ensures)
+            {
+                Line(Axiom($"{pre} ==> {E(e, cx)}"));
+            }
             // (trusted for its annotations: a non-nullable result isn't null; an integer one is in its type's range)
-            if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType)) Line(Axiom($"{app} != null"));
-            if (IsIntegral(m.ReturnType)) Line(Axiom(E(MathTypes.InRange(new MLit(app), m.ReturnType), InProcedure)));
+            if (IsNullable(m.ReturnType) && NotNullable(m.ReturnType))
+            {
+                Line(Axiom($"{app} != null"));
+            }
+            if (IsIntegral(m.ReturnType))
+            {
+                Line(Axiom(E(MathTypes.InRange(new MLit(app), m.ReturnType), InProcedure)));
+            }
         }
 
         // ------------------------------------------------------------------ data types
@@ -492,7 +605,10 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (function, type, fact) in fields)
             {
                 Line($"function {function}(d: Ref): {type};");
-                if (fact != null) Line($"axiom (forall d: Ref :: {{ {function}(d) }} {E(fact, cx)});");
+                if (fact != null)
+                {
+                    Line($"axiom (forall d: Ref :: {{ {function}(d) }} {E(fact, cx)});");
+                }
             }
             _tags = null;
             foreach (var c in cases)
@@ -502,8 +618,14 @@ namespace CsVerify.Verifier.Boogie
                 var app = $"{c.Name}({string.Join(", ", c.Params.Select(x => x.name))})";
                 Line($"function {c.Name}({ps}): Ref;");
                 var facts = new List<string> { $"{app} != null", $"$tag({app}) == {c.Tag}" };
-                foreach (var (function, value) in c.Fields) facts.Add($"{function}({app}) == {E(value, cx)}");
-                foreach (var x in c.Params.Where(x => x.data)) facts.Add($"({x.name} != null ==> $rank({x.name}) < $rank({app}))");
+                foreach (var (function, value) in c.Fields)
+                {
+                    facts.Add($"{function}({app}) == {E(value, cx)}");
+                }
+                foreach (var x in c.Params.Where(x => x.data))
+                {
+                    facts.Add($"({x.name} != null ==> $rank({x.name}) < $rank({app}))");
+                }
                 Line(c.Params.Count == 0 ? $"axiom {string.Join(" && ", facts)};" : $"axiom (forall {ps} :: {{ {app} }} {string.Join(" && ", facts)});");
                 // (a value of the case is the case's constructor of its fields)
                 var eta = $"{c.Name}({string.Join(", ", c.Params.Select(x => $"{x.field}(d)"))})";
@@ -517,12 +639,17 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public void Valid(List<(string name, MExpr invariant, List<(string isCase, MExpr part)> parts)> types)
         {
-            foreach (var (name, _, _) in types) Line($"function {name}(d: Ref): bool;");
+            foreach (var (name, _, _) in types)
+            {
+                Line($"function {name}(d: Ref): bool;");
+            }
             foreach (var (name, invariant, parts) in types)
             {
                 Line($"axiom (forall d: Ref :: {{ {name}(d) }} {name}(d) && d != null ==> {E(invariant, InProcedure)});");
                 foreach (var (isCase, part) in parts)
+                {
                     Line($"axiom (forall d: Ref :: {{ {name}(d), {isCase}(d) }} {name}(d) && {isCase}(d) ==> {E(part, InProcedure)});");
+                }
             }
         }
 
@@ -535,7 +662,10 @@ namespace CsVerify.Verifier.Boogie
         public void Delegates(IEnumerable<string> keys, ISet<string> maps)
         {
             var all = keys.Distinct().OrderBy(x => x, System.StringComparer.Ordinal).ToList();
-            if (all.Count == 0 && !UsesState) return;
+            if (all.Count == 0 && !UsesState)
+            {
+                return;
+            }
             string Ty(string part) => part == "Ref" ? "Ref" : part == "Boolean" ? "bool" : "int";
             Line("function $nochange(d: Ref): bool;");
             // (a state: the memory, each map of it given back; a steady delegate is the same in all of them)
@@ -599,21 +729,35 @@ namespace CsVerify.Verifier.Boogie
                 Line($"axiom (forall d: Ref, s1: St, s2: St{decl}{rr} :: {{ $postS.{key}(d, s1{use}{ru}), $postS.{key}(d, s2{use}{ru}) }} " +
                      $"{Agree(r1)} ==> $postS.{key}(d, s1{use}{ru}) == $postS.{key}(d, s2{use}{ru}));");
                 Line($"procedure $call.{key}(d: Ref{decl}){(res == "void" ? "" : $" returns (res: {Ty(res)})")};");
-                if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
-                foreach (var l in StepsKept(modifies, true)) Line("  " + l);
-                if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                if (modifies.Count > 0)
+                {
+                    Line($"  modifies {string.Join(", ", modifies)};");
+                }
+                foreach (var l in StepsKept(modifies, true))
+                {
+                    Line("  " + l);
+                }
+                if (modifies.Contains("$Alloc"))
+                {
+                    Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                }
                 Line($"  free ensures {InRangeOfMemory};");
                 Line($"  free ensures $postS.{key}(d, old({State}){use}{(res == "void" ? "" : ", res")});");
                 // (only what's in its frame changes, of what was allocated)
                 foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
+                {
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !$frame.{key}(d{use})[o] ==> {m.name}[o] == old({m.name}[o]));");
+                }
                 if (res != "void" && res != "Ref" && res != "Boolean")
                 {
                     var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + res));
                     Line($"  free ensures {(lo < 0 ? $"({lo})" : lo.ToString())} <= res && res <= {hi};");
                 }
                 var same = modifies.Where(x => x != "$Alloc").ToList();
-                if (same.Count > 0) Line($"  free ensures $nochange(d) ==> {string.Join(" && ", same.Select(x => $"{x} == old({x})"))};");
+                if (same.Count > 0)
+                {
+                    Line($"  free ensures $nochange(d) ==> {string.Join(" && ", same.Select(x => $"{x} == old({x})"))};");
+                }
             }
         }
 
@@ -624,9 +768,18 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (name, these) in new[] { ("$havoc", modifies), ("$havocProgram", modifies.Where(x => !x.StartsWith("$F.$M.")).ToList()) })
             {
                 Line($"procedure {name}();");
-                if (these.Count > 0) Line($"  modifies {string.Join(", ", these)};");
-                foreach (var l in StepsKept(these, true)) Line("  " + l);
-                if (these.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                if (these.Count > 0)
+                {
+                    Line($"  modifies {string.Join(", ", these)};");
+                }
+                foreach (var l in StepsKept(these, true))
+                {
+                    Line("  " + l);
+                }
+                if (these.Contains("$Alloc"))
+                {
+                    Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                }
                 Line($"  free ensures {InRangeOfMemory};");
             }
         }
@@ -635,9 +788,13 @@ namespace CsVerify.Verifier.Boogie
         private IEnumerable<string> HeldKept(ICollection<string> modifies)
         {
             foreach (var t in ElementTypes.Select(ElementMap).Where(modifies.Contains))
+            {
                 yield return $"  free ensures (forall a: Ref, i: int :: c[a][i] > 0.0 ==> {t}[a][i] == old({t}[a][i]));";
+            }
             foreach (var m in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
+            {
                 yield return $"  free ensures (forall o: Ref :: p[o] ==> {m}[o] == old({m}[o]));";
+            }
         }
 
         /// <summary>
@@ -652,14 +809,37 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (name, when, held) in new[] { ("$await", false, false), ("$awaitIf", true, false), ("$awaitHeld", false, true), ("$awaitIfHeld", true, true) })
             {
                 Line($"procedure {name}({(when ? "w: bool, " : "")}k: [Ref]bool{(held ? ", c: [Ref][int]real, p: [Ref]bool" : "")});");
-                if (modifies.Count > 0) Line($"  modifies {string.Join(", ", modifies)};");
-                foreach (var l in StepsKept(modifies, true)) Line("  " + l);
-                if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                if (modifies.Count > 0)
+                {
+                    Line($"  modifies {string.Join(", ", modifies)};");
+                }
+                foreach (var l in StepsKept(modifies, true))
+                {
+                    Line("  " + l);
+                }
+                if (modifies.Contains("$Alloc"))
+                {
+                    Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+                }
                 Line($"  free ensures {InRangeOfMemory};");
                 foreach (var m in _stateMaps.Where(m => modifies.Contains(m.name)))
+                {
                     Line($"  free ensures (forall o: Ref :: k[o] ==> {m.name}[o] == old({m.name}[o]));");
-                if (when) foreach (var m in modifies) Line($"  free ensures !w ==> {m} == old({m});");
-                if (held) foreach (var l in HeldKept(modifies)) Line(l);
+                }
+                if (when)
+                {
+                    foreach (var m in modifies)
+                    {
+                        Line($"  free ensures !w ==> {m} == old({m});");
+                    }
+                }
+                if (held)
+                {
+                    foreach (var l in HeldKept(modifies))
+                    {
+                        Line(l);
+                    }
+                }
             }
         }
 
@@ -693,28 +873,54 @@ namespace CsVerify.Verifier.Boogie
             Line("function sub(a: Ty, b: Ty): bool;");
             Line("axiom (forall a: Ty :: sub(a, a));");
             Line("axiom (forall a: Ty, b: Ty, c: Ty :: { sub(a, b), sub(b, c) } sub(a, b) && sub(b, c) ==> sub(a, c));");
-            foreach (var t in all) Line($"const unique {TypeConst(t)}: Ty;");
-            if (exception != null && classList.Count == 0) Line($"axiom (forall a: Ty :: sub(a, {TypeConst(exception)}));");
+            foreach (var t in all)
+            {
+                Line($"const unique {TypeConst(t)}: Ty;");
+            }
+            if (exception != null && classList.Count == 0)
+            {
+                Line($"axiom (forall a: Ty :: sub(a, {TypeConst(exception)}));");
+            }
             bool Derives(ITypeSymbol a, ITypeSymbol b)
             {
                 for (var c = (a as INamedTypeSymbol)?.BaseType; c != null; c = c.BaseType)
-                    if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b.OriginalDefinition)) return true;
+                {
+                    if (SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, b.OriginalDefinition))
+                    {
+                        return true;
+                    }
+                }
                 return a.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, b.OriginalDefinition));
             }
             foreach (var a in all)
+            {
                 foreach (var b in all.Where(b => !SymbolEqualityComparer.Default.Equals(a, b)))
+                {
                     Line($"axiom {(Derives(a, b) ? "" : "!")}sub({TypeConst(a)}, {TypeConst(b)});");
-            if (classList.Count == 0) return;
+                }
+            }
+            if (classList.Count == 0)
+            {
+                return;
+            }
             for (int i = 0; i < all.Count; i++)
             {
                 var a = all[i];
-                if (a.IsSealed) Line($"axiom (forall t: Ty :: {{ sub(t, {TypeConst(a)}) }} sub(t, {TypeConst(a)}) ==> t == {TypeConst(a)});");
+                if (a.IsSealed)
+                {
+                    Line($"axiom (forall t: Ty :: {{ sub(t, {TypeConst(a)}) }} sub(t, {TypeConst(a)}) ==> t == {TypeConst(a)});");
+                }
                 for (int j = i + 1; j < all.Count; j++)
                 {
                     var b = all[j];
-                    if (Derives(a, b) || Derives(b, a)) continue;
+                    if (Derives(a, b) || Derives(b, a))
+                    {
+                        continue;
+                    }
                     if (a.TypeKind == TypeKind.Class && b.TypeKind == TypeKind.Class || a.IsSealed || b.IsSealed)
+                    {
                         Line($"axiom (forall t: Ty :: {{ sub(t, {TypeConst(a)}), sub(t, {TypeConst(b)}) }} !(sub(t, {TypeConst(a)}) && sub(t, {TypeConst(b)})));");
+                    }
                 }
             }
         }
@@ -732,10 +938,18 @@ namespace CsVerify.Verifier.Boogie
                 .Concat(m.Parameters.Where(x => x.RefKind != RefKind.Out).Select(x => $"{Local(x)}{(x.RefKind == RefKind.Ref ? "$in" : "")}: {TypeOf(x.Type)}")));
             Line($"procedure {callee.Name}$throws({ps}) returns (ex: Ref);");
             if (modifies.Count > 0)
+            {
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
+            }
             Line("  free ensures ex != null;");
             foreach (var (type, cond) in clauses)
-                Line($"  free ensures {E(new MOp("==>", Checks.Is(new MVar("ex"), type), cond), new Context { Ins = ins, AtEntry = false })};");
+            {
+                Line($"  free ensures {E(new MOp("==>", Checks.Is(new MVar("ex"), type), cond), new Context
+                {
+                    Ins = ins,
+                    AtEntry = false,
+                })};");
+            }
         }
 
         // ------------------------------------------------------------------ predicates
@@ -757,7 +971,10 @@ namespace CsVerify.Verifier.Boogie
                 var name = Checks.InstanceName(p);
                 var xs = p.Parameters.Select((x, k) => (name: "x" + k, type: TypeOf(x.Type))).ToList();
                 Line($"function {name}({string.Join(", ", xs.Select(x => $"{x.name}: {x.type}"))}): Inst;");
-                for (int k = 0; k < xs.Count; k++) Line($"function {name}#{k}(q: Inst): {xs[k].type};");
+                for (int k = 0; k < xs.Count; k++)
+                {
+                    Line($"function {name}#{k}(q: Inst): {xs[k].type};");
+                }
                 var app = $"{name}({string.Join(", ", xs.Select(x => x.name))})";
                 var facts = new[] { $"i#kind({app}) == {kind}" }.Concat(xs.Select((x, k) => $"{name}#{k}({app}) == {x.name}"));
                 Line(xs.Count == 0 ? $"axiom {string.Join(" && ", facts)};"
@@ -787,21 +1004,30 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The uninterpreted functions procedures name (their declarations, whole).</summary>
         public void Declarations(IEnumerable<string> lines)
         {
-            foreach (var l in lines) Line(l);
+            foreach (var l in lines)
+            {
+                Line(l);
+            }
         }
 
         public void Models(List<ModelMap> models, List<(string key, string value)> pairs)
         {
             string Bound(string kind, string at)
             {
-                if (kind == null || kind is "Ref" or "Boolean") return null;
+                if (kind == null || kind is "Ref" or "Boolean")
+                {
+                    return null;
+                }
                 var (lo, hi) = Range((SpecialType)System.Enum.Parse(typeof(SpecialType), "System_" + kind));
                 return $"{(lo < 0 ? $"({lo})" : lo.ToString())} <= {at} && {at} <= {hi}";
             }
             foreach (var m in models)
             {
                 string where = "";
-                if (m.Name == SizeMap || m.Name == "$F.$M.Length") where = $" where (forall o: Ref :: {m.Name}[o] >= 0)";
+                if (m.Name == SizeMap || m.Name == "$F.$M.Length")
+                {
+                    where = $" where (forall o: Ref :: {m.Name}[o] >= 0)";
+                }
                 else if (m.Range != null && Bound(m.Range, "x") != null)
                 {
                     var key = m.Type.Substring("[Ref][".Length, m.Type.IndexOf(']', 5) - "[Ref][".Length);
@@ -813,12 +1039,18 @@ namespace CsVerify.Verifier.Boogie
             foreach (var k in pairs.Select(p => p.key).Distinct().OrderBy(x => x, System.StringComparer.Ordinal))
             {
                 Line($"function $kvp.Key.{k}(p: Ref): {BoogieOf(k)};");
-                if (Bound(k, $"$kvp.Key.{k}(p)") is string b) Line($"axiom (forall p: Ref :: {{ $kvp.Key.{k}(p) }} {b});");
+                if (Bound(k, $"$kvp.Key.{k}(p)") is string b)
+                {
+                    Line($"axiom (forall p: Ref :: {{ $kvp.Key.{k}(p) }} {b});");
+                }
             }
             foreach (var v in pairs.Select(p => p.value).Distinct().OrderBy(x => x, System.StringComparer.Ordinal))
             {
                 Line($"function $kvp.Value.{v}(p: Ref): {BoogieOf(v)};");
-                if (Bound(v, $"$kvp.Value.{v}(p)") is string b) Line($"axiom (forall p: Ref :: {{ $kvp.Value.{v}(p) }} {b});");
+                if (Bound(v, $"$kvp.Value.{v}(p)") is string b)
+                {
+                    Line($"axiom (forall p: Ref :: {{ $kvp.Value.{v}(p) }} {b});");
+                }
             }
         }
 
@@ -842,8 +1074,14 @@ namespace CsVerify.Verifier.Boogie
         public void Fields(IEnumerable<ISymbol> fields)
         {
             _stateMaps.Clear();
-            foreach (var t in ElementTypes) _stateMaps.Add((ElementMap(t), "[Ref][int]" + ElementValue(t)));
-            foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal)) _stateMaps.Add((FieldMap(f), $"[Ref]{TypeOf(FieldType(f))}"));
+            foreach (var t in ElementTypes)
+            {
+                _stateMaps.Add((ElementMap(t), "[Ref][int]" + ElementValue(t)));
+            }
+            foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal))
+            {
+                _stateMaps.Add((FieldMap(f), $"[Ref]{TypeOf(FieldType(f))}"));
+            }
             foreach (var f in fields.OrderBy(FieldMap, System.StringComparer.Ordinal))
             {
                 var map = FieldMap(f);
@@ -852,7 +1090,10 @@ namespace CsVerify.Verifier.Boogie
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
             // (each object's ownership tree's root)
-            if (KernelTypes.Trees) Line("var $root: [Ref]Ref;");
+            if (KernelTypes.Trees)
+            {
+                Line("var $root: [Ref]Ref;");
+            }
         }
 
         private static string FieldParams(IEnumerable<string> fields, IEnumerable<ISymbol> symbols) =>
@@ -890,20 +1131,28 @@ namespace CsVerify.Verifier.Boogie
             Line($"function {name}(s: int{ps}): {TypeOf(m.ReturnType)};");
             var app = $"{name}(s{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
             if (!p.Source.Ghost && IsIntegral(m.ReturnType))
+            {
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {E(MathTypes.InRange(new MLit(app), m.ReturnType), InProcedure)});");
+            }
             // its postconditions, of every snapshot, where its precondition's facts hold (those that read no memory: an
             // axiom is about every state)
             var cx = new Context { Result = app };
             var pre = p.Requires.Where(r => !ReadsMemory(r.Expr)).Select(r => E(r.Expr, cx)).DefaultIfEmpty("true");
             // (conjunct by conjunct: those of them that read no memory)
             foreach (var e in p.Ensures.SelectMany(e => Conjuncts(e.Expr)).Where(e => !ReadsMemory(e)))
+            {
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {string.Join(" && ", pre)} ==> {E(e, cx)});");
+            }
             // (its value is its body, read in the snapshot's state: so the functions over one snapshot agree with each
             // other; where its body reads no snapshot of its own)
             if (p.FunctionBody != null && Closed(p.FunctionBody, m.Parameters.Select(Local).ToHashSet()))
             {
                 UsesState = true;
-                var bx = new Context { Result = app, MapAt = map => $"$st.{map}($sst(s))" };
+                var bx = new Context
+                {
+                    Result = app,
+                    MapAt = map => $"$st.{map}($sst(s))",
+                };
                 Line($"axiom (forall s: int{ps} :: {{ {app} }} {app} == {E(p.FunctionBody, bx)});");
             }
         }
@@ -931,7 +1180,10 @@ namespace CsVerify.Verifier.Boogie
         public void Dispatch(IMethodSymbol b, List<string> bFields, IMethodSymbol o, List<string> oFields, IEnumerable<ISymbol> symbols)
         {
             // (each reads all the arrays, or none of them)
-            if (OwnArrays(b) is { Count: > 0 } || OwnArrays(o) is { Count: > 0 }) return;
+            if (OwnArrays(b) is { Count: > 0 } || OwnArrays(o) is { Count: > 0 })
+            {
+                return;
+            }
             var all = bFields.Union(oFields).ToList();
             var ps = FieldParams(all, symbols) + ", this: Ref" + string.Join("", o.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
             string Sep(string x) => x.Length == 0 ? "" : ", " + x;
@@ -944,7 +1196,9 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = p.Source.Method;
             if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null)
+            {
                 _ownedQueries.Add((m, fields));
+            }
             var name = FunctionName(m);
             var self = m.IsStatic ? "" : ", this: Ref";
             var ps = FieldParams(fields, symbols) + self + string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"));
@@ -957,8 +1211,14 @@ namespace CsVerify.Verifier.Boogie
             string At(string layer) => $"{name}({layer}{Sep(memoryArgs)}{args})";
             Line($"function {name}(ly: LayerType{Sep(memory)}{ps}): {TypeOf(m.ReturnType)};");
             Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {At("$LS(ly)")} == {At("ly")});");
-            var cx = new Context { InFunction = true, Layer = "ly", Result = At("ly"), Elems = own?.ToDictionary(o => o.param, o => "e" + o.param),
-                                   Group = callee => callee != null && Recursive(m, callee) };
+            var cx = new Context
+            {
+                InFunction = true,
+                Layer = "ly",
+                Result = At("ly"),
+                Elems = own?.ToDictionary(o => o.param, o => "e" + o.param),
+                Group = callee => callee != null && Recursive(m, callee),
+            };
             var guard = p.Requires.Count == 0 ? "true" : string.Join(" && ", p.Requires.Select(r => E(r.Expr, cx)));
             // (its Spec.Reads, Dafny's frame axiom: two memories that agree on every object it reads give one value)
             var reads = p.ReadsFrame ?? p.InferredReads;
@@ -967,19 +1227,37 @@ namespace CsVerify.Verifier.Boogie
                 string Mem(string pre) => string.Join(", ", ElementTypes.Select(t => $"{pre}{ElementMap(t)}: [Ref][int]{ElementValue(t)}"))
                                         + string.Join("", fields.Select(x => $", {pre}{x}: [Ref]{TypeOf(FieldType(symbols.First(f => FieldMap(f) == x)))}"));
                 string App(string pre) => $"{name}(ly, {string.Join(", ", ElementTypes.Select(t => pre + ElementMap(t)))}{string.Join("", fields.Select(x => ", " + pre + x))}{(m.IsStatic ? "" : ", this")}{string.Join("", m.Parameters.Select(x => ", " + Local(x)))})";
-                var r = E(reads, new Context { InFunction = true, Layer = "ly", Prefix = "a", Group = cx.Group });
+                var r = E(reads, new Context
+                {
+                    InFunction = true,
+                    Layer = "ly",
+                    Prefix = "a",
+                    Group = cx.Group,
+                });
                 var agree = ElementTypes.Select(t => $"(forall o: Ref, i: int :: {r}[o] ==> a{ElementMap(t)}[o][i] == b{ElementMap(t)}[o][i])")
                     .Concat(fields.Select(x => $"(forall o: Ref :: {r}[o] ==> a{x}[o] == b{x}[o])"));
                 Line($"axiom (forall ly: LayerType, {Mem("a")}, {Mem("b")}{self}{string.Join("", m.Parameters.Select(x => $", {Local(x)}: {TypeOf(x.Type)}"))} :: {{ {App("a")}, {App("b")} }} {string.Join(" && ", agree)} ==> {App("a")} == {App("b")});");
             }
             // (its definition, where it has one: an abstract or virtual one is of its contract alone)
-            if (p.FunctionBody != null) Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {guard} ==> {At("$LS(ly)")} == {E(p.FunctionBody, cx)});");
+            if (p.FunctionBody != null)
+            {
+                Line($"axiom (forall {bound} :: {{ {At("$LS(ly)")} }} {guard} ==> {At("$LS(ly)")} == {E(p.FunctionBody, cx)});");
+            }
             // (one whose precondition holds predicate instances, over several or of other than its parameters: its guard
             // here has no meaning of them, so facts that hold by them (its postconditions, its range) aren't axioms of
             // every memory; its calls give them, where its precondition is checked)
-            if (overInstances) return;
-            foreach (var e in p.Ensures) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {guard} ==> {E(e.Expr, cx)});");
-            if (!p.Source.Ghost && IsIntegral(m.ReturnType)) Line($"axiom (forall {bound} :: {{ {At("ly")} }} {E(MathTypes.InRange(new MLit(At("ly")), m.ReturnType), cx)});");
+            if (overInstances)
+            {
+                return;
+            }
+            foreach (var e in p.Ensures)
+            {
+                Line($"axiom (forall {bound} :: {{ {At("ly")} }} {guard} ==> {E(e.Expr, cx)});");
+            }
+            if (!p.Source.Ghost && IsIntegral(m.ReturnType))
+            {
+                Line($"axiom (forall {bound} :: {{ {At("ly")} }} {E(MathTypes.InRange(new MLit(At("ly")), m.ReturnType), cx)});");
+            }
         }
 
         // ------------------------------------------------------------------ procedures
@@ -989,9 +1267,16 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = p.Source.Method;
             var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
-            if (p.Source.StructRefThis) ins.Add("this");
+            if (p.Source.StructRefThis)
+            {
+                ins.Add("this");
+            }
             var cx = new Context { Ins = ins };
-            var atEntry = new Context { Ins = ins, AtEntry = true };
+            var atEntry = new Context
+            {
+                Ins = ins,
+                AtEntry = true,
+            };
             // (a ref parameter comes in as p$x$in and goes out as p$x; an out one only goes out; a struct's this that its
             // method writes, too)
             var ps = string.Join(", ", (p.Source.HasThis ? new[] { p.Source.StructRefThis ? "this$in: Ref" : "this: Ref" } : new string[0])
@@ -1005,17 +1290,34 @@ namespace CsVerify.Verifier.Boogie
             // (an abstract member's: a declaration, its specifications after it, no body)
             Line($"procedure {p.Source.Name}({ps}){ret}{(p.Source.Abstract ? ";" : "")}", Undecided(p));
             if (modifies.Count > 0)
+            {
                 Line($"  modifies {string.Join(", ", Heap.Globals.Where(modifies.Contains).Concat(modifies.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)))};");
-            if (modifies.Contains("$Alloc")) Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
-            foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f)))) Line($"  free ensures {GoodField(f)};");
-            foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees && (modifies.Contains(FieldMap(f)) || modifies.Contains("$root")))) Line($"  free ensures {TreeField(f)};");
+            }
+            if (modifies.Contains("$Alloc"))
+            {
+                Line("  free ensures (forall r: Ref :: old($Alloc[r]) ==> $Alloc[r]);");
+            }
+            foreach (var f in RefFieldsOf(p).Where(f => modifies.Contains(FieldMap(f))))
+            {
+                Line($"  free ensures {GoodField(f)};");
+            }
+            foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees && (modifies.Contains(FieldMap(f)) || modifies.Contains("$root"))))
+            {
+                Line($"  free ensures {TreeField(f)};");
+            }
             // (a method that writes only arrays it makes (the Engine's MayWriteHeap): every other array as it was)
             if ((!p.Source.Abstract || p.Source.Opaque) && p.Frame == null && KernelTypes.MayWriteHeap != null && !KernelTypes.MayWriteHeap(p.Source.Method))
+            {
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
+                {
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
+                }
+            }
             // (a field written only at this object, in its constructor, or at objects allocated since: the same at every other)
             foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !anyWrites.Contains(x) && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
+            {
                 Line($"  free ensures (forall o: Ref :: {(p.Source.IsCtor ? "o != this && " : "")}old($Alloc[o]) ==> {map}[o] == old({map}[o]));");
+            }
             // (an [Owned] object's field: written only where its view is, which the procedure holds only for this, the
             // views it gets, and the objects it makes)
             var views = (p.Source.ThisIsView ? new[] { "this" } : new string[0])
@@ -1029,56 +1331,133 @@ namespace CsVerify.Verifier.Boogie
                 ? string.Concat(views.Select(v => p.Source.IsCtor && v == "this" ? $" && {o} != this" : $" && old($root[{o}]) != old($root[{v}])"))
                 : string.Concat(views.Select(v => $" && {o} != {v}"));
             foreach (var map in modifies.Where(OwnedMaps.Contains).OrderBy(x => x, System.StringComparer.Ordinal))
+            {
                 Line($"  free ensures (forall o: Ref :: old($Alloc[o]){Outside("o")} ==> {map}[o] == old({map}[o]));");
+            }
             if (KernelTypes.Trees && modifies.Contains("$root"))
+            {
                 Line($"  free ensures (forall o: Ref :: old($Alloc[o]){Outside("o")} ==> $root[o] == old($root[o]));");
+            }
             // (Spec.Modifies: every field and cell of an object allocated before, and not in the frame then, is as it was)
             if (p.Frame != null)
             {
                 var w = E(new MOp("old", p.Frame), cx);
                 foreach (var map in modifies.Where(x => x.StartsWith("$F.") && !OwnedMaps.Contains(x)).OrderBy(x => x, System.StringComparer.Ordinal))
+                {
                     Line($"  free ensures (forall o: Ref :: old($Alloc[o]) && !{w}[o] ==> {map}[o] == old({map}[o]));");
+                }
                 foreach (var map in modifies.Where(x => x.StartsWith("$E.")).OrderBy(x => x, System.StringComparer.Ordinal))
+                {
                     Line($"  free ensures (forall a: Ref, i: int :: old($Alloc[a]) && !{w}[a] ==> {map}[a][i] == old({map}[a][i]));");
+                }
             }
             Line($"  free ensures {InRangeOfMemory};");
-            foreach (var l in StepsKept(modifies, true)) Line("  " + l);
+            foreach (var l in StepsKept(modifies, true))
+            {
+                Line("  " + l);
+            }
             Given(p, atEntry);
-            if (p.Source.StructRefThis) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free ensures {fact};");
+            if (p.Source.StructRefThis)
+            {
+                foreach (var fact in ValueFacts("this", m.ContainingType, null, cx))
+                {
+                    Line($"  free ensures {fact};");
+                }
+            }
             foreach (var x in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out))
             {
-                if (IsIntegral(x.Type)) Line($"  free ensures {E(MathTypes.InRange(new MVar(Local(x)), x.Type), cx)};");
-                if (IsStruct(x.Type)) foreach (var fact in ValueFacts(Local(x), x.Type, null, cx)) Line($"  free ensures {fact};");
-                if (IsRef(x.Type)) Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
-                if (IsData(x.Type) && x.Type.IsValueType) Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
+                if (IsIntegral(x.Type))
+                {
+                    Line($"  free ensures {E(MathTypes.InRange(new MVar(Local(x)), x.Type), cx)};");
+                }
+                if (IsStruct(x.Type))
+                {
+                    foreach (var fact in ValueFacts(Local(x), x.Type, null, cx))
+                    {
+                        Line($"  free ensures {fact};");
+                    }
+                }
+                if (IsRef(x.Type))
+                {
+                    Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
+                }
+                if (IsData(x.Type) && x.Type.IsValueType)
+                {
+                    Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
+                }
                 // (a library member's, as its nullability says: [MaybeNullWhen(b)] not null where it returns !b)
                 if (m.DeclaringSyntaxReferences.Length == 0 && IsNullable(x.Type))
                 {
-                    if (StaticChecks.IsNonNullable(x)) Line($"  free ensures {Local(x)} != null;");
+                    if (StaticChecks.IsNonNullable(x))
+                    {
+                        Line($"  free ensures {Local(x)} != null;");
+                    }
                     else if (StaticChecks.NotNullWhen(x) is bool when && m.ReturnType.SpecialType == SpecialType.System_Boolean)
+                    {
                         Line($"  free ensures {(when ? "result" : "!result")} ==> {Local(x)} != null;");
+                    }
                 }
-                else if (IsNullable(x.Type) && NotNullable(x.Type)) Line($"  free ensures {Local(x)} != null;");
+                else if (IsNullable(x.Type) && NotNullable(x.Type))
+                {
+                    Line($"  free ensures {Local(x)} != null;");
+                }
             }
             // (one that speaks of snapshots of predicate instances, the procedure's own state, is checked and assumed in its body)
-            foreach (var r in p.Requires) Line($"  {(p.Source.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.Source.FreeRequires ? null : r.Check);
+            foreach (var r in p.Requires)
+            {
+                Line($"  {(p.Source.FreeRequires ? "free requires" : "requires")} {(Snapshots(r.Expr) ? "true" : E(r.Expr, atEntry))};", p.Source.FreeRequires ? null : r.Check);
+            }
             // (checked at each return, where it is reported: Boogie would report one return path of each)
             // (one of a parameter the body assigns is of its value at return, which callers don't see: they get none)
-            foreach (var e in p.Ensures) Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.Source.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
-            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Source.Ghost) Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
+            foreach (var e in p.Ensures)
+            {
+                Line($"  free ensures {(Snapshots(e.Expr) || MentionsAny(e.Expr, p.Source.AssignedParams.Keys) ? "true" : E(e.Expr, cx))};");
+            }
+            if (Returns(m) != null && IsIntegral(Returns(m)) && !p.Source.Ghost)
+            {
+                Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
+            }
             if (functionFields != null)
-                Line($"  free ensures result == {E(new MFnApp { Callee = m, Function = FunctionName(m), Layer = "$LS($LZ)", Fields = functionFields, Args = (p.Source.HasThis ? new[] { new MVar("this") } : new MExpr[0]).Concat(m.Parameters.Select(x => (MExpr)new MVar(Local(x)))).ToArray() }, cx)};");
-            if (Returns(m) != null && IsRef(Returns(m))) Line("  free ensures result == null || $Alloc[result];");
+            {
+                Line($"  free ensures result == {E(new MFnApp
+                {
+                    Callee = m,
+                    Function = FunctionName(m),
+                    Layer = "$LS($LZ)",
+                    Fields = functionFields,
+                    Args = (p.Source.HasThis ? new[] { new MVar("this") } : new MExpr[0]).Concat(m.Parameters.Select(x => (MExpr)new MVar(Local(x)))).ToArray(),
+                }, cx)};");
+            }
+            if (Returns(m) != null && IsRef(Returns(m)))
+            {
+                Line("  free ensures result == null || $Alloc[result];");
+            }
             // (a list's constructor: a new list)
-            if (p.Source.ListCtor) Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
-            if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m))) Line("  free ensures result != null;");
-            if (Returns(m) != null && IsData(Returns(m))) Line($"  free ensures {DataFacts("result", Returns(m), cx)};");
+            if (p.Source.ListCtor)
+            {
+                Line("  free ensures result != null && !old($Alloc[result]) && $Alloc[result];");
+            }
+            if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m)))
+            {
+                Line("  free ensures result != null;");
+            }
+            if (Returns(m) != null && IsData(Returns(m)))
+            {
+                Line($"  free ensures {DataFacts("result", Returns(m), cx)};");
+            }
             // (a constructor has set the fields that may not be null: it asserts so at each return)
             if (p.Source.IsCtor)
+            {
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f)) &&
                                                                          (!Checks.IsRequired(f) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))))
+                {
                     Line($"  free ensures {FieldMap(f)}[this] != null;");
-            if (p.Source.Abstract) return;
+                }
+            }
+            if (p.Source.Abstract)
+            {
+                return;
+            }
             Line("{");
             if (p.Source.UsesPerm)
             {
@@ -1104,18 +1483,27 @@ namespace CsVerify.Verifier.Boogie
             // the program's of a non-nullable reference type is never null: each write to it is checked, and it's read only
             // once written)
             foreach (var l in p.Source.Locals)
+            {
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
                      IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.InRange(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
                      $"  var {l.Name}: {TypeOf(l.Type)};");
-            foreach (var x in ins) Line($"    {x} := {x}$in;");
+            }
+            foreach (var x in ins)
+            {
+                Line($"    {x} := {x}$in;");
+            }
             foreach (var b in p.Blocks)
             {
                 Line($"  {b.Label}:");
                 // (a block's leading assertions and assumptions are a loop's invariants where it is a head: kept whole there)
                 // (elsewhere a check not assumed after is on a side branch: inline, a failing one would make what follows vacuous)
                 int lead = !p.Source.LoopBodies.ContainsKey(b.Ordinal) || b.Label != $"b{b.Ordinal}" ? 0 : b.Stmts.TakeWhile(x => x is MAssert || x is MAssume || x is HLoopFrame || x is MAtomicSteps || x is HConfinedFrame).Count();
-                for (int k = 0; k < b.Stmts.Count; k++) { _leading = k < lead; Statement(b.Stmts[k], cx); }
+                for (int k = 0; k < b.Stmts.Count; k++)
+                {
+                    _leading = k < lead;
+                    Statement(b.Stmts[k], cx);
+                }
                 _leading = false;
                 switch (b.Jump)
                 {
@@ -1132,15 +1520,23 @@ namespace CsVerify.Verifier.Boogie
                 Line($"procedure {p.Source.Name}$wf({ps})", Undecided(p));
                 Given(p, atEntry);
                 Line("{");
-                if (p.Source.UsesPerm) Line("  var psnap: [Inst]int;");
-                foreach (var s in p.Entry) Statement(s, atEntry);
+                if (p.Source.UsesPerm)
+                {
+                    Line("  var psnap: [Inst]int;");
+                }
+                foreach (var s in p.Entry)
+                {
+                    Statement(s, atEntry);
+                }
                 Line("}");
             }
         }
 
         private static Check Undecided(HProcedure p) => new Check
         {
-            Id = BoogieTranslator.Undecided, Method = p.Source.Result, Message = "Boogie couldn't decide it",
+            Id = BoogieTranslator.Undecided,
+            Method = p.Source.Result,
+            Message = "Boogie couldn't decide it",
             Span = (p.Source.Method.Locations.FirstOrDefault() ?? Location.None).GetLineSpan(),
         };
 
@@ -1164,7 +1560,10 @@ namespace CsVerify.Verifier.Boogie
         {
             var name = E(new MVar(local), cx);
             var isCase = E(MathTypes.IsCase(new MVar(local), t), cx);
-            if (!t.IsValueType) return $"{name} == null || {isCase}";
+            if (!t.IsValueType)
+            {
+                return $"{name} == null || {isCase}";
+            }
             var refs = KernelTypes.Data.Fields((INamedTypeSymbol)t).Where(f => IsRef(f.Type) || IsView(f.Type)).ToList();
             var fields = refs.Where(f => NotNullable(f.Type)).Select(f => $" && {FieldFunction(f)}({name}) != null")
                 .Concat(refs.Select(f => $" && ({FieldFunction(f)}({name}) == null || $Alloc[{FieldFunction(f)}({name})])"));
@@ -1187,23 +1586,56 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = p.Source.Method;
             Line($"  free requires {InRangeOfMemory};");
-            if (p.Source.HasThis && p.Source.ThisIsView && KernelTypes.Trees) Line("  free requires $root[this] == this;");
-            if (p.Source.HasThis && !IsStruct(m.ContainingType)) Line(IsData(m.ContainingType) ? $"  free requires {E(MathTypes.IsCase(new MVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
-            if (p.Source.HasThis && IsStruct(m.ContainingType)) foreach (var fact in ValueFacts("this", m.ContainingType, null, cx)) Line($"  free requires {fact};");
+            if (p.Source.HasThis && p.Source.ThisIsView && KernelTypes.Trees)
+            {
+                Line("  free requires $root[this] == this;");
+            }
+            if (p.Source.HasThis && !IsStruct(m.ContainingType))
+            {
+                Line(IsData(m.ContainingType) ? $"  free requires {E(MathTypes.IsCase(new MVar("this"), m.ContainingType), cx)};" : "  free requires this != null && $Alloc[this];");
+            }
+            if (p.Source.HasThis && IsStruct(m.ContainingType))
+            {
+                foreach (var fact in ValueFacts("this", m.ContainingType, null, cx))
+                {
+                    Line($"  free requires {fact};");
+                }
+            }
             // (a reference in a field of an allocated object is to an allocated object: Dafny's good heap)
-            foreach (var f in RefFieldsOf(p)) Line($"  free requires {GoodField(f)};");
-            foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees)) Line($"  free requires {TreeField(f)};");
+            foreach (var f in RefFieldsOf(p))
+            {
+                Line($"  free requires {GoodField(f)};");
+            }
+            foreach (var f in RefFieldsOf(p).Where(f => SpecSymbols.IsOwnsField(f) && KernelTypes.Trees))
+            {
+                Line($"  free requires {TreeField(f)};");
+            }
             // (a new object's fields are their defaults: its caller made them so)
             if (p.Source.IsCtor)
+            {
                 foreach (var f in InstanceFields(m.ContainingType).Where(f => !IsTypeParameter(FieldType(f))).OrderBy(FieldMap, System.StringComparer.Ordinal))
+                {
                     Line($"  free requires {FieldMap(f)}[this] == {E(MathTypes.Default(FieldType(f)), cx)};");
+                }
+            }
             foreach (var x in m.Parameters.Where(x => x.RefKind != RefKind.Out))
-                foreach (var fact in ValueFacts(Local(x), x.Type, x, cx)) Line($"  free requires {fact};");
+            {
+                foreach (var fact in ValueFacts(Local(x), x.Type, x, cx))
+                {
+                    Line($"  free requires {fact};");
+                }
+            }
             // (what a lambda or a local function captures: some value of its type)
             foreach (var (input, type, notNull) in p.Source.Captured)
             {
-                foreach (var fact in ValueFacts(input, type, null, cx)) Line($"  free requires {fact};");
-                if (notNull && !(IsNullable(type) && NotNullable(type))) Line($"  free requires {input} != null;");
+                foreach (var fact in ValueFacts(input, type, null, cx))
+                {
+                    Line($"  free requires {fact};");
+                }
+                if (notNull && !(IsNullable(type) && NotNullable(type)))
+                {
+                    Line($"  free requires {input} != null;");
+                }
             }
         }
 
@@ -1211,22 +1643,49 @@ namespace CsVerify.Verifier.Boogie
         private IEnumerable<string> ValueFacts(string local, ITypeSymbol type, IParameterSymbol x, Context cx)
         {
             var name = E(new MVar(local), cx);
-            if (IsIntegral(type)) yield return E(MathTypes.InRange(new MVar(local), type), cx);
+            if (IsIntegral(type))
+            {
+                yield return E(MathTypes.InRange(new MVar(local), type), cx);
+            }
             // (a struct's integer fields: each in its type's range)
             if (IsStruct(type))
+            {
                 foreach (var (f, k) in StructFields(type).Select((f, k) => (f, k)).Where(x => IsIntegral(x.f.Type)))
+                {
                     yield return E(MathTypes.InRange(MathTypes.TupleItem(new MVar(local), type, k), f.Type), cx);
+                }
+            }
             // (a span from elsewhere: its cells some array's, within its length)
-            if (IsSpan(type)) yield return $"$sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}))";
-            if (IsRef(type) || IsView(type) || IsShare(type)) yield return $"{name} == null || $Alloc[{name}]";
+            if (IsSpan(type))
+            {
+                yield return $"$sbase({name}) != null && $Alloc[$sbase({name})] && 0 <= $soff({name}) && 0 <= len({name}) && $soff({name}) + len({name}) <= len($sbase({name}))";
+            }
+            if (IsRef(type) || IsView(type) || IsShare(type))
+            {
+                yield return $"{name} == null || $Alloc[{name}]";
+            }
             // (not null: checked at each call's argument)
-            if (IsNullable(type) && (NotNullable(type) || x != null && IsQueryParameter(x))) yield return $"{name} != null";
+            if (IsNullable(type) && (NotNullable(type) || x != null && IsQueryParameter(x)))
+            {
+                yield return $"{name} != null";
+            }
             // (a view's object is its tree's root)
-            if (KernelTypes.Trees && x != null && HoldsView(x)) yield return $"$root[{name}] == {name}";
+            if (KernelTypes.Trees && x != null && HoldsView(x))
+            {
+                yield return $"$root[{name}] == {name}";
+            }
             if (KernelTypes.Trees && IsPackage(type) && (x == null || x.RefKind is RefKind.None or RefKind.Ref))
-                foreach (var f in PackageViews(type)) yield return $"$root[{FieldFunction(f)}({name})] == {FieldFunction(f)}({name})";
+            {
+                foreach (var f in PackageViews(type))
+                {
+                    yield return $"$root[{FieldFunction(f)}({name})] == {FieldFunction(f)}({name})";
+                }
+            }
             // (a data value is one of its type's cases)
-            if (IsData(type)) yield return DataFacts(local, type, cx);
+            if (IsData(type))
+            {
+                yield return DataFacts(local, type, cx);
+            }
         }
 
         private void Statement(IHeapStmt s, Context cx)
@@ -1273,18 +1732,26 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return;
                 case MAtomicSteps _:
-                    foreach (var l in StepsKept(AtomicSteps.Keys, false)) Line("    " + l);
+                    foreach (var l in StepsKept(AtomicSteps.Keys, false))
+                    {
+                        Line("    " + l);
+                    }
                     return;
                 case MHavocAll ha:
                     var havoc = ha.ProgramState ? "$havocProgram" : "$havoc";
                     Line(ha.Unless == null ? $"    call {havoc}();" : $"    if (!({E(ha.Unless, cx)})) {{ call {havoc}(); }}");
                     return;
                 case MKeep keep when !keep.After:
-                    foreach (var m in _stateMaps) Line($"    k${keep.Id}{m.name} := {m.name};");
+                    foreach (var m in _stateMaps)
+                    {
+                        Line($"    k${keep.Id}{m.name} := {m.name};");
+                    }
                     return;
                 case MKeep keep:
                     foreach (var m in _stateMaps)
+                    {
                         Line($"    assume (forall o: Ref :: ({string.Join(" || ", keep.Keep.Select(x => $"o == {E(new MVar(x), cx)}"))}) ==> {m.name}[o] == k${keep.Id}{m.name}[o]);");
+                    }
                     return;
                 case MAwait aw:
                 {
@@ -1309,26 +1776,47 @@ namespace CsVerify.Verifier.Boogie
                     var rs = lam.ResultType == null ? new string[0] : new[] { $"q$r: {lam.ResultType}" };
                     var post = App("$post." + lam.Key, lam.ResultType == null ? "" : ", q$r");
                     foreach (var fact in lam.Posts)
+                    {
                         Line($"    assume {All(rs, post, $"{post} && {pre} ==> ({E(fact, cx)})")};");
-                    if (lam.NoChange) Line($"    assume $nochange({lam.Var});");
-                    if (lam.Steady) Line($"    assume $steady({lam.Var});");
+                    }
+                    if (lam.NoChange)
+                    {
+                        Line($"    assume $nochange({lam.Var});");
+                    }
+                    if (lam.Steady)
+                    {
+                        Line($"    assume $steady({lam.Var});");
+                    }
                     var preS = $"$preS.{lam.Key}({lam.Var}, {State}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
                     var readsS = $"$readsS.{lam.Key}({lam.Var}, {State}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
-                    if (lam.PreS != null) Line($"    assume {All(new string[0], preS, $"{preS} == ({E(lam.PreS, cx)})")};");
-                    if (lam.Reads != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{readsS}[o$]", $"{readsS}[o$] ==> ({E(lam.Reads, cx)})[o$]")};");
+                    if (lam.PreS != null)
+                    {
+                        Line($"    assume {All(new string[0], preS, $"{preS} == ({E(lam.PreS, cx)})")};");
+                    }
+                    if (lam.Reads != null)
+                    {
+                        Line($"    assume {All(new[] { "o$: Ref" }, $"{readsS}[o$]", $"{readsS}[o$] ==> ({E(lam.Reads, cx)})[o$]")};");
+                    }
                     // (in any state: what it accepts and what it gives are of that state's memory, which its frame says it reads)
                     var atS = new Context { MapAt = map => $"$st.{map}(s$)" };
                     string InS(string f) => f.Replace($"{lam.Var}, {State}", $"{lam.Var}, s$");
                     if (lam.PreS != null)
+                    {
                         Line($"    assume (forall s$: St{string.Concat(lam.Params.Select(x => $", {x.name}: {x.type}"))} :: {{ {InS(preS)} }} {InS(preS)} == ({E(lam.PreS, atS)}));");
+                    }
                     if (lam.PostsS.Count > 0)
                     {
                         var postS = $"$postS.{lam.Key}({lam.Var}, s${string.Concat(lam.Params.Select(x => ", " + x.name))}{(lam.ResultType == null ? "" : ", q$r")})";
                         foreach (var fact in lam.PostsS)
+                        {
                             Line($"    assume (forall s$: St{string.Concat(lam.Params.Select(x => $", {x.name}: {x.type}"))}{(lam.ResultType == null ? "" : $", q$r: {lam.ResultType}")} :: {{ {postS} }} {postS} && {InS(preS)} ==> ({E(fact, atS)}));");
+                        }
                     }
                     var frame = $"$frame.{lam.Key}({lam.Var}{string.Concat(lam.Params.Select(x => ", " + x.name))})";
-                    if (lam.Changes != null) Line($"    assume {All(new[] { "o$: Ref" }, $"{frame}[o$]", $"{frame}[o$] ==> ({E(lam.Changes, cx)})[o$]")};");
+                    if (lam.Changes != null)
+                    {
+                        Line($"    assume {All(new[] { "o$: Ref" }, $"{frame}[o$]", $"{frame}[o$] ==> ({E(lam.Changes, cx)})[o$]")};");
+                    }
                     return;
                 }
                 case MNewExc ne:
@@ -1360,7 +1848,9 @@ namespace CsVerify.Verifier.Boogie
                 case MCallFrame { After: false } frame:
                     foreach (var x in new[] { "perm", "pinst", "owner", "psnap", "$Alloc" }.Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).Concat(frame.Maps).Concat(frame.Fields ? new[] { "fperm", "fowner" } : new string[0])
                                  .Concat(frame.Cells ? new[] { "cells", "cowner" }.Concat(frame.ElementMaps) : new string[0]).Concat(frame.OldGlobals).Distinct())
+                    {
                         Line($"    s{frame.Id}{(x.StartsWith("$") ? "" : "$")}{x} := {x};");
+                    }
                     return;
                 case MCallFrame frame:
                 {
@@ -1381,15 +1871,24 @@ namespace CsVerify.Verifier.Boogie
                     }
                     // (a query of an [Owned] object reads only its tree: of one the caller keeps, what it was)
                     if (KernelTypes.Trees)
+                    {
                         foreach (var (qm, qfields) in _ownedQueries.Where(q => q.fields.Any(frame.Maps.Contains)))
                         {
                             var x = new MVar("x$q");
-                            var now = E(new MFnApp { Callee = qm, Function = FunctionName(qm), Layer = "$LS($LZ)", Fields = qfields, Args = new MExpr[] { x } }, cx);
+                            var now = E(new MFnApp
+                            {
+                                Callee = qm,
+                                Function = FunctionName(qm),
+                                Layer = "$LS($LZ)",
+                                Fields = qfields,
+                                Args = new MExpr[] { x },
+                            }, cx);
                             var maps = OwnArrays(qm) == null ? Maps(cx) : "";
                             var then = $"{FunctionName(qm)}($LS($LZ){(maps.Length == 0 ? "" : ", " + maps)}{string.Join("", qfields.Select(f => ", " + (frame.Maps.Contains(f) ? sn + f : Map(f, cx))))}, x$q)";
                             var recv = frame.Receiver == null ? "" : $" && x$q != {E(frame.Receiver, cx)} && {sn}$root[x$q] != {E(frame.Receiver, cx)}";
                             Line($"    assume (forall x$q: Ref :: {{ {now} }} {sn}$Alloc[x$q] && ({sn}$perm[x$q] || {sn}$perm[{sn}$root[x$q]]){recv} ==> {now} == {then});");
                         }
+                    }
                     if (frame.Fields)
                     {
                         var keptField = $"{sn}$Alloc[y] && (({sn}$perm[y]{(frame.Receiver == null ? "" : $" && y != {E(frame.Receiver, cx)}")}) || {sn}$fperm[y][k] || {sn}$pinst[{sn}$owner[y]] >= 1 || {sn}$pinst[{sn}$fowner[y][k]] >= 1)";
@@ -1409,23 +1908,39 @@ namespace CsVerify.Verifier.Boogie
                         }).Where(x => x != null).ToList();
                         var changed = parts.Count == 0 ? "false" : $"(({string.Join(" || ", parts)}) && {sn}$cells[x$][i$] <= 0.0)";
                         var unchanged = $"{sn}$Alloc[x$] && !{changed}";
-                        foreach (var map in frame.ElementMaps) Line($"    assume (forall x$: Ref, i$: int :: {unchanged} ==> {map}[x$][i$] == {sn}{map}[x$][i$]);");
+                        foreach (var map in frame.ElementMaps)
+                        {
+                            Line($"    assume (forall x$: Ref, i$: int :: {unchanged} ==> {map}[x$][i$] == {sn}{map}[x$][i$]);");
+                        }
                         Line("    havoc cowner;");
                         Line($"    assume (forall x$: Ref, i$: int :: {unchanged} ==> cowner[x$][i$] == {sn}$cowner[x$][i$]);");
                     }
                     return;
                 }
                 case HSnapshot snap:
-                    if (snap.Frame.Maps.Count == 0) return;
-                    foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps)) Line($"    s${snap.Frame.Head}{map} := {map};");
+                    if (snap.Frame.Maps.Count == 0)
+                    {
+                        return;
+                    }
+                    foreach (var map in new[] { "$Alloc" }.Concat(snap.Frame.Maps))
+                    {
+                        Line($"    s${snap.Frame.Head}{map} := {map};");
+                    }
                     return;
                 case HConfinedSnapshot cs:
-                    foreach (var (name, _) in _stateMaps) Line($"    c${cs.Head}{name} := {name};");
+                    foreach (var (name, _) in _stateMaps)
+                    {
+                        Line($"    c${cs.Head}{name} := {name};");
+                    }
                     return;
                 case HConfinedFrame cf:
                     foreach (var (local, written) in cf.Locals.OrderBy(x => x.Key, System.StringComparer.Ordinal))
+                    {
                         foreach (var (name, _) in _stateMaps.Where(m => !written.Contains(m.name) && !(written.Contains("$M.") && m.name.StartsWith("$F.$M."))))
+                        {
                             Line($"    assume {local} != null ==> {name}[{local}] == c${cf.Head}{name}[{local}];");
+                        }
+                    }
                     return;
                 case HLoopFrame frame:
                     // (an assume at the head: what Boogie keeps across the loop's havoc, as an invariant)
@@ -1440,7 +1955,10 @@ namespace CsVerify.Verifier.Boogie
                     var targets = (c.Result == null ? new string[0] : new[] { c.Result }).Concat(c.ThisOut == null ? new string[0] : new[] { c.ThisOut })
                         .Concat(c.RefOuts.OrderBy(x => x.param).Select(x => x.var)).ToList();
                     var given = c.Args.Where((a, k) => k >= c.Callee.Parameters.Length || c.Callee.Parameters[k].RefKind != RefKind.Out);
-                    if (c.Phase == 2) Started.Add(c.Callee);
+                    if (c.Phase == 2)
+                    {
+                        Started.Add(c.Callee);
+                    }
                     Line($"    call {(targets.Count == 0 ? "" : string.Join(", ", targets) + " := ")}{Name(c.Callee)}{(c.Phase == 2 ? "$started" : "")}({string.Join(", ", (c.Receiver == null ? given : new[] { c.Receiver }.Concat(given)).Select(a => E(a, cx)))});", c.Check);
                     return;
                 }

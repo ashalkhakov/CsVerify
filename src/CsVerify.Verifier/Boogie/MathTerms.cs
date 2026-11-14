@@ -17,7 +17,10 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static MExpr Map(MExpr e, Func<MExpr, MExpr> at)
         {
-            if (at(e) is MExpr given) return given;
+            if (at(e) is MExpr given)
+            {
+                return given;
+            }
             MExpr M(MExpr x) => Map(x, at);
             return e switch
             {
@@ -25,13 +28,23 @@ namespace CsVerify.Verifier.Boogie
                 MOp op => new MOp(op.Op, op.Args.Select(M).ToArray()),
                 MQuant q => new MQuant
                 {
-                    Forall = q.Forall, Var = q.Var, Type = q.Type,
-                    Range = q.Range == null ? null : M(q.Range), Body = M(q.Body), Trigger = q.Trigger?.Select(M).ToArray(),
+                    Forall = q.Forall,
+                    Var = q.Var,
+                    Type = q.Type,
+                    Range = q.Range == null ? null : M(q.Range),
+                    Body = M(q.Body),
+                    Trigger = q.Trigger?.Select(M).ToArray(),
                 },
                 MFnApp f => new MFnApp
                 {
-                    Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields,
-                    Args = f.Args.Select(M).ToArray(), Snap = f.Snap == null ? null : M(f.Snap),
+                    Callee = f.Callee,
+                    Function = f.Function,
+                    Plain = f.Plain,
+                    MapsAt = f.MapsAt,
+                    Layer = f.Layer,
+                    Fields = f.Fields,
+                    Args = f.Args.Select(M).ToArray(),
+                    Snap = f.Snap == null ? null : M(f.Snap),
                 },
                 _ => throw NotMath(e),
             };
@@ -49,9 +62,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 var x = stack.Pop();
                 yield return x;
-                if (into != null && !into(x)) continue;
+                if (into != null && !into(x))
+                {
+                    continue;
+                }
                 var children = Children(x).ToList();
-                for (int k = children.Count - 1; k >= 0; k--) stack.Push(children[k]);
+                for (int k = children.Count - 1; k >= 0; k--)
+                {
+                    stack.Push(children[k]);
+                }
             }
         }
 
@@ -86,15 +105,39 @@ namespace CsVerify.Verifier.Boogie
                     var range = q.Range == null ? null : ToMath(q.Range);
                     var body = ToMath(q.Body);
                     var trigger = q.Trigger == null ? null : All(q.Trigger);
-                    if (q.Range != null && range == null || body == null || q.Trigger != null && trigger == null) return null;
-                    return new MQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = range, Body = body, Trigger = trigger };
+                    if (q.Range != null && range == null || body == null || q.Trigger != null && trigger == null)
+                    {
+                        return null;
+                    }
+                    return new MQuant
+                    {
+                        Forall = q.Forall,
+                        Var = q.Var,
+                        Type = q.Type,
+                        Range = range,
+                        Body = body,
+                        Trigger = trigger,
+                    };
                 }
                 case KFnApp f:
                 {
                     var args = All(f.Args);
                     var snap = f.Snap == null ? null : ToMath(f.Snap);
-                    if (args == null || f.Snap != null && snap == null) return null;
-                    return new MFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = args, Snap = snap, Plain = f.Plain, MapsAt = f.MapsAt };
+                    if (args == null || f.Snap != null && snap == null)
+                    {
+                        return null;
+                    }
+                    return new MFnApp
+                    {
+                        Callee = f.Callee,
+                        Function = f.Function,
+                        Layer = f.Layer,
+                        Fields = f.Fields,
+                        Args = args,
+                        Snap = snap,
+                        Plain = f.Plain,
+                        MapsAt = f.MapsAt,
+                    };
                 }
                 default: return null;
             }

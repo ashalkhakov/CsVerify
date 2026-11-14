@@ -28,8 +28,16 @@ namespace CsVerify.Verifier.Boogie
                 AssumeInvariant(ViewOf(f.Type), v);
                 Assume(new MOp("&&", new MOp("!", Held(v)), new MOp("!", Packed(v))));
                 // (a view's object is its tree's root, packed or not)
-                if (KernelTypes.Trees) Assume(new MOp("==", new MOp("sel", new MVar("$root"), v), v));
-                Emit(new MMapUpdate { Map = "pkg", Ref = v, Value = new MLit("true") });
+                if (KernelTypes.Trees)
+                {
+                    Assume(new MOp("==", new MOp("sel", new MVar("$root"), v), v));
+                }
+                Emit(new MMapUpdate
+                {
+                    Map = "pkg",
+                    Ref = v,
+                    Value = new MLit("true"),
+                });
             }
         }
 
@@ -53,16 +61,29 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr Whole(MExpr o) => new MOp("&&", Held(o), new MOp(">=", new MOp("sel", new MVar("pk"), o), new MLit("0")));
 
         private void Shares(MExpr o, int by) =>
-            Emit(new MMapUpdate { Map = "pk", Ref = o, Value = new MOp(by > 0 ? "+" : "-", new MOp("sel", new MVar("pk"), o), new MLit(System.Math.Abs(by).ToString())) });
+            Emit(new MMapUpdate
+            {
+                Map = "pk",
+                Ref = o,
+                Value = new MOp(by > 0 ? "+" : "-", new MOp("sel", new MVar("pk"), o), new MLit(System.Math.Abs(by).ToString())),
+            });
 
         /// <summary>A view received: nobody else has it (views are linear), so it isn't one in hand already; now it is.</summary>
         private void Receive(MExpr o)
         {
             Assume(new MOp("!", Held(o)));
             Assume(new MOp("!", Packed(o)));
-            Emit(new MMapUpdate { Map = "perm", Ref = o, Value = new MLit("true") });
+            Emit(new MMapUpdate
+            {
+                Map = "perm",
+                Ref = o,
+                Value = new MLit("true"),
+            });
             // (an object whose view is in hand is its tree's root: no [Owns] field holds it)
-            if (KernelTypes.Trees) Assume(new MOp("==", new MOp("sel", new MVar("$root"), o), o));
+            if (KernelTypes.Trees)
+            {
+                Assume(new MOp("==", new MOp("sel", new MVar("$root"), o), o));
+            }
         }
 
         /// <summary>
@@ -71,24 +92,56 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void EnterOwned()
         {
-            Emit(new MAssign { Var = "perm", Value = new MLit("(lambda o: Ref :: false)") });
-            Emit(new MAssign { Var = "pk", Value = new MLit("(lambda o: Ref :: 0)") });
-            Emit(new MAssign { Var = "pkg", Value = new MLit("(lambda o: Ref :: false)") });
+            Emit(new MAssign
+            {
+                Var = "perm",
+                Value = new MLit("(lambda o: Ref :: false)"),
+            });
+            Emit(new MAssign
+            {
+                Var = "pk",
+                Value = new MLit("(lambda o: Ref :: 0)"),
+            });
+            Emit(new MAssign
+            {
+                Var = "pkg",
+                Value = new MLit("(lambda o: Ref :: false)"),
+            });
             // (no instances held yet: the preconditions bring them; who owns what is unknown)
-            Emit(new MAssign { Var = "pinst", Value = new MLit("(lambda q: Inst :: 0)") });
+            Emit(new MAssign
+            {
+                Var = "pinst",
+                Value = new MLit("(lambda q: Inst :: 0)"),
+            });
             Emit(new MHavoc { Var = "owner" });
             Emit(new MHavoc { Var = "psnap" });
             if (_p.UsesFields)
             {
-                Emit(new MAssign { Var = "fperm", Value = new MLit("(lambda y$: Ref :: (lambda k$: int :: false))") });
+                Emit(new MAssign
+                {
+                    Var = "fperm",
+                    Value = new MLit("(lambda y$: Ref :: (lambda k$: int :: false))"),
+                });
                 Emit(new MHavoc { Var = "fowner" });
             }
             if (_p.UsesCells)
             {
-                Emit(new MAssign { Var = "cells", Value = new MLit($"(lambda x$: Ref :: (lambda i$: int :: {(_p.ArrayMode ? "0.0" : "1.0")}))") });
+                Emit(new MAssign
+                {
+                    Var = "cells",
+                    Value = new MLit($"(lambda x$: Ref :: (lambda i$: int :: {(_p.ArrayMode ? "0.0" : "1.0")}))"),
+                });
                 Emit(new MHavoc { Var = "cowner" });
             }
-            if (_p.ThisIsView) Emit(new MMapUpdate { Map = "perm", Ref = new MVar("this"), Value = new MLit("true") });
+            if (_p.ThisIsView)
+            {
+                Emit(new MMapUpdate
+                {
+                    Map = "perm",
+                    Ref = new MVar("this"),
+                    Value = new MLit("true"),
+                });
+            }
             ViewsAtEntry(grant: true);
         }
 
@@ -100,7 +153,10 @@ namespace CsVerify.Verifier.Boogie
                 var v = new MVar(Local(param));
                 Assume(new MOp("!=", v, new MLit("null")));
                 AssumeInvariant(ViewOf(param.Type), v);
-                if (grant) Receive(v);
+                if (grant)
+                {
+                    Receive(v);
+                }
             }
             // (a share, or a view lent read-only: a share's worth, which may alias other shares, but no view in hand)
             foreach (var param in m.Parameters.Where(HoldsShare))
@@ -108,15 +164,28 @@ namespace CsVerify.Verifier.Boogie
                 var v = new MVar(Local(param));
                 Assume(new MOp("!=", v, new MLit("null")));
                 AssumeInvariant(ViewOf(param.Type), v);
-                if (!grant) continue;
-                if (IsView(param.Type)) Assume(new MOp("!", Held(v)));
+                if (!grant)
+                {
+                    continue;
+                }
+                if (IsView(param.Type))
+                {
+                    Assume(new MOp("!", Held(v)));
+                }
                 Shares(v, 1);
             }
             // (the views in the packages it gets: in hand, packed, each different from the others)
             if (grant)
+            {
                 foreach (var param in m.Parameters.Where(x => IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref))
+                {
                     Arrive(new MVar(Local(param)), param.Type);
-            if (_p.ThisIsView && !_p.IsCtor) AssumeInvariant(m.ContainingType, new MVar("this"));
+                }
+            }
+            if (_p.ThisIsView && !_p.IsCtor)
+            {
+                AssumeInvariant(m.ContainingType, new MVar("this"));
+            }
         }
     }
 }

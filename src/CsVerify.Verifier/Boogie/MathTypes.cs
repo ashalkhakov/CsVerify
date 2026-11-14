@@ -25,7 +25,9 @@ namespace CsVerify.Verifier.Boogie
         public static MExpr FloatLiteral(object v, ITypeSymbol t)
         {
             if (t.SpecialType == SpecialType.System_Single)
+            {
                 return new MOp("$fp.bits32", new MLit(((uint)System.BitConverter.SingleToInt32Bits(System.Convert.ToSingle(v))).ToString() + "bv32"));
+            }
             return new MOp("$fp.bits64", new MLit(((ulong)System.BitConverter.DoubleToInt64Bits(System.Convert.ToDouble(v))).ToString() + "bv64"));
         }
 
@@ -50,7 +52,10 @@ namespace CsVerify.Verifier.Boogie
         public static MExpr IsCase(MExpr v, ITypeSymbol type)
         {
             // (an open type's values: of any case, those the program has or others)
-            if (Data.IsOpen(DataTypes.Def(type))) return new MOp("!=", v, new MLit("null"));
+            if (Data.IsOpen(DataTypes.Def(type)))
+            {
+                return new MOp("!=", v, new MLit("null"));
+            }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (MExpr)new MOp("$is." + CaseName(c).Substring(3), v)).ToList();
             var any = tags.Count == 0 ? new MLit("false") : tags.Aggregate((a, b) => new MOp("||", a, b));
             return new MOp("&&", new MOp("!=", v, new MLit("null")), any);
@@ -66,7 +71,9 @@ namespace CsVerify.Verifier.Boogie
             var list = (INamedTypeSymbol)KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
             var kind = Kind(element);
             if (index == null)
+            {
                 return new MOp("ite", new MOp("$arr", x), new MOp("len", x), new MOp("ite", new MOp("$coll", x), new MOp("sel", new MVar(SizeMap), x), new MOp("$ocount", x, new MOp("$state"))));
+            }
             var array = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element);
             return new MOp("ite", new MOp("$arr", x), new MOp("sel", new MVar(Elements(array)), x, index),
                 new MOp("ite", new MOp("$coll", x), new MOp("sel", new MVar(ModelOf("Items", list).Name), x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));

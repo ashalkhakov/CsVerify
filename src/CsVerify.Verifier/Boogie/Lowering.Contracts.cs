@@ -21,16 +21,21 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr InvariantBody(IMethodSymbol inv, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal, Func<IMethodSymbol, Contract> contractOf)
         {
             var c = contractOf(inv);
-            if (c.PureBody == null) throw new NotTranslated("an invariant without an expression body: " + inv.Name);
+            if (c.PureBody == null)
+            {
+                throw new NotTranslated("an invariant without an expression body: " + inv.Name);
+            }
             // (a function it calls is of values alone: static, its parameters data or scalars, as the record's are)
             bool OfValues(IInvocationOperation call) => IntegerMath(call) ||
                 isFunction(call.TargetMethod) && call.TargetMethod.IsStatic && call.TargetMethod.Parameters.All(x => x.RefKind == RefKind.None && (Scalar(x.Type) || IsData(x.Type)));
             if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation call && !OfValues(call) || o is IFieldReferenceOperation ||
                                                        o is IPropertyReferenceOperation pr && !(pr.Instance != null && IsData(pr.Instance.Type) && DataTypes.IsPositional(pr.Property.OriginalDefinition)) &&
                                                        !IsViewsObject(pr) && !(pr.Property.Name == "Value" && pr.Instance is IPropertyReferenceOperation inner && IsViewsObject(inner))))
+            {
                 // (one that reads mutable state is reported, from its declaration, by StaticChecks;
                 // a value's validity then says nothing of it, which is sound, and a construction still checks it)
                 return new KLit("true");
+            }
             var l = new Lowering(inv, c, null, c.Model, null, _ => false, isFunction, literal, contractOf);
             return l.Spec(c.PureBody, null);
         }
@@ -58,12 +63,25 @@ namespace CsVerify.Verifier.Boogie
         {
             var l = new Lowering(m, contract, null, null, null, _ => false, isFunction, literal, contractOf);
             // (a local function's: what it captures, inputs of its own, which its contract may name)
-            if (IsNested(m) && KernelTypes.NestedGraphs != null && KernelTypes.NestedGraphs.TryGetValue(m.OriginalDefinition, out var lg)) l.Captures(lg);
+            if (IsNested(m) && KernelTypes.NestedGraphs != null && KernelTypes.NestedGraphs.TryGetValue(m.OriginalDefinition, out var lg))
+            {
+                l.Captures(lg);
+            }
             // (the permissions its postconditions give back, and a predicate's body, for folding and unfolding it)
             ContractOf(l, contract);
-            if (contract.Modifies != null) { l._p.Frame = l.Spec(contract.Modifies, null); l.LentRoots(contract.Modifies); }
-            if ((SpecSymbols.IsPredicate(m) || isFunction(m) && !Engine.IsOverridable(m)) && contract.PureBody != null) l._p.FunctionBody = l.Spec(contract.PureBody, null);
-            else if (isFunction(m) && !Engine.IsOverridable(m) && contract.PureStatements != null) l._p.FunctionBody = l.PureStatements(contract.PureStatements, 0);
+            if (contract.Modifies != null)
+            {
+                l._p.Frame = l.Spec(contract.Modifies, null);
+                l.LentRoots(contract.Modifies);
+            }
+            if ((SpecSymbols.IsPredicate(m) || isFunction(m) && !Engine.IsOverridable(m)) && contract.PureBody != null)
+            {
+                l._p.FunctionBody = l.Spec(contract.PureBody, null);
+            }
+            else if (isFunction(m) && !Engine.IsOverridable(m) && contract.PureStatements != null)
+            {
+                l._p.FunctionBody = l.PureStatements(contract.PureStatements, 0);
+            }
             return l._p;
         }
 
@@ -74,45 +92,111 @@ namespace CsVerify.Verifier.Boogie
         private static void ContractOf(Lowering l, Contract contract)
         {
             KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => new KOp("&&", a, b));
-            foreach (var r in contract.Requires) l._p.Requires.Add(new KSpec { Expr = l.Spec(r, null), At = r.Syntax });
+            foreach (var r in contract.Requires)
+            {
+                l._p.Requires.Add(new KSpec
+                {
+                    Expr = l.Spec(r, null),
+                    At = r.Syntax,
+                });
+            }
             foreach (var (type, cond, at) in contract.ThrowEnsures)
             {
-                if (!IsException(type)) throw new NotTranslated("Spec.EnsuresOnThrow of " + type);
+                if (!IsException(type))
+                {
+                    throw new NotTranslated("Spec.EnsuresOnThrow of " + type);
+                }
                 l._p.ThrowEnsures.Add((type, l.Spec(cond, null), at));
                 l._p.ExceptionTypes.Add(type);
             }
             foreach (var e in contract.Ensures)
             {
                 var post = l.Spec(e.Expr, e.ResultParameter);
-                if (e.Guard != null) post = new KOp("==>", new KOp("old", And(e.Guard.Select(g => l.Spec(g, null)))), post);
-                l._p.Ensures.Add(new KSpec { Expr = post, At = e.Syntax });
+                if (e.Guard != null)
+                {
+                    post = new KOp("==>", new KOp("old", And(e.Guard.Select(g => l.Spec(g, null)))), post);
+                }
+                l._p.Ensures.Add(new KSpec
+                {
+                    Expr = post,
+                    At = e.Syntax,
+                });
             }
             // (a function over a predicate, with its body: its procedure gives its value, of the instance's snapshot, as
             // the body says where it unfolds it; so a call of it in code tells what a specification's use of it reads)
             if (l._m.IsStatic && l._isFunction(l._m) && contract.PureBody != null && contract.Requires.Any(HasAtoms) && l._m.DeclaringSyntaxReferences.Length > 0 &&
                 l._m.DeclaringSyntaxReferences[0].GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i => i.Expression.ToString() == "Spec.Unfold"))
-                l._p.Ensures.Add(new KSpec { At = l._m.DeclaringSyntaxReferences[0].GetSyntax(), Expr = new KOp("==", new KVar("result"),
-                    new KFnCall { Callee = l._m.OriginalDefinition, Args = l._m.Parameters.Select(x => (KExpr)new KVar(Local(x))).ToArray(), At = l._m.DeclaringSyntaxReferences[0].GetSyntax() }) });
-            if (contract.Decreases != null) l._p.Decreases = contract.Decreases.Select(d => l.Measure(d)).ToList();
+            {
+                l._p.Ensures.Add(new KSpec
+                {
+                    At = l._m.DeclaringSyntaxReferences[0].GetSyntax(),
+                    Expr = new KOp("==", new KVar("result"),
+                    new KFnCall
+                    {
+                        Callee = l._m.OriginalDefinition,
+                        Args = l._m.Parameters.Select(x => (KExpr)new KVar(Local(x))).ToArray(),
+                        At = l._m.DeclaringSyntaxReferences[0].GetSyntax(),
+                    }),
+                });
+            }
+            if (contract.Decreases != null)
+            {
+                l._p.Decreases = contract.Decreases.Select(d => l.Measure(d)).ToList();
+            }
             // (a memory view parameter holds its cells: a Spec.Acc of them, taken, and given back where it's lent)
             var decl = l._m.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
             foreach (var p in l._m.Parameters.Where(x => IsMemView(x.Type)))
             {
-                if (p.RefKind != RefKind.Out) foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl)) l._p.Requires.Add(new KSpec { Expr = c, At = decl });
-                if (p.RefKind != RefKind.None) foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl)) l._p.Ensures.Add(new KSpec { Expr = c, At = decl });
+                if (p.RefKind != RefKind.Out)
+                {
+                    foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl))
+                    {
+                        l._p.Requires.Add(new KSpec
+                        {
+                            Expr = c,
+                            At = decl,
+                        });
+                    }
+                }
+                if (p.RefKind != RefKind.None)
+                {
+                    foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl))
+                    {
+                        l._p.Ensures.Add(new KSpec
+                        {
+                            Expr = c,
+                            At = decl,
+                        });
+                    }
+                }
             }
             if (Returns(l._m) is ITypeSymbol rt && IsMemView(rt))
             {
-                foreach (var c in MemCells(new KVar("result"), rt, decl)) l._p.Ensures.Add(new KSpec { Expr = c, At = decl });
+                foreach (var c in MemCells(new KVar("result"), rt, decl))
+                {
+                    l._p.Ensures.Add(new KSpec
+                    {
+                        Expr = c,
+                        At = decl,
+                    });
+                }
             }
-            if (contract.Reads != null) l._p.ReadsFrame = l.Spec(contract.Reads, null);
+            if (contract.Reads != null)
+            {
+                l._p.ReadsFrame = l.Spec(contract.Reads, null);
+            }
             if (contract.OwnRequires.Count > 0)
             {
                 l._p.OwnRequires = contract.OwnRequires.Select(r => l.Spec(r, null)).ToList();
-                foreach (var b in contract.Bases) l._p.BaseRequires.Add((b.Method, b.Requires.Select(r => l.Spec(r, null)).ToList()));
+                foreach (var b in contract.Bases)
+                {
+                    l._p.BaseRequires.Add((b.Method, b.Requires.Select(r => l.Spec(r, null)).ToList()));
+                }
             }
             foreach (var (b, frame) in contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, contract.Modifies)))
+            {
                 l._p.BaseFrames.Add((b.Method, l.Spec(frame, null)));
+            }
         }
 
         /// <summary>
@@ -122,20 +206,37 @@ namespace CsVerify.Verifier.Boogie
         private IMethodSymbol OnThis(IMethodSymbol m, IOperation instance)
         {
             m = m.OriginalDefinition;
-            if (!(instance is IInstanceReferenceOperation) || !Engine.IsOverridable(m) || _m.ContainingType == null) return m;
+            if (!(instance is IInstanceReferenceOperation) || !Engine.IsOverridable(m) || _m.ContainingType == null)
+            {
+                return m;
+            }
             for (var t = _m.ContainingType; t != null; t = t.BaseType)
+            {
                 foreach (var o in t.GetMembers(m.Name).OfType<IMethodSymbol>())
+                {
                     for (var b = o.OverriddenMethod; b != null; b = b.OverriddenMethod)
+                    {
                         if (SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, m))
+                        {
                             return o.IsSealed || _m.ContainingType.IsSealed ? o.OriginalDefinition : m;
+                        }
+                    }
+                }
+            }
             return m;
         }
 
         /// <summary>A contract class's member means the member it specifies (the one it overrides or implements).</summary>
         private static IPropertySymbol Specified(IPropertySymbol p)
         {
-            if (p == null || !SpecSymbols.IsContractsClass(p.ContainingType)) return p;
-            if (p.OverriddenProperty != null) return p.OverriddenProperty;
+            if (p == null || !SpecSymbols.IsContractsClass(p.ContainingType))
+            {
+                return p;
+            }
+            if (p.OverriddenProperty != null)
+            {
+                return p.OverriddenProperty;
+            }
             var target = SpecSymbols.ContractClassTarget(p.ContainingType);
             return target?.GetMembers(p.Name).OfType<IPropertySymbol>().FirstOrDefault() ?? p;
         }
@@ -149,13 +250,26 @@ namespace CsVerify.Verifier.Boogie
         private KProcedure Predicate()
         {
             if (!_m.IsStatic || _m.ReturnType.SpecialType != SpecialType.System_Boolean || _contract.PureBody == null)
+            {
                 throw new NotTranslated("a [Predicate] that isn't a static bool method of one expression");
+            }
             // (ghost code: its arithmetic is mathematical, its reads and divisions checked)
             _p.IsPredicate = _p.UsesPerm = _p.Ghost = true;
             _codeArith = true;
-            try { _p.FunctionBody = Spec(_contract.PureBody, null); }
-            finally { _codeArith = false; }
-            _p.Blocks.Add(new KBlock { Label = "b0", Ordinal = 0, Jump = new KStop() });
+            try
+            {
+                _p.FunctionBody = Spec(_contract.PureBody, null);
+            }
+            finally
+            {
+                _codeArith = false;
+            }
+            _p.Blocks.Add(new KBlock
+            {
+                Label = "b0",
+                Ordinal = 0,
+                Jump = new KStop(),
+            });
             return _p;
         }
 
@@ -184,7 +298,10 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private KExpr PureStatements(IReadOnlyList<IOperation> ops, int i)
         {
-            if (i >= ops.Count) return null;
+            if (i >= ops.Count)
+            {
+                return null;
+            }
             var op = ops[i];
             IReadOnlyList<IOperation> Then(IOperation first) =>
                 (first is IBlockOperation b ? b.Operations : (IEnumerable<IOperation>)new[] { first }).Concat(ops.Skip(i + 1)).ToList();
@@ -200,15 +317,31 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var binds = new List<(string, KExpr)>();
                         foreach (var decl in group.Declarations)
+                        {
                             foreach (var v in decl.Declarators)
                             {
                                 var init = v.Initializer?.Value ?? decl.Initializer?.Value;
-                                if (init == null || !InSubset(v.Symbol.Type)) return null;
+                                if (init == null || !InSubset(v.Symbol.Type))
+                                {
+                                    return null;
+                                }
                                 binds.Add((Local(v.Symbol), Spec(init, null)));
                             }
+                        }
                         var rest = PureStatements(ops, i + 1);
-                        if (rest == null) return null;
-                        for (int k = binds.Count - 1; k >= 0; k--) rest = new KLet { Var = binds[k].Item1, Value = binds[k].Item2, Body = rest };
+                        if (rest == null)
+                        {
+                            return null;
+                        }
+                        for (int k = binds.Count - 1; k >= 0; k--)
+                        {
+                            rest = new KLet
+                            {
+                                Var = binds[k].Item1,
+                                Value = binds[k].Item2,
+                                Body = rest,
+                            };
+                        }
                         return rest;
                     }
                     case IConditionalOperation cond when cond.Type == null || cond.Type.SpecialType == SpecialType.System_Void:
@@ -225,15 +358,22 @@ namespace CsVerify.Verifier.Boogie
                         return null;
                 }
             }
-            catch (NotTranslated) { return null; }
+            catch (NotTranslated)
+            {
+                return null;
+            }
         }
 
         /// <summary>The trees a frame borrows: the roots of its Own.Tree(x).</summary>
         private void LentRoots(IOperation modifies)
         {
             foreach (var t in modifies.DescendantsAndSelf().OfType<IInvocationOperation>())
+            {
                 if (SpecSymbols.IsCsVerifyType(t.TargetMethod.ContainingType, "Own") && t.TargetMethod.Name == "Tree" && t.Arguments.Length == 1)
+                {
                     _p.LentRoots.Add(Spec(Unconverted(t.Arguments[0].Value), null));
+                }
+            }
         }
 
         /// <summary>
@@ -252,15 +392,22 @@ namespace CsVerify.Verifier.Boogie
             var named = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
             var reading = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
             var c = _contractOf?.Invoke(m);
-            if (c == null) return named;
+            if (c == null)
+            {
+                return named;
+            }
             foreach (var op in c.Requires.Concat(c.Ensures.Select(e => e.Expr)).Where(x => x != null).SelectMany(x => x.DescendantsAndSelf()).OfType<IInvocationOperation>())
+            {
                 if (SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && op.Arguments.Length > 0 && Unconverted(op.Arguments[0].Value) is IParameterReferenceOperation pr)
+                {
                     switch (op.TargetMethod.Name)
                     {
                         case "Pre": case "Post": case "Total": named.Add(pr.Parameter.OriginalDefinition); break;
                         case "Reads" when op.Arguments.Length == 2: reading.Add(pr.Parameter.OriginalDefinition); break;
                         case "ReadsOf": reading.Add(pr.Parameter.OriginalDefinition); break;
                     }
+                }
+            }
             named.ExceptWith(reading);
             return named;
         }
@@ -271,15 +418,24 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void EnclosingFacts()
         {
-            if (!IsNested(_m)) return;
-            if (!(Enclosing(_m) is IMethodSymbol outer)) return;
+            if (!IsNested(_m))
+            {
+                return;
+            }
+            if (!(Enclosing(_m) is IMethodSymbol outer))
+            {
+                return;
+            }
             foreach (var sp in SteadyParams(outer).Where(x => IsFunc(x.Type) && NeverWritten(x)))
+            {
                 if (_capturedParams.FirstOrDefault(c => SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, sp)) is IParameterSymbol cp)
                 {
                     _p.DelegateKeys.Add(FuncKey(cp.Type));
                     Emit(new KAssume { Cond = new KOp("$steady", new KVar(_capturedIn[cp])) });
                 }
+            }
             foreach (var req in _contractOf?.Invoke(outer)?.Requires ?? Enumerable.Empty<IOperation>())
+            {
                 if (req.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i => SpecSymbols.IsSpecClass(i.TargetMethod.ContainingType) && i.TargetMethod.Name is "Pre" or "Total") &&
                     req.DescendantsAndSelf().All(o => o.ConstantValue.HasValue || o switch
                     {
@@ -288,19 +444,26 @@ namespace CsVerify.Verifier.Boogie
                         IArgumentOperation or IBinaryOperation or IUnaryOperation or IParenthesizedOperation or IConversionOperation => true,
                         _ => false,
                     }))
+                {
                     Emit(new KAssume { Cond = Spec(req, null) });
+                }
+            }
         }
 
         /// <summary>At a call: what the callee takes to be steady must be (CSV1001).</summary>
         private void SteadyArguments(IMethodSymbol callee, KExpr[] args, SyntaxNode at)
         {
             foreach (var p in SteadyParams(callee).Where(p => p.Ordinal < args.Length && args[p.Ordinal] != null))
+            {
                 Emit(new KCheck
                 {
-                    Cond = new KOp("$steady", args[p.Ordinal]), Id = "CSV1001", At = at,
+                    Cond = new KOp("$steady", args[p.Ordinal]),
+                    Id = "CSV1001",
+                    At = at,
                     Message = $"'{callee.Name}' takes what '{p.Name}' accepts and gives to be the same in every state, but this might depend on state: " +
                               $"say what it reads with Spec.Requires(Spec.Reads({p.Name}, ...)) in '{callee.Name}'",
                 });
+            }
         }
     }
 }

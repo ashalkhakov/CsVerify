@@ -21,9 +21,23 @@ namespace CsVerify.Verifier.Boogie
         {
             var from = _block;
             var name = $"{from.Label}$if{_temps++}";
-            var yes = new KBlock { Label = name + "t", Ordinal = from.Ordinal, Stmts = { new KAssume { Cond = cond } } };
-            var no = new KBlock { Label = name + "f", Ordinal = from.Ordinal, Stmts = { new KAssume { Cond = new KOp("!", cond) } } };
-            var join = new KBlock { Label = name + "j", Ordinal = from.Ordinal };
+            var yes = new KBlock
+            {
+                Label = name + "t",
+                Ordinal = from.Ordinal,
+                Stmts = { new KAssume { Cond = cond } },
+            };
+            var no = new KBlock
+            {
+                Label = name + "f",
+                Ordinal = from.Ordinal,
+                Stmts = { new KAssume { Cond = new KOp("!", cond) } },
+            };
+            var join = new KBlock
+            {
+                Label = name + "j",
+                Ordinal = from.Ordinal,
+            };
             from.Jump = new KGoto(yes.Label, no.Label);
             _p.Blocks.Add(yes);
             _block = yes;
@@ -41,7 +55,14 @@ namespace CsVerify.Verifier.Boogie
         private void FixedSize()
         {
             if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string target)
-                Emit(new KFork { Overflow = new KLit("false"), Target = target, Exception = null });
+            {
+                Emit(new KFork
+                {
+                    Overflow = new KLit("false"),
+                    Target = target,
+                    Exception = null,
+                });
+            }
             Emit(new KAssume { Cond = new KLit("false") });
         }
 
@@ -49,34 +70,74 @@ namespace CsVerify.Verifier.Boogie
         private (bool, KExpr) IfcCall(IInvocationOperation call)
         {
             var m = call.TargetMethod;
-            if (call.Instance == null || !IsListInterface(m.ContainingType) || !(m.Name is "Add" or "Insert" or "Remove" or "RemoveAt" or "Clear")) return (false, null);
+            if (call.Instance == null || !IsListInterface(m.ContainingType) || !(m.Name is "Add" or "Insert" or "Remove" or "RemoveAt" or "Clear"))
+            {
+                return (false, null);
+            }
             var ifc = (INamedTypeSymbol)m.ContainingType;
             var element = ifc.TypeArguments[0];
-            if (!InSubset(element)) return (false, null);
+            if (!InSubset(element))
+            {
+                return (false, null);
+            }
             // (the program's own implementations: a call through the interface runs its code)
             if (new[] { "IList", "ICollection" }.Any(n => KernelTypes.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{n}`1") is INamedTypeSymbol d && ImplementedHere(d)))
+            {
                 return (false, null);
+            }
             var list = KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
             var target = list.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == m.Parameters.Length &&
                 x.Parameters.Zip(m.Parameters, (a, b) => SymbolEqualityComparer.Default.Equals(a.Type, b.Type)).All(s => s));
-            if (target == null) return (false, null);
+            if (target == null)
+            {
+                return (false, null);
+            }
             var receiver = Expr(call.Instance);
-            Emit(new KCheck { Cond = new KOp("!=", receiver, new KLit("null")), Id = "CSV1013", At = call.Instance.Syntax, Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'" });
+            Emit(new KCheck
+            {
+                Cond = new KOp("!=", receiver, new KLit("null")),
+                Id = "CSV1013",
+                At = call.Instance.Syntax,
+                Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'",
+            });
             KExpr value = null;
             string result = m.ReturnsVoid ? null : Declare("t$" + _temps++, m.ReturnType);
             Branch(new KOp("$arr", receiver), FixedSize, () =>
                 Branch(new KOp("$coll", receiver), () =>
                 {
-                    foreach (var md in ModelsOf(list)) _p.Models[md.Name] = md;
+                    foreach (var md in ModelsOf(list))
+                    {
+                        _p.Models[md.Name] = md;
+                    }
                     var v = Invoke(target, call.Instance, call.Arguments, call.Syntax, null);
-                    if (result != null) Emit(new KAssign { Var = result, Value = v });
+                    if (result != null)
+                    {
+                        Emit(new KAssign
+                        {
+                            Var = result,
+                            Value = v,
+                        });
+                    }
                 }, () =>
                 {
                     var (handled, v) = LibraryCall(call);
-                    if (!handled) throw new NotTranslated($"{m.Name} through {ifc.Name} of a collection the kernel doesn't model");
-                    if (result != null) Emit(new KAssign { Var = result, Value = v });
+                    if (!handled)
+                    {
+                        throw new NotTranslated($"{m.Name} through {ifc.Name} of a collection the kernel doesn't model");
+                    }
+                    if (result != null)
+                    {
+                        Emit(new KAssign
+                        {
+                            Var = result,
+                            Value = v,
+                        });
+                    }
                 }));
-            if (result != null) value = new KVar(result);
+            if (result != null)
+            {
+                value = new KVar(result);
+            }
             return (true, value);
         }
 
@@ -85,27 +146,59 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!(target is IPropertyReferenceOperation { Property.IsIndexer: true } pr) || pr.Instance == null || pr.Arguments.Length != 1 ||
                 !(pr.Property.ContainingType is INamedTypeSymbol { Name: "IList", Arity: 1 } ifc) || ifc.ContainingNamespace?.ToDisplayString() != "System.Collections.Generic")
+            {
                 return false;
+            }
             var element = ifc.TypeArguments[0];
-            if (!InSubset(element)) return false;
-            if (KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.IList`1") is INamedTypeSymbol d && ImplementedHere(d)) return false;
+            if (!InSubset(element))
+            {
+                return false;
+            }
+            if (KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.IList`1") is INamedTypeSymbol d && ImplementedHere(d))
+            {
+                return false;
+            }
             var list = KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
             var setter = list.GetMembers().OfType<IPropertySymbol>().FirstOrDefault(p => p.IsIndexer)?.SetMethod;
-            if (setter == null) return false;
+            if (setter == null)
+            {
+                return false;
+            }
             var receiver = Expr(pr.Instance);
             var index = Expr(pr.Arguments[0].Value);
             var v = Declare("t$" + _temps++, element);
-            Emit(new KAssign { Var = v, Value = value });
-            Emit(new KCheck { Cond = new KOp("!=", receiver, new KLit("null")), Id = "CSV1013", At = pr.Instance.Syntax, Message = $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'" });
+            Emit(new KAssign
+            {
+                Var = v,
+                Value = value,
+            });
+            Emit(new KCheck
+            {
+                Cond = new KOp("!=", receiver, new KLit("null")),
+                Id = "CSV1013",
+                At = pr.Instance.Syntax,
+                Message = $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'",
+            });
             var array = KernelTypes.Compilation.CreateArrayTypeSymbol(element);
             Branch(new KOp("$arr", receiver), () =>
             {
                 HeldCell(receiver, pr.Syntax, write: true);
-                Emit(new KStore { Array = receiver, Index = index, Value = new KVar(v), ArrayType = array, At = pr.Syntax, ArrayAt = pr.Instance.Syntax });
+                Emit(new KStore
+                {
+                    Array = receiver,
+                    Index = index,
+                    Value = new KVar(v),
+                    ArrayType = array,
+                    At = pr.Syntax,
+                    ArrayAt = pr.Instance.Syntax,
+                });
             }, () =>
                 Branch(new KOp("$coll", receiver), () =>
                 {
-                    foreach (var md in ModelsOf(list)) _p.Models[md.Name] = md;
+                    foreach (var md in ModelsOf(list))
+                    {
+                        _p.Models[md.Name] = md;
+                    }
                     Invoke(setter, pr.Instance, pr.Arguments, pr.Syntax, new KVar(v));
                 }, () =>
                 {

@@ -17,7 +17,10 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static KExpr Map(KExpr e, Func<KExpr, KExpr> at)
         {
-            if (at(e) is KExpr given) return given;
+            if (at(e) is KExpr given)
+            {
+                return given;
+            }
             KExpr M(KExpr x) => Map(x, at);
             return e switch
             {
@@ -25,13 +28,23 @@ namespace CsVerify.Verifier.Boogie
                 KOp op => new KOp(op.Op, op.Args.Select(M).ToArray()),
                 KQuant q => new KQuant
                 {
-                    Forall = q.Forall, Var = q.Var, Type = q.Type,
-                    Range = q.Range == null ? null : M(q.Range), Body = M(q.Body), Trigger = q.Trigger?.Select(M).ToArray(),
+                    Forall = q.Forall,
+                    Var = q.Var,
+                    Type = q.Type,
+                    Range = q.Range == null ? null : M(q.Range),
+                    Body = M(q.Body),
+                    Trigger = q.Trigger?.Select(M).ToArray(),
                 },
                 KFnApp f => new KFnApp
                 {
-                    Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Layer = f.Layer, Fields = f.Fields,
-                    Args = f.Args.Select(M).ToArray(), Snap = f.Snap == null ? null : M(f.Snap),
+                    Callee = f.Callee,
+                    Function = f.Function,
+                    Plain = f.Plain,
+                    MapsAt = f.MapsAt,
+                    Layer = f.Layer,
+                    Fields = f.Fields,
+                    Args = f.Args.Select(M).ToArray(),
+                    Snap = f.Snap == null ? null : M(f.Snap),
                 },
                 _ => throw NotMath(e),
             };
@@ -49,9 +62,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 var x = stack.Pop();
                 yield return x;
-                if (into != null && !into(x)) continue;
+                if (into != null && !into(x))
+                {
+                    continue;
+                }
                 var children = Children(x).ToList();
-                for (int k = children.Count - 1; k >= 0; k--) stack.Push(children[k]);
+                for (int k = children.Count - 1; k >= 0; k--)
+                {
+                    stack.Push(children[k]);
+                }
             }
         }
 
@@ -72,8 +91,26 @@ namespace CsVerify.Verifier.Boogie
             MLit l => new KLit(l.Text),
             MVar v => new KVar(v.Name),
             MOp op => new KOp(op.Op, op.Args.Select(Of).ToArray()),
-            MQuant q => new KQuant { Forall = q.Forall, Var = q.Var, Type = q.Type, Range = Of(q.Range), Body = Of(q.Body), Trigger = q.Trigger?.Select(Of).ToArray() },
-            MFnApp f => new KFnApp { Callee = f.Callee, Function = f.Function, Layer = f.Layer, Fields = f.Fields, Args = f.Args.Select(Of).ToArray(), Snap = Of(f.Snap), Plain = f.Plain, MapsAt = f.MapsAt },
+            MQuant q => new KQuant
+            {
+                Forall = q.Forall,
+                Var = q.Var,
+                Type = q.Type,
+                Range = Of(q.Range),
+                Body = Of(q.Body),
+                Trigger = q.Trigger?.Select(Of).ToArray(),
+            },
+            MFnApp f => new KFnApp
+            {
+                Callee = f.Callee,
+                Function = f.Function,
+                Layer = f.Layer,
+                Fields = f.Fields,
+                Args = f.Args.Select(Of).ToArray(),
+                Snap = Of(f.Snap),
+                Plain = f.Plain,
+                MapsAt = f.MapsAt,
+            },
             _ => throw new System.InvalidOperationException("not mathematics: " + e.GetType().Name),
         };
 

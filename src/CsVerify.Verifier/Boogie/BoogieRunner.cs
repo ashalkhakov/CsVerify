@@ -56,8 +56,23 @@ namespace CsVerify.Verifier.Boogie
             {
                 var facts = failures.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => int.Parse(f.diagnostic.Message)).ToList();
                 var redo = new HashSet<MethodResult>(failures.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => f.method));
-                if (round > 5) { foreach (var (line, c) in program.Lines) if (c.Id == Checks.Candidate && redo.Contains(c.Method)) program.Disabled.Add(line); }
-                else foreach (var line in facts) program.Disabled.Add(line);
+                if (round > 5)
+                {
+                    foreach (var (line, c) in program.Lines)
+                    {
+                        if (c.Id == Checks.Candidate && redo.Contains(c.Method))
+                        {
+                            program.Disabled.Add(line);
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var line in facts)
+                    {
+                        program.Disabled.Add(line);
+                    }
+                }
                 var (redone0, undecidedAgain0, factsAgain) = Run(program, z3Path, quick, null, factsIn, names);
                 failures = failures.Where(f => !redo.Contains(f.method)).Concat(redone0).ToList();
                 undecided = undecided.Where(u => !factsIn.Contains(u)).Concat(undecidedAgain0).Distinct().ToList();
@@ -68,7 +83,10 @@ namespace CsVerify.Verifier.Boogie
             // (the methods that failed, and weren't undecided: each again, split, to see nothing went unreported)
             var failed = failures.Select(f => f.method).Where(m => !redone.Contains(m) && names.ContainsKey(m)).Distinct().ToList();
             var splitProcs = undecided.Concat(failed.Select(m => names[m])).Distinct().ToList();
-            if (splitProcs.Count == 0) return failures;
+            if (splitProcs.Count == 0)
+            {
+                return failures;
+            }
             var (again, _, _) = Run(program, z3Path, timeoutMs, splitProcs);
             object Key((MethodResult method, VerificationDiagnostic diagnostic) f) => (f.diagnostic.Id, f.diagnostic.Span.StartLinePosition, f.diagnostic.Span.EndLinePosition);
             // (a failure split finds that the whole didn't: Boogie reports the solver's unknown, where it gives up, as a
@@ -107,9 +125,15 @@ namespace CsVerify.Verifier.Boogie
                         "Boogie couldn't decide all of it: split an assertion at a time, one wasn't decided", span))).ToList();
                 }
                 // (each a counterexample, of the whole or of an assertion with the others assumed: both are failures)
-                else failures = failures.Concat(parts.Where(f => !whole.Contains(Key(f)))).ToList();
+                else
+                {
+                    failures = failures.Concat(parts.Where(f => !whole.Contains(Key(f)))).ToList();
+                }
             }
-            if (undecided.Count == 0) return failures;
+            if (undecided.Count == 0)
+            {
+                return failures;
+            }
             // (split, each assertion is decided with the others assumed: a counterexample to one is an execution that
             // fails it, as one of the whole is, and the rest are proved. A redone method all of whose assertions split
             // decided is decided: verified, or failed where they failed. One that split doesn't decide all of is
@@ -140,7 +164,9 @@ namespace CsVerify.Verifier.Boogie
             for (int attempt = 0; ; attempt++)
             {
                 if (!Schedulers.TryTake(out var scheduler))
+                {
                     scheduler = CustomStackSizePoolTaskScheduler.Create(16 * 1024 * 1024, Math.Max(1, Environment.ProcessorCount));
+                }
                 Gate.Wait();
                 (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) result;
                 try
@@ -151,10 +177,17 @@ namespace CsVerify.Verifier.Boogie
                 }
                 catch (Exception e) when (attempt == 0 && SolverMishap(e))
                 {
-                    if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null) Console.Error.WriteLine("[run] again, after: " + e.Message);
+                    if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null)
+                    {
+                        Console.Error.WriteLine("[run] again, after: " + e.Message);
+                    }
                     continue;
                 }
-                finally { Interlocked.Decrement(ref _running); Gate.Release(); }
+                finally
+                {
+                    Interlocked.Decrement(ref _running);
+                    Gate.Release();
+                }
                 // (given back after a run that ended: one that didn't may still hold its threads)
                 Schedulers.Add(scheduler);
                 return result;
@@ -186,7 +219,9 @@ namespace CsVerify.Verifier.Boogie
         {
             var output = new StringWriter();
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
+            {
                 Console.Error.WriteLine($"[run] {(split == null ? "whole" : "split")} {timeoutMs} ms, {(split ?? procs)?.Count.ToString() ?? "all"} procedures, {program.Disabled.Count} facts left out");
+            }
             var outcomes = new OutcomePrinter();
             var options = new CommandLineOptions(output, outcomes);
             // (CSVERIFY_BOOGIE_OPTIONS: more of Boogie's options, space-separated, to debug a translation: /proverLog:x.smt2)
@@ -198,9 +233,13 @@ namespace CsVerify.Verifier.Boogie
             options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores }.Concat(only).Concat(extra).ToArray());
             using var engine = new ExecutionEngine(options, new EmptyVerificationResultCache(), scheduler, false);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
+            {
                 throw new InvalidOperationException("the translated program doesn't parse:\n" + output);
+            }
             if (engine.ResolveAndTypecheck(parsed, "csverify.bpl", out _) != PipelineOutcome.ResolvedAndTypeChecked)
+            {
                 throw new InvalidOperationException("the translated program doesn't type check:\n" + output);
+            }
             var failures = new List<(MethodResult, VerificationDiagnostic)>();
             var lines = new Dictionary<VerificationDiagnostic, int>();
             var undecided = new List<string>();
@@ -211,15 +250,29 @@ namespace CsVerify.Verifier.Boogie
             {
                 var d = Diagnostic(program, info);
                 if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
+                {
                     Console.Error.WriteLine($"[boogie] {info.ImplementationName} {(split == null ? "whole" : "split")} {info.Kind} line {info.Tok.line}: {d.Item2?.Id} {d.Item2?.Message}");
+                }
                 Interlocked.Increment(ref progress);
                 lock (failures)
                 {
                     failures.Add(d);
-                    if (d.Item2 != null) lines[d.Item2] = info.Tok.line;
-                    if (names != null && d.Item1 != null && info.ImplementationName != null) names[d.Item1] = info.ImplementationName;
-                    if (d.Item2?.Id == "CSV1900" && info.ImplementationName != null && !undecided.Contains(info.ImplementationName)) undecided.Add(info.ImplementationName);
-                    if (d.Item2?.Id == Checks.Candidate && info.ImplementationName != null && !facts.Contains(info.ImplementationName)) facts.Add(info.ImplementationName);
+                    if (d.Item2 != null)
+                    {
+                        lines[d.Item2] = info.Tok.line;
+                    }
+                    if (names != null && d.Item1 != null && info.ImplementationName != null)
+                    {
+                        names[d.Item1] = info.ImplementationName;
+                    }
+                    if (d.Item2?.Id == "CSV1900" && info.ImplementationName != null && !undecided.Contains(info.ImplementationName))
+                    {
+                        undecided.Add(info.ImplementationName);
+                    }
+                    if (d.Item2?.Id == Checks.Candidate && info.ImplementationName != null && !facts.Contains(info.ImplementationName))
+                    {
+                        facts.Add(info.ImplementationName);
+                    }
                 }
             }, "csverify", default);
             // (a run that goes on with nothing done for a long while has lost a solver's answer: Boogie waits for it, its
@@ -228,7 +281,10 @@ namespace CsVerify.Verifier.Boogie
             for (var seen = -1; !running.Wait(idle);)
             {
                 var now = stats.VerifiedCount + stats.ErrorCount + stats.InconclusiveCount + stats.TimeoutCount + stats.OutOfResourceCount + stats.OutOfMemoryCount + Volatile.Read(ref progress);
-                if (now == seen) throw new InvalidOperationException($"Boogie: no answer from its solvers in {idle.TotalSeconds:0} s");
+                if (now == seen)
+                {
+                    throw new InvalidOperationException($"Boogie: no answer from its solvers in {idle.TotalSeconds:0} s");
+                }
                 seen = now;
             }
             var outcome = running.Result;
@@ -243,16 +299,30 @@ namespace CsVerify.Verifier.Boogie
             var reported = new HashSet<string>(failures.Where(f => f.Item1 != null).Select(f => names != null && names.TryGetValue(f.Item1, out var n) ? n : null).Where(n => n != null));
             foreach (var (impl, line, vc) in outcomes.Outcomes)
             {
-                if (vc == VcOutcome.Correct || reported.Contains(impl) || !program.Lines.TryGetValue(line, out var head) || head.Id != BoogieTranslator.Undecided || head.Method == null) continue;
-                if (failures.Any(f => f.Item1 == head.Method && f.Item2 != null)) continue;
+                if (vc == VcOutcome.Correct || reported.Contains(impl) || !program.Lines.TryGetValue(line, out var head) || head.Id != BoogieTranslator.Undecided || head.Method == null)
+                {
+                    continue;
+                }
+                if (failures.Any(f => f.Item1 == head.Method && f.Item2 != null))
+                {
+                    continue;
+                }
                 var silent = new VerificationDiagnostic("CSV1900", false, $"Boogie's outcome for '{impl}' was {vc}, with nothing reported", head.Span);
                 failures.Add((head.Method, silent));
                 lines[silent] = line;
-                if (names != null) names[head.Method] = impl;
-                if (!undecided.Contains(impl)) undecided.Add(impl);
+                if (names != null)
+                {
+                    names[head.Method] = impl;
+                }
+                if (!undecided.Contains(impl))
+                {
+                    undecided.Add(impl);
+                }
             }
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
+            {
                 Console.Error.WriteLine(output + $"\n[stats] verified {stats.VerifiedCount} errors {stats.ErrorCount} inconclusive {stats.InconclusiveCount} timeouts {stats.TimeoutCount} outOfResource {stats.OutOfResourceCount} outOfMemory {stats.OutOfMemoryCount}");
+            }
             // (one report of a check, however many paths fail it; and one of a kind at a
             // place: the first in the program)
             return (failures.Where(f => f.Item1 != null).OrderBy(f => lines[f.Item2]).GroupBy(f => (f.Item1, f.Item2.Id, f.Item2.Span.StartLinePosition, f.Item2.Span.EndLinePosition))
@@ -265,11 +335,20 @@ namespace CsVerify.Verifier.Boogie
             program.Lines.TryGetValue(info.Tok.line, out var at);
             var about = info.Aux.Select(a => program.Lines.TryGetValue(a.Tok.line, out var c) ? c : null).FirstOrDefault(c => c != null && c.Id == BoogieTranslator.Aux);
             string kind = info.Kind.ToString();
-            if (at == null) return (null, null);
+            if (at == null)
+            {
+                return (null, null);
+            }
             // (a loop's inferred fact that doesn't hold: its line, for the next run to leave it out)
-            if (at.Id == Checks.Candidate) return (at.Method, new VerificationDiagnostic(Checks.Candidate, false, info.Tok.line.ToString(), at.Span));
+            if (at.Id == Checks.Candidate)
+            {
+                return (at.Method, new VerificationDiagnostic(Checks.Candidate, false, info.Tok.line.ToString(), at.Span));
+            }
             // (a timeout, or running out of memory or resources: nothing was decided, which isn't verified)
-            if (at.Id == BoogieTranslator.Undecided) return (at.Method, new VerificationDiagnostic("CSV1900", false, info.Msg, at.Span));
+            if (at.Id == BoogieTranslator.Undecided)
+            {
+                return (at.Method, new VerificationDiagnostic("CSV1900", false, info.Msg, at.Span));
+            }
             var (id, message) = kind switch
             {
                 "Precondition" when about?.ReportAs == "CSV1014" => ("CSV1014", $"{at.Message}: {about.Message}"),
@@ -282,7 +361,10 @@ namespace CsVerify.Verifier.Boogie
                 _ => (at.Id, at.Message + (at.Id == "CSV1004" ? " might not hold" : "")),
             };
             var diagnostic = new VerificationDiagnostic(id, true, message + " (boogie)", at.Span);
-            if (at.Causes.Count > 0) diagnostic.Causes = at.Causes.OrderBy(x => x, StringComparer.Ordinal).ToList();
+            if (at.Causes.Count > 0)
+            {
+                diagnostic.Causes = at.Causes.OrderBy(x => x, StringComparer.Ordinal).ToList();
+            }
             return (at.Method, diagnostic);
         }
     }

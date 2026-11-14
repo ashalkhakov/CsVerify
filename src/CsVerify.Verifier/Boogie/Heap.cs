@@ -25,7 +25,12 @@ namespace CsVerify.Verifier.Boogie
             stmts.Add(new MHavoc { Var = var });
             MExpr fresh = new MOp("&&", new MOp("!=", t, new MLit("null")), new MOp("!", new MOp("sel", new MVar("$Alloc"), t)));
             stmts.Add(new MAssume { Cond = extra == null ? fresh : new MOp("&&", fresh, extra) });
-            stmts.Add(new MMapUpdate { Map = "$Alloc", Ref = t, Value = new MLit("true") });
+            stmts.Add(new MMapUpdate
+            {
+                Map = "$Alloc",
+                Ref = t,
+                Value = new MLit("true"),
+            });
         }
 
         /// <summary>Level 2 to level 3: each block's statements made level 3's, then the loop frames added.</summary>
@@ -37,7 +42,13 @@ namespace CsVerify.Verifier.Boogie
                 FunctionBody = p.FunctionBody, Obligations = p.Obligations,
                 // (what Checks asserts at entry is level 3's already: its well-definedness, nothing stored or allocated)
                 Entry = p.Entry.Select(s => s as IHeapStmt ?? throw new System.InvalidOperationException("a store or an allocation at entry: " + s.GetType().Name)).ToList(),
-                Blocks = p.Blocks.Select(b => new HBlock { Label = b.Label, Ordinal = b.Ordinal, Jump = b.Jump, Stmts = Statements(p, b) }).ToList(),
+                Blocks = p.Blocks.Select(b => new HBlock
+                {
+                    Label = b.Label,
+                    Ordinal = b.Ordinal,
+                    Jump = b.Jump,
+                    Stmts = Statements(p, b),
+                }).ToList(),
             };
             LoopFrames(p, h);
             return h;
@@ -49,6 +60,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var stmts = new List<IHeapStmt>();
                 foreach (var s in b.Stmts)
+                {
                     switch (s)
                     {
                         case MFieldStore fs:
@@ -56,8 +68,16 @@ namespace CsVerify.Verifier.Boogie
                             var map = FieldMap(fs.Field);
                             p.Source.Modifies.Add(map);
                             // (an [Owned] object's field is written only with its view: framed by the views a call gets)
-                            if (!(p.Source.IsCtor && fs.OnThis) && !IsOwnedField(fs.Field)) p.Source.AnyWrites.Add(map);
-                            stmts.Add(new MMapUpdate { Map = map, Ref = fs.Instance, Value = fs.Value });
+                            if (!(p.Source.IsCtor && fs.OnThis) && !IsOwnedField(fs.Field))
+                            {
+                                p.Source.AnyWrites.Add(map);
+                            }
+                            stmts.Add(new MMapUpdate
+                            {
+                                Map = map,
+                                Ref = fs.Instance,
+                                Value = fs.Value,
+                            });
                             break;
                         }
                         case MNewObj n:
@@ -71,39 +91,85 @@ namespace CsVerify.Verifier.Boogie
                                 var map = FieldMap(field);
                                 p.Source.Modifies.Add(map);
                                 // (a generic class's field of T: the default of a T the class doesn't know, a box nothing is known of)
-                                if (!IsTypeParameter(FieldType(field))) stmts.Add(new MMapUpdate { Map = map, Ref = t, Value = MathTypes.Default(FieldType(field)) });
+                                if (!IsTypeParameter(FieldType(field)))
+                                {
+                                    stmts.Add(new MMapUpdate
+                                    {
+                                        Map = map,
+                                        Ref = t,
+                                        Value = MathTypes.Default(FieldType(field)),
+                                    });
+                                }
                             }
                             if (n.Ctor != null)
-                                stmts.Add(new MCall { Callee = n.Ctor, Receiver = t, ReceiverIsThis = false, Args = n.Args, At = n.At, Check = n.Check });
+                            {
+                                stmts.Add(new MCall
+                                {
+                                    Callee = n.Ctor,
+                                    Receiver = t,
+                                    ReceiverIsThis = false,
+                                    Args = n.Args,
+                                    At = n.At,
+                                    Check = n.Check,
+                                });
+                            }
                             else
+                            {
                                 // an implicit constructor runs the initializers: what they make isn't known here (a non-nullable field's is set)
                                 foreach (var field in InstanceFields(n.Type).Where(f => HasInitializer(f) || IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
                                 {
                                     var u = "u$" + FieldMap(field);
-                                    if (!p.Source.Locals.Any(l => l.Name == u)) p.Source.Locals.Add(new KLocal { Name = u, Type = FieldType(field) });
+                                    if (!p.Source.Locals.Any(l => l.Name == u))
+                                    {
+                                        p.Source.Locals.Add(new KLocal
+                                        {
+                                            Name = u,
+                                            Type = FieldType(field),
+                                        });
+                                    }
                                     stmts.Add(new MHavoc { Var = u });
-                                    stmts.Add(new MMapUpdate { Map = FieldMap(field), Ref = t, Value = new MVar(u) });
+                                    stmts.Add(new MMapUpdate
+                                    {
+                                        Map = FieldMap(field),
+                                        Ref = t,
+                                        Value = new MVar(u),
+                                    });
                                 }
+                            }
                             break;
                         }
                         case MRow row when row.Ref == null:
                             // (the whole map: a library call's arrays, any of them)
                             p.Source.Modifies.Add(row.Map);
                             p.Source.AnyWrites.Add(row.Map);
-                            stmts.Add(new MAssign { Var = row.Map, Value = row.Value });
+                            stmts.Add(new MAssign
+                            {
+                                Var = row.Map,
+                                Value = row.Value,
+                            });
                             break;
                         case MRow row:
                             p.Source.Modifies.Add(row.Map);
                             p.Source.AnyWrites.Add(row.Map);
-                            stmts.Add(new MMapUpdate { Map = row.Map, Ref = row.Ref, Value = row.Value });
+                            stmts.Add(new MMapUpdate
+                            {
+                                Map = row.Map,
+                                Ref = row.Ref,
+                                Value = row.Value,
+                            });
                             break;
                         case MFill fill:
                         {
                             p.Source.Modifies.Add(fill.Map);
                             p.Source.AnyWrites.Add(fill.Map);
                             var j = new MVar("j$");
-                            stmts.Add(new MMapUpdate { Map = fill.Map, Ref = new MLit("null"), Value = new MOp("lambda", new MLit("j$: int"),
-                                new MOp("ite", new MOp("&&", new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, new MOp("sel", new MVar(fill.Map), new MLit("null"), j))) });
+                            stmts.Add(new MMapUpdate
+                            {
+                                Map = fill.Map,
+                                Ref = new MLit("null"),
+                                Value = new MOp("lambda", new MLit("j$: int"),
+                                new MOp("ite", new MOp("&&", new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, new MOp("sel", new MVar(fill.Map), new MLit("null"), j))),
+                            });
                             break;
                         }
                         case MStore st:
@@ -111,7 +177,13 @@ namespace CsVerify.Verifier.Boogie
                             var map = Elements(st.ArrayType);
                             p.Source.Modifies.Add(map);
                             p.Source.AnyWrites.Add(map);
-                            stmts.Add(new MMapUpdate { Map = map, Ref = st.Array, Index = st.Index, Value = st.Value });
+                            stmts.Add(new MMapUpdate
+                            {
+                                Map = map,
+                                Ref = st.Array,
+                                Index = st.Index,
+                                Value = st.Value,
+                            });
                             break;
                         }
                         case MNew n:
@@ -128,12 +200,27 @@ namespace CsVerify.Verifier.Boogie
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;
-                            stmts.Add(new MMapUpdate { Map = map, Ref = t, Value = IsStruct(element) ? new MOp("lambda", new MLit("j: int"), MathTypes.StructDefault(element))
+                            stmts.Add(new MMapUpdate
+                            {
+                                Map = map,
+                                Ref = t,
+                                Value = IsStruct(element) ? new MOp("lambda", new MLit("j: int"), MathTypes.StructDefault(element))
                                                                                  : IsFloating(element) ? new MOp("lambda", new MLit("j: int"), MathTypes.FloatLiteral(0.0, element))
-                                                                                 : new MLit($"(lambda j: int :: {zero})") });
+                                                                                 : new MLit($"(lambda j: int :: {zero})"),
+                            });
                             if (n.Elements != null)
+                            {
                                 for (int k = 0; k < n.Elements.Length; k++)
-                                    stmts.Add(new MMapUpdate { Map = map, Ref = t, Index = new MLit(k.ToString()), Value = n.Elements[k] });
+                                {
+                                    stmts.Add(new MMapUpdate
+                                    {
+                                        Map = map,
+                                        Ref = t,
+                                        Index = new MLit(k.ToString()),
+                                        Value = n.Elements[k],
+                                    });
+                                }
+                            }
                             break;
                         }
                         case MLambda lam:
@@ -148,6 +235,7 @@ namespace CsVerify.Verifier.Boogie
                             break;
                         default: throw new System.InvalidOperationException("a level 2 statement Heap doesn't know: " + s.GetType().Name);
                     }
+                }
                 return stmts;
             }
         }
@@ -170,16 +258,21 @@ namespace CsVerify.Verifier.Boogie
                 var frame = new HLoopFrame { Head = head };
                 bool keeps = true;
                 foreach (var s in body.SelectMany(b => b.Stmts))
+                {
                     switch (s)
                     {
                         case MStore st when st.Array is MVar v && !assigned.Contains(v.Name):
-                            if (!frame.Writers.Any(w => ((MVar)w).Name == v.Name)) frame.Writers.Add(v);
+                            if (!frame.Writers.Any(w => ((MVar)w).Name == v.Name))
+                            {
+                                frame.Writers.Add(v);
+                            }
                             break;
                         case MStore _: keeps = false; break;
                         case MInvoke _: case MHavocAll _: case MAwait _: keeps = false; break; // (a delegate, or unknown code, may write any array)
                         case MCall c: frame.Callees.Add(c.Callee); break;
                         case MNewObj o when o.Ctor != null: frame.Callees.Add(o.Ctor); break;
                     }
+                }
                 var entry = p.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
                 var hEntry = h.Blocks.FirstOrDefault(b => b.Label == $"b{head}");
                 var hInto = h.Blocks.Where(b => b.Ordinal < head && b.Jump is KGoto g && g.Targets.Contains($"b{head}")).ToList();
@@ -189,19 +282,30 @@ namespace CsVerify.Verifier.Boogie
                 if (entry != null && confined.Count > 0)
                 {
                     var cf = new HConfinedFrame { Head = head };
-                    foreach (var c in confined) cf.Locals[c] = new HashSet<string>();
+                    foreach (var c in confined)
+                    {
+                        cf.Locals[c] = new HashSet<string>();
+                    }
                     foreach (var st in body.SelectMany(b => b.Stmts))
+                    {
                         switch (st)
                         {
                             case MStore ks when ks.Array is MVar kv && cf.Locals.ContainsKey(kv.Name): cf.Locals[kv.Name].Add(Elements(ks.ArrayType)); break;
                             case MFieldStore kf when kf.Instance is MVar fv && cf.Locals.ContainsKey(fv.Name): cf.Locals[fv.Name].Add(FieldMap(kf.Field)); break;
                             case MCall kc when kc.Receiver is MVar rv && cf.Locals.ContainsKey(rv.Name): cf.Locals[rv.Name].Add("$M."); break;
-                            case MCall kc2: foreach (var a in kc2.Args.OfType<MVar>().Where(a => cf.Locals.ContainsKey(a.Name))) cf.Locals.Remove(a.Name); break;
+                            case MCall kc2: foreach (var a in kc2.Args.OfType<MVar>().Where(a => cf.Locals.ContainsKey(a.Name)))
+                            {
+                                cf.Locals.Remove(a.Name);
+                            } break;
                         }
+                    }
                     if (cf.Locals.Count > 0)
                     {
                         hEntry.Stmts.Insert(0, cf);
-                        foreach (var b in hInto) b.Stmts.Add(new HConfinedSnapshot { Head = head });
+                        foreach (var b in hInto)
+                        {
+                            b.Stmts.Add(new HConfinedSnapshot { Head = head });
+                        }
                     }
                 }
                 // (the atomic fields at the loop's head: steps since the loop was entered, of a snapshot taken on the way in)
@@ -212,22 +316,47 @@ namespace CsVerify.Verifier.Boogie
                     if (atomic.Count > 0 && into.Count > 0)
                     {
                         steps.Head = head;
-                        p.Source.Locals.Add(new KLocal { Name = $"as{head}$Alloc", Raw = "[Ref]bool" });
+                        p.Source.Locals.Add(new KLocal
+                        {
+                            Name = $"as{head}$Alloc",
+                            Raw = "[Ref]bool",
+                        });
                         foreach (var (map, type) in atomic)
                         {
                             steps.Maps.Add(map);
-                            p.Source.Locals.Add(new KLocal { Name = $"as{head}{map}", Raw = "[Ref]" + type });
+                            p.Source.Locals.Add(new KLocal
+                            {
+                                Name = $"as{head}{map}",
+                                Raw = "[Ref]" + type,
+                            });
                         }
                         foreach (var b in into)
                         {
-                            b.Stmts.Add(new MAssign { Var = $"as{head}$Alloc", Value = new MVar("$Alloc") });
-                            foreach (var (map, _) in atomic) b.Stmts.Add(new MAssign { Var = $"as{head}{map}", Value = new MVar(map) });
+                            b.Stmts.Add(new MAssign
+                            {
+                                Var = $"as{head}$Alloc",
+                                Value = new MVar("$Alloc"),
+                            });
+                            foreach (var (map, _) in atomic)
+                            {
+                                b.Stmts.Add(new MAssign
+                                {
+                                    Var = $"as{head}{map}",
+                                    Value = new MVar(map),
+                                });
+                            }
                         }
                     }
                 }
-                if (!keeps || entry == null) continue;
+                if (!keeps || entry == null)
+                {
+                    continue;
+                }
                 hEntry.Stmts.Insert(0, frame);
-                foreach (var b in hInto) b.Stmts.Add(new HSnapshot { Frame = frame });
+                foreach (var b in hInto)
+                {
+                    b.Stmts.Add(new HSnapshot { Frame = frame });
+                }
             }
         }
 

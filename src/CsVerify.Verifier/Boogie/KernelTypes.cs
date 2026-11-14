@@ -16,10 +16,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Each C# integer type: its bits, and whether it is signed (char is an unsigned 16-bit integer here).</summary>
         public static readonly Dictionary<SpecialType, (int bits, bool signed)> Widths = new Dictionary<SpecialType, (int, bool)>
         {
-            [SpecialType.System_SByte] = (8, true), [SpecialType.System_Byte] = (8, false),
-            [SpecialType.System_Int16] = (16, true), [SpecialType.System_UInt16] = (16, false), [SpecialType.System_Char] = (16, false),
-            [SpecialType.System_Int32] = (32, true), [SpecialType.System_UInt32] = (32, false),
-            [SpecialType.System_Int64] = (64, true), [SpecialType.System_UInt64] = (64, false),
+            [SpecialType.System_SByte] = (8, true),
+            [SpecialType.System_Byte] = (8, false),
+            [SpecialType.System_Int16] = (16, true),
+            [SpecialType.System_UInt16] = (16, false),
+            [SpecialType.System_Char] = (16, false),
+            [SpecialType.System_Int32] = (32, true),
+            [SpecialType.System_UInt32] = (32, false),
+            [SpecialType.System_Int64] = (64, true),
+            [SpecialType.System_UInt64] = (64, false),
         };
 
         /// <summary>The element types of arrays: each integer type, bool, and references (object's map, of every reference element type).</summary>
@@ -44,15 +49,33 @@ namespace CsVerify.Verifier.Boogie
             var found = new HashSet<SpecialType> { SpecialType.System_Int32 };
             void Of(ITypeSymbol t, int depth)
             {
-                if (t == null || depth > 4) return;
-                if (t is IArrayTypeSymbol a) { found.Add(Sp(a.ElementType)); Of(a.ElementType, depth + 1); }
-                if (t is INamedTypeSymbol n) foreach (var x in n.TypeArguments) { found.Add(Sp(x)); Of(x, depth + 1); }
-                if (t is IPointerTypeSymbol p) found.Add(Sp(p.PointedAtType));
+                if (t == null || depth > 4)
+                {
+                    return;
+                }
+                if (t is IArrayTypeSymbol a)
+                {
+                    found.Add(Sp(a.ElementType));
+                    Of(a.ElementType, depth + 1);
+                }
+                if (t is INamedTypeSymbol n)
+                {
+                    foreach (var x in n.TypeArguments)
+                    {
+                        found.Add(Sp(x));
+                        Of(x, depth + 1);
+                    }
+                }
+                if (t is IPointerTypeSymbol p)
+                {
+                    found.Add(Sp(p.PointedAtType));
+                }
             }
             foreach (var t in userTrees)
             {
                 var model = c.GetSemanticModel(t);
                 foreach (var n in t.GetRoot().DescendantNodes())
+                {
                     if (n is Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.TypeSyntax)
                     {
                         var info = model.GetTypeInfo(n);
@@ -60,7 +83,10 @@ namespace CsVerify.Verifier.Boogie
                         Of(info.ConvertedType, 0);
                     }
                     else if (model.GetDeclaredSymbol(n) is ISymbol d)
+                    {
                         Of(d switch { IMethodSymbol m => m.ReturnType, IPropertySymbol pr => pr.Type, IFieldSymbol f => f.Type, ILocalSymbol l => l.Type, IParameterSymbol ps => ps.Type, _ => null }, 0);
+                    }
+                }
             }
             return found;
         }
@@ -147,7 +173,10 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr CellOf(IReadOnlyList<KExpr> indices)
         {
             var cell = indices[0];
-            for (int d = 1; d < indices.Count; d++) cell = new KOp("$cell", cell, indices[d]);
+            for (int d = 1; d < indices.Count; d++)
+            {
+                cell = new KOp("$cell", cell, indices[d]);
+            }
             return cell;
         }
 
@@ -195,9 +224,15 @@ namespace CsVerify.Verifier.Boogie
         public static bool WritesStructThis(IMethodSymbol m)
         {
             m = m.OriginalDefinition;
-            if (m.IsStatic || m.IsReadOnly || !(m.MethodKind is MethodKind.Ordinary or MethodKind.PropertySet) || !IsStruct(m.ContainingType) || Compilation == null) return false;
+            if (m.IsStatic || m.IsReadOnly || !(m.MethodKind is MethodKind.Ordinary or MethodKind.PropertySet) || !IsStruct(m.ContainingType) || Compilation == null)
+            {
+                return false;
+            }
             _writesThisSeen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-            if (!_writesThisSeen.Add(m)) return false;
+            if (!_writesThisSeen.Add(m))
+            {
+                return false;
+            }
             try
             {
                 foreach (var r in m.DeclaringSyntaxReferences)
@@ -206,15 +241,24 @@ namespace CsVerify.Verifier.Boogie
                     var model = Compilation.GetSemanticModel(node.SyntaxTree);
                     bool OfThis(ExpressionSyntax e)
                     {
-                        while (e is ParenthesizedExpressionSyntax p) e = p.Expression;
-                        if (e is ThisExpressionSyntax) return true;
+                        while (e is ParenthesizedExpressionSyntax p)
+                        {
+                            e = p.Expression;
+                        }
+                        if (e is ThisExpressionSyntax)
+                        {
+                            return true;
+                        }
                         // (this.X, or X.Y of a struct member X: a part of this)
                         if (e is MemberAccessExpressionSyntax ma)
+                        {
                             return ma.Expression is ThisExpressionSyntax ? OfThis(ma.Name) : model.GetTypeInfo(ma.Expression).Type?.IsValueType == true && OfThis(ma.Expression);
+                        }
                         return e is IdentifierNameSyntax && model.GetSymbolInfo(e).Symbol is ISymbol s && s is IFieldSymbol or IPropertySymbol && !s.IsStatic &&
                                SymbolEqualityComparer.Default.Equals(s.ContainingType, m.ContainingType);
                     }
                     foreach (var n in node.DescendantNodes())
+                    {
                         switch (n)
                         {
                             case AssignmentExpressionSyntax a when OfThis(a.Left): return true;
@@ -225,10 +269,14 @@ namespace CsVerify.Verifier.Boogie
                                                                      model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee && !callee.IsStatic && WritesStructThis(callee):
                                 return true;
                         }
+                    }
                 }
                 return false;
             }
-            finally { _writesThisSeen.Remove(m); }
+            finally
+            {
+                _writesThisSeen.Remove(m);
+            }
         }
 
         [System.ThreadStatic] private static HashSet<IMethodSymbol> _writesThisSeen;
@@ -237,10 +285,23 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!(t is INamedTypeSymbol { TypeKind: TypeKind.Struct, IsGenericType: false, IsRefLikeType: false } n) || n.DeclaringSyntaxReferences.Length == 0 ||
                 n.IsTupleType || n.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || IsData(n) ||
-                n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace)) return false;
-            if (!_structGuard.Add(n)) return false;
-            try { var fs = StructFields(n); return fs.Count > 0 && fs.All(f => InSubset(f.Type) && !IsTuple(f.Type) && !IsStruct(f.Type) && !IsView(f.Type) && !IsShare(f.Type) && !IsGhost(f.Type)); }
-            finally { _structGuard.Remove(n); }
+                n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace))
+            {
+                return false;
+            }
+            if (!_structGuard.Add(n))
+            {
+                return false;
+            }
+            try
+            {
+                var fs = StructFields(n);
+                return fs.Count > 0 && fs.All(f => InSubset(f.Type) && !IsTuple(f.Type) && !IsStruct(f.Type) && !IsView(f.Type) && !IsShare(f.Type) && !IsGhost(f.Type));
+            }
+            finally
+            {
+                _structGuard.Remove(n);
+            }
         }
 
         [System.ThreadStatic] private static HashSet<ITypeSymbol> _structGuardSet;
@@ -303,10 +364,22 @@ namespace CsVerify.Verifier.Boogie
         public static List<KCells> MemCells(KExpr v, ITypeSymbol type, SyntaxNode at)
         {
             var addr = MemProp("Addr", v, type);
-            KCells Of(KExpr lo, KExpr hi) => new KCells { Arr = new KLit("null"), Lo = lo, Hi = hi, At = at };
-            if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1")) return new List<KCells> { Of(addr, new KOp("+", addr, new KLit("1"))) };
+            KCells Of(KExpr lo, KExpr hi) => new KCells
+            {
+                Arr = new KLit("null"),
+                Lo = lo,
+                Hi = hi,
+                At = at,
+            };
+            if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
+            {
+                return new List<KCells> { Of(addr, new KOp("+", addr, new KLit("1"))) };
+            }
             var end = new KOp("+", addr, MemProp("Length", v, type));
-            if (SpecSymbols.IsCsVerifyType(type, "ArrayView`1")) return new List<KCells> { Of(addr, end) };
+            if (SpecSymbols.IsCsVerifyType(type, "ArrayView`1"))
+            {
+                return new List<KCells> { Of(addr, end) };
+            }
             var hole = new KOp("+", addr, MemProp("Index", v, type));
             return new List<KCells> { Of(addr, hole), Of(new KOp("+", hole, new KLit("1")), end) };
         }
@@ -317,13 +390,24 @@ namespace CsVerify.Verifier.Boogie
             var map = new KVar(MemMap(type));
             var addr = MemProp("Addr", v, type);
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
+            {
                 return new KOp("==", new KOp("sel", map, new KLit("null"), addr), MemProp("Value", v, type));
+            }
             var i = new KVar("m$i");
             KExpr range = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, MemProp("Length", v, type)));
             KExpr body = new KOp("==", new KOp("sel", map, new KLit("null"), new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
             // (a hole's: all but its index)
-            if (SpecSymbols.IsCsVerifyType(type, "ArrayHole`1")) body = new KOp("==>", new KOp("!=", i, MemProp("Index", v, type)), body);
-            return new KQuant { Forall = true, Var = "m$i", Range = range, Body = body };
+            if (SpecSymbols.IsCsVerifyType(type, "ArrayHole`1"))
+            {
+                body = new KOp("==>", new KOp("!=", i, MemProp("Index", v, type)), body);
+            }
+            return new KQuant
+            {
+                Forall = true,
+                Var = "m$i",
+                Range = range,
+                Body = body,
+            };
         }
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>
@@ -349,17 +433,35 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool IsRefParameter(ITypeSymbol t)
         {
-            if (!(t is ITypeParameterSymbol tp)) return false;
+            if (!(t is ITypeParameterSymbol tp))
+            {
+                return false;
+            }
             // (new() beside a library class's constraint: a reference all the same)
             bool library = tp.ConstraintTypes.Length > 0 && tp.ConstraintTypes.All(c => c.TypeKind == TypeKind.Class && c.DeclaringSyntaxReferences.Length == 0 && IsLibraryObject(c));
             if (!(t is ITypeParameterSymbol) || tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint || tp.HasConstructorConstraint && !library ||
-                !(tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0)) return false;
+                !(tp.HasReferenceTypeConstraint || tp.ConstraintTypes.Length > 0))
+            {
+                return false;
+            }
             // (a constraint that names the parameter itself, T : IKey<T>: coinductive, met again while checked, it holds)
-            if (library) return true;
+            if (library)
+            {
+                return true;
+            }
             _constraintsSeen ??= new HashSet<ITypeParameterSymbol>(SymbolEqualityComparer.Default);
-            if (!_constraintsSeen.Add(tp)) return true;
-            try { return tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c)); }
-            finally { _constraintsSeen.Remove(tp); }
+            if (!_constraintsSeen.Add(tp))
+            {
+                return true;
+            }
+            try
+            {
+                return tp.ConstraintTypes.All(c => IsInterface(c) || IsClass(c));
+            }
+            finally
+            {
+                _constraintsSeen.Remove(tp);
+            }
         }
 
         [System.ThreadStatic] private static HashSet<ITypeParameterSymbol> _constraintsSeen;
@@ -389,7 +491,10 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr IsCase(KExpr v, ITypeSymbol type)
         {
             // (an open type's values: of any case, those the program has or others)
-            if (Data.IsOpen(DataTypes.Def(type))) return new KOp("!=", v, new KLit("null"));
+            if (Data.IsOpen(DataTypes.Def(type)))
+            {
+                return new KOp("!=", v, new KLit("null"));
+            }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (KExpr)new KOp("$is." + CaseName(c).Substring(3), v)).ToList();
             var any = tags.Count == 0 ? new KLit("false") : tags.Aggregate((a, b) => new KOp("||", a, b));
             return new KOp("&&", new KOp("!=", v, new KLit("null")), any);
@@ -413,16 +518,25 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static bool GenericClassArguments(INamedTypeSymbol n)
         {
-            if (n.Arity == 0) return true;
+            if (n.Arity == 0)
+            {
+                return true;
+            }
             // (coinductive: a type met again while it's checked, Kk : IKey<Kk>, is taken to be well formed)
             _argumentsSeen ??= new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-            if (!_argumentsSeen.Add(n)) return true;
+            if (!_argumentsSeen.Add(n))
+            {
+                return true;
+            }
             try
             {
                 return n.OriginalDefinition.TypeParameters.All(IsGenericParameter) &&
                        n.OriginalDefinition.TypeParameters.Zip(n.TypeArguments).All(x => !(x.Second is INamedTypeSymbol an && SymbolEqualityComparer.Default.Equals(an.OriginalDefinition, n.OriginalDefinition)) && Instantiates(x.First, x.Second));
             }
-            finally { _argumentsSeen.Remove(n); }
+            finally
+            {
+                _argumentsSeen.Remove(n);
+            }
         }
 
         [System.ThreadStatic] private static HashSet<ITypeSymbol> _argumentsSeen;
@@ -452,7 +566,12 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsException(ITypeSymbol t)
         {
             for (var c = t as INamedTypeSymbol; c != null; c = c.BaseType)
-                if (c.OriginalDefinition.ToDisplayString() == "System.Exception") return t is INamedTypeSymbol n && n.Arity == 0;
+            {
+                if (c.OriginalDefinition.ToDisplayString() == "System.Exception")
+                {
+                    return t is INamedTypeSymbol n && n.Arity == 0;
+                }
+            }
             return false;
         }
 
@@ -604,19 +723,30 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
         public static bool ImplementedHere(INamedTypeSymbol ifc)
         {
-            if (Compilation == null) return true;
+            if (Compilation == null)
+            {
+                return true;
+            }
             if (!_implemented.TryGetValue(Compilation, out var set))
             {
                 set = new HashSet<string>();
                 void Walk(INamespaceOrTypeSymbol ns)
                 {
                     foreach (var m in ns.GetMembers())
-                        if (m is INamespaceSymbol sub) Walk(sub);
+                    {
+                        if (m is INamespaceSymbol sub)
+                        {
+                            Walk(sub);
+                        }
                         else if (m is INamedTypeSymbol nt && nt.DeclaringSyntaxReferences.Length > 0)
                         {
-                            foreach (var i in nt.AllInterfaces) set.Add(i.OriginalDefinition.ToDisplayString());
+                            foreach (var i in nt.AllInterfaces)
+                            {
+                                set.Add(i.OriginalDefinition.ToDisplayString());
+                            }
                             Walk(nt);
                         }
+                    }
                 }
                 Walk(Compilation.Assembly.GlobalNamespace);
                 _implemented.Add(Compilation, set);
@@ -631,7 +761,9 @@ namespace CsVerify.Verifier.Boogie
             var list = (INamedTypeSymbol)Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
             var kind = Kind(element);
             if (index == null)
+            {
                 return new KOp("ite", new KOp("$arr", x), new KOp("len", x), new KOp("ite", new KOp("$coll", x), new KOp("sel", new KVar(SizeMap), x), new KOp("$ocount", x, new KOp("$state"))));
+            }
             var array = (IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element);
             return new KOp("ite", new KOp("$arr", x), new KOp("sel", new KVar(Elements(array)), x, index),
                 new KOp("ite", new KOp("$coll", x), new KOp("sel", new KVar(ModelOf("Items", list).Name), x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
@@ -669,9 +801,17 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static bool CustomEquality(ITypeSymbol t)
         {
-            if (!(t is INamedTypeSymbol n) || !IsClass(n)) return false;
+            if (!(t is INamedTypeSymbol n) || !IsClass(n))
+            {
+                return false;
+            }
             for (var s = n; s != null && s.SpecialType != SpecialType.System_Object; s = s.BaseType)
-                if (s.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => m.IsOverride && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Object)) return true;
+            {
+                if (s.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => m.IsOverride && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Object))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -708,13 +848,43 @@ namespace CsVerify.Verifier.Boogie
             return model switch
             {
                 // (a builder's length: a map of its own, so that no list is thought to be one)
-                "Size" when CollectionKind(collection) == "StringBuilder" => new ModelMap { Name = "$F.$M.Length", Type = "[Ref]int" },
-                "Size" => new ModelMap { Name = SizeMap, Type = "[Ref]int" },
-                "Version" => new ModelMap { Name = VersionMap, Type = "[Ref]int" },
-                "Items" => new ModelMap { Name = "$F.$M.Items." + args[0], Type = $"[Ref][int]{BoogieOf(args[0])}", Range = args[0] },
-                "Members" => new ModelMap { Name = "$F.$M.Members." + args[0], Type = $"[Ref][{BoogieOf(args[0])}]bool" },
-                "Domain" => new ModelMap { Name = "$F.$M.Domain." + args[0], Type = $"[Ref][{BoogieOf(args[0])}]bool" },
-                "Entries" => new ModelMap { Name = $"$F.$M.Entries.{args[0]}.{args[1]}", Type = $"[Ref][{BoogieOf(args[0])}]{BoogieOf(args[1])}", Range = args[1] },
+                "Size" when CollectionKind(collection) == "StringBuilder" => new ModelMap
+                {
+                    Name = "$F.$M.Length",
+                    Type = "[Ref]int",
+                },
+                "Size" => new ModelMap
+                {
+                    Name = SizeMap,
+                    Type = "[Ref]int",
+                },
+                "Version" => new ModelMap
+                {
+                    Name = VersionMap,
+                    Type = "[Ref]int",
+                },
+                "Items" => new ModelMap
+                {
+                    Name = "$F.$M.Items." + args[0],
+                    Type = $"[Ref][int]{BoogieOf(args[0])}",
+                    Range = args[0],
+                },
+                "Members" => new ModelMap
+                {
+                    Name = "$F.$M.Members." + args[0],
+                    Type = $"[Ref][{BoogieOf(args[0])}]bool",
+                },
+                "Domain" => new ModelMap
+                {
+                    Name = "$F.$M.Domain." + args[0],
+                    Type = $"[Ref][{BoogieOf(args[0])}]bool",
+                },
+                "Entries" => new ModelMap
+                {
+                    Name = $"$F.$M.Entries.{args[0]}.{args[1]}",
+                    Type = $"[Ref][{BoogieOf(args[0])}]{BoogieOf(args[1])}",
+                    Range = args[1],
+                },
                 _ => null,
             };
         }
@@ -725,8 +895,12 @@ namespace CsVerify.Verifier.Boogie
         {
             var keys = string.Concat(m.Parameters.Skip(1).Select(p => "[" + TypeOf(p.Type) + "]"));
             var kind = Scalar(m.ReturnType) ? Sp(m.ReturnType).ToString().Substring("System_".Length) : null;
-            return new ModelMap { Name = "$F.$M.User." + Ident(m.ContainingType.ToDisplayString() + "." + m.Name), Type = "[Ref]" + keys + TypeOf(m.ReturnType),
-                                  Range = keys.Length == 0 ? null : kind };
+            return new ModelMap
+            {
+                Name = "$F.$M.User." + Ident(m.ContainingType.ToDisplayString() + "." + m.Name),
+                Type = "[Ref]" + keys + TypeOf(m.ReturnType),
+                Range = keys.Length == 0 ? null : kind,
+            };
         }
 
         public static IEnumerable<ModelMap> ModelsOf(INamedTypeSymbol collection) =>
@@ -756,7 +930,12 @@ namespace CsVerify.Verifier.Boogie
         public static bool DerivesFromLibrary(ITypeSymbol t)
         {
             for (var s = t; s != null && s.SpecialType != SpecialType.System_Object; s = s.BaseType)
-                if (IsLibraryBase(s)) return true;
+            {
+                if (IsLibraryBase(s))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -874,7 +1053,12 @@ namespace CsVerify.Verifier.Boogie
         {
             // (its base classes' too)
             for (var c = t as INamedTypeSymbol; c != null && c.SpecialType != SpecialType.System_Object; c = c.BaseType)
-                foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m))) yield return m.OriginalDefinition;
+            {
+                foreach (var m in c.GetMembers().Where(m => !m.IsStatic && IsField(m)))
+                {
+                    yield return m.OriginalDefinition;
+                }
+            }
         }
 
         public static KExpr Default(ITypeSymbol t) => KernelTerms.Of(MathTypes.Default(t));
@@ -953,7 +1137,10 @@ namespace CsVerify.Verifier.Boogie
         public static ISymbol Enclosing(IMethodSymbol m)
         {
             ISymbol s = m;
-            while (s is IMethodSymbol x && IsNested(x)) s = x.ContainingSymbol;
+            while (s is IMethodSymbol x && IsNested(x))
+            {
+                s = x.ContainingSymbol;
+            }
             return s;
         }
 
@@ -967,9 +1154,20 @@ namespace CsVerify.Verifier.Boogie
             var b = new StringBuilder();
             // (Boogie's identifiers are ASCII: another letter, σ, is its code, u03C3, as one such name stays apart from others)
             foreach (var ch in s ?? "")
-                if (ch < 128 && (char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == '$')) b.Append(ch);
-                else if (ch >= 128 && char.IsLetterOrDigit(ch)) b.Append("u").Append(((int)ch).ToString("X4"));
-                else b.Append('_');
+            {
+                if (ch < 128 && (char.IsLetterOrDigit(ch) || ch == '_' || ch == '.' || ch == '$'))
+                {
+                    b.Append(ch);
+                }
+                else if (ch >= 128 && char.IsLetterOrDigit(ch))
+                {
+                    b.Append("u").Append(((int)ch).ToString("X4"));
+                }
+                else
+                {
+                    b.Append('_');
+                }
+            }
             return b.ToString();
         }
 

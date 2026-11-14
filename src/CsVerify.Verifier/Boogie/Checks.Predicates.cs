@@ -17,13 +17,36 @@ namespace CsVerify.Verifier.Boogie
         private void RunPredicate()
         {
             // (its one block, b0, empty: what the check makes is all of it)
-            _m.Blocks = _p.Blocks.Select(b => new MBlock { Label = b.Label, Ordinal = b.Ordinal, Jump = b.Jump }).ToList();
+            _m.Blocks = _p.Blocks.Select(b => new MBlock
+            {
+                Label = b.Label,
+                Ordinal = b.Ordinal,
+                Jump = b.Jump,
+            }).ToList();
             _out = _m.Blocks[0].Stmts;
-            Emit(new MAssign { Var = "perm", Value = new MLit("(lambda o: Ref :: false)") });
+            Emit(new MAssign
+            {
+                Var = "perm",
+                Value = new MLit("(lambda o: Ref :: false)"),
+            });
             _p.UsesCells = _program.UsesPermissions;
             _p.UsesFields = _program.UsesFieldPermissions;
-            if (_p.UsesFields) Emit(new MAssign { Var = "fperm", Value = new MLit("(lambda y$: Ref :: (lambda k$: int :: false))") });
-            if (_p.UsesCells) Emit(new MAssign { Var = "cells", Value = new MLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))") });
+            if (_p.UsesFields)
+            {
+                Emit(new MAssign
+                {
+                    Var = "fperm",
+                    Value = new MLit("(lambda y$: Ref :: (lambda k$: int :: false))"),
+                });
+            }
+            if (_p.UsesCells)
+            {
+                Emit(new MAssign
+                {
+                    Var = "cells",
+                    Value = new MLit("(lambda x$: Ref :: (lambda i$: int :: 0.0))"),
+                });
+            }
             CWalk(_p.FunctionBody, new MLit("true"));
             _m.Obligations = _m.Blocks[0].Stmts.Count(s => s is MAssert a && a.Check != null);
         }
@@ -60,20 +83,39 @@ namespace CsVerify.Verifier.Boogie
                     return new MLit("true");
                 }
                 case KInst inst:
-                    foreach (var a in inst.Args) CWalk(a, guard);
+                    foreach (var a in inst.Args)
+                    {
+                        CWalk(a, guard);
+                    }
                     return new MLit("true");
                 case KFieldAcc fa:
                 {
                     var o = CWalk(fa.Obj, guard);
                     Assume(Implies(guard, new MOp("!=", o, new MLit("null"))));
-                    if (_p.UsesFields) SetField(o, fa.Field, new MOp("||", FieldHeld(o, fa.Field), guard));
+                    if (_p.UsesFields)
+                    {
+                        SetField(o, fa.Field, new MOp("||", FieldHeld(o, fa.Field), guard));
+                    }
                     return new MLit("true");
                 }
                 case KCells cl:
                 {
-                    var c = new MCells { Arr = CWalk(cl.Arr, guard), Lo = CWalk(cl.Lo, guard), Hi = CWalk(cl.Hi, guard), Read = cl.Read, At = cl.At };
-                    if (cl.Read) Assert(new MLit("false"), At("CSV1016", cl.At, "a predicate holds whole permissions: Spec.AccRead is for contracts"));
-                    if (_p.UsesCells) ChangeCells(guard, c, "+");
+                    var c = new MCells
+                    {
+                        Arr = CWalk(cl.Arr, guard),
+                        Lo = CWalk(cl.Lo, guard),
+                        Hi = CWalk(cl.Hi, guard),
+                        Read = cl.Read,
+                        At = cl.At,
+                    };
+                    if (cl.Read)
+                    {
+                        Assert(new MLit("false"), At("CSV1016", cl.At, "a predicate holds whole permissions: Spec.AccRead is for contracts"));
+                    }
+                    if (_p.UsesCells)
+                    {
+                        ChangeCells(guard, c, "+");
+                    }
                     return new MLit("true");
                 }
                 case KElem el:
@@ -82,7 +124,9 @@ namespace CsVerify.Verifier.Boogie
                     var i = CWalk(el.Index, guard);
                     var v = Guarded(guard, () => el.String ? StringChar(el, a, i) : Elem(el, a, i, alongside: null));
                     if (_p.UsesCells && !el.String)
+                    {
                         Assert(Implies(guard, new MOp(">", Cell(a, i), new MLit("0.0"))), At("CSV1016", el.At, $"'{el.At}' reads a cell this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
+                    }
                     return v;
                 }
                 case KOp op:

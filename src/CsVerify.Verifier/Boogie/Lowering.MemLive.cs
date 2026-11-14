@@ -26,42 +26,84 @@ namespace CsVerify.Verifier.Boogie
             var views = _m.Parameters.Where(x => IsMemView(x.Type) && x.RefKind != RefKind.Out).ToList();
             bool uses = views.Count > 0 || _model.GetOperation(_decl) is IOperation root &&
                         root.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i => SpecSymbols.IsCsVerifyType(i.TargetMethod.ContainingType, "Mem"));
-            if (!uses) return;
+            if (!uses)
+            {
+                return;
+            }
             _memLive = "m$live";
-            _p.Locals.Add(new KLocal { Name = _memLive, Raw = "[int]bool" });
+            _p.Locals.Add(new KLocal
+            {
+                Name = _memLive,
+                Raw = "[int]bool",
+            });
             Emit(new KHavoc { Var = _memLive });
             var a = new KVar("m$a");
             foreach (var x in views)
-                ShapeFact(new KQuant { Forall = true, Var = "m$a", Type = "int", Body = new KOp("==>", InCells(MemCells(new KVar(Local(x)), x.Type, _decl), a), new KOp("sel", new KVar(_memLive), a)) }, _decl);
+            {
+                ShapeFact(new KQuant
+                {
+                    Forall = true,
+                    Var = "m$a",
+                    Type = "int",
+                    Body = new KOp("==>", InCells(MemCells(new KVar(Local(x)), x.Type, _decl), a), new KOp("sel", new KVar(_memLive), a)),
+                }, _decl);
+            }
             // (two ranges apart, each pair of theirs: an empty one is apart from any)
             for (int i = 0; i < views.Count; i++)
+            {
                 for (int j = i + 1; j < views.Count; j++)
+                {
                     foreach (var x in MemCells(new KVar(Local(views[i])), views[i].Type, _decl))
+                    {
                         foreach (var y in MemCells(new KVar(Local(views[j])), views[j].Type, _decl))
+                        {
                             ShapeFact(new KOp("||", new KOp("||", new KOp("<=", x.Hi, x.Lo), new KOp("<=", y.Hi, y.Lo)),
                                                     new KOp("||", new KOp("<=", x.Hi, y.Lo), new KOp("<=", y.Hi, x.Lo))), _decl);
+                        }
+                    }
+                }
+            }
         }
 
         /// <summary>An allocation's view: of cells none in hand covers; live from here on.</summary>
         private void MemFresh(KExpr view, ITypeSymbol type, SyntaxNode at)
         {
-            if (_memLive == null) return;
+            if (_memLive == null)
+            {
+                return;
+            }
             var a = new KVar("m$a");
             var cells = MemCells(view, type, at);
-            ShapeFact(new KQuant { Forall = true, Var = "m$a", Type = "int", Body = new KOp("==>", InCells(cells, a), new KOp("!", new KOp("sel", new KVar(_memLive), a))) }, at);
+            ShapeFact(new KQuant
+            {
+                Forall = true,
+                Var = "m$a",
+                Type = "int",
+                Body = new KOp("==>", InCells(cells, a), new KOp("!", new KOp("sel", new KVar(_memLive), a))),
+            }, at);
             // (said of each range's first cell too, for the solver to find)
-            foreach (var c in cells) ShapeFact(new KOp("==>", new KOp("<", c.Lo, c.Hi), new KOp("!", new KOp("sel", new KVar(_memLive), c.Lo))), at);
+            foreach (var c in cells)
+            {
+                ShapeFact(new KOp("==>", new KOp("<", c.Lo, c.Hi), new KOp("!", new KOp("sel", new KVar(_memLive), c.Lo))), at);
+            }
             MemLive(view, type, at, true);
         }
 
         /// <summary>A view's cells live (a call gave it, an allocation made it), or not (freed).</summary>
         private void MemLive(KExpr view, ITypeSymbol type, SyntaxNode at, bool live)
         {
-            if (_memLive == null) return;
+            if (_memLive == null)
+            {
+                return;
+            }
             var a = new KVar("m$a");
             var cells = InCells(MemCells(view, type, at), a);
             var was = new KOp("sel", new KVar(_memLive), a);
-            Emit(new KAssign { Var = _memLive, Value = new KOp("lambda", new KLit("m$a: int"), live ? new KOp("||", was, cells) : new KOp("&&", was, new KOp("!", cells))) });
+            Emit(new KAssign
+            {
+                Var = _memLive,
+                Value = new KOp("lambda", new KLit("m$a: int"), live ? new KOp("||", was, cells) : new KOp("&&", was, new KOp("!", cells))),
+            });
         }
 
         /// <summary>
@@ -74,9 +116,15 @@ namespace CsVerify.Verifier.Boogie
             value = null;
             var m = call.TargetMethod;
             bool offset = m.Name == "Offset" && SpecSymbols.IsCsVerifyType(m.ContainingType, "Ptr`1");
-            if (!offset && !(SpecSymbols.IsCsVerifyType(m.ContainingType, "Mem") && m.IsGenericMethod)) return false;
+            if (!offset && !(SpecSymbols.IsCsVerifyType(m.ContainingType, "Mem") && m.IsGenericMethod))
+            {
+                return false;
+            }
             var elem = offset ? ((INamedTypeSymbol)m.ContainingType).TypeArguments[0] : m.TypeArguments[0];
-            if (!Scalar(elem)) throw new NotTranslated("memory of " + elem);
+            if (!Scalar(elem))
+            {
+                throw new NotTranslated("memory of " + elem);
+            }
             var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var named = args.ToDictionary(a => a.Parameter.Name, a => a);
             var at = call.Syntax;
@@ -84,21 +132,62 @@ namespace CsVerify.Verifier.Boogie
             var given = new Dictionary<string, KExpr>();
             KExpr In(string name)
             {
-                if (given.TryGetValue(name, out var known)) return known;
+                if (given.TryGetValue(name, out var known))
+                {
+                    return known;
+                }
                 var t = Declare("t$" + _temps++, named[name].Parameter.Type);
-                Emit(new KAssign { Var = t, Value = Expr(named[name].Value) });
+                Emit(new KAssign
+                {
+                    Var = t,
+                    Value = Expr(named[name].Value),
+                });
                 return given[name] = new KVar(t);
             }
             string Out(string name) => RefVariable(named[name]);
             ITypeSymbol TypeOfParam(string name) => named[name].Parameter.Type;
             KExpr P(string prop, KExpr v, string param) => MemProp(prop, v, TypeOfParam(param));
-            void Need(KExpr cond, string text) => Emit(new KCheck { Cond = cond, Id = "CSV1001", At = at, Message = $"precondition '{text}' of '{m.Name}' might not hold" });
+            void Need(KExpr cond, string text) => Emit(new KCheck
+            {
+                Cond = cond,
+                Id = "CSV1001",
+                At = at,
+                Message = $"precondition '{text}' of '{m.Name}' might not hold",
+            });
             void Assume(KExpr c) => Emit(new KAssume { Cond = c });
-            string New(ITypeSymbol t) { var v = Declare("t$" + _temps++, t); Emit(new KHavoc { Var = v }); return v; }
-            void Grant(KExpr v, ITypeSymbol t, bool tie = true) { Emit(new KMemCells { Cells = MemCells(v, t, at), Grant = true }); if (tie) Assume(MemTie(v, t)); }
-            void Revoke(KExpr v, ITypeSymbol t) => Emit(new KMemCells { Cells = MemCells(v, t, at), Grant = false });
+            string New(ITypeSymbol t)
+            {
+                var v = Declare("t$" + _temps++, t);
+                Emit(new KHavoc { Var = v });
+                return v;
+            }
+            void Grant(KExpr v, ITypeSymbol t, bool tie = true)
+            {
+                Emit(new KMemCells
+                {
+                    Cells = MemCells(v, t, at),
+                    Grant = true,
+                });
+                if (tie)
+                {
+                    Assume(MemTie(v, t));
+                }
+            }
+            void Revoke(KExpr v, ITypeSymbol t) => Emit(new KMemCells
+            {
+                Cells = MemCells(v, t, at),
+                Grant = false,
+            });
             var arrayOf = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(elem);
-            void Store(KExpr addr, KExpr x) => Emit(new KStore { Memory = true, Index = addr, Value = x, ArrayType = arrayOf, At = at, ArrayAt = at });
+            void Store(KExpr addr, KExpr x) => Emit(new KStore
+            {
+                Memory = true,
+                Index = addr,
+                Value = x,
+                ArrayType = arrayOf,
+                At = at,
+                ArrayAt = at,
+            });
             KExpr Eq(KExpr a, KExpr b) => new KOp("==", a, b);
             KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => new KOp("&&", a, b));
             KExpr Plus(KExpr a, KExpr b) => new KOp("+", a, b);
@@ -121,7 +210,11 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KHavoc { Var = view });
                     var v = new KVar(view);
                     Assume(And(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Value", v, "view"), init)));
-                    Emit(new KMemCells { Cells = MemCells(v, TypeOfParam("view"), at), Grant = true });
+                    Emit(new KMemCells
+                    {
+                        Cells = MemCells(v, TypeOfParam("view"), at),
+                        Grant = true,
+                    });
                     MemFresh(v, TypeOfParam("view"), at);
                     Store(P("Addr", v, "view"), init);
                     value = new KVar(p);
@@ -139,7 +232,11 @@ namespace CsVerify.Verifier.Boogie
                     var v = In("view"); var p = In("p"); var x = In("value");
                     Need(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), "view.Addr == p.Addr");
                     var old = Declare("t$" + _temps++, TypeOfParam("view"));
-                    Emit(new KAssign { Var = old, Value = v });
+                    Emit(new KAssign
+                    {
+                        Var = old,
+                        Value = v,
+                    });
                     var view = Out("view");
                     Emit(new KHavoc { Var = view });
                     var nv = new KVar(view);
@@ -166,9 +263,19 @@ namespace CsVerify.Verifier.Boogie
                     Assume(And(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Length", v, "view"), n),
                                Eq(P("Elems", v, "view"), new KOp("seq.const", fill))));
                     Assume(And(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Length", g, "gc"), P("Length", v, "view"))));
-                    Emit(new KMemCells { Cells = MemCells(v, TypeOfParam("view"), at), Grant = true });
+                    Emit(new KMemCells
+                    {
+                        Cells = MemCells(v, TypeOfParam("view"), at),
+                        Grant = true,
+                    });
                     MemFresh(v, TypeOfParam("view"), at);
-                    Emit(new KFill { Map = MemMap(TypeOfParam("view")), Lo = P("Addr", v, "view"), Hi = Plus(P("Addr", v, "view"), n), Value = fill });
+                    Emit(new KFill
+                    {
+                        Map = MemMap(TypeOfParam("view")),
+                        Lo = P("Addr", v, "view"),
+                        Hi = Plus(P("Addr", v, "view"), n),
+                        Value = fill,
+                    });
                     value = new KVar(p);
                     return true;
                 }
@@ -189,7 +296,11 @@ namespace CsVerify.Verifier.Boogie
                     Need(And(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), new KOp("<=", new KLit("0"), i), new KOp("<", i, P("Length", v, "view"))),
                          "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
                     var old = Declare("t$" + _temps++, TypeOfParam("view"));
-                    Emit(new KAssign { Var = old, Value = v });
+                    Emit(new KAssign
+                    {
+                        Var = old,
+                        Value = v,
+                    });
                     var view = Out("view");
                     Emit(new KHavoc { Var = view });
                     var nv = new KVar(view); var ov = new KVar(old);

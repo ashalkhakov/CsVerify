@@ -18,7 +18,13 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr Snap(IMethodSymbol pred, int[] map, MExpr[] args)
         {
             var instArgs = new MExpr[pred.Parameters.Length];
-            for (int k = 0; k < map.Length; k++) if (map[k] >= 0) instArgs[map[k]] = args[k];
+            for (int k = 0; k < map.Length; k++)
+            {
+                if (map[k] >= 0)
+                {
+                    instArgs[map[k]] = args[k];
+                }
+            }
             return new MOp("sel", new MVar("psnap"), Instance(pred, instArgs));
         }
 
@@ -34,7 +40,10 @@ namespace CsVerify.Verifier.Boogie
         private void SnapFacts(IMethodSymbol pred, MExpr[] args, MExpr g)
         {
             var sig = _program.Signature(pred);
-            if (sig.FunctionBody == null) return;
+            if (sig.FunctionBody == null)
+            {
+                return;
+            }
             var snap = new MOp("$sst", new MOp("sel", new MVar("psnap"), Instance(pred, args)));
             // (every map read, a library function's arguments' too: those Plain lets through are of its arguments alone)
             MExpr In(MExpr e) => MathTerms.Map(e, x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
@@ -59,18 +68,46 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var f in _program.FunctionsOver(pred))
             {
-                if (!(_program.OverPredicate(f) is (IMethodSymbol, int[] map))) continue;
+                if (!(_program.OverPredicate(f) is (IMethodSymbol, int[] map)))
+                {
+                    continue;
+                }
                 var sig = _program.Signature(f);
-                if (sig.FunctionBody == null) continue;
+                if (sig.FunctionBody == null)
+                {
+                    continue;
+                }
                 // (its parameters not of the instance: for every value of them)
                 var args = map.Select((j, k) => j >= 0 ? instArgs[j] : new MVar($"q$x{k}")).ToArray();
                 var given = f.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
-                MExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, given); }
+                MExpr M(KExpr x)
+                {
+                    var v = Spec(x, out _);
+                    _facts.Clear();
+                    return Subst(v, given);
+                }
                 var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)new MLit("true"), Conj);
-                var app = new MFnApp { Callee = f, Function = FunctionName(f), Args = args, Snap = new MOp("sel", new MVar("psnap"), p) };
+                var app = new MFnApp
+                {
+                    Callee = f,
+                    Function = FunctionName(f),
+                    Args = args,
+                    Snap = new MOp("sel", new MVar("psnap"), p),
+                };
                 MExpr fact = Implies(pre, new MOp("==", app, M(sig.FunctionBody)));
                 for (int k = map.Length - 1; k >= 0; k--)
-                    if (map[k] < 0) fact = new MQuant { Forall = true, Var = $"q$x{k}", Type = TypeOf(f.Parameters[k].Type), Body = fact };
+                {
+                    if (map[k] < 0)
+                    {
+                        fact = new MQuant
+                        {
+                            Forall = true,
+                            Var = $"q$x{k}",
+                            Type = TypeOf(f.Parameters[k].Type),
+                            Body = fact,
+                        };
+                    }
+                }
                 Assume(fact);
             }
         }

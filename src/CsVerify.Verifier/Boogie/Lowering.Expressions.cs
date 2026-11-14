@@ -17,13 +17,25 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A static readonly field of the program's that the kernel doesn't have as a field: its value, a constant of the run's ($sf).</summary>
         private static KExpr StaticReadonly(IFieldSymbol f)
         {
-            if (f.DeclaringSyntaxReferences.Length == 0 || f.IsConst || IsField(f) || IsLockObject(f) || !InSubset(f.Type)) return null;
+            if (f.DeclaringSyntaxReferences.Length == 0 || f.IsConst || IsField(f) || IsLockObject(f) || !InSubset(f.Type))
+            {
+                return null;
+            }
             var kind = TypeOf(f.Type) switch { "Ref" => "Ref", "int" => "Int", "bool" => "Bool", _ => null };
-            if (kind == null) return null;
+            if (kind == null)
+            {
+                return null;
+            }
             var ids = KernelTypes.StaticReadonlyIds ??= new Dictionary<string, int>();
             var key = f.OriginalDefinition.ToDisplayString();
-            if (!ids.TryGetValue(key, out var k)) ids[key] = k = ids.Count;
-            if (kind == "Ref" && IsNullable(f.Type) && NotNullable(f.Type) && StaticStartsWithObject(f)) (KernelTypes.StaticReadonlyNonNull ??= new HashSet<int>()).Add(k);
+            if (!ids.TryGetValue(key, out var k))
+            {
+                ids[key] = k = ids.Count;
+            }
+            if (kind == "Ref" && IsNullable(f.Type) && NotNullable(f.Type) && StaticStartsWithObject(f))
+            {
+                (KernelTypes.StaticReadonlyNonNull ??= new HashSet<int>()).Add(k);
+            }
             return new KOp("$sf" + kind, new KLit(k.ToString()));
         }
 
@@ -34,7 +46,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A tuple's elements, in order: a tuple written here, (x, y), each value; any other, each item of it.</summary>
         private List<KExpr> TupleParts(IOperation op, Func<IOperation, KExpr> lower, bool inSpec)
         {
-            if (Unconverted(op) is ITupleOperation lit) return lit.Elements.Select(e => Operand(e, lower, inSpec)).ToList();
+            if (Unconverted(op) is ITupleOperation lit)
+            {
+                return lit.Elements.Select(e => Operand(e, lower, inSpec)).ToList();
+            }
             var v = Operand(op, lower, inSpec);
             return Enumerable.Range(0, ((INamedTypeSymbol)op.Type).TupleElements.Length).Select(k => TupleItem(v, op.Type, k)).ToList();
         }
@@ -43,13 +58,34 @@ namespace CsVerify.Verifier.Boogie
         private KExpr CopyOf(KExpr src, KExpr start, KExpr length, ITypeSymbol arrayType, SyntaxNode at)
         {
             var copy = Declare("t$" + _temps++, arrayType);
-            Emit(new KNew { Var = copy, ArrayType = arrayType, Size = length });
+            Emit(new KNew
+            {
+                Var = copy,
+                ArrayType = arrayType,
+                Size = length,
+            });
             var map = Elements(arrayType);
             var row = new KVar(LinqMap("[int]" + ElementValue(map)));
-            Emit(new KRow { Map = map, Ref = new KVar(copy), Value = row });
+            Emit(new KRow
+            {
+                Map = map,
+                Ref = new KVar(copy),
+                Value = row,
+            });
             var i = new KVar("i$k");
-            Emit(new KSpecStmt { Spec = new KQuant { Forall = true, Var = "i$k", Body = new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, new KOp("+", start, i))) },
-                                 Assume = true, Free = true, At = at, ArgumentAt = at });
+            Emit(new KSpecStmt
+            {
+                Spec = new KQuant
+                {
+                    Forall = true,
+                    Var = "i$k",
+                    Body = new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, new KOp("+", start, i))),
+                },
+                Assume = true,
+                Free = true,
+                At = at,
+                ArgumentAt = at,
+            });
             return new KVar(copy);
         }
 
@@ -78,7 +114,12 @@ namespace CsVerify.Verifier.Boogie
         private static IPropertySymbol Actual(ITypeSymbol t, string name)
         {
             for (var s = t as INamedTypeSymbol; s != null; s = s.BaseType)
-                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p) return p;
+            {
+                if (s.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol p)
+                {
+                    return p;
+                }
+            }
             return null;
         }
 
@@ -86,9 +127,16 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Operand(IOperation op, Func<IOperation, KExpr> lower, bool inSpec)
         {
             var v = lower(op);
-            if (inSpec || v is KVar || v is KLit) return v;
+            if (inSpec || v is KVar || v is KLit)
+            {
+                return v;
+            }
             var t = Declare("t$" + _temps++, op.Type);
-            Emit(new KAssign { Var = t, Value = v });
+            Emit(new KAssign
+            {
+                Var = t,
+                Value = v,
+            });
             return new KVar(t);
         }
 
@@ -98,10 +146,15 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private INamedTypeSymbol CollectionOf(ITypeSymbol t)
         {
-            if (IsCollection(t)) return (INamedTypeSymbol)t;
+            if (IsCollection(t))
+            {
+                return (INamedTypeSymbol)t;
+            }
             if (CollectionKind(t) != null && ((INamedTypeSymbol)t).TypeArguments.Any(a => a is ITypeParameterSymbol) && _contract.IsStub && IsCollection(_m.ContainingType) &&
                 SymbolEqualityComparer.Default.Equals(t.OriginalDefinition, _m.ContainingType.OriginalDefinition))
+            {
                 return (INamedTypeSymbol)_m.ContainingType;
+            }
             return null;
         }
 
@@ -129,11 +182,26 @@ namespace CsVerify.Verifier.Boogie
             bool fresh = new[] { "IList", "IReadOnlyList", "ICollection", "IReadOnlyCollection" }.Any(n =>
                 KernelTypes.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{n}`1") is INamedTypeSymbol d && ImplementedHere(d));
             // (in a specification, a read of the state's model: some value, which code's reads, each unknown, needn't agree with)
-            if (inSpec) fresh = false;
+            if (inSpec)
+            {
+                fresh = false;
+            }
             var list = (INamedTypeSymbol)KernelTypes.Compilation.GetTypeByMetadataName("System.Collections.Generic.List`1").Construct(element);
-            foreach (var m in ModelsOf(list)) _p.Models[m.Name] = m;
+            foreach (var m in ModelsOf(list))
+            {
+                _p.Models[m.Name] = m;
+            }
             _p.UsesState = true;
-            return new KIfc { Item = index != null, Of = of, Index = index, Element = element, Fresh = fresh, At = p.Syntax, OfAt = p.Instance.Syntax };
+            return new KIfc
+            {
+                Item = index != null,
+                Of = of,
+                Index = index,
+                Element = element,
+                Fresh = fresh,
+                At = p.Syntax,
+                OfAt = p.Instance.Syntax,
+            };
         }
 
         private KExpr Model(string name, INamedTypeSymbol collection, KExpr of)
@@ -160,7 +228,10 @@ namespace CsVerify.Verifier.Boogie
                     default: return o.ConstantValue.HasValue;
                 }
             }
-            if (!Simple(op)) return false;
+            if (!Simple(op))
+            {
+                return false;
+            }
             bool Names(ExpressionSyntax e) => e is IdentifierNameSyntax n && names.Contains(n.Identifier.Text);
             return !during.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>().Any(a => Names(a.Left)) &&
                    !during.DescendantNodesAndSelf().OfType<PostfixUnaryExpressionSyntax>().Any(u => Names(u.Operand)) &&
@@ -170,7 +241,10 @@ namespace CsVerify.Verifier.Boogie
 
         private string Capture(CaptureId id, ITypeSymbol type)
         {
-            if (type == null || !InSubset(type)) throw new NotTranslated("a capture of " + type);
+            if (type == null || !InSubset(type))
+            {
+                throw new NotTranslated("a capture of " + type);
+            }
             return Declare("c$" + id.GetHashCode(), type);
         }
 
@@ -183,18 +257,34 @@ namespace CsVerify.Verifier.Boogie
                 IPropertyReferenceOperation p when p.Arguments.Length == 0 => (p.Property, p.Instance),
                 _ => throw new NotTranslated(access.Kind.ToString()),
             };
-            if (!IsField(symbol)) throw new NotTranslated("the member " + symbol.Name);
+            if (!IsField(symbol))
+            {
+                throw new NotTranslated("the member " + symbol.Name);
+            }
             symbol = symbol.OriginalDefinition;
             _p.Fields.Add(symbol);
             var name = (access.Syntax as MemberAccessExpressionSyntax)?.Name ?? access.Syntax;
-            if (symbol.IsStatic) { if (!spec) Held(symbol, null, name); return (symbol, null, false, null); }
+            if (symbol.IsStatic)
+            {
+                if (!spec)
+                {
+                    Held(symbol, null, name);
+                }
+                return (symbol, null, false, null);
+            }
             if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance })
             {
-                if (!spec) Held(symbol, new KVar("this"), name);
+                if (!spec)
+                {
+                    Held(symbol, new KVar("this"), name);
+                }
                 return (symbol, new KVar("this"), true, instance.Syntax);
             }
             var o = spec ? Spec(instance, specResult) : Expr(instance);
-            if (!spec) Held(symbol, o, name);
+            if (!spec)
+            {
+                Held(symbol, o, name);
+            }
             return (symbol, o, false, instance.Syntax);
         }
 
@@ -220,9 +310,16 @@ namespace CsVerify.Verifier.Boogie
             int end = _block.Stmts.Count;
             for (int k = ops.Length - 2; k >= 0; k--)
             {
-                if (after[k] == end || values[k] is KLit || values[k] is KVar || !InSubset(ops[k].Type)) continue;
+                if (after[k] == end || values[k] is KLit || values[k] is KVar || !InSubset(ops[k].Type))
+                {
+                    continue;
+                }
                 var t = Declare("t$" + _temps++, ops[k].Type);
-                _block.Stmts.Insert(after[k], new KAssign { Var = t, Value = values[k] });
+                _block.Stmts.Insert(after[k], new KAssign
+                {
+                    Var = t,
+                    Value = values[k],
+                });
                 values[k] = new KVar(t);
             }
             return values;
@@ -236,12 +333,27 @@ namespace CsVerify.Verifier.Boogie
                 KExpr F(KExpr x) => x is KLit lit && System.Numerics.BigInteger.TryParse(lit.Text, out var k) ? FloatLiteral((double)k, type) : x;
                 return new KOp((op switch { "+" => "$fp.add", "-" => "$fp.sub", "*" => "$fp.mul", _ => "$fp.div" }) + FloatSize(type), F(l), F(r));
             }
-            if (!IsIntegral(type)) throw new NotTranslated("arithmetic on " + type);
+            if (!IsIntegral(type))
+            {
+                throw new NotTranslated("arithmetic on " + type);
+            }
             var mode = Mode(at, isChecked);
             // (checked overflow, and MinValue / -1, throw an OverflowException: where exceptions are seen, to the handlers)
             var throwsTo = _cfgBlock != null && (mode == KMode.Checked || op is "/" or "%") && !_codeArith ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
-            if (throwsTo != null) _p.ExceptionTypes.Add(_model.Compilation.GetTypeByMetadataName("System.OverflowException"));
-            return new KArith { Op = op, Left = l, Right = r, Type = type, Mode = mode, At = at, ThrowsTo = throwsTo };
+            if (throwsTo != null)
+            {
+                _p.ExceptionTypes.Add(_model.Compilation.GetTypeByMetadataName("System.OverflowException"));
+            }
+            return new KArith
+            {
+                Op = op,
+                Left = l,
+                Right = r,
+                Type = type,
+                Mode = mode,
+                At = at,
+                ThrowsTo = throwsTo,
+            };
         }
 
         private static string Op(BinaryOperatorKind k) => k switch
@@ -254,9 +366,15 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Expr(IOperation e)
         {
             // (a data value's, a span's: Lowering.Data's and Lowering.Spans')
-            if (DataExpr(e, Expr, BindInCode) is KExpr data) return data;
+            if (DataExpr(e, Expr, BindInCode) is KExpr data)
+            {
+                return data;
+            }
             // (a constant: its value; no form below is a constant of these types)
-            if (e.ConstantValue is { HasValue: true } cv && (Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type))) return Constant(cv.Value, e.Type);
+            if (e.ConstantValue is { HasValue: true } cv && (Scalar(e.Type) || IsFloating(e.Type) || IsNullable(e.Type)))
+            {
+                return Constant(cv.Value, e.Type);
+            }
             switch (e)
             {
                 case IPropertyReferenceOperation: return ExprOfPropertyReference(e);
@@ -313,7 +431,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var v = Declare("t$" + _temps++, acur.Element);
                     Emit(new KHavoc { Var = v });
-                    if (IsNullable(acur.Element) && NotNullable(acur.Element)) Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
+                    if (IsNullable(acur.Element) && NotNullable(acur.Element))
+                    {
+                        Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
+                    }
                     return new KVar(v);
                 }
                 // (a computed property: its getter, called)
@@ -344,11 +465,22 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation lp when IsCollection(lp.Instance?.Type) && lp.Property.GetMethod != null:
                     return Invoke(lp.Property.GetMethod, lp.Instance, lp.Arguments, lp.Syntax, null);
                 case IPropertyReferenceOperation sl when sl.Property.Name == "Length" && IsString(sl.Instance?.Type):
-                    return new KLen { String = true, Array = Expr(sl.Instance), At = sl.Syntax, ArrayAt = sl.Instance.Syntax };
+                    return new KLen
+                    {
+                        String = true,
+                        Array = Expr(sl.Instance),
+                        At = sl.Syntax,
+                        ArrayAt = sl.Instance.Syntax,
+                    };
                 case IPropertyReferenceOperation sc when sc.Property.IsIndexer && IsString(sc.Instance?.Type) && sc.Arguments.Length == 1:
                     return StringChar(sc);
                 case IPropertyReferenceOperation pr when pr.Property.Name == "Length" && IsArray(ActualArray(pr.Instance?.Type)):
-                    return new KLen { Array = Expr(pr.Instance), At = pr.Syntax, ArrayAt = pr.Instance.Syntax };
+                    return new KLen
+                    {
+                        Array = Expr(pr.Instance),
+                        At = pr.Syntax,
+                        ArrayAt = pr.Instance.Syntax,
+                    };
                 default: return ExprOther(e);
             }
         }
@@ -365,8 +497,14 @@ namespace CsVerify.Verifier.Boogie
                 // where its type says so)
                 case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } srr } when StaticReadonly(srr) is KExpr srv:
                 {
-                    if (IsNullable(srr.Type) && NotNullable(srr.Type)) Emit(new KAssume { Cond = new KOp("!=", srv, new KLit("null")) });
-                    if (IsIntegral(srr.Type)) Emit(new KAssume { Cond = InRange(srv, srr.Type) });
+                    if (IsNullable(srr.Type) && NotNullable(srr.Type))
+                    {
+                        Emit(new KAssume { Cond = new KOp("!=", srv, new KLit("null")) });
+                    }
+                    if (IsIntegral(srr.Type))
+                    {
+                        Emit(new KAssume { Cond = InRange(srv, srr.Type) });
+                    }
                     return srv;
                 }
                 case IFieldReferenceOperation _:
@@ -379,18 +517,39 @@ namespace CsVerify.Verifier.Boogie
         private KExpr FieldRead(IOperation e)
         {
             var (field, instance, onThis, instanceAt) = FieldOf(e);
-            if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis)) return AtomicRead(field, instance, onThis, e.Syntax);
+            if (Atomics.IsAtomic(field) && !(_p.IsCtor && onThis))
+            {
+                return AtomicRead(field, instance, onThis, e.Syntax);
+            }
             if (KernelTypes.Trees && SpecSymbols.IsOwnsField(field) && instance != null)
             {
                 // (what an [Owns] field holds is in its container's tree, and isn't its root: it's owned)
                 var t = Declare("t$" + _temps++, FieldType(field));
-                Emit(new KAssign { Var = t, Value = new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt } });
+                Emit(new KAssign
+                {
+                    Var = t,
+                    Value = new KField
+                    {
+                        Field = field,
+                        Instance = instance,
+                        OnThis = onThis,
+                        At = e.Syntax,
+                        InstanceAt = instanceAt,
+                    },
+                });
                 var r = new KVar("$root");
                 Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")),
                     new KOp("&&", new KOp("==", new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), new KOp("!=", new KOp("sel", r, new KVar(t)), new KVar(t)))) });
                 return new KVar(t);
             }
-            return Unbox(new KField { Field = field, Instance = instance, OnThis = onThis, At = e.Syntax, InstanceAt = instanceAt }, FieldType(field), e.Type);
+            return Unbox(new KField
+            {
+                Field = field,
+                Instance = instance,
+                OnThis = onThis,
+                At = e.Syntax,
+                InstanceAt = instanceAt,
+            }, FieldType(field), e.Type);
         }
 
         /// <summary>Expr of a default value: its forms, in order; any other as ExprOther.</summary>
@@ -443,8 +602,13 @@ namespace CsVerify.Verifier.Boogie
         {
             // (the list may not have changed since: MoveNext throws if it has; whether there's another, unknown)
             var what = CollectionKind(fv.Collection) switch { "Dictionary" => "dictionary", "HashSet" => "set", "Stack" => "stack", "Queue" => "queue", _ => "list" };
-            Emit(new KCheck { Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(fv.Array)), new KVar(fv.Version)), Id = "CSV1001", At = fv.At,
-                              Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)" });
+            Emit(new KCheck
+            {
+                Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(fv.Array)), new KVar(fv.Version)),
+                Id = "CSV1001",
+                At = fv.At,
+                Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)",
+            });
             var more = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
             Emit(new KHavoc { Var = more });
             // (it gives at most the Count it had where the loop began (a dictionary's Remove may go on while it's
@@ -469,7 +633,14 @@ namespace CsVerify.Verifier.Boogie
                 case IConversionOperation cc when Unconverted(cc) is IPropertyReferenceOperation { Property.Name: "Current", Instance: IFlowCaptureReferenceOperation cr } && _forEach.TryGetValue(cr.Id, out var fcur):
                 {
                     var el = Current(fcur);
-                    return SymbolEqualityComparer.Default.Equals(cc.Type, fcur.Element) ? el : new KConv { Value = el, From = fcur.Element, To = cc.Type, Mode = KMode.Default, At = cc.Syntax };
+                    return SymbolEqualityComparer.Default.Equals(cc.Type, fcur.Element) ? el : new KConv
+                    {
+                        Value = el,
+                        From = fcur.Element,
+                        To = cc.Type,
+                        Mode = KMode.Default,
+                        At = cc.Syntax,
+                    };
                 }
                 case IConversionOperation conv when conv.Conversion.IsIdentity || conv.IsImplicit && IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && conv.Conversion.IsNumeric:
                     return Expr(conv.Operand);
@@ -486,13 +657,26 @@ namespace CsVerify.Verifier.Boogie
                     return Expr(tt.Operand);
                 // (and an enum's: an integer of its underlying type)
                 case IConversionOperation conv when IsIntegral(conv.Type) && IsIntegral(conv.Operand.Type) && (conv.Conversion.IsNumeric || conv.Type.TypeKind == TypeKind.Enum || conv.Operand.Type.TypeKind == TypeKind.Enum):
-                    return new KConv { Value = Expr(conv.Operand), From = conv.Operand.Type, To = conv.Type, Mode = Mode(conv.Syntax, conv.IsChecked), At = conv.Syntax };
+                    return new KConv
+                    {
+                        Value = Expr(conv.Operand),
+                        From = conv.Operand.Type,
+                        To = conv.Type,
+                        Mode = Mode(conv.Syntax, conv.IsChecked),
+                        At = conv.Syntax,
+                    };
                 // ((T[])a.Clone(): a new array of a's length, its elements a's)
                 case IConversionOperation { Operand: IInvocationOperation { TargetMethod.Name: "Clone", Arguments.Length: 0, Instance: { } ci } } cc
                     when IsArray(cc.Type) && IsArray(ci.Type) && SymbolEqualityComparer.Default.Equals(cc.Type, ci.Type) && !_p.MemViews:
                 {
                     var src = Expr(ci);
-                    Emit(new KCheck { Cond = new KOp("!=", src, new KLit("null")), Id = "CSV1013", At = ci.Syntax, Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'" });
+                    Emit(new KCheck
+                    {
+                        Cond = new KOp("!=", src, new KLit("null")),
+                        Id = "CSV1013",
+                        At = ci.Syntax,
+                        Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'",
+                    });
                     return CopyOf(src, new KLit("0"), new KOp("len", src), cc.Type, cc.Syntax);
                 }
                 // (a value boxed, as object or an interface it has: an object of its own, not null, which no other is known to be)
@@ -513,10 +697,20 @@ namespace CsVerify.Verifier.Boogie
             {
                 case ILocalReferenceOperation l when InSubset(l.Local.Type) && l.Local.RefKind == RefKind.None: return new KVar(Declare(Local(l.Local), l.Local.Type));
                 case ILocalReferenceOperation rr when _refAlias.TryGetValue(rr.Local, out var ra):
-                    if (ra.Var != null) return new KVar(ra.Var);
+                    if (ra.Var != null)
+                    {
+                        return new KVar(ra.Var);
+                    }
                     HeldCell(ra.Array, rr.Syntax, write: false);
-                    return new KElem { Array = ra.Array, Index = ra.Index, ArrayType = ra.ArrayType, At = rr.Syntax, ArrayAt = rr.Syntax,
-                                       Alongside = InSpec(rr.Syntax) ? null : Concurrent ? new KLit("true") : Running() };
+                    return new KElem
+                    {
+                        Array = ra.Array,
+                        Index = ra.Index,
+                        ArrayType = ra.ArrayType,
+                        At = rr.Syntax,
+                        ArrayAt = rr.Syntax,
+                        Alongside = InSpec(rr.Syntax) ? null : Concurrent ? new KLit("true") : Running(),
+                    };
                 default: return ExprOther(e);
             }
         }
@@ -760,17 +954,26 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Expr of an operation none of the forms above is.</summary>
         private KExpr ExprOther(IOperation e)
         {
-            if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type)) return new KLit("null");
+            if (e.ConstantValue.HasValue && e.ConstantValue.Value == null && IsNullable(e.Type))
+            {
+                return new KLit("null");
+            }
             throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
         }
 
         /// <summary>A lock's object read as a value: some object, not null where declared so (no state of the kernel's).</summary>
         private KExpr LockObjectRead(IFieldReferenceOperation lockRead)
         {
-            if (lockRead.Instance != null && !(lockRead.Instance is IInstanceReferenceOperation)) Expr(lockRead.Instance);
+            if (lockRead.Instance != null && !(lockRead.Instance is IInstanceReferenceOperation))
+            {
+                Expr(lockRead.Instance);
+            }
             var lt = Declare("t$" + _temps++, lockRead.Type);
             Emit(new KHavoc { Var = lt });
-            if (NotNullable(lockRead.Field.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lt), new KLit("null")) });
+            if (NotNullable(lockRead.Field.Type))
+            {
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(lt), new KLit("null")) });
+            }
             return new KVar(lt);
         }
 
@@ -786,7 +989,13 @@ namespace CsVerify.Verifier.Boogie
         private KExpr ContextTable(IOperation e, IOperation ctx)
         {
             var cv = Expr(ctx);
-            Emit(new KCheck { Cond = new KOp("!=", cv, new KLit("null")), Id = "CSV1013", At = ctx.Syntax, Message = $"'{ctx.Syntax}' might be null in '{e.Syntax}'" });
+            Emit(new KCheck
+            {
+                Cond = new KOp("!=", cv, new KLit("null")),
+                Id = "CSV1013",
+                At = ctx.Syntax,
+                Message = $"'{ctx.Syntax}' might be null in '{e.Syntax}'",
+            });
             var table = Declare("t$" + _temps++, e.Type);
             Emit(new KHavoc { Var = table });
             Emit(new KAssume { Cond = new KOp("!=", new KVar(table), new KLit("null")) });
@@ -800,14 +1009,34 @@ namespace CsVerify.Verifier.Boogie
             // gives what the type says where the type's precondition holds)
             if (Refines(cgm.Method, ((INamedTypeSymbol)cg.Type).DelegateInvokeMethod, receiver) is (KExpr accepts, KExpr gives))
             {
-                Emit(new KCheck { Cond = accepts, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                  Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its precondition might not accept every argument the delegate type's does" });
-                Emit(new KCheck { Cond = gives, Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                  Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its postcondition might not give what the delegate type's says" });
+                Emit(new KCheck
+                {
+                    Cond = accepts,
+                    Id = "CSV1029",
+                    At = cg.Syntax,
+                    NotAssumedAfter = true,
+                    Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its precondition might not accept every argument the delegate type's does",
+                });
+                Emit(new KCheck
+                {
+                    Cond = gives,
+                    Id = "CSV1029",
+                    At = cg.Syntax,
+                    NotAssumedAfter = true,
+                    Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its postcondition might not give what the delegate type's says",
+                });
             }
             else
-                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1029", At = cg.Syntax, NotAssumedAfter = true,
-                                  Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its contract, or the delegate type's, depends on state, so it isn't known to keep the type's (use a lambda)" });
+            {
+                Emit(new KCheck
+                {
+                    Cond = new KLit("false"),
+                    Id = "CSV1029",
+                    At = cg.Syntax,
+                    NotAssumedAfter = true,
+                    Message = $"'{cgm.Method.Name}' made a '{cg.Type.Name}': its contract, or the delegate type's, depends on state, so it isn't known to keep the type's (use a lambda)",
+                });
+            }
             var t = Declare("t$" + _temps++, cg.Type);
             Emit(new KHavoc { Var = t });
             Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
@@ -816,7 +1045,11 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Boxed(IConversionOperation bx)
         {
-            Emit(new KAssign { Var = Declare("t$" + _temps++, bx.Operand.Type), Value = Expr(bx.Operand) });
+            Emit(new KAssign
+            {
+                Var = Declare("t$" + _temps++, bx.Operand.Type),
+                Value = Expr(bx.Operand),
+            });
             var boxed = Declare("t$" + _temps++, bx.Type);
             Emit(new KHavoc { Var = boxed });
             Emit(new KAssume { Cond = new KOp("!=", new KVar(boxed), new KLit("null")) });
@@ -825,7 +1058,14 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr NewOpaqueValue(IObjectCreationOperation ov)
         {
-            foreach (var a in ov.Arguments.OrderBy(a => a.Parameter.Ordinal)) Emit(new KAssign { Var = Declare("t$" + _temps++, a.Value.Type), Value = Expr(a.Value) });
+            foreach (var a in ov.Arguments.OrderBy(a => a.Parameter.Ordinal))
+            {
+                Emit(new KAssign
+                {
+                    Var = Declare("t$" + _temps++, a.Value.Type),
+                    Value = Expr(a.Value),
+                });
+            }
             var made = Declare("t$" + _temps++, ov.Type);
             Emit(new KHavoc { Var = made });
             return new KVar(made);
@@ -845,11 +1085,20 @@ namespace CsVerify.Verifier.Boogie
             foreach (var part in istr.Parts.OfType<IInterpolationOperation>())
             {
                 if (!InSubset(part.Expression.Type) && !(Unconverted(part.Expression) is var u && InSubset(u.Type)))
+                {
                     throw new NotTranslated("a hole of " + part.Expression.Type);
+                }
                 // (read into a variable: its checks are where it's read)
                 var hole = InSubset(part.Expression.Type) ? part.Expression : Unconverted(part.Expression);
-                Emit(new KAssign { Var = Declare("t$" + _temps++, hole.Type), Value = Expr(hole) });
-                if (part.Alignment != null) Expr(part.Alignment);
+                Emit(new KAssign
+                {
+                    Var = Declare("t$" + _temps++, hole.Type),
+                    Value = Expr(hole),
+                });
+                if (part.Alignment != null)
+                {
+                    Expr(part.Alignment);
+                }
             }
             var str = Declare("t$" + _temps++, istr.Type);
             Emit(new KHavoc { Var = str });
@@ -861,7 +1110,14 @@ namespace CsVerify.Verifier.Boogie
         {
             // (a lambda made a delegate with a contract: proved against it on its own; here, a new reference)
             var t = Declare("t$" + _temps++, cd.Type);
-            Emit(new KNewObj { Var = t, Type = cd.Type, At = cd.Syntax, Args = new KExpr[0], ArgsAt = new SyntaxNode[0] });
+            Emit(new KNewObj
+            {
+                Var = t,
+                Type = cd.Type,
+                At = cd.Syntax,
+                Args = new KExpr[0],
+                ArgsAt = new SyntaxNode[0],
+            });
             return new KVar(t);
         }
 
@@ -871,7 +1127,13 @@ namespace CsVerify.Verifier.Boogie
             var size = v[0];
             var elements = ac.Initializer == null ? null : v.Skip(1).ToArray();
             var t = Declare("t$" + _temps++, ac.Type);
-            Emit(new KNew { Var = t, ArrayType = ac.Type, Size = size, Elements = elements });
+            Emit(new KNew
+            {
+                Var = t,
+                ArrayType = ac.Type,
+                Size = size,
+                Elements = elements,
+            });
             return new KVar(t);
         }
 
@@ -879,20 +1141,54 @@ namespace CsVerify.Verifier.Boogie
         {
             var sizes = Operands(mc.DimensionSizes.ToArray());
             foreach (var s in sizes)
-                Emit(new KCheck { Cond = new KOp("<=", new KLit("0"), s), Id = "CSV1003", At = mc.Syntax, Message = $"array size in '{mc.Syntax}' might be negative" });
+            {
+                Emit(new KCheck
+                {
+                    Cond = new KOp("<=", new KLit("0"), s),
+                    Id = "CSV1003",
+                    At = mc.Syntax,
+                    Message = $"array size in '{mc.Syntax}' might be negative",
+                });
+            }
             var t = Declare("t$" + _temps++, mc.Type);
-            Emit(new KNew { Var = t, ArrayType = mc.Type, Size = sizes.Skip(1).Aggregate(sizes[0], (x, y) => new KOp("*", x, y)) });
-            for (int d = 0; d < sizes.Length; d++) Emit(new KAssume { Cond = new KOp("==", new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d]) });
+            Emit(new KNew
+            {
+                Var = t,
+                ArrayType = mc.Type,
+                Size = sizes.Skip(1).Aggregate(sizes[0], (x, y) => new KOp("*", x, y)),
+            });
+            for (int d = 0; d < sizes.Length; d++)
+            {
+                Emit(new KAssume { Cond = new KOp("==", new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d]) });
+            }
             void Fill(IArrayInitializerOperation init, List<KExpr> prefix)
             {
                 for (int i = 0; i < init.ElementValues.Length; i++)
                 {
                     var at = new List<KExpr>(prefix) { new KLit(i.ToString()) };
-                    if (at.Count < sizes.Length) Fill((IArrayInitializerOperation)init.ElementValues[i], at);
-                    else Emit(new KStore { Unchecked = true, Array = new KVar(t), Index = CellOf(at), Value = Expr(init.ElementValues[i]), ArrayType = mc.Type, At = mc.Syntax, ArrayAt = mc.Syntax });
+                    if (at.Count < sizes.Length)
+                    {
+                        Fill((IArrayInitializerOperation)init.ElementValues[i], at);
+                    }
+                    else
+                    {
+                        Emit(new KStore
+                        {
+                            Unchecked = true,
+                            Array = new KVar(t),
+                            Index = CellOf(at),
+                            Value = Expr(init.ElementValues[i]),
+                            ArrayType = mc.Type,
+                            At = mc.Syntax,
+                            ArrayAt = mc.Syntax,
+                        });
+                    }
                 }
             }
-            if (mc.Initializer != null) Fill(mc.Initializer, new List<KExpr>());
+            if (mc.Initializer != null)
+            {
+                Fill(mc.Initializer, new List<KExpr>());
+            }
             return new KVar(t);
         }
 
@@ -907,7 +1203,10 @@ namespace CsVerify.Verifier.Boogie
             var stringLeft = IsString(Unconverted(so.LeftOperand).Type);
             var str = Expr(stringLeft ? so.LeftOperand : so.RightOperand);
             var other = Unconverted(stringLeft ? so.RightOperand : so.LeftOperand);
-            if (!InSubset(other.Type)) throw new NotTranslated("a string + " + other.Type);
+            if (!InSubset(other.Type))
+            {
+                throw new NotTranslated("a string + " + other.Type);
+            }
             Expr(other);
             var text = Declare("t$" + _temps++, so.Type);
             Emit(new KHavoc { Var = text });
@@ -918,9 +1217,17 @@ namespace CsVerify.Verifier.Boogie
         private KExpr IncrementValue(IIncrementOrDecrementOperation iv)
         {
             var before = Declare("t$" + _temps++, iv.Type);
-            Emit(new KAssign { Var = before, Value = Expr(iv.Target) });
+            Emit(new KAssign
+            {
+                Var = before,
+                Value = Expr(iv.Target),
+            });
             var after = Declare("t$" + _temps++, iv.Type);
-            Emit(new KAssign { Var = after, Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), new KLit("1"), iv.Type, iv.Syntax, iv.IsChecked) });
+            Emit(new KAssign
+            {
+                Var = after,
+                Value = Arith(iv.Kind == OperationKind.Increment ? "+" : "-", new KVar(before), new KLit("1"), iv.Type, iv.Syntax, iv.IsChecked),
+            });
             Assign(iv.Target, new KVar(after));
             return new KVar(iv.IsPostfix ? before : after);
         }
@@ -928,7 +1235,14 @@ namespace CsVerify.Verifier.Boogie
         private KExpr StringChar(IPropertyReferenceOperation sc)
         {
             var v = Operands(sc.Instance, sc.Arguments[0].Value);
-            return new KElem { String = true, Array = v[0], Index = v[1], At = sc.Syntax, ArrayAt = sc.Instance.Syntax };
+            return new KElem
+            {
+                String = true,
+                Array = v[0],
+                Index = v[1],
+                At = sc.Syntax,
+                ArrayAt = sc.Instance.Syntax,
+            };
         }
 
         private KExpr GivenTaskResult(IPropertyReferenceOperation tr)
@@ -943,14 +1257,25 @@ namespace CsVerify.Verifier.Boogie
         {
             var v = Operands(el.ArrayReference, el.Indices[0]);
             HeldCell(v[0], el.Syntax, write: false);
-            return new KElem { Array = v[0], Index = v[1], ArrayType = el.ArrayReference.Type, At = el.Syntax, ArrayAt = el.ArrayReference.Syntax,
-                               Alongside = InSpec(el.Syntax) ? null : Concurrent ? new KLit("true") : Running() };
+            return new KElem
+            {
+                Array = v[0],
+                Index = v[1],
+                ArrayType = el.ArrayReference.Type,
+                At = el.Syntax,
+                ArrayAt = el.ArrayReference.Syntax,
+                Alongside = InSpec(el.Syntax) ? null : Concurrent ? new KLit("true") : Running(),
+            };
         }
 
         private KExpr AsCollectionInterface(IConversionOperation ci)
         {
             var t = Declare("t$" + _temps++, ci.Type);
-            Emit(new KAssign { Var = t, Value = Expr(ci.Operand) });
+            Emit(new KAssign
+            {
+                Var = t,
+                Value = Expr(ci.Operand),
+            });
             Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")), new KOp(IsArray(ci.Operand.Type) ? "$arr" : "$coll", new KVar(t))) });
             return new KVar(t);
         }
@@ -967,7 +1292,11 @@ namespace CsVerify.Verifier.Boogie
         private KExpr AssignmentValue(ISimpleAssignmentOperation sa)
         {
             var t = Declare("t$" + _temps++, sa.Type);
-            Emit(new KAssign { Var = t, Value = Expr(sa.Value) });
+            Emit(new KAssign
+            {
+                Var = t,
+                Value = Expr(sa.Value),
+            });
             Assign(sa.Target, new KVar(t));
             return new KVar(t);
         }
@@ -976,7 +1305,11 @@ namespace CsVerify.Verifier.Boogie
         {
             var ordered = re.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var a0 = Declare("t$" + _temps++, ordered[0].Value.Type);
-            Emit(new KAssign { Var = a0, Value = Expr(ordered[0].Value) });
+            Emit(new KAssign
+            {
+                Var = a0,
+                Value = Expr(ordered[0].Value),
+            });
             return new KOp("==", new KVar(a0), Expr(ordered[1].Value));
         }
 
@@ -984,15 +1317,35 @@ namespace CsVerify.Verifier.Boogie
         {
             var ctor = oc.Constructor.OriginalDefinition;
             bool isImplicit = ctor.IsImplicitlyDeclared;
-            if (!isImplicit && !_isProcedure(ctor)) throw new NotTranslated("a call of " + oc.Type.Name + "'s constructor");
-            if (!isImplicit) _p.Calls.Add(ctor);
+            if (!isImplicit && !_isProcedure(ctor))
+            {
+                throw new NotTranslated("a call of " + oc.Type.Name + "'s constructor");
+            }
+            if (!isImplicit)
+            {
+                _p.Calls.Add(ctor);
+            }
             var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var args = Operands(ordered.Select(a => a.Value).ToArray());
             // (a generic class's constructor takes boxes for its T: new Box<int>(3))
-            for (int k = 0; k < args.Length; k++) args[k] = Box(args[k], ctor.Parameters[ordered[k].Parameter.Ordinal].Type, ordered[k].Parameter.Type);
+            for (int k = 0; k < args.Length; k++)
+            {
+                args[k] = Box(args[k], ctor.Parameters[ordered[k].Parameter.Ordinal].Type, ordered[k].Parameter.Type);
+            }
             var t = Declare("t$" + _temps++, oc.Type);
-            foreach (var f in InstanceFields(oc.Type)) _p.Fields.Add(f);
-            Emit(new KNewObj { Var = t, Type = oc.Type, Ctor = isImplicit ? null : ctor, Args = args, ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(), At = oc.Syntax });
+            foreach (var f in InstanceFields(oc.Type))
+            {
+                _p.Fields.Add(f);
+            }
+            Emit(new KNewObj
+            {
+                Var = t,
+                Type = oc.Type,
+                Ctor = isImplicit ? null : ctor,
+                Args = args,
+                ArgsAt = ordered.Select(a => a.Value.Syntax).ToArray(),
+                At = oc.Syntax,
+            });
             // (exactly a C)
             if (IsModeledClass(oc.Type))
             {
@@ -1000,7 +1353,10 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KAssume { Cond = new KOp("==", new KOp("dtype", new KVar(t)), new KLit(TypeConst(oc.Type))) });
             }
             // (a context made: it tracks nothing, and has nothing open)
-            if (IsContext(oc.Type)) NewContext(new KVar(t));
+            if (IsContext(oc.Type))
+            {
+                NewContext(new KVar(t));
+            }
             return new KVar(t);
         }
 
@@ -1009,10 +1365,21 @@ namespace CsVerify.Verifier.Boogie
             foreach (var x in lob.Arguments.OrderBy(x => x.Parameter.Ordinal))
             {
                 var xv = Expr(x.Value);
-                if (IsFunc(x.Parameter.Type)) StoredInLibrary(lob.Constructor, x, xv);
+                if (IsFunc(x.Parameter.Type))
+                {
+                    StoredInLibrary(lob.Constructor, x, xv);
+                }
             }
             var t = Declare("t$" + _temps++, lob.Type);
-            Emit(new KNewObj { Var = t, Type = lob.Type, Ctor = null, Args = new KExpr[0], ArgsAt = new SyntaxNode[0], At = lob.Syntax });
+            Emit(new KNewObj
+            {
+                Var = t,
+                Type = lob.Type,
+                Ctor = null,
+                Args = new KExpr[0],
+                ArgsAt = new SyntaxNode[0],
+                At = lob.Syntax,
+            });
             return new KVar(t);
         }
 
@@ -1024,7 +1391,13 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
             if (ns.Arguments.Length == 2 && IsIntegral(ns.Arguments[1].Value.Type) && ns.Arguments[0].Value.Type?.SpecialType == SpecialType.System_Char)
             {
-                Emit(new KCheck { Cond = new KOp(">=", vs[1], new KLit("0")), Id = "CSV1001", At = ns.Syntax, Message = $"'{ns.Syntax}' might throw: its count might be negative" });
+                Emit(new KCheck
+                {
+                    Cond = new KOp(">=", vs[1], new KLit("0")),
+                    Id = "CSV1001",
+                    At = ns.Syntax,
+                    Message = $"'{ns.Syntax}' might throw: its count might be negative",
+                });
                 Emit(new KAssume { Cond = new KOp("==", new KOp("slen", new KVar(t)), vs[1]) });
             }
             return new KVar(t);
@@ -1036,9 +1409,20 @@ namespace CsVerify.Verifier.Boogie
             {
                 var iv = Expr(lp.Instance);
                 if (IsNullable(lp.Instance.Type) && !(lp.Instance is IInstanceReferenceOperation))
-                    Emit(new KCheck { Cond = new KOp("!=", iv, new KLit("null")), Id = "CSV1013", At = lp.Syntax, Message = $"'{lp.Instance.Syntax}' might be null in '{lp.Syntax}'" });
+                {
+                    Emit(new KCheck
+                    {
+                        Cond = new KOp("!=", iv, new KLit("null")),
+                        Id = "CSV1013",
+                        At = lp.Syntax,
+                        Message = $"'{lp.Instance.Syntax}' might be null in '{lp.Syntax}'",
+                    });
+                }
             }
-            foreach (var a in lp.Arguments) Expr(a.Value);
+            foreach (var a in lp.Arguments)
+            {
+                Expr(a.Value);
+            }
             var prop = lp.Property;
             var ns = prop.ContainingType.ContainingNamespace?.ToDisplayString();
             bool shared = prop.ContainingType.IsValueType && ns is "System.Threading" or "System.Threading.Tasks" or "System.Runtime.CompilerServices";
@@ -1046,11 +1430,19 @@ namespace CsVerify.Verifier.Boogie
             // (nor of one with a stub, a [Pure] one that says nothing more: Channel.Writer, a token source's Token)
             bool stubbed = _contractOf?.Invoke(prop.GetMethod.OriginalDefinition) is Contract sc && sc.IsStub;
             if (!shared && !stubbed && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator") && !_p.Warnings.Any(w => w.Span.Equals(span)))
+            {
                 _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown", span));
-            if (_p.Result != null) lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
+            }
+            if (_p.Result != null)
+            {
+                lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
+            }
             var lv = Declare("t$" + _temps++, lp.Type);
             Emit(new KHavoc { Var = lv });
-            if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type)) Emit(new KAssume { Cond = new KOp("!=", new KVar(lv), new KLit("null")) });
+            if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type))
+            {
+                Emit(new KAssume { Cond = new KOp("!=", new KVar(lv), new KLit("null")) });
+            }
             return new KVar(lv);
         }
 
@@ -1059,18 +1451,33 @@ namespace CsVerify.Verifier.Boogie
             var type = _m.ContainingType;
             bool invariants = HasObjectInvariant(type);
             if (invariants || InstanceFields(type).Any(f => IsNullable(FieldType(f)) && NotNullable(FieldType(f))))
-                Emit(new KCheck { Cond = new KLit("false"), Id = "CSV1015", At = ti.Syntax, NotAssumedAfter = true,
-                                  Message = invariants ? $"'this' escapes the constructor of {type.Name} before its invariant is established"
-                                                       : $"'this' escapes the constructor of {type.Name}, whose non-nullable fields may not be set yet" });
+            {
+                Emit(new KCheck
+                {
+                    Cond = new KLit("false"),
+                    Id = "CSV1015",
+                    At = ti.Syntax,
+                    NotAssumedAfter = true,
+                    Message = invariants ? $"'this' escapes the constructor of {type.Name} before its invariant is established"
+                                                       : $"'this' escapes the constructor of {type.Name}, whose non-nullable fields may not be set yet",
+                });
+            }
             return new KVar("this");
         }
 
         private KExpr NewLibraryException(IObjectCreationOperation ne)
         {
-            foreach (var a in ne.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation))) Expr(a.Value);
+            foreach (var a in ne.Arguments.Where(a => InSubset(a.Value.Type) && !(a.Value is IInterpolatedStringOperation)))
+            {
+                Expr(a.Value);
+            }
             var t = Declare("t$" + _temps++, ne.Type);
             _p.ExceptionTypes.Add(ne.Type);
-            Emit(new KNewExc { Var = t, Type = ne.Type });
+            Emit(new KNewExc
+            {
+                Var = t,
+                Type = ne.Type,
+            });
             return new KVar(t);
         }
 
@@ -1115,11 +1522,23 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Constant(object v, ITypeSymbol type)
         {
-            if (v is float or double && IsFloating(type)) return FloatLiteral(v, type);
-            if (v is bool x) return new KLit(x ? "true" : "false");
-            if (v == null && IsNullable(type)) return new KLit("null");
+            if (v is float or double && IsFloating(type))
+            {
+                return FloatLiteral(v, type);
+            }
+            if (v is bool x)
+            {
+                return new KLit(x ? "true" : "false");
+            }
+            if (v == null && IsNullable(type))
+            {
+                return new KLit("null");
+            }
             // (a string literal: one value per contents)
-            if (v is string str) return new KVar(_literal?.Invoke(str) ?? throw new NotTranslated("a string literal"));
+            if (v is string str)
+            {
+                return new KVar(_literal?.Invoke(str) ?? throw new NotTranslated("a string literal"));
+            }
             System.Numerics.BigInteger n;
             switch (v)
             {
@@ -1172,13 +1591,25 @@ namespace CsVerify.Verifier.Boogie
         private (IOperation a, IOperation b)? StringEquals(IInvocationOperation inv)
         {
             var m = inv.TargetMethod;
-            if (m.Name != "Equals" || !IsString(m.ContainingType)) return null;
+            if (m.Name != "Equals" || !IsString(m.ContainingType))
+            {
+                return null;
+            }
             var strings = m.Parameters.TakeWhile(p => IsString(p.Type)).Count();
             var rest = m.Parameters.Skip(strings).ToList();
             if (rest.Count > 1 || rest.Count == 1 && !(rest[0].Type.Name == "StringComparison" &&
-                inv.Arguments.First(a => a.Parameter.Ordinal == rest[0].Ordinal).Value.ConstantValue is { HasValue: true, Value: 4 })) return null;
-            if (m.IsStatic && strings == 2) return (inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value, inv.Arguments.First(a => a.Parameter.Ordinal == 1).Value);
-            if (!m.IsStatic && strings == 1 && inv.Instance != null) return (inv.Instance, inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
+                inv.Arguments.First(a => a.Parameter.Ordinal == rest[0].Ordinal).Value.ConstantValue is { HasValue: true, Value: 4 }))
+            {
+                return null;
+            }
+            if (m.IsStatic && strings == 2)
+            {
+                return (inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value, inv.Arguments.First(a => a.Parameter.Ordinal == 1).Value);
+            }
+            if (!m.IsStatic && strings == 1 && inv.Instance != null)
+            {
+                return (inv.Instance, inv.Arguments.First(a => a.Parameter.Ordinal == 0).Value);
+            }
             return null;
         }
 

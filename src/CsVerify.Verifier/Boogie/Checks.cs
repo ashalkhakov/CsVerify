@@ -59,7 +59,12 @@ namespace CsVerify.Verifier.Boogie
         private readonly IProgramFacts _program;
         private List<MStmt> _out;
 
-        private Checks(KProcedure p, IProgramFacts program) { _p = p; _m = new MProcedure { Source = p }; _program = program; }
+        private Checks(KProcedure p, IProgramFacts program)
+        {
+            _p = p;
+            _m = new MProcedure { Source = p };
+            _program = program;
+        }
 
         public static MProcedure Run(KProcedure p, IProgramFacts facts)
         {
@@ -69,7 +74,14 @@ namespace CsVerify.Verifier.Boogie
         }
 
         private Check At(string id, SyntaxNode at, string message, string reportAs = null) =>
-            new Check { Id = id, Message = message, Span = at.GetLocation().GetLineSpan(), Method = _p.Result, ReportAs = reportAs };
+            new Check
+            {
+                Id = id,
+                Message = message,
+                Span = at.GetLocation().GetLineSpan(),
+                Method = _p.Result,
+                ReportAs = reportAs,
+            };
 
         /// <summary>A null check of what <paramref name="what"/> is, saying where the null may come from.</summary>
         private Check NullAt(SyntaxNode at, SyntaxNode what, string message) => At("CSV1013", at, message + NullReasons(what));
@@ -83,16 +95,34 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         internal static string NullReasons(SyntaxNode what)
         {
-            if (what == null || KernelTypes.Compilation == null || what.SyntaxTree == null || !KernelTypes.Compilation.SyntaxTrees.Contains(what.SyntaxTree)) return "";
+            if (what == null || KernelTypes.Compilation == null || what.SyntaxTree == null || !KernelTypes.Compilation.SyntaxTrees.Contains(what.SyntaxTree))
+            {
+                return "";
+            }
             var model = KernelTypes.Compilation.GetSemanticModel(what.SyntaxTree);
-            while (what is Microsoft.CodeAnalysis.CSharp.Syntax.ParenthesizedExpressionSyntax pe) what = pe.Expression;
+            while (what is Microsoft.CodeAnalysis.CSharp.Syntax.ParenthesizedExpressionSyntax pe)
+            {
+                what = pe.Expression;
+            }
             var symbol = model.GetSymbolInfo(what).Symbol;
             var origins = new List<string>();
-            if (NullOrigin(what, symbol, model) is string origin) origins.Add(origin);
-            if (ChangedSinceChecked(what, symbol, model) is string changed) origins.Add(changed);
-            if (origins.Count == 0) return "";
+            if (NullOrigin(what, symbol, model) is string origin)
+            {
+                origins.Add(origin);
+            }
+            if (ChangedSinceChecked(what, symbol, model) is string changed)
+            {
+                origins.Add(changed);
+            }
+            if (origins.Count == 0)
+            {
+                return "";
+            }
             var reasons = ": " + string.Join("; ", origins.Take(3));
-            if (origins.Any(o => o.Contains(" may change "))) reasons += " (a check made before a call does not hold after it: copy the value to a local, check that, and use the local)";
+            if (origins.Any(o => o.Contains(" may change ")))
+            {
+                reasons += " (a check made before a call does not hold after it: copy the value to a local, check that, and use the local)";
+            }
             return reasons;
         }
 
@@ -105,22 +135,35 @@ namespace CsVerify.Verifier.Boogie
             string FromCall(Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax inv) =>
                 model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && MayReturnNull(m) ? $"'{m.Name}' may return null (line {LineOf(inv)})" : null;
             if (symbol is IParameterSymbol p && (p.Type.NullableAnnotation == NullableAnnotation.Annotated || p.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T))
+            {
                 return $"parameter '{p.Name}' is declared '{Note(p.Type)}'";
-            if (what is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call) return FromCall(call);
+            }
+            if (what is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call)
+            {
+                return FromCall(call);
+            }
             if (symbol is ILocalSymbol l && l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax d &&
                 d.Initializer?.Value is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax made)
+            {
                 return FromCall(made);
+            }
             return null;
         }
 
         /// <summary>A field or property checked before a call, and read again after it: the call may have changed it.</summary>
         private static string ChangedSinceChecked(SyntaxNode what, ISymbol symbol, SemanticModel model)
         {
-            if (!(what is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax read && symbol is IFieldSymbol or IPropertySymbol)) return null;
+            if (!(what is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax read && symbol is IFieldSymbol or IPropertySymbol))
+            {
+                return null;
+            }
             var text = read.ToString();
             var check = what.Ancestors().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IfStatementSyntax>()
                 .FirstOrDefault(i => i.Condition.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax>().Any(b => b.Left.ToString() == text || b.Right.ToString() == text));
-            if (check == null) return null;
+            if (check == null)
+            {
+                return null;
+            }
             var between = check.Statement.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
                 .Where(i => i.SpanStart < what.SpanStart && !i.Span.Contains(what.Span)).Select(i => model.GetSymbolInfo(i).Symbol as IMethodSymbol)
                 .FirstOrDefault(m => m != null && !CsVerify.Analyzers.SpecSymbols.IsSpecClass(m.ContainingType));
@@ -132,7 +175,16 @@ namespace CsVerify.Verifier.Boogie
         {
             _out.Add(s);
             if (_headInto != null && _inQuantifier == 0 && s is MAssume { Always: true } always)
-                foreach (var into in _headInto) into.Stmts.Add(new MAssume { Cond = always.Cond, Always = true });
+            {
+                foreach (var into in _headInto)
+                {
+                    into.Stmts.Add(new MAssume
+                    {
+                        Cond = always.Cond,
+                        Always = true,
+                    });
+                }
+            }
         }
 
         /// <summary>The blocks into a loop's head from before it, while its statements are checked.</summary>
@@ -166,7 +218,10 @@ namespace CsVerify.Verifier.Boogie
                 case MFnApp app when app.Snap == null && !app.Plain && app.MapsAt == null && app.Callee.IsStatic:
                 {
                     var sig = _program.Signature(app.Callee);
-                    if (sig.FunctionBody == null || sig.Requires.Count > 0 || app.Args.Length != app.Callee.Parameters.Length) return e;
+                    if (sig.FunctionBody == null || sig.Requires.Count > 0 || app.Args.Length != app.Callee.Parameters.Length)
+                    {
+                        return e;
+                    }
                     var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
                     var saved = _facts.ToList();
                     _facts.Clear();
@@ -177,8 +232,15 @@ namespace CsVerify.Verifier.Boogie
                         _unfoldedFacts.AddRange(_facts.Select(f => Subst(f, given)));
                         return body;
                     }
-                    catch (NotTranslated) { return e; }
-                    finally { _facts.Clear(); _facts.AddRange(saved); }
+                    catch (NotTranslated)
+                    {
+                        return e;
+                    }
+                    finally
+                    {
+                        _facts.Clear();
+                        _facts.AddRange(saved);
+                    }
                 }
                 default: return e;
             }
@@ -195,11 +257,23 @@ namespace CsVerify.Verifier.Boogie
                 var unfolded = UnfoldOnce(cond);
                 if (!ReferenceEquals(unfolded, cond))
                 {
-                    foreach (var f in _unfoldedFacts) Assume(f);
+                    foreach (var f in _unfoldedFacts)
+                    {
+                        Assume(f);
+                    }
                     _unfoldedFacts.Clear();
                     _unfoldingAssert++;
-                    try { foreach (var c in Conjuncts(unfolded)) Assert(c, check); }
-                    finally { _unfoldingAssert--; }
+                    try
+                    {
+                        foreach (var c in Conjuncts(unfolded))
+                        {
+                            Assert(c, check);
+                        }
+                    }
+                    finally
+                    {
+                        _unfoldingAssert--;
+                    }
                 }
             }
             // (an assertion of a conjunction, one conjunct at a time, each known for the next: as Dafny splits them, so
@@ -210,8 +284,16 @@ namespace CsVerify.Verifier.Boogie
                 Assert(and_[1], check);
                 return;
             }
-            if (check != null) check.Causes.UnionWith(CausesOf(cond));
-            Emit(new MAssert { Cond = cond, Check = check, NotAssumedAfter = notAssumedAfter });
+            if (check != null)
+            {
+                check.Causes.UnionWith(CausesOf(cond));
+            }
+            Emit(new MAssert
+            {
+                Cond = cond,
+                Check = check,
+                NotAssumedAfter = notAssumedAfter,
+            });
         }
 
         /// <summary>The causes of a condition's unknown values: its variables', and those they were made from.</summary>
@@ -223,9 +305,21 @@ namespace CsVerify.Verifier.Boogie
             while (todo.Count > 0)
             {
                 var v = todo.Pop();
-                if (!seen.Add(v)) continue;
-                if (_p.Causes.TryGetValue(v, out var c)) causes.UnionWith(c);
-                if (_p.Deps.TryGetValue(v, out var d)) foreach (var x in d) todo.Push(x);
+                if (!seen.Add(v))
+                {
+                    continue;
+                }
+                if (_p.Causes.TryGetValue(v, out var c))
+                {
+                    causes.UnionWith(c);
+                }
+                if (_p.Deps.TryGetValue(v, out var d))
+                {
+                    foreach (var x in d)
+                    {
+                        todo.Push(x);
+                    }
+                }
             }
             return causes;
         }
@@ -241,7 +335,10 @@ namespace CsVerify.Verifier.Boogie
 
         private void Facts()
         {
-            foreach (var f in _facts) Assume(f);
+            foreach (var f in _facts)
+            {
+                Assume(f);
+            }
             _facts.Clear();
         }
 
@@ -251,7 +348,11 @@ namespace CsVerify.Verifier.Boogie
         private MVar Fresh(string type)
         {
             var name = "f$" + _fresh++;
-            _p.Locals.Add(new KLocal { Name = name, Raw = type });
+            _p.Locals.Add(new KLocal
+            {
+                Name = name,
+                Raw = type,
+            });
             Emit(new MHavoc { Var = name });
             return new MVar(name);
         }
@@ -286,7 +387,11 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void Run()
         {
-            if (_p.IsPredicate) { RunPredicate(); return; }
+            if (_p.IsPredicate)
+            {
+                RunPredicate();
+                return;
+            }
             // (what the contract gives and takes: its permissions, read from the specifications as written)
             _rawRequires = _p.Requires.Select(r => r.Expr).ToList();
             _rawEnsures = _p.Ensures.Select(e => e.Expr).ToList();
@@ -298,13 +403,24 @@ namespace CsVerify.Verifier.Boogie
             // at entry: the requires well-defined, in order (each under those before it)
             _out = _m.Entry;
             // (the preconditions are well-defined given what entry gives: the views received hold their invariants)
-            if (_p.UsesPerm) ViewsAtEntry(grant: false);
+            if (_p.UsesPerm)
+            {
+                ViewsAtEntry(grant: false);
+            }
             // (an abstract member: nothing of its own to check, its contract is what calls of it use)
-            if (_p.Abstract) { _m.Entry.Clear(); _m.Obligations = 0; return; }
+            if (_p.Abstract)
+            {
+                _m.Entry.Clear();
+                _m.Obligations = 0;
+                return;
+            }
             var before = new List<MExpr>();
             foreach (var r in contract.Requires)
             {
-                foreach (var f in r.Facts) Assume(f);
+                foreach (var f in r.Facts)
+                {
+                    Assume(f);
+                }
                 WellDefined(r.Wf, r.Source.At, before);
                 before.Add(r.Math);
             }
@@ -312,18 +428,35 @@ namespace CsVerify.Verifier.Boogie
 
             // (each block's statements, made into level 2's in a block of its own, the same label and jump)
             _bodies = _p.Blocks;
-            _m.Blocks = _p.Blocks.Select(b => new MBlock { Label = b.Label, Ordinal = b.Ordinal, Jump = b.Jump }).ToList();
+            _m.Blocks = _p.Blocks.Select(b => new MBlock
+            {
+                Label = b.Label,
+                Ordinal = b.Ordinal,
+                Jump = b.Jump,
+            }).ToList();
             foreach (var (b, mb) in _p.Blocks.Zip(_m.Blocks))
             {
                 _out = mb.Stmts;
-                if (b == _p.Blocks[0]) AtEntry(contract);
+                if (b == _p.Blocks[0])
+                {
+                    AtEntry(contract);
+                }
                 bool head = b.Label == $"b{b.Ordinal}";
-                if (head) AtLoopHead(b, contract);
+                if (head)
+                {
+                    AtLoopHead(b, contract);
+                }
                 // (a loop's head: what the code there assumes that holds in every state (a non-nullable field read not
                 // null) is assumed on the way in too, as Boogie takes the assumes at a head's start for free invariants)
                 _headInto = head ? _m.Blocks.Where(x => x.Ordinal < b.Ordinal && x.Jump is KGoto hg && hg.Targets.Contains(b.Label)).ToList() : null;
-                if (_headInto != null && !_p.Blocks.Any(x => x.Ordinal >= b.Ordinal && x.Jump is KGoto lg && lg.Targets.Contains(b.Label))) _headInto = null;
-                foreach (var s in b.Stmts) Statement(s, contract.Decreases);
+                if (_headInto != null && !_p.Blocks.Any(x => x.Ordinal >= b.Ordinal && x.Jump is KGoto lg && lg.Targets.Contains(b.Label)))
+                {
+                    _headInto = null;
+                }
+                foreach (var s in b.Stmts)
+                {
+                    Statement(s, contract.Decreases);
+                }
                 _headInto = null;
                 switch (b.Jump)
                 {
@@ -342,14 +475,26 @@ namespace CsVerify.Verifier.Boogie
             {
                 _m.ReadsFrame = Spec(_p.ReadsFrame, out _);
                 _facts.Clear();
-                _p.Locals.Add(new KLocal { Name = "r$entry", Raw = "[Ref]bool" });
+                _p.Locals.Add(new KLocal
+                {
+                    Name = "r$entry",
+                    Raw = "[Ref]bool",
+                });
             }
             if (_p.Frame != null)
             {
                 _m.Frame = Spec(_p.Frame, out _);
                 _facts.Clear();
-                _p.Locals.Add(new KLocal { Name = "w$entry", Raw = "[Ref]bool" });
-                _p.Locals.Add(new KLocal { Name = "alloc$entry", Raw = "[Ref]bool" });
+                _p.Locals.Add(new KLocal
+                {
+                    Name = "w$entry",
+                    Raw = "[Ref]bool",
+                });
+                _p.Locals.Add(new KLocal
+                {
+                    Name = "alloc$entry",
+                    Raw = "[Ref]bool",
+                });
             }
         }
 
@@ -358,23 +503,59 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = _p.Method;
             var requires = _p.Requires.Select(r => new Clause(r, Spec(r.Expr, out var wf), wf, Take())).ToList();
-            var ensures = _p.Ensures.Select(e => { var math = OldAtEntry(Spec(e.Expr, out var wf)); return new Clause(e, math, wf.Select(OldAtEntry).ToList(), Take().Select(OldAtEntry).ToList()); }).ToList();
-            _m.Requires = requires.Select(r => new MSpec { Expr = r.Math, At = r.Source.At, Check = At(BoogieTranslator.Aux, r.Source.At, $"precondition '{r.Source.At}' of '{m.Name}'", "CSV1001") }).ToList();
-            _m.Ensures = ensures.Select(e => new MSpec { Expr = e.Math, At = e.Source.At }).ToList();
+            var ensures = _p.Ensures.Select(e =>
+            {
+                var math = OldAtEntry(Spec(e.Expr, out var wf));
+                return new Clause(e, math, wf.Select(OldAtEntry).ToList(), Take().Select(OldAtEntry).ToList());
+            }).ToList();
+            _m.Requires = requires.Select(r => new MSpec
+            {
+                Expr = r.Math,
+                At = r.Source.At,
+                Check = At(BoogieTranslator.Aux, r.Source.At, $"precondition '{r.Source.At}' of '{m.Name}'", "CSV1001"),
+            }).ToList();
+            _m.Ensures = ensures.Select(e => new MSpec
+            {
+                Expr = e.Math,
+                At = e.Source.At,
+            }).ToList();
             // (the caller's measure is as it was at entry, as Dafny's is: what the body writes before the call doesn't count)
             var decreases = _p.Decreases?.Select(d => (MExpr)new MOp("old", Spec(d, out _))).ToList();
-            if (_p.FunctionBody != null) _m.FunctionBody = Spec(_p.FunctionBody, out _);
-            if (_m.FunctionBody != null && _m.ReadsFrame == null) _m.InferredReads = InferReads(_m.FunctionBody);
+            if (_p.FunctionBody != null)
+            {
+                _m.FunctionBody = Spec(_p.FunctionBody, out _);
+            }
+            if (_m.FunctionBody != null && _m.ReadsFrame == null)
+            {
+                _m.InferredReads = InferReads(_m.FunctionBody);
+            }
             // (a function's axioms are about every state: what they say can't be of a procedure's snapshots. One whose body
             // reads them is a function of its contract alone: its procedure proves the contract, its calls give it)
-            if (_m.FunctionBody != null && _program.OverPredicate(m) == null && Mentions(_m.FunctionBody, Snaps)) { _m.FunctionBody = null; _m.InferredReads = null; }
+            if (_m.FunctionBody != null && _program.OverPredicate(m) == null && Mentions(_m.FunctionBody, Snaps))
+            {
+                _m.FunctionBody = null;
+                _m.InferredReads = null;
+            }
             if (_program.OverPredicate(m) == null && _program.IsFunction(m) &&
                 requires.Select(r => r.Math).Concat(ensures.Select(e => e.Math)).Any(x => Mentions(x, Snaps)))
+            {
                 throw new NotTranslated("a function whose contract reads a function over a predicate");
-            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => { var math = OldAtEntry(Spec(i.Expr, out var wf)); return new Clause(i, math, wf.Select(OldAtEntry).ToList(), Take().Select(OldAtEntry).ToList()); }).ToList());
+            }
+            var invariants = _p.Invariants.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i =>
+            {
+                var math = OldAtEntry(Spec(i.Expr, out var wf));
+                return new Clause(i, math, wf.Select(OldAtEntry).ToList(), Take().Select(OldAtEntry).ToList());
+            }).ToList());
             var measures = _p.Measures.ToDictionary(kv => kv.Key, kv => kv.Value.Select(x => Spec(x.Expr, out _)).ToList());
             _facts.Clear();
-            return new ContractMath { Requires = requires, Ensures = ensures, Decreases = decreases, Invariants = invariants, Measures = measures };
+            return new ContractMath
+            {
+                Requires = requires,
+                Ensures = ensures,
+                Decreases = decreases,
+                Invariants = invariants,
+                Measures = measures,
+            };
         }
 
         /// <summary>
@@ -385,15 +566,29 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = _p.Method;
             var decl = m.DeclaringSyntaxReferences[0].GetSyntax();
-            MExpr Conjunction(IEnumerable<KExpr> xs) => xs.Select(x => { var v = Spec(x, out _); _facts.Clear(); return v; }).Aggregate((MExpr)new MLit("true"), Conj);
+            MExpr Conjunction(IEnumerable<KExpr> xs) => xs.Select(x =>
+            {
+                var v = Spec(x, out _);
+                _facts.Clear();
+                return v;
+            }).Aggregate((MExpr)new MLit("true"), Conj);
             foreach (var (b, reqs) in _p.BaseRequires)
+            {
                 Assert(new MOp("==>", Conjunction(reqs), Conjunction(_p.OwnRequires)),
                     At("CSV1018", decl, $"'{m.Name}' requires more than {b.ContainingType.Name}.{b.Name}, which it overrides, promises its callers"), true);
+            }
             foreach (var (b, frame) in _p.BaseFrames.Where(_ => _p.Frame != null))
             {
                 var allowed = Conjunction(new[] { frame });
                 var r = new MVar("r$");
-                Assert(new MQuant { Forall = true, Var = "r$", Type = "Ref", Range = null, Body = new MOp("==>", new MOp("sel", _m.Frame, r), new MOp("sel", allowed, r)) },
+                Assert(new MQuant
+                {
+                    Forall = true,
+                    Var = "r$",
+                    Type = "Ref",
+                    Range = null,
+                    Body = new MOp("==>", new MOp("sel", _m.Frame, r), new MOp("sel", allowed, r)),
+                },
                     At("CSV1018", decl, $"Spec.Modifies of '{m.Name}' might not be within that of {b.ContainingType.Name}.{b.Name}, which it overrides"), true);
             }
         }
@@ -407,12 +602,29 @@ namespace CsVerify.Verifier.Boogie
             if (_p.UsesPerm)
             {
                 EnterOwned();
-                foreach (var r in _rawRequires) Inhale(r, null, null);
+                foreach (var r in _rawRequires)
+                {
+                    Inhale(r, null, null);
+                }
                 // (what the preconditions say of snapshots: Boogie's requires can't name them)
-                Emit(new MAssign { Var = "psnap$entry", Value = new MVar("psnap") });
-                foreach (var r in contract.Requires.Where(r => Mentions(r.Math, Snaps))) Assume(r.Math);
+                Emit(new MAssign
+                {
+                    Var = "psnap$entry",
+                    Value = new MVar("psnap"),
+                });
+                foreach (var r in contract.Requires.Where(r => Mentions(r.Math, Snaps)))
+                {
+                    Assume(r.Math);
+                }
             }
-            if (_m.ReadsFrame != null) Emit(new MAssign { Var = "r$entry", Value = _m.ReadsFrame });
+            if (_m.ReadsFrame != null)
+            {
+                Emit(new MAssign
+                {
+                    Var = "r$entry",
+                    Value = _m.ReadsFrame,
+                });
+            }
             // (a precondition that is a function, Wf(p), of no precondition: its body too, unfolded once, so
             // that its quantifiers are facts the solver uses as they are, not inside the function's equation)
             foreach (var r in contract.Requires)
@@ -421,21 +633,40 @@ namespace CsVerify.Verifier.Boogie
                 var unfolded = UnfoldOnce(r.Math);
                 if (!ReferenceEquals(unfolded, r.Math))
                 {
-                    foreach (var f in _unfoldedFacts) Assume(f);
-                    foreach (var c in Conjuncts(unfolded)) Assume(c);
+                    foreach (var f in _unfoldedFacts)
+                    {
+                        Assume(f);
+                    }
+                    foreach (var c in Conjuncts(unfolded))
+                    {
+                        Assume(c);
+                    }
                 }
                 _unfoldedFacts.Clear();
             }
             // (immutable objects received hold their invariants: not this, in its constructor or its invariant)
             foreach (var param in _p.Method.Parameters.Where(x => x.RefKind != RefKind.Out))
+            {
                 ObjectInvariant(new MVar(Local(param)), param.Type);
-            if (_p.HasThis && !_p.IsCtor && !DefinesInvariant(_p.Method)) ObjectInvariant(new MVar("this"), _p.Method.ContainingType);
+            }
+            if (_p.HasThis && !_p.IsCtor && !DefinesInvariant(_p.Method))
+            {
+                ObjectInvariant(new MVar("this"), _p.Method.ContainingType);
+            }
             if (_m.Frame != null)
             {
                 // (the frame as it is on entry, and what was allocated then)
-                Emit(new MAssign { Var = "w$entry", Value = _m.Frame });
+                Emit(new MAssign
+                {
+                    Var = "w$entry",
+                    Value = _m.Frame,
+                });
                 // (a constructor's object was allocated just before it ran: new, as far as its frame is concerned)
-                Emit(new MAssign { Var = "alloc$entry", Value = _p.IsCtor ? new MOp("store", new MVar("$Alloc"), new MVar("this"), new MLit("false")) : new MVar("$Alloc") });
+                Emit(new MAssign
+                {
+                    Var = "alloc$entry",
+                    Value = _p.IsCtor ? new MOp("store", new MVar("$Alloc"), new MVar("this"), new MLit("false")) : new MVar("$Alloc"),
+                });
             }
         }
 
@@ -447,50 +678,103 @@ namespace CsVerify.Verifier.Boogie
         {
             // (a loop's inferred facts: each an invariant, left out and verified again without where it doesn't hold)
             if (_p.Candidates.TryGetValue(b.Ordinal, out var candidates))
+            {
                 for (int k = 0; k < candidates.Count; k++)
                 {
                     var math = Spec(candidates[k].Expr, out _);
                     _facts.Clear();
-                    Emit(new MAssert { Cond = math, Check = At(Candidate, candidates[k].At, "a loop's inferred fact") });
+                    Emit(new MAssert
+                    {
+                        Cond = math,
+                        Check = At(Candidate, candidates[k].At, "a loop's inferred fact"),
+                    });
                 }
+            }
             if (contract.Invariants.TryGetValue(b.Ordinal, out var invs))
+            {
                 foreach (var inv in invs)
                 {
                     // (what reading the invariant lets one assume, a non-nullable field not null, holds in every state:
                     // assumed on the way in too, as Boogie takes an assume at a loop's head for a free invariant, only
                     // after its havoc, and the invariant's checks on entry need it)
                     foreach (var into in _m.Blocks.Where(x => x.Ordinal < b.Ordinal && x.Jump is KGoto g && g.Targets.Contains(b.Label)))
-                        foreach (var f in inv.Facts) into.Stmts.Add(new MAssume { Cond = f });
-                    foreach (var f in inv.Facts) Assume(f);
+                    {
+                        foreach (var f in inv.Facts)
+                        {
+                            into.Stmts.Add(new MAssume { Cond = f });
+                        }
+                    }
+                    foreach (var f in inv.Facts)
+                    {
+                        Assume(f);
+                    }
                     WellDefined(inv.Wf, inv.Source.At, null);
                     Assert(inv.Math, At("CSV1005", inv.Source.At, $"loop invariant '{inv.Source.At}'"));
                 }
+            }
             if (contract.Measures.TryGetValue(b.Ordinal, out var measure))
-                for (int k = 0; k < measure.Count; k++) Emit(new MAssign { Var = $"m${b.Ordinal}${k}", Value = measure[k] });
-            if (Exchanges(b.Ordinal)) PermissionsAtLoopHead(b.Ordinal);
+            {
+                for (int k = 0; k < measure.Count; k++)
+                {
+                    Emit(new MAssign
+                    {
+                        Var = $"m${b.Ordinal}${k}",
+                        Value = measure[k],
+                    });
+                }
+            }
+            if (Exchanges(b.Ordinal))
+            {
+                PermissionsAtLoopHead(b.Ordinal);
+            }
         }
 
         /// <summary>A loop that exchanges permissions: what it holds at its head is what was held outside it, and its invariants'.</summary>
         private void PermissionsAtLoopHead(int head)
         {
-            Emit(new MAssign { Var = "perm", Value = new MVar($"l${head}$perm") });
-            Emit(new MAssign { Var = "pinst", Value = new MVar($"l${head}$pinst") });
+            Emit(new MAssign
+            {
+                Var = "perm",
+                Value = new MVar($"l${head}$perm"),
+            });
+            Emit(new MAssign
+            {
+                Var = "pinst",
+                Value = new MVar($"l${head}$pinst"),
+            });
             Emit(new MHavoc { Var = "owner" });
             if (_p.UsesFields)
             {
-                Emit(new MAssign { Var = "fperm", Value = new MVar($"l${head}$fperm") });
+                Emit(new MAssign
+                {
+                    Var = "fperm",
+                    Value = new MVar($"l${head}$fperm"),
+                });
                 Emit(new MHavoc { Var = "fowner" });
             }
             if (_p.UsesCells)
             {
-                Emit(new MAssign { Var = "cells", Value = new MVar($"l${head}$cells") });
+                Emit(new MAssign
+                {
+                    Var = "cells",
+                    Value = new MVar($"l${head}$cells"),
+                });
                 Emit(new MHavoc { Var = "cowner" });
             }
             // (the loop havocs the snapshots it changes: an instance's at the head is new already, and the
             // invariants' facts, assumed by Boogie at the head, are of it)
             _atLoopHead = true;
-            try { foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(head) ?? new List<(KExpr, SyntaxNode)>()) Inhale(inv, null, null); }
-            finally { _atLoopHead = false; }
+            try
+            {
+                foreach (var (inv, _) in _rawInvariants.GetValueOrDefault(head) ?? new List<(KExpr, SyntaxNode)>())
+                {
+                    Inhale(inv, null, null);
+                }
+            }
+            finally
+            {
+                _atLoopHead = false;
+            }
         }
 
         /// <summary>
@@ -500,24 +784,54 @@ namespace CsVerify.Verifier.Boogie
         private void Goto(KBlock b, KGoto g, ContractMath contract)
         {
             foreach (var target in g.Targets)
+            {
                 if (target.StartsWith("b") && int.TryParse(target.Substring(1), out var into) && Exchanges(into))
                 {
                     // the invariant's permissions go round the loop: given up on each way into its head
-                    foreach (var (inv, at) in _rawInvariants.GetValueOrDefault(into) ?? new List<(KExpr, SyntaxNode)>()) Exhale(inv, null, at, null);
+                    foreach (var (inv, at) in _rawInvariants.GetValueOrDefault(into) ?? new List<(KExpr, SyntaxNode)>())
+                    {
+                        Exhale(inv, null, at, null);
+                    }
                     if (into > b.Ordinal)
                     {
-                        Emit(new MAssign { Var = $"l${into}$perm", Value = new MVar("perm") });
-                        Emit(new MAssign { Var = $"l${into}$pinst", Value = new MVar("pinst") });
-                        if (_p.UsesCells) Emit(new MAssign { Var = $"l${into}$cells", Value = new MVar("cells") });
-                        if (_p.UsesFields) Emit(new MAssign { Var = $"l${into}$fperm", Value = new MVar("fperm") });
+                        Emit(new MAssign
+                        {
+                            Var = $"l${into}$perm",
+                            Value = new MVar("perm"),
+                        });
+                        Emit(new MAssign
+                        {
+                            Var = $"l${into}$pinst",
+                            Value = new MVar("pinst"),
+                        });
+                        if (_p.UsesCells)
+                        {
+                            Emit(new MAssign
+                            {
+                                Var = $"l${into}$cells",
+                                Value = new MVar("cells"),
+                            });
+                        }
+                        if (_p.UsesFields)
+                        {
+                            Emit(new MAssign
+                            {
+                                Var = $"l${into}$fperm",
+                                Value = new MVar("fperm"),
+                            });
+                        }
                     }
                     else
+                    {
                         Assert(new MLit($"(forall y: Ref :: l${into}$perm[y] ==> perm[y]) && (forall q: Inst :: pinst[q] >= l${into}$pinst[q])" +
                                         (_p.UsesCells ? $" && (forall x$: Ref, i$: int :: cells[x$][i$] >= l${into}$cells[x$][i$])" : "") +
                                         (_p.UsesFields ? $" && (forall y$: Ref, k$: int :: l${into}$fperm[y$][k$] ==> fperm[y$][k$])" : "")),
                             At("CSV1016", _p.LoopSyntax.GetValueOrDefault(into) ?? _p.Method.DeclaringSyntaxReferences[0].GetSyntax(), "the loop body might use up permissions held outside it (only its invariant's go round the loop)"));
+                    }
                 }
+            }
             foreach (var target in g.Targets)
+            {
                 if (target.StartsWith("b") && int.TryParse(target.Substring(1), out var to) && to <= b.Ordinal && contract.Measures.TryGetValue(to, out var now))
                 {
                     var spec = _p.Measures[to];
@@ -526,6 +840,7 @@ namespace CsVerify.Verifier.Boogie
                     Assert(Lexicographic(now, then), At("CSV1007", spec[0].At.Parent?.Parent ?? spec[0].At,
                         $"loop measure '{string.Join(", ", spec.Select(x => x.At))}' might not decrease or might be negative"), true);
                 }
+            }
         }
     }
 }

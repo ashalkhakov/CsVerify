@@ -19,8 +19,12 @@ namespace CsVerify.Verifier.Boogie
         private void ChangeCells(MExpr g, MCells c, string op)
         {
             var (x, i) = (new MVar("x$"), new MVar("i$"));
-            Emit(new MAssign { Var = "cells", Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
-                Ite(InCells(g, c, x, i), new MOp(op, Cell(x, i), Amount(c.Read)), Cell(x, i)))) });
+            Emit(new MAssign
+            {
+                Var = "cells",
+                Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
+                Ite(InCells(g, c, x, i), new MOp(op, Cell(x, i), Amount(c.Read)), Cell(x, i)))),
+            });
         }
 
         /// <summary>The first cells of the memory views granted so far: where a new one's room is said too.</summary>
@@ -33,14 +37,22 @@ namespace CsVerify.Verifier.Boogie
             {
                 var i = new MVar("i$");
                 var room = c.Read ? new MOp("<=", Cell(c.Arr, i), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, i), new MLit("1.0"));
-                Assume(new MQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), room) });
+                Assume(new MQuant
+                {
+                    Forall = true,
+                    Var = "i$",
+                    Range = null,
+                    Body = Implies(InCells(g, c, c.Arr, i), room),
+                });
                 var lo = c.Read ? new MOp("<=", Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, c.Lo), new MLit("1.0"));
                 Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
                 // (memory: two intervals overlap only where one starts inside the other, so at the other views' first cells too)
                 if (c.Arr is MLit { Text: "null" })
                 {
                     foreach (var other in _memLos)
+                    {
                         Assume(Implies(InCells(g, c, c.Arr, other), c.Read ? new MOp("<=", Cell(c.Arr, other), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, other), new MLit("1.0"))));
+                    }
                     _memLos.Add(c.Lo);
                 }
             }
@@ -50,7 +62,13 @@ namespace CsVerify.Verifier.Boogie
         private void ExhaleCells(MExpr g, MCells c, SyntaxNode at, string message)
         {
             var i = new MVar("i$");
-            Assert(new MQuant { Forall = true, Var = "i$", Range = null, Body = Implies(InCells(g, c, c.Arr, i), new MOp(">=", Cell(c.Arr, i), Amount(c.Read))) }, At("CSV1016", at, message));
+            Assert(new MQuant
+            {
+                Forall = true,
+                Var = "i$",
+                Range = null,
+                Body = Implies(InCells(g, c, c.Arr, i), new MOp(">=", Cell(c.Arr, i), Amount(c.Read))),
+            }, At("CSV1016", at, message));
             ChangeCells(g, c, "-");
         }
 
@@ -69,7 +87,10 @@ namespace CsVerify.Verifier.Boogie
                 _p.ArrayMode = _p.MemViews || NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
                                callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(Atoms).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
                 _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
-                if (_p.UsesCells) _p.UsesPerm = true;
+                if (_p.UsesCells)
+                {
+                    _p.UsesPerm = true;
+                }
             }
             _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
         }
@@ -77,7 +98,10 @@ namespace CsVerify.Verifier.Boogie
         private bool PredicateHasCells(IMethodSymbol pred, HashSet<IMethodSymbol> seen = null)
         {
             seen ??= new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-            if (!seen.Add(pred)) return false;
+            if (!seen.Add(pred))
+            {
+                return false;
+            }
             var body = _program.Signature(pred).FunctionBody;
             return body != null && Atoms(body).Any(a => a is KCells || a is KInst q && PredicateHasCells(q.Pred, seen));
         }

@@ -36,8 +36,17 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void Call(KCall c, List<MExpr> decreases)
         {
-            if (c.Phase == 2) { Join(c); return; }
-            var call = new CallAt { C = c, Callee = c.Callee, Receiver = CallReceiver(c) };
+            if (c.Phase == 2)
+            {
+                Join(c);
+                return;
+            }
+            var call = new CallAt
+            {
+                C = c,
+                Callee = c.Callee,
+                Receiver = CallReceiver(c),
+            };
             call.Args = Arguments(call.Callee, c.Args, c.ArgsAt);
             Termination(c, call.Receiver, call.Args, decreases);
             HandOverViews(call);
@@ -56,23 +65,64 @@ namespace CsVerify.Verifier.Boogie
                 _started[c] = (call.Receiver, call.Args, call.Given, call.Gave, call.CellCall, call.Pure);
                 return;
             }
-            var frame = _p.UsesPerm ? new MCallFrame { Id = _frames++, Receiver = call.OwnedReceiver ? call.Receiver : null, Callee = call.Callee, Cells = call.CellCall, Given = call.Gave, Fields = _p.UsesFields } : null;
+            var frame = _p.UsesPerm ? new MCallFrame
+            {
+                Id = _frames++,
+                Receiver = call.OwnedReceiver ? call.Receiver : null,
+                Callee = call.Callee,
+                Cells = call.CellCall,
+                Given = call.Gave,
+                Fields = _p.UsesFields,
+            } : null;
             SnapshotPreconditions(call);
             // (where exceptions are seen: or it throws, and gives back only what its EnsuresOnThrow says)
             if (c.ThrowsTo != null)
-                Emit(new MFork { Call = new MCall { Callee = call.Callee, Receiver = call.Receiver, Args = call.Args, RefOuts = c.RefOuts }, Target = c.ThrowsTo });
-            if (frame != null) Emit(frame);
-            Emit(new MCall { Callee = call.Callee, Receiver = call.Receiver, ReceiverIsThis = c.ReceiverIsThis, ReceiverAt = c.ReceiverAt, Args = call.Args, Result = c.Result, ThisOut = c.ThisOut, At = c.At, ArgsAt = c.ArgsAt,
-                             RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'") });
+            {
+                Emit(new MFork
+                {
+                    Call = new MCall
+                    {
+                        Callee = call.Callee,
+                        Receiver = call.Receiver,
+                        Args = call.Args,
+                        RefOuts = c.RefOuts,
+                    },
+                    Target = c.ThrowsTo,
+                });
+            }
+            if (frame != null)
+            {
+                Emit(frame);
+            }
+            Emit(new MCall
+            {
+                Callee = call.Callee,
+                Receiver = call.Receiver,
+                ReceiverIsThis = c.ReceiverIsThis,
+                ReceiverAt = c.ReceiverAt,
+                Args = call.Args,
+                Result = c.Result,
+                ThisOut = c.ThisOut,
+                At = c.At,
+                ArgsAt = c.ArgsAt,
+                RefOuts = c.RefOuts,
+                Check = At("CSV1001", c.At, $"'{c.At}'"),
+            });
             AfterCall(c, call.Callee, call.Receiver, call.Given, frame, call.Sig, call.Pure, call.OwnedReceiver);
         }
 
         /// <summary>A call's receiver, checked not null (a struct's member's is a value, never null; this is never null).</summary>
         private MExpr CallReceiver(KCall c)
         {
-            if (c.Receiver == null) return null;
+            if (c.Receiver == null)
+            {
+                return null;
+            }
             var receiver = Code(c.Receiver);
-            if (!c.ReceiverIsThis && !IsStruct(c.Callee.ContainingType)) Assert(new MOp("!=", receiver, new MLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+            if (!c.ReceiverIsThis && !IsStruct(c.Callee.ContainingType))
+            {
+                Assert(new MOp("!=", receiver, new MLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+            }
             return receiver;
         }
 
@@ -94,18 +144,35 @@ namespace CsVerify.Verifier.Boogie
             {
                 var x = args[param.Ordinal];
                 ProveInvariant(ViewOf(param.Type), x, c.ArgsAt[param.Ordinal], $"when its view is handed to '{callee.Name}'");
-                if (IsShare(param.Type) && param.RefKind == RefKind.None) Shares(x, -1);
+                if (IsShare(param.Type) && param.RefKind == RefKind.None)
+                {
+                    Shares(x, -1);
+                }
             }
             // (a package goes with its views: by value for good, by ref until it comes back)
             foreach (var param in callee.Parameters.Where(x => IsPackage(x.Type) && x.RefKind is RefKind.None or RefKind.Ref))
+            {
                 foreach (var f in PackageViews(param.Type))
-                    Emit(new MMapUpdate { Map = "pkg", Ref = new MOp(FieldFunction(f), args[param.Ordinal]), Value = new MLit("false") });
+                {
+                    Emit(new MMapUpdate
+                    {
+                        Map = "pkg",
+                        Ref = new MOp(FieldFunction(f), args[param.Ordinal]),
+                        Value = new MLit("false"),
+                    });
+                }
+            }
             foreach (var param in callee.Parameters.Where(HoldsView))
             {
                 var x = args[param.Ordinal];
                 ProveInvariant(ViewOf(param.Type), x, c.ArgsAt[param.Ordinal], $"when its view is handed to '{callee.Name}'");
                 Assert(Whole(x), At("CSV1016", c.ArgsAt[param.Ordinal], $"'{c.ArgsAt[param.Ordinal]}' might not be whole: join its read shares back (Own.Unshare) and get back any fields given away before handing the view over"));
-                Emit(new MMapUpdate { Map = "perm", Ref = x, Value = new MLit("false") });
+                Emit(new MMapUpdate
+                {
+                    Map = "perm",
+                    Ref = x,
+                    Value = new MLit("false"),
+                });
             }
         }
 
@@ -116,7 +183,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 _facts.Clear();
                 Subst(Spec(r.Expr, out _), call.Given);
-                foreach (var f in _facts.ToList()) Assume(Subst(f, call.Given));
+                foreach (var f in _facts.ToList())
+                {
+                    Assume(Subst(f, call.Given));
+                }
                 _facts.Clear();
             }
         }
@@ -135,14 +205,27 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Under a frame of ours: the callee's within it, or it changes nothing a frame would tell (decided once the program's writes are).</summary>
         private void WithinOurFrame(CallAt call)
         {
-            if (_p.Frame == null || call.Pure) return;
+            if (_p.Frame == null || call.Pure)
+            {
+                return;
+            }
             var (c, callee) = (call.C, call.Callee);
             if (call.Sig.Frame == null)
             {
-                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, UnlessKind = "arrays",
-                                   Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
-                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, UnlessKind = "fields",
-                                   Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked") });
+                Emit(new MAssert
+                {
+                    Cond = new MLit("false"),
+                    UnlessWritesArrays = callee,
+                    UnlessKind = "arrays",
+                    Check = At("CSV1017", c.At, $"'{callee.Name}' may write arrays but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked"),
+                });
+                Emit(new MAssert
+                {
+                    Cond = new MLit("false"),
+                    UnlessWritesArrays = callee,
+                    UnlessKind = "fields",
+                    Check = At("CSV1017", c.At, $"'{callee.Name}' may write fields but has no Spec.Modifies frame, so this method's Spec.Modifies cannot be checked"),
+                });
                 return;
             }
             var theirs = Subst(Spec(call.Sig.Frame, out _), call.Given);
@@ -150,9 +233,17 @@ namespace CsVerify.Verifier.Boogie
             var r = new MVar("r$");
             Emit(new MAssert
             {
-                Cond = new MQuant { Forall = true, Var = "r$", Type = "Ref", Range = null, Body = new MOp("==>", new MOp("sel", theirs, r),
-                    new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r)))) },
-                UnlessWritesArrays = callee, UnlessKind = "any",
+                Cond = new MQuant
+                {
+                    Forall = true,
+                    Var = "r$",
+                    Type = "Ref",
+                    Range = null,
+                    Body = new MOp("==>", new MOp("sel", theirs, r),
+                    new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r)))),
+                },
+                UnlessWritesArrays = callee,
+                UnlessKind = "any",
                 Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),
             });
         }
@@ -165,10 +256,23 @@ namespace CsVerify.Verifier.Boogie
         {
             var (c, callee, sig) = (call.C, call.Callee, call.Sig);
             call.Gave = new List<(MExpr, MExpr)>();
-            if (_p.UsesPerm && !call.Pure) foreach (var r in sig.Requires) Exhale(r.Expr, call.Given, c.At, call.Gave);
+            if (_p.UsesPerm && !call.Pure)
+            {
+                foreach (var r in sig.Requires)
+                {
+                    Exhale(r.Expr, call.Given, c.At, call.Gave);
+                }
+            }
             call.CellCall = _p.UsesCells && !call.Pure && NamesCells(sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
             if (_p.ArrayMode && !call.CellCall && !call.Pure)
-                Emit(new MAssert { Cond = new MLit("false"), UnlessWritesArrays = callee, Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes") });
+            {
+                Emit(new MAssert
+                {
+                    Cond = new MLit("false"),
+                    UnlessWritesArrays = callee,
+                    Check = At("CSV1016", c.At, $"'{callee.Name}' may write any array: give it a contract with Spec.Acc for the cells it writes"),
+                });
+            }
         }
 
         /// <summary>A task's or thread's start: its preconditions checked here, as no Boogie call will.</summary>
@@ -185,12 +289,18 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What its preconditions say of snapshots: checked here, as Boogie's requires can't name them.</summary>
         private void SnapshotPreconditions(CallAt call)
         {
-            if (!_p.UsesPerm) return;
+            if (!_p.UsesPerm)
+            {
+                return;
+            }
             foreach (var r in call.Sig.Requires)
             {
                 var math = Subst(Spec(r.Expr, out _), call.Given);
                 _facts.Clear();
-                if (Mentions(math, Snaps)) Assert(math, At("CSV1001", call.C.At, $"'{call.C.At}': its precondition '{r.At}'"));
+                if (Mentions(math, Snaps))
+                {
+                    Assert(math, At("CSV1001", call.C.At, $"'{call.C.At}': its precondition '{r.At}'"));
+                }
             }
         }
 
@@ -201,10 +311,33 @@ namespace CsVerify.Verifier.Boogie
             var (receiver, args, given, gave, cellCall, pure) = _started[st];
             var callee = c.Callee;
             var sig = _program.Signature(callee);
-            var frame = _p.UsesPerm ? new MCallFrame { Id = _frames++, Receiver = null, Callee = callee, Cells = cellCall, Given = gave, Fields = _p.UsesFields } : null;
-            if (frame != null) Emit(frame);
-            Emit(new MCall { Callee = callee, Receiver = receiver, ReceiverIsThis = st.ReceiverIsThis, ReceiverAt = st.ReceiverAt, Args = args, Result = c.Result, At = c.At,
-                             ArgsAt = st.ArgsAt, RefOuts = c.RefOuts, Check = At("CSV1001", c.At, $"'{c.At}'"), Phase = 2 });
+            var frame = _p.UsesPerm ? new MCallFrame
+            {
+                Id = _frames++,
+                Receiver = null,
+                Callee = callee,
+                Cells = cellCall,
+                Given = gave,
+                Fields = _p.UsesFields,
+            } : null;
+            if (frame != null)
+            {
+                Emit(frame);
+            }
+            Emit(new MCall
+            {
+                Callee = callee,
+                Receiver = receiver,
+                ReceiverIsThis = st.ReceiverIsThis,
+                ReceiverAt = st.ReceiverAt,
+                Args = args,
+                Result = c.Result,
+                At = c.At,
+                ArgsAt = st.ArgsAt,
+                RefOuts = c.RefOuts,
+                Check = At("CSV1001", c.At, $"'{c.At}'"),
+                Phase = 2,
+            });
             AfterCall(c, callee, receiver, given, frame, sig, pure, false);
         }
 
@@ -216,7 +349,10 @@ namespace CsVerify.Verifier.Boogie
         private void AfterCall(KCall c, IMethodSymbol callee, MExpr receiver, Dictionary<string, MExpr> given, MCallFrame frame, KProcedure sig, bool pure, bool ownedReceiver)
         {
             GivenBack(c, callee, receiver, ownedReceiver);
-            if (frame != null) PostconditionsGiveBack(c, callee, given, frame, sig, pure);
+            if (frame != null)
+            {
+                PostconditionsGiveBack(c, callee, given, frame, sig, pure);
+            }
         }
 
         /// <summary>
@@ -232,12 +368,27 @@ namespace CsVerify.Verifier.Boogie
                 AssumeInvariant(ViewOf(callee.Parameters[ordinal].Type), v);
                 Receive(v);
             }
-            if (ownedReceiver) AssumeInvariant(callee.ContainingType, receiver);
-            if (c.Result != null && Returns(callee) != null) ObjectInvariant(new MVar(c.Result), Returns(callee));
-            foreach (var (ordinal, var) in c.RefOuts) ObjectInvariant(new MVar(var), callee.Parameters[ordinal].Type);
+            if (ownedReceiver)
+            {
+                AssumeInvariant(callee.ContainingType, receiver);
+            }
+            if (c.Result != null && Returns(callee) != null)
+            {
+                ObjectInvariant(new MVar(c.Result), Returns(callee));
+            }
+            foreach (var (ordinal, var) in c.RefOuts)
+            {
+                ObjectInvariant(new MVar(var), callee.Parameters[ordinal].Type);
+            }
             // (the packages it gives back: its result, and its ref and out arguments)
-            foreach (var (ordinal, var) in c.RefOuts.Where(x => IsPackage(callee.Parameters[x.param].Type))) Arrive(new MVar(var), callee.Parameters[ordinal].Type);
-            if (c.Result != null && IsPackage(Returns(callee))) Arrive(new MVar(c.Result), Returns(callee));
+            foreach (var (ordinal, var) in c.RefOuts.Where(x => IsPackage(callee.Parameters[x.param].Type)))
+            {
+                Arrive(new MVar(var), callee.Parameters[ordinal].Type);
+            }
+            if (c.Result != null && IsPackage(Returns(callee)))
+            {
+                Arrive(new MVar(c.Result), Returns(callee));
+            }
         }
 
         /// <summary>
@@ -246,19 +397,55 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void PostconditionsGiveBack(KCall c, IMethodSymbol callee, Dictionary<string, MExpr> given, MCallFrame frame, KProcedure sig, bool pure)
         {
-            Emit(new MCallFrame { Id = frame.Id, After = true, Receiver = frame.Receiver, Callee = callee, Maps = frame.Maps, Cells = frame.Cells, Given = frame.Given, ElementMaps = frame.ElementMaps, Fields = frame.Fields, FieldIds = frame.FieldIds });
+            Emit(new MCallFrame
+            {
+                Id = frame.Id,
+                After = true,
+                Receiver = frame.Receiver,
+                Callee = callee,
+                Maps = frame.Maps,
+                Cells = frame.Cells,
+                Given = frame.Given,
+                ElementMaps = frame.ElementMaps,
+                Fields = frame.Fields,
+                FieldIds = frame.FieldIds,
+            });
             var back = new Dictionary<string, MExpr>(given);
-            if (c.Result != null) back["result"] = new MVar(c.Result);
-            if (c.ThisOut != null) back["this"] = new MVar(c.ThisOut);
-            foreach (var (ordinal, var) in c.RefOuts) back[Local(callee.Parameters[ordinal])] = new MVar(var);
+            if (c.Result != null)
+            {
+                back["result"] = new MVar(c.Result);
+            }
+            if (c.ThisOut != null)
+            {
+                back["this"] = new MVar(c.ThisOut);
+            }
+            foreach (var (ordinal, var) in c.RefOuts)
+            {
+                back[Local(callee.Parameters[ordinal])] = new MVar(var);
+            }
             _old = x => OldBefore(x, frame);
-            try { if (!pure) foreach (var e in sig.Ensures) Inhale(e.Expr, back, null); }
-            finally { _old = null; }
+            try
+            {
+                if (!pure)
+                {
+                    foreach (var e in sig.Ensures)
+                    {
+                        Inhale(e.Expr, back, null);
+                    }
+                }
+            }
+            finally
+            {
+                _old = null;
+            }
             foreach (var e in sig.Ensures)
             {
                 var math = Subst(Spec(e.Expr, out _), back);
                 _facts.Clear();
-                if (Mentions(math, Snaps)) Assume(OldBefore(math, frame));
+                if (Mentions(math, Snaps))
+                {
+                    Assume(OldBefore(math, frame));
+                }
             }
         }
 
@@ -288,13 +475,39 @@ namespace CsVerify.Verifier.Boogie
                     frame.OldGlobals.Add(v.Name);
                     return new MVar($"s{frame.Id}{v.Name}");
                 // (a function over a predicate: of the snapshot as it was, at no layer and of no maps)
-                case MFnApp f when f.Snap != null: return new MFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, MapsAt = f.MapsAt, Args = Args(f), Snap = Before(f.Snap, frame) };
+                case MFnApp f when f.Snap != null: return new MFnApp
+                {
+                    Callee = f.Callee,
+                    Function = f.Function,
+                    Plain = f.Plain,
+                    MapsAt = f.MapsAt,
+                    Args = Args(f),
+                    Snap = Before(f.Snap, frame),
+                };
                 // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
                 case MFnApp f when !f.Plain:
-                    foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields)) frame.OldGlobals.Add(map);
-                    return new MFnApp { Callee = f.Callee, Function = f.Function, Plain = f.Plain, Layer = f.Layer, Fields = f.Fields, Args = Args(f), MapsAt = $"s{frame.Id}" };
+                    foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields))
+                    {
+                        frame.OldGlobals.Add(map);
+                    }
+                    return new MFnApp
+                    {
+                        Callee = f.Callee,
+                        Function = f.Function,
+                        Plain = f.Plain,
+                        Layer = f.Layer,
+                        Fields = f.Fields,
+                        Args = Args(f),
+                        MapsAt = $"s{frame.Id}",
+                    };
                 case MFnApp f:
-                    return new MFnApp { Callee = f.Callee, Function = f.Function, Plain = true, Args = Args(f) };
+                    return new MFnApp
+                    {
+                        Callee = f.Callee,
+                        Function = f.Function,
+                        Plain = true,
+                        Args = Args(f),
+                    };
                 default: return null;
             }
         });
@@ -308,7 +521,9 @@ namespace CsVerify.Verifier.Boogie
                 args[k] = Code(given[k]);
                 var param = callee != null && k < callee.Parameters.Length ? callee.Parameters[k] : null;
                 if (param != null && param.RefKind != RefKind.Out && IsNullable(param.Type) && NotNullable(param.Type))
+                {
                     Assert(new MOp("!=", args[k], new MLit("null")), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
+                }
             }
             return args;
         }

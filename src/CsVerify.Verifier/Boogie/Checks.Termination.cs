@@ -17,9 +17,16 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void Termination(KCall c, MExpr receiver, MExpr[] args, List<MExpr> mine)
         {
-            if (!_program.Recursive(_p.Method, c.Callee)) return;
+            if (!_program.Recursive(_p.Method, c.Callee))
+            {
+                return;
+            }
             var theirs = _program.ContractOf(c.Callee);
-            if (mine == null || theirs?.Decreases == null) { WithoutMeasure(c); return; }
+            if (mine == null || theirs?.Decreases == null)
+            {
+                WithoutMeasure(c);
+                return;
+            }
             // (measures of different shapes can't be compared)
             if (theirs.Decreases.Count != mine.Count)
             {
@@ -44,20 +51,28 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             if (c.At != null)
+            {
                 _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, self
                     ? $"recursive call without Spec.Decreases in '{_p.Method.Name}'; termination is not checked"
                     : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' without Spec.Decreases on both; termination is not checked", c.At.GetLocation().GetLineSpan()));
+            }
         }
 
         private Dictionary<string, MExpr> Given(IMethodSymbol callee, MExpr receiver, MExpr[] args)
         {
             var given = callee.Parameters.Select((p, k) => (p, k)).Where(x => x.k < args.Length).ToDictionary(x => Local(x.p), x => args[x.k]);
-            if (receiver != null) given["this"] = receiver;
+            if (receiver != null)
+            {
+                given["this"] = receiver;
+            }
             // (a local function's captured inputs: after its arguments)
             if (callee.MethodKind == MethodKind.LocalFunction)
             {
                 var captured = _program.Signature(callee).Captured;
-                for (int k = 0; k < captured.Count && callee.Parameters.Length + k < args.Length; k++) given[captured[k].input] = args[callee.Parameters.Length + k];
+                for (int k = 0; k < captured.Count && callee.Parameters.Length + k < args.Length; k++)
+                {
+                    given[captured[k].input] = args[callee.Parameters.Length + k];
+                }
             }
             return given;
         }

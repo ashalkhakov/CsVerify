@@ -35,14 +35,20 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KLit : KExpr
     {
         public string Text;
-        public KLit(string text) { Text = text; }
+        public KLit(string text)
+        {
+            Text = text;
+        }
     }
 
     /// <summary>A variable: a parameter, a local, a quantifier's variable, "result".</summary>
     internal sealed class KVar : KExpr
     {
         public string Name;
-        public KVar(string name) { Name = name; }
+        public KVar(string name)
+        {
+            Name = name;
+        }
     }
 
     /// <summary>
@@ -54,7 +60,11 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Op;
         public KExpr[] Args;
-        public KOp(string op, params KExpr[] args) { Op = op; Args = args; }
+        public KOp(string op, params KExpr[] args)
+        {
+            Op = op;
+            Args = args;
+        }
     }
 
     /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>
@@ -589,7 +599,10 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class KGoto : KJump
     {
         public List<string> Targets;
-        public KGoto(params string[] targets) { Targets = targets.ToList(); }
+        public KGoto(params string[] targets)
+        {
+            Targets = targets.ToList();
+        }
     }
 
     /// <summary>A return, from here (where its postconditions are reported).</summary>

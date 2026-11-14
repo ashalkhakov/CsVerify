@@ -46,8 +46,15 @@ namespace CsVerify.Verifier.Boogie
                 // (what holds of the memory wherever it's read: a field's reference allocated, a non-nullable field set; assumed)
                 var known = _facts.ToList();
                 _facts.Clear();
-                MExpr At(MExpr y) { y = given == null ? y : Subst(y, given); return _old == null ? y : _old(y); }
-                foreach (var k in known) Assume(Implies(guard, At(k)));
+                MExpr At(MExpr y)
+                {
+                    y = given == null ? y : Subst(y, given);
+                    return _old == null ? y : _old(y);
+                }
+                foreach (var k in known)
+                {
+                    Assume(Implies(guard, At(k)));
+                }
                 return At(v);
             }
             switch (e)
@@ -66,41 +73,89 @@ namespace CsVerify.Verifier.Boogie
                     return Ite(c, t, f);
                 }
                 case KAcc acc:
-                    atom(guard, new MAcc { Obj = M(acc.Obj), Type = acc.Type, At = acc.At });
+                    atom(guard, new MAcc
+                    {
+                        Obj = M(acc.Obj),
+                        Type = acc.Type,
+                        At = acc.At,
+                    });
                     return new MLit("true");
                 case KInst inst:
-                    atom(guard, new MInst { Pred = inst.Pred, Args = inst.Args.Select(M).ToArray(), At = inst.At });
+                    atom(guard, new MInst
+                    {
+                        Pred = inst.Pred,
+                        Args = inst.Args.Select(M).ToArray(),
+                        At = inst.At,
+                    });
                     return new MLit("true");
                 case KCells cl:
-                    atom(guard, new MCells { Arr = M(cl.Arr), Lo = M(cl.Lo), Hi = M(cl.Hi), Read = cl.Read, At = cl.At });
+                    atom(guard, new MCells
+                    {
+                        Arr = M(cl.Arr),
+                        Lo = M(cl.Lo),
+                        Hi = M(cl.Hi),
+                        Read = cl.Read,
+                        At = cl.At,
+                    });
                     return new MLit("true");
                 case KFieldAcc fa:
-                    atom(guard, new MFieldAcc { Obj = M(fa.Obj), Field = fa.Field, Type = fa.Type, At = fa.At });
+                    atom(guard, new MFieldAcc
+                    {
+                        Obj = M(fa.Obj),
+                        Field = fa.Field,
+                        Type = fa.Type,
+                        At = fa.At,
+                    });
                     return new MLit("true");
                 case KLit { Text: "true" }: return new MLit("true");
             }
-            if (HasAtoms(e)) throw new NotTranslated("a permission that isn't a conjunct, or in a branch of ?:");
+            if (HasAtoms(e))
+            {
+                throw new NotTranslated("a permission that isn't a conjunct, or in a branch of ?:");
+            }
             var v = M(e);
             fact?.Invoke(guard, v);
             return v;
         }
 
-        private void SetPerm(MExpr o, MExpr value) => Emit(new MAssign { Var = "perm", Value = new MOp("store", new MVar("perm"), o, value) });
+        private void SetPerm(MExpr o, MExpr value) => Emit(new MAssign
+        {
+            Var = "perm",
+            Value = new MOp("store", new MVar("perm"), o, value),
+        });
 
         private void AddInst(MExpr q, MExpr guard, int by) =>
-            Emit(new MAssign { Var = "pinst", Value = new MOp("store", new MVar("pinst"), q,
-                new MOp(by > 0 ? "+" : "-", new MOp("sel", new MVar("pinst"), q), Ite(guard, new MLit("1"), new MLit("0")))) });
+            Emit(new MAssign
+            {
+                Var = "pinst",
+                Value = new MOp("store", new MVar("pinst"), q,
+                new MOp(by > 0 ? "+" : "-", new MOp("sel", new MVar("pinst"), q), Ite(guard, new MLit("1"), new MLit("0")))),
+            });
 
         /// <summary>Receives an assertion's permissions (a precondition at entry, a postcondition after a call, an invariant at a loop head).</summary>
         private bool _atLoopHead;
 
         private void Inhale(KExpr e, Dictionary<string, MExpr> given, MExpr _)
         {
-            if (!HasAtoms(e)) return;
+            if (!HasAtoms(e))
+            {
+                return;
+            }
             Walk(e, given, new MLit("true"), (g, a) =>
             {
-                if (a is MCells cl) { if (_p.UsesCells) InhaleCells(g, cl); return; }
-                if (a is MFieldAcc fa) { TakeField(fa, g); return; }
+                if (a is MCells cl)
+                {
+                    if (_p.UsesCells)
+                    {
+                        InhaleCells(g, cl);
+                    }
+                    return;
+                }
+                if (a is MFieldAcc fa)
+                {
+                    TakeField(fa, g);
+                    return;
+                }
                 if (a is MAcc acc)
                 {
                     // two whole permissions to one object can't both be in hand, and one in hand is folded nowhere
@@ -108,17 +163,26 @@ namespace CsVerify.Verifier.Boogie
                                                   new MOp("==", new MOp("sel", new MVar("owner"), acc.Obj), None))));
                     NoFieldsHeld(g, acc.Obj, acc.Type);
                     SetPerm(acc.Obj, new MOp("||", Held(acc.Obj), g));
-                    if (Invariant(acc.Type, acc.Obj) is MExpr inv) Assume(Implies(g, inv));
+                    if (Invariant(acc.Type, acc.Obj) is MExpr inv)
+                    {
+                        Assume(Implies(g, inv));
+                    }
                 }
                 else
                 {
                     var inst = (MInst)a;
                     // (the guard as it is before the snapshot changes: it may read it)
                     var held = Hold(g);
-                    if (!_atLoopHead) Refresh(Instance(inst.Pred, inst.Args), held);
+                    if (!_atLoopHead)
+                    {
+                        Refresh(Instance(inst.Pred, inst.Args), held);
+                    }
                     SnapFacts(inst.Pred, inst.Args, held);
                     // (one that holds an object's Spec.Acc can't be held twice: the object's permission is one)
-                    if (PredicateExclusive(inst.Pred)) Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("pinst"), Instance(inst.Pred, inst.Args)), new MLit("0"))));
+                    if (PredicateExclusive(inst.Pred))
+                    {
+                        Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("pinst"), Instance(inst.Pred, inst.Args)), new MLit("0"))));
+                    }
                     AddInst(Instance(inst.Pred, inst.Args), g, +1);
                 }
             }, null);
@@ -127,17 +191,33 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Gives an assertion's permissions up (a callee's precondition at a call, a postcondition at a return, an invariant on the way into a loop's head): each must be in hand.</summary>
         private void Exhale(KExpr e, Dictionary<string, MExpr> given, SyntaxNode at, List<(MExpr, MExpr)> gave)
         {
-            if (!HasAtoms(e)) return;
+            if (!HasAtoms(e))
+            {
+                return;
+            }
             Walk(e, given, new MLit("true"), (g, a) =>
             {
                 gave?.Add((g, a));
-                if (a is MCells cl) { if (_p.UsesCells) ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand"); return; }
-                if (a is MFieldAcc fa) { GiveField(fa, g, at, $"'{fa.At}' is needed here, but that permission is not in hand"); return; }
+                if (a is MCells cl)
+                {
+                    if (_p.UsesCells)
+                    {
+                        ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand");
+                    }
+                    return;
+                }
+                if (a is MFieldAcc fa)
+                {
+                    GiveField(fa, g, at, $"'{fa.At}' is needed here, but that permission is not in hand");
+                    return;
+                }
                 if (a is MAcc acc)
                 {
                     Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"'{acc.At}' is needed here, but that permission is not in hand"));
                     if (Invariant(acc.Type, acc.Obj) is MExpr inv)
+                    {
                         Assert(Implies(g, inv), At("CSV1015", at, $"invariant of {acc.Type.Name} might not hold when '{acc.At}' is given up"));
+                    }
                     SetPerm(acc.Obj, new MOp("&&", Held(acc.Obj), new MOp("!", g)));
                 }
                 else
@@ -158,12 +238,26 @@ namespace CsVerify.Verifier.Boogie
         private void Fold(KFold fold)
         {
             var sig = _program.Signature(fold.Inst.Pred);
-            if (sig.FunctionBody == null) throw new NotTranslated("a predicate without a body");
-            var args = fold.Inst.Args.Select(a => { var v = Spec(a, out _); _facts.Clear(); return v; }).ToArray();
+            if (sig.FunctionBody == null)
+            {
+                throw new NotTranslated("a predicate without a body");
+            }
+            var args = fold.Inst.Args.Select(a =>
+            {
+                var v = Spec(a, out _);
+                _facts.Clear();
+                return v;
+            }).ToArray();
             var given = fold.Inst.Pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
             var p = Instance(fold.Inst.Pred, args);
-            if (fold.Unfold) Unfold(fold, sig, given, args, p);
-            else FoldInto(fold, sig, given, args, p);
+            if (fold.Unfold)
+            {
+                Unfold(fold, sig, given, args, p);
+            }
+            else
+            {
+                FoldInto(fold, sig, given, args, p);
+            }
         }
 
         /// <summary>Spec.Fold: each permission of the body given into the instance p, each fact of it holding; then p in hand, new.</summary>
@@ -189,22 +283,39 @@ namespace CsVerify.Verifier.Boogie
                 {
                     GiveField(fa, g, at, $"folding needs '{fa.At}', but that permission is not in hand here");
                     var k = new MLit(_program.FieldId(fa.Field).ToString());
-                    Emit(new MAssign { Var = "fowner", Value = new MOp("store", new MVar("fowner"), fa.Obj,
-                        new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), k, Ite(g, p, new MOp("sel", new MVar("fowner"), fa.Obj, k)))) });
+                    Emit(new MAssign
+                    {
+                        Var = "fowner",
+                        Value = new MOp("store", new MVar("fowner"), fa.Obj,
+                        new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), k, Ite(g, p, new MOp("sel", new MVar("fowner"), fa.Obj, k)))),
+                    });
                     return;
                 }
                 case MCells cl:
-                    if (!_p.UsesCells) return;
+                    if (!_p.UsesCells)
+                    {
+                        return;
+                    }
                     ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand");
-                    Emit(new MAssign { Var = "cowner", Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
-                        Ite(InCells(g, cl, new MVar("x$"), new MVar("i$")), p, new MOp("sel", new MVar("cowner"), new MVar("x$"), new MVar("i$"))))) });
+                    Emit(new MAssign
+                    {
+                        Var = "cowner",
+                        Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"),
+                        Ite(InCells(g, cl, new MVar("x$"), new MVar("i$")), p, new MOp("sel", new MVar("cowner"), new MVar("x$"), new MVar("i$"))))),
+                    });
                     return;
                 case MAcc acc:
                     Assert(Implies(g, Held(acc.Obj)), At("CSV1016", at, $"folding needs '{acc.At}', but that permission is not in hand here"));
                     if (Invariant(acc.Type, acc.Obj) is MExpr inv)
+                    {
                         Assert(Implies(g, inv), At("CSV1015", at, $"invariant of {acc.Type.Name} might not hold when it is folded into '{fold.InstAt}'"));
+                    }
                     SetPerm(acc.Obj, new MOp("&&", Held(acc.Obj), new MOp("!", g)));
-                    Emit(new MAssign { Var = "owner", Value = new MOp("store", new MVar("owner"), acc.Obj, Ite(g, p, new MOp("sel", new MVar("owner"), acc.Obj))) });
+                    Emit(new MAssign
+                    {
+                        Var = "owner",
+                        Value = new MOp("store", new MVar("owner"), acc.Obj, Ite(g, p, new MOp("sel", new MVar("owner"), acc.Obj))),
+                    });
                     return;
                 default:
                 {
@@ -214,8 +325,12 @@ namespace CsVerify.Verifier.Boogie
                     Assert(Implies(g, new MOp(">=", new MOp("sel", new MVar("pinst"), q), new MLit("1"))), At("CSV1016", at, $"folding needs '{inst.At}', which is not held here"));
                     AddInst(q, g, -1);
                     var y = new MVar("y$");
-                    Emit(new MAssign { Var = "owner", Value = new MOp("lambda", new MLit("y$: Ref"),
-                        Ite(Conj(g, new MOp("==", new MOp("sel", new MVar("owner"), y), q)), p, new MOp("sel", new MVar("owner"), y))) });
+                    Emit(new MAssign
+                    {
+                        Var = "owner",
+                        Value = new MOp("lambda", new MLit("y$: Ref"),
+                        Ite(Conj(g, new MOp("==", new MOp("sel", new MVar("owner"), y), q)), p, new MOp("sel", new MVar("owner"), y))),
+                    });
                     return;
                 }
             }
@@ -231,22 +346,51 @@ namespace CsVerify.Verifier.Boogie
             Assert(new MOp(">=", new MOp("sel", new MVar("pinst"), p), new MLit("1")), At("CSV1016", at, $"'{fold.InstAt}' is not held here"));
             AddInst(p, new MLit("true"), -1);
             foreach (var (name, raw) in new[] { ("footprint$", "[Ref]Inst"), ("choice$", "[Ref]int") })
-                if (!_p.Locals.Any(l => l.Name == name)) _p.Locals.Add(new KLocal { Name = name, Raw = raw });
-            Emit(new MAssign { Var = "footprint$", Value = new MVar("owner") });
+            {
+                if (!_p.Locals.Any(l => l.Name == name))
+                {
+                    _p.Locals.Add(new KLocal
+                    {
+                        Name = name,
+                        Raw = raw,
+                    });
+                }
+            }
+            Emit(new MAssign
+            {
+                Var = "footprint$",
+                Value = new MVar("owner"),
+            });
             var own = new List<(MExpr g, MExpr o)>();
             var nested = new List<(MExpr g, MExpr q)>();
             var ownCells = new List<(MExpr g, MCells c)>();
             if (_p.UsesCells)
             {
-                Emit(new MAssign { Var = "cfootprint$", Value = new MVar("cowner") });
+                Emit(new MAssign
+                {
+                    Var = "cfootprint$",
+                    Value = new MVar("cowner"),
+                });
                 foreach (var (name, raw) in new[] { ("cfootprint$", "[Ref][int]Inst"), ("cchoice$", "[Ref][int]int") })
-                    if (!_p.Locals.Any(l => l.Name == name)) _p.Locals.Add(new KLocal { Name = name, Raw = raw });
+                {
+                    if (!_p.Locals.Any(l => l.Name == name))
+                    {
+                        _p.Locals.Add(new KLocal
+                        {
+                            Name = name,
+                            Raw = raw,
+                        });
+                    }
+                }
             }
             Walk(sig.FunctionBody, given, new MLit("true"), (g, a) => UnfoldAtom(p, g, a, own, nested, ownCells), (g, fact) => Assume(Implies(g, fact)));
             // (what was folded hasn't changed: the functions over it are what their bodies say of it now)
             Define(fold.Inst.Pred, args, p);
             SplitFootprint(p, own, nested);
-            if (_p.UsesCells) SplitCells(p, ownCells, nested);
+            if (_p.UsesCells)
+            {
+                SplitCells(p, ownCells, nested);
+            }
         }
 
         /// <summary>
@@ -258,20 +402,30 @@ namespace CsVerify.Verifier.Boogie
             switch (a)
             {
                 case MCells cl:
-                    if (_p.UsesCells) InhaleCells(g, cl);
+                    if (_p.UsesCells)
+                    {
+                        InhaleCells(g, cl);
+                    }
                     ownCells.Add((g, cl));
                     return;
                 case MFieldAcc fa:
                     Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("fowner"), fa.Obj, new MLit(_program.FieldId(fa.Field).ToString())), p)));
                     TakeField(fa, g);
                     // (folded nowhere now: the body's own)
-                    Emit(new MAssign { Var = "fowner", Value = new MOp("store", new MVar("fowner"), fa.Obj,
-                        new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), new MLit(_program.FieldId(fa.Field).ToString()), Ite(g, None, new MOp("sel", new MVar("fowner"), fa.Obj, new MLit(_program.FieldId(fa.Field).ToString()))))) });
+                    Emit(new MAssign
+                    {
+                        Var = "fowner",
+                        Value = new MOp("store", new MVar("fowner"), fa.Obj,
+                        new MOp("store", new MOp("sel", new MVar("fowner"), fa.Obj), new MLit(_program.FieldId(fa.Field).ToString()), Ite(g, None, new MOp("sel", new MVar("fowner"), fa.Obj, new MLit(_program.FieldId(fa.Field).ToString()))))),
+                    });
                     return;
                 case MAcc acc:
                     Assume(Implies(g, new MOp("&&", new MOp("&&", new MOp("!=", acc.Obj, new MLit("null")), new MOp("==", new MOp("sel", new MVar("footprint$"), acc.Obj), p)), new MOp("!", Held(acc.Obj)))));
                     SetPerm(acc.Obj, new MOp("||", Held(acc.Obj), g));
-                    if (Invariant(acc.Type, acc.Obj) is MExpr inv) Assume(Implies(g, inv));
+                    if (Invariant(acc.Type, acc.Obj) is MExpr inv)
+                    {
+                        Assume(Implies(g, inv));
+                    }
                     own.Add((g, acc.Obj));
                     return;
                 default:
@@ -282,7 +436,10 @@ namespace CsVerify.Verifier.Boogie
                     var held = Hold(g);
                     Refresh(q, held);
                     SnapFacts(inst.Pred, inst.Args, held);
-                    if (PredicateExclusive(inst.Pred)) Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("pinst"), q), new MLit("0"))));
+                    if (PredicateExclusive(inst.Pred))
+                    {
+                        Assume(Implies(g, new MOp("==", new MOp("sel", new MVar("pinst"), q), new MLit("0"))));
+                    }
                     AddInst(q, g, +1);
                     nested.Add((g, q));
                     return;
@@ -298,18 +455,30 @@ namespace CsVerify.Verifier.Boogie
         {
             var yv = new MVar("y$");
             MExpr Footprint(MExpr y) => new MOp("sel", new MVar("footprint$"), y);
-            if (nested.Count > 1) Emit(new MHavoc { Var = "choice$" });
+            if (nested.Count > 1)
+            {
+                Emit(new MHavoc { Var = "choice$" });
+            }
             MExpr to = None;
             for (int k = nested.Count - 1; k >= 0; k--)
             {
                 var pick = nested.Count > 1 ? Conj(nested[k].g, new MOp("==", new MOp("sel", new MVar("choice$"), yv), new MLit(k.ToString()))) : nested[k].g;
                 to = Ite(pick, nested[k].q, to);
             }
-            foreach (var (g, o) in own) to = Ite(Conj(g, new MOp("==", yv, o)), None, to);
+            foreach (var (g, o) in own)
+            {
+                to = Ite(Conj(g, new MOp("==", yv, o)), None, to);
+            }
             MExpr elsewhere = Footprint(yv);
             if (nested.Count > 0)
+            {
                 elsewhere = Ite(nested.Select(n => (MExpr)new MOp("==", Footprint(yv), n.q)).Aggregate((a, b) => new MOp("||", a, b)), None, Footprint(yv));
-            Emit(new MAssign { Var = "owner", Value = new MOp("lambda", new MLit("y$: Ref"), Ite(new MOp("==", Footprint(yv), p), to, elsewhere)) });
+            }
+            Emit(new MAssign
+            {
+                Var = "owner",
+                Value = new MOp("lambda", new MLit("y$: Ref"), Ite(new MOp("==", Footprint(yv), p), to, elsewhere)),
+            });
         }
 
         /// <summary>The cells of p's footprint, likewise: the body's own are free, the rest go to its instances.</summary>
@@ -317,18 +486,30 @@ namespace CsVerify.Verifier.Boogie
         {
             var (xv, iv) = (new MVar("x$"), new MVar("i$"));
             MExpr CFoot() => new MOp("sel", new MVar("cfootprint$"), xv, iv);
-            if (nested.Count > 1) Emit(new MHavoc { Var = "cchoice$" });
+            if (nested.Count > 1)
+            {
+                Emit(new MHavoc { Var = "cchoice$" });
+            }
             MExpr cto = None;
             for (int k = nested.Count - 1; k >= 0; k--)
             {
                 var pick = nested.Count > 1 ? Conj(nested[k].g, new MOp("==", new MOp("sel", new MVar("cchoice$"), xv, iv), new MLit(k.ToString()))) : nested[k].g;
                 cto = Ite(pick, nested[k].q, cto);
             }
-            foreach (var (g, c) in ownCells) cto = Ite(InCells(g, c, xv, iv), None, cto);
+            foreach (var (g, c) in ownCells)
+            {
+                cto = Ite(InCells(g, c, xv, iv), None, cto);
+            }
             MExpr celsewhere = CFoot();
             if (nested.Count > 0)
+            {
                 celsewhere = Ite(nested.Select(n => (MExpr)new MOp("==", CFoot(), n.q)).Aggregate((a, b) => new MOp("||", a, b)), None, CFoot());
-            Emit(new MAssign { Var = "cowner", Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"), Ite(new MOp("==", CFoot(), p), cto, celsewhere))) });
+            }
+            Emit(new MAssign
+            {
+                Var = "cowner",
+                Value = new MOp("lambda", new MLit("x$: Ref"), new MOp("lambda", new MLit("i$: int"), Ite(new MOp("==", CFoot(), p), cto, celsewhere))),
+            });
         }
 
         // ------------------------------------------------------------------ functions under quantifiers
@@ -342,7 +523,10 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void Unfoldings(string var, MExpr range, MExpr body)
         {
-            if (_unfolding > 0) return;
+            if (_unfolding > 0)
+            {
+                return;
+            }
             _unfolding++;
             try
             {
@@ -350,19 +534,36 @@ namespace CsVerify.Verifier.Boogie
                                                          !a.Args.Any(x => Mentions(x, _bound))).ToList())
                 {
                     var sig = _program.Signature(app.Callee);
-                    if (sig.FunctionBody == null || !app.Callee.IsStatic) continue;
+                    if (sig.FunctionBody == null || !app.Callee.IsStatic)
+                    {
+                        continue;
+                    }
                     var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
-                    MExpr M(KExpr x) { var v = Spec(x, out _); _facts.Clear(); return Subst(v, given); }
+                    MExpr M(KExpr x)
+                    {
+                        var v = Spec(x, out _);
+                        _facts.Clear();
+                        return Subst(v, given);
+                    }
                     // (the facts so far kept: the definition's own are left out)
                     var saved = _facts.ToList();
                     var pre = sig.Requires.Select(r => M(r.Expr)).Aggregate((MExpr)new MLit("true"), Conj);
                     var definition = new MOp("==", app, M(sig.FunctionBody));
                     _facts.Clear();
                     _facts.AddRange(saved);
-                    _facts.Add(new MQuant { Forall = true, Var = var, Range = null, Body = Implies(Conj(range, pre), definition) });
+                    _facts.Add(new MQuant
+                    {
+                        Forall = true,
+                        Var = var,
+                        Range = null,
+                        Body = Implies(Conj(range, pre), definition),
+                    });
                 }
             }
-            finally { _unfolding--; }
+            finally
+            {
+                _unfolding--;
+            }
         }
 
         private static IEnumerable<MFnApp> Apps(MExpr e) => e switch
@@ -378,7 +579,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A write of an (unowned) object's field or an array's cell: within Spec.Modifies as of entry, or allocated since (CSV1017).</summary>
         private void WithinFrame(MExpr o, SyntaxNode at)
         {
-            if (_p.Frame == null) return;
+            if (_p.Frame == null)
+            {
+                return;
+            }
             Assert(new MOp("||", new MOp("sel", new MVar("w$entry"), o), new MOp("!", new MOp("sel", new MVar("alloc$entry"), o))),
                 At("CSV1017", at, $"'{at}' writes an object that is not in Spec.Modifies and was not allocated here"));
         }
@@ -388,19 +592,41 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A condition's value now, in a local of its own (true stays true).</summary>
         private MExpr Hold(MExpr g)
         {
-            if (g is MLit { Text: "true" }) return g;
+            if (g is MLit { Text: "true" })
+            {
+                return g;
+            }
             var name = "g$h" + _holds++;
-            _p.Locals.Add(new KLocal { Name = name, Raw = "bool" });
-            Emit(new MAssign { Var = name, Value = g });
+            _p.Locals.Add(new KLocal
+            {
+                Name = name,
+                Raw = "bool",
+            });
+            Emit(new MAssign
+            {
+                Var = name,
+                Value = g,
+            });
             return new MVar(name);
         }
 
         private void Refresh(MExpr q, MExpr g)
         {
             g = Conj(g, new MOp("==", new MOp("sel", new MVar("pinst"), q), new MLit("0")));
-            if (!_p.Locals.Any(l => l.Name == "snap$")) _p.Locals.Add(new KLocal { Name = "snap$", Raw = "int" });
+            if (!_p.Locals.Any(l => l.Name == "snap$"))
+            {
+                _p.Locals.Add(new KLocal
+                {
+                    Name = "snap$",
+                    Raw = "int",
+                });
+            }
             Emit(new MHavoc { Var = "snap$" });
-            Emit(new MAssign { Var = "psnap", Value = new MOp("store", new MVar("psnap"), q, Ite(g, new MVar("snap$"), new MOp("sel", new MVar("psnap"), q))) });
+            Emit(new MAssign
+            {
+                Var = "psnap",
+                Value = new MOp("store", new MVar("psnap"), q, Ite(g, new MVar("snap$"), new MOp("sel", new MVar("psnap"), q))),
+            });
         }
 
         // ------------------------------------------------------------------ single fields (Viper's acc(o.f))
@@ -411,41 +637,84 @@ namespace CsVerify.Verifier.Boogie
         private MExpr CanWrite(MExpr o, ISymbol field) => _p.UsesFields ? new MOp("||", Held(o), FieldHeld(o, field)) : Held(o);
 
         private void SetField(MExpr o, ISymbol field, MExpr value) =>
-            Emit(new MAssign { Var = "fperm", Value = new MOp("store", new MVar("fperm"), o,
-                new MOp("store", new MOp("sel", new MVar("fperm"), o), new MLit(_program.FieldId(field).ToString()), value)) });
+            Emit(new MAssign
+            {
+                Var = "fperm",
+                Value = new MOp("store", new MVar("fperm"), o,
+                new MOp("store", new MOp("sel", new MVar("fperm"), o), new MLit(_program.FieldId(field).ToString()), value)),
+            });
 
         /// <summary>A whole object received is nobody else's, field by field either.</summary>
         private void NoFieldsHeld(MExpr g, MExpr o, ITypeSymbol type)
         {
-            if (!_p.UsesFields) return;
-            foreach (var f in WholeFields(type)) Assume(Implies(g, new MOp("!", FieldHeld(o, f))));
+            if (!_p.UsesFields)
+            {
+                return;
+            }
+            foreach (var f in WholeFields(type))
+            {
+                Assume(Implies(g, new MOp("!", FieldHeld(o, f))));
+            }
         }
 
         /// <summary>Gives o.F up: from its own permission, or split off the whole object (whose other fields stay, one by one).</summary>
         private void GiveField(MFieldAcc fa, MExpr g, SyntaxNode at, string message)
         {
-            if (!_p.UsesFields) return;
+            if (!_p.UsesFields)
+            {
+                return;
+            }
             Assert(Implies(g, CanWrite(fa.Obj, fa.Field)), At("CSV1016", at, message));
-            Emit(new MAssign { Var = "own$", Value = FieldHeld(fa.Obj, fa.Field) });
-            if (!_p.Locals.Any(l => l.Name == "own$")) _p.Locals.Add(new KLocal { Name = "own$", Raw = "bool" });
+            Emit(new MAssign
+            {
+                Var = "own$",
+                Value = FieldHeld(fa.Obj, fa.Field),
+            });
+            if (!_p.Locals.Any(l => l.Name == "own$"))
+            {
+                _p.Locals.Add(new KLocal
+                {
+                    Name = "own$",
+                    Raw = "bool",
+                });
+            }
             var split = Conj(g, new MOp("!", new MVar("own$")));
             SetPerm(fa.Obj, new MOp("&&", Held(fa.Obj), new MOp("!", split)));
             foreach (var other in WholeFields(fa.Type).Where(f => !SymbolEqualityComparer.Default.Equals(f, fa.Field)))
+            {
                 SetField(fa.Obj, other, new MOp("||", FieldHeld(fa.Obj, other), split));
+            }
             SetField(fa.Obj, fa.Field, new MOp("&&", FieldHeld(fa.Obj, fa.Field), new MOp("!", Conj(g, new MVar("own$")))));
         }
 
         /// <summary>Receives o.F; with every field in hand, the object is whole again.</summary>
         private void TakeField(MFieldAcc fa, MExpr g)
         {
-            if (!_p.UsesFields) return;
+            if (!_p.UsesFields)
+            {
+                return;
+            }
             // (nobody else can hold it: not the whole object, not the field)
             Assume(Implies(g, new MOp("&&", new MOp("&&", new MOp("!=", fa.Obj, new MLit("null")), new MOp("!", Held(fa.Obj))), new MOp("!", FieldHeld(fa.Obj, fa.Field)))));
             SetField(fa.Obj, fa.Field, new MOp("||", FieldHeld(fa.Obj, fa.Field), g));
             var fields = WholeFields(fa.Type);
-            Emit(new MAssign { Var = "all$", Value = fields.Select(f => FieldHeld(fa.Obj, f)).Aggregate(g, (a, b) => Conj(a, b)) });
-            if (!_p.Locals.Any(l => l.Name == "all$")) _p.Locals.Add(new KLocal { Name = "all$", Raw = "bool" });
-            foreach (var f in fields) SetField(fa.Obj, f, new MOp("&&", FieldHeld(fa.Obj, f), new MOp("!", new MVar("all$"))));
+            Emit(new MAssign
+            {
+                Var = "all$",
+                Value = fields.Select(f => FieldHeld(fa.Obj, f)).Aggregate(g, (a, b) => Conj(a, b)),
+            });
+            if (!_p.Locals.Any(l => l.Name == "all$"))
+            {
+                _p.Locals.Add(new KLocal
+                {
+                    Name = "all$",
+                    Raw = "bool",
+                });
+            }
+            foreach (var f in fields)
+            {
+                SetField(fa.Obj, f, new MOp("&&", FieldHeld(fa.Obj, f), new MOp("!", new MVar("all$"))));
+            }
             SetPerm(fa.Obj, new MOp("||", Held(fa.Obj), new MVar("all$")));
         }
 
@@ -467,18 +736,45 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Does the loop at this head exchange permissions (fold, unfold, or call what gives or takes them)?</summary>
         private bool Exchanges(int head)
         {
-            if (!_p.UsesPerm || !_p.LoopBodies.TryGetValue(head, out var last)) return false;
+            if (!_p.UsesPerm || !_p.LoopBodies.TryGetValue(head, out var last))
+            {
+                return false;
+            }
             if (!_exchanges.TryGetValue(head, out var known))
+            {
                 _exchanges[head] = known = _bodies.Where(b => b.Ordinal >= head && b.Ordinal <= last).SelectMany(b => b.Stmts).Any(s =>
                     s is KFold || s is KOwn { Kind: "fromacc" } ||
                     s is KCall c && !_program.ContractOf(c.Callee).IsPure &&
                     _program.Signature(c.Callee) is KProcedure sig && sig.Requires.Concat(sig.Ensures).Any(x => HasAtoms(x.Expr)));
+            }
             if (known && !_p.Locals.Any(l => l.Name == $"l${head}$perm"))
             {
-                _p.Locals.Add(new KLocal { Name = $"l${head}$perm", Raw = "[Ref]bool" });
-                _p.Locals.Add(new KLocal { Name = $"l${head}$pinst", Raw = "[Inst]int" });
-                if (_p.UsesCells) _p.Locals.Add(new KLocal { Name = $"l${head}$cells", Raw = "[Ref][int]real" });
-                if (_p.UsesFields) _p.Locals.Add(new KLocal { Name = $"l${head}$fperm", Raw = "[Ref][int]bool" });
+                _p.Locals.Add(new KLocal
+                {
+                    Name = $"l${head}$perm",
+                    Raw = "[Ref]bool",
+                });
+                _p.Locals.Add(new KLocal
+                {
+                    Name = $"l${head}$pinst",
+                    Raw = "[Inst]int",
+                });
+                if (_p.UsesCells)
+                {
+                    _p.Locals.Add(new KLocal
+                    {
+                        Name = $"l${head}$cells",
+                        Raw = "[Ref][int]real",
+                    });
+                }
+                if (_p.UsesFields)
+                {
+                    _p.Locals.Add(new KLocal
+                    {
+                        Name = $"l${head}$fperm",
+                        Raw = "[Ref][int]bool",
+                    });
+                }
             }
             return known;
         }

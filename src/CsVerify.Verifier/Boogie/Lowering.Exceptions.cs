@@ -20,8 +20,16 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void CastThrows(KExpr ok, bool inSpec)
         {
-            if (inSpec || _cfgBlock == null || !(ThrowTarget(_cfgBlock.EnclosingRegion) is string to)) return;
-            Emit(new KFork { Overflow = ok, Target = to, Exception = null });
+            if (inSpec || _cfgBlock == null || !(ThrowTarget(_cfgBlock.EnclosingRegion) is string to))
+            {
+                return;
+            }
+            Emit(new KFork
+            {
+                Overflow = ok,
+                Target = to,
+                Exception = null,
+            });
             Emit(new KAssume { Cond = ok });
         }
 
@@ -37,9 +45,18 @@ namespace CsVerify.Verifier.Boogie
         {
             for (; r != null && !Outside(r); r = r.EnclosingRegion)
             {
-                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndCatch) return r;
-                if (r.Kind == ControlFlowRegionKind.Catch) r = r.EnclosingRegion; // (its TryAndCatch: go on outside it)
-                else if (r.Kind == ControlFlowRegionKind.Finally) r = r.EnclosingRegion;
+                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndCatch)
+                {
+                    return r;
+                }
+                if (r.Kind == ControlFlowRegionKind.Catch)
+                {
+                    r = r.EnclosingRegion; // (its TryAndCatch: go on outside it)
+                } // (its TryAndCatch: go on outside it)
+                else if (r.Kind == ControlFlowRegionKind.Finally)
+                {
+                    r = r.EnclosingRegion;
+                }
             }
             return null;
         }
@@ -50,16 +67,27 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private string ThrowTarget(ControlFlowRegion r)
         {
-            if (_p.Ghost || _contract.IsPure || _contract.IsLemma || _cfg == null) return null; // (proofs may not throw)
+            if (_p.Ghost || _contract.IsPure || _contract.IsLemma || _cfg == null)
+            {
+                return null; // (proofs may not throw)
+            } // (proofs may not throw)
             // (in a filter, before any try of its own: the exception is swallowed, the filter false)
             for (var q = r; q != null && q.Kind != ControlFlowRegionKind.Try; q = q.EnclosingRegion)
-                if (q.Kind == ControlFlowRegionKind.Filter) return FilterFalse(q);
+            {
+                if (q.Kind == ControlFlowRegionKind.Filter)
+                {
+                    return FilterFalse(q);
+                }
+            }
             var t = TryOf(r);
             // (a try with a finally, inside the handlers' try, or with none: the finally runs, then the exception goes on)
             var f = FinallyTryOf(r);
             if (f != null && (t == null || IsInside(f, t)))
             {
-                if (_throughFinally.TryGetValue(f, out var known)) return known;
+                if (_throughFinally.TryGetValue(f, out var known))
+                {
+                    return known;
+                }
                 var outer = ThrowTarget(f.EnclosingRegion.EnclosingRegion ?? f.EnclosingRegion);
                 var via = (KGoto)ThroughFinally(f.EnclosingRegion.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Finally), outer == null ? new KStop() : new KGoto(outer), f.FirstBlockOrdinal);
                 Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
@@ -67,8 +95,14 @@ namespace CsVerify.Verifier.Boogie
             }
             if (t == null)
             {
-                if (_contract.ThrowEnsures.Count == 0) return null;
-                if (!_exitUsed) Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
+                if (_contract.ThrowEnsures.Count == 0)
+                {
+                    return null;
+                }
+                if (!_exitUsed)
+                {
+                    Declare("ex$", _model.Compilation.GetTypeByMetadataName("System.Exception"));
+                }
                 _exitUsed = true;
                 return "x$exit";
             }
@@ -82,8 +116,14 @@ namespace CsVerify.Verifier.Boogie
         {
             for (; r != null && !Outside(r); r = r.EnclosingRegion)
             {
-                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally && !_erased.Contains(r.EnclosingRegion)) return r;
-                if (r.Kind == ControlFlowRegionKind.Finally) r = r.EnclosingRegion;
+                if (r.Kind == ControlFlowRegionKind.Try && r.EnclosingRegion?.Kind == ControlFlowRegionKind.TryAndFinally && !_erased.Contains(r.EnclosingRegion))
+                {
+                    return r;
+                }
+                if (r.Kind == ControlFlowRegionKind.Finally)
+                {
+                    r = r.EnclosingRegion;
+                }
             }
             return null;
         }
@@ -91,8 +131,14 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A region of another graph (a lambda's is in its method's): an exception leaves the lambda before it.</summary>
         private bool Outside(ControlFlowRegion r)
         {
-            if (_cfg == null) return false;
-            if (_ownRegions == null) _ownRegions = new HashSet<ControlFlowRegion>(AllRegions(_cfg.Root).Append(_cfg.Root));
+            if (_cfg == null)
+            {
+                return false;
+            }
+            if (_ownRegions == null)
+            {
+                _ownRegions = new HashSet<ControlFlowRegion>(AllRegions(_cfg.Root).Append(_cfg.Root));
+            }
             return !_ownRegions.Contains(r);
         }
 
@@ -101,7 +147,13 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Is region a inside region b?</summary>
         private static bool IsInside(ControlFlowRegion a, ControlFlowRegion b)
         {
-            for (var r = a; r != null; r = r.EnclosingRegion) if (r == b) return true;
+            for (var r = a; r != null; r = r.EnclosingRegion)
+            {
+                if (r == b)
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -117,7 +169,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A try's handlers, in order: each catch tests the exception's type (and its filter); none taken, it goes on outward.</summary>
         private string Dispatch(ControlFlowRegion tryRegion)
         {
-            if (_dispatch.TryGetValue(tryRegion, out var label)) return label;
+            if (_dispatch.TryGetValue(tryRegion, out var label))
+            {
+                return label;
+            }
             label = $"x${tryRegion.FirstBlockOrdinal}";
             _dispatch[tryRegion] = label;
             var outer = ThrowTarget(tryRegion.EnclosingRegion.EnclosingRegion ?? tryRegion.EnclosingRegion);
@@ -129,26 +184,74 @@ namespace CsVerify.Verifier.Boogie
             {
                 var h = handlers[k];
                 var all = h.ExceptionType == null || h.ExceptionType.ToDisplayString() == "System.Exception";
-                if (!all) _p.ExceptionTypes.Add(h.ExceptionType);
+                if (!all)
+                {
+                    _p.ExceptionTypes.Add(h.ExceptionType);
+                }
                 var test = all ? (KExpr)new KLit("true") : new KOp("sub", new KOp("dtype", ex), new KLit(TypeConst(h.ExceptionType)));
                 string here = k == 0 ? label : $"{label}$n{k - 1}", take = $"{label}$h{k}", pass = $"{label}$t{k}";
-                if (k > 0) _p.Blocks.Last(x => x.Label == here).Jump = new KGoto(take, pass);
-                else _p.Blocks.Add(new KBlock { Label = here, Ordinal = tryRegion.FirstBlockOrdinal, Jump = new KGoto(take, pass) });
-                _p.Blocks.Add(new KBlock { Label = take, Ordinal = tryRegion.FirstBlockOrdinal, Stmts = { new KAssume { Cond = test } }, Jump = new KGoto($"b{h.FirstBlockOrdinal}") });
-                var next = new KBlock { Label = pass, Ordinal = tryRegion.FirstBlockOrdinal, Stmts = { new KAssume { Cond = new KOp("!", test) } } };
+                if (k > 0)
+                {
+                    _p.Blocks.Last(x => x.Label == here).Jump = new KGoto(take, pass);
+                }
+                else
+                {
+                    _p.Blocks.Add(new KBlock
+                    {
+                        Label = here,
+                        Ordinal = tryRegion.FirstBlockOrdinal,
+                        Jump = new KGoto(take, pass),
+                    });
+                }
+                _p.Blocks.Add(new KBlock
+                {
+                    Label = take,
+                    Ordinal = tryRegion.FirstBlockOrdinal,
+                    Stmts = { new KAssume { Cond = test } },
+                    Jump = new KGoto($"b{h.FirstBlockOrdinal}"),
+                });
+                var next = new KBlock
+                {
+                    Label = pass,
+                    Ordinal = tryRegion.FirstBlockOrdinal,
+                    Stmts = { new KAssume { Cond = new KOp("!", test) } },
+                };
                 _p.Blocks.Add(next);
-                if (k == handlers.Count - 1) next.Jump = outer == null ? new KStop() : new KGoto(outer);
-                else { next.Jump = new KGoto($"{label}$n{k}"); _p.Blocks.Add(new KBlock { Label = $"{label}$n{k}", Ordinal = tryRegion.FirstBlockOrdinal }); }
+                if (k == handlers.Count - 1)
+                {
+                    next.Jump = outer == null ? new KStop() : new KGoto(outer);
+                }
+                else
+                {
+                    next.Jump = new KGoto($"{label}$n{k}");
+                    _p.Blocks.Add(new KBlock
+                    {
+                        Label = $"{label}$n{k}",
+                        Ordinal = tryRegion.FirstBlockOrdinal,
+                    });
+                }
                 // (a filter: its type matched, it runs; false, on to the next handler as if the type hadn't)
                 if (h.Kind == ControlFlowRegionKind.FilterAndHandler)
                 {
                     var filter = h.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Filter);
                     _filterFalse[filter] = $"{label}$f{k}";
-                    _p.Blocks.Add(new KBlock { Label = $"{label}$f{k}", Ordinal = tryRegion.FirstBlockOrdinal,
-                                               Jump = k == handlers.Count - 1 ? (outer == null ? new KStop() : new KGoto(outer)) : new KGoto($"{label}$n{k}") });
+                    _p.Blocks.Add(new KBlock
+                    {
+                        Label = $"{label}$f{k}",
+                        Ordinal = tryRegion.FirstBlockOrdinal,
+                        Jump = k == handlers.Count - 1 ? (outer == null ? new KStop() : new KGoto(outer)) : new KGoto($"{label}$n{k}"),
+                    });
                 }
             }
-            if (handlers.Count == 0) _p.Blocks.Add(new KBlock { Label = label, Ordinal = tryRegion.FirstBlockOrdinal, Jump = outer == null ? new KStop() : new KGoto(outer) });
+            if (handlers.Count == 0)
+            {
+                _p.Blocks.Add(new KBlock
+                {
+                    Label = label,
+                    Ordinal = tryRegion.FirstBlockOrdinal,
+                    Jump = outer == null ? new KStop() : new KGoto(outer),
+                });
+            }
             return label;
         }
 
@@ -165,7 +268,12 @@ namespace CsVerify.Verifier.Boogie
         private ControlFlowRegion FinallyOf(ControlFlowRegion r)
         {
             for (; r != null; r = r.EnclosingRegion)
-                if (r.Kind == ControlFlowRegionKind.Finally) return _erased.Contains(r.EnclosingRegion) ? null : r;
+            {
+                if (r.Kind == ControlFlowRegionKind.Finally)
+                {
+                    return _erased.Contains(r.EnclosingRegion) ? null : r;
+                }
+            }
             return null;
         }
 
@@ -174,11 +282,27 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Runs this finally, then goes on as given.</summary>
         private KJump ThroughFinally(ControlFlowRegion fin, KJump then, int ordinal)
         {
-            if (!_finExits.TryGetValue(fin, out var exits)) _finExits[fin] = exits = new List<(int, KJump)>();
+            if (!_finExits.TryGetValue(fin, out var exits))
+            {
+                _finExits[fin] = exits = new List<(int, KJump)>();
+            }
             var id = exits.Count;
             exits.Add((id, then));
             var label = $"e${_edges++}";
-            _p.Blocks.Add(new KBlock { Label = label, Ordinal = ordinal, Stmts = { new KAssign { Var = Continuation(fin), Value = new KLit(id.ToString()) } }, Jump = new KGoto($"b{fin.FirstBlockOrdinal}") });
+            _p.Blocks.Add(new KBlock
+            {
+                Label = label,
+                Ordinal = ordinal,
+                Stmts =
+                {
+                    new KAssign
+                    {
+                        Var = Continuation(fin),
+                        Value = new KLit(id.ToString()),
+                    },
+                },
+                Jump = new KGoto($"b{fin.FirstBlockOrdinal}"),
+            });
             return new KGoto(label);
         }
 
@@ -188,11 +312,19 @@ namespace CsVerify.Verifier.Boogie
             // (a filter's false: on to the next handler)
             if (branch != null && branch.Destination == null && branch.Semantics == ControlFlowBranchSemantics.StructuredExceptionHandling &&
                 from.EnclosingRegion.Kind == ControlFlowRegionKind.Filter)
+            {
                 return new KGoto(FilterFalse(from.EnclosingRegion));
+            }
             var target = To(from, branch?.Destination);
-            if (branch == null) return target;
+            if (branch == null)
+            {
+                return target;
+            }
             var fins = branch.FinallyRegions.Where(f => !_erased.Contains(f.EnclosingRegion)).ToList();
-            for (int k = fins.Count - 1; k >= 0; k--) target = ThroughFinally(fins[k], target, from.Ordinal);
+            for (int k = fins.Count - 1; k >= 0; k--)
+            {
+                target = ThroughFinally(fins[k], target, from.Ordinal);
+            }
             return target;
         }
 
@@ -202,16 +334,29 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (fin, end) in _finEnds)
             {
                 var exits = _finExits.TryGetValue(fin, out var x) ? x : new List<(int id, KJump then)>();
-                if (exits.Count == 0) { end.Jump = new KStop(); continue; }
+                if (exits.Count == 0)
+                {
+                    end.Jump = new KStop();
+                    continue;
+                }
                 var v = Continuation(fin);
                 var labels = new List<string>();
                 foreach (var (id, then) in exits)
                 {
                     var label = $"{end.Label}$f{id}";
                     labels.Add(label);
-                    var fb = new KBlock { Label = label, Ordinal = end.Ordinal, Stmts = { new KAssume { Cond = new KOp("==", new KVar(v), new KLit(id.ToString())) } }, Jump = then };
+                    var fb = new KBlock
+                    {
+                        Label = label,
+                        Ordinal = end.Ordinal,
+                        Stmts = { new KAssume { Cond = new KOp("==", new KVar(v), new KLit(id.ToString())) } },
+                        Jump = then,
+                    };
                     // (a return through the finally: the tasks are awaited by now, CSV1026)
-                    if (then is KReturn) TasksAwaited(fb);
+                    if (then is KReturn)
+                    {
+                        TasksAwaited(fb);
+                    }
                     _p.Blocks.Add(fb);
                 }
                 end.Jump = new KGoto(labels.ToArray());
@@ -221,7 +366,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A jump to a block, or a return where it is to the exit.</summary>
         private KJump To(BasicBlock from, BasicBlock to)
         {
-            if (to == null) return new KStop();
+            if (to == null)
+            {
+                return new KStop();
+            }
             if (to.Kind == BasicBlockKind.Exit)
             {
                 // (where a return is reported: the return statement or its value; a return; at its block's

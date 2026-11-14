@@ -32,14 +32,20 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class MLit : MExpr
     {
         public string Text;
-        public MLit(string text) { Text = text; }
+        public MLit(string text)
+        {
+            Text = text;
+        }
     }
 
     /// <summary>A variable: a parameter, a local, a quantifier's variable, "result".</summary>
     internal sealed class MVar : MExpr
     {
         public string Name;
-        public MVar(string name) { Name = name; }
+        public MVar(string name)
+        {
+            Name = name;
+        }
     }
 
     /// <summary>
@@ -51,7 +57,11 @@ namespace CsVerify.Verifier.Boogie
     {
         public string Op;
         public MExpr[] Args;
-        public MOp(string op, params MExpr[] args) { Op = op; Args = args; }
+        public MOp(string op, params MExpr[] args)
+        {
+            Op = op;
+            Args = args;
+        }
     }
 
     /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>

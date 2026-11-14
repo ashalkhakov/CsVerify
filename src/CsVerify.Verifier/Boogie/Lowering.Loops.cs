@@ -24,8 +24,15 @@ namespace CsVerify.Verifier.Boogie
         {
             var heads = new HashSet<int>();
             foreach (var b in cfg.Blocks)
+            {
                 foreach (var s in new[] { b.FallThroughSuccessor, b.ConditionalSuccessor })
-                    if (s?.Destination != null && s.Destination.Ordinal <= b.Ordinal) heads.Add(s.Destination.Ordinal);
+                {
+                    if (s?.Destination != null && s.Destination.Ordinal <= b.Ordinal)
+                    {
+                        heads.Add(s.Destination.Ordinal);
+                    }
+                }
+            }
             return heads;
         }
 
@@ -45,15 +52,28 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var h in heads.OrderBy(x => x))
             {
-                if (_p.Invariants.ContainsKey(h) || !_p.LoopSyntax.TryGetValue(h, out var loop)) continue;
+                if (_p.Invariants.ContainsKey(h) || !_p.LoopSyntax.TryGetValue(h, out var loop))
+                {
+                    continue;
+                }
                 var condition = loop switch { ForStatementSyntax f => f.Condition, WhileStatementSyntax w => w.Condition, DoStatementSyntax d => d.Condition, _ => null };
-                if (condition == null || !(_model.GetOperation(condition) is IOperation cond)) continue;
+                if (condition == null || !(_model.GetOperation(condition) is IOperation cond))
+                {
+                    continue;
+                }
                 var comparisons = new List<IBinaryOperation>();
                 void Conjuncts(IOperation o)
                 {
                     o = Unconverted(o);
-                    if (o is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } and) { Conjuncts(and.LeftOperand); Conjuncts(and.RightOperand); }
-                    else if (o is IBinaryOperation b && b.OperatorMethod == null && IsIntegral(Unconverted(b.LeftOperand).Type) && IsIntegral(Unconverted(b.RightOperand).Type)) comparisons.Add(b);
+                    if (o is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } and)
+                    {
+                        Conjuncts(and.LeftOperand);
+                        Conjuncts(and.RightOperand);
+                    }
+                    else if (o is IBinaryOperation b && b.OperatorMethod == null && IsIntegral(Unconverted(b.LeftOperand).Type) && IsIntegral(Unconverted(b.RightOperand).Type))
+                    {
+                        comparisons.Add(b);
+                    }
                 }
                 Conjuncts(cond);
                 var facts = new List<KSpec>();
@@ -64,7 +84,12 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var (l, r) = (Unconverted(b.LeftOperand), Unconverted(b.RightOperand));
                         foreach (var side in new[] { l, r })
-                            if (!side.ConstantValue.HasValue && !paths.Any(p => p.Syntax.IsEquivalentTo(side.Syntax))) paths.Add(side);
+                        {
+                            if (!side.ConstantValue.HasValue && !paths.Any(p => p.Syntax.IsEquivalentTo(side.Syntax)))
+                            {
+                                paths.Add(side);
+                            }
+                        }
                         var (lv, rv) = (Spec(l, null), Spec(r, null));
                         KExpr Plus(int k) => k == 0 ? rv : new KOp("+", rv, new KLit(k < 0 ? $"(-{-k})" : k.ToString()));
                         var made = b.OperatorKind switch
@@ -76,7 +101,11 @@ namespace CsVerify.Verifier.Boogie
                             BinaryOperatorKind.NotEquals => new[] { new KOp("<=", lv, Plus(0)), new KOp(">=", lv, Plus(0)) },
                             _ => new KOp[0],
                         };
-                        facts.AddRange(made.Select(x => new KSpec { Expr = x, At = loop }));
+                        facts.AddRange(made.Select(x => new KSpec
+                        {
+                            Expr = x,
+                            At = loop,
+                        }));
                     }
                     // (what the loop changes: an integer that moves one way)
                     foreach (var path in paths.Where(p => !(p is ILiteralOperation)))
@@ -84,12 +113,26 @@ namespace CsVerify.Verifier.Boogie
                         var v = Spec(path, null);
                         var entry = Declare($"lf${h}${_entryValues.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Int64));
                         _entryValues.Add((h, entry, v));
-                        facts.Add(new KSpec { Expr = new KOp(">=", v, new KVar(entry)), At = loop });
-                        facts.Add(new KSpec { Expr = new KOp("<=", v, new KVar(entry)), At = loop });
+                        facts.Add(new KSpec
+                        {
+                            Expr = new KOp(">=", v, new KVar(entry)),
+                            At = loop,
+                        });
+                        facts.Add(new KSpec
+                        {
+                            Expr = new KOp("<=", v, new KVar(entry)),
+                            At = loop,
+                        });
                     }
                 }
-                catch (NotTranslated) { continue; }
-                if (facts.Count > 0) _p.Candidates[h] = facts;
+                catch (NotTranslated)
+                {
+                    continue;
+                }
+                if (facts.Count > 0)
+                {
+                    _p.Candidates[h] = facts;
+                }
             }
         }
 
@@ -97,6 +140,7 @@ namespace CsVerify.Verifier.Boogie
         private void ReadLoopSpecs(ControlFlowGraph cfg, HashSet<int> heads)
         {
             foreach (var b in cfg.Blocks)
+            {
                 foreach (var op in b.Operations)
                 {
                     if (SpecCall(op, "Decreases") is IInvocationOperation dec && HeadOf(cfg, heads, b) is int h && h >= 0)
@@ -105,7 +149,11 @@ namespace CsVerify.Verifier.Boogie
                         var measure = new List<KSpec>();
                         for (int k = 0; k < whole.Arguments.Length; k++)
                         {
-                            measure.Add(new KSpec { Expr = Measure(whole.Arguments[k].Value), At = whole.Arguments[k].Value.Syntax });
+                            measure.Add(new KSpec
+                            {
+                                Expr = Measure(whole.Arguments[k].Value),
+                                At = whole.Arguments[k].Value.Syntax,
+                            });
                             Declare($"m${h}${k}", IsData(whole.Arguments[k].Value.Type) ? _model.Compilation.GetSpecialType(SpecialType.System_Int32) : whole.Arguments[k].Value.Type);
                         }
                         _p.Measures[h] = measure;
@@ -113,13 +161,24 @@ namespace CsVerify.Verifier.Boogie
                     if (SpecCall(op, "Invariant") is IInvocationOperation inv)
                     {
                         var head = HeadOf(cfg, heads, b);
-                        if (head < 0) throw new NotTranslated("an invariant outside a loop");
-                        if (!_p.Invariants.TryGetValue(head, out var list)) _p.Invariants[head] = list = new List<KSpec>();
+                        if (head < 0)
+                        {
+                            throw new NotTranslated("an invariant outside a loop");
+                        }
+                        if (!_p.Invariants.TryGetValue(head, out var list))
+                        {
+                            _p.Invariants[head] = list = new List<KSpec>();
+                        }
                         _writtenInvariants.Add(head);
                         var arg = SpecArgument(inv);
-                        list.Add(new KSpec { Expr = Spec(arg, null), At = arg.Syntax });
+                        list.Add(new KSpec
+                        {
+                            Expr = Spec(arg, null),
+                            At = arg.Syntax,
+                        });
                     }
                 }
+            }
         }
     }
 }
