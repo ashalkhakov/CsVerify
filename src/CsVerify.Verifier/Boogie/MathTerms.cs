@@ -21,19 +21,18 @@ namespace CsVerify.Verifier.Boogie
             {
                 return given;
             }
-            MExpr R(MExpr x) => x.Rewrite(at);
             return this switch
             {
                 MLit or MVar => this,
-                MOp op => new MOp(op.Op, op.Args.Select(R).ToArray()),
+                MOp op => new MOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
                 MQuant q => new MQuant
                 {
                     Forall = q.Forall,
                     Var = q.Var,
                     Type = q.Type,
-                    Range = q.Range == null ? null : R(q.Range),
-                    Body = R(q.Body),
-                    Trigger = q.Trigger?.Select(R).ToArray(),
+                    Range = q.Range == null ? null : q.Range.Rewrite(at),
+                    Body = q.Body.Rewrite(at),
+                    Trigger = q.Trigger?.Select(x => x.Rewrite(at)).ToArray(),
                 },
                 MFnApp f => new MFnApp
                 {
@@ -43,8 +42,8 @@ namespace CsVerify.Verifier.Boogie
                     MapsAt = f.MapsAt,
                     Layer = f.Layer,
                     Fields = f.Fields,
-                    Args = f.Args.Select(R).ToArray(),
-                    Snap = f.Snap == null ? null : R(f.Snap),
+                    Args = f.Args.Select(x => x.Rewrite(at)).ToArray(),
+                    Snap = f.Snap == null ? null : f.Snap.Rewrite(at),
                 },
                 _ => throw MathTerms.NotMath(this),
             };
@@ -117,21 +116,16 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public static MExpr ToMath(KExpr e)
         {
-            MExpr[] All(KExpr[] es)
-            {
-                var r = es.Select(ToMath).ToArray();
-                return r.Any(x => x == null) ? null : r;
-            }
             switch (e)
             {
                 case KLit l: return new MLit(l.Text);
                 case KVar v: return new MVar(v.Name);
-                case KOp op: return All(op.Args) is MExpr[] operands ? new MOp(op.Op, operands) : null;
+                case KOp op: return AllToMath(op.Args) is MExpr[] operands ? new MOp(op.Op, operands) : null;
                 case KQuant q:
                 {
                     var range = q.Range == null ? null : ToMath(q.Range);
                     var body = ToMath(q.Body);
-                    var trigger = q.Trigger == null ? null : All(q.Trigger);
+                    var trigger = q.Trigger == null ? null : AllToMath(q.Trigger);
                     if (q.Range != null && range == null || body == null || q.Trigger != null && trigger == null)
                     {
                         return null;
@@ -148,7 +142,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case KFnApp f:
                 {
-                    var args = All(f.Args);
+                    var args = AllToMath(f.Args);
                     var snap = f.Snap == null ? null : ToMath(f.Snap);
                     if (args == null || f.Snap != null && snap == null)
                     {
@@ -168,6 +162,12 @@ namespace CsVerify.Verifier.Boogie
                 }
                 default: return null;
             }
+        }
+
+        private static MExpr[] AllToMath(KExpr[] es)
+        {
+            var r = es.Select(ToMath).ToArray();
+            return r.Any(x => x == null) ? null : r;
         }
 
         /// <summary>A kernel expression Lowering made as mathematics: level 2's (an error where it holds code).</summary>

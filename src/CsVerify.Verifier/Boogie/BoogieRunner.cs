@@ -88,13 +88,12 @@ namespace CsVerify.Verifier.Boogie
                 return failures;
             }
             var (again, _, _) = Run(program, z3Path, timeoutMs, splitProcs);
-            object Key((MethodResult method, VerificationDiagnostic diagnostic) f) => (f.diagnostic.Id, f.diagnostic.Span.StartLinePosition, f.diagnostic.Span.EndLinePosition);
             // (a failure split finds that the whole didn't: Boogie reports the solver's unknown, where it gives up, as a
             // failure, and split, without what it learned from the others, it gives up more. So the method is verified
             // whole again, with four times the time: what that finds too is a failure, what it proves is proved; where the
             // time runs out again, the method is undecided. Of a method the whole found failing, split's are kept)
-            var wholeKeys = failures.Select(f => (f.method, Key(f))).ToHashSet();
-            var fresh = again.Where(f => f.diagnostic.Id != "CSV1900" && !wholeKeys.Contains((f.method, Key(f)))).ToList();
+            var wholeKeys = failures.Select(f => (f.method, DiagnosticKey(f))).ToHashSet();
+            var fresh = again.Where(f => f.diagnostic.Id != "CSV1900" && !wholeKeys.Contains((f.method, DiagnosticKey(f)))).ToList();
             if (fresh.Count > 0)
             {
                 // (of a method the whole found failing, a failure split finds is one more counterexample, the others'
@@ -103,20 +102,20 @@ namespace CsVerify.Verifier.Boogie
                 var failing = new HashSet<MethodResult>(failed);
                 var recheck = fresh.Select(f => f.method).Distinct().Where(names.ContainsKey).Where(m => !failing.Contains(m)).ToHashSet();
                 var (confirm, _, _) = Run(program, z3Path, timeoutMs * 4, null, recheck.Select(m => names[m]).ToList());
-                var kept = confirm.Where(f => f.diagnostic.Id != "CSV1900").Select(f => (f.method, Key(f))).ToHashSet();
+                var kept = confirm.Where(f => f.diagnostic.Id != "CSV1900").Select(f => (f.method, DiagnosticKey(f))).ToHashSet();
                 var timedOut = confirm.Where(f => f.diagnostic.Id == "CSV1900" && recheck.Contains(f.method)).ToList();
                 var outOfTime = timedOut.Select(f => f.method).ToHashSet();
-                again = again.Where(f => !recheck.Contains(f.method) || f.diagnostic.Id == "CSV1900" || wholeKeys.Contains((f.method, Key(f))) ||
-                                         kept.Contains((f.method, Key(f))) || outOfTime.Contains(f.method))
+                again = again.Where(f => !recheck.Contains(f.method) || f.diagnostic.Id == "CSV1900" || wholeKeys.Contains((f.method, DiagnosticKey(f))) ||
+                                         kept.Contains((f.method, DiagnosticKey(f))) || outOfTime.Contains(f.method))
                     .Concat(timedOut).ToList();
                 // (and what that run finds of its own, a counterexample split didn't get to: a failure too, never dropped,
                 // or a method whose split failures it doesn't confirm, and whose own it finds, would be verified)
-                var present = again.Select(f => (f.method, Key(f))).ToHashSet();
-                again = again.Concat(confirm.Where(f => f.diagnostic.Id != "CSV1900" && recheck.Contains(f.method) && present.Add((f.method, Key(f))))).ToList();
+                var present = again.Select(f => (f.method, DiagnosticKey(f))).ToHashSet();
+                again = again.Concat(confirm.Where(f => f.diagnostic.Id != "CSV1900" && recheck.Contains(f.method) && present.Add((f.method, DiagnosticKey(f))))).ToList();
             }
             foreach (var m in failed)
             {
-                var whole = new HashSet<object>(failures.Where(f => f.method == m).Select(Key));
+                var whole = new HashSet<object>(failures.Where(f => f.method == m).Select(DiagnosticKey));
                 var parts = again.Where(f => f.method == m).ToList();
                 if (parts.Any(f => f.diagnostic.Id == "CSV1900"))
                 {
@@ -127,7 +126,7 @@ namespace CsVerify.Verifier.Boogie
                 // (each a counterexample, of the whole or of an assertion with the others assumed: both are failures)
                 else
                 {
-                    failures = failures.Concat(parts.Where(f => !whole.Contains(Key(f)))).ToList();
+                    failures = failures.Concat(parts.Where(f => !whole.Contains(DiagnosticKey(f)))).ToList();
                 }
             }
             if (undecided.Count == 0)
@@ -153,6 +152,8 @@ namespace CsVerify.Verifier.Boogie
             }
             return failures.Where(f => !redone.Contains(f.method)).Concat(decidedSplit).Concat(undecidedAgain).ToList();
         }
+
+        private static object DiagnosticKey((MethodResult method, VerificationDiagnostic diagnostic) f) => (f.diagnostic.Id, f.diagnostic.Span.StartLinePosition, f.diagnostic.Span.EndLinePosition);
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
             BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null)

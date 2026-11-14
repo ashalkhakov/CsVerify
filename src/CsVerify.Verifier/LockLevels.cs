@@ -101,21 +101,22 @@ namespace CsVerify.Verifier
         public bool TakesNoLocks(IMethodSymbol m)
         {
             var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-            bool Said(IMethodSymbol x)
-            {
-                x = x.OriginalDefinition;
-                if (!seen.Add(x)) return false;
-                if (SpecSymbols.HasAttribute(x, "TakesNoLocksAttribute") || x.AssociatedSymbol != null && SpecSymbols.HasAttribute(x.AssociatedSymbol, "TakesNoLocksAttribute") ||
-                    x.ContainingType != null && SpecSymbols.HasAttribute(x.ContainingType, "TakesNoLocksAttribute"))
-                    return true;
-                if (x.OverriddenMethod != null && Said(x.OverriddenMethod)) return true;
-                if (x.IsStatic || x.ContainingType == null) return false;
-                foreach (var iface in x.ContainingType.AllInterfaces)
-                    foreach (var im in iface.GetMembers().OfType<IMethodSymbol>())
-                        if (SymbolEqualityComparer.Default.Equals(x.ContainingType.FindImplementationForInterfaceMember(im)?.OriginalDefinition, x) && Said(im)) return true;
-                return false;
-            }
-            return Said(m);
+            return Said(m, seen);
+        }
+
+        private bool Said(IMethodSymbol x, HashSet<IMethodSymbol> seen)
+        {
+            x = x.OriginalDefinition;
+            if (!seen.Add(x)) return false;
+            if (SpecSymbols.HasAttribute(x, "TakesNoLocksAttribute") || x.AssociatedSymbol != null && SpecSymbols.HasAttribute(x.AssociatedSymbol, "TakesNoLocksAttribute") ||
+                x.ContainingType != null && SpecSymbols.HasAttribute(x.ContainingType, "TakesNoLocksAttribute"))
+                return true;
+            if (x.OverriddenMethod != null && Said(x.OverriddenMethod, seen)) return true;
+            if (x.IsStatic || x.ContainingType == null) return false;
+            foreach (var iface in x.ContainingType.AllInterfaces)
+                foreach (var im in iface.GetMembers().OfType<IMethodSymbol>())
+                    if (SymbolEqualityComparer.Default.Equals(x.ContainingType.FindImplementationForInterfaceMember(im)?.OriginalDefinition, x) && Said(im, seen)) return true;
+            return false;
         }
 
         public static bool TakesNoLocks(ITypeSymbol delegateType) => delegateType != null && SpecSymbols.HasAttribute(delegateType.OriginalDefinition, "TakesNoLocksAttribute");
@@ -536,8 +537,7 @@ namespace CsVerify.Verifier
         {
             var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             var work = new Stack<IMethodSymbol>();
-            void Push(IMethodSymbol x) { foreach (var b in Bodies(x)) if (b.IsAsync && seen.Add(b)) work.Push(b); }
-            Push(m);
+            Push(m, seen, work);
             while (work.Count > 0)
             {
                 var x = work.Pop();
@@ -545,8 +545,7 @@ namespace CsVerify.Verifier
                 {
                     var model = _compilation.GetSemanticModel(r.SyntaxTree);
                     var body = r.GetSyntax();
-                    bool Own(SyntaxNode y) => y == body || !(y is AnonymousFunctionExpressionSyntax || y is LocalFunctionStatementSyntax);
-                    foreach (var n in body.DescendantNodes(Own))
+                    foreach (var n in body.DescendantNodes(y => KeepsContextOwn(y, body)))
                     {
                         switch (n)
                         {
@@ -559,7 +558,7 @@ namespace CsVerify.Verifier
                             case LocalDeclarationStatementSyntax ld when !ld.AwaitKeyword.IsKind(SyntaxKind.None):
                                 return ld;
                             case InvocationExpressionSyntax call when model.GetSymbolInfo(call).Symbol is IMethodSymbol callee:
-                                Push(callee);
+                                Push(callee, seen, work);
                                 break;
                         }
                     }
@@ -567,6 +566,10 @@ namespace CsVerify.Verifier
             }
             return null;
         }
+
+        private bool KeepsContextOwn(SyntaxNode y, SyntaxNode body) => y == body || !(y is AnonymousFunctionExpressionSyntax || y is LocalFunctionStatementSyntax);
+
+        private void Push(IMethodSymbol x, HashSet<IMethodSymbol> seen, Stack<IMethodSymbol> work) { foreach (var b in Bodies(x)) if (b.IsAsync && seen.Add(b)) work.Push(b); }
 
         private static bool FreeOfContext(ExpressionSyntax e) =>
             Bare(e) is InvocationExpressionSyntax ca && ca.Expression is MemberAccessExpressionSyntax cm && cm.Name.Identifier.Text == "ConfigureAwait" &&
@@ -648,8 +651,7 @@ namespace CsVerify.Verifier
 
             public void Scan(SyntaxNode root, SemanticModel model, Origin?[] map, IMethodSymbol inMethod)
             {
-                bool Into(SyntaxNode x) => x == root || !(x is AnonymousFunctionExpressionSyntax || x is LocalFunctionStatementSyntax || IntoSpec(x, model));
-                foreach (var n in root.DescendantNodes(Into))
+                foreach (var n in root.DescendantNodes(x => Into(x, root, model)))
                 {
                     if (n is AnonymousFunctionExpressionSyntax lambda)
                     {
@@ -669,51 +671,54 @@ namespace CsVerify.Verifier
                 }
             }
 
+            private bool Into(SyntaxNode x, SyntaxNode root, SemanticModel model) => x == root || !(x is AnonymousFunctionExpressionSyntax || x is LocalFunctionStatementSyntax || IntoSpec(x, model));
+
             /// <summary>Calls with no call written: operators, conversions, foreach, using, events, initializers' Add, property patterns.</summary>
             public void Implicit(SyntaxNode n, SemanticModel model, Origin?[] map, IMethodSymbol inMethod)
             {
                 if (!(n is ExpressionSyntax || n is StatementSyntax || n is SubpatternSyntax)) return;
                 var op = model.GetOperation(n);
                 if (op == null) return;
-                void Run(IMethodSymbol m) { if (m != null && (m.DeclaringSyntaxReferences.Length > 0 || Engine.IsOverridable(m))) Push(m, null); }
                 switch (op)
                 {
-                    case IBinaryOperation b: Run(b.OperatorMethod); break;
-                    case IUnaryOperation u: Run(u.OperatorMethod); break;
-                    case IIncrementOrDecrementOperation i: Run(i.OperatorMethod); break;
-                    case ICompoundAssignmentOperation ca: Run(ca.OperatorMethod); break;
-                    case IConversionOperation c: Run(c.OperatorMethod); break;
-                    case IEventAssignmentOperation ea when ea.EventReference is IEventReferenceOperation er: Run(ea.Adds ? er.Event.AddMethod : er.Event.RemoveMethod); break;
+                    case IBinaryOperation b: ImplicitRun(b.OperatorMethod); break;
+                    case IUnaryOperation u: ImplicitRun(u.OperatorMethod); break;
+                    case IIncrementOrDecrementOperation i: ImplicitRun(i.OperatorMethod); break;
+                    case ICompoundAssignmentOperation ca: ImplicitRun(ca.OperatorMethod); break;
+                    case IConversionOperation c: ImplicitRun(c.OperatorMethod); break;
+                    case IEventAssignmentOperation ea when ea.EventReference is IEventReferenceOperation er: ImplicitRun(ea.Adds ? er.Event.AddMethod : er.Event.RemoveMethod); break;
                     case IForEachLoopOperation fe:
                         if (model.GetForEachStatementInfo((CommonForEachStatementSyntax)n) is var info)
                         {
-                            Run(info.GetEnumeratorMethod); Run(info.MoveNextMethod); Run(info.CurrentProperty?.GetMethod); Run(info.DisposeMethod);
+                            ImplicitRun(info.GetEnumeratorMethod); ImplicitRun(info.MoveNextMethod); ImplicitRun(info.CurrentProperty?.GetMethod); ImplicitRun(info.DisposeMethod);
                         }
                         break;
                     case IUsingOperation us:
                         var types = us.Resources is IVariableDeclarationGroupOperation g ? g.Declarations.SelectMany(x => x.Declarators).Select(x => x.Symbol.Type) : new[] { us.Resources?.Type };
                         foreach (var rt in types.Where(x => x != null))
                         {
-                            Run(rt.GetMembers("Dispose").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
-                            Run(rt.GetMembers("DisposeAsync").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
+                            ImplicitRun(rt.GetMembers("Dispose").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
+                            ImplicitRun(rt.GetMembers("DisposeAsync").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
                         }
                         break;
                     case IUsingDeclarationOperation ud:
                         foreach (var d in ud.DeclarationGroup.Declarations.SelectMany(x => x.Declarators))
                             if (d.Symbol.Type is ITypeSymbol dt)
                             {
-                                Run(dt.GetMembers("Dispose").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
-                                Run(dt.GetMembers("DisposeAsync").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
+                                ImplicitRun(dt.GetMembers("Dispose").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
+                                ImplicitRun(dt.GetMembers("DisposeAsync").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0));
                             }
                         break;
                     case IObjectOrCollectionInitializerOperation init:
-                        foreach (var add in init.Initializers.OfType<IInvocationOperation>()) Run(add.TargetMethod);
+                        foreach (var add in init.Initializers.OfType<IInvocationOperation>()) ImplicitRun(add.TargetMethod);
                         break;
                     case IPropertySubpatternOperation ps when ps.Member is IPropertyReferenceOperation pr:
-                        Run(pr.Property.GetMethod);
+                        ImplicitRun(pr.Property.GetMethod);
                         break;
                 }
             }
+
+            private void ImplicitRun(IMethodSymbol m) { if (m != null && (m.DeclaringSyntaxReferences.Length > 0 || Engine.IsOverridable(m))) Push(m, null); }
 
             /// <summary>
             /// What a node runs by calling, pushed to be walked; a lambda it runs at once is scanned as part of it, by whoever

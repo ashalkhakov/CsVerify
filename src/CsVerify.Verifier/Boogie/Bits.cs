@@ -251,20 +251,29 @@ namespace CsVerify.Verifier.Boogie
                 return app;
             }
             Emit(KAssume.Of(RangeFacts(op, x, y, app)));
-            KExpr Disjoint(KExpr zeros, int k, KExpr low) => AndAlso(AndAlso(                Eq(Mod(zeros, System.Math.Min(k, width)), Number(0)), Le(Number(0), low)), Lt(low, Number(Pow2(System.Math.Min(k, width)))));
             KExpr disjoint = kind == BinaryOperatorKind.And ? Number(0) : Plus(x, y);
             KExpr value = app;
             if (yz > 0)
             {
-                value = Ite(Disjoint(y, yz, x), disjoint, value);
+                value = Ite(Disjoint(y, yz, x, width), disjoint, value);
             }
             if (xz > 0)
             {
-                value = Ite(Disjoint(x, xz, y), disjoint, value);
+                value = Ite(Disjoint(x, xz, y, width), disjoint, value);
             }
             var v = Once(value, false);
             _lowZeros[v] = System.Math.Min(xz, yz);
             return v;
+        }
+
+        /// <summary>The low k bits of zeros are zero, and low fits in them: the two have no bit in common.</summary>
+        private KExpr Disjoint(KExpr zeros, int k, KExpr low, int width)
+        {
+            var bits = System.Math.Min(k, width);
+            var lowZero = Eq(Mod(zeros, bits), Number(0));
+            var nonNegative = Le(Number(0), low);
+            var below = Lt(low, Number(Pow2(bits)));
+            return AndAlso(AndAlso(lowZero, nonNegative), below);
         }
 
         /// <summary>What holds of any non-negative operands: their results' ranges.</summary>
@@ -280,7 +289,6 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The result, bit by bit, and the value those bits add up to.</summary>
         private static KExpr BitFacts(string op, KExpr x, KExpr y, KExpr r, int width)
         {
-            KExpr Bit(KExpr t, int i) => Eq(Mod(Shifted(t, i), 1), Number(1));
             var facts = new List<KExpr> { RangeFacts(op, x, y, r) };
             for (int i = 0; i < width; i++)
             {
@@ -290,5 +298,7 @@ namespace CsVerify.Verifier.Boogie
             facts.Add(Eq(Mod(r, width), sum));
             return AndAll(facts);
         }
+
+        private static KExpr Bit(KExpr t, int i) => Eq(Mod(Shifted(t, i), 1), Number(1));
     }
 }

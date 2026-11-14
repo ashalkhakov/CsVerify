@@ -226,11 +226,9 @@ namespace CsVerify.Verifier
                 _unreadEntities.Add(e.Type.OriginalDefinition);
                 return;
             }
-            IPropertySymbol Nav(ExpressionSyntax x) =>
-                x is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax m } ? model.GetSymbolInfo(m).Symbol as IPropertySymbol : null;
-            var first = Nav(arg);
+            var first = Nav(arg, model);
             var with = next.FirstOrDefault(x => x.name == "WithMany" || x.name == "WithOne");
-            var second = with.call == null ? null : Nav(with.call.ArgumentList.Arguments.FirstOrDefault()?.Expression);
+            var second = with.call == null ? null : Nav(with.call.ArgumentList.Arguments.FirstOrDefault()?.Expression, model);
             var reference = name == "HasOne" ? first : second;
             var collection = name == "HasMany" ? first : with.name == "WithMany" ? second : null;
             var key = next.FirstOrDefault(x => x.name == "HasForeignKey").call;
@@ -240,7 +238,7 @@ namespace CsVerify.Verifier
             if (key != null)
             {
                 var k = key.ArgumentList.Arguments.FirstOrDefault()?.Expression;
-                fk = (key.Expression as MemberAccessExpressionSyntax)?.Name is GenericNameSyntax || key.ArgumentList.Arguments.Count != 1 ? null : Nav(k);
+                fk = (key.Expression as MemberAccessExpressionSyntax)?.Name is GenericNameSyntax || key.ArgumentList.Arguments.Count != 1 ? null : Nav(k, model);
                 if (fk == null) unread = true;
             }
             if (unread)
@@ -251,6 +249,9 @@ namespace CsVerify.Verifier
             if (reference != null && fk != null) _fluentKeys[reference] = fk;
             if (reference != null && collection != null) _fluentInverse[collection] = reference;
         }
+
+        private IPropertySymbol Nav(ExpressionSyntax x, SemanticModel model) =>
+            x is SimpleLambdaExpressionSyntax { Body: MemberAccessExpressionSyntax m } ? model.GetSymbolInfo(m).Symbol as IPropertySymbol : null;
 
         /// <summary>
         /// Owned types and complex types: their properties are columns of their owner, which EF always loads with it. They
@@ -304,7 +305,6 @@ namespace CsVerify.Verifier
         /// </summary>
         private void Inherit()
         {
-            int Depth(ITypeSymbol x) { int d = 0; for (var b = x.BaseType; b != null; b = b.BaseType) d++; return d; }
             foreach (var e in _entities.Values.OrderBy(x => Depth(x.Type)))
             {
                 Entity b = null;
@@ -317,6 +317,8 @@ namespace CsVerify.Verifier
                 foreach (var v in b.RowVersions) e.RowVersions.Add(v);
             }
         }
+
+        private int Depth(ITypeSymbol x) { int d = 0; for (var b = x.BaseType; b != null; b = b.BaseType) d++; return d; }
 
         public bool IsContextType(ITypeSymbol t)
         {
@@ -427,11 +429,6 @@ namespace CsVerify.Verifier
             var next = new List<(string name, InvocationExpressionSyntax call)>();
             for (SyntaxNode n = inv; n.Parent is MemberAccessExpressionSyntax up && up.Parent is InvocationExpressionSyntax call; n = call)
                 next.Add((up.Name.Identifier.Text, call));
-            bool Called(string m, out InvocationExpressionSyntax call)
-            {
-                call = next.FirstOrDefault(x => x.name == m).call;
-                return call != null;
-            }
             switch (name)
             {
                 case "HasKey":
@@ -442,15 +439,15 @@ namespace CsVerify.Verifier
                     if (Properties(model, arg, e) is List<IPropertySymbol> alt) e.Unique.Add(alt);
                     break;
                 case "HasIndex":
-                    if (Called("IsUnique", out var isUnique) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
+                    if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
                         && Properties(model, arg, e) is List<IPropertySymbol> index)
                         e.Unique.Add(index);
                     break;
                 case "Property":
                     if (Properties(model, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
-                        if (Called("IsRowVersion", out _)) { if (!e.Tokens.Contains(p[0])) e.Tokens.Add(p[0]); e.RowVersions.Add(p[0]); }
-                        else if (Called("IsConcurrencyToken", out var token) &&
+                        if (Called("IsRowVersion", out _, next)) { if (!e.Tokens.Contains(p[0])) e.Tokens.Add(p[0]); e.RowVersions.Add(p[0]); }
+                        else if (Called("IsConcurrencyToken", out var token, next) &&
                                  !(token.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax f && f.IsKind(SyntaxKind.FalseLiteralExpression)) &&
                                  !e.Tokens.Contains(p[0]))
                             e.Tokens.Add(p[0]);
@@ -473,23 +470,30 @@ namespace CsVerify.Verifier
             }
         }
 
+        private bool Called(string m, out InvocationExpressionSyntax call, List<(string name, InvocationExpressionSyntax call)> next)
+        {
+            call = next.FirstOrDefault(x => x.name == m).call;
+            return call != null;
+        }
+
         /// <summary>The properties a lambda names: x => x.P, or x => new { x.A, x.B }.</summary>
         private static List<IPropertySymbol> Properties(SemanticModel model, ExpressionSyntax arg, Entity e)
         {
             if (!(arg is SimpleLambdaExpressionSyntax lambda)) return null;
-            IPropertySymbol One(ExpressionSyntax x) =>
-                x is MemberAccessExpressionSyntax m && m.Expression is IdentifierNameSyntax id && id.Identifier.Text == lambda.Parameter.Identifier.Text
-                    ? model.GetSymbolInfo(m).Symbol as IPropertySymbol : null;
             switch (lambda.Body)
             {
                 case MemberAccessExpressionSyntax m:
-                    return One(m) is IPropertySymbol p ? new List<IPropertySymbol> { p } : null;
+                    return One(m, lambda, model) is IPropertySymbol p ? new List<IPropertySymbol> { p } : null;
                 case AnonymousObjectCreationExpressionSyntax a:
-                    var ps = a.Initializers.Select(i => One(i.Expression)).ToList();
+                    var ps = a.Initializers.Select(i => One(i.Expression, lambda, model)).ToList();
                     return ps.All(p => p != null) && ps.Count > 0 ? ps : null;
                 default:
                     return null;
             }
         }
+
+        private static IPropertySymbol One(ExpressionSyntax x, SimpleLambdaExpressionSyntax lambda, SemanticModel model) =>
+            x is MemberAccessExpressionSyntax m && m.Expression is IdentifierNameSyntax id && id.Identifier.Text == lambda.Parameter.Identifier.Text
+                ? model.GetSymbolInfo(m).Symbol as IPropertySymbol : null;
     }
 }

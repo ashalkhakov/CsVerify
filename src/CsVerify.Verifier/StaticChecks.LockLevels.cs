@@ -217,19 +217,20 @@ namespace CsVerify.Verifier
         private void CheckMonitor(string name, ExpressionSyntax target, List<LockLevels.Acquired> held, SyntaxNode at)
         {
             var (sym, element, _, receiver, isStatic) = _engine.Levels.LockTarget(target, _model);
-            bool Same(LockLevels.Acquired h) => SymbolEqualityComparer.Default.Equals(h.Lock, sym) && h.Element == element && !h.Semaphore && (isStatic || SameObject(h, receiver));
             bool ownLock = SymbolEqualityComparer.Default.Equals(_engine.Locks.GuardOf(_method), sym) && receiver == "this";
-            if (!held.Any(Same) && !ownLock)
+            if (!held.Any(h => SameLock(h, sym, element, isStatic, receiver)) && !ownLock)
             {
                 Report("CSV1023", at, $"'{at}' needs '{target}' held here, or it throws: call it inside 'lock ({target})'", isError: true);
                 return;
             }
             if (name != "Wait") return;
-            if (held.FirstOrDefault(h => !Same(h)) is LockLevels.Acquired other)
+            if (held.FirstOrDefault(h => !SameLock(h, sym, element, isStatic, receiver)) is LockLevels.Acquired other)
                 Report("CSV1025", at, $"'{at}' waits, giving back '{target}' but still holding '{Named(other)}': the thread that would pulse it may need that lock first", isError: true);
             if (_engine.Locks.GuardOf(_method) is IFieldSymbol g && !SymbolEqualityComparer.Default.Equals(g, sym))
                 Report("CSV1025", at, $"'{at}' waits, giving back '{target}' but still holding '{g.Name}', which its caller holds for it: the thread that would pulse it may need that lock first", isError: true);
         }
+
+        private bool SameLock(LockLevels.Acquired h, ISymbol sym, bool element, bool isStatic, string receiver) => SymbolEqualityComparer.Default.Equals(h.Lock, sym) && h.Element == element && !h.Semaphore && (isStatic || SameObject(h, receiver));
 
         // ---- blocking on async code that comes back to its context ----
 

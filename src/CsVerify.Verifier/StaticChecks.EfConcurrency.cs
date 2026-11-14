@@ -43,10 +43,11 @@ namespace CsVerify.Verifier
             if (!(IsEfMethod(m) || IsTransactionType(m.ContainingType) || Ef.IsContextType(m.ContainingType))) return false;
             var receiver = call.Expression is MemberAccessExpressionSyntax ma ? _model.GetTypeInfo(ma.Expression).Type : null;
             var first = m.IsExtensionMethod || m.ReducedFrom != null ? receiver : null;
-            bool Ours(ITypeSymbol t) => t != null && (Ef.IsContextType(t) || t.Name == "DbSet" || t.Name == "IQueryable" || t.Name == "IOrderedQueryable" ||
-                t.AllInterfaces.Any(i => i.Name == "IQueryable") || t.Name == "DatabaseFacade" || t.Name == "EntityEntry" || IsTransactionType(t));
-            return Ours(receiver) || Ours(first);
+            return IsEfType(receiver) || IsEfType(first);
         }
+
+        private bool IsEfType(ITypeSymbol t) => t != null && (Ef.IsContextType(t) || t.Name == "DbSet" || t.Name == "IQueryable" || t.Name == "IOrderedQueryable" ||
+            t.AllInterfaces.Any(i => i.Name == "IQueryable") || t.Name == "DatabaseFacade" || t.Name == "EntityEntry" || IsTransactionType(t));
 
         /// <summary>
         /// Is the task awaited where it is made (through ConfigureAwait and parentheses), or returned by a method that

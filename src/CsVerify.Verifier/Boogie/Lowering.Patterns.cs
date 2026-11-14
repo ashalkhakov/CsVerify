@@ -56,13 +56,12 @@ namespace CsVerify.Verifier.Boogie
         {
             var has = NotNull(v);
             var u = Underlying(nullable);
-            KExpr Sub(IPatternOperation q) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, lower, bind) : Pattern(q, NullableValue(v, nullable), u, lower, bind);
             switch (p)
             {
                 case IDiscardPatternOperation _: return KLit.True;
                 case IConstantPatternOperation c when c.Value.ConstantValue is { HasValue: true, Value: null }: return IsNull(v);
-                case INegatedPatternOperation n: return Not(Sub(n.Pattern));
-                case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Sub(b.LeftPattern), Sub(b.RightPattern));
+                case INegatedPatternOperation n: return Not(SubPattern(n.Pattern, v, nullable, lower, bind, u));
+                case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", SubPattern(b.LeftPattern, v, nullable, lower, bind, u), SubPattern(b.RightPattern, v, nullable, lower, bind, u));
                 case IDeclarationPatternOperation d when d.MatchesNull:
                     if (d.DeclaredSymbol is ILocalSymbol dl)
                     {
@@ -80,29 +79,10 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        private KExpr SubPattern(IPatternOperation q, KExpr v, ITypeSymbol nullable, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind, ITypeSymbol u) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, lower, bind) : Pattern(q, NullableValue(v, nullable), u, lower, bind);
+
         private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
         {
-            KExpr TypeTest(ITypeSymbol t)
-            {
-                if (t == null || SymbolEqualityComparer.Default.Equals(DataTypes.Def(t), DataTypes.Def(type)) && !IsData(t))
-                {
-                    return KLit.True;
-                }
-                if (IsData(t))
-                {
-                    Data(t);
-                    return IsCase(v, t);
-                }
-                if (Scalar(t) && SymbolEqualityComparer.Default.Equals(t, type))
-                {
-                    return KLit.True;
-                }
-                if (IsModeledClass(t))
-                {
-                    return ClassTest(v, t);
-                }
-                throw new NotTranslated("a type test of " + t);
-            }
             switch (p)
             {
                 case IDiscardPatternOperation _: return KLit.True;
@@ -112,11 +92,11 @@ namespace CsVerify.Verifier.Boogie
                     {
                         bind(l, v);
                     }
-                    return d.MatchesNull ? KLit.True : IsData(d.MatchedType) ? TypeTest(d.MatchedType) :
+                    return d.MatchesNull ? KLit.True : IsData(d.MatchedType) ? TypeTest(d.MatchedType, type, v) :
                            IsModeledClass(d.MatchedType) && !SymbolEqualityComparer.Default.Equals(d.MatchedType.OriginalDefinition, type.OriginalDefinition) ? ClassTest(v, d.MatchedType) :
                            IsNullable(type) ? NotNull(v) : KLit.True;
                 }
-                case ITypePatternOperation tp: return TypeTest(tp.MatchedType);
+                case ITypePatternOperation tp: return TypeTest(tp.MatchedType, type, v);
                 case IConstantPatternOperation sc when IsString(type) && sc.Value.ConstantValue is { HasValue: true, Value: string }:
                     return AndAlso(NotNull(v), new KOp("streq", v, lower(sc.Value)));
                 case IConstantPatternOperation cp: return Eq(v, lower(cp.Value));
@@ -190,7 +170,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         throw new NotTranslated("a recursive pattern of " + matched);
                     }
-                    KExpr cond = TypeTest(matched);
+                    KExpr cond = TypeTest(matched, type, v);
                     if (rp.DeclaredSymbol is ILocalSymbol l)
                     {
                         bind(l, v);
@@ -273,6 +253,28 @@ namespace CsVerify.Verifier.Boogie
                 }
                 default: throw new NotTranslated("the pattern " + p.Kind);
             }
+        }
+
+        private KExpr TypeTest(ITypeSymbol t, ITypeSymbol type, KExpr v)
+        {
+            if (t == null || SymbolEqualityComparer.Default.Equals(DataTypes.Def(t), DataTypes.Def(type)) && !IsData(t))
+            {
+                return KLit.True;
+            }
+            if (IsData(t))
+            {
+                Data(t);
+                return IsCase(v, t);
+            }
+            if (Scalar(t) && SymbolEqualityComparer.Default.Equals(t, type))
+            {
+                return KLit.True;
+            }
+            if (IsModeledClass(t))
+            {
+                return ClassTest(v, t);
+            }
+            throw new NotTranslated("a type test of " + t);
         }
     }
 }

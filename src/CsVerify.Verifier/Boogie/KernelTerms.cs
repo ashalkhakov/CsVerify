@@ -21,19 +21,18 @@ namespace CsVerify.Verifier.Boogie
             {
                 return given;
             }
-            KExpr R(KExpr x) => x.Rewrite(at);
             return this switch
             {
                 KLit or KVar => this,
-                KOp op => new KOp(op.Op, op.Args.Select(R).ToArray()),
+                KOp op => new KOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
                 KQuant q => new KQuant
                 {
                     Forall = q.Forall,
                     Var = q.Var,
                     Type = q.Type,
-                    Range = q.Range == null ? null : R(q.Range),
-                    Body = R(q.Body),
-                    Trigger = q.Trigger?.Select(R).ToArray(),
+                    Range = q.Range == null ? null : q.Range.Rewrite(at),
+                    Body = q.Body.Rewrite(at),
+                    Trigger = q.Trigger?.Select(x => x.Rewrite(at)).ToArray(),
                 },
                 KFnApp f => new KFnApp
                 {
@@ -43,8 +42,8 @@ namespace CsVerify.Verifier.Boogie
                     MapsAt = f.MapsAt,
                     Layer = f.Layer,
                     Fields = f.Fields,
-                    Args = f.Args.Select(R).ToArray(),
-                    Snap = f.Snap == null ? null : R(f.Snap),
+                    Args = f.Args.Select(x => x.Rewrite(at)).ToArray(),
+                    Snap = f.Snap == null ? null : f.Snap.Rewrite(at),
                 },
                 _ => throw KernelTerms.NotMath(this),
             };

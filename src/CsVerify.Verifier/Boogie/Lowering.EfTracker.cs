@@ -481,53 +481,16 @@ namespace CsVerify.Verifier.Boogie
             IOperation context = null;
             ISymbol of = null;
             bool ok = true;
-            void Value(IOperation v)
-            {
-                v = Unconverted(v);
-                switch (v)
-                {
-                    case IAwaitOperation aw:
-                        Value(aw.Operation);
-                        return;
-                    case IConditionalOperation cond:
-                        Value(cond.WhenTrue);
-                        if (cond.WhenFalse != null)
-                        {
-                            Value(cond.WhenFalse);
-                        }
-                        return;
-                    case ILiteralOperation { ConstantValue: { HasValue: true, Value: null } }: return;
-                    case IDefaultValueOperation: return;
-                    case IInvocationOperation { TargetMethod.Name: "BeginTransaction" or "BeginTransactionAsync", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } }:
-                        Context(db); return;
-                    case IPropertyReferenceOperation { Property.Name: "CurrentTransaction", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db2 } }:
-                        Context(db2); return;
-                    default:
-                        ok = false;
-                        return;
-                }
-            }
-            void Context(IOperation db)
-            {
-                db = Unconverted(db);
-                var s = db is IParameterReferenceOperation p ? (ISymbol)p.Parameter : db is ILocalReferenceOperation l ? l.Local : null;
-                if (s == null || of != null && !SymbolEqualityComparer.Default.Equals(of, s))
-                {
-                    ok = false;
-                    return;
-                }
-                of = s; context = db;
-            }
             var root = _model.GetOperation(_decl);
             foreach (var op in root.DescendantsAndSelf())
             {
                 if (op is IVariableDeclaratorOperation d && SymbolEqualityComparer.Default.Equals(d.Symbol, tx) && d.Initializer != null)
                 {
-                    Value(d.Initializer.Value);
+                    TrackedValue(d.Initializer.Value, ref of, ref ok, ref context);
                 }
                 if (op is ISimpleAssignmentOperation a && a.Target is ILocalReferenceOperation tl && SymbolEqualityComparer.Default.Equals(tl.Local, tx))
                 {
-                    Value(a.Value);
+                    TrackedValue(a.Value, ref of, ref ok, ref context);
                 }
             }
             // (the context, not assigned again)
@@ -541,6 +504,45 @@ namespace CsVerify.Verifier.Boogie
                 ok = false;
             }
             return ok ? context : null;
+        }
+
+        private void TrackedValue(IOperation v, ref ISymbol of, ref bool ok, ref IOperation context)
+        {
+            v = Unconverted(v);
+            switch (v)
+            {
+                case IAwaitOperation aw:
+                    TrackedValue(aw.Operation, ref of, ref ok, ref context);
+                    return;
+                case IConditionalOperation cond:
+                    TrackedValue(cond.WhenTrue, ref of, ref ok, ref context);
+                    if (cond.WhenFalse != null)
+                    {
+                        TrackedValue(cond.WhenFalse, ref of, ref ok, ref context);
+                    }
+                    return;
+                case ILiteralOperation { ConstantValue: { HasValue: true, Value: null } }: return;
+                case IDefaultValueOperation: return;
+                case IInvocationOperation { TargetMethod.Name: "BeginTransaction" or "BeginTransactionAsync", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } }:
+                    TrackedContext(db, ref of, ref ok, ref context); return;
+                case IPropertyReferenceOperation { Property.Name: "CurrentTransaction", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db2 } }:
+                    TrackedContext(db2, ref of, ref ok, ref context); return;
+                default:
+                    ok = false;
+                    return;
+            }
+        }
+
+        private void TrackedContext(IOperation db, ref ISymbol of, ref bool ok, ref IOperation context)
+        {
+            db = Unconverted(db);
+            var s = db is IParameterReferenceOperation p ? (ISymbol)p.Parameter : db is ILocalReferenceOperation l ? l.Local : null;
+            if (s == null || of != null && !SymbolEqualityComparer.Default.Equals(of, s))
+            {
+                ok = false;
+                return;
+            }
+            of = s; context = db;
         }
 
         /// <summary>Add, Attach, Update or Remove of one entity (or Entry(e).State set: as the state says).</summary>
@@ -620,8 +622,6 @@ namespace CsVerify.Verifier.Boogie
             var was = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
             Emit(KAssign.Of(was, Failed(c)));
             MayThrow(() => SetLocal(_failed, c, KLit.True), () => SetLocal(_failed, c, new KVar(was)));
-            // the database sets the row versions of what it writes
-            KExpr Written(KExpr x) => OrElse(Eq(State(c, x), I(Added)), Eq(State(c, x), I(Modified)));
             foreach (var p in KernelTypes.Ef.Entities.SelectMany(e => e.RowVersions).Where(IsField).Select(p => p.OriginalDefinition).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default))
             {
                 _p.Fields.Add(p);
@@ -629,16 +629,19 @@ namespace CsVerify.Verifier.Boogie
                 Emit(KRow.Of(
                     FieldMap(p),
                     null,
-                    MapLambda("y$: Ref", Ite(Written(y), Sel(fresh, y), Sel(FieldMap(p), y)))));
+                    MapLambda("y$: Ref", Ite(Written(y, c), Sel(fresh, y), Sel(FieldMap(p), y)))));
             }
             SetLocal(_savedAlone, c, OrElse(Sel(_savedAlone, c), Not(InTx(c))));
-            SetStates(c, MapLambda("y$: Ref", Ite(Written(y), I(Unchanged), Ite(Eq(State(c, y), I(Deleted)), I(EfDetached), State(c, y)))));
+            SetStates(c, MapLambda("y$: Ref", Ite(Written(y, c), I(Unchanged), Ite(Eq(State(c, y), I(Deleted)), I(EfDetached), State(c, y)))));
             SetUnsaved(c, KLit.False);
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
             Emit(KHavoc.Of(n));
             Emit(KAssume.Of(Le(KLit.Zero, new KVar(n))));
             return new KVar(n);
         }
+
+        // the database sets the row versions of what it writes
+        private KExpr Written(KExpr x, KExpr c) => OrElse(Eq(State(c, x), I(Added)), Eq(State(c, x), I(Modified)));
 
         /// <summary>Find(key), or Find(a, b) for a composite key, in the key's order: the tracked entity with that key, or the row read and tracked, or null.</summary>
         private KExpr Find(IInvocationOperation inv, List<IArgumentOperation> args, KExpr c, EfModel.Entity e)
@@ -674,9 +677,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Fields.Add(p.OriginalDefinition);
             }
-            // (the maps themselves: of what may be null)
-            KExpr Col(IPropertySymbol p) => Sel(FieldMap(p.OriginalDefinition), rv);
-            var match = AndAll(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Col(p), ks[j]) : (KExpr)Eq(Col(p), ks[j])));
+            var match = AndAll(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Sel(FieldMap(p.OriginalDefinition), rv), ks[j]) : (KExpr)Eq(Sel(FieldMap(p.OriginalDefinition), rv), ks[j])));
             Emit(KAssume.Of(OrElse(Eq(rv, Null), AndAlso(Isa(rv, e), match))));
             SetStates(c, Store(States(c), rv, Ite(Eq(State(c, rv), I(EfDetached)), I(Unchanged), State(c, rv))));
             MayThrow();
@@ -751,28 +752,29 @@ namespace CsVerify.Verifier.Boogie
             var n = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
             Emit(KHavoc.Of(n));
             var len = new KVar(n);
-            KExpr El(KExpr i) => Sel(el, i);
-            KExpr Live(KExpr y) => AndAlso(Ne(State(c, y), I(EfDetached)), Ne(State(c, y), I(Deleted)));
-            KExpr Each(KExpr i) => AndAll(new[] { Eq(Sel(idx, El(i)), i), Ne(El(i), Null), Isa(El(i), e), Live(El(i)) });
             var known = _known;
             _known = null;
             ShapeFact(Le(KLit.Zero, len), at);
-            ShapeFact(Over(KLit.Zero, len, Each), at);
-            ShapeFact(Implies(Lt(KLit.Zero, len), Each(KLit.Zero)), at);
+            ShapeFact(Over(KLit.Zero, len, i => EachTracked(i, idx, el, e, c)), at);
+            ShapeFact(Implies(Lt(KLit.Zero, len), EachTracked(KLit.Zero, idx, el, e, c)), at);
             var y = new KVar("y$");
             ShapeFact(KQuant.ForAll(
                 "y$",
                 "Ref",
-                Implies(AndAlso(Isa(y, e), Live(y)),
-                AndAll(new KExpr[] { Le(KLit.Zero, Sel(idx, y)), Lt(Sel(idx, y), len), Eq(El(Sel(idx, y)), y) }))), at);
+                Implies(AndAlso(Isa(y, e), IsLive(y, c)),
+                AndAll(new KExpr[] { Le(KLit.Zero, Sel(idx, y)), Lt(Sel(idx, y), len), Eq(Sel(el, Sel(idx, y)), y) }))), at);
             _known = known;
             return new LSeq
             {
                 Length = len,
-                Elem = El,
+                Elem = i => Sel(el, i),
                 Type = e.Type,
             };
         }
+
+        private KExpr EachTracked(KExpr i, KVar idx, KVar el, EfModel.Entity e, KExpr c) => AndAll(new[] { Eq(Sel(idx, Sel(el, i)), i), Ne(Sel(el, i), Null), Isa(Sel(el, i), e), IsLive(Sel(el, i), c) });
+
+        private KExpr IsLive(KExpr y, KExpr c) => AndAlso(Ne(State(c, y), I(EfDetached)), Ne(State(c, y), I(Deleted)));
 
         private static bool IsLocalView(IOperation op) =>
             Unconverted(op) is IPropertyReferenceOperation { Property.Name: "Local", Instance: { } i } && DbSetEntity(Unconverted(i).Type) != null;
@@ -888,13 +890,12 @@ namespace CsVerify.Verifier.Boogie
                     message: $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read"));
             }
             var c = new KVar("c$");
-            KExpr Was(KExpr x) => Sel(StateMap, x, o);
-            Emit(KRow.Of(UnsavedMap, null, MapLambda("c$: Ref", OrElse(Ne(Was(c), I(EfDetached)), Unsaved(c)))));
+            Emit(KRow.Of(UnsavedMap, null, MapLambda("c$: Ref", OrElse(Ne(Sel(StateMap, c, o), I(EfDetached)), Unsaved(c)))));
             Emit(KRow.Of(
                 StateMap,
                 null,
                 MapLambda("c$: Ref",
-        Store(States(c), o, Ite(Eq(Was(c), I(Unchanged)), I(Modified), Was(c))))));
+        Store(States(c), o, Ite(Eq(Sel(StateMap, c, o), I(Unchanged)), I(Modified), Sel(StateMap, c, o))))));
         }
 
         /// <summary>Rows read with tracking: tracked from here on (unchanged, those it didn't track).</summary>

@@ -20,44 +20,7 @@ namespace CsVerify.Verifier.Boogie
             var objects = new List<MExpr>();
             var keys = new HashSet<string>();
             var bound = new HashSet<string>();
-            bool Walk(MExpr e)
-            {
-                switch (e)
-                {
-                    case MLit _: return true;
-                    case MVar v: return v.Name != "$Alloc";
-                    case MOp { Op: "sel" } s when s.Args[0] is MVar map && (map.Name.StartsWith("$F.") || map.Name.StartsWith("$E.")):
-                        if (s.Args[1].Mentions(bound))
-                        {
-                            return false;
-                        }
-                        if (keys.Add(Key(s.Args[1])))
-                        {
-                            objects.Add(s.Args[1]);
-                        }
-                        return s.Args.Skip(1).All(Walk);
-                    case MOp op: return op.Args.All(Walk);
-                    case MQuant q:
-                        bound.Add(q.Var);
-                        try
-                        {
-                            return (q.Range == null || Walk(q.Range)) && Walk(q.Body);
-                        }
-                        finally
-                        {
-                            bound.Remove(q.Var);
-                        }
-                    default: return false;
-                }
-            }
-            string Key(MExpr e) => e switch
-            {
-                MVar v => v.Name,
-                MLit l => l.Text,
-                MOp op => op.Op + "(" + string.Join(",", op.Args.Select(Key)) + ")",
-                _ => "?" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e),
-            };
-            if (!Walk(body) || objects.Count == 0)
+            if (!InferReadsWalk(body, bound, keys, objects) || objects.Count == 0)
             {
                 return null;
             }
@@ -69,6 +32,45 @@ namespace CsVerify.Verifier.Boogie
             }
             return union;
         }
+
+        private static bool InferReadsWalk(MExpr e, HashSet<string> bound, HashSet<string> keys, List<MExpr> objects)
+        {
+            switch (e)
+            {
+                case MLit _: return true;
+                case MVar v: return v.Name != "$Alloc";
+                case MOp { Op: "sel" } s when s.Args[0] is MVar map && (map.Name.StartsWith("$F.") || map.Name.StartsWith("$E.")):
+                    if (s.Args[1].Mentions(bound))
+                    {
+                        return false;
+                    }
+                    if (keys.Add(StructuralKey(s.Args[1])))
+                    {
+                        objects.Add(s.Args[1]);
+                    }
+                    return s.Args.Skip(1).All(e => InferReadsWalk(e, bound, keys, objects));
+                case MOp op: return op.Args.All(e => InferReadsWalk(e, bound, keys, objects));
+                case MQuant q:
+                    bound.Add(q.Var);
+                    try
+                    {
+                        return (q.Range == null || InferReadsWalk(q.Range, bound, keys, objects)) && InferReadsWalk(q.Body, bound, keys, objects);
+                    }
+                    finally
+                    {
+                        bound.Remove(q.Var);
+                    }
+                default: return false;
+            }
+        }
+
+        private static string StructuralKey(MExpr e) => e switch
+        {
+            MVar v => v.Name,
+            MLit l => l.Text,
+            MOp op => op.Op + "(" + string.Join(",", op.Args.Select(StructuralKey)) + ")",
+            _ => "?" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e),
+        };
 
 
         /// <summary>A specification's well-definedness, asserted (CSV1012) where it is evaluated, under what holds before it.</summary>
@@ -181,37 +183,24 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private MExpr Spec(KExpr e, List<MExpr> wf, List<MExpr> guard)
         {
-            void Need(MExpr cond) => wf.Add(guard.Count == 0 ? cond : Implies(And(guard), cond));
-            MExpr Under(MExpr g, KExpr x)
-            {
-                guard.Add(g);
-                try
-                {
-                    return Spec(x, wf, guard);
-                }
-                finally
-                {
-                    guard.RemoveAt(guard.Count - 1);
-                }
-            }
             switch (e)
             {
                 case KLit _: case KVar _: case KFnApp _: return MathTerms.Math(e);
                 case KOp { Op: "ite" } ite:
                 {
                     var c = Spec(ite.Args[0], wf, guard);
-                    return Ite(c, Under(c, ite.Args[1]), Under(Not(c), ite.Args[2]));
+                    return Ite(c, SpecUnder(c, ite.Args[1], guard, wf), SpecUnder(Not(c), ite.Args[2], guard, wf));
                 }
                 case KOp { Op: "&&" } and:
                 {
                     // (the right only where the left lets it be evaluated)
                     var l = Spec(and.Args[0], wf, guard);
-                    return AndAlso(l, Under(l, and.Args[1]));
+                    return AndAlso(l, SpecUnder(l, and.Args[1], guard, wf));
                 }
                 case KOp { Op: "||" } or:
                 {
                     var l = Spec(or.Args[0], wf, guard);
-                    return OrElse(l, Under(Not(l), or.Args[1]));
+                    return OrElse(l, SpecUnder(Not(l), or.Args[1], guard, wf));
                 }
                 case KOp { Op: "old" } old:
                 {
@@ -220,14 +209,14 @@ namespace CsVerify.Verifier.Boogie
                     var v = Spec(old.Args[0], inner, new List<MExpr>());
                     foreach (var c in inner)
                     {
-                        Need(Old(c));
+                        AddWellDefinedness(Old(c), wf, guard);
                     }
                     return Old(v);
                 }
                 // (a value defined only where its condition holds: a float cast to an integer, which must fit)
                 case KOp { Op: "$need" } nd:
                 {
-                    Need(Spec(nd.Args[0], wf, guard));
+                    AddWellDefinedness(Spec(nd.Args[0], wf, guard), wf, guard);
                     return Spec(nd.Args[1], wf, guard);
                 }
                 case KOp { Op: "streq" } eq:
@@ -249,7 +238,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var l = Spec(ar.Left, wf, guard);
                     var r = Spec(ar.Right, wf, guard);
-                    Need(Ne(r, MLit.Zero));
+                    AddWellDefinedness(Ne(r, MLit.Zero), wf, guard);
                     return new MOp(ar.Op == "/" ? "div" : "rem", l, r);
                 }
                 case KIfc si:
@@ -257,7 +246,7 @@ namespace CsVerify.Verifier.Boogie
                     var x = Spec(si.Of, wf, guard);
                     var i = si.Index == null ? null : Spec(si.Index, wf, guard);
                     var count = MathTypes.IfcRead(x, null, si.Element);
-                    Need(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(Le(MLit.Zero, i), Lt(i, count))));
+                    AddWellDefinedness(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(Le(MLit.Zero, i), Lt(i, count))), wf, guard);
                     return i == null ? count : MathTypes.IfcRead(x, i, si.Element);
                 }
                 case KLet let:
@@ -290,7 +279,7 @@ namespace CsVerify.Verifier.Boogie
                     // (well-defined within the array: 0 <= n <= a.Length; its contents as of where it's read)
                     var a = Spec(ms.Array, wf, guard);
                     var n = Spec(ms.Count, wf, guard);
-                    Need(AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, n)), Le(n, Length(a))));
+                    AddWellDefinedness(AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, n)), Le(n, Length(a))), wf, guard);
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
@@ -303,16 +292,16 @@ namespace CsVerify.Verifier.Boogie
                     // (a collection's element, of its model: where its indexer's precondition holds)
                     var a = Spec(le.Array, wf, guard);
                     var i = Spec(le.Index, wf, guard);
-                    Need(le.Domain != null
+                    AddWellDefinedness(le.Domain != null
                         ? AndAlso(NotNull(a), Sel(le.Domain, a, i))
-                        : AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, i)), Lt(i, Sel(SizeMap, a))));
+                        : AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, i)), Lt(i, Sel(SizeMap, a))), wf, guard);
                     return Sel(model, a, i);
                 }
                 case KElem el:
                 {
                     var a = Spec(el.Array, wf, guard);
                     var i = Spec(el.Index, wf, guard);
-                    Need(el.Unchecked ? (el.NoNull ? MLit.True : NotNull(a)) : AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, i)), Lt(i, new MOp(el.String ? "slen" : "len", a))));
+                    AddWellDefinedness(el.Unchecked ? (el.NoNull ? MLit.True : NotNull(a)) : AndAlso(AndAlso(NotNull(a), Le(MLit.Zero, i)), Lt(i, new MOp(el.String ? "slen" : "len", a))), wf, guard);
                     return el.String ? new MOp("sat", a, i) : Sel(Elements(el.ArrayType), a, i);
                 }
                 case KDataField df:
@@ -320,20 +309,20 @@ namespace CsVerify.Verifier.Boogie
                     var v = Spec(df.Value, wf, guard);
                     if (!df.Struct)
                     {
-                        Need(NotNull(v));
+                        AddWellDefinedness(NotNull(v), wf, guard);
                     }
                     return new MOp(df.Function, v);
                 }
                 case KCast cast:
                 {
                     var v = Spec(cast.Value, wf, guard);
-                    Need(Spec(cast.Test, wf, guard));
+                    AddWellDefinedness(Spec(cast.Test, wf, guard), wf, guard);
                     return v;
                 }
                 case KLen len:
                 {
                     var a = Spec(len.Array, wf, guard);
-                    Need(NotNull(a));
+                    AddWellDefinedness(NotNull(a), wf, guard);
                     return new MOp(len.String ? "slen" : "len", a);
                 }
                 case KFnCall { Stub: true } st:
@@ -342,14 +331,14 @@ namespace CsVerify.Verifier.Boogie
                     if (st.Receiver != null)
                     {
                         receiver = Spec(st.Receiver, wf, guard);
-                        Need(NotNull(receiver));
+                        AddWellDefinedness(NotNull(receiver), wf, guard);
                     }
                     var args = st.Args.Select(a => Spec(a, wf, guard)).ToArray();
                     var given = StubGiven(st.Callee, receiver, args);
                     var saved = _facts.ToList();
                     foreach (var r in _program.Signature(st.Callee).Requires)
                     {
-                        Need(Spec(r.Expr, out _).Substitute(given));
+                        AddWellDefinedness(Spec(r.Expr, out _).Substitute(given), wf, guard);
                     }
                     _facts.Clear();
                     _facts.AddRange(saved);
@@ -400,7 +389,7 @@ namespace CsVerify.Verifier.Boogie
                     var o = Spec(fd.Instance, wf, guard);
                     if (!fd.OnThis && !fd.NoNull)
                     {
-                        Need(NotNull(o));
+                        AddWellDefinedness(NotNull(o), wf, guard);
                     }
                     var v = Sel(FieldMap(fd.Field), o);
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !o.Mentions(_bound))
@@ -460,7 +449,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     foreach (var c in inner)
                     {
-                        Need(MQuant.ForAll(q.Var, c));
+                        AddWellDefinedness(MQuant.ForAll(q.Var, c), wf, guard);
                     }
                     if (!range.Mentions(_bound))
                     {
@@ -484,15 +473,30 @@ namespace CsVerify.Verifier.Boogie
                         receiver = Spec(fn.Receiver, wf, guard);
                         if (!fn.ReceiverIsThis && !IsStruct(fn.Callee.ContainingType))
                         {
-                            Need(NotNull(receiver));
+                            AddWellDefinedness(NotNull(receiver), wf, guard);
                         }
                     }
                     var args = fn.Args.Select(a => Spec(a, wf, guard)).ToArray();
-                    return FunctionApp(fn, receiver, args, Need);
+                    return FunctionApp(fn, receiver, args, cond => AddWellDefinedness(cond, wf, guard));
                 }
                 default: throw new NotTranslated("in a specification: " + e.GetType().Name);
             }
         }
+
+        private MExpr SpecUnder(MExpr g, KExpr x, List<MExpr> guard, List<MExpr> wf)
+        {
+            guard.Add(g);
+            try
+            {
+                return Spec(x, wf, guard);
+            }
+            finally
+            {
+                guard.RemoveAt(guard.Count - 1);
+            }
+        }
+
+        private void AddWellDefinedness(MExpr cond, List<MExpr> wf, List<MExpr> guard) => wf.Add(guard.Count == 0 ? cond : Implies(And(guard), cond));
 
         /// <summary>A function's application, its receiver and arguments made: what it needs, its precondition at them.</summary>
         private MExpr FunctionApp(KFnCall fn, MExpr receiver, MExpr[] args, Action<MExpr> need)

@@ -219,11 +219,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 return false;
             }
-            bool Named(ExpressionSyntax e) => e.ToString() == name || e is TupleExpressionSyntax t && t.Arguments.Any(x => Named(x.Expression));
-            return !l.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => Named(a.Left)) &&
-                   !l.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => Named(fe.Variable)) &&
+            return !l.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => Named(a.Left, name)) &&
+                   !l.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => Named(fe.Variable, name)) &&
                    !l.DescendantNodes().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && a.Expression.ToString() == name);
         }
+
+        private static bool Named(ExpressionSyntax e, string name) => e.ToString() == name || e is TupleExpressionSyntax t && t.Arguments.Any(x => Named(x.Expression, name));
 
         /// <summary>Monitor.Wait(o): o's lock given back (its invariants proved, CSV1024, at the call), then taken again.</summary>
         private void Waited(IInvocationOperation call)

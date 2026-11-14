@@ -113,213 +113,212 @@ namespace CsVerify.Verifier.Boogie
             var at = call.Syntax;
             // (each argument evaluated once, here, before any view it names changes)
             var given = new Dictionary<string, KExpr>();
-            KExpr In(string name)
-            {
-                if (given.TryGetValue(name, out var known))
-                {
-                    return known;
-                }
-                var t = Declare("t$" + _temps++, named[name].Parameter.Type);
-                Emit(KAssign.Of(t, Expr(named[name].Value)));
-                return given[name] = new KVar(t);
-            }
-            string Out(string name) => RefVariable(named[name]);
-            ITypeSymbol TypeOfParam(string name) => named[name].Parameter.Type;
-            KExpr P(string prop, KExpr v, string param) => MemProp(prop, v, TypeOfParam(param));
-            void Need(KExpr cond, string text) => Emit(KCheck.Of(cond, "CSV1001", at, $"precondition '{text}' of '{m.Name}' might not hold"));
-            void Assume(KExpr c) => Emit(KAssume.Of(c));
-            string New(ITypeSymbol t)
-            {
-                var v = Declare("t$" + _temps++, t);
-                Emit(KHavoc.Of(v));
-                return v;
-            }
-            void Grant(KExpr v, ITypeSymbol t, bool tie = true)
-            {
-                Emit(KMemCells.Of(MemCells(v, t, at), true));
-                if (tie)
-                {
-                    Assume(MemTie(v, t));
-                }
-            }
-            void Revoke(KExpr v, ITypeSymbol t) => Emit(KMemCells.Of(MemCells(v, t, at), false));
             var arrayOf = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(elem);
-            void StoreCell(KExpr addr, KExpr x) => Emit(new KStore
-            {
-                Memory = true,
-                Index = addr,
-                Value = x,
-                ArrayType = arrayOf,
-                At = at,
-                ArrayAt = at,
-            });
             switch (m.Name)
             {
                 case "Offset":
                 {
                     var p = Expr(call.Instance);
-                    var k = In("offset");
-                    var q = New(m.ReturnType);
+                    var k = ArgumentIn("offset", given, named);
+                    var q = FreshLocal(m.ReturnType);
                     Assume(Eq(MemProp("Addr", new KVar(q), m.ReturnType), Plus(MemProp("Addr", p, m.ReturnType), k)));
                     value = new KVar(q);
                     return true;
                 }
                 case "Alloc":
                 {
-                    var init = In("init");
-                    var p = New(m.ReturnType);
-                    var view = Out("view");
+                    var init = ArgumentIn("init", given, named);
+                    var p = FreshLocal(m.ReturnType);
+                    var view = RefVariable(named["view"]);
                     Emit(KHavoc.Of(view));
                     var v = new KVar(view);
-                    Assume(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Value", v, "view"), init)));
-                    Emit(KMemCells.Of(MemCells(v, TypeOfParam("view"), at), true));
-                    MemFresh(v, TypeOfParam("view"), at);
-                    StoreCell(P("Addr", v, "view"), init);
+                    Assume(AndAll(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(MemProp("Value", v, named["view"].Parameter.Type), init)));
+                    Emit(KMemCells.Of(MemCells(v, named["view"].Parameter.Type, at), true));
+                    MemFresh(v, named["view"].Parameter.Type, at);
+                    StoreCell(MemProp("Addr", v, named["view"].Parameter.Type), init, arrayOf, at);
                     value = new KVar(p);
                     return true;
                 }
                 case "Read":
                 {
-                    var v = In("view"); var p = In("p");
-                    Need(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), "view.Addr == p.Addr");
-                    value = P("Value", v, "view");
+                    var v = ArgumentIn("view", given, named); var p = ArgumentIn("p", given, named);
+                    CheckPrecondition(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", p, named["p"].Parameter.Type)), "view.Addr == p.Addr", at, m.Name);
+                    value = MemProp("Value", v, named["view"].Parameter.Type);
                     return true;
                 }
                 case "Write":
                 {
-                    var v = In("view"); var p = In("p"); var x = In("value");
-                    Need(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), "view.Addr == p.Addr");
-                    var old = Declare("t$" + _temps++, TypeOfParam("view"));
+                    var v = ArgumentIn("view", given, named); var p = ArgumentIn("p", given, named); var x = ArgumentIn("value", given, named);
+                    CheckPrecondition(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", p, named["p"].Parameter.Type)), "view.Addr == p.Addr", at, m.Name);
+                    var old = Declare("t$" + _temps++, named["view"].Parameter.Type);
                     Emit(KAssign.Of(old, v));
-                    var view = Out("view");
+                    var view = RefVariable(named["view"]);
                     Emit(KHavoc.Of(view));
                     var nv = new KVar(view);
-                    Assume(AndAll(Eq(P("Addr", nv, "view"), P("Addr", new KVar(old), "view")), Eq(P("Value", nv, "view"), x)));
-                    StoreCell(P("Addr", nv, "view"), x);
+                    Assume(AndAll(Eq(MemProp("Addr", nv, named["view"].Parameter.Type), MemProp("Addr", new KVar(old), named["view"].Parameter.Type)), Eq(MemProp("Value", nv, named["view"].Parameter.Type), x)));
+                    StoreCell(MemProp("Addr", nv, named["view"].Parameter.Type), x, arrayOf, at);
                     return true;
                 }
                 case "Free":
                 {
-                    var v = In("view"); var p = In("p");
-                    Need(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), "view.Addr == p.Addr");
-                    Revoke(v, TypeOfParam("view"));
-                    MemLive(v, TypeOfParam("view"), at, false);
+                    var v = ArgumentIn("view", given, named); var p = ArgumentIn("p", given, named);
+                    CheckPrecondition(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", p, named["p"].Parameter.Type)), "view.Addr == p.Addr", at, m.Name);
+                    Revoke(v, named["view"].Parameter.Type, at);
+                    MemLive(v, named["view"].Parameter.Type, at, false);
                     return true;
                 }
                 case "AllocArray":
                 {
-                    var n = In("length"); var fill = In("fill");
-                    Need(Ge(n, KLit.Zero), "length >= 0");
-                    var p = New(m.ReturnType);
-                    var view = Out("view"); var gc = Out("gc");
+                    var n = ArgumentIn("length", given, named); var fill = ArgumentIn("fill", given, named);
+                    CheckPrecondition(Ge(n, KLit.Zero), "length >= 0", at, m.Name);
+                    var p = FreshLocal(m.ReturnType);
+                    var view = RefVariable(named["view"]); var gc = RefVariable(named["gc"]);
                     Emit(KHavoc.Of(view)); Emit(KHavoc.Of(gc));
                     var v = new KVar(view); var g = new KVar(gc);
-                    Assume(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(P("Length", v, "view"), n),
-                               Eq(P("Elems", v, "view"), new KOp("seq.const", fill))));
-                    Assume(AndAll(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Length", g, "gc"), P("Length", v, "view"))));
-                    Emit(KMemCells.Of(MemCells(v, TypeOfParam("view"), at), true));
-                    MemFresh(v, TypeOfParam("view"), at);
+                    Assume(AndAll(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", new KVar(p), m.ReturnType)), Eq(MemProp("Length", v, named["view"].Parameter.Type), n),
+                               Eq(MemProp("Elems", v, named["view"].Parameter.Type), new KOp("seq.const", fill))));
+                    Assume(AndAll(Eq(MemProp("Addr", g, named["gc"].Parameter.Type), MemProp("Addr", v, named["view"].Parameter.Type)), Eq(MemProp("Length", g, named["gc"].Parameter.Type), MemProp("Length", v, named["view"].Parameter.Type))));
+                    Emit(KMemCells.Of(MemCells(v, named["view"].Parameter.Type, at), true));
+                    MemFresh(v, named["view"].Parameter.Type, at);
                     Emit(new KFill
                     {
-                        Map = MemMap(TypeOfParam("view")),
-                        Lo = P("Addr", v, "view"),
-                        Hi = Plus(P("Addr", v, "view"), n),
+                        Map = MemMap(named["view"].Parameter.Type),
+                        Lo = MemProp("Addr", v, named["view"].Parameter.Type),
+                        Hi = Plus(MemProp("Addr", v, named["view"].Parameter.Type), n),
                         Value = fill,
                     });
                     value = new KVar(p);
                     return true;
                 }
                 case "LengthIsNatural":
-                    Assume(Ge(P("Length", In("view"), "view"), KLit.Zero));
+                    Assume(Ge(MemProp("Length", ArgumentIn("view", given, named), named["view"].Parameter.Type), KLit.Zero));
                     return true;
                 case "Get":
                 {
-                    var v = In("view"); var p = In("p"); var i = In("i");
-                    Need(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), Le(KLit.Zero, i), Lt(i, P("Length", v, "view"))),
-                         "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
-                    value = Sel(P("Elems", v, "view"), i);
+                    var v = ArgumentIn("view", given, named); var p = ArgumentIn("p", given, named); var i = ArgumentIn("i", given, named);
+                    CheckPrecondition(AndAll(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", p, named["p"].Parameter.Type)), Le(KLit.Zero, i), Lt(i, MemProp("Length", v, named["view"].Parameter.Type))), "view.Addr == p.Addr && 0 <= i && i < view.Length.Value", at, m.Name);
+                    value = Sel(MemProp("Elems", v, named["view"].Parameter.Type), i);
                     return true;
                 }
                 case "Set":
                 {
-                    var v = In("view"); var p = In("p"); var i = In("i"); var x = In("value");
-                    Need(AndAll(Eq(P("Addr", v, "view"), MemProp("Addr", p, TypeOfParam("p"))), Le(KLit.Zero, i), Lt(i, P("Length", v, "view"))),
-                         "view.Addr == p.Addr && 0 <= i && i < view.Length.Value");
-                    var old = Declare("t$" + _temps++, TypeOfParam("view"));
+                    var v = ArgumentIn("view", given, named); var p = ArgumentIn("p", given, named); var i = ArgumentIn("i", given, named); var x = ArgumentIn("value", given, named);
+                    CheckPrecondition(AndAll(Eq(MemProp("Addr", v, named["view"].Parameter.Type), MemProp("Addr", p, named["p"].Parameter.Type)), Le(KLit.Zero, i), Lt(i, MemProp("Length", v, named["view"].Parameter.Type))), "view.Addr == p.Addr && 0 <= i && i < view.Length.Value", at, m.Name);
+                    var old = Declare("t$" + _temps++, named["view"].Parameter.Type);
                     Emit(KAssign.Of(old, v));
-                    var view = Out("view");
+                    var view = RefVariable(named["view"]);
                     Emit(KHavoc.Of(view));
                     var nv = new KVar(view); var ov = new KVar(old);
-                    Assume(AndAll(Eq(P("Addr", nv, "view"), P("Addr", ov, "view")), Eq(P("Length", nv, "view"), P("Length", ov, "view")),
-                               Eq(P("Elems", nv, "view"), Store(P("Elems", ov, "view"), i, x))));
-                    StoreCell(Plus(P("Addr", nv, "view"), i), x);
+                    Assume(AndAll(Eq(MemProp("Addr", nv, named["view"].Parameter.Type), MemProp("Addr", ov, named["view"].Parameter.Type)), Eq(MemProp("Length", nv, named["view"].Parameter.Type), MemProp("Length", ov, named["view"].Parameter.Type)),
+                               Eq(MemProp("Elems", nv, named["view"].Parameter.Type), Store(MemProp("Elems", ov, named["view"].Parameter.Type), i, x))));
+                    StoreCell(Plus(MemProp("Addr", nv, named["view"].Parameter.Type), i), x, arrayOf, at);
                     return true;
                 }
                 case "FreeArray":
                 {
-                    var g = In("gc"); var v = In("view"); var p = In("p");
-                    Need(AndAll(Eq(P("Addr", g, "gc"), P("Addr", v, "view")), Eq(P("Addr", g, "gc"), MemProp("Addr", p, TypeOfParam("p"))), Eq(P("Length", g, "gc"), P("Length", v, "view"))),
-                         "gc.Addr == view.Addr && gc.Addr == p.Addr && gc.Length == view.Length");
-                    Revoke(v, TypeOfParam("view"));
+                    var g = ArgumentIn("gc", given, named); var v = ArgumentIn("view", given, named); var p = ArgumentIn("p", given, named);
+                    CheckPrecondition(AndAll(Eq(MemProp("Addr", g, named["gc"].Parameter.Type), MemProp("Addr", v, named["view"].Parameter.Type)), Eq(MemProp("Addr", g, named["gc"].Parameter.Type), MemProp("Addr", p, named["p"].Parameter.Type)), Eq(MemProp("Length", g, named["gc"].Parameter.Type), MemProp("Length", v, named["view"].Parameter.Type))), "gc.Addr == view.Addr && gc.Addr == p.Addr && gc.Length == view.Length", at, m.Name);
+                    Revoke(v, named["view"].Parameter.Type, at);
                     return true;
                 }
                 case "Split":
                 {
-                    var w = In("whole"); var cut = In("at");
-                    Need(AndAll(Le(KLit.Zero, cut), Le(cut, P("Length", w, "whole"))), "0 <= at.Value && at.Value <= whole.Length.Value");
-                    var left = Out("left"); var right = Out("right");
+                    var w = ArgumentIn("whole", given, named); var cut = ArgumentIn("at", given, named);
+                    CheckPrecondition(AndAll(Le(KLit.Zero, cut), Le(cut, MemProp("Length", w, named["whole"].Parameter.Type))), "0 <= at.Value && at.Value <= whole.Length.Value", at, m.Name);
+                    var left = RefVariable(named["left"]); var right = RefVariable(named["right"]);
                     Emit(KHavoc.Of(left)); Emit(KHavoc.Of(right));
                     var l = new KVar(left); var r = new KVar(right);
-                    Assume(AndAll(Eq(P("Addr", l, "left"), P("Addr", w, "whole")), Eq(P("Length", l, "left"), cut), Eq(P("Elems", l, "left"), P("Elems", w, "whole")),
-                               Ge(P("Length", r, "right"), KLit.Zero)));
-                    Assume(AndAll(Eq(P("Addr", r, "right"), Plus(P("Addr", w, "whole"), cut)), Eq(P("Length", r, "right"), Minus(P("Length", w, "whole"), cut)),
-                               Eq(P("Elems", r, "right"), new KOp("seq.drop", P("Elems", w, "whole"), cut))));
-                    Revoke(w, TypeOfParam("whole"));
-                    Grant(l, TypeOfParam("left")); Grant(r, TypeOfParam("right"));
+                    Assume(AndAll(Eq(MemProp("Addr", l, named["left"].Parameter.Type), MemProp("Addr", w, named["whole"].Parameter.Type)), Eq(MemProp("Length", l, named["left"].Parameter.Type), cut), Eq(MemProp("Elems", l, named["left"].Parameter.Type), MemProp("Elems", w, named["whole"].Parameter.Type)),
+                               Ge(MemProp("Length", r, named["right"].Parameter.Type), KLit.Zero)));
+                    Assume(AndAll(Eq(MemProp("Addr", r, named["right"].Parameter.Type), Plus(MemProp("Addr", w, named["whole"].Parameter.Type), cut)), Eq(MemProp("Length", r, named["right"].Parameter.Type), Minus(MemProp("Length", w, named["whole"].Parameter.Type), cut)),
+                               Eq(MemProp("Elems", r, named["right"].Parameter.Type), new KOp("seq.drop", MemProp("Elems", w, named["whole"].Parameter.Type), cut))));
+                    Revoke(w, named["whole"].Parameter.Type, at);
+                    Grant(l, named["left"].Parameter.Type, at); Grant(r, named["right"].Parameter.Type, at);
                     return true;
                 }
                 case "Join":
                 {
-                    var l = In("left"); var r = In("right");
-                    Need(Eq(P("Addr", r, "right"), Plus(P("Addr", l, "left"), P("Length", l, "left"))), "right.Addr.Value == left.Addr.Value + left.Length.Value");
-                    var whole = Out("whole");
+                    var l = ArgumentIn("left", given, named); var r = ArgumentIn("right", given, named);
+                    CheckPrecondition(Eq(MemProp("Addr", r, named["right"].Parameter.Type), Plus(MemProp("Addr", l, named["left"].Parameter.Type), MemProp("Length", l, named["left"].Parameter.Type))), "right.Addr.Value == left.Addr.Value + left.Length.Value", at, m.Name);
+                    var whole = RefVariable(named["whole"]);
                     Emit(KHavoc.Of(whole));
                     var w = new KVar(whole);
-                    Assume(AndAll(Eq(P("Addr", w, "whole"), P("Addr", l, "left")), Eq(P("Length", w, "whole"), Plus(P("Length", l, "left"), P("Length", r, "right"))),
-                               Eq(P("Elems", w, "whole"), new KOp("seq.concat", P("Elems", l, "left"), P("Length", l, "left"), P("Elems", r, "right")))));
-                    Revoke(l, TypeOfParam("left")); Revoke(r, TypeOfParam("right"));
-                    Grant(w, TypeOfParam("whole"));
+                    Assume(AndAll(Eq(MemProp("Addr", w, named["whole"].Parameter.Type), MemProp("Addr", l, named["left"].Parameter.Type)), Eq(MemProp("Length", w, named["whole"].Parameter.Type), Plus(MemProp("Length", l, named["left"].Parameter.Type), MemProp("Length", r, named["right"].Parameter.Type))),
+                               Eq(MemProp("Elems", w, named["whole"].Parameter.Type), new KOp("seq.concat", MemProp("Elems", l, named["left"].Parameter.Type), MemProp("Length", l, named["left"].Parameter.Type), MemProp("Elems", r, named["right"].Parameter.Type)))));
+                    Revoke(l, named["left"].Parameter.Type, at); Revoke(r, named["right"].Parameter.Type, at);
+                    Grant(w, named["whole"].Parameter.Type, at);
                     return true;
                 }
                 case "TakeOut":
                 {
-                    var w = In("whole"); var i = In("i");
-                    Need(AndAll(Le(KLit.Zero, i), Lt(i, P("Length", w, "whole"))), "0 <= i.Value && i.Value < whole.Length.Value");
-                    var cell = Out("cell"); var rest = Out("rest");
+                    var w = ArgumentIn("whole", given, named); var i = ArgumentIn("i", given, named);
+                    CheckPrecondition(AndAll(Le(KLit.Zero, i), Lt(i, MemProp("Length", w, named["whole"].Parameter.Type))), "0 <= i.Value && i.Value < whole.Length.Value", at, m.Name);
+                    var cell = RefVariable(named["cell"]); var rest = RefVariable(named["rest"]);
                     Emit(KHavoc.Of(cell)); Emit(KHavoc.Of(rest));
                     var c = new KVar(cell); var h = new KVar(rest);
-                    Assume(AndAll(Eq(P("Addr", c, "cell"), Plus(P("Addr", w, "whole"), i)), Eq(P("Value", c, "cell"), Sel(P("Elems", w, "whole"), i))));
-                    Assume(AndAll(Eq(P("Addr", h, "rest"), P("Addr", w, "whole")), Eq(P("Length", h, "rest"), P("Length", w, "whole")), Eq(P("Index", h, "rest"), i),
-                               Eq(P("Elems", h, "rest"), P("Elems", w, "whole"))));
-                    Revoke(w, TypeOfParam("whole"));
-                    Grant(c, TypeOfParam("cell")); Grant(h, TypeOfParam("rest"));
+                    Assume(AndAll(Eq(MemProp("Addr", c, named["cell"].Parameter.Type), Plus(MemProp("Addr", w, named["whole"].Parameter.Type), i)), Eq(MemProp("Value", c, named["cell"].Parameter.Type), Sel(MemProp("Elems", w, named["whole"].Parameter.Type), i))));
+                    Assume(AndAll(Eq(MemProp("Addr", h, named["rest"].Parameter.Type), MemProp("Addr", w, named["whole"].Parameter.Type)), Eq(MemProp("Length", h, named["rest"].Parameter.Type), MemProp("Length", w, named["whole"].Parameter.Type)), Eq(MemProp("Index", h, named["rest"].Parameter.Type), i),
+                               Eq(MemProp("Elems", h, named["rest"].Parameter.Type), MemProp("Elems", w, named["whole"].Parameter.Type))));
+                    Revoke(w, named["whole"].Parameter.Type, at);
+                    Grant(c, named["cell"].Parameter.Type, at); Grant(h, named["rest"].Parameter.Type, at);
                     return true;
                 }
                 case "PutBack":
                 {
-                    var c = In("cell"); var h = In("rest");
-                    Need(Eq(P("Addr", c, "cell"), Plus(P("Addr", h, "rest"), P("Index", h, "rest"))), "cell.Addr.Value == rest.Addr.Value + rest.Index.Value");
-                    var whole = Out("whole");
+                    var c = ArgumentIn("cell", given, named); var h = ArgumentIn("rest", given, named);
+                    CheckPrecondition(Eq(MemProp("Addr", c, named["cell"].Parameter.Type), Plus(MemProp("Addr", h, named["rest"].Parameter.Type), MemProp("Index", h, named["rest"].Parameter.Type))), "cell.Addr.Value == rest.Addr.Value + rest.Index.Value", at, m.Name);
+                    var whole = RefVariable(named["whole"]);
                     Emit(KHavoc.Of(whole));
                     var w = new KVar(whole);
-                    Assume(AndAll(Eq(P("Addr", w, "whole"), P("Addr", h, "rest")), Eq(P("Length", w, "whole"), P("Length", h, "rest")),
-                               Eq(P("Elems", w, "whole"), Store(P("Elems", h, "rest"), P("Index", h, "rest"), P("Value", c, "cell")))));
-                    Revoke(c, TypeOfParam("cell")); Revoke(h, TypeOfParam("rest"));
-                    Grant(w, TypeOfParam("whole"));
+                    Assume(AndAll(Eq(MemProp("Addr", w, named["whole"].Parameter.Type), MemProp("Addr", h, named["rest"].Parameter.Type)), Eq(MemProp("Length", w, named["whole"].Parameter.Type), MemProp("Length", h, named["rest"].Parameter.Type)),
+                               Eq(MemProp("Elems", w, named["whole"].Parameter.Type), Store(MemProp("Elems", h, named["rest"].Parameter.Type), MemProp("Index", h, named["rest"].Parameter.Type), MemProp("Value", c, named["cell"].Parameter.Type)))));
+                    Revoke(c, named["cell"].Parameter.Type, at); Revoke(h, named["rest"].Parameter.Type, at);
+                    Grant(w, named["whole"].Parameter.Type, at);
                     return true;
                 }
                 default: throw new NotTranslated("Mem." + m.Name);
             }
+        }
+
+        private void StoreCell(KExpr addr, KExpr x, IArrayTypeSymbol arrayOf, SyntaxNode at) => Emit(new KStore
+        {
+            Memory = true,
+            Index = addr,
+            Value = x,
+            ArrayType = arrayOf,
+            At = at,
+            ArrayAt = at,
+        });
+
+        private void Revoke(KExpr v, ITypeSymbol t, SyntaxNode at) => Emit(KMemCells.Of(MemCells(v, t, at), false));
+
+        private void Grant(KExpr v, ITypeSymbol t, SyntaxNode at, bool tie = true)
+        {
+            Emit(KMemCells.Of(MemCells(v, t, at), true));
+            if (tie)
+            {
+                Assume(MemTie(v, t));
+            }
+        }
+
+        private string FreshLocal(ITypeSymbol t)
+        {
+            var v = Declare("t$" + _temps++, t);
+            Emit(KHavoc.Of(v));
+            return v;
+        }
+
+        private void Assume(KExpr c) => Emit(KAssume.Of(c));
+
+        private KExpr ArgumentIn(string name, Dictionary<string, KExpr> given, Dictionary<string, IArgumentOperation> named)
+        {
+            if (given.TryGetValue(name, out var known))
+            {
+                return known;
+            }
+            var t = Declare("t$" + _temps++, named[name].Parameter.Type);
+            Emit(KAssign.Of(t, Expr(named[name].Value)));
+            return given[name] = new KVar(t);
         }
     }
 }

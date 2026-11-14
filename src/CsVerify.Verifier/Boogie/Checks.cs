@@ -129,26 +129,29 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Where a null may come from: a parameter declared nullable, a call that may return null (or a local made of one).</summary>
         private static string NullOrigin(SyntaxNode what, ISymbol symbol, SemanticModel model)
         {
-            string Note(ITypeSymbol t) => t.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat.WithMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
-            bool MayReturnNull(IMethodSymbol m) => !m.ReturnsVoid && (m.ReturnType.NullableAnnotation == NullableAnnotation.Annotated || m.ReturnType.IsReferenceType && m.ReturnType.NullableAnnotation == NullableAnnotation.None ||
-                                                                      m.GetReturnTypeAttributes().Any(a => a.AttributeClass?.Name == "MaybeNullAttribute"));
-            string FromCall(Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax inv) =>
-                model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && MayReturnNull(m) ? $"'{m.Name}' may return null (line {LineOf(inv)})" : null;
             if (symbol is IParameterSymbol p && (p.Type.NullableAnnotation == NullableAnnotation.Annotated || p.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T))
             {
-                return $"parameter '{p.Name}' is declared '{Note(p.Type)}'";
+                return $"parameter '{p.Name}' is declared '{ShortName(p.Type)}'";
             }
             if (what is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax call)
             {
-                return FromCall(call);
+                return FromCall(call, model);
             }
             if (symbol is ILocalSymbol l && l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax d &&
                 d.Initializer?.Value is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax made)
             {
-                return FromCall(made);
+                return FromCall(made, model);
             }
             return null;
         }
+
+        private static string FromCall(Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax inv, SemanticModel model) =>
+            model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && MayReturnNull(m) ? $"'{m.Name}' may return null (line {LineOf(inv)})" : null;
+
+        private static bool MayReturnNull(IMethodSymbol m) => !m.ReturnsVoid && (m.ReturnType.NullableAnnotation == NullableAnnotation.Annotated || m.ReturnType.IsReferenceType && m.ReturnType.NullableAnnotation == NullableAnnotation.None ||
+                                                                  m.GetReturnTypeAttributes().Any(a => a.AttributeClass?.Name == "MaybeNullAttribute"));
+
+        private static string ShortName(ITypeSymbol t) => t.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat.WithMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
 
         /// <summary>A field or property checked before a call, and read again after it: the call may have changed it.</summary>
         private static string ChangedSinceChecked(SyntaxNode what, ISymbol symbol, SemanticModel model)
@@ -538,17 +541,6 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = _p.Method;
             var decl = m.DeclaringSyntaxReferences[0].GetSyntax();
-            MExpr Conjunction(IEnumerable<KExpr> xs)
-            {
-                MExpr all = MLit.True;
-                foreach (var x in xs)
-                {
-                    var v = Spec(x, out _);
-                    _facts.Clear();
-                    all = Conj(all, v);
-                }
-                return all;
-            }
             foreach (var (b, reqs) in _p.BaseRequires)
             {
                 Assert(Implies(Conjunction(reqs), Conjunction(_p.OwnRequires)),
@@ -561,6 +553,18 @@ namespace CsVerify.Verifier.Boogie
                 Assert(MQuant.ForAll("r$", "Ref", Implies(Sel(_m.Frame, r), Sel(allowed, r))),
                     At("CSV1018", decl, $"Spec.Modifies of '{m.Name}' might not be within that of {b.ContainingType.Name}.{b.Name}, which it overrides"), true);
             }
+        }
+
+        private MExpr Conjunction(IEnumerable<KExpr> xs)
+        {
+            MExpr all = MLit.True;
+            foreach (var x in xs)
+            {
+                var v = Spec(x, out _);
+                _facts.Clear();
+                all = Conj(all, v);
+            }
+            return all;
         }
 
         /// <summary>

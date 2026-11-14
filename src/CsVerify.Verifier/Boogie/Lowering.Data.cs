@@ -581,12 +581,8 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr LiftedBinary(IBinaryOperation nb, Func<IOperation, KExpr> lower, bool inSpec)
         {
-            KExpr Side(IOperation x) => x.Type == null ? KLit.Null : lower(x);
-            var (l, r) = (Side(nb.LeftOperand), Side(nb.RightOperand));
+            var (l, r) = (LoweredSide(nb.LeftOperand, lower), LoweredSide(nb.RightOperand, lower));
             var t = nb.LeftOperand.Type;
-            KExpr Both(string op) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
-                ? AndAlso(AndAlso(NotNull(l), NotNull(r)), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
-                : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
             // (in a database query's lambda, with SQL's nulls (UseRelationalNulls): == and != where either is null are
             // unknown, SQL's unknown, for each comparison; as in C# where neither is)
             if (_inDatabase > 0 && KernelTypes.Ef?.RelationalNulls == true && nb.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
@@ -609,8 +605,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var both = AndAlso(NotNull(l), NotNull(r));
                 var u = Underlying(nb.Type);
-                KExpr V(KExpr x) => Ite(both, NullableValue(x, t), KLit.Zero);
-                var sum = inSpec ? new KOp(Op(nb.OperatorKind), V(l), V(r)) : Arith(Op(nb.OperatorKind), V(l), V(r), u, nb.Syntax, nb.IsChecked);
+                var sum = inSpec ? new KOp(Op(nb.OperatorKind), Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero)) : Arith(Op(nb.OperatorKind), Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero), u, nb.Syntax, nb.IsChecked);
                 if (!inSpec)
                 {
                     var tv = Declare("t$" + _temps++, u);
@@ -630,8 +625,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var both = AndAlso(NotNull(l), NotNull(r));
                 var u = Underlying(nb.Type);
-                KExpr V(KExpr x) => Ite(both, NullableValue(x, t), KLit.Zero);
-                var bits = Bitwise(nb.OperatorKind, V(l), V(r), u, inSpec);
+                var bits = Bitwise(nb.OperatorKind, Ite(both, NullableValue(l, t), KLit.Zero), Ite(both, NullableValue(r, t), KLit.Zero), u, inSpec);
                 if (!inSpec)
                 {
                     var tv = Declare("t$" + _temps++, u);
@@ -643,11 +637,17 @@ namespace CsVerify.Verifier.Boogie
             return nb.OperatorKind switch
             {
                 BinaryOperatorKind.Equals => Eq(l, r), BinaryOperatorKind.NotEquals => Ne(l, r),
-                BinaryOperatorKind.LessThan => Both("<"), BinaryOperatorKind.LessThanOrEqual => Both("<="),
-                BinaryOperatorKind.GreaterThan => Both(">"), BinaryOperatorKind.GreaterThanOrEqual => Both(">="),
+                BinaryOperatorKind.LessThan => LiftedBoth("<", t, nb, l, r), BinaryOperatorKind.LessThanOrEqual => LiftedBoth("<=", t, nb, l, r),
+                BinaryOperatorKind.GreaterThan => LiftedBoth(">", t, nb, l, r), BinaryOperatorKind.GreaterThanOrEqual => LiftedBoth(">=", t, nb, l, r),
                 _ => throw new NotTranslated("the lifted operator " + nb.OperatorKind),
             };
         }
+
+        private KExpr LiftedBoth(string op, ITypeSymbol t, IBinaryOperation nb, KExpr l, KExpr r) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
+            ? AndAlso(AndAlso(NotNull(l), NotNull(r)), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
+            : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
+
+        private KExpr LoweredSide(IOperation x, Func<IOperation, KExpr> lower) => x.Type == null ? KLit.Null : lower(x);
 
         private KExpr NewData(IObjectCreationOperation oc, Func<IOperation, KExpr> lower, bool inSpec)
         {

@@ -305,10 +305,11 @@ namespace CsVerify.Verifier
         public IFieldSymbol GateOfTry(TryStatementSyntax t, SemanticModel model)
         {
             if (!(Before(t) is StatementSyntax before) || !(GateTakenBy(before, model) is IFieldSymbol gate) || ReleaseIn(t, gate, model) == null) return null;
-            string Receiver(StatementSyntax st) => st.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(i => CallsGate(i, gate, model)).Select(i => OwnerOf(i, model)).FirstOrDefault();
             // (o._gate taken, and p._gate given back, is not this)
-            return Receiver(before) == Receiver(ReleaseIn(t, gate, model)) ? gate : null;
+            return Receiver(before, gate, model) == Receiver(ReleaseIn(t, gate, model), gate, model) ? gate : null;
         }
+
+        private string Receiver(StatementSyntax st, IFieldSymbol gate, SemanticModel model) => st.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(i => CallsGate(i, gate, model)).Select(i => OwnerOf(i, model)).FirstOrDefault();
 
         /// <summary>The object whose semaphore a try holds, as written ("this" when it isn't).</summary>
         public string TryOwner(TryStatementSyntax t, IFieldSymbol gate, SemanticModel model) =>
@@ -374,33 +375,34 @@ namespace CsVerify.Verifier
         {
             var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             var gates = new HashSet<IFieldSymbol>(SymbolEqualityComparer.Default);
-            void Walk(IMethodSymbol m)
+            Walk(method, seen, gates);
+            return gates;
+        }
+
+        private void Walk(IMethodSymbol m, HashSet<IMethodSymbol> seen, HashSet<IFieldSymbol> gates)
+        {
+            if (!seen.Add(m.OriginalDefinition)) return;
+            foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
             {
-                if (!seen.Add(m.OriginalDefinition)) return;
-                foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
+                var model = _compilation.GetSemanticModel(r.SyntaxTree);
+                foreach (var inv in r.GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
-                    var model = _compilation.GetSemanticModel(r.SyntaxTree);
-                    foreach (var inv in r.GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>())
+                    if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)) continue;
+                    bool onThis = inv.Expression is IdentifierNameSyntax || inv.Expression is GenericNameSyntax ||
+                                  inv.Expression is MemberAccessExpressionSyntax ma && ma.Expression is ThisExpressionSyntax;
+                    if (onThis) { Walk(callee, seen, gates); continue; }
+                    if (Acquires(callee) && GateOfWrapper(inv, model, true) is IFieldSymbol taken &&
+                        OwnerOf(inv, model) == "this")
                     {
-                        if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)) continue;
-                        bool onThis = inv.Expression is IdentifierNameSyntax || inv.Expression is GenericNameSyntax ||
-                                      inv.Expression is MemberAccessExpressionSyntax ma && ma.Expression is ThisExpressionSyntax;
-                        if (onThis) { Walk(callee); continue; }
-                        if (Acquires(callee) && GateOfWrapper(inv, model, true) is IFieldSymbol taken &&
-                            OwnerOf(inv, model) == "this")
-                        {
-                            gates.Add(taken);
-                            continue;
-                        }
-                        if (inv.Expression is MemberAccessExpressionSyntax wa && (wa.Name.Identifier.Text == "Wait" || wa.Name.Identifier.Text == "WaitAsync") &&
-                            (wa.Expression is IdentifierNameSyntax || wa.Expression is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax) &&
-                            model.GetSymbolInfo(wa.Expression).Symbol is IFieldSymbol g && IsPlainSemaphore(g))
-                            gates.Add(g);
+                        gates.Add(taken);
+                        continue;
                     }
+                    if (inv.Expression is MemberAccessExpressionSyntax wa && (wa.Name.Identifier.Text == "Wait" || wa.Name.Identifier.Text == "WaitAsync") &&
+                        (wa.Expression is IdentifierNameSyntax || wa.Expression is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax) &&
+                        model.GetSymbolInfo(wa.Expression).Symbol is IFieldSymbol g && IsPlainSemaphore(g))
+                        gates.Add(g);
                 }
             }
-            Walk(method);
-            return gates;
         }
 
         // ---- other lock primitives, in their form: taken, then a try whose finally gives it back ----

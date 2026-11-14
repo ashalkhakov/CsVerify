@@ -131,17 +131,6 @@ namespace CsVerify.Verifier.Boogie
             var decl = _decl ?? _m.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
             var model = _model ?? (decl == null ? null : KernelTypes.Compilation?.GetSemanticModel(decl.SyntaxTree));
             var ops = cfg.Blocks.SelectMany(b => b.Operations.Concat(b.BranchValue == null ? new IOperation[0] : new[] { b.BranchValue })).SelectMany(o => o.DescendantsAndSelf()).ToList();
-            bool Encloses(ISymbol owner)
-            {
-                for (var up = _m.ContainingSymbol; up != null; up = up.ContainingSymbol)
-                {
-                    if (SymbolEqualityComparer.Default.Equals(up, owner))
-                    {
-                        return true;
-                    }
-                }
-                return false;
-            }
             // (and what its contract names)
             var named = _contract.Requires.Concat(_contract.Ensures.Select(e => e.Expr)).Concat(new[] { _contract.Reads, _contract.Modifies }).Where(x => x != null).SelectMany(x => x.DescendantsAndSelf());
             var syms = ops.Concat(named).Select(o => o is IParameterReferenceOperation pr ? (ISymbol)pr.Parameter : o is ILocalReferenceOperation lr ? lr.Local : null)
@@ -171,6 +160,18 @@ namespace CsVerify.Verifier.Boogie
                 _p.Captured.Add((input, type, notNull));
                 _p.CapturedSymbols.Add(sym);
             }
+        }
+
+        private bool Encloses(ISymbol owner)
+        {
+            for (var up = _m.ContainingSymbol; up != null; up = up.ContainingSymbol)
+            {
+                if (SymbolEqualityComparer.Default.Equals(up, owner))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>The captured variables: each one's input.</summary>
@@ -418,17 +419,10 @@ namespace CsVerify.Verifier.Boogie
                     if (KernelTypes.SteppedBy?.Invoke(_m)?.FirstOrDefault() is IFieldSymbol stepped && _m.IsStatic && _m.Parameters.Length == 2 && _isFunction(_m))
                     {
                         var ft = stepped.Type;
-                        KExpr S(string x, string y) => new KFnCall
-                        {
-                            Callee = _m.OriginalDefinition,
-                            Args = new KExpr[] { new KVar(x), new KVar(y) },
-                            At = _decl,
-                        };
-                        KExpr R(string x) => IsIntegral(ft) ? InRange(new KVar(x), ft) : KLit.True;
-                        KExpr body = Implies(AndAlso(S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
+                        KExpr body = Implies(AndAlso(SelfCall("q$a", "q$b"), SelfCall("q$b", "q$c")), SelfCall("q$a", "q$c"));
                         foreach (var v in new[] { "q$c", "q$b", "q$a" })
                         {
-                            body = KQuant.ForAll(v, TypeOf(ft), Implies(R(v), body));
+                            body = KQuant.ForAll(v, TypeOf(ft), Implies(InRangeOf(v, ft), body));
                         }
                         Emit(KCheck.Of(
                             body,
@@ -565,6 +559,15 @@ namespace CsVerify.Verifier.Boogie
             LoopCauses();
             return _p;
         }
+
+        private KExpr InRangeOf(string x, ITypeSymbol ft) => IsIntegral(ft) ? InRange(new KVar(x), ft) : KLit.True;
+
+        private KExpr SelfCall(string x, string y) => new KFnCall
+        {
+            Callee = _m.OriginalDefinition,
+            Args = new KExpr[] { new KVar(x), new KVar(y) },
+            At = _decl,
+        };
 
         /// <summary>
         /// A Spec statement's argument as written: the control-flow graph lowers &amp;&amp; and ?: in it into blocks, but a

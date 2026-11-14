@@ -313,38 +313,40 @@ namespace CsVerify.Verifier
                 !(local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax declarator) ||
                 // (captured from around a local function: the method around it has it, and this looks only inside)
                 !c.Declaration.Contains(declarator)) return false;
-            bool Same(ExpressionSyntax e) => e is IdentifierNameSyntax n && SymbolEqualityComparer.Default.Equals(c.Model.GetSymbolInfo(n).Symbol, local);
-            bool Allowed(ExpressionSyntax e)
-            {
-                switch (e)
-                {
-                    case ArrayCreationExpressionSyntax _:
-                    case ImplicitArrayCreationExpressionSyntax _:
-                        return true;
-                    case ParenthesizedExpressionSyntax p: return Allowed(p.Expression);
-                    case ConditionalExpressionSyntax q: return Allowed(q.WhenTrue) && Allowed(q.WhenFalse);
-                    case IdentifierNameSyntax n: return c.Model.GetSymbolInfo(n).Symbol is ILocalSymbol other && HoldsOnlyNewArrays(other, c, visiting);
-                    default: return false;
-                }
-            }
-            if (declarator.Initializer != null && !Allowed(declarator.Initializer.Value)) return false;
+            if (declarator.Initializer != null && !Allowed(declarator.Initializer.Value, c, visiting)) return false;
             foreach (var n in c.Declaration.DescendantNodes())
                 switch (n)
                 {
-                    case AssignmentExpressionSyntax a when Same(a.Left):
-                        if (!Allowed(a.Right)) return false;
+                    case AssignmentExpressionSyntax a when IsLocal(a.Left, c, local):
+                        if (!Allowed(a.Right, c, visiting)) return false;
                         break;
                     // (assigned in a tuple or by a foreach: from something this doesn't follow)
-                    case AssignmentExpressionSyntax a when Parts(a.Left).Skip(1).Any() && Parts(a.Left).Any(Same): return false;
-                    case ForEachVariableStatementSyntax fe when Parts(fe.Variable).Any(Same): return false;
-                    case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) && Same(arg.Expression): return false;
-                    case RefExpressionSyntax r when Same(r.Expression): return false;
+                    case AssignmentExpressionSyntax a when Parts(a.Left).Skip(1).Any() && Parts(a.Left).Any(e => IsLocal(e, c, local)): return false;
+                    case ForEachVariableStatementSyntax fe when Parts(fe.Variable).Any(e => IsLocal(e, c, local)): return false;
+                    case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) && IsLocal(arg.Expression, c, local): return false;
+                    case RefExpressionSyntax r when IsLocal(r.Expression, c, local): return false;
                     // (a specification's lambda never runs)
-                    case AnonymousFunctionExpressionSyntax f when SpecSymbols.EnclosingSpecCall(f, c.Model) == null && f.DescendantNodes().OfType<IdentifierNameSyntax>().Any(Same): return false;
-                    case LocalFunctionStatementSyntax f when f.DescendantNodes().OfType<IdentifierNameSyntax>().Any(Same): return false;
+                    case AnonymousFunctionExpressionSyntax f when SpecSymbols.EnclosingSpecCall(f, c.Model) == null && f.DescendantNodes().OfType<IdentifierNameSyntax>().Any(e => IsLocal(e, c, local)): return false;
+                    case LocalFunctionStatementSyntax f when f.DescendantNodes().OfType<IdentifierNameSyntax>().Any(e => IsLocal(e, c, local)): return false;
                 }
             return true;
         }
+
+        private static bool Allowed(ExpressionSyntax e, Contract c, HashSet<ILocalSymbol> visiting)
+        {
+            switch (e)
+            {
+                case ArrayCreationExpressionSyntax _:
+                case ImplicitArrayCreationExpressionSyntax _:
+                    return true;
+                case ParenthesizedExpressionSyntax p: return Allowed(p.Expression, c, visiting);
+                case ConditionalExpressionSyntax q: return Allowed(q.WhenTrue, c, visiting) && Allowed(q.WhenFalse, c, visiting);
+                case IdentifierNameSyntax n: return c.Model.GetSymbolInfo(n).Symbol is ILocalSymbol other && HoldsOnlyNewArrays(other, c, visiting);
+                default: return false;
+            }
+        }
+
+        private static bool IsLocal(ExpressionSyntax e, Contract c, ILocalSymbol local) => e is IdentifierNameSyntax n && SymbolEqualityComparer.Default.Equals(c.Model.GetSymbolInfo(n).Symbol, local);
 
         private readonly Dictionary<IMethodSymbol, bool> _touchesArrays = new Dictionary<IMethodSymbol, bool>(SymbolEqualityComparer.Default);
 
@@ -364,9 +366,8 @@ namespace CsVerify.Verifier
             if (IsOverridable(key)) return _touchesArrays[key] = true;
             if (!c.HasSource)
             {
-                bool Reaches(ITypeSymbol t) => t != null && !t.IsValueType && t.SpecialType != SpecialType.System_String;
-                return _touchesArrays[key] = Fields.RunsUserCode(key) || key.Parameters.Any(p => Reaches(p.Type)) ||
-                                             !key.IsStatic && Reaches(key.ContainingType) || key.IsGenericMethod;
+                return _touchesArrays[key] = Fields.RunsUserCode(key) || key.Parameters.Any(p => ReachesObjects(p.Type)) ||
+                                             !key.IsStatic && ReachesObjects(key.ContainingType) || key.IsGenericMethod;
             }
             _touchesArrays[key] = false; // assume no for recursive calls while computing
             var body = c.Model.GetOperation(c.Declaration);
@@ -402,6 +403,8 @@ namespace CsVerify.Verifier
             }
             return _touchesArrays[key] = touches;
         }
+
+        private bool ReachesObjects(ITypeSymbol t) => t != null && !t.IsValueType && t.SpecialType != SpecialType.System_String;
 
         private static IOperation Unwrap(IOperation op)
         {

@@ -99,16 +99,17 @@ namespace CsVerify.Verifier
             if (b.OperatorKind == BinaryOperatorKind.ConditionalAnd)
                 return Definition(b.LeftOperand, result) ?? Definition(b.RightOperand, result);
             if (b.OperatorKind != BinaryOperatorKind.Equals) return null;
-            bool IsResult(IOperation o)
-            {
-                o = Unwrap(o);
-                if (o is IInvocationOperation g && SpecSymbols.IsGhostOf(g.TargetMethod)) o = Unwrap(g.Arguments[0].Value);
-                return o is IParameterReferenceOperation p && result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result) ||
-                       o is IInvocationOperation r && SpecSymbols.IsSpecClass(r.TargetMethod.ContainingType) && r.TargetMethod.Name == "Result";
-            }
-            if (IsResult(b.LeftOperand) && !Mentions(b.RightOperand, result)) return b.RightOperand;
-            if (IsResult(b.RightOperand) && !Mentions(b.LeftOperand, result)) return b.LeftOperand;
+            if (IsResult(b.LeftOperand, result) && !Mentions(b.RightOperand, result)) return b.RightOperand;
+            if (IsResult(b.RightOperand, result) && !Mentions(b.LeftOperand, result)) return b.LeftOperand;
             return null;
+        }
+
+        private static bool IsResult(IOperation o, IParameterSymbol result)
+        {
+            o = Unwrap(o);
+            if (o is IInvocationOperation g && SpecSymbols.IsGhostOf(g.TargetMethod)) o = Unwrap(g.Arguments[0].Value);
+            return o is IParameterReferenceOperation p && result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result) ||
+                   o is IInvocationOperation r && SpecSymbols.IsSpecClass(r.TargetMethod.ContainingType) && r.TargetMethod.Name == "Result";
         }
 
         private static IOperation Unwrap(IOperation o)

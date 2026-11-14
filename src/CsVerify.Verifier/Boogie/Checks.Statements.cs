@@ -536,12 +536,6 @@ namespace CsVerify.Verifier.Boogie
             {
                 r[kv.Key] = MathTerms.Math(kv.Value);
             }
-            MExpr M(KExpr x)
-            {
-                var v = Spec(x, out _);
-                _facts.Clear();
-                return v.Substitute(r);
-            }
             Emit(new MLambda
             {
                 Var = lam.Var,
@@ -550,12 +544,12 @@ namespace CsVerify.Verifier.Boogie
                 ResultType = lam.ResultType,
                 NoChange = lam.NoChange,
                 Steady = lam.Steady,
-                Pre = lam.Pre == null ? null : M(lam.Pre),
-                Posts = lam.Posts.Select(M).ToList(),
-                PreS = lam.PreS == null ? null : M(lam.PreS),
-                Reads = lam.Reads == null ? null : M(lam.Reads),
-                Changes = lam.Changes == null ? null : M(lam.Changes),
-                PostsS = lam.PostsS.Select(M).ToList(),
+                Pre = lam.Pre == null ? null : SpecGiven(lam.Pre, r),
+                Posts = lam.Posts.Select(x => SpecGiven(x, r)).ToList(),
+                PreS = lam.PreS == null ? null : SpecGiven(lam.PreS, r),
+                Reads = lam.Reads == null ? null : SpecGiven(lam.Reads, r),
+                Changes = lam.Changes == null ? null : SpecGiven(lam.Changes, r),
+                PostsS = lam.PostsS.Select(x => SpecGiven(x, r)).ToList(),
             });
             return;
         }

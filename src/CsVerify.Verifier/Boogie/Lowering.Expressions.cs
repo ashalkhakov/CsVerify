@@ -190,32 +190,34 @@ namespace CsVerify.Verifier.Boogie
         private static bool Steady(IOperation op, ExpressionSyntax during)
         {
             var names = new HashSet<string>();
-            bool Simple(IOperation o)
-            {
-                switch (o)
-                {
-                    case IConversionOperation { IsImplicit: true } c: return Simple(c.Operand);
-                    case ILocalReferenceOperation l:
-                        names.Add(l.Local.Name);
-                        return true;
-                    case IParameterReferenceOperation pr:
-                        names.Add(pr.Parameter.Name);
-                        return true;
-                    case IInstanceReferenceOperation _: return true;
-                    case IFieldReferenceOperation { Field.IsReadOnly: true } f: return f.Instance == null || Simple(f.Instance);
-                    case IArrayElementReferenceOperation ae: return Simple(ae.ArrayReference) && ae.Indices.All(Simple);
-                    default: return o.ConstantValue.HasValue;
-                }
-            }
-            if (!Simple(op))
+            if (!IsSimple(op, names))
             {
                 return false;
             }
-            bool Names(ExpressionSyntax e) => e is IdentifierNameSyntax n && names.Contains(n.Identifier.Text);
-            return !during.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>().Any(a => Names(a.Left)) &&
-                   !during.DescendantNodesAndSelf().OfType<PostfixUnaryExpressionSyntax>().Any(u => Names(u.Operand)) &&
-                   !during.DescendantNodesAndSelf().OfType<PrefixUnaryExpressionSyntax>().Any(u => Names(u.Operand)) &&
-                   !during.DescendantNodesAndSelf().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && Names(a.Expression));
+            return !during.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>().Any(a => NamesOneOf(a.Left, names)) &&
+                   !during.DescendantNodesAndSelf().OfType<PostfixUnaryExpressionSyntax>().Any(u => NamesOneOf(u.Operand, names)) &&
+                   !during.DescendantNodesAndSelf().OfType<PrefixUnaryExpressionSyntax>().Any(u => NamesOneOf(u.Operand, names)) &&
+                   !during.DescendantNodesAndSelf().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && NamesOneOf(a.Expression, names));
+        }
+
+        private static bool NamesOneOf(ExpressionSyntax e, HashSet<string> names) => e is IdentifierNameSyntax n && names.Contains(n.Identifier.Text);
+
+        private static bool IsSimple(IOperation o, HashSet<string> names)
+        {
+            switch (o)
+            {
+                case IConversionOperation { IsImplicit: true } c: return IsSimple(c.Operand, names);
+                case ILocalReferenceOperation l:
+                    names.Add(l.Local.Name);
+                    return true;
+                case IParameterReferenceOperation pr:
+                    names.Add(pr.Parameter.Name);
+                    return true;
+                case IInstanceReferenceOperation _: return true;
+                case IFieldReferenceOperation { Field.IsReadOnly: true } f: return f.Instance == null || IsSimple(f.Instance, names);
+                case IArrayElementReferenceOperation ae: return IsSimple(ae.ArrayReference, names) && ae.Indices.All(o => IsSimple(o, names));
+                default: return o.ConstantValue.HasValue;
+            }
         }
 
         private string Capture(CaptureId id, ITypeSymbol type)
@@ -305,8 +307,7 @@ namespace CsVerify.Verifier.Boogie
             // (x += y, x++ of floats: rounded, never an overflow)
             if (IsFloating(type) && op is "+" or "-" or "*" or "/")
             {
-                KExpr F(KExpr x) => x is KLit lit && System.Numerics.BigInteger.TryParse(lit.Text, out var k) ? FloatLiteral((double)k, type) : x;
-                return new KOp((op switch { "+" => "$fp.add", "-" => "$fp.sub", "*" => "$fp.mul", _ => "$fp.div" }) + FloatSize(type), F(l), F(r));
+                return new KOp((op switch { "+" => "$fp.add", "-" => "$fp.sub", "*" => "$fp.mul", _ => "$fp.div" }) + FloatSize(type), AsFloat(l, type), AsFloat(r, type));
             }
             if (!IsIntegral(type))
             {
@@ -330,6 +331,8 @@ namespace CsVerify.Verifier.Boogie
                 ThrowsTo = throwsTo,
             };
         }
+
+        private KExpr AsFloat(KExpr x, ITypeSymbol type) => x is KLit lit && System.Numerics.BigInteger.TryParse(lit.Text, out var k) ? FloatLiteral((double)k, type) : x;
 
         private static string Op(BinaryOperatorKind k) => k switch
         {
@@ -1086,35 +1089,36 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             {
                 Emit(KAssume.Of(Eq(new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d])));
             }
-            void Fill(IArrayInitializerOperation init, List<KExpr> prefix)
-            {
-                for (int i = 0; i < init.ElementValues.Length; i++)
-                {
-                    var at = new List<KExpr>(prefix) { new KLit(i.ToString()) };
-                    if (at.Count < sizes.Length)
-                    {
-                        Fill((IArrayInitializerOperation)init.ElementValues[i], at);
-                    }
-                    else
-                    {
-                        Emit(new KStore
-                        {
-                            Unchecked = true,
-                            Array = new KVar(t),
-                            Index = CellOf(at),
-                            Value = Expr(init.ElementValues[i]),
-                            ArrayType = mc.Type,
-                            At = mc.Syntax,
-                            ArrayAt = mc.Syntax,
-                        });
-                    }
-                }
-            }
             if (mc.Initializer != null)
             {
-                Fill(mc.Initializer, new List<KExpr>());
+                Fill(mc.Initializer, new List<KExpr>(), sizes, t, mc);
             }
             return new KVar(t);
+        }
+
+        private void Fill(IArrayInitializerOperation init, List<KExpr> prefix, KExpr[] sizes, string t, IArrayCreationOperation mc)
+        {
+            for (int i = 0; i < init.ElementValues.Length; i++)
+            {
+                var at = new List<KExpr>(prefix) { new KLit(i.ToString()) };
+                if (at.Count < sizes.Length)
+                {
+                    Fill((IArrayInitializerOperation)init.ElementValues[i], at, sizes, t, mc);
+                }
+                else
+                {
+                    Emit(new KStore
+                    {
+                        Unchecked = true,
+                        Array = new KVar(t),
+                        Index = CellOf(at),
+                        Value = Expr(init.ElementValues[i]),
+                        ArrayType = mc.Type,
+                        At = mc.Syntax,
+                        ArrayAt = mc.Syntax,
+                    });
+                }
+            }
         }
 
         private KExpr StringOperator(IBinaryOperation sb)

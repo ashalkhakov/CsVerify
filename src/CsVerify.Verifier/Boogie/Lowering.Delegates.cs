@@ -416,34 +416,35 @@ namespace CsVerify.Verifier.Boogie
             }
             var vars = invoke.Parameters.Select((p, k) => ("q$" + k, TypeOf(p.Type))).ToList();
             var withResult = invoke.ReturnsVoid ? vars : vars.Append(("r$", TypeOf(invoke.ReturnType))).ToList();
-            // (each contract's parameters, by position, to the bound variables; its result to r$; the method's this to the receiver)
-            KExpr Of(IOperation op, IParameterSymbol result)
-            {
-                var own = new HashSet<ISymbol>(op.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Select(p => p.Parameter), SymbolEqualityComparer.Default);
-                if (!Steady(op, own))
-                {
-                    return null;
-                }
-                var given = own.OfType<IParameterSymbol>().Where(p => !SymbolEqualityComparer.Default.Equals(p, result)).ToDictionary(p => Local(p), p => (KExpr)new KVar("q$" + p.Ordinal));
-                given["result"] = new KVar("r$");
-                if (receiver != null)
-                {
-                    given["this"] = receiver;
-                }
-                // (a contract of code's reads, an element or a call, isn't compared: its well-definedness is Checks')
-                var spec = Spec(op, result);
-                return spec.IsMath() ? spec.Rewrite(x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
-            }
-            var dPre = dc.Requires.Select(r => Of(r, null)).ToList();
-            var mPre = mc.Requires.Select(r => Of(r, null)).ToList();
-            var mPost = mc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();
-            var dPost = dc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();
+            var dPre = dc.Requires.Select(r => ContractPart(r, null, receiver)).ToList();
+            var mPre = mc.Requires.Select(r => ContractPart(r, null, receiver)).ToList();
+            var mPost = mc.Ensures.Where(e => e.Guard == null).Select(e => ContractPart(e.Expr, e.ResultParameter, receiver)).ToList();
+            var dPost = dc.Ensures.Where(e => e.Guard == null).Select(e => ContractPart(e.Expr, e.ResultParameter, receiver)).ToList();
             if (dPre.Concat(mPre).Concat(mPost).Concat(dPost).Any(x => x == null))
             {
                 return null;
             }
             return (Forall(vars, Implies(AndAll(dPre), AndAll(mPre))),
                     Forall(withResult, Implies(AndAlso(AndAlso(AndAll(dPre), AndAll(mPre)), AndAll(mPost)), AndAll(dPost))));
+        }
+
+        // (each contract's parameters, by position, to the bound variables; its result to r$; the method's this to the receiver)
+        private KExpr ContractPart(IOperation op, IParameterSymbol result, KExpr receiver)
+        {
+            var own = new HashSet<ISymbol>(op.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Select(p => p.Parameter), SymbolEqualityComparer.Default);
+            if (!Steady(op, own))
+            {
+                return null;
+            }
+            var given = own.OfType<IParameterSymbol>().Where(p => !SymbolEqualityComparer.Default.Equals(p, result)).ToDictionary(p => Local(p), p => (KExpr)new KVar("q$" + p.Ordinal));
+            given["result"] = new KVar("r$");
+            if (receiver != null)
+            {
+                given["this"] = receiver;
+            }
+            // (a contract of code's reads, an element or a call, isn't compared: its well-definedness is Checks')
+            var spec = Spec(op, result);
+            return spec.IsMath() ? spec.Rewrite(x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
         }
 
         /// <summary>For every value of these variables (none: the body itself).</summary>

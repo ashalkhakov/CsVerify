@@ -225,13 +225,11 @@ namespace CsVerify.Verifier.Boogie
         private void AddEffects(SyntaxNode code, SemanticModel model, Effects e, HashSet<string> seen, SyntaxNode except, EffectScope scope)
         {
             var locks = KernelTypes.Locks;
-            bool Enter(SyntaxNode x) => x != except && !(x is LockStatementSyntax) && !(x is TryStatementSyntax t && locks?.GateOfTry(t, model) != null) &&
-                                        !(x is UsingStatementSyntax u && locks?.GateOfUsing(u, model) != null) && !(x is StatementSyntax st && st.Parent is BlockSyntax b && locks != null && locks.UsingsBefore(st, b, model).Any());
             if (code == except)
             {
                 return;
             }
-            foreach (var n in code.DescendantNodes(Enter))
+            foreach (var n in code.DescendantNodes(x => Enters(x, except, locks, model)))
             {
                 switch (n)
                 {
@@ -281,6 +279,9 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        private bool Enters(SyntaxNode x, SyntaxNode except, LockGuards locks, SemanticModel model) => x != except && !(x is LockStatementSyntax) && !(x is TryStatementSyntax t && locks?.GateOfTry(t, model) != null) &&
+                                    !(x is UsingStatementSyntax u && locks?.GateOfUsing(u, model) != null) && !(x is StatementSyntax st && st.Parent is BlockSyntax b && locks != null && locks.UsingsBefore(st, b, model).Any());
+
         /// <summary>Two objects told apart: both known, and not equal (a condition, false where either isn't known).</summary>
         private static KExpr Apart(KExpr x, KExpr y) => x == null || y == null ? KLit.False : KeyOf(x) == KeyOf(y) && KeyOf(x) != "" ? KLit.False : Ne(x, y);
 
@@ -318,11 +319,10 @@ namespace CsVerify.Verifier.Boogie
             }
             var fields = FieldRaces(a, b).Concat(FieldRaces(b, a)).ToList();
             var fieldsApart = AndAll(fields.Select(f => f.apart));
-            KExpr Or(KExpr c) => unless == null ? c : OrElse(unless, c);
             if (fields.Count > 0)
             {
                 Emit(KCheck.Of(
-                    Or(fieldsApart),
+                    OrUnless(fieldsApart, unless),
                     Warning,
                     at,
                     notAssumedAfter: true,
@@ -338,12 +338,14 @@ namespace CsVerify.Verifier.Boogie
             }
             // (as an else of the fields': warned of only where those are apart)
             Emit(KCheck.Of(
-                Or(OrElse(Not(fieldsApart), AndAlso(ArraysApart(a, b), ArraysApart(b, a)))),
+                OrUnless(OrElse(Not(fieldsApart), AndAlso(ArraysApart(a, b), ArraysApart(b, a))), unless),
                 Warning,
                 at,
                 notAssumedAfter: true,
                 message: $"'{a.Name}' and '{b.Name}' run at once, and one writes arrays the other may use: on one array, that could race, and each is proved as if alone"));
         }
+
+        private KExpr OrUnless(KExpr c, KExpr unless) => unless == null ? c : OrElse(unless, c);
 
         /// <summary>The id of a check whose failure is a warning (CSV1900, not an error), never assumed after.</summary>
         public const string Warning = "WARN";

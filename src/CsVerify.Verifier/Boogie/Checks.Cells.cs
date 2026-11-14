@@ -68,10 +68,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 var stmts = _p.Blocks.SelectMany(b => b.Stmts).ToList();
                 bool foldsCells = stmts.OfType<KFold>().Any(f => PredicateHasCells(f.Inst.Pred));
-                bool callsCells(Func<KProcedure, IEnumerable<KExpr>> specs) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
                 _p.ArrayMode = _p.MemViews || NamesCells(_rawRequires.Concat(_rawEnsures)) || foldsCells ||
-                               callsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(x => x.Atoms()).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)));
-                _p.UsesCells = _p.ArrayMode || callsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr));
+                               CallsCells(sig => sig.Ensures.Select(e => e.Expr).SelectMany(x => x.Atoms()).OfType<KInst>().Where(q => PredicateHasCells(q.Pred)), stmts);
+                _p.UsesCells = _p.ArrayMode || CallsCells(sig => sig.Requires.Concat(sig.Ensures).Select(x => x.Expr), stmts);
                 if (_p.UsesCells)
                 {
                     _p.UsesPerm = true;
@@ -79,6 +78,8 @@ namespace CsVerify.Verifier.Boogie
             }
             _p.UsesFields = _p.UsesPerm && _program.UsesFieldPermissions;
         }
+
+        private bool CallsCells(Func<KProcedure, IEnumerable<KExpr>> specs, List<KStmt> stmts) => stmts.OfType<KCall>().Any(c => !_program.ContractOf(c.Callee).IsPure && NamesCells(specs(_program.Signature(c.Callee))));
 
         private bool PredicateHasCells(IMethodSymbol pred, HashSet<IMethodSymbol> seen = null)
         {

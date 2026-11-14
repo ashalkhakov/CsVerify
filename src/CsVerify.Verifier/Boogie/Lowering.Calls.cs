@@ -341,7 +341,7 @@ namespace CsVerify.Verifier.Boogie
                 var row = model.Type.Substring("[Ref]".Length);
                 Emit(KRow.Of(model.Name, recv, new KVar(LinqMap(row)), at: at));
             }
-            if (model0Size(callee) is string size)
+            if (SizeModelOf(callee) is string size)
             {
                 Emit(KAssume.Of(Ge(Sel(size, recv), KLit.Zero)));
             }
@@ -352,8 +352,9 @@ namespace CsVerify.Verifier.Boogie
             var r = Declare("t$" + _temps++, callee.ReturnType);
             Emit(KHavoc.Of(r));
             return new KVar(r);
-            static string model0Size(IMethodSymbol m) => ModelsOf((INamedTypeSymbol)m.ContainingType).Any(x => x.Name == SizeMap) ? SizeMap : null;
         }
+
+        private string SizeModelOf(IMethodSymbol m) => ModelsOf((INamedTypeSymbol)m.ContainingType).Any(x => x.Name == SizeMap) ? SizeMap : null;
 
         /// <summary>
         /// Array.Reverse(a), Array.Copy(src, dst, n) and (src, i, dst, j, n), Array.Resize(ref a, n), as their stubs have
@@ -365,19 +366,12 @@ namespace CsVerify.Verifier.Boogie
         {
             var m = call.TargetMethod;
             var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
-            void CheckNotNull(IArgumentOperation a, KExpr v) =>
-                Emit(KCheck.Of(
-                    NotNull(v),
-                    "CSV1014",
-                    a.Syntax,
-                    $"'{a.Value.Syntax}' might be null, but parameter '{a.Parameter.Name}' of '{m.Name}' is not nullable"));
-            void Pre(KExpr c, string text) => Emit(KCheck.Of(c, "CSV1001", call.Syntax, $"precondition '{text}' of '{m.Name}' might not hold"));
             // (Sort(a): a written, its order the comparer's, as its stub has it)
             if (m.Name == "Sort" && ordered.Count == 1 && IsArray(Unconverted(ordered[0].Value).Type))
             {
                 var at = Unconverted(ordered[0].Value).Type;
                 var a = Expr(Unconverted(ordered[0].Value));
-                CheckNotNull(ordered[0],a);
+                CheckNotNull(ordered[0], a, m);
                 var map = Elements(at);
                 Emit(KRow.Of(map, a, new KVar(LinqMap("[int]" + ElementValue(map))), at: call.Syntax));
                 return (true, null);
@@ -386,7 +380,7 @@ namespace CsVerify.Verifier.Boogie
             if (m.Name == "IndexOf" && ordered.Count == 2 && IsArray(Unconverted(ordered[0].Value).Type) && m.ReturnType.SpecialType == SpecialType.System_Int32)
             {
                 var a = Expr(Unconverted(ordered[0].Value));
-                CheckNotNull(ordered[0],a);
+                CheckNotNull(ordered[0], a, m);
                 Expr(ordered[1].Value);
                 var r = Declare("t$" + _temps++, m.ReturnType);
                 Emit(KHavoc.Of(r));
@@ -397,7 +391,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var at = Unconverted(ordered[0].Value).Type;
                 var a = Expr(Unconverted(ordered[0].Value));
-                CheckNotNull(ordered[0],a);
+                CheckNotNull(ordered[0], a, m);
                 var map = Elements(at);
                 var was = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
                 var old = new KVar(LinqMap("[int]" + ElementValue(map)));
@@ -423,16 +417,15 @@ namespace CsVerify.Verifier.Boogie
                 IsArray(Unconverted(ordered[0].Value).Type) && IsArray(Unconverted(ordered[ordered.Count == 3 ? 1 : 2].Value).Type))
             {
                 var src = Expr(Unconverted(ordered[0].Value));
-                CheckNotNull(ordered[0],src);
+                CheckNotNull(ordered[0], src, m);
                 KExpr si = ordered.Count == 5 ? Expr(ordered[1].Value) : KLit.Zero;
                 var dstArg = ordered[ordered.Count == 3 ? 1 : 2];
                 var dst = Expr(Unconverted(dstArg.Value));
-                CheckNotNull(dstArg, dst);
+                CheckNotNull(dstArg, dst, m);
                 KExpr di = ordered.Count == 5 ? Expr(ordered[3].Value) : KLit.Zero;
                 var n = Expr(ordered[ordered.Count - 1].Value);
-                Pre(AndAlso(AndAlso(Le(KLit.Zero, si), Le(KLit.Zero, di)),
-                            AndAlso(Le(KLit.Zero, n), AndAlso(Le(si, Minus(Length(src), n)), Le(di, Minus(Length(dst), n))))),
-                    "0 <= sourceIndex && 0 <= destinationIndex && 0 <= length && sourceIndex <= sourceArray.Length - length && destinationIndex <= destinationArray.Length - length");
+                CheckPrecondition(AndAlso(AndAlso(Le(KLit.Zero, si), Le(KLit.Zero, di)),
+                            AndAlso(Le(KLit.Zero, n), AndAlso(Le(si, Minus(Length(src), n)), Le(di, Minus(Length(dst), n))))), "0 <= sourceIndex && 0 <= destinationIndex && 0 <= length && sourceIndex <= sourceArray.Length - length && destinationIndex <= destinationArray.Length - length", call.Syntax, m.Name);
                 var dt = Unconverted(dstArg.Value).Type;
                 var map = Elements(dt);
                 var old = new KVar(LinqMap("[int]" + ElementValue(map)));
@@ -452,7 +445,7 @@ namespace CsVerify.Verifier.Boogie
             if (m.Name == "Resize" && ordered.Count == 2 && ordered[0].Parameter.RefKind == RefKind.Ref && m.IsGenericMethod && IsArray(ordered[0].Value.Type))
             {
                 var n = Expr(ordered[1].Value);
-                Pre(Ge(n, KLit.Zero), "newSize >= 0");
+                CheckPrecondition(Ge(n, KLit.Zero), "newSize >= 0", call.Syntax, m.Name);
                 var target = RefVariable(ordered[0]);
                 var t = Declare("t$" + _temps++, ordered[0].Value.Type);
                 Emit(KNew.Of(t, ordered[0].Value.Type, n));
@@ -469,6 +462,13 @@ namespace CsVerify.Verifier.Boogie
             }
             return (false, null);
         }
+
+        private void CheckNotNull(IArgumentOperation a, KExpr v, IMethodSymbol m) =>
+            Emit(KCheck.Of(
+                NotNull(v),
+                "CSV1014",
+                a.Syntax,
+                $"'{a.Value.Syntax}' might be null, but parameter '{a.Parameter.Name}' of '{m.Name}' is not nullable"));
 
         /// <summary>Does this collection member call its elements' Equals or GetHashCode, of a class of the program's that has its own?</summary>
         private static bool RunsEquals(IMethodSymbol callee)
@@ -575,9 +575,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return (false, null);
             }
-            // (all it can reach is the arrays it's handed: no object of another kind, which under cell permissions it must be)
-            bool Plain(IOperation v) => v == null || v.ConstantValue.HasValue || Scalar(v.Type) || IsString(v.Type) || IsArray(Unconverted(v).Type);
-            bool plain = handed.Count == 0 && Plain(call.Instance) && call.Arguments.All(a => a.ArgumentKind != ArgumentKind.Explicit || Plain(a.Value));
+            bool plain = handed.Count == 0 && ReachesOnlyArrays(call.Instance) && call.Arguments.All(a => a.ArgumentKind != ArgumentKind.Explicit || ReachesOnlyArrays(a.Value));
             if (!m.ReturnsVoid && !InSubset(m.ReturnType))
             {
                 return (false, null);
@@ -588,12 +586,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return (false, null);
             }
-            // (a lambda quoted as an expression tree is data: EF's configuration, nothing that runs)
-            bool Quoted(IOperation v) => Unconverted(v) is IAnonymousFunctionOperation || v.Type is INamedTypeSymbol { Name: "Expression", Arity: 1 } && v.Type.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions";
             foreach (var a in call.Arguments.Where(a => a.ArgumentKind == ArgumentKind.Explicit && !alongLambdas.Contains(a)))
             {
                 if (a.Parameter.RefKind != RefKind.Out && !InSubset(a.Value.Type) && !(a.Value is IConversionOperation { IsImplicit: true } ac && IsArray(ac.Operand.Type)) &&
-                    !(a.Value is IInterpolatedStringOperation) && !Quoted(a.Value))
+                    !(a.Value is IInterpolatedStringOperation) && !IsQuoted(a.Value))
                 {
                     return (false, null);
                 }
@@ -626,7 +622,7 @@ namespace CsVerify.Verifier.Boogie
             }
             // (an argument boxed or cast up to object for it: what it is, since the library's use of it isn't modeled)
             var delegates = new List<(IArgumentOperation arg, KExpr value)>();
-            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && !Quoted(a.Value) &&
+            foreach (var a in call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => a.ArgumentKind == ArgumentKind.Explicit && a.Parameter.RefKind != RefKind.Out && !IsQuoted(a.Value) &&
                                                                                        (InSubset(a.Value.Type) || a.Value is IConversionOperation { IsImplicit: true } ac && IsArray(ac.Operand.Type))))
             {
                 // (an array as System.Array: the array)
@@ -780,6 +776,12 @@ namespace CsVerify.Verifier.Boogie
             }
             return (true, new KVar(r));
         }
+
+        // (a lambda quoted as an expression tree is data: EF's configuration, nothing that runs)
+        private bool IsQuoted(IOperation v) => Unconverted(v) is IAnonymousFunctionOperation || v.Type is INamedTypeSymbol { Name: "Expression", Arity: 1 } && v.Type.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions";
+
+        // (all it can reach is the arrays it's handed: no object of another kind, which under cell permissions it must be)
+        private bool ReachesOnlyArrays(IOperation v) => v == null || v.ConstantValue.HasValue || Scalar(v.Type) || IsString(v.Type) || IsArray(Unconverted(v).Type);
 
         /// <summary>A stub's call: its receiver (not null) and arguments; its precondition checked, its value the function's.</summary>
         /// <summary>
@@ -1639,13 +1641,14 @@ namespace CsVerify.Verifier.Boogie
                         writes.Add(null); break;
                 }
             }
-            static ExpressionSyntax Bare(ExpressionSyntax e) => e is ParenthesizedExpressionSyntax p ? Bare(p.Expression) : e is CastExpressionSyntax c ? Bare(c.Expression) : e;
-            if (!writes.Any(w => w != null && Bare(w) is BaseObjectCreationExpressionSyntax))
+            if (!writes.Any(w => w != null && Unwrapped(w) is BaseObjectCreationExpressionSyntax))
             {
                 return new List<ITypeSymbol>();
             }
-            return writes.Select(w => w != null && Bare(w) is BaseObjectCreationExpressionSyntax oc ? _model.GetTypeInfo(oc).Type : null).ToList();
+            return writes.Select(w => w != null && Unwrapped(w) is BaseObjectCreationExpressionSyntax oc ? _model.GetTypeInfo(oc).Type : null).ToList();
         }
+
+        private ExpressionSyntax Unwrapped(ExpressionSyntax e) => e is ParenthesizedExpressionSyntax p ? Unwrapped(p.Expression) : e is CastExpressionSyntax c ? Unwrapped(c.Expression) : e;
 
         /// <summary>The method that runs for a call of m on an object whose class is c: m's override in c or its nearest base, or c's implementation of an interface's m.</summary>
         private static IMethodSymbol Implementation(IMethodSymbol m, INamedTypeSymbol c)

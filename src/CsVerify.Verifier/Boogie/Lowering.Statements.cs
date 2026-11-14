@@ -23,44 +23,29 @@ namespace CsVerify.Verifier.Boogie
             var found = new List<IParameterSymbol>();
             // (a target the flow graph captured, as x = new C { ... }'s: the variable it is)
             var captures = cfg.Blocks.SelectMany(b => b.Operations).SelectMany(o => o.DescendantsAndSelf()).OfType<IFlowCaptureOperation>().GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().Value);
-            void Target(IOperation t)
-            {
-                if (Unconverted(t) is IFlowCaptureReferenceOperation fc && captures.TryGetValue(fc.Id, out var captured))
-                {
-                    t = captured;
-                }
-                if (Unconverted(t) is IParameterReferenceOperation { Parameter: var p } && p.RefKind == RefKind.None && !found.Contains(p, SymbolEqualityComparer.Default))
-                {
-                    if (!InSubset(p.Type) || IsView(p.Type) || IsShare(p.Type) || IsPackage(p.Type))
-                    {
-                        throw new NotTranslated("an assignment to a parameter of " + p.Type);
-                    }
-                    found.Add(p);
-                }
-            }
             var ops = cfg.Blocks.SelectMany(b => b.Operations.Concat(b.BranchValue == null ? new IOperation[0] : new[] { b.BranchValue })).SelectMany(o => o.DescendantsAndSelf()).ToList();
             foreach (var o in ops)
             {
                 switch (o)
                 {
                     case IAssignmentOperation a when !(a is IDeconstructionAssignmentOperation):
-                        Target(a.Target);
+                        Target(a.Target, captures, found);
                         break;
                     case IIncrementOrDecrementOperation i:
-                        Target(i.Target);
+                        Target(i.Target, captures, found);
                         break;
                     case IDeconstructionAssignmentOperation d when d.Target is ITupleOperation tt:
                         foreach (var e in tt.Elements)
                         {
-                            Target(e);
+                            Target(e, captures, found);
                         }
                         break;
                     case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } arg:
-                        Target(arg.Value);
+                        Target(arg.Value, captures, found);
                         break;
                     // (a struct's method that writes its receiver: the parameter it's called on)
                     case IInvocationOperation { Instance: { } wi } wc when WritesStructThis(wc.TargetMethod):
-                        Target(wi);
+                        Target(wi, captures, found);
                         break;
                 }
             }
@@ -78,6 +63,22 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             return found;
+        }
+
+        private void Target(IOperation t, Dictionary<CaptureId, IOperation> captures, List<IParameterSymbol> found)
+        {
+            if (Unconverted(t) is IFlowCaptureReferenceOperation fc && captures.TryGetValue(fc.Id, out var captured))
+            {
+                t = captured;
+            }
+            if (Unconverted(t) is IParameterReferenceOperation { Parameter: var p } && p.RefKind == RefKind.None && !found.Contains(p, SymbolEqualityComparer.Default))
+            {
+                if (!InSubset(p.Type) || IsView(p.Type) || IsShare(p.Type) || IsPackage(p.Type))
+                {
+                    throw new NotTranslated("an assignment to a parameter of " + p.Type);
+                }
+                found.Add(p);
+            }
         }
 
         /// <summary>The locals a deconstruction declares or writes, in order (null for a discard); null if it is anything else.</summary>

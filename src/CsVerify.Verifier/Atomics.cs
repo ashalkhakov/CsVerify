@@ -85,21 +85,20 @@ namespace CsVerify.Verifier
             foreach (var f in All)
             {
                 if (!(f.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax at)) continue;
-                void Bad(string why) => _misdeclared.Add((at, $"[Atomic] '{f.Name}' {why}"));
-                if (!AtomicType(f.Type)) Bad($"is a {f.Type.ToDisplayString()}: an atomic field is an integer, a bool, a char, an enum or a reference, read and written in one step");
-                if (f.IsReadOnly || f.IsConst) Bad("never changes: it needs no [Atomic]");
-                if (SpecSymbols.HasAttribute(f, "GuardedByAttribute")) Bad("is also [GuardedBy] a lock: it's one or the other");
-                if (!f.IsStatic && SpecSymbols.IsOwned(f.ContainingType)) Bad($"is in [Owned] '{f.ContainingType.Name}', whose fields are held by one owner at a time");
-                if (SpecSymbols.HasAttribute(f, "LockLevelAttribute")) Bad("is a lock: a lock field never changes");
-                if (locks.IsFlag(f)) Bad("guards state, so it's a try-lock, taken and given back in its form: it's one or the other");
-                if (f.ContainingType.IsValueType && !f.IsStatic) Bad($"is in struct '{f.ContainingType.Name}', which is copied, not shared");
+                if (!AtomicType(f.Type)) AddMisdeclared($"is a {f.Type.ToDisplayString()}: an atomic field is an integer, a bool, a char, an enum or a reference, read and written in one step", at, f);
+                if (f.IsReadOnly || f.IsConst) AddMisdeclared("never changes: it needs no [Atomic]", at, f);
+                if (SpecSymbols.HasAttribute(f, "GuardedByAttribute")) AddMisdeclared("is also [GuardedBy] a lock: it's one or the other", at, f);
+                if (!f.IsStatic && SpecSymbols.IsOwned(f.ContainingType)) AddMisdeclared($"is in [Owned] '{f.ContainingType.Name}', whose fields are held by one owner at a time", at, f);
+                if (SpecSymbols.HasAttribute(f, "LockLevelAttribute")) AddMisdeclared("is a lock: a lock field never changes", at, f);
+                if (locks.IsFlag(f)) AddMisdeclared("guards state, so it's a try-lock, taken and given back in its form: it's one or the other", at, f);
+                if (f.ContainingType.IsValueType && !f.IsStatic) AddMisdeclared($"is in struct '{f.ContainingType.Name}', which is copied, not shared", at, f);
                 if (StepName(f) is string name)
                 {
                     var m = f.ContainingType.GetMembers(name).OfType<IMethodSymbol>().ToList();
-                    if (m.Count != 1) Bad($"names a step '{name}' that isn't one method of '{f.ContainingType.Name}'");
-                    else if (WellFormedStep(m[0], f) is string why) Bad($"names a step '{name}' that {why}");
+                    if (m.Count != 1) AddMisdeclared($"names a step '{name}' that isn't one method of '{f.ContainingType.Name}'", at, f);
+                    else if (WellFormedStep(m[0], f) is string why) AddMisdeclared($"names a step '{name}' that {why}", at, f);
                     else if (fields.ReadsOf(m[0]).Count > 0 || fields.ReadsArrays(m[0]))
-                        Bad($"names a step '{name}' that reads state: it may only look at the old and new values");
+                        AddMisdeclared($"names a step '{name}' that reads state: it may only look at the old and new values", at, f);
                 }
             }
             // what changes at any moment can't be in a function, a predicate or an invariant, which are of one state
@@ -112,5 +111,7 @@ namespace CsVerify.Verifier
             }
             return _misdeclared;
         }
+
+        private void AddMisdeclared(string why, VariableDeclaratorSyntax at, IFieldSymbol f) => _misdeclared.Add((at, $"[Atomic] '{f.Name}' {why}"));
     }
 }

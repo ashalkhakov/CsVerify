@@ -27,30 +27,29 @@ namespace CsVerify.Verifier.Boogie
         private KExpr FloatCall(string name, ITypeSymbol t, KExpr[] a, ITypeSymbol result, bool inSpec)
         {
             var n = FloatSize(t);
-            KExpr Op(string f, params KExpr[] xs) => new KOp("$fp." + f + n, xs);
             switch (name)
             {
-                case "IsNaN": return Op("isNaN", a[0]);
-                case "IsInfinity": return Op("isInf", a[0]);
-                case "IsFinite": return Not(OrElse(Op("isNaN", a[0]), Op("isInf", a[0])));
-                case "IsPositiveInfinity": return AndAlso(Op("isInf", a[0]), Op("isPos", a[0]));
-                case "IsNegativeInfinity": return AndAlso(Op("isInf", a[0]), Op("isNeg", a[0]));
-                case "IsNormal": return Op("isNormal", a[0]);
-                case "IsSubnormal": return Op("isSubnormal", a[0]);
-                case "Abs" when a.Length == 1: return Op("abs", a[0]);
-                case "Sqrt" when a.Length == 1: return Op("sqrt", a[0]);
-                case "Floor" when a.Length == 1: return Op("floor", a[0]);
-                case "Ceiling" when a.Length == 1: return Op("ceil", a[0]);
-                case "Truncate" when a.Length == 1: return Op("trunc", a[0]);
-                case "Round" when a.Length == 1: return Op("round", a[0]);
-                case "FusedMultiplyAdd" when a.Length == 3: return Op("fma", a[0], a[1], a[2]);
+                case "IsNaN": return FloatOp("isNaN", n, a[0]);
+                case "IsInfinity": return FloatOp("isInf", n, a[0]);
+                case "IsFinite": return Not(OrElse(FloatOp("isNaN", n, a[0]), FloatOp("isInf", n, a[0])));
+                case "IsPositiveInfinity": return AndAlso(FloatOp("isInf", n, a[0]), FloatOp("isPos", n, a[0]));
+                case "IsNegativeInfinity": return AndAlso(FloatOp("isInf", n, a[0]), FloatOp("isNeg", n, a[0]));
+                case "IsNormal": return FloatOp("isNormal", n, a[0]);
+                case "IsSubnormal": return FloatOp("isSubnormal", n, a[0]);
+                case "Abs" when a.Length == 1: return FloatOp("abs", n, a[0]);
+                case "Sqrt" when a.Length == 1: return FloatOp("sqrt", n, a[0]);
+                case "Floor" when a.Length == 1: return FloatOp("floor", n, a[0]);
+                case "Ceiling" when a.Length == 1: return FloatOp("ceil", n, a[0]);
+                case "Truncate" when a.Length == 1: return FloatOp("trunc", n, a[0]);
+                case "Round" when a.Length == 1: return FloatOp("round", n, a[0]);
+                case "FusedMultiplyAdd" when a.Length == 3: return FloatOp("fma", n, a[0], a[1], a[2]);
                 case "Min" or "Max" when a.Length == 2:
                 {
                     bool min = name == "Min";
-                    var nan = OrElse(Op("isNaN", a[0]), Op("isNaN", a[1]));
-                    var less = Op(min ? "lt" : "gt", a[0], a[1]);
-                    var more = Op(min ? "lt" : "gt", a[1], a[0]);
-                    var keepA = Op(min ? "isNeg" : "isPos", a[0]);
+                    var nan = OrElse(FloatOp("isNaN", n, a[0]), FloatOp("isNaN", n, a[1]));
+                    var less = FloatOp(min ? "lt" : "gt", n, a[0], a[1]);
+                    var more = FloatOp(min ? "lt" : "gt", n, a[1], a[0]);
+                    var keepA = FloatOp(min ? "isNeg" : "isPos", n, a[0]);
                     return Ite(nan, FloatLiteral(t.SpecialType == SpecialType.System_Single ? (object)float.NaN : double.NaN, t),
                         Ite(less, a[0], Ite(more, a[1], Ite(keepA, a[0], a[1]))));
                 }
@@ -64,6 +63,8 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(r);
             }
         }
+
+        private KExpr FloatOp(string f, string n, params KExpr[] xs) => new KOp("$fp." + f + n, xs);
 
         /// <summary>
         /// A conversion to or from a float type: integer to float and float to float round to nearest; float to an

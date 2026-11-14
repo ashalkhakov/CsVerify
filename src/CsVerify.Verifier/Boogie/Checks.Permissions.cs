@@ -51,23 +51,6 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private MExpr Walk(KExpr e, Dictionary<string, MExpr> given, MExpr guard, Action<MExpr, MExpr> atom, Action<MExpr, MExpr> fact)
         {
-            MExpr M(KExpr x)
-            {
-                var v = Spec(x, out _);
-                // (what holds of the memory wherever it's read: a field's reference allocated, a non-nullable field set; assumed)
-                var known = _facts.ToList();
-                _facts.Clear();
-                MExpr At(MExpr y)
-                {
-                    y = given == null ? y : y.Substitute(given);
-                    return _old == null ? y : _old(y);
-                }
-                foreach (var k in known)
-                {
-                    Assume(Implication(guard, At(k)));
-                }
-                return At(v);
-            }
             switch (e)
             {
                 case KOp { Op: "&&" } and:
@@ -78,7 +61,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case KOp { Op: "ite" } ite when HasAtoms(ite.Args[1]) || HasAtoms(ite.Args[2]):
                 {
-                    var c = M(ite.Args[0]);
+                    var c = WalkSpec(ite.Args[0], guard, given);
                     var t = Walk(ite.Args[1], given, Conj(guard, c), atom, fact);
                     var f = Walk(ite.Args[2], given, Conj(guard, Not(c)), atom, fact);
                     return Ite(c, t, f);
@@ -86,7 +69,7 @@ namespace CsVerify.Verifier.Boogie
                 case KAcc acc:
                     atom(guard, new MAcc
                     {
-                        Obj = M(acc.Obj),
+                        Obj = WalkSpec(acc.Obj, guard, given),
                         Type = acc.Type,
                         At = acc.At,
                     });
@@ -95,16 +78,16 @@ namespace CsVerify.Verifier.Boogie
                     atom(guard, new MInst
                     {
                         Pred = inst.Pred,
-                        Args = inst.Args.Select(M).ToArray(),
+                        Args = inst.Args.Select(x => WalkSpec(x, guard, given)).ToArray(),
                         At = inst.At,
                     });
                     return MLit.True;
                 case KCells cl:
                     atom(guard, new MCells
                     {
-                        Arr = M(cl.Arr),
-                        Lo = M(cl.Lo),
-                        Hi = M(cl.Hi),
+                        Arr = WalkSpec(cl.Arr, guard, given),
+                        Lo = WalkSpec(cl.Lo, guard, given),
+                        Hi = WalkSpec(cl.Hi, guard, given),
                         Read = cl.Read,
                         At = cl.At,
                     });
@@ -112,7 +95,7 @@ namespace CsVerify.Verifier.Boogie
                 case KFieldAcc fa:
                     atom(guard, new MFieldAcc
                     {
-                        Obj = M(fa.Obj),
+                        Obj = WalkSpec(fa.Obj, guard, given),
                         Field = fa.Field,
                         Type = fa.Type,
                         At = fa.At,
@@ -124,9 +107,28 @@ namespace CsVerify.Verifier.Boogie
             {
                 throw new NotTranslated("a permission that isn't a conjunct, or in a branch of ?:");
             }
-            var v = M(e);
+            var v = WalkSpec(e, guard, given);
             fact?.Invoke(guard, v);
             return v;
+        }
+
+        private MExpr WalkSpec(KExpr x, MExpr guard, Dictionary<string, MExpr> given)
+        {
+            var v = Spec(x, out _);
+            // (what holds of the memory wherever it's read: a field's reference allocated, a non-nullable field set; assumed)
+            var known = _facts.ToList();
+            _facts.Clear();
+            foreach (var k in known)
+            {
+                Assume(Implication(guard, AsGiven(k, given)));
+            }
+            return AsGiven(v, given);
+        }
+
+        private MExpr AsGiven(MExpr y, Dictionary<string, MExpr> given)
+        {
+            y = given == null ? y : y.Substitute(given);
+            return _old == null ? y : _old(y);
         }
 
         private void SetPerm(MExpr o, MExpr value) => Emit(MAssign.Of("perm", Store("perm", o, value)));
@@ -431,7 +433,6 @@ namespace CsVerify.Verifier.Boogie
         private void SplitFootprint(MExpr p, List<(MExpr g, MExpr o)> own, List<(MExpr g, MExpr q)> nested)
         {
             var yv = new MVar("y$");
-            MExpr Footprint(MExpr y) => Sel("footprint$", y);
             if (nested.Count > 1)
             {
                 Emit(MHavoc.Of("choice$"));
@@ -454,11 +455,12 @@ namespace CsVerify.Verifier.Boogie
             Emit(MAssign.Of("owner", MapLambda("y$: Ref", Ite(Eq(Footprint(yv), p), to, elsewhere))));
         }
 
+        private MExpr Footprint(MExpr y) => Sel("footprint$", y);
+
         /// <summary>The cells of p's footprint, likewise: the body's own are free, the rest go to its instances.</summary>
         private void SplitCells(MExpr p, List<(MExpr g, MCells c)> ownCells, List<(MExpr g, MExpr q)> nested)
         {
             var (xv, iv) = (new MVar("x$"), new MVar("i$"));
-            MExpr CFoot() => Sel("cfootprint$", xv, iv);
             if (nested.Count > 1)
             {
                 Emit(MHavoc.Of("cchoice$"));
@@ -473,15 +475,17 @@ namespace CsVerify.Verifier.Boogie
             {
                 cto = Ite(InCells(g, c, xv, iv), None, cto);
             }
-            MExpr celsewhere = CFoot();
+            MExpr celsewhere = CellFootprint(xv, iv);
             if (nested.Count > 0)
             {
-                celsewhere = Ite(OrAny(nested.Select(n => (MExpr)Eq(CFoot(), n.q))), None, CFoot());
+                celsewhere = Ite(OrAny(nested.Select(n => (MExpr)Eq(CellFootprint(xv, iv), n.q))), None, CellFootprint(xv, iv));
             }
             Emit(MAssign.Of(
                 "cowner",
-                MapLambda("x$: Ref", MapLambda("i$: int", Ite(Eq(CFoot(), p), cto, celsewhere)))));
+                MapLambda("x$: Ref", MapLambda("i$: int", Ite(Eq(CellFootprint(xv, iv), p), cto, celsewhere)))));
         }
+
+        private MExpr CellFootprint(MVar xv, MVar iv) => Sel("cfootprint$", xv, iv);
 
         // ------------------------------------------------------------------ functions under quantifiers
 
@@ -510,16 +514,10 @@ namespace CsVerify.Verifier.Boogie
                         continue;
                     }
                     var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
-                    MExpr M(KExpr x)
-                    {
-                        var v = Spec(x, out _);
-                        _facts.Clear();
-                        return v.Substitute(given);
-                    }
                     // (the facts so far kept: the definition's own are left out)
                     var saved = _facts.ToList();
-                    var pre = ConjAll(sig.Requires.Select(r => M(r.Expr)));
-                    var definition = Eq(app, M(sig.FunctionBody));
+                    var pre = ConjAll(sig.Requires.Select(r => SpecGiven(r.Expr, given)));
+                    var definition = Eq(app, SpecGiven(sig.FunctionBody, given));
                     _facts.Clear();
                     _facts.AddRange(saved);
                     _facts.Add(MQuant.ForAll(var, Implication(Conj(range, pre), definition)));

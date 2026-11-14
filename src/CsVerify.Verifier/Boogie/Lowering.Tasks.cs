@@ -599,56 +599,10 @@ InstanceAt = aw.Syntax,
                 return unkept;
             }
             var given = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-            ISymbol Root(IOperation o) => Unconverted(o) switch { IParameterReferenceOperation p => p.Parameter, IInstanceReferenceOperation _ => call.TargetMethod.ContainingType, _ => null };
             IOperation read = null;
-            void Walk(IOperation o)
-            {
-                if (o == null)
-                {
-                    return;
-                }
-                switch (o)
-                {
-                    case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) && inv.TargetMethod.Name is "Acc" or "AccRead":
-                        if (inv.Arguments.Length > 0 && Root(inv.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value) is ISymbol g)
-                        {
-                            given.Add(g);
-                        }
-                        return;
-                    case IInvocationOperation old when SpecSymbols.IsSpecClass(old.TargetMethod.ContainingType) && old.TargetMethod.Name == "Old":
-                        return;
-                    case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.And } and:
-                        Walk(and.LeftOperand); Walk(and.RightOperand);
-                        return;
-                    case IArrayElementReferenceOperation ae:
-                        if (!(Root(ae.ArrayReference) is ISymbol ar && given.Contains(ar)))
-                        {
-                            read ??= o;
-                            unkept.Add(o);
-                            return;
-                        }
-                        foreach (var x in ae.Indices)
-                        {
-                            Walk(x);
-                        }
-                        return;
-                    case IFieldReferenceOperation f when !f.Field.IsReadOnly && !f.Field.IsConst:
-                        if (f.Instance == null || !(Root(f.Instance) is ISymbol fr && given.Contains(fr)))
-                        {
-                            read ??= o;
-                            unkept.Add(o);
-                            return;
-                        }
-                        return;
-                }
-                foreach (var ch in o.ChildOperations)
-                {
-                    Walk(ch);
-                }
-            }
             foreach (var e in c.Ensures)
             {
-                Walk(e.Expr);
+                WalkArguments(e.Expr, call, given, ref read, unkept);
             }
             if (read != null)
             {
@@ -662,6 +616,54 @@ InstanceAt = aw.Syntax,
             return unkept;
         }
 
+        private void WalkArguments(IOperation o, IInvocationOperation call, HashSet<ISymbol> given, ref IOperation read, List<IOperation> unkept)
+        {
+            if (o == null)
+            {
+                return;
+            }
+            switch (o)
+            {
+                case IInvocationOperation inv when SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) && inv.TargetMethod.Name is "Acc" or "AccRead":
+                    if (inv.Arguments.Length > 0 && RootSymbol(inv.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value, call) is ISymbol g)
+                    {
+                        given.Add(g);
+                    }
+                    return;
+                case IInvocationOperation old when SpecSymbols.IsSpecClass(old.TargetMethod.ContainingType) && old.TargetMethod.Name == "Old":
+                    return;
+                case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.And } and:
+                    WalkArguments(and.LeftOperand, call, given, ref read, unkept); WalkArguments(and.RightOperand, call, given, ref read, unkept);
+                    return;
+                case IArrayElementReferenceOperation ae:
+                    if (!(RootSymbol(ae.ArrayReference, call) is ISymbol ar && given.Contains(ar)))
+                    {
+                        read ??= o;
+                        unkept.Add(o);
+                        return;
+                    }
+                    foreach (var x in ae.Indices)
+                    {
+                        WalkArguments(x, call, given, ref read, unkept);
+                    }
+                    return;
+                case IFieldReferenceOperation f when !f.Field.IsReadOnly && !f.Field.IsConst:
+                    if (f.Instance == null || !(RootSymbol(f.Instance, call) is ISymbol fr && given.Contains(fr)))
+                    {
+                        read ??= o;
+                        unkept.Add(o);
+                        return;
+                    }
+                    return;
+            }
+            foreach (var ch in o.ChildOperations)
+            {
+                WalkArguments(ch, call, given, ref read, unkept);
+            }
+        }
+
+        private ISymbol RootSymbol(IOperation o, IInvocationOperation call) => Unconverted(o) switch { IParameterReferenceOperation p => p.Parameter, IInstanceReferenceOperation _ => call.TargetMethod.ContainingType, _ => null };
+
         /// <summary>
         /// What a started task's postcondition reads but doesn't give back, as the caller's: forgotten where the task is
         /// joined (it may have changed since the task finished). An array's elements, a
@@ -670,9 +672,6 @@ InstanceAt = aw.Syntax,
         private List<System.Action> Unkept(IInvocationOperation call, List<IOperation> reads)
         {
             var forget = new List<System.Action>();
-            IOperation Arg(IOperation root) => Unconverted(root) is IParameterReferenceOperation p && p.Parameter.ContainingSymbol is IMethodSymbol pm &&
-                                               SymbolEqualityComparer.Default.Equals(pm.OriginalDefinition, call.TargetMethod.OriginalDefinition)
-                ? call.Arguments.FirstOrDefault(a => a.Parameter?.Ordinal == p.Parameter.Ordinal)?.Value : null;
             foreach (var r in reads)
             {
                 // (a static field: forgotten itself)
@@ -696,7 +695,7 @@ InstanceAt = aw.Syntax,
                     continue;
                 }
                 var root = r is IArrayElementReferenceOperation ae ? ae.ArrayReference : (r as IFieldReferenceOperation)?.Instance;
-                var arg = root == null ? null : Arg(root);
+                var arg = root == null ? null : ArgumentOf(root, call);
                 if (!(Unconverted(arg) is ILocalReferenceOperation || Unconverted(arg) is IParameterReferenceOperation))
                 {
                     throw new NotTranslated("a started task's postcondition reading what it doesn't give back, of an argument that isn't a variable");
@@ -729,6 +728,10 @@ InstanceAt = aw.Syntax,
             }
             return forget;
         }
+
+        private IOperation ArgumentOf(IOperation root, IInvocationOperation call) => Unconverted(root) is IParameterReferenceOperation p && p.Parameter.ContainingSymbol is IMethodSymbol pm &&
+                                           SymbolEqualityComparer.Default.Equals(pm.OriginalDefinition, call.TargetMethod.OriginalDefinition)
+            ? call.Arguments.FirstOrDefault(a => a.Parameter?.Ordinal == p.Parameter.Ordinal)?.Value : null;
 
         /// <summary>A started method that relies on its caller holding a gate: it would run alongside this code (CSV1023).</summary>
         private void StartedUnderGate(IInvocationOperation call)
@@ -926,30 +929,10 @@ InstanceAt = aw.Syntax,
                 return;
             }
             var st = t.StartCall;
-            void Join()
-            {
-                Emit(new KCall
-                {
-                    Callee = st.Callee,
-                    Started = st,
-                    Result = st.Result,
-                    At = st.At,
-                    ArgsAt = st.ArgsAt,
-                    RefOuts = st.RefOuts,
-                    Phase = 2,
-                });
-                if (t.Forget != null)
-                {
-                    foreach (var f in t.Forget)
-                    {
-                        f();
-                    }
-                }
-            }
             // (a task awaited in one place only: joined there; one awaited in more, joined where it wasn't yet)
             if (t.Awaited == null || _cfgBlock == null || !AwaitedInPlaces(t))
             {
-                Join();
+                Join(st, t);
                 t.StartCall = null;
                 return;
             }
@@ -964,12 +947,33 @@ InstanceAt = aw.Syntax,
             _p.Blocks.Add(after);
             _block = join;
             Emit(KAssume.Of(Not(new KVar(t.Awaited))));
-            Join();
+            Join(st, t);
             join.Jump = new KGoto(after.Label);
             _block = skip;
             Emit(KAssume.Of(new KVar(t.Awaited)));
             skip.Jump = new KGoto(after.Label);
             _block = after;
+        }
+
+        private void Join(KCall st, Task t)
+        {
+            Emit(new KCall
+            {
+                Callee = st.Callee,
+                Started = st,
+                Result = st.Result,
+                At = st.At,
+                ArgsAt = st.ArgsAt,
+                RefOuts = st.RefOuts,
+                Phase = 2,
+            });
+            if (t.Forget != null)
+            {
+                foreach (var f in t.Forget)
+                {
+                    f();
+                }
+            }
         }
 
         private int _joins;

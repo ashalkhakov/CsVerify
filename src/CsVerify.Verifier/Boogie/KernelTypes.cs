@@ -47,30 +47,6 @@ namespace CsVerify.Verifier.Boogie
         public static HashSet<SpecialType> NamesScalarArrays(Compilation c, IEnumerable<SyntaxTree> userTrees)
         {
             var found = new HashSet<SpecialType> { SpecialType.System_Int32 };
-            void Of(ITypeSymbol t, int depth)
-            {
-                if (t == null || depth > 4)
-                {
-                    return;
-                }
-                if (t is IArrayTypeSymbol a)
-                {
-                    found.Add(Sp(a.ElementType));
-                    Of(a.ElementType, depth + 1);
-                }
-                if (t is INamedTypeSymbol n)
-                {
-                    foreach (var x in n.TypeArguments)
-                    {
-                        found.Add(Sp(x));
-                        Of(x, depth + 1);
-                    }
-                }
-                if (t is IPointerTypeSymbol p)
-                {
-                    found.Add(Sp(p.PointedAtType));
-                }
-            }
             foreach (var t in userTrees)
             {
                 var model = c.GetSemanticModel(t);
@@ -79,16 +55,41 @@ namespace CsVerify.Verifier.Boogie
                     if (n is Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.TypeSyntax)
                     {
                         var info = model.GetTypeInfo(n);
-                        Of(info.Type, 0);
-                        Of(info.ConvertedType, 0);
+                        CollectSpecialTypes(info.Type, 0, found);
+                        CollectSpecialTypes(info.ConvertedType, 0, found);
                     }
                     else if (model.GetDeclaredSymbol(n) is ISymbol d)
                     {
-                        Of(d switch { IMethodSymbol m => m.ReturnType, IPropertySymbol pr => pr.Type, IFieldSymbol f => f.Type, ILocalSymbol l => l.Type, IParameterSymbol ps => ps.Type, _ => null }, 0);
+                        CollectSpecialTypes(d switch { IMethodSymbol m => m.ReturnType, IPropertySymbol pr => pr.Type, IFieldSymbol f => f.Type, ILocalSymbol l => l.Type, IParameterSymbol ps => ps.Type, _ => null }, 0, found);
                     }
                 }
             }
             return found;
+        }
+
+        private static void CollectSpecialTypes(ITypeSymbol t, int depth, HashSet<SpecialType> found)
+        {
+            if (t == null || depth > 4)
+            {
+                return;
+            }
+            if (t is IArrayTypeSymbol a)
+            {
+                found.Add(Sp(a.ElementType));
+                CollectSpecialTypes(a.ElementType, depth + 1, found);
+            }
+            if (t is INamedTypeSymbol n)
+            {
+                foreach (var x in n.TypeArguments)
+                {
+                    found.Add(Sp(x));
+                    CollectSpecialTypes(x, depth + 1, found);
+                }
+            }
+            if (t is IPointerTypeSymbol p)
+            {
+                found.Add(Sp(p.PointedAtType));
+            }
         }
         private static readonly SpecialType[] Floats = { SpecialType.System_Single, SpecialType.System_Double };
 
@@ -239,32 +240,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var node = r.GetSyntax();
                     var model = Compilation.GetSemanticModel(node.SyntaxTree);
-                    bool OfThis(ExpressionSyntax e)
-                    {
-                        while (e is ParenthesizedExpressionSyntax p)
-                        {
-                            e = p.Expression;
-                        }
-                        if (e is ThisExpressionSyntax)
-                        {
-                            return true;
-                        }
-                        // (this.X, or X.Y of a struct member X: a part of this)
-                        if (e is MemberAccessExpressionSyntax ma)
-                        {
-                            return ma.Expression is ThisExpressionSyntax ? OfThis(ma.Name) : model.GetTypeInfo(ma.Expression).Type?.IsValueType == true && OfThis(ma.Expression);
-                        }
-                        return e is IdentifierNameSyntax && model.GetSymbolInfo(e).Symbol is ISymbol s && s is IFieldSymbol or IPropertySymbol && !s.IsStatic &&
-                               SymbolEqualityComparer.Default.Equals(s.ContainingType, m.ContainingType);
-                    }
                     foreach (var n in node.DescendantNodes())
                     {
                         switch (n)
                         {
-                            case AssignmentExpressionSyntax a when OfThis(a.Left): return true;
-                            case PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PreIncrementExpression or (int)SyntaxKind.PreDecrementExpression } pre when OfThis(pre.Operand): return true;
-                            case PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PostIncrementExpression or (int)SyntaxKind.PostDecrementExpression } post when OfThis(post.Operand): return true;
-                            case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword) && OfThis(arg.Expression): return true;
+                            case AssignmentExpressionSyntax a when IsOfThis(a.Left, model, m): return true;
+                            case PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PreIncrementExpression or (int)SyntaxKind.PreDecrementExpression } pre when IsOfThis(pre.Operand, model, m): return true;
+                            case PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PostIncrementExpression or (int)SyntaxKind.PostDecrementExpression } post when IsOfThis(post.Operand, model, m): return true;
+                            case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None) && !arg.RefKindKeyword.IsKind(SyntaxKind.InKeyword) && IsOfThis(arg.Expression, model, m): return true;
                             case InvocationExpressionSyntax inv when (inv.Expression is IdentifierNameSyntax || inv.Expression is MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }) &&
                                                                      model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee && !callee.IsStatic && WritesStructThis(callee):
                                 return true;
@@ -277,6 +260,25 @@ namespace CsVerify.Verifier.Boogie
             {
                 _writesThisSeen.Remove(m);
             }
+        }
+
+        private static bool IsOfThis(ExpressionSyntax e, SemanticModel model, IMethodSymbol m)
+        {
+            while (e is ParenthesizedExpressionSyntax p)
+            {
+                e = p.Expression;
+            }
+            if (e is ThisExpressionSyntax)
+            {
+                return true;
+            }
+            // (this.X, or X.Y of a struct member X: a part of this)
+            if (e is MemberAccessExpressionSyntax ma)
+            {
+                return ma.Expression is ThisExpressionSyntax ? IsOfThis(ma.Name, model, m) : model.GetTypeInfo(ma.Expression).Type?.IsValueType == true && IsOfThis(ma.Expression, model, m);
+            }
+            return e is IdentifierNameSyntax && model.GetSymbolInfo(e).Symbol is ISymbol s && s is IFieldSymbol or IPropertySymbol && !s.IsStatic &&
+                   SymbolEqualityComparer.Default.Equals(s.ContainingType, m.ContainingType);
         }
 
         [System.ThreadStatic] private static HashSet<IMethodSymbol> _writesThisSeen;
@@ -364,25 +366,26 @@ namespace CsVerify.Verifier.Boogie
         public static List<KCells> MemCells(KExpr v, ITypeSymbol type, SyntaxNode at)
         {
             var addr = MemProp("Addr", v, type);
-            KCells Of(KExpr lo, KExpr hi) => new KCells
-            {
-                Arr = KLit.Null,
-                Lo = lo,
-                Hi = hi,
-                At = at,
-            };
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
             {
-                return new List<KCells> { Of(addr, Plus(addr, KLit.One)) };
+                return new List<KCells> { MemoryCells(addr, Plus(addr, KLit.One), at) };
             }
             var end = Plus(addr, MemProp("Length", v, type));
             if (SpecSymbols.IsCsVerifyType(type, "ArrayView`1"))
             {
-                return new List<KCells> { Of(addr, end) };
+                return new List<KCells> { MemoryCells(addr, end, at) };
             }
             var hole = Plus(addr, MemProp("Index", v, type));
-            return new List<KCells> { Of(addr, hole), Of(Plus(hole, KLit.One), end) };
+            return new List<KCells> { MemoryCells(addr, hole, at), MemoryCells(Plus(hole, KLit.One), end, at) };
         }
+
+        private static KCells MemoryCells(KExpr lo, KExpr hi, SyntaxNode at) => new KCells
+        {
+            Arr = KLit.Null,
+            Lo = lo,
+            Hi = hi,
+            At = at,
+        };
 
         /// <summary>What a view says is what its cells hold (true while it's in hand: nobody else writes them).</summary>
         public static KExpr MemTie(KExpr v, ITypeSymbol type)
@@ -546,9 +549,10 @@ namespace CsVerify.Verifier.Boogie
         public static string FuncKey(ITypeSymbol t)
         {
             var inv = ((INamedTypeSymbol)t).DelegateInvokeMethod;
-            string Of(ITypeSymbol x) => Scalar(x) ? Sp(x).ToString().Substring("System_".Length) : "Ref";
-            return string.Join(".", inv.Parameters.Select(p => Of(p.Type)).Append(inv.ReturnsVoid ? "void" : Of(inv.ReturnType)));
+            return string.Join(".", inv.Parameters.Select(p => FunctionKey(p.Type)).Append(inv.ReturnsVoid ? "void" : FunctionKey(inv.ReturnType)));
         }
+
+        private static string FunctionKey(ITypeSymbol x) => Scalar(x) ? Sp(x).ToString().Substring("System_".Length) : "Ref";
 
         /// <summary>A string: a value (its length, its characters), a Ref only so that null is one; never allocated.</summary>
         public static bool IsString(ITypeSymbol t) => t?.SpecialType == SpecialType.System_String;
@@ -724,28 +728,29 @@ namespace CsVerify.Verifier.Boogie
             if (!_implemented.TryGetValue(Compilation, out var set))
             {
                 set = new HashSet<string>();
-                void Walk(INamespaceOrTypeSymbol ns)
-                {
-                    foreach (var m in ns.GetMembers())
-                    {
-                        if (m is INamespaceSymbol sub)
-                        {
-                            Walk(sub);
-                        }
-                        else if (m is INamedTypeSymbol nt && nt.DeclaringSyntaxReferences.Length > 0)
-                        {
-                            foreach (var i in nt.AllInterfaces)
-                            {
-                                set.Add(i.OriginalDefinition.ToDisplayString());
-                            }
-                            Walk(nt);
-                        }
-                    }
-                }
-                Walk(Compilation.Assembly.GlobalNamespace);
+                CollectImplemented(Compilation.Assembly.GlobalNamespace, set);
                 _implemented.Add(Compilation, set);
             }
             return set.Contains(ifc.OriginalDefinition.ToDisplayString());
+        }
+
+        private static void CollectImplemented(INamespaceOrTypeSymbol ns, HashSet<string> set)
+        {
+            foreach (var m in ns.GetMembers())
+            {
+                if (m is INamespaceSymbol sub)
+                {
+                    CollectImplemented(sub, set);
+                }
+                else if (m is INamedTypeSymbol nt && nt.DeclaringSyntaxReferences.Length > 0)
+                {
+                    foreach (var i in nt.AllInterfaces)
+                    {
+                        set.Add(i.OriginalDefinition.ToDisplayString());
+                    }
+                    CollectImplemented(nt, set);
+                }
+            }
         }
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Compilation, HashSet<string>> _implemented = new System.Runtime.CompilerServices.ConditionalWeakTable<Compilation, HashSet<string>>();
 

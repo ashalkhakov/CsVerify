@@ -272,14 +272,15 @@ namespace CsVerify.Verifier
         public bool WritesFieldsAt(IInvocationOperation inv)
         {
             var m = inv.TargetMethod;
-            bool May(ITypeSymbol declared, IOperation value) =>
-                (HandsOver(declared) || ReachesModels(declared)) && !(value?.ConstantValue.HasValue == true && value.ConstantValue.Value == null) &&
-                (value == null || HandsOver(Handed(value)) || ReachesModels(Handed(value)));
             if ((m.MethodKind != MethodKind.Constructor || m.Parameters.Length > 0 && !m.Parameters.All(p => p.Type.SpecialType != SpecialType.None)) &&
                 m.ContainingType.TypeArguments.Concat(m.TypeArguments).Any(t => HandsOver(t) || ReachesModels(t))) return true;
             if (!m.IsStatic && m.MethodKind != MethodKind.Constructor && May(m.ContainingType, inv.Instance)) return true;
             return inv.Arguments.Any(a => a.Parameter != null && May(a.Parameter.Type, a.ArgumentKind == ArgumentKind.Explicit ? a.Value : null));
         }
+
+        private bool May(ITypeSymbol declared, IOperation value) =>
+            (HandsOver(declared) || ReachesModels(declared)) && !(value?.ConstantValue.HasValue == true && value.ConstantValue.Value == null) &&
+            (value == null || HandsOver(Handed(value)) || ReachesModels(Handed(value)));
 
         /// <summary>
         /// At this call of a library member that changes nothing it is given itself, might it run program code other

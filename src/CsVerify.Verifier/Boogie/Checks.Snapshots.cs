@@ -44,20 +44,22 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             var snap = new MOp("$sst", Sel("psnap", Instance(pred, args)));
-            // (every map read, a library function's arguments' too: those Plain lets through are of its arguments alone)
-            MExpr In(MExpr e) => e.Rewrite(x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
-            // (of no memory now, no old(...), no other snapshot)
-            bool Plain(MExpr e) => e.Subterms().All(x => x is not (MFnApp { Plain: false } or MOp { Op: "old" } or MVar { Name: "psnap" }));
             var given = pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
             var facts = new List<(MExpr g, MExpr f)>();
             var saved = _old;
             Walk(sig.FunctionBody, given, g, (_, __) => { }, (gg, f) => facts.Add((gg, f)));
-            foreach (var (gg, f) in facts.Where(x => Plain(x.f) && Plain(x.g)))
+            foreach (var (gg, f) in facts.Where(x => IsPlain(x.f) && IsPlain(x.g)))
             {
                 _p.UsesState = true;
-                Assume(Implication(In(gg), In(f)));
+                Assume(Implication(InSnapshot(gg, snap), InSnapshot(f, snap)));
             }
         }
+
+        // (of no memory now, no old(...), no other snapshot)
+        private bool IsPlain(MExpr e) => e.Subterms().All(x => x is not (MFnApp { Plain: false } or MOp { Op: "old" } or MVar { Name: "psnap" }));
+
+        // (every map read, a library function's arguments' too: those Plain lets through are of its arguments alone)
+        private MExpr InSnapshot(MExpr e, MOp snap) => e.Rewrite(x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
 
         /// <summary>
         /// The functions over a predicate, of an instance whose footprint is in hand as it was folded (folding it,
@@ -79,13 +81,7 @@ namespace CsVerify.Verifier.Boogie
                 // (its parameters not of the instance: for every value of them)
                 var args = map.Select((j, k) => j >= 0 ? instArgs[j] : new MVar($"q$x{k}")).ToArray();
                 var given = f.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
-                MExpr M(KExpr x)
-                {
-                    var v = Spec(x, out _);
-                    _facts.Clear();
-                    return v.Substitute(given);
-                }
-                var pre = ConjAll(sig.Requires.Select(r => M(r.Expr)));
+                var pre = ConjAll(sig.Requires.Select(r => SpecGiven(r.Expr, given)));
                 var app = new MFnApp
                 {
                     Callee = f,
@@ -93,7 +89,7 @@ namespace CsVerify.Verifier.Boogie
                     Args = args,
                     Snap = Sel("psnap", p),
                 };
-                MExpr fact = Implication(pre, Eq(app, M(sig.FunctionBody)));
+                MExpr fact = Implication(pre, Eq(app, SpecGiven(sig.FunctionBody, given)));
                 for (int k = map.Length - 1; k >= 0; k--)
                 {
                     if (map[k] < 0)
@@ -103,6 +99,13 @@ namespace CsVerify.Verifier.Boogie
                 }
                 Assume(fact);
             }
+        }
+
+        private MExpr SpecGiven(KExpr x, Dictionary<string, MExpr> given)
+        {
+            var v = Spec(x, out _);
+            _facts.Clear();
+            return v.Substitute(given);
         }
     }
 }

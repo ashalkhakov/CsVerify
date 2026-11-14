@@ -25,10 +25,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 throw new NotTranslated("an invariant without an expression body: " + inv.Name);
             }
-            // (a function it calls is of values alone: static, its parameters data or scalars, as the record's are)
-            bool OfValues(IInvocationOperation call) => IntegerMath(call) ||
-                isFunction(call.TargetMethod) && call.TargetMethod.IsStatic && call.TargetMethod.Parameters.All(x => x.RefKind == RefKind.None && (Scalar(x.Type) || IsData(x.Type)));
-            if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation call && !OfValues(call) || o is IFieldReferenceOperation ||
+            if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation call && !IsOfValues(call, isFunction) || o is IFieldReferenceOperation ||
                                                        o is IPropertyReferenceOperation pr && !(pr.Instance != null && IsData(pr.Instance.Type) && DataTypes.IsPositional(pr.Property.OriginalDefinition)) &&
                                                        !IsViewsObject(pr) && !(pr.Property.Name == "Value" && pr.Instance is IPropertyReferenceOperation inner && IsViewsObject(inner))))
             {
@@ -39,6 +36,10 @@ namespace CsVerify.Verifier.Boogie
             var l = new Lowering(inv, c, null, c.Model, null, _ => false, isFunction, literal, contractOf);
             return l.Spec(c.PureBody, null);
         }
+
+        // (a function it calls is of values alone: static, its parameters data or scalars, as the record's are)
+        private static bool IsOfValues(IInvocationOperation call, Func<IMethodSymbol, bool> isFunction) => IntegerMath(call) ||
+            isFunction(call.TargetMethod) && call.TargetMethod.IsStatic && call.TargetMethod.Parameters.All(x => x.RefKind == RefKind.None && (Scalar(x.Type) || IsData(x.Type)));
 
         /// <summary>
         /// A data case's field that its base record has: the argument its record header gives the base's primary
@@ -275,8 +276,6 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             var op = ops[i];
-            IReadOnlyList<IOperation> Then(IOperation first) =>
-                (first is IBlockOperation b ? b.Operations : (IEnumerable<IOperation>)new[] { first }).Concat(ops.Skip(i + 1)).ToList();
             try
             {
                 switch (op)
@@ -284,7 +283,7 @@ namespace CsVerify.Verifier.Boogie
                     case IReturnOperation ret when ret.ReturnedValue != null:
                         return Spec(ret.ReturnedValue, null);
                     case IBlockOperation block:
-                        return PureStatements(Then(block), 0);
+                        return PureStatements(OperationsAfter(block, ops, i), 0);
                     case IVariableDeclarationGroupOperation group:
                     {
                         var binds = new List<(string, KExpr)>();
@@ -314,8 +313,8 @@ namespace CsVerify.Verifier.Boogie
                     case IConditionalOperation cond when cond.Type == null || cond.Type.SpecialType == SpecialType.System_Void:
                     {
                         var c = Spec(cond.Condition, null);
-                        var yes = PureStatements(Then(cond.WhenTrue), 0);
-                        var no = cond.WhenFalse != null ? PureStatements(Then(cond.WhenFalse), 0) : PureStatements(ops, i + 1);
+                        var yes = PureStatements(OperationsAfter(cond.WhenTrue, ops, i), 0);
+                        var no = cond.WhenFalse != null ? PureStatements(OperationsAfter(cond.WhenFalse, ops, i), 0) : PureStatements(ops, i + 1);
                         return yes == null || no == null ? null : Ite(c, yes, no);
                     }
                     case IExpressionStatementOperation es when es.Operation is IInvocationOperation inv &&
@@ -330,6 +329,9 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
         }
+
+        private IReadOnlyList<IOperation> OperationsAfter(IOperation first, IReadOnlyList<IOperation> ops, int i) =>
+            (first is IBlockOperation b ? b.Operations : (IEnumerable<IOperation>)new[] { first }).Concat(ops.Skip(i + 1)).ToList();
 
         /// <summary>The trees a frame borrows: the roots of its Own.Tree(x).</summary>
         private void LentRoots(IOperation modifies)

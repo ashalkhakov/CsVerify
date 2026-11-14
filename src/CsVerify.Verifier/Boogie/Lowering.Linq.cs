@@ -211,13 +211,12 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var n = Sel(SizeMap, new KVar(hs));
                 var order = new KVar(LinqMap("[int]" + TypeOf(elem)));
-                KExpr E(KExpr i) => Sel(order, i);
-                ShapeFact(Over(KLit.Zero, n, i => Sel(ModelOf("Members", (INamedTypeSymbol)type).Name, new KVar(hs), Keyed(E(i), elem))), src.Syntax);
-                ShapeFact(Over(KLit.Zero, n, i => Over(KLit.Zero, i, j => Ne(E(j), E(i)))), src.Syntax);
+                ShapeFact(Over(KLit.Zero, n, i => Sel(ModelOf("Members", (INamedTypeSymbol)type).Name, new KVar(hs), Keyed(Sel(order, i), elem))), src.Syntax);
+                ShapeFact(Over(KLit.Zero, n, i => Over(KLit.Zero, i, j => Ne(Sel(order, j), Sel(order, i)))), src.Syntax);
                 return new LSeq
                 {
                     Length = n,
-                    Elem = E,
+                    Elem = i => Sel(order, i),
                     Type = elem,
                 };
             }
@@ -686,7 +685,6 @@ namespace CsVerify.Verifier.Boogie
                     // (the keys, the first one's call innermost; a stable sort of the source by them all)
                     var keys = new List<((IOperation, IParameterSymbol, IParameterSymbol) key, ITypeSymbol type, bool down)>();
                     IInvocationOperation at = q;
-                    IOperation SourceOf(IInvocationOperation x) => x.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
                     while (at.TargetMethod.Name.StartsWith("Then"))
                     {
                         keys.Insert(0, (LambdaArg(at, 1), at.TargetMethod.TypeArguments.Last(), at.TargetMethod.Name.EndsWith("Descending")));
@@ -775,11 +773,10 @@ namespace CsVerify.Verifier.Boogie
                     {
                         // (exactly: a running count of those with j's key, over the source)
                         var rc = new KVar(LinqMap("[int][int]int"));
-                        KExpr R(KExpr j, KExpr k) => Sel(rc, j, k);
-                        LinqFact(Over(KLit.Zero, src.Length, j => Eq(R(j, KLit.Zero), KLit.Zero)), q.Syntax);
+                        LinqFact(Over(KLit.Zero, src.Length, j => Eq(Sel(rc, j, KLit.Zero), KLit.Zero)), q.Syntax);
                         LinqFact(Over(KLit.Zero, src.Length, j => Over(KLit.Zero, src.Length, k =>
-                            Eq(R(j, Plus(k, KLit.One)), Plus(R(j, k), Ite(SameValue(Apply(key, src.Elem(k)), Apply(key, src.Elem(j)), key.body.Type), KLit.One, KLit.Zero))))), q.Syntax);
-                        LinqFact(Over(KLit.Zero, src.Length, j => Eq(Sel(count, j), R(j, src.Length))), q.Syntax);
+                            Eq(Sel(rc, j, Plus(k, KLit.One)), Plus(Sel(rc, j, k), Ite(SameValue(Apply(key, src.Elem(k)), Apply(key, src.Elem(j)), key.body.Type), KLit.One, KLit.Zero))))), q.Syntax);
+                        LinqFact(Over(KLit.Zero, src.Length, j => Eq(Sel(count, j), Sel(rc, j, src.Length))), q.Syntax);
                     }
                     _groupsOf[q] = (src, key, count);
                     var groups = new LSeq
@@ -835,11 +832,10 @@ namespace CsVerify.Verifier.Boogie
                     var (okey, ikey, sel) = (LambdaArg(q, 2), LambdaArg(q, 3), LambdaArg(q, 4));
                     var count = new KVar(LinqMap("[int]int"));
                     var rc = new KVar(LinqMap("[int][int]int"));
-                    KExpr R(KExpr j, KExpr k) => Sel(rc, j, k);
-                    LinqFact(Over(KLit.Zero, o.Length, j => Eq(R(j, KLit.Zero), KLit.Zero)), q.Syntax);
+                    LinqFact(Over(KLit.Zero, o.Length, j => Eq(Sel(rc, j, KLit.Zero), KLit.Zero)), q.Syntax);
                     LinqFact(Over(KLit.Zero, o.Length, j => Over(KLit.Zero, inner.Length, k =>
-                        Eq(R(j, Plus(k, KLit.One)), Plus(R(j, k), Ite(JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type), KLit.One, KLit.Zero))))), q.Syntax);
-                    LinqFact(Over(KLit.Zero, o.Length, j => Eq(Sel(count, j), R(j, inner.Length))), q.Syntax);
+                        Eq(Sel(rc, j, Plus(k, KLit.One)), Plus(Sel(rc, j, k), Ite(JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type), KLit.One, KLit.Zero))))), q.Syntax);
+                    LinqFact(Over(KLit.Zero, o.Length, j => Eq(Sel(count, j), Sel(rc, j, inner.Length))), q.Syntax);
                     ShapeFact(Over(KLit.Zero, o.Length, j => AndAlso(Le(KLit.Zero, Sel(count, j)), Le(Sel(count, j), inner.Length))), q.Syntax);
                     _groupParams[sel.p2] = (inner, null, count);
                     return new LSeq
@@ -864,9 +860,8 @@ namespace CsVerify.Verifier.Boogie
                         Elem = j => Ite(Lt(j, o.Length), o.Elem(j), none),
                     };
                     var pairs = Flatten(inner, k => ext, q.Syntax, out var byInner, out var within, whole: true);
-                    KExpr Match(KExpr j, KExpr k) => JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type);
-                    var kept = FilterAt(pairs, i => Ite(Lt(within(i), o.Length), Match(within(i), byInner(i)),
-                        Not(new KQuantOver(this, KLit.Zero, o.Length, j => Match(j, byInner(i)), forall: false).Q)), q.Syntax);
+                    var kept = FilterAt(pairs, i => Ite(Lt(within(i), o.Length), KeysMatch(within(i), byInner(i), okey, o, ikey, inner),
+                        Not(new KQuantOver(this, KLit.Zero, o.Length, j => KeysMatch(j, byInner(i), okey, o, ikey, inner), forall: false).Q)), q.Syntax);
                     var sx = (sel.body, sel.p1, (IParameterSymbol)null);
                     return new LSeq
                     {
@@ -891,9 +886,8 @@ namespace CsVerify.Verifier.Boogie
                         Elem = k => Ite(Lt(k, inner.Length), inner.Elem(k), none),
                     };
                     var pairs = Flatten(o, j => ext, q.Syntax, out var outer, out var within, whole: true);
-                    KExpr Match(KExpr j, KExpr k) => JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type);
-                    var kept = FilterAt(pairs, i => Ite(Lt(within(i), inner.Length), Match(outer(i), within(i)),
-                        Not(new KQuantOver(this, KLit.Zero, inner.Length, k => Match(outer(i), k), forall: false).Q)), q.Syntax);
+                    var kept = FilterAt(pairs, i => Ite(Lt(within(i), inner.Length), KeysMatch(outer(i), within(i), okey, o, ikey, inner),
+                        Not(new KQuantOver(this, KLit.Zero, inner.Length, k => KeysMatch(outer(i), k, okey, o, ikey, inner), forall: false).Q)), q.Syntax);
                     var sx = (sel.body, sel.p1, (IParameterSymbol)null);
                     var joined = new LSeq
                     {
@@ -906,6 +900,10 @@ namespace CsVerify.Verifier.Boogie
                 default: throw new NotTranslated("LINQ's " + m.Name);
             }
         }
+
+        private KExpr KeysMatch(KExpr j, KExpr k, (IOperation body, IParameterSymbol p1, IParameterSymbol p2) okey, LSeq o, (IOperation body, IParameterSymbol p1, IParameterSymbol p2) ikey, LSeq inner) => JoinKeysEqual(Apply(okey, o.Elem(j)), Apply(ikey, inner.Elem(k)), okey.body.Type);
+
+        private IOperation SourceOf(IInvocationOperation x) => x.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
 
         /// <summary>A GroupBy's groups, by a loop's variable: the source read where the loop started (Map), and its key.</summary>
         private readonly Dictionary<ILocalSymbol, (string map, (IOperation, IParameterSymbol, IParameterSymbol) key, ITypeSymbol elem, string count)> _groups =
@@ -1032,17 +1030,11 @@ namespace CsVerify.Verifier.Boogie
                 var outer = Sequence(args[0].Value);
                 var innerSrc = Sequence(args[1].Value);
                 var (okey, ikey) = (LambdaArg(gj, 2), LambdaArg(gj, 3));
-                string Read(LSeq sq)
-                {
-                    var map = LinqMap("[int]" + TypeOf(sq.Type));
-                    LinqFact(Over(KLit.Zero, sq.Length, i => Eq(Sel(map, i), sq.Elem(i))), at);
-                    return map;
-                }
                 var oc = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
                 Emit(KAssign.Of(oc, outer.Length));
                 var ic = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
                 Emit(KAssign.Of(ic, innerSrc.Length));
-                var read = (outerMap: Read(outer), outerCount: oc, innerMap: Read(innerSrc), innerCount: ic, okey, ikey, outerType: outer.Type, innerType: innerSrc.Type);
+                var read = (outerMap: ReadIntoMap(outer, at), outerCount: oc, innerMap: ReadIntoMap(innerSrc, at), innerCount: ic, okey, ikey, outerType: outer.Type, innerType: innerSrc.Type);
                 foreach (var l in _forEachOf.Where(kv => kv.Value == fe).Select(kv => kv.Key))
                 {
                     _joinRows[l] = (_joinRows[l].join, _joinRows[l].members, read);
@@ -1089,6 +1081,13 @@ namespace CsVerify.Verifier.Boogie
             Emit(KHavoc.Of(fe.Mat));
             LinqFact(Over(KLit.Zero, new KVar(fe.Count), i => Eq(Sel(fe.Mat, i), seq.Elem(i))), at);
             Emit(KAssign.Of(fe.Index, KLit.Zero));
+        }
+
+        private string ReadIntoMap(LSeq sq, SyntaxNode at)
+        {
+            var map = LinqMap("[int]" + TypeOf(sq.Type));
+            LinqFact(Over(KLit.Zero, sq.Length, i => Eq(Sel(map, i), sq.Elem(i))), at);
+            return map;
         }
 
         /// <summary>A GroupJoin's rows by their variable: the query, what each member of a row is (the outer element, or the group), and what was read where the loop started.</summary>
@@ -1189,10 +1188,8 @@ namespace CsVerify.Verifier.Boogie
             var o = new KVar(LinqMap("[int]int"));
             var ov = new KVar(LinqMap("[int]int"));
             var n = src.Length;
-            KExpr O(KExpr j) => Sel(o, j);
-            KExpr Out(KExpr i) => Sel(ov, i);
-            ShapeFact(Eq(O(KLit.Zero), KLit.Zero), at);
-            var offsets = Over(KLit.Zero, n, j => AndAlso(Eq(O(Plus(j, KLit.One)), Plus(O(j), inner(j).Length)), Le(KLit.Zero, inner(j).Length)));
+            ShapeFact(Eq(Sel(o, KLit.Zero), KLit.Zero), at);
+            var offsets = Over(KLit.Zero, n, j => AndAlso(Eq(Sel(o, Plus(j, KLit.One)), Plus(Sel(o, j), inner(j).Length)), Le(KLit.Zero, inner(j).Length)));
             if (whole)
             {
                 ShapeFact(offsets, at);
@@ -1201,15 +1198,15 @@ namespace CsVerify.Verifier.Boogie
                 LinqFact(offsets, at);
             }
             // (monotone: an offset is no more than any later one)
-            ShapeFact(Over(KLit.Zero, Plus(n, KLit.One), a => Over(a, Plus(n, KLit.One), b => Le(O(a), O(b)))), at);
-            ShapeFact(Over(KLit.Zero, O(n), i => AndAlso(Between(KLit.Zero, Out(i), n), AndAlso(Le(O(Out(i)), i), Lt(i, O(Plus(Out(i), KLit.One)))))), at);
-            outer = Out;
-            within = i => Minus(i, O(Out(i)));
+            ShapeFact(Over(KLit.Zero, Plus(n, KLit.One), a => Over(a, Plus(n, KLit.One), b => Le(Sel(o, a), Sel(o, b)))), at);
+            ShapeFact(Over(KLit.Zero, Sel(o, n), i => AndAlso(Between(KLit.Zero, Sel(ov, i), n), AndAlso(Le(Sel(o, Sel(ov, i)), i), Lt(i, Sel(o, Plus(Sel(ov, i), KLit.One)))))), at);
+            outer = i => Sel(ov, i);
+            within = i => Minus(i, Sel(o, Sel(ov, i)));
             Func<KExpr, KExpr> w = within;
             return new LSeq
             {
-                Length = O(n),
-                Elem = i => inner(Out(i)).Elem(w(i)),
+                Length = Sel(o, n),
+                Elem = i => inner(Sel(ov, i)).Elem(w(i)),
                 Type = inner(KLit.Zero).Type,
             };
         }
@@ -1255,11 +1252,9 @@ namespace CsVerify.Verifier.Boogie
         {
             var first = new KVar(LinqMap("[int]bool"));
             var seen = new KVar(LinqMap("[int]int"));
-            KExpr First(KExpr j) => Sel(first, j);
-            KExpr Seen(KExpr j) => Sel(seen, j);
-            LinqFact(Over(KLit.Zero, n, j => Implies(First(j), Over(KLit.Zero, j, k => Not(same(k, j))))), at);
-            LinqFact(Over(KLit.Zero, n, j => Implies(Not(First(j)), AndAlso(Between(KLit.Zero, Seen(j), j), same(Seen(j), j)))), at);
-            return First;
+            LinqFact(Over(KLit.Zero, n, j => Implies(Sel(first, j), Over(KLit.Zero, j, k => Not(same(k, j))))), at);
+            LinqFact(Over(KLit.Zero, n, j => Implies(Not(Sel(first, j)), AndAlso(Between(KLit.Zero, Sel(seen, j), j), same(Sel(seen, j), j)))), at);
+            return j => Sel(first, j);
         }
 
         private sealed class KQuantOver
@@ -1295,24 +1290,22 @@ namespace CsVerify.Verifier.Boogie
             var c = new KVar(LinqMap("[int]int"));
             var ix = new KVar(LinqMap("[int]int"));
             var n = src.Length;
-            KExpr C(KExpr j) => Sel(c, j);
-            KExpr Ix(KExpr i) => Sel(ix, i);
-            ShapeFact(Eq(C(KLit.Zero), KLit.Zero), at);
-            LinqFact(Over(KLit.Zero, n, j => Eq(C(Plus(j, KLit.One)), Plus(C(j), Ite(keep(j), KLit.One, KLit.Zero)))), at);
-            ShapeFact(Over(KLit.Zero, Plus(n, KLit.One), j => AndAlso(Le(KLit.Zero, C(j)), Le(C(j), j))), at);
-            LinqFact(Over(KLit.Zero, n, j => Implies(keep(j), Eq(Ix(C(j)), j))), at);
-            LinqFact(Over(KLit.Zero, C(n), i => AndAlso(AndAlso(Between(KLit.Zero, Ix(i), n), keep(Ix(i))), Eq(C(Ix(i)), i))), at);
+            ShapeFact(Eq(Sel(c, KLit.Zero), KLit.Zero), at);
+            LinqFact(Over(KLit.Zero, n, j => Eq(Sel(c, Plus(j, KLit.One)), Plus(Sel(c, j), Ite(keep(j), KLit.One, KLit.Zero)))), at);
+            ShapeFact(Over(KLit.Zero, Plus(n, KLit.One), j => AndAlso(Le(KLit.Zero, Sel(c, j)), Le(Sel(c, j), j))), at);
+            LinqFact(Over(KLit.Zero, n, j => Implies(keep(j), Eq(Sel(ix, Sel(c, j)), j))), at);
+            LinqFact(Over(KLit.Zero, Sel(c, n), i => AndAlso(AndAlso(Between(KLit.Zero, Sel(ix, i), n), keep(Sel(ix, i))), Eq(Sel(c, Sel(ix, i)), i))), at);
             // (of two indices there are: one alone would make the next, and so on without end)
-            var increasing = Over(KLit.Zero, Minus(C(n), KLit.One), i => Lt(Ix(i), Ix(Plus(i, KLit.One))));
+            var increasing = Over(KLit.Zero, Minus(Sel(c, n), KLit.One), i => Lt(Sel(ix, i), Sel(ix, Plus(i, KLit.One))));
             var iv = new KVar(increasing.Var);
-            increasing.Trigger = new KExpr[] { new KOp("$pattern", Ix(iv), Ix(Plus(iv, KLit.One))) };
+            increasing.Trigger = new KExpr[] { new KOp("$pattern", Sel(ix, iv), Sel(ix, Plus(iv, KLit.One))) };
             LinqFact(increasing, at);
             return new LSeq
             {
-                Length = C(n),
-                Elem = i => src.Elem(Ix(i)),
+                Length = Sel(c, n),
+                Elem = i => src.Elem(Sel(ix, i)),
                 Type = src.Type,
-                Index = Ix,
+                Index = i => Sel(ix, i),
             };
         }
 
@@ -1326,31 +1319,29 @@ namespace CsVerify.Verifier.Boogie
             var p = new KVar(LinqMap("[int]int"));
             var qv = new KVar(LinqMap("[int]int"));
             var n = src.Length;
-            KExpr P(KExpr i) => Sel(p, i);
-            KExpr Q(KExpr j) => Sel(qv, j);
-            ShapeFact(Over(KLit.Zero, n, i => AndAlso(Between(KLit.Zero, P(i), n), Eq(Q(P(i)), i))), at);
-            ShapeFact(Over(KLit.Zero, n, j => AndAlso(Between(KLit.Zero, Q(j), n), Eq(P(Q(j)), j))), at);
+            ShapeFact(Over(KLit.Zero, n, i => AndAlso(Between(KLit.Zero, Sel(p, i), n), Eq(Sel(qv, Sel(p, i)), i))), at);
+            ShapeFact(Over(KLit.Zero, n, j => AndAlso(Between(KLit.Zero, Sel(qv, j), n), Eq(Sel(p, Sel(qv, j)), j))), at);
             int prefix = keys.TakeWhile(k => k.type != null && (IsIntegral(k.type) || k.type.SpecialType == SpecialType.System_Char)).Count();
-            KExpr Key(int k, KExpr j) => Apply(keys[k].key, src.Elem(j));
-            KExpr InOrder(KExpr a, KExpr b, int level)
-            {
-                if (level == prefix)
-                {
-                    return prefix == keys.Count ? Lt(a, b) : KLit.True;
-                }
-                var (x, y) = (Key(level, a), Key(level, b));
-                return OrElse(keys[level].down ? Gt(x, y) : Lt(x, y), AndAlso(Eq(x, y), InOrder(a, b, level + 1)));
-            }
             if (prefix > 0)
             {
-                LinqFact(Over(KLit.Zero, Minus(n, KLit.One), i => InOrder(P(i), P(Plus(i, KLit.One)), 0)), at);
+                LinqFact(Over(KLit.Zero, Minus(n, KLit.One), i => InOrder(Sel(p, i), Sel(p, Plus(i, KLit.One)), 0, prefix, keys, src)), at);
             }
             return new LSeq
             {
                 Length = n,
-                Elem = i => src.Elem(P(i)),
+                Elem = i => src.Elem(Sel(p, i)),
                 Type = src.Type,
             };
+        }
+
+        private KExpr InOrder(KExpr a, KExpr b, int level, int prefix, List<((IOperation, IParameterSymbol, IParameterSymbol) key, ITypeSymbol type, bool down)> keys, LSeq src)
+        {
+            if (level == prefix)
+            {
+                return prefix == keys.Count ? Lt(a, b) : KLit.True;
+            }
+            var (x, y) = (Apply(keys[level].key, src.Elem(a)), Apply(keys[level].key, src.Elem(b)));
+            return OrElse(keys[level].down ? Gt(x, y) : Lt(x, y), AndAlso(Eq(x, y), InOrder(a, b, level + 1, prefix, keys, src)));
         }
 
         /// <summary>A call of Enumerable read here (in code): a query copied (ToArray, ToList), or read (Count, Sum, Max, ...).</summary>
@@ -1365,14 +1356,13 @@ namespace CsVerify.Verifier.Boogie
             var t = Declare("t$" + _temps++, call.Type);
             Emit(KHavoc.Of(t));
             var v = new KVar(t);
-            KExpr P(KExpr x) => Apply(f, x);
             switch (call.TargetMethod.Name)
             {
                 case "Exists":
-                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i => P(s.Elem(i)), forall: false)), at);
+                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i => Apply(f, s.Elem(i)), forall: false)), at);
                     break;
                 case "TrueForAll":
-                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i => P(s.Elem(i)))), at);
+                    ShapeFact(Eq(v, Over(KLit.Zero, s.Length, i => Apply(f, s.Elem(i)))), at);
                     break;
                 case "Find":
                 {
@@ -1380,14 +1370,14 @@ namespace CsVerify.Verifier.Boogie
                     {
                         throw new NotTranslated("a default of " + call.Type);
                     }
-                    var m = Filter(s, P, at);
+                    var m = Filter(s, x => Apply(f, x), at);
                     ShapeFact(Eq(v, Ite(Gt(m.Length, KLit.Zero), m.Elem(KLit.Zero), dflt)), at);
                     break;
                 }
                 default: // FindIndex
                     ShapeFact(AndAlso(Le(KLit.MinusOne, v), Lt(v, s.Length)), at);
-                    ShapeFact(Ite(Eq(v, KLit.MinusOne), Over(KLit.Zero, s.Length, i => Not(P(s.Elem(i)))),
-                                      AndAlso(P(s.Elem(v)), Over(KLit.Zero, v, i => Not(P(s.Elem(i)))))), at);
+                    ShapeFact(Ite(Eq(v, KLit.MinusOne), Over(KLit.Zero, s.Length, i => Not(Apply(f, s.Elem(i)))),
+                                      AndAlso(Apply(f, s.Elem(v)), Over(KLit.Zero, v, i => Not(Apply(f, s.Elem(i)))))), at);
                     break;
             }
             return v;
@@ -1448,39 +1438,6 @@ namespace CsVerify.Verifier.Boogie
             // (a CancellationToken an async form takes says nothing of what it gives)
             var args = call.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
             var at = call.Syntax;
-            void Need(KExpr cond, string text) => Emit(KCheck.Of(cond, "CSV1001", at, $"precondition '{text}' of '{name}' might not hold"));
-            KExpr Value(KExpr v)
-            {
-                var t = Declare("t$" + _temps++, callType);
-                Emit(KHavoc.Of(t));
-                ShapeFact(Eq(new KVar(t), v), at);
-                return new KVar(t);
-            }
-            LSeq Of(bool withPredicate)
-            {
-                var src = Sequence(args[0].Value);
-                if (!withPredicate || args.Count == 1)
-                {
-                    return src;
-                }
-                var f = LambdaArg(call, 1);
-                return Filter(src, x => Apply(f, x), at);
-            }
-            LSeq Mapped()
-            {
-                var src = Sequence(args[0].Value);
-                if (args.Count == 1)
-                {
-                    return src;
-                }
-                var f = LambdaArg(call, 1);
-                return new LSeq
-                {
-                    Length = src.Length,
-                    Elem = i => Apply(f, src.Elem(i), i),
-                    Type = ElementOf(callType) ?? f.body.Type,
-                };
-            }
             switch (name)
             {
                 case "ToArray" when args.Count == 1 && IsArray(callType):
@@ -1507,24 +1464,22 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(t);
                 }
                 case "Count" or "LongCount" when args.Count <= 2:
-                    return Value(Of(true).Length);
+                    return LinqValue(FilteredSequence(true, args, call, at).Length, callType, at);
                 case "Any" when args.Count <= 2:
-                    return Value(Gt(Of(true).Length, KLit.Zero));
+                    return LinqValue(Gt(FilteredSequence(true, args, call, at).Length, KLit.Zero), callType, at);
                 case "All" when args.Count == 2:
                 {
                     var s = Sequence(args[0].Value);
                     var f = LambdaArg(call, 1);
-                    return Value(Over(KLit.Zero, s.Length, i => Apply(f, s.Elem(i))));
+                    return LinqValue(Over(KLit.Zero, s.Length, i => Apply(f, s.Elem(i))), callType, at);
                 }
                 // (a dictionary, of the library's: only where it throws, a key that's null or an earlier one's, as its definition says)
                 case "ToDictionary" when args.Count is 2 or 3 && _inDatabase == 0 && IsCollection(callType) && LambdaArg(call, 1) is var kf && kf.p2 == null:
                 {
                     var s = Sequence(args[0].Value);
-                    KExpr K(KExpr i) => Apply(kf, s.Elem(i));
                     var keyType = kf.body.Type;
-                    Need(Over(KLit.Zero, s.Length, i => AndAlso(IsNullable(keyType) ? NotNull(K(i)) : KLit.True,
-                                                                    Not(new KQuantOver(this, KLit.Zero, i, j => SameValue(K(j), K(i), keyType), forall: false).Q))),
-                         "Spec.Forall(0, Q.Count(source), i => keySelector(Q.At(source, i)) != null && Q.Unseen(Select(source, keySelector), i))");
+                    CheckPrecondition(Over(KLit.Zero, s.Length, i => AndAlso(IsNullable(keyType) ? NotNull(Apply(kf, s.Elem(i))) : KLit.True,
+                                                                    Not(new KQuantOver(this, KLit.Zero, i, j => SameValue(Apply(kf, s.Elem(j)), Apply(kf, s.Elem(i)), keyType), forall: false).Q))), "Spec.Forall(0, Q.Count(source), i => keySelector(Q.At(source, i)) != null && Q.Unseen(Select(source, keySelector), i))", at, name);
                     var d = Declare("t$" + _temps++, callType);
                     Emit(KHavoc.Of(d));
                     ShapeFact(NotNull(new KVar(d)), at);
@@ -1535,93 +1490,91 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var a = Sequence(args[0].Value);
                     var b = Sequence(args[1].Value);
-                    return Value(AndAlso(Eq(a.Length, b.Length), Over(KLit.Zero, a.Length, i => SameValue(a.Elem(i), b.Elem(i), a.Type))));
+                    return LinqValue(AndAlso(Eq(a.Length, b.Length), Over(KLit.Zero, a.Length, i => SameValue(a.Elem(i), b.Elem(i), a.Type))), callType, at);
                 }
                 case "Contains" when args.Count == 2:
                 {
                     var s = Sequence(args[0].Value);
                     var x = Expr(args[1].Value);
-                    return Value(Over(KLit.Zero, s.Length, i => SameValue(s.Elem(i), x, s.Type), forall: false));
+                    return LinqValue(Over(KLit.Zero, s.Length, i => SameValue(s.Elem(i), x, s.Type), forall: false), callType, at);
                 }
                 case "First" or "Last" or "FirstOrDefault" or "LastOrDefault" when args.Count <= 2:
                 {
-                    var s = Of(true);
+                    var s = FilteredSequence(true, args, call, at);
                     AtMostOneHint(s, at);
                     DatabaseOrder(call, args[0].Value, s.Length);
                     var pos = name.StartsWith("First") ? KLit.Zero : (KExpr)Minus(s.Length, KLit.One);
                     if (!name.EndsWith("OrDefault"))
                     {
-                        Need(Gt(s.Length, KLit.Zero), args.Count == 1 ? "Q.Count(source) > 0" : "a matching element");
-                        return Value(s.Elem(pos));
+                        CheckPrecondition(Gt(s.Length, KLit.Zero), args.Count == 1 ? "Q.Count(source) > 0" : "a matching element", at, name);
+                        return LinqValue(s.Elem(pos), callType, at);
                     }
                     if (!(Default(callType) is KExpr dflt))
                     {
                         throw new NotTranslated("a default of " + callType);
                     }
-                    return Value(Ite(Gt(s.Length, KLit.Zero), s.Elem(pos), dflt));
+                    return LinqValue(Ite(Gt(s.Length, KLit.Zero), s.Elem(pos), dflt), callType, at);
                 }
                 case "Single" or "SingleOrDefault" when args.Count <= 2:
                 {
                     // (one, or with OrDefault none, else InvalidOperationException: its precondition)
-                    var s = Of(true);
+                    var s = FilteredSequence(true, args, call, at);
                     AtMostOneHint(s, at);
                     var src = args.Count == 1 ? "Q.Count(source)" : "Q.Count(Where(source, predicate))";
                     if (name == "Single")
                     {
-                        Need(Eq(s.Length, KLit.One), src + " == 1");
-                        return Value(s.Elem(KLit.Zero));
+                        CheckPrecondition(Eq(s.Length, KLit.One), src + " == 1", at, name);
+                        return LinqValue(s.Elem(KLit.Zero), callType, at);
                     }
-                    Need(Le(s.Length, KLit.One), src + " <= 1");
+                    CheckPrecondition(Le(s.Length, KLit.One), src + " <= 1", at, name);
                     if (!(Default(callType) is KExpr sd))
                     {
                         throw new NotTranslated("a default of " + callType);
                     }
-                    return Value(Ite(Eq(s.Length, KLit.One), s.Elem(KLit.Zero), sd));
+                    return LinqValue(Ite(Eq(s.Length, KLit.One), s.Elem(KLit.Zero), sd), callType, at);
                 }
                 // (the first element whose key is least, or greatest: an integer key)
                 case "MinBy" or "MaxBy" when args.Count == 2 && _inDatabase == 0 && LambdaArg(call, 1) is var by && by.p2 == null && IsIntegral(by.body.Type):
                 {
                     var s = Sequence(args[0].Value);
-                    Need(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0");
+                    CheckPrecondition(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0", at, name);
                     var ix = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Int32));
                     Emit(KHavoc.Of(ix));
                     var iv = new KVar(ix);
-                    KExpr Key(KExpr e) => Apply(by, e);
                     var better = name == "MinBy" ? "<" : ">";
                     LinqFact(AndAlso(Le(KLit.Zero, iv), Lt(iv, s.Length)), at);
-                    LinqFact(Over(KLit.Zero, s.Length, i => Not(new KOp(better, Key(s.Elem(i)), Key(s.Elem(iv))))), at);
-                    LinqFact(Over(KLit.Zero, iv, i => new KOp(better == "<" ? ">" : "<", Key(s.Elem(i)), Key(s.Elem(iv)))), at);
-                    return Value(s.Elem(iv));
+                    LinqFact(Over(KLit.Zero, s.Length, i => Not(new KOp(better, Apply(by, s.Elem(i)), Apply(by, s.Elem(iv))))), at);
+                    LinqFact(Over(KLit.Zero, iv, i => new KOp(better == "<" ? ">" : "<", Apply(by, s.Elem(i)), Apply(by, s.Elem(iv)))), at);
+                    return LinqValue(s.Elem(iv), callType, at);
                 }
                 // (of doubles: Min is NaN where one is; Max passes NaNs over, NaN only where all are, as .NET compares them)
                 case "Max" or "Min" when args.Count <= 2 && IsFloating(callType) && _inDatabase == 0:
                 {
-                    var s = Mapped();
-                    Need(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0");
+                    var s = MappedSequence(args, call, callType);
+                    CheckPrecondition(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0", at, name);
                     var n = FloatSize(callType);
                     var r = Declare("t$" + _temps++, callType);
                     Emit(KHavoc.Of(r));
                     var rv = new KVar(r);
-                    KExpr NaN(KExpr x) => new KOp("$fp.isNaN" + n, x);
-                    var anyNaN = Over(KLit.Zero, s.Length, i => NaN(s.Elem(i)), forall: false);
-                    var allNaN = Over(KLit.Zero, s.Length, i => NaN(s.Elem(i)));
+                    var anyNaN = Over(KLit.Zero, s.Length, i => IsNaN(s.Elem(i), n), forall: false);
+                    var allNaN = Over(KLit.Zero, s.Length, i => IsNaN(s.Elem(i), n));
                     LinqFact(Over(KLit.Zero, s.Length, i => Eq(s.Elem(i), rv), forall: false), at);
                     if (name == "Min")
                     {
-                        LinqFact(Eq(NaN(rv), anyNaN), at);
-                        LinqFact(Over(KLit.Zero, s.Length, i => OrElse(NaN(rv), new KOp("$fp.leq" + n, rv, s.Elem(i)))), at);
+                        LinqFact(Eq(IsNaN(rv, n), anyNaN), at);
+                        LinqFact(Over(KLit.Zero, s.Length, i => OrElse(IsNaN(rv, n), new KOp("$fp.leq" + n, rv, s.Elem(i)))), at);
                     }
                     else
                     {
-                        LinqFact(Eq(NaN(rv), allNaN), at);
-                        LinqFact(Over(KLit.Zero, s.Length, i => OrElse(NaN(s.Elem(i)), new KOp("$fp.leq" + n, s.Elem(i), rv))), at);
+                        LinqFact(Eq(IsNaN(rv, n), allNaN), at);
+                        LinqFact(Over(KLit.Zero, s.Length, i => OrElse(IsNaN(s.Elem(i), n), new KOp("$fp.leq" + n, s.Elem(i), rv))), at);
                     }
                     return rv;
                 }
                 case "Max" or "Min" when args.Count <= 2 && IsIntegral(callType):
                 {
-                    var s = Mapped();
-                    Need(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0");
+                    var s = MappedSequence(args, call, callType);
+                    CheckPrecondition(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0", at, name);
                     var r = Declare("t$" + _temps++, callType);
                     Emit(KHavoc.Of(r));
                     var rv = new KVar(r);
@@ -1631,16 +1584,14 @@ namespace CsVerify.Verifier.Boogie
                 }
                 case "Sum" when args.Count <= 2 && IsIntegral(callType):
                 {
-                    var s = Mapped();
+                    var s = MappedSequence(args, call, callType);
                     // (every partial sum in range: .NET adds them checked)
                     var acc = new KVar(LinqMap("[int]int"));
-                    KExpr A(KExpr j) => Sel(acc, j);
-                    LinqFact(Eq(A(KLit.Zero), KLit.Zero), at);
-                    LinqFact(Over(KLit.Zero, s.Length, j => Eq(A(Plus(j, KLit.One)), Plus(A(j), s.Elem(j)))), at);
+                    LinqFact(Eq(Sel(acc, KLit.Zero), KLit.Zero), at);
+                    LinqFact(Over(KLit.Zero, s.Length, j => Eq(Sel(acc, Plus(j, KLit.One)), Plus(Sel(acc, j), s.Elem(j)))), at);
                     var (lo, hi) = Range(callType.SpecialType);
-                    Need(Over(KLit.Zero, Plus(s.Length, KLit.One), j => AndAlso(Le(Number(lo), A(j)), Le(A(j), Number(hi)))),
-                         "every partial sum in range");
-                    return Value(A(s.Length));
+                    CheckPrecondition(Over(KLit.Zero, Plus(s.Length, KLit.One), j => AndAlso(Le(Number(lo), Sel(acc, j)), Le(Sel(acc, j), Number(hi)))), "every partial sum in range", at, name);
+                    return LinqValue(Sel(acc, s.Length), callType, at);
                 }
                 // (floating point: IEEE, added in order from 0.0, rounded at each step, as .NET adds them)
                 // (a fold, as its definition is: Q.Fold(Skip(source, 1), Q.At(source, 0), func) without a seed, which
@@ -1656,7 +1607,7 @@ namespace CsVerify.Verifier.Boogie
                     KExpr seed, from;
                     if (args.Count == 2)
                     {
-                        Need(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0");
+                        CheckPrecondition(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0", at, name);
                         (seed, from) = (s.Elem(KLit.Zero), KLit.One);
                     }
                     else
@@ -1664,26 +1615,24 @@ namespace CsVerify.Verifier.Boogie
                         (seed, from) = (Expr(args[1].Value), KLit.Zero);
                     }
                     var acc = new KVar(LinqMap("[int]" + TypeOf(callType)));
-                    KExpr A(KExpr j) => Sel(acc, j);
-                    LinqFact(Eq(A(from), seed), at);
-                    LinqFact(Over(from, s.Length, j => Eq(A(Plus(j, KLit.One)), Apply(f, A(j), s.Elem(j)))), at);
-                    return Value(A(s.Length));
+                    LinqFact(Eq(Sel(acc, from), seed), at);
+                    LinqFact(Over(from, s.Length, j => Eq(Sel(acc, Plus(j, KLit.One)), Apply(f, Sel(acc, j), s.Elem(j)))), at);
+                    return LinqValue(Sel(acc, s.Length), callType, at);
                 }
                 case "Sum" or "Average" when args.Count <= 2 && callType.SpecialType == SpecialType.System_Double:
                 {
-                    var s = Mapped();
+                    var s = MappedSequence(args, call, callType);
                     if (name == "Average")
                     {
-                        Need(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0");
+                        CheckPrecondition(Gt(s.Length, KLit.Zero), "Q.Count(source) > 0", at, name);
                     }
                     var count = new KOp("$fp.ofReal64", new KOp("$toreal", s.Length));
                     if (s.Type.SpecialType == SpecialType.System_Double)
                     {
                         var acc = new KVar(LinqMap("[int]float53e11"));
-                        KExpr A(KExpr j) => Sel(acc, j);
-                        LinqFact(Eq(A(KLit.Zero), FloatLiteral(0.0, callType)), at);
-                        LinqFact(Over(KLit.Zero, s.Length, j => Eq(A(Plus(j, KLit.One)), new KOp("$fp.add64", A(j), s.Elem(j)))), at);
-                        return Value(name == "Sum" ? A(s.Length) : new KOp("$fp.div64", A(s.Length), count));
+                        LinqFact(Eq(Sel(acc, KLit.Zero), FloatLiteral(0.0, callType)), at);
+                        LinqFact(Over(KLit.Zero, s.Length, j => Eq(Sel(acc, Plus(j, KLit.One)), new KOp("$fp.add64", Sel(acc, j), s.Elem(j)))), at);
+                        return LinqValue(name == "Sum" ? Sel(acc, s.Length) : new KOp("$fp.div64", Sel(acc, s.Length), count), callType, at);
                     }
                     if (name == "Sum" || !IsIntegral(s.Type))
                     {
@@ -1691,14 +1640,52 @@ namespace CsVerify.Verifier.Boogie
                     }
                     // (an integer average: summed as long, exactly, then divided as doubles)
                     var sum = new KVar(LinqMap("[int]int"));
-                    KExpr S(KExpr j) => Sel(sum, j);
-                    LinqFact(Eq(S(KLit.Zero), KLit.Zero), at);
-                    LinqFact(Over(KLit.Zero, s.Length, j => Eq(S(Plus(j, KLit.One)), Plus(S(j), s.Elem(j)))), at);
-                    return Value(new KOp("$fp.div64", new KOp("$fp.ofReal64", new KOp("$toreal", S(s.Length))), count));
+                    LinqFact(Eq(Sel(sum, KLit.Zero), KLit.Zero), at);
+                    LinqFact(Over(KLit.Zero, s.Length, j => Eq(Sel(sum, Plus(j, KLit.One)), Plus(Sel(sum, j), s.Elem(j)))), at);
+                    return LinqValue(new KOp("$fp.div64", new KOp("$fp.ofReal64", new KOp("$toreal", Sel(sum, s.Length))), count), callType, at);
                 }
                 default:
                     throw new NotTranslated("LINQ's " + name);
             }
         }
+
+        private KExpr IsNaN(KExpr x, string n) => new KOp("$fp.isNaN" + n, x);
+
+        private LSeq MappedSequence(List<IArgumentOperation> args, IInvocationOperation call, ITypeSymbol callType)
+        {
+            var src = Sequence(args[0].Value);
+            if (args.Count == 1)
+            {
+                return src;
+            }
+            var f = LambdaArg(call, 1);
+            return new LSeq
+            {
+                Length = src.Length,
+                Elem = i => Apply(f, src.Elem(i), i),
+                Type = ElementOf(callType) ?? f.body.Type,
+            };
+        }
+
+        private LSeq FilteredSequence(bool withPredicate, List<IArgumentOperation> args, IInvocationOperation call, SyntaxNode at)
+        {
+            var src = Sequence(args[0].Value);
+            if (!withPredicate || args.Count == 1)
+            {
+                return src;
+            }
+            var f = LambdaArg(call, 1);
+            return Filter(src, x => Apply(f, x), at);
+        }
+
+        private KExpr LinqValue(KExpr v, ITypeSymbol callType, SyntaxNode at)
+        {
+            var t = Declare("t$" + _temps++, callType);
+            Emit(KHavoc.Of(t));
+            ShapeFact(Eq(new KVar(t), v), at);
+            return new KVar(t);
+        }
+
+        private void CheckPrecondition(KExpr cond, string text, SyntaxNode at, string name) => Emit(KCheck.Of(cond, "CSV1001", at, $"precondition '{text}' of '{name}' might not hold"));
     }
 }

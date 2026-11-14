@@ -921,39 +921,42 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void OwnArrays()
         {
-            // (and a function of its contract alone whose body reads nothing of the memory: no array, no field, calling only
-            // such functions or mathematics; its procedure's value is then of its arguments alone too)
-            bool ReadsNothing(IMethodSymbol m) => m.IsStatic && !m.IsAbstract && !Engine.IsOverridable(m) && m.Parameters.All(x => Scalar(x.Type)) && FieldsOf(m).Count == 0 &&
-                m.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).All(d => !d.DescendantNodes().Any(n => n is ElementAccessExpressionSyntax || n is ObjectCreationExpressionSyntax ||
-                    n is InvocationExpressionSyntax inv && !(inv.Expression.ToString().StartsWith("Spec.") || inv.Expression.ToString().StartsWith("Math."))));
             var functions = _pending.Where(p => (p.FunctionBody != null || IsFunction(p.Source.Method) && ReadsNothing(p.Source.Method)) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null).ToDictionary(p => p.Source.Method, p => p, (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             var own = functions.Keys.ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-            List<(int arg, string param, string map)> Of(IMethodSymbol m) =>
-                m.Parameters.Where(x => IsArray(x.Type)).Select(x => (x.Ordinal + (m.IsStatic ? 0 : 1), Local(x), Elements(x.Type))).ToList();
-            bool Reads(MExpr e, HashSet<string> mine) => e switch
-            {
-                MOp { Op: "sel" } s when s.Args.Length == 3 && s.Args[0] is MVar map && map.Name.StartsWith("$E.") =>
-                    s.Args[1] is MVar a && mine.Contains(a.Name) && Reads(s.Args[2], mine),
-                MOp op => op.Args.All(x => Reads(x, mine)),
-                MQuant q => (q.Range == null || Reads(q.Range, mine)) && Reads(q.Body, mine),
-                MFnApp f => own.Contains(f.Callee) && Of(f.Callee).All(o => f.Args[o.arg] is MVar a && mine.Contains(a.Name)) && f.Args.All(x => Reads(x, mine)),
-                _ => true,
-            };
             for (bool shrank = true; shrank;)
             {
                 shrank = false;
                 foreach (var p in functions.Values.Where(p => own.Contains(p.Source.Method)).ToList())
                 {
-                    var mine = Of(p.Source.Method).Select(o => o.param).ToHashSet();
-                    if (!new[] { p.FunctionBody }.Where(x => x != null).Concat(p.Requires.Select(r => r.Expr)).Concat(p.Ensures.Select(x => x.Expr)).All(x => Reads(x, mine)))
+                    var mine = ArrayParams(p.Source.Method).Select(o => o.param).ToHashSet();
+                    if (!new[] { p.FunctionBody }.Where(x => x != null).Concat(p.Requires.Select(r => r.Expr)).Concat(p.Ensures.Select(x => x.Expr)).All(x => Reads(x, mine, own)))
                     {
                         own.Remove(p.Source.Method);
                         shrank = true;
                     }
                 }
             }
-            _printer.OwnArrays = m => own.Contains(m.OriginalDefinition) ? Of(m.OriginalDefinition) : null;
+            _printer.OwnArrays = m => own.Contains(m.OriginalDefinition) ? ArrayParams(m.OriginalDefinition) : null;
         }
+
+        private bool Reads(MExpr e, HashSet<string> mine, HashSet<IMethodSymbol> own) => e switch
+        {
+            MOp { Op: "sel" } s when s.Args.Length == 3 && s.Args[0] is MVar map && map.Name.StartsWith("$E.") =>
+                s.Args[1] is MVar a && mine.Contains(a.Name) && Reads(s.Args[2], mine, own),
+            MOp op => op.Args.All(x => Reads(x, mine, own)),
+            MQuant q => (q.Range == null || Reads(q.Range, mine, own)) && Reads(q.Body, mine, own),
+            MFnApp f => own.Contains(f.Callee) && ArrayParams(f.Callee).All(o => f.Args[o.arg] is MVar a && mine.Contains(a.Name)) && f.Args.All(x => Reads(x, mine, own)),
+            _ => true,
+        };
+
+        private List<(int arg, string param, string map)> ArrayParams(IMethodSymbol m) =>
+            m.Parameters.Where(x => IsArray(x.Type)).Select(x => (x.Ordinal + (m.IsStatic ? 0 : 1), Local(x), Elements(x.Type))).ToList();
+
+        // (and a function of its contract alone whose body reads nothing of the memory: no array, no field, calling only
+        // such functions or mathematics; its procedure's value is then of its arguments alone too)
+        private bool ReadsNothing(IMethodSymbol m) => m.IsStatic && !m.IsAbstract && !Engine.IsOverridable(m) && m.Parameters.All(x => Scalar(x.Type)) && FieldsOf(m).Count == 0 &&
+            m.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).All(d => !d.DescendantNodes().Any(n => n is ElementAccessExpressionSyntax || n is ObjectCreationExpressionSyntax ||
+                n is InvocationExpressionSyntax inv && !(inv.Expression.ToString().StartsWith("Spec.") || inv.Expression.ToString().StartsWith("Math."))));
 
         private HashSet<string> _allMaps = new HashSet<string>();
 

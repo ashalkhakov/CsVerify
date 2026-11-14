@@ -88,12 +88,13 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr Lexicographic(List<MExpr> next, List<MExpr> before)
         {
             int n = Math.Min(next.Count, before.Count);
-            MExpr Below(int k)
-            {
-                var down = AndAlso(Le(MLit.Zero, before[k]), Lt(next[k], before[k]));
-                return k == n - 1 ? down : OrElse(down, AndAlso(Eq(next[k], before[k]), Below(k + 1)));
-            }
-            return n == 0 ? MLit.False : Below(0);
+            return n == 0 ? MLit.False : LexicallyBelow(0, before, next, n);
+        }
+
+        private static MExpr LexicallyBelow(int k, List<MExpr> before, List<MExpr> next, int n)
+        {
+            var down = AndAlso(Le(MLit.Zero, before[k]), Lt(next[k], before[k]));
+            return k == n - 1 ? down : OrElse(down, AndAlso(Eq(next[k], before[k]), LexicallyBelow(k + 1, before, next, n)));
         }
     }
 }

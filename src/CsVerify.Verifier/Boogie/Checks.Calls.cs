@@ -444,7 +444,6 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>What a callee's old(...) reads, as it was just before the call: the snapshots the frame took then.</summary>
         private static MExpr Before(MExpr e, MCallFrame frame) => e.Rewrite(x =>
         {
-            MExpr[] Args(MFnApp f) => f.Args.Select(a => Before(a, frame)).ToArray();
             switch (x)
             {
                 case MVar v when v.Name == "psnap": return new MVar($"s{frame.Id}$psnap");
@@ -458,7 +457,7 @@ namespace CsVerify.Verifier.Boogie
                     Function = f.Function,
                     Plain = f.Plain,
                     MapsAt = f.MapsAt,
-                    Args = Args(f),
+                    Args = ArgsBefore(f, frame),
                     Snap = Before(f.Snap, frame),
                 };
                 // (a function of the memory, as it was: of the frame's snapshots of every map it takes)
@@ -474,7 +473,7 @@ namespace CsVerify.Verifier.Boogie
                         Plain = f.Plain,
                         Layer = f.Layer,
                         Fields = f.Fields,
-                        Args = Args(f),
+                        Args = ArgsBefore(f, frame),
                         MapsAt = $"s{frame.Id}",
                     };
                 case MFnApp f:
@@ -483,11 +482,13 @@ namespace CsVerify.Verifier.Boogie
                         Callee = f.Callee,
                         Function = f.Function,
                         Plain = true,
-                        Args = Args(f),
+                        Args = ArgsBefore(f, frame),
                     };
                 default: return null;
             }
         });
+
+        private static MExpr[] ArgsBefore(MFnApp f, MCallFrame frame) => f.Args.Select(a => Before(a, frame)).ToArray();
 
         /// <summary>A call's arguments, each checked, then not null where its parameter may not be (CSV1014).</summary>
         private MExpr[] Arguments(IMethodSymbol callee, KExpr[] given, SyntaxNode[] at)

@@ -152,28 +152,12 @@ namespace CsVerify.Verifier.Boogie
             var type = FieldType(field);
             var cur = OthersStep(field, o, onThis, inv.Syntax);
             string what = $"'{inv.Syntax}' might not be a step of [Atomic] '{field.Name}'";
-            void Write(KExpr v, KExpr when = null)
-            {
-                if (Step(field, cur, v) is KExpr step)
-                {
-                    Emit(KCheck.Of(when == null ? step : Implies(when, step), "CSV1030", inv.Syntax, what));
-                }
-                Emit(new KFieldStore
-                {
-                    Field = field,
-                    Instance = o,
-                    OnThis = onThis,
-                    Value = when == null ? v : Ite(when, v, cur),
-                    At = inv.Syntax,
-                    InstanceAt = inv.Syntax,
-                });
-            }
             var name = (inv.TargetMethod.ContainingType.Name == "Volatile" ? "Volatile." : "") + inv.TargetMethod.Name;
             switch (name)
             {
                 case "Volatile.Read": case "Read": return cur;
                 case "Volatile.Write":
-                    Write(args[0]);
+                    Write(args[0], field, cur, inv, what, o, onThis);
                     return null;
                 case "Increment": case "Decrement": case "Add":
                 {
@@ -191,25 +175,42 @@ namespace CsVerify.Verifier.Boogie
                     Mode = KMode.Unchecked,
                     At = inv.Syntax,
                 }));
-                    Write(new KVar(t));
+                    Write(new KVar(t), field, cur, inv, what, o, onThis);
                     return new KVar(t);
                 }
                 case "Exchange":
-                    Write(args[0]);
+                    Write(args[0], field, cur, inv, what, o, onThis);
                     return cur;
                 case "CompareExchange":
-                    Write(args[0], Eq(cur, args[1]));
+                    Write(args[0], field, cur, inv, what, o, onThis, Eq(cur, args[1]));
                     return cur;
                 // (bitwise, at once: the old value given back)
                 case "And" or "Or" when IsIntegral(type):
                 {
                     var t = Declare("t$" + _temps++, type);
                     Emit(KAssign.Of(t, Bitwise(name == "And" ? BinaryOperatorKind.And : BinaryOperatorKind.Or, cur, args[0], type, inSpec: false)));
-                    Write(new KVar(t));
+                    Write(new KVar(t), field, cur, inv, what, o, onThis);
                     return cur;
                 }
                 default: throw new NotTranslated(name + " of an atomic field");
             }
+        }
+
+        private void Write(KExpr v, ISymbol field, KExpr cur, IInvocationOperation inv, string what, KExpr o, bool onThis, KExpr when = null)
+        {
+            if (Step(field, cur, v) is KExpr step)
+            {
+                Emit(KCheck.Of(when == null ? step : Implies(when, step), "CSV1030", inv.Syntax, what));
+            }
+            Emit(new KFieldStore
+            {
+                Field = field,
+                Instance = o,
+                OnThis = onThis,
+                Value = when == null ? v : Ite(when, v, cur),
+                At = inv.Syntax,
+                InstanceAt = inv.Syntax,
+            });
         }
     }
 }

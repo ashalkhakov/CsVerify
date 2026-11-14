@@ -61,20 +61,7 @@ namespace CsVerify.Verifier.Boogie
                     continue;
                 }
                 var comparisons = new List<IBinaryOperation>();
-                void Conjuncts(IOperation o)
-                {
-                    o = Unconverted(o);
-                    if (o is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } and)
-                    {
-                        Conjuncts(and.LeftOperand);
-                        Conjuncts(and.RightOperand);
-                    }
-                    else if (o is IBinaryOperation b && b.OperatorMethod == null && IsIntegral(Unconverted(b.LeftOperand).Type) && IsIntegral(Unconverted(b.RightOperand).Type))
-                    {
-                        comparisons.Add(b);
-                    }
-                }
-                Conjuncts(cond);
+                Conjuncts(cond, comparisons);
                 var facts = new List<KSpec>();
                 var paths = new List<IOperation>();
                 try
@@ -90,14 +77,13 @@ namespace CsVerify.Verifier.Boogie
                             }
                         }
                         var (lv, rv) = (Spec(l, null), Spec(r, null));
-                        KExpr Offset(int k) => k == 0 ? rv : Plus(rv, new KLit(k < 0 ? $"(-{-k})" : k.ToString()));
                         var made = b.OperatorKind switch
                         {
-                            BinaryOperatorKind.LessThan => new[] { Le(lv, Offset(0)) },
-                            BinaryOperatorKind.LessThanOrEqual => new[] { Le(lv, Offset(1)) },
-                            BinaryOperatorKind.GreaterThan => new[] { Ge(lv, Offset(0)) },
-                            BinaryOperatorKind.GreaterThanOrEqual => new[] { Ge(lv, Offset(-1)) },
-                            BinaryOperatorKind.NotEquals => new[] { Le(lv, Offset(0)), Ge(lv, Offset(0)) },
+                            BinaryOperatorKind.LessThan => new[] { Le(lv, Offset(0, rv)) },
+                            BinaryOperatorKind.LessThanOrEqual => new[] { Le(lv, Offset(1, rv)) },
+                            BinaryOperatorKind.GreaterThan => new[] { Ge(lv, Offset(0, rv)) },
+                            BinaryOperatorKind.GreaterThanOrEqual => new[] { Ge(lv, Offset(-1, rv)) },
+                            BinaryOperatorKind.NotEquals => new[] { Le(lv, Offset(0, rv)), Ge(lv, Offset(0, rv)) },
                             _ => new KOp[0],
                         };
                         facts.AddRange(made.Select(x => KSpec.Of(x, loop)));
@@ -120,6 +106,22 @@ namespace CsVerify.Verifier.Boogie
                 {
                     _p.Candidates[h] = facts;
                 }
+            }
+        }
+
+        private KExpr Offset(int k, KExpr rv) => k == 0 ? rv : Plus(rv, new KLit(k < 0 ? $"(-{-k})" : k.ToString()));
+
+        private void Conjuncts(IOperation o, List<IBinaryOperation> comparisons)
+        {
+            o = Unconverted(o);
+            if (o is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } and)
+            {
+                Conjuncts(and.LeftOperand, comparisons);
+                Conjuncts(and.RightOperand, comparisons);
+            }
+            else if (o is IBinaryOperation b && b.OperatorMethod == null && IsIntegral(Unconverted(b.LeftOperand).Type) && IsIntegral(Unconverted(b.RightOperand).Type))
+            {
+                comparisons.Add(b);
             }
         }
 

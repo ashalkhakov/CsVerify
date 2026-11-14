@@ -174,11 +174,7 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                     var st = Unconverted(ordered[0].Value).Type;
                     var sp = lower(Unconverted(ordered[0].Value));
                     var map = Elements(CellsOf(st));
-                    KExpr At(KExpr span, KExpr i) => Sel(map, SBase(span), Plus(SOff(span), i));
                     var i = new KVar("i$m");
-                    KExpr Within(KExpr lo, KExpr hi, KExpr body) => KQuant.ForAll(
-                        "i$m",
-                        Implies(AndAlso(Le(lo, i), Lt(i, hi)), body));
                     var r = Declare("t$" + _temps++, se.Type);
                     Emit(KHavoc.Of(r));
                     var rv = new KVar(r);
@@ -190,9 +186,9 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                         }
                         var v = lower(ordered[1].Value);
                         Emit(KAssume.Of(AndAlso(Le(KLit.MinusOne, rv), Lt(rv, Length(sp)))));
-                        Emit(KAssume.Of(Implies(Ge(rv, KLit.Zero), Eq(At(sp, rv), v))));
+                        Emit(KAssume.Of(Implies(Ge(rv, KLit.Zero), Eq(SpanElementAt(sp, rv, map), v))));
                         Emit(KSpecStmt.AssumedFree(
-                            Within(KLit.Zero, Ite(Lt(rv, KLit.Zero), Length(sp), rv), Ne(At(sp, i), v)),
+                            Within(KLit.Zero, Ite(Lt(rv, KLit.Zero), Length(sp), rv), Ne(SpanElementAt(sp, i, map), v), i),
                             se.Syntax,
                             argumentAt: se.Syntax));
                     }
@@ -204,7 +200,7 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
                         }
                         var pre = lower(Unconverted(ordered[1].Value));
                         Emit(KSpecStmt.AssumedFree(
-                            Eq(rv, AndAlso(Le(Length(pre), Length(sp)), Within(KLit.Zero, Length(pre), Eq(At(sp, i), At(pre, i))))),
+                            Eq(rv, AndAlso(Le(Length(pre), Length(sp)), Within(KLit.Zero, Length(pre), Eq(SpanElementAt(sp, i, map), SpanElementAt(pre, i, map)), i))),
                             se.Syntax,
                             argumentAt: se.Syntax));
                     }
@@ -223,6 +219,12 @@ AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), KLit.Zero), Eq(Length(s), Length(a)
             }
             return null;
         }
+
+        private KExpr Within(KExpr lo, KExpr hi, KExpr body, KVar i) => KQuant.ForAll(
+            "i$m",
+            Implies(AndAlso(Le(lo, i), Lt(i, hi)), body));
+
+        private KExpr SpanElementAt(KExpr span, KExpr i, string map) => Sel(map, SBase(span), Plus(SOff(span), i));
 
         private KExpr StackAlloc(IOperation op, ITypeSymbol spanType)
         {

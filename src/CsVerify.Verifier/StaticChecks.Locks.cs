@@ -137,11 +137,12 @@ namespace CsVerify.Verifier
         {
             if (receiver == "this") return true;
             if (!SyntaxFacts.IsValidIdentifier(receiver)) return false;
-            bool Named(ExpressionSyntax e) => e.ToString() == receiver || e is TupleExpressionSyntax t && t.Arguments.Any(x => Named(x.Expression));
-            return !l.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => Named(a.Left)) &&
-                   !l.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => Named(fe.Variable)) &&
+            return !l.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => StaysTheSameNamed(a.Left, receiver)) &&
+                   !l.DescendantNodes().OfType<ForEachVariableStatementSyntax>().Any(fe => StaysTheSameNamed(fe.Variable, receiver)) &&
                    !l.DescendantNodes().OfType<ArgumentSyntax>().Any(a => !a.RefKindKeyword.IsKind(SyntaxKind.None) && a.Expression.ToString() == receiver);
         }
+
+        private bool StaysTheSameNamed(ExpressionSyntax e, string receiver) => e.ToString() == receiver || e is TupleExpressionSyntax t && t.Arguments.Any(x => StaysTheSameNamed(x.Expression, receiver));
 
         // ---- a SemaphoreSlim used as a lock (see LockGuards). Unlike a lock it may be held across an await, and a second try at it waits forever. ----
 
@@ -222,12 +223,10 @@ namespace CsVerify.Verifier
             bool acquiring = locks.Acquires(_method), releasing = locks.Releases(_method);
             if (!acquiring && !releasing) return;
             var calls = _contract.Declaration.DescendantNodes().OfType<InvocationExpressionSyntax>().ToList();
-            bool Calls(string name, bool wrapperAcquiring) => calls.Any(i => i.Expression is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == name && _model.GetTypeInfo(ma.Expression).Type?.ToDisplayString() == "System.Threading.SemaphoreSlim" ||
-                                                                             _model.GetSymbolInfo(i).Symbol is IMethodSymbol m && (wrapperAcquiring ? locks.Acquires(m) : locks.Releases(m)));
-            if (releasing && !Calls("Release", false))
+            if (releasing && !Calls("Release", false, calls, locks))
                 Report("CSV1023", MethodLocationNode(), $"[Releases] on '{_method.Name}', but it doesn't call Release on a semaphore", isError: true);
             if (!acquiring) return;
-            if (!Calls("Wait", true) && !Calls("WaitAsync", true))
+            if (!Calls("Wait", true, calls, locks) && !Calls("WaitAsync", true, calls, locks))
                 Report("CSV1023", MethodLocationNode(), $"[Acquires] on '{_method.Name}', but it doesn't call Wait or WaitAsync on a semaphore", isError: true);
             foreach (var i in calls)
                 if (i.Expression is MemberAccessExpressionSyntax ma && (ma.Name.Identifier.Text == "Wait" || ma.Name.Identifier.Text == "WaitAsync") && _model.GetSymbolInfo(ma.Expression).Symbol is IFieldSymbol g && !locks.IsMutexGate(g))
@@ -238,5 +237,8 @@ namespace CsVerify.Verifier
                 !dispose.DeclaringSyntaxReferences.SelectMany(x => x.GetSyntax().DescendantNodes().OfType<MemberAccessExpressionSyntax>()).Any(ma => ma.Name.Identifier.Text == "Release"))
                 Report("CSV1023", MethodLocationNode(), $"[Acquires] on '{_method.Name}', but the Dispose of what it gives, '{r.Name}', doesn't call Release", isError: true);
         }
+
+        private bool Calls(string name, bool wrapperAcquiring, List<InvocationExpressionSyntax> calls, LockGuards locks) => calls.Any(i => i.Expression is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == name && _model.GetTypeInfo(ma.Expression).Type?.ToDisplayString() == "System.Threading.SemaphoreSlim" ||
+                                                                         _model.GetSymbolInfo(i).Symbol is IMethodSymbol m && (wrapperAcquiring ? locks.Acquires(m) : locks.Releases(m)));
     }
 }
