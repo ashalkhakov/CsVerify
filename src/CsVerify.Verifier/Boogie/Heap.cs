@@ -32,20 +32,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Level 2 to level 3: each block's statements made level 3's, then the loop frames added.</summary>
         public static HProcedure Run(MProcedure p)
         {
-            var h = new HProcedure
-            {
-                Source = p.Source, Requires = p.Requires, Ensures = p.Ensures, Frame = p.Frame, ReadsFrame = p.ReadsFrame, InferredReads = p.InferredReads,
-                FunctionBody = p.FunctionBody, Obligations = p.Obligations,
-                // (what Checks asserts at entry is level 3's already: its well-definedness, nothing stored or allocated)
-                Entry = p.Entry.Select(s => s as IHeapStmt ?? throw new System.InvalidOperationException("a store or an allocation at entry: " + s.GetType().Name)).ToList(),
-                Blocks = p.Blocks.Select(b => new HBlock
-                {
-                    Label = b.Label,
-                    Ordinal = b.Ordinal,
-                    Jump = b.Jump,
-                    Stmts = Statements(p, b),
-                }).ToList(),
-            };
+            // (what Checks asserts at entry is level 3's already: its well-definedness, nothing stored or allocated)
+            var entry = p.Entry.Select(s => s as IHeapStmt ?? throw new System.InvalidOperationException("a store or an allocation at entry: " + s.GetType().Name)).ToList();
+            var blocks = p.Blocks.Select(b => HBlock.Of(b, Statements(p, b))).ToList();
+            var h = HProcedure.Of(p, entry, blocks);
             LoopFrames(p, h);
             return h;
         }
@@ -89,15 +79,7 @@ namespace CsVerify.Verifier.Boogie
                             }
                             if (n.Ctor != null)
                             {
-                                stmts.Add(new MCall
-                                {
-                                    Callee = n.Ctor,
-                                    Receiver = t,
-                                    ReceiverIsThis = false,
-                                    Args = n.Args,
-                                    At = n.At,
-                                    Check = n.Check,
-                                });
+                                stmts.Add(MCall.OfConstructor(n, t));
                             }
                             else
                             {

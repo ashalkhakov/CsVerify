@@ -288,7 +288,8 @@ namespace CsVerify.Verifier.Boogie
             // (float and double as IEEE 754: Z3's floating point, rounding to nearest as .NET does)
             foreach (var (n, t, size, bv) in new[] { ("32", "float24e8", "8 24", "bv32"), ("64", "float53e11", "11 53", "bv64") })
             {
-                var x = $"x: {t}"; var xy = $"x: {t}, y: {t}";
+                var x = $"x: {t}";
+                var xy = $"x: {t}, y: {t}";
                 foreach (var (name, op) in new[] { ("add", "fp.add RNE"), ("sub", "fp.sub RNE"), ("mul", "fp.mul RNE"), ("div", "fp.div RNE") })
                 {
                     Optional("$fp.", FloatBuiltin(name, op, xy, t, n));
@@ -405,6 +406,18 @@ namespace CsVerify.Verifier.Boogie
             public string Result = "result";
             /// <summary>A map read in another state (a snapshot's: $st.m($sst(s))), in place of the memory's.</summary>
             public Func<string, string> MapAt;
+
+            /// <summary>This context inside old(): the ref parameters as they were on entry.</summary>
+            public Context AsAtEntry() => new Context
+            {
+                Ins = Ins,
+                AtEntry = true,
+                Elems = Elems,
+                InFunction = InFunction,
+                Layer = Layer,
+                Result = Result,
+                Group = Group,
+            };
         }
 
         private static readonly Context InProcedure = new Context();
@@ -423,16 +436,7 @@ namespace CsVerify.Verifier.Boogie
                 case MVar v when cx.AtEntry && cx.Ins.Contains(v.Name): return v.Name + "$in";
                 case MVar v: return v.Name == "result" ? cx.Result : Map(v.Name, cx);
                 case MOp { Op: "old" } old when cx.Ins.Count > 0 && !cx.AtEntry:
-                    return $"old({E(old.Args[0], new Context
-                    {
-                        Ins = cx.Ins,
-                        AtEntry = true,
-                        Elems = cx.Elems,
-                        InFunction = cx.InFunction,
-                        Layer = cx.Layer,
-                        Result = cx.Result,
-                        Group = cx.Group,
-                    })})";
+                    return $"old({E(old.Args[0], cx.AsAtEntry())})";
                 case MFnApp f when f.Plain:
                     return $"{f.Function}({string.Join(", ", f.Args.Select(a => E(a, cx)))})";
                 case MFnApp f when f.Snap != null:

@@ -79,13 +79,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new MFork
                 {
-                    Call = new MCall
-                    {
-                        Callee = call.Callee,
-                        Receiver = call.Receiver,
-                        Args = call.Args,
-                        RefOuts = c.RefOuts,
-                    },
+                    Call = MCall.Thrown(call.Callee, call.Receiver, call.Args, c.RefOuts),
                     Target = c.ThrowsTo,
                 });
             }
@@ -93,20 +87,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(frame);
             }
-            Emit(new MCall
-            {
-                Callee = call.Callee,
-                Receiver = call.Receiver,
-                ReceiverIsThis = c.ReceiverIsThis,
-                ReceiverAt = c.ReceiverAt,
-                Args = call.Args,
-                Result = c.Result,
-                ThisOut = c.ThisOut,
-                At = c.At,
-                ArgsAt = c.ArgsAt,
-                RefOuts = c.RefOuts,
-                Check = At("CSV1001", c.At, $"'{c.At}'"),
-            });
+            var check = At("CSV1001", c.At, $"'{c.At}'");
+            Emit(MCall.Of(c, call.Callee, call.Receiver, call.Args, check));
             AfterCall(c, call.Callee, call.Receiver, call.Given, frame, call.Sig, call.Pure, call.OwnedReceiver);
         }
 
@@ -301,20 +283,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(frame);
             }
-            Emit(new MCall
-            {
-                Callee = callee,
-                Receiver = receiver,
-                ReceiverIsThis = st.ReceiverIsThis,
-                ReceiverAt = st.ReceiverAt,
-                Args = args,
-                Result = c.Result,
-                At = c.At,
-                ArgsAt = st.ArgsAt,
-                RefOuts = c.RefOuts,
-                Check = At("CSV1001", c.At, $"'{c.At}'"),
-                Phase = 2,
-            });
+            var check = At("CSV1001", c.At, $"'{c.At}'");
+            Emit(MCall.Joined(c, st, callee, receiver, args, check));
             AfterCall(c, callee, receiver, given, frame, sig, pure, false);
         }
 
@@ -374,19 +344,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void PostconditionsGiveBack(KCall c, IMethodSymbol callee, Dictionary<string, MExpr> given, MCallFrame frame, KProcedure sig, bool pure)
         {
-            Emit(new MCallFrame
-            {
-                Id = frame.Id,
-                After = true,
-                Receiver = frame.Receiver,
-                Callee = callee,
-                Maps = frame.Maps,
-                Cells = frame.Cells,
-                Given = frame.Given,
-                ElementMaps = frame.ElementMaps,
-                Fields = frame.Fields,
-                FieldIds = frame.FieldIds,
-            });
+            Emit(frame.AfterCall(callee));
             var back = new Dictionary<string, MExpr>(given);
             if (c.Result != null)
             {

@@ -164,17 +164,16 @@ namespace CsVerify.Verifier.Boogie
                     // (wrapping at the type's ends, as at run time)
                     var delta = name == "Increment" ? KLit.One : name == "Decrement" ? KLit.MinusOne : args[0];
                     var t = Declare("t$" + _temps++, type);
-                    Emit(KAssign.Of(
-                        t,
-                        new KArith
-                {
-                    Op = "+",
-                    Left = cur,
-                    Right = delta,
-                    Type = type,
-                    Mode = KMode.Unchecked,
-                    At = inv.Syntax,
-                }));
+                    var sum = new KArith
+                    {
+                        Op = "+",
+                        Left = cur,
+                        Right = delta,
+                        Type = type,
+                        Mode = KMode.Unchecked,
+                        At = inv.Syntax,
+                    };
+                    Emit(KAssign.Of(t, sum));
                     Write(new KVar(t), field, cur, inv, what, o, onThis);
                     return new KVar(t);
                 }

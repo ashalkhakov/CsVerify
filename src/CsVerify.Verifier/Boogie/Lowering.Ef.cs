@@ -537,7 +537,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 return false;
             }
-            _p.AddField(fk.OriginalDefinition); _p.AddField(key.OriginalDefinition);
+            _p.AddField(fk.OriginalDefinition);
+            _p.AddField(key.OriginalDefinition);
             return true;
         }
 

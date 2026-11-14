@@ -18,6 +18,15 @@ namespace CsVerify.Verifier
         /// under which alone the base promised it (evaluated in the entry state).
         /// </summary>
         public IReadOnlyList<IOperation> Guard;
+
+        /// <summary>This postcondition, promised only under these preconditions.</summary>
+        public Postcondition Guarded(IReadOnlyList<IOperation> guard) => new Postcondition
+        {
+            Expr = Expr,
+            ResultParameter = ResultParameter,
+            Syntax = Syntax,
+            Guard = guard,
+        };
     }
 
     /// <summary>A method's contract, read from the Spec.* statements at the top level of its body.</summary>
@@ -168,7 +177,8 @@ namespace CsVerify.Verifier
                 IsPure = SpecSymbols.IsPure(method),
             };
             var syntax = method.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).FirstOrDefault();
-            BlockSyntax block; ExpressionSyntax exprBody;
+            BlockSyntax block;
+            ExpressionSyntax exprBody;
             switch (syntax)
             {
                 case MethodDeclarationSyntax m:
@@ -204,7 +214,6 @@ namespace CsVerify.Verifier
             }
             c.Declaration = syntax;
             c.Model = compilation.GetSemanticModel(syntax.SyntaxTree);
-
             if (exprBody != null)
             {
                 if (isStub)
@@ -221,7 +230,6 @@ namespace CsVerify.Verifier
             {
                 return c;
             }
-
             var rest = new List<StatementSyntax>();
             foreach (var stmt in block.Statements)
             {
@@ -296,15 +304,7 @@ namespace CsVerify.Verifier
                 bool weakened = OwnRequires.Count > 0 && b.Requires.Count > 0;
                 foreach (var post in b.Ensures)
                 {
-                    Ensures.Add(weakened && post.Guard == null
-                        ? new Postcondition
-                        {
-                            Expr = post.Expr,
-                            ResultParameter = post.ResultParameter,
-                            Syntax = post.Syntax,
-                            Guard = b.Requires,
-                        }
-                        : post);
+                    Ensures.Add(weakened && post.Guard == null ? post.Guarded(b.Requires) : post);
                 }
                 ThrowEnsures.AddRange(b.ThrowEnsures); // (what the base promises on a throw, every override does)
                 if (OwnRequires.Count == 0 && Requires.Count == 0)

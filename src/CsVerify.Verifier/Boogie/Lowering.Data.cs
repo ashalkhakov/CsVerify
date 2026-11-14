@@ -704,17 +704,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     throw new NotTranslated("an invariant that isn't a function: " + inv.Name);
                 }
-                Emit(KCheck.Of(
-                    new KFnCall
-             {
-                 Callee = inv.OriginalDefinition,
-                 Receiver = new KVar(t),
-                 Args = new KExpr[0],
-                 At = oc.Syntax,
-             },
-                    "CSV1015",
-                    oc.Syntax,
-                    $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'"));
+                var holds = new KFnCall
+                {
+                    Callee = inv.OriginalDefinition,
+                    Receiver = new KVar(t),
+                    Args = new KExpr[0],
+                    At = oc.Syntax,
+                };
+                Emit(KCheck.Of(holds, "CSV1015", oc.Syntax, $"invariant '{inv.Name}' of {oc.Type.Name} might not hold for '{oc.Syntax}'"));
             }
             AssumeValid(new KVar(t), oc.Type);
             return new KVar(t);

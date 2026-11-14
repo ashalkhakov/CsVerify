@@ -649,15 +649,15 @@ namespace CsVerify.Verifier.Boogie
             }
             else if (fe.Collection == null)
             {
-                Emit(KAssign.Of(
-                    Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
-                    new KLen
-            {
-                String = fe.String,
-                Array = new KVar(fe.Array),
-                At = fe.At,
-                ArrayAt = fe.At,
-            }));
+                var count = Declare(fe.Array.Replace("$a", "$n"), _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                var length = new KLen
+                {
+                    String = fe.String,
+                    Array = new KVar(fe.Array),
+                    At = fe.At,
+                    ArrayAt = fe.At,
+                };
+                Emit(KAssign.Of(count, length));
             }
             return;
         }
@@ -972,15 +972,7 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     HeldCell(wa.Array, target.Syntax, write: true);
-                    Emit(new KStore
-                    {
-                        Array = wa.Array,
-                        Index = wa.Index,
-                        Value = value,
-                        ArrayType = wa.ArrayType,
-                        At = target.Syntax,
-                        ArrayAt = target.Syntax,
-                    });
+                    Emit(wa.Write(value, target.Syntax));
                 }
                 return;
             }

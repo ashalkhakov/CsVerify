@@ -641,6 +641,18 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         public int Phase;
         public KCall Started;
+
+        /// <summary>The join (the second phase) of a started call: where its result and its ref and out arguments come back.</summary>
+        public static KCall JoinOf(KCall started) => new KCall
+        {
+            Callee = started.Callee,
+            Started = started,
+            Result = started.Result,
+            At = started.At,
+            ArgsAt = started.ArgsAt,
+            RefOuts = started.RefOuts,
+            Phase = 2,
+        };
     }
 
     /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>

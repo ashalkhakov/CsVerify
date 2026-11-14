@@ -30,9 +30,61 @@ namespace CsVerify.Verifier.Boogie
                 notAssumedAfter: true,
                 message: $"passing the array cell '{a.Value.Syntax}' by {a.Parameter.RefKind.ToString().ToLowerInvariant()} to '{callee.Name}', which may touch arrays itself, is not supported: the cell and the parameter would disagree (copy the element into a local)"));
 
-        /// <summary>What each ref local names: a variable (its kernel name), or an array's cell (the array and the index, as they were bound).</summary>
-        private readonly Dictionary<ILocalSymbol, (string Var, KExpr Array, KExpr Index, ITypeSymbol ArrayType)> _refAlias =
-            new Dictionary<ILocalSymbol, (string, KExpr, KExpr, ITypeSymbol)>(SymbolEqualityComparer.Default);
+        /// <summary>What a ref local names: a variable (its kernel name), or an array's cell (the array and the index, as they were bound).</summary>
+        private sealed class RefAlias
+        {
+            public readonly string Var;
+            public readonly KExpr Array, Index;
+            public readonly ITypeSymbol ArrayType;
+
+            private RefAlias(string var, KExpr array, KExpr index, ITypeSymbol arrayType)
+            {
+                Var = var;
+                Array = array;
+                Index = index;
+                ArrayType = arrayType;
+            }
+
+            public static RefAlias OfVariable(string var) => new RefAlias(var, null, null, null);
+
+            public static RefAlias OfCell(KExpr array, KExpr index, ITypeSymbol arrayType) => new RefAlias(null, array, index, arrayType);
+
+            /// <summary>A read of its cell, in code at this syntax (alongside: what may run alongside it).</summary>
+            public KElem Read(SyntaxNode at, KExpr alongside) => new KElem
+            {
+                Array = Array,
+                Index = Index,
+                ArrayType = ArrayType,
+                At = at,
+                ArrayAt = at,
+                Alongside = alongside,
+            };
+
+            /// <summary>A read of its cell in a specification, at this syntax.</summary>
+            public KElem ReadInSpec(SyntaxNode at) => new KElem
+            {
+                Array = Array,
+                Index = Index,
+                ArrayType = ArrayType,
+                InSpec = true,
+                At = at,
+                ArrayAt = at,
+            };
+
+            /// <summary>A store of this value in its cell, at this syntax.</summary>
+            public KStore Write(KExpr value, SyntaxNode at) => new KStore
+            {
+                Array = Array,
+                Index = Index,
+                Value = value,
+                ArrayType = ArrayType,
+                At = at,
+                ArrayAt = at,
+            };
+        }
+
+        /// <summary>What each ref local names.</summary>
+        private readonly Dictionary<ILocalSymbol, RefAlias> _refAlias = new Dictionary<ILocalSymbol, RefAlias>(SymbolEqualityComparer.Default);
 
         /// <summary>
         /// ref T r = ref x: r names x, a local or a parameter's variable, or an array's cell, its array and index fixed
@@ -58,16 +110,16 @@ namespace CsVerify.Verifier.Boogie
             switch (target)
             {
                 case ILocalReferenceOperation l when l.Local.RefKind == RefKind.None && InSubset(l.Local.Type):
-                    _refAlias[r] = (Declare(Local(l.Local), l.Local.Type), null, null, null);
+                    _refAlias[r] = RefAlias.OfVariable(Declare(Local(l.Local), l.Local.Type));
                     return;
                 case ILocalReferenceOperation l2 when _refAlias.TryGetValue(l2.Local, out var other):
                     _refAlias[r] = other;
                     return;
                 case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal):
-                    _refAlias[r] = (apLocal, null, null, null);
+                    _refAlias[r] = RefAlias.OfVariable(apLocal);
                     return;
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && p.Parameter.RefKind is RefKind.Ref or RefKind.Out:
-                    _refAlias[r] = (Local(p.Parameter), null, null, null);
+                    _refAlias[r] = RefAlias.OfVariable(Local(p.Parameter));
                     return;
                 case IArrayElementReferenceOperation e when IsArray(e.ArrayReference.Type) && e.Indices.Length == 1:
                 {
@@ -79,17 +131,16 @@ namespace CsVerify.Verifier.Boogie
                     // (its checks: not null, within bounds, as reading it)
                     var probe = Declare("t$" + _temps++, e.Type);
                     HeldCell(new KVar(arr), e.Syntax, write: false);
-                    Emit(KAssign.Of(
-                        probe,
-                        new KElem
-                {
-                    Array = new KVar(arr),
-                    Index = new KVar(idx),
-                    ArrayType = e.ArrayReference.Type,
-                    At = e.Syntax,
-                    ArrayAt = e.ArrayReference.Syntax,
-                }));
-                    _refAlias[r] = (null, new KVar(arr), new KVar(idx), e.ArrayReference.Type);
+                    var read = new KElem
+                    {
+                        Array = new KVar(arr),
+                        Index = new KVar(idx),
+                        ArrayType = e.ArrayReference.Type,
+                        At = e.Syntax,
+                        ArrayAt = e.ArrayReference.Syntax,
+                    };
+                    Emit(KAssign.Of(probe, read));
+                    _refAlias[r] = RefAlias.OfCell(new KVar(arr), new KVar(idx), e.ArrayReference.Type);
                     return;
                 }
                 case IFieldReferenceOperation:
@@ -102,7 +153,7 @@ namespace CsVerify.Verifier.Boogie
                         message: $"a ref local to the field '{target.Syntax}' is not supported: only locals, parameters and array elements"));
                     var t = Declare("t$" + _temps++, r.Type);
                     Emit(KHavoc.Of(t));
-                    _refAlias[r] = (t, null, null, null);
+                    _refAlias[r] = RefAlias.OfVariable(t);
                     return;
                 }
                 default: throw new NotTranslated("a ref local bound to " + target.Kind);

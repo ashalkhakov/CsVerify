@@ -516,17 +516,16 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var t = Declare("t$" + _temps++, FieldType(f));
                     _p.AddField(f.OriginalDefinition);
-                    Emit(KAssign.Of(
-                        t,
-                        new KField
-                {
-                    Field = f.OriginalDefinition,
-                    Instance = f.IsStatic ? null : owner,
-                    OnThis = owner is KVar { Name: "this" },
-                    NoNull = true,
-                    At = aw.Syntax,
-                    InstanceAt = aw.Syntax,
-                }));
+                    var read = new KField
+                    {
+                        Field = f.OriginalDefinition,
+                        Instance = f.IsStatic ? null : owner,
+                        OnThis = owner is KVar { Name: "this" },
+                        NoNull = true,
+                        At = aw.Syntax,
+                        InstanceAt = aw.Syntax,
+                    };
+                    Emit(KAssign.Of(t, read));
                     kept.Add((f.OriginalDefinition, t, f.IsStatic ? null : owner));
                 }
             }
@@ -543,16 +542,16 @@ namespace CsVerify.Verifier.Boogie
             UnsharedAfter(unshared);
             foreach (var (f, t, owner) in kept)
             {
-                Emit(KAssume.Of(
-                Eq(new KField
-{
-Field = f,
-Instance = owner,
-OnThis = owner is KVar { Name: "this" },
-NoNull = true,
-At = aw.Syntax,
-InstanceAt = aw.Syntax,
-}, new KVar(t))));
+                var read = new KField
+                {
+                    Field = f,
+                    Instance = owner,
+                    OnThis = owner is KVar { Name: "this" },
+                    NoNull = true,
+                    At = aw.Syntax,
+                    InstanceAt = aw.Syntax,
+                };
+                Emit(KAssume.Of(Eq(read, new KVar(t))));
             }
             ForgetCaptured();
         }
@@ -635,7 +634,8 @@ InstanceAt = aw.Syntax,
                 case IInvocationOperation old when SpecSymbols.IsSpecClass(old.TargetMethod.ContainingType) && old.TargetMethod.Name == "Old":
                     return;
                 case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.And } and:
-                    WalkArguments(and.LeftOperand, call, given, ref read, unkept); WalkArguments(and.RightOperand, call, given, ref read, unkept);
+                    WalkArguments(and.LeftOperand, call, given, ref read, unkept);
+                    WalkArguments(and.RightOperand, call, given, ref read, unkept);
                     return;
                 case IArrayElementReferenceOperation ae:
                     if (!(RootSymbol(ae.ArrayReference, call) is ISymbol ar && given.Contains(ar)))
@@ -959,16 +959,7 @@ InstanceAt = aw.Syntax,
 
         private void Join(KCall st, Task t)
         {
-            Emit(new KCall
-            {
-                Callee = st.Callee,
-                Started = st,
-                Result = st.Result,
-                At = st.At,
-                ArgsAt = st.ArgsAt,
-                RefOuts = st.RefOuts,
-                Phase = 2,
-            });
+            Emit(KCall.JoinOf(st));
             if (t.Forget != null)
             {
                 foreach (var f in t.Forget)

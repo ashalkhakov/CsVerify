@@ -62,7 +62,10 @@ namespace CsVerify.Verifier
 
         public VerificationDiagnostic(string id, bool isError, string message, FileLinePositionSpan span)
         {
-            Id = id; IsError = isError; Message = message; Span = span;
+            Id = id;
+            IsError = isError;
+            Message = message;
+            Span = span;
         }
 
         public int Line => Span.StartLinePosition.Line + 1;

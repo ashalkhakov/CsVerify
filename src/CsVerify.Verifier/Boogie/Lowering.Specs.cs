@@ -154,16 +154,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case ILocalReferenceOperation cl when _capturedIn.ContainsKey(cl.Local): return CapturedInSpec(cl.Local);
                 case ILocalReferenceOperation sr when _refAlias.TryGetValue(sr.Local, out var sra):
-                    return sra.Var != null ? new KVar(sra.Var)
-                         : new KElem
-                         {
-                             Array = sra.Array,
-                             Index = sra.Index,
-                             ArrayType = sra.ArrayType,
-                             InSpec = true,
-                             At = sr.Syntax,
-                             ArrayAt = sr.Syntax,
-                         };
+                    return sra.Var != null ? new KVar(sra.Var) : sra.ReadInSpec(sr.Syntax);
                 case ILocalReferenceOperation l when InSubset(l.Local.Type): return new KVar(Declare(Local(l.Local), l.Local.Type));
                 default: return SpecOther(e, result);
             }

@@ -93,13 +93,8 @@ namespace CsVerify.Verifier.Boogie
                     });
                     return MLit.True;
                 case KFieldAcc fa:
-                    atom(guard, new MFieldAcc
-                    {
-                        Obj = WalkSpec(fa.Obj, guard, given),
-                        Field = fa.Field,
-                        Type = fa.Type,
-                        At = fa.At,
-                    });
+                    var obj = WalkSpec(fa.Obj, guard, given);
+                    atom(guard, MFieldAcc.Of(fa, obj));
                     return MLit.True;
                 case KLit { Text: "true" }: return MLit.True;
             }

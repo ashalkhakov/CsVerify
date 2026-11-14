@@ -46,6 +46,16 @@ namespace CsVerify.Verifier
             public bool Element, Semaphore;
             public Origin? Origin;
             public IMethodSymbol In;
+
+            /// <summary>A lock acquired in a method (in), the object it is of known as origin says (null: a static one).</summary>
+            public static Take Of(Acquired a, Origin? origin, IMethodSymbol @in) => new Take
+            {
+                Lock = a.Lock,
+                Element = a.Element,
+                Semaphore = a.Semaphore,
+                Origin = origin,
+                In = @in,
+            };
         }
 
         /// <summary>What code may take: these locks, and, if <see cref="Unknown"/> says what, any lock at all.</summary>
@@ -938,14 +948,8 @@ namespace CsVerify.Verifier
                     }
                     if (_owner.AcquiredAt(n, model) is Acquired a && a.Lock != null)
                     {
-                        _s.Add(new Take
-                        {
-                            Lock = a.Lock,
-                            Element = a.Element,
-                            Semaphore = a.Semaphore,
-                            Origin = a.Static ? null : OriginOfSyntax(a.Owner, model, map, inMethod),
-                            In = inMethod,
-                        });
+                        var origin = a.Static ? null : OriginOfSyntax(a.Owner, model, map, inMethod);
+                        _s.Add(Take.Of(a, origin, inMethod));
                     }
                     else if (n is LockStatementSyntax unknownLock)
                     {
@@ -1004,7 +1008,10 @@ namespace CsVerify.Verifier
                     case IForEachLoopOperation fe:
                         if (model.GetForEachStatementInfo((CommonForEachStatementSyntax)n) is var info)
                         {
-                            ImplicitRun(info.GetEnumeratorMethod); ImplicitRun(info.MoveNextMethod); ImplicitRun(info.CurrentProperty?.GetMethod); ImplicitRun(info.DisposeMethod);
+                            ImplicitRun(info.GetEnumeratorMethod);
+                            ImplicitRun(info.MoveNextMethod);
+                            ImplicitRun(info.CurrentProperty?.GetMethod);
+                            ImplicitRun(info.DisposeMethod);
                         }
                         break;
                     case IUsingOperation us:

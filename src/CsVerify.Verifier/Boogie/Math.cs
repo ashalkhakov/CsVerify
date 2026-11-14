@@ -292,6 +292,15 @@ namespace CsVerify.Verifier.Boogie
         public ISymbol Field;
         public ITypeSymbol Type;
         public SyntaxNode At;
+
+        /// <summary>A kernel field permission at level 2, of this object.</summary>
+        public static MFieldAcc Of(KFieldAcc fa, MExpr obj) => new MFieldAcc
+        {
+            Obj = obj,
+            Field = fa.Field,
+            Type = fa.Type,
+            At = fa.At,
+        };
     }
 
     /// <summary>An instance of a [Predicate]: P(Args), its permissions folded into it.</summary>
@@ -319,6 +328,21 @@ namespace CsVerify.Verifier.Boogie
         public bool Fields;
         /// <summary>The globals the callee's postconditions read as they were (old): snapshotted before the call.</summary>
         public HashSet<string> OldGlobals = new HashSet<string>();
+
+        /// <summary>This frame after its call returns (of callee, the method that ran): what it kept, given back.</summary>
+        public MCallFrame AfterCall(IMethodSymbol callee) => new MCallFrame
+        {
+            Id = Id,
+            After = true,
+            Receiver = Receiver,
+            Callee = callee,
+            Maps = Maps,
+            Cells = Cells,
+            Given = Given,
+            ElementMaps = ElementMaps,
+            Fields = Fields,
+            FieldIds = FieldIds,
+        };
 
         public void AddElementMaps(IEnumerable<string> collection) => ElementMaps.AddRange(collection);
 
@@ -375,6 +399,28 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Instance, Value;
         public bool OnThis;
         public SyntaxNode At, InstanceAt;
+
+        /// <summary>A store in a container's own field (the ownership tree's: taking a child out, giving one in), at this syntax.</summary>
+        public static MFieldStore InContainer(ISymbol field, MExpr container, MExpr value, SyntaxNode at) => new MFieldStore
+        {
+            Field = field,
+            Instance = container,
+            OnThis = true,
+            Value = value,
+            At = at,
+            InstanceAt = at,
+        };
+
+        /// <summary>A kernel field store at level 2: of this object, this value.</summary>
+        public static MFieldStore Of(KFieldStore fs, MExpr instance, MExpr value) => new MFieldStore
+        {
+            Field = fs.Field,
+            Instance = instance,
+            Value = value,
+            OnThis = fs.OnThis,
+            At = fs.At,
+            InstanceAt = fs.InstanceAt,
+        };
     }
 
     /// <summary>The tree roots change: Take's split (what was below the taken object is in its tree or the container's), Give's join.</summary>
@@ -395,6 +441,18 @@ namespace CsVerify.Verifier.Boogie
         public SyntaxNode[] ArgsAt;
         public SyntaxNode At;
         public Check Check;
+
+        /// <summary>A kernel allocation at level 2: its constructor's arguments these, its precondition's check this.</summary>
+        public static MNewObj Of(KNewObj n, MExpr[] args, Check check) => new MNewObj
+        {
+            Var = n.Var,
+            Type = n.Type,
+            Ctor = n.Ctor,
+            Args = args,
+            ArgsAt = n.ArgsAt,
+            At = n.At,
+            Check = check,
+        };
     }
 
     /// <summary>Map[Ref] := Value, Value a specification (a new array's row, a new list's Items or Size: LINQ's copies).</summary>
@@ -427,6 +485,17 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Array, Index, Value;
         public ITypeSymbol ArrayType;
         public SyntaxNode At, ArrayAt;
+
+        /// <summary>A kernel store at level 2: of this cell, this value.</summary>
+        public static MStore Of(KStore st, MExpr array, MExpr index, MExpr value) => new MStore
+        {
+            Array = array,
+            Index = index,
+            Value = value,
+            ArrayType = st.ArrayType,
+            At = st.At,
+            ArrayAt = st.ArrayAt,
+        };
     }
 
     /// <summary>new T[n] (with an initializer's elements): into Var.</summary>
@@ -460,6 +529,61 @@ namespace CsVerify.Verifier.Boogie
         public string ThrowsTo;
         /// <summary>2: a task's or thread's join, of the procedure's twin whose preconditions its start checked.</summary>
         public int Phase;
+
+        /// <summary>A kernel call at level 2: of this method, receiver and arguments, its precondition's check this.</summary>
+        public static MCall Of(KCall c, IMethodSymbol callee, MExpr receiver, MExpr[] args, Check check) => new MCall
+        {
+            Callee = callee,
+            Receiver = receiver,
+            ReceiverIsThis = c.ReceiverIsThis,
+            ReceiverAt = c.ReceiverAt,
+            Args = args,
+            Result = c.Result,
+            ThisOut = c.ThisOut,
+            At = c.At,
+            ArgsAt = c.ArgsAt,
+            RefOuts = c.RefOuts,
+            Check = check,
+        };
+
+        /// <summary>
+        /// A started call's join (c, its second phase; started, its first) at level 2: of this method, receiver and
+        /// arguments, as the start had them.
+        /// </summary>
+        public static MCall Joined(KCall c, KCall started, IMethodSymbol callee, MExpr receiver, MExpr[] args, Check check) => new MCall
+        {
+            Callee = callee,
+            Receiver = receiver,
+            ReceiverIsThis = started.ReceiverIsThis,
+            ReceiverAt = started.ReceiverAt,
+            Args = args,
+            Result = c.Result,
+            At = c.At,
+            ArgsAt = started.ArgsAt,
+            RefOuts = c.RefOuts,
+            Check = check,
+            Phase = 2,
+        };
+
+        /// <summary>A call as an exception sees it: of this method, receiver and arguments, its ref and out arguments those.</summary>
+        public static MCall Thrown(IMethodSymbol callee, MExpr receiver, MExpr[] args, List<(int param, string var)> refOuts) => new MCall
+        {
+            Callee = callee,
+            Receiver = receiver,
+            Args = args,
+            RefOuts = refOuts,
+        };
+
+        /// <summary>A new object's constructor, called on it (t, the object).</summary>
+        public static MCall OfConstructor(MNewObj n, MExpr t) => new MCall
+        {
+            Callee = n.Ctor,
+            Receiver = t,
+            ReceiverIsThis = false,
+            Args = n.Args,
+            At = n.At,
+            Check = n.Check,
+        };
     }
 
     /// <summary>A call of a delegate (a Func or an Action): checked not null, and that it accepts the arguments.</summary>
@@ -471,6 +595,17 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Its signature, as Boogie's types ("int.int"): which $pre, $post and $call.</summary>
         public string Key;
         public SyntaxNode At, DelegateAt;
+
+        /// <summary>A kernel invocation at level 2: of this delegate, at these arguments.</summary>
+        public static MInvoke Of(KInvoke iv, MExpr @delegate, MExpr[] args) => new MInvoke
+        {
+            Result = iv.Result,
+            Delegate = @delegate,
+            Args = args,
+            Key = iv.Key,
+            At = iv.At,
+            DelegateAt = iv.DelegateAt,
+        };
     }
 
     /// <summary>
@@ -495,6 +630,23 @@ namespace CsVerify.Verifier.Boogie
         public List<MExpr> PostsS = new List<MExpr>();
         /// <summary>What it may change, for its arguments (its own Spec.Modifies).</summary>
         public MExpr Changes;
+
+        /// <summary>A kernel lambda at level 2, its contract's parts these.</summary>
+        public static MLambda Of(KLambda lam, MExpr pre, List<MExpr> posts, MExpr preS, MExpr reads, MExpr changes, List<MExpr> postsS) => new MLambda
+        {
+            Var = lam.Var,
+            Key = lam.Key,
+            Params = lam.Params,
+            ResultType = lam.ResultType,
+            NoChange = lam.NoChange,
+            Steady = lam.Steady,
+            Pre = pre,
+            Posts = posts,
+            PreS = preS,
+            Reads = reads,
+            Changes = changes,
+            PostsS = postsS,
+        };
     }
 
     /// <summary>A call of code whose contract isn't known (IDisposable.Dispose, as using calls it): it may change anything.</summary>
@@ -512,6 +664,13 @@ namespace CsVerify.Verifier.Boogie
         public int Id;
         public bool After;
         public List<string> Keep = new List<string>();
+
+        public static MKeep Of(KKeep k) => new MKeep
+        {
+            Id = k.Id,
+            After = k.After,
+            Keep = k.Keep,
+        };
     }
 
     /// <summary>At a loop's head: every atomic field went by steps from where it was on entry (each change of it is one).</summary>
@@ -622,6 +781,21 @@ namespace CsVerify.Verifier.Boogie
         public List<IHeapStmt> Entry = new List<IHeapStmt>();
         public List<HBlock> Blocks = new List<HBlock>();
         public int Obligations;
+
+        /// <summary>A level 2 procedure at level 3: its entry's statements and its blocks these.</summary>
+        public static HProcedure Of(MProcedure p, List<IHeapStmt> entry, List<HBlock> blocks) => new HProcedure
+        {
+            Source = p.Source,
+            Requires = p.Requires,
+            Ensures = p.Ensures,
+            Frame = p.Frame,
+            ReadsFrame = p.ReadsFrame,
+            InferredReads = p.InferredReads,
+            FunctionBody = p.FunctionBody,
+            Obligations = p.Obligations,
+            Entry = entry,
+            Blocks = blocks,
+        };
         /// <summary>A copy (a twin's), of a copy of its kernel procedure.</summary>
         public HProcedure Clone()
         {
@@ -638,6 +812,15 @@ namespace CsVerify.Verifier.Boogie
         public int Ordinal;
         public List<IHeapStmt> Stmts = new List<IHeapStmt>();
         public KJump Jump;
+
+        /// <summary>A level 2 block at level 3: its statements these.</summary>
+        public static HBlock Of(MBlock b, List<IHeapStmt> stmts) => new HBlock
+        {
+            Label = b.Label,
+            Ordinal = b.Ordinal,
+            Jump = b.Jump,
+            Stmts = stmts,
+        };
 
         public void AddStmt(IHeapStmt stmt) => Stmts.Add(stmt);
 

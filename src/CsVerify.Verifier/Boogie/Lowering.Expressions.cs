@@ -503,16 +503,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 // (what an [Owns] field holds is in its container's tree, and isn't its root: it's owned)
                 var t = Declare("t$" + _temps++, FieldType(field));
-                Emit(KAssign.Of(
-                    t,
-                    new KField
-            {
-                Field = field,
-                Instance = instance,
-                OnThis = onThis,
-                At = e.Syntax,
-                InstanceAt = instanceAt,
-            }));
+                var read = new KField
+                {
+                    Field = field,
+                    Instance = instance,
+                    OnThis = onThis,
+                    At = e.Syntax,
+                    InstanceAt = instanceAt,
+                };
+                Emit(KAssign.Of(t, read));
                 var r = new KVar("$root");
                 Emit(KAssume.Of(
                 OrElse(IsNull(new KVar(t)),
@@ -671,15 +670,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                         return new KVar(ra.Var);
                     }
                     HeldCell(ra.Array, rr.Syntax, write: false);
-                    return new KElem
-                    {
-                        Array = ra.Array,
-                        Index = ra.Index,
-                        ArrayType = ra.ArrayType,
-                        At = rr.Syntax,
-                        ArrayAt = rr.Syntax,
-                        Alongside = InSpec(rr.Syntax) ? null : Concurrent ? KLit.True : Running(),
-                    };
+                    var alongside = InSpec(rr.Syntax) ? null : Concurrent ? KLit.True : Running();
+                    return ra.Read(rr.Syntax, alongside);
                 default: return ExprOther(e);
             }
         }

@@ -211,7 +211,8 @@ namespace CsVerify.Verifier.Boogie
                 else if (kind == "each" && quiet && type.DelegateInvokeMethod.Parameters.Length == 1)
                 {
                     var st = srcOp.Type;
-                    KExpr len; System.Func<KExpr, KExpr> Elem;
+                    KExpr len;
+                    System.Func<KExpr, KExpr> Elem;
                     if (IsArray(st))
                     {
                         len = Length(src);
@@ -1638,7 +1639,8 @@ namespace CsVerify.Verifier.Boogie
                         break;
                     case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.None) && arg.Expression is IdentifierNameSyntax or DeclarationExpressionSyntax &&
                                                  SymbolEqualityComparer.Default.Equals(arg.Expression is DeclarationExpressionSyntax { Designation: SingleVariableDesignationSyntax d } ? _model.GetDeclaredSymbol(d) : _model.GetSymbolInfo(arg.Expression).Symbol, local):
-                        writes.Add(null); break;
+                        writes.Add(null);
+                        break;
                 }
             }
             if (!writes.Any(w => w != null && Unwrapped(w) is BaseObjectCreationExpressionSyntax))

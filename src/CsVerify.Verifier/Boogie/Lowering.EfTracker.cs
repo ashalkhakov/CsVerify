@@ -56,7 +56,10 @@ namespace CsVerify.Verifier.Boogie
                 Name = InTxMap,
                 Type = "[Ref]bool",
             };
-            _failed = "ef$failed"; _savedAlone = "ef$savedAlone"; _stale = "ef$stale"; _read = "ef$read";
+            _failed = "ef$failed";
+            _savedAlone = "ef$savedAlone";
+            _stale = "ef$stale";
+            _read = "ef$read";
             _p.AddLocal(KLocal.Of(_failed, "[Ref]bool"));
             _p.AddLocal(KLocal.Of(_savedAlone, "[Ref]bool"));
             _p.AddLocal(KLocal.Of(_stale, "[Ref][Ref]bool"));
@@ -524,9 +527,11 @@ namespace CsVerify.Verifier.Boogie
                 case ILiteralOperation { ConstantValue: { HasValue: true, Value: null } }: return;
                 case IDefaultValueOperation: return;
                 case IInvocationOperation { TargetMethod.Name: "BeginTransaction" or "BeginTransactionAsync", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } }:
-                    TrackedContext(db, ref of, ref ok, ref context); return;
+                    TrackedContext(db, ref of, ref ok, ref context);
+                    return;
                 case IPropertyReferenceOperation { Property.Name: "CurrentTransaction", Instance: IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db2 } }:
-                    TrackedContext(db2, ref of, ref ok, ref context); return;
+                    TrackedContext(db2, ref of, ref ok, ref context);
+                    return;
                 default:
                     ok = false;
                     return;
@@ -542,7 +547,8 @@ namespace CsVerify.Verifier.Boogie
                 ok = false;
                 return;
             }
-            of = s; context = db;
+            of = s;
+            context = db;
         }
 
         /// <summary>Add, Attach, Update or Remove of one entity (or Entry(e).State set: as the state says).</summary>

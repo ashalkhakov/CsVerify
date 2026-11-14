@@ -233,16 +233,12 @@ namespace CsVerify.Verifier.Boogie
                     return;
                 }
                 case KStore { Memory: true } ms:
-                    Emit(new MStore
-                    {
-                        Array = MLit.Null,
-                        Index = Code(ms.Index),
-                        Value = Code(ms.Value),
-                        ArrayType = ms.ArrayType,
-                        At = ms.At,
-                        ArrayAt = ms.ArrayAt,
-                    });
+                {
+                    var index = Code(ms.Index);
+                    var value = Code(ms.Value);
+                    Emit(MStore.Of(ms, MLit.Null, index, value));
                     return;
+                }
                 case KRow row when row.Ref == null:
                     Emit(new MRow
                     {
@@ -343,12 +339,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new MHavocAll { ProgramState = ha.ProgramState });
                     return;
                 case KKeep k:
-                    Emit(new MKeep
-                    {
-                        Id = k.Id,
-                        After = k.After,
-                        Keep = k.Keep,
-                    });
+                    Emit(MKeep.Of(k));
                     return;
                 case KAtomicSteps st:
                     Emit(new MAtomicSteps
@@ -397,15 +388,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Assert(NotNull(value), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
             }
-            Emit(new MFieldStore
-            {
-                Field = fs.Field,
-                Instance = o,
-                Value = value,
-                OnThis = fs.OnThis,
-                At = fs.At,
-                InstanceAt = fs.InstanceAt,
-            });
+            Emit(MFieldStore.Of(fs, o, value));
             return;
         }
 
@@ -451,16 +434,9 @@ namespace CsVerify.Verifier.Boogie
                     AndAlso(AndAlso(Eq(Sel(root, held), Sel(root, c)), Ne(Sel(root, held), held)),
                         Ne(held, child))));
             }
-            Emit(new MFieldStore
-            {
-                Field = take.Field,
-                Instance = c,
-                OnThis = true,
-                Value = MLit.Null,
-                At = take.At,
-                InstanceAt = take.At,
-            });
-            _p.AddModifies("$root"); _p.AddAnyWrite("$root");
+            Emit(MFieldStore.InContainer(take.Field, c, MLit.Null, take.At));
+            _p.AddModifies("$root");
+            _p.AddAnyWrite("$root");
             if (!_p.Locals.Any(l => l.Name == "split$"))
             {
                 _p.AddLocal(KLocal.Of("split$", "[Ref]bool"));
@@ -489,16 +465,9 @@ namespace CsVerify.Verifier.Boogie
             Assert(Ne(Sel("$root", c), x), At("CSV1016", give.At, $"'{give.ValueAt}' might own the container: ownership would be a cycle"));
             ProveInvariant(give.Type, x, give.At, "when it is given to its owner");
             Emit(MMapUpdate.Of("perm", x, MLit.False));
-            Emit(new MFieldStore
-            {
-                Field = give.Field,
-                Instance = c,
-                OnThis = true,
-                Value = x,
-                At = give.At,
-                InstanceAt = give.At,
-            });
-            _p.AddModifies("$root"); _p.AddAnyWrite("$root");
+            Emit(MFieldStore.InContainer(give.Field, c, x, give.At));
+            _p.AddModifies("$root");
+            _p.AddAnyWrite("$root");
             Emit(new MRoots
             {
                 Join = true,
@@ -516,15 +485,7 @@ namespace CsVerify.Verifier.Boogie
             Assert(NotNull(d), NullAt(iv.At, iv.DelegateAt, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
             Assert(new MOp("$preS." + iv.Key, new[] { d, new MOp("$state") }.Concat(args).ToArray()),
                 At("CSV1001", iv.At, $"'{iv.DelegateAt}' might not accept these arguments: say what it accepts with Spec.Requires(Spec.Pre({iv.DelegateAt}, ...))"));
-            Emit(new MInvoke
-            {
-                Result = iv.Result,
-                Delegate = d,
-                Args = args,
-                Key = iv.Key,
-                At = iv.At,
-                DelegateAt = iv.DelegateAt,
-            });
+            Emit(MInvoke.Of(iv, d, args));
             return;
         }
 
@@ -536,21 +497,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 r[kv.Key] = MathTerms.Math(kv.Value);
             }
-            Emit(new MLambda
-            {
-                Var = lam.Var,
-                Key = lam.Key,
-                Params = lam.Params,
-                ResultType = lam.ResultType,
-                NoChange = lam.NoChange,
-                Steady = lam.Steady,
-                Pre = lam.Pre == null ? null : SpecGiven(lam.Pre, r),
-                Posts = lam.Posts.Select(x => SpecGiven(x, r)).ToList(),
-                PreS = lam.PreS == null ? null : SpecGiven(lam.PreS, r),
-                Reads = lam.Reads == null ? null : SpecGiven(lam.Reads, r),
-                Changes = lam.Changes == null ? null : SpecGiven(lam.Changes, r),
-                PostsS = lam.PostsS.Select(x => SpecGiven(x, r)).ToList(),
-            });
+            var pre = lam.Pre == null ? null : SpecGiven(lam.Pre, r);
+            var posts = lam.Posts.Select(x => SpecGiven(x, r)).ToList();
+            var preS = lam.PreS == null ? null : SpecGiven(lam.PreS, r);
+            var reads = lam.Reads == null ? null : SpecGiven(lam.Reads, r);
+            var changes = lam.Changes == null ? null : SpecGiven(lam.Changes, r);
+            var postsS = lam.PostsS.Select(x => SpecGiven(x, r)).ToList();
+            Emit(MLambda.Of(lam, pre, posts, preS, reads, changes, postsS));
             return;
         }
 
@@ -582,16 +535,8 @@ namespace CsVerify.Verifier.Boogie
                     Exhale(r.Expr, given, n.At, null);
                 }
             }
-            Emit(new MNewObj
-            {
-                Var = n.Var,
-                Type = n.Type,
-                Ctor = n.Ctor,
-                Args = args,
-                ArgsAt = n.ArgsAt,
-                At = n.At,
-                Check = n.Ctor == null ? null : At("CSV1001", n.At, $"'{n.At}'"),
-            });
+            var check = n.Ctor == null ? null : At("CSV1001", n.At, $"'{n.At}'");
+            Emit(MNewObj.Of(n, args, check));
             if (sig != null)
             {
                 foreach (var e in sig.Ensures)
@@ -662,15 +607,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Assert(Ge(Cell(a, i), MLit.FullPermission), At("CSV1016", st.At, $"'{st.At}' writes a cell this method has no Spec.Acc for"));
             }
-            Emit(new MStore
-            {
-                Array = a,
-                Index = i,
-                Value = value,
-                ArrayType = st.ArrayType,
-                At = st.At,
-                ArrayAt = st.ArrayAt,
-            });
+            Emit(MStore.Of(st, a, i, value));
             return;
         }
 

@@ -43,8 +43,14 @@ namespace CsVerify.Verifier.Boogie
         private Lowering(IMethodSymbol m, Contract contract, SyntaxNode decl, SemanticModel model, MethodResult result,
                          Func<IMethodSymbol, bool> isProcedure, Func<IMethodSymbol, bool> isFunction, Func<string, string> literal, Func<IMethodSymbol, Contract> contractOf)
         {
-            _m = m; _contract = contract; _decl = decl; _model = model; _isProcedure = isProcedure; _isFunction = isFunction;
-            _literal = literal; _contractOf = contractOf;
+            _m = m;
+            _contract = contract;
+            _decl = decl;
+            _model = model;
+            _isProcedure = isProcedure;
+            _isFunction = isFunction;
+            _literal = literal;
+            _contractOf = contractOf;
             _p = new KProcedure
             {
                 Method = IsCollection(m.ContainingType) ? m : m.OriginalDefinition,

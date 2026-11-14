@@ -643,7 +643,8 @@ namespace CsVerify.Verifier
         /// <summary>Interlocked.Exchange(ref f, 1/true), or CompareExchange(ref f, 1/true, 0/false): the flag, and its free value (0 or false).</summary>
         private static ExpressionSyntax FlagTaking(InvocationExpressionSyntax inv, SemanticModel model, out object free, out bool isBool)
         {
-            free = null; isBool = false;
+            free = null;
+            isBool = false;
             if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol m) || m.ContainingType?.ToDisplayString() != "System.Threading.Interlocked")
             {
                 return null;
