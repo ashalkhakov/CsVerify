@@ -36,13 +36,8 @@ namespace CsVerify.Verifier.Boogie
             var sig = _program.Signature(pred);
             if (sig.FunctionBody == null) return;
             var snap = new MOp("$sst", new MOp("sel", new MVar("psnap"), Instance(pred, args)));
-            MExpr In(MExpr e) => MathTerms.Map(e, x => x switch
-            {
-                MVar v when v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.") => new MOp("$st." + v.Name, snap),
-                // (not into a function's arguments: a map read there stays the memory's now. TODO: of the snapshot too?)
-                MFnApp => x,
-                _ => null,
-            });
+            // (every map read, a library function's arguments' too: those Plain lets through are of its arguments alone)
+            MExpr In(MExpr e) => MathTerms.Map(e, x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
             // (of no memory now, no old(...), no other snapshot)
             bool Plain(MExpr e) => MathTerms.Subterms(e).All(x => x is not (MFnApp { Plain: false } or MOp { Op: "old" } or MVar { Name: "psnap" }));
             var given = pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
