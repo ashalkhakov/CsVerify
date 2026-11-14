@@ -189,13 +189,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var y = new KVar("y$");
             var clash = And(new KExpr[] { new KOp("!=", State(c, y), I(EfDetached)), new KOp("!=", y, o), Isa(y, e), KeyColumnsEqual(e, y, o) });
-            return new KQuant
-            {
-                Forall = true,
-                Var = "y$",
-                Type = "Ref",
-                Body = new KOp("!", clash),
-            };
+            return KQuant.ForAll("y$", "Ref", new KOp("!", clash));
         }
 
         /// <summary>What o's navigations hold: nothing (each reference null, each collection null or empty)?</summary>
@@ -698,13 +692,10 @@ namespace CsVerify.Verifier.Boogie
             UsableContext(c, at);
             var y = new KVar("y$");
             // nothing ExecuteUpdate changed behind the tracker is written back
-            TrackerCheck(new KQuant
-            {
-                Forall = true,
-                Var = "y$",
-                Type = "Ref",
-                Body = new KOp("==>", new KOp("==", State(c, y), I(Modified)), new KOp("!", new KOp("sel", new KVar(_stale), c, y))),
-            },
+            TrackerCheck(KQuant.ForAll(
+                "y$",
+                "Ref",
+                new KOp("==>", new KOp("==", State(c, y), I(Modified)), new KOp("!", new KOp("sel", new KVar(_stale), c, y)))),
                 "CSV1033", at, $"'{at}' writes an entity that ExecuteUpdate or ExecuteDelete may have changed since it was read, overwriting what they wrote: reload it (Entry(e).Reload()) first");
             // two saves: one transaction around both, or the first stays if the second fails
             TrackerCheck(new KOp("||", InTx(c), new KOp("!", new KOp("sel", new KVar(_savedAlone), c))), "CSV1035", at,
@@ -865,14 +856,11 @@ namespace CsVerify.Verifier.Boogie
             ShapeFact(Over(new KLit("0"), len, Each), at);
             ShapeFact(new KOp("==>", new KOp("<", new KLit("0"), len), Each(new KLit("0"))), at);
             var y = new KVar("y$");
-            ShapeFact(new KQuant
-            {
-                Forall = true,
-                Var = "y$",
-                Type = "Ref",
-                Body = new KOp("==>", new KOp("&&", Isa(y, e), Live(y)),
-                And(new KExpr[] { new KOp("<=", new KLit("0"), new KOp("sel", idx, y)), new KOp("<", new KOp("sel", idx, y), len), new KOp("==", El(new KOp("sel", idx, y)), y) })),
-            }, at);
+            ShapeFact(KQuant.ForAll(
+                "y$",
+                "Ref",
+                new KOp("==>", new KOp("&&", Isa(y, e), Live(y)),
+                And(new KExpr[] { new KOp("<=", new KLit("0"), new KOp("sel", idx, y)), new KOp("<", new KOp("sel", idx, y), len), new KOp("==", El(new KOp("sel", idx, y)), y) }))), at);
             _known = known;
             return new LSeq
             {

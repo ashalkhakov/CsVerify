@@ -37,13 +37,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var i = new MVar("i$");
                 var room = c.Read ? new MOp("<=", Cell(c.Arr, i), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, i), new MLit("1.0"));
-                Assume(new MQuant
-                {
-                    Forall = true,
-                    Var = "i$",
-                    Range = null,
-                    Body = Implies(InCells(g, c, c.Arr, i), room),
-                });
+                Assume(MQuant.ForAll("i$", Implies(InCells(g, c, c.Arr, i), room)));
                 var lo = c.Read ? new MOp("<=", Cell(c.Arr, c.Lo), new MLit("1.0 - " + Share)) : new MOp("<", Cell(c.Arr, c.Lo), new MLit("1.0"));
                 Assume(Implies(InCells(g, c, c.Arr, c.Lo), lo));
                 // (memory: two intervals overlap only where one starts inside the other, so at the other views' first cells too)
@@ -62,13 +56,7 @@ namespace CsVerify.Verifier.Boogie
         private void ExhaleCells(MExpr g, MCells c, SyntaxNode at, string message)
         {
             var i = new MVar("i$");
-            Assert(new MQuant
-            {
-                Forall = true,
-                Var = "i$",
-                Range = null,
-                Body = Implies(InCells(g, c, c.Arr, i), new MOp(">=", Cell(c.Arr, i), Amount(c.Read))),
-            }, At("CSV1016", at, message));
+            Assert(MQuant.ForAll("i$", Implies(InCells(g, c, c.Arr, i), new MOp(">=", Cell(c.Arr, i), Amount(c.Read)))), At("CSV1016", at, message));
             ChangeCells(g, c, "-");
         }
 

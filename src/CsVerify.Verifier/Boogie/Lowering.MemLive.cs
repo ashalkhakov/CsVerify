@@ -40,13 +40,9 @@ namespace CsVerify.Verifier.Boogie
             var a = new KVar("m$a");
             foreach (var x in views)
             {
-                ShapeFact(new KQuant
-                {
-                    Forall = true,
-                    Var = "m$a",
-                    Type = "int",
-                    Body = new KOp("==>", InCells(MemCells(new KVar(Local(x)), x.Type, _decl), a), new KOp("sel", new KVar(_memLive), a)),
-                }, _decl);
+                ShapeFact(KQuant.ForAll(
+                    "m$a",
+                    new KOp("==>", InCells(MemCells(new KVar(Local(x)), x.Type, _decl), a), new KOp("sel", new KVar(_memLive), a))), _decl);
             }
             // (two ranges apart, each pair of theirs: an empty one is apart from any)
             for (int i = 0; i < views.Count; i++)
@@ -74,13 +70,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var a = new KVar("m$a");
             var cells = MemCells(view, type, at);
-            ShapeFact(new KQuant
-            {
-                Forall = true,
-                Var = "m$a",
-                Type = "int",
-                Body = new KOp("==>", InCells(cells, a), new KOp("!", new KOp("sel", new KVar(_memLive), a))),
-            }, at);
+            ShapeFact(KQuant.ForAll("m$a", new KOp("==>", InCells(cells, a), new KOp("!", new KOp("sel", new KVar(_memLive), a)))), at);
             // (said of each range's first cell too, for the solver to find)
             foreach (var c in cells)
             {

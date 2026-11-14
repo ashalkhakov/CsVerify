@@ -703,12 +703,9 @@ namespace CsVerify.Verifier.Boogie
             if (row.At != null && _p.UsesCells)
             {
                 var i = new MVar("i$");
-                Assert(new MOp("||", new MOp("==", r, new MLit("null")), new MQuant
-                {
-                    Forall = true,
-                    Var = "i$",
-                    Body = Implies(new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))),
-                }),
+                Assert(new MOp("||", new MOp("==", r, new MLit("null")), MQuant.ForAll(
+                    "i$",
+                    Implies(new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))))),
                        At("CSV1016", row.At, $"'{row.At}' writes the whole array: this method needs Spec.Acc of all its cells"));
             }
             var v = Spec(row.Value, out _);
@@ -795,12 +792,9 @@ namespace CsVerify.Verifier.Boogie
                 var i = new MVar("i$");
                 var inRange = new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a)));
                 Assert(new MOp("||", new MOp("==", a, new MLit("null")),
-                               new MQuant
-                               {
-                                   Forall = true,
-                                   Var = "i$",
-                                   Body = Implies(inRange, la.Write ? new MOp(">=", Cell(a, i), new MLit("1.0")) : new MOp(">", Cell(a, i), new MLit("0.0"))),
-                               }),
+                               MQuant.ForAll(
+                                   "i$",
+                                   Implies(inRange, la.Write ? new MOp(">=", Cell(a, i), new MLit("1.0")) : new MOp(">", Cell(a, i), new MLit("0.0"))))),
                        At("CSV1016", la.At, la.Write ? $"'{la.At}' may write the array it's handed: this method needs Spec.Acc of all its cells"
                                                      : $"'{la.At}' reads the array it's handed: this method needs Spec.Acc or Spec.AccRead of all its cells"));
                 if (!la.Write)

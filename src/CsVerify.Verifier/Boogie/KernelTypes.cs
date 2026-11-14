@@ -401,13 +401,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 body = new KOp("==>", new KOp("!=", i, MemProp("Index", v, type)), body);
             }
-            return new KQuant
-            {
-                Forall = true,
-                Var = "m$i",
-                Range = range,
-                Body = body,
-            };
+            return KQuant.ForAll("m$i", body, range: range);
         }
 
         /// <summary>A CancellationToken: a value nothing is known of (whether it's cancelled is a new answer at every read).</summary>

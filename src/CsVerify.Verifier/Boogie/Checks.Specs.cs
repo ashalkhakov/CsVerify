@@ -371,13 +371,9 @@ namespace CsVerify.Verifier.Boogie
                         return new MLit("true");
                     }
                     var i = new MVar("i$");
-                    return new MQuant
-                    {
-                        Forall = true,
-                        Var = "i$",
-                        Range = null,
-                        Body = Implies(new MOp("&&", new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))),
-                    };
+                    return MQuant.ForAll(
+                        "i$",
+                        Implies(new MOp("&&", new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))));
                 }
                 case KInst inst:
                 {
@@ -458,13 +454,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     foreach (var c in inner)
                     {
-                        Need(new MQuant
-                        {
-                            Forall = true,
-                            Var = q.Var,
-                            Range = null,
-                            Body = c,
-                        });
+                        Need(MQuant.ForAll(q.Var, c));
                     }
                     if (!Mentions(range, _bound))
                     {

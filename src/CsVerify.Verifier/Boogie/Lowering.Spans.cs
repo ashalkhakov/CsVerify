@@ -193,13 +193,9 @@ namespace CsVerify.Verifier.Boogie
                     var map = Elements(CellsOf(st));
                     KExpr At(KExpr span, KExpr i) => new KOp("sel", new KVar(map), SBase(span), new KOp("+", SOff(span), i));
                     var i = new KVar("i$m");
-                    KExpr Within(KExpr lo, KExpr hi, KExpr body) => new KQuant
-                    {
-                        Forall = true,
-                        Var = "i$m",
-                        Range = null,
-                        Body = new KOp("==>", new KOp("&&", new KOp("<=", lo, i), new KOp("<", i, hi)), body),
-                    };
+                    KExpr Within(KExpr lo, KExpr hi, KExpr body) => KQuant.ForAll(
+                        "i$m",
+                        new KOp("==>", new KOp("&&", new KOp("<=", lo, i), new KOp("<", i, hi)), body));
                     var r = Declare("t$" + _temps++, se.Type);
                     Emit(new KHavoc { Var = r });
                     var rv = new KVar(r);

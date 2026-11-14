@@ -74,6 +74,27 @@ namespace CsVerify.Verifier.Boogie
         public MExpr Range, Body;
         /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
         public MExpr[] Trigger;
+
+        /// <summary>forall var: int, (range ==>) body.</summary>
+        public static MQuant ForAll(string var, MExpr body, MExpr range = null) => ForAll(var, "int", body, range);
+
+        /// <summary>forall var: type, (range ==>) body.</summary>
+        public static MQuant ForAll(string var, string type, MExpr body, MExpr range = null) => Quant(true, var, type, body, range);
+
+        /// <summary>exists var: int, (range &&) body.</summary>
+        public static MQuant Exists(string var, MExpr body, MExpr range = null) => Exists(var, "int", body, range);
+
+        /// <summary>exists var: type, (range &&) body.</summary>
+        public static MQuant Exists(string var, string type, MExpr body, MExpr range = null) => Quant(false, var, type, body, range);
+
+        private static MQuant Quant(bool forall, string var, string type, MExpr body, MExpr range) => new MQuant
+        {
+            Forall = forall,
+            Var = var,
+            Type = type,
+            Range = range,
+            Body = body,
+        };
     }
 
     /// <summary>

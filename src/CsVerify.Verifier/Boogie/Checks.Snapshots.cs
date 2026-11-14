@@ -99,13 +99,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (map[k] < 0)
                     {
-                        fact = new MQuant
-                        {
-                            Forall = true,
-                            Var = $"q$x{k}",
-                            Type = TypeOf(f.Parameters[k].Type),
-                            Body = fact,
-                        };
+                        fact = MQuant.ForAll($"q$x{k}", TypeOf(f.Parameters[k].Type), fact);
                     }
                 }
                 Assume(fact);

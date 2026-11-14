@@ -75,12 +75,7 @@ namespace CsVerify.Verifier.Boogie
             var i = new KVar("i$k");
             Emit(new KSpecStmt
             {
-                Spec = new KQuant
-                {
-                    Forall = true,
-                    Var = "i$k",
-                    Body = new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, new KOp("+", start, i))),
-                },
+                Spec = KQuant.ForAll("i$k", new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, new KOp("+", start, i)))),
                 Assume = true,
                 Free = true,
                 At = at,

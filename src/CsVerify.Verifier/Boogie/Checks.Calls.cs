@@ -233,15 +233,11 @@ namespace CsVerify.Verifier.Boogie
             var r = new MVar("r$");
             Emit(new MAssert
             {
-                Cond = new MQuant
-                {
-                    Forall = true,
-                    Var = "r$",
-                    Type = "Ref",
-                    Range = null,
-                    Body = new MOp("==>", new MOp("sel", theirs, r),
-                    new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r)))),
-                },
+                Cond = MQuant.ForAll(
+                    "r$",
+                    "Ref",
+                    new MOp("==>", new MOp("sel", theirs, r),
+                    new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r))))),
                 UnlessWritesArrays = callee,
                 UnlessKind = "any",
                 Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),

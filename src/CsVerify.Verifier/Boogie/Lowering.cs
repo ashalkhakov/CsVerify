@@ -457,14 +457,7 @@ namespace CsVerify.Verifier.Boogie
                         KExpr body = new KOp("==>", new KOp("&&", S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
                         foreach (var v in new[] { "q$c", "q$b", "q$a" })
                         {
-                            body = new KQuant
-                            {
-                                Forall = true,
-                                Var = v,
-                                Type = TypeOf(ft),
-                                Range = null,
-                                Body = new KOp("==>", R(v), body),
-                            };
+                            body = KQuant.ForAll(v, TypeOf(ft), new KOp("==>", R(v), body));
                         }
                         Emit(new KCheck
                         {

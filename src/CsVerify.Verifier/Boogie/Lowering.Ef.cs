@@ -231,13 +231,7 @@ namespace CsVerify.Verifier.Boogie
                 });
                 Emit(new KHavoc { Var = k });
                 var o = new KVar("o$");
-                var none = new KQuant
-                {
-                    Forall = true,
-                    Var = "o$",
-                    Type = "Ref",
-                    Body = new KOp("==>", new KOp("!=", State(t.Context, o), I(EfDetached)), new KOp("!", Isa(o, e))),
-                };
+                var none = KQuant.ForAll("o$", "Ref", new KOp("==>", new KOp("!=", State(t.Context, o), I(EfDetached)), new KOp("!", Isa(o, e))));
                 var outer = _known;
                 _known = null;
                 LinqFact(new KOp("==", new KVar(k), none), at);
@@ -305,30 +299,12 @@ namespace CsVerify.Verifier.Boogie
         {
             var parentOf = new KVar(LinqMap("[Ref]Ref"));
             KExpr P(KExpr r) => new KOp("sel", parentOf, r);
-            LinqFact(parent.All(x => new KQuant
-            {
-                Forall = true,
-                Var = "z$",
-                Type = "Ref",
-                Body = new KOp("==>", member(x, new KVar("z$")), new KOp("==", P(new KVar("z$")), x)),
-            }), at);
+            LinqFact(parent.All(x => KQuant.ForAll("z$", "Ref", new KOp("==>", member(x, new KVar("z$")), new KOp("==", P(new KVar("z$")), x)))), at);
             return new Made
             {
                 Entity = entity,
-                All = body => parent.All(x => new KQuant
-                {
-                    Forall = true,
-                    Var = "z$",
-                    Type = "Ref",
-                    Body = new KOp("==>", member(x, new KVar("z$")), body(new KVar("z$"))),
-                }),
-                Any = body => parent.Any(x => new KQuant
-                {
-                    Forall = false,
-                    Var = "z$",
-                    Type = "Ref",
-                    Body = new KOp("&&", member(x, new KVar("z$")), body(new KVar("z$"))),
-                }),
+                All = body => parent.All(x => KQuant.ForAll("z$", "Ref", new KOp("==>", member(x, new KVar("z$")), body(new KVar("z$"))))),
+                Any = body => parent.Any(x => KQuant.Exists("z$", "Ref", new KOp("&&", member(x, new KVar("z$")), body(new KVar("z$"))))),
                 Has = r => new KOp("&&", parent.Has(P(r)), member(P(r), r)),
             };
         }
@@ -404,13 +380,10 @@ namespace CsVerify.Verifier.Boogie
                             var members = ModelOf("Members", set).Name;
                             LinqFact(top.All(x => ListMade(Column(nav, x))), at);
                             LinqFact(top.All(x => new KOp("==", new KOp("sel", new KVar(SizeMap), Column(nav, x)), Zero)), at);
-                            LinqFact(top.All(x => new KQuant
-                            {
-                                Forall = true,
-                                Var = "z$",
-                                Type = "Ref",
-                                Body = new KOp("!", new KOp("sel", new KVar(members), Column(nav, x), new KVar("z$"))),
-                            }), at);
+                            LinqFact(top.All(x => KQuant.ForAll(
+                                "z$",
+                                "Ref",
+                                new KOp("!", new KOp("sel", new KVar(members), Column(nav, x), new KVar("z$"))))), at);
                             made.Add(ChildOf(top, x => Column(nav, x), false, null, at));
                             break;
                         }
@@ -490,13 +463,10 @@ namespace CsVerify.Verifier.Boogie
             KExpr none = known;
             foreach (var d in types)
             {
-                none = new KOp("&&", none, new KQuant
-                {
-                    Forall = true,
-                    Var = "o$",
-                    Type = "Ref",
-                    Body = new KOp("==>", new KOp("!=", State(t.Context, o), I(EfDetached)), new KOp("!", Isa(o, d))),
-                });
+                none = new KOp("&&", none, KQuant.ForAll(
+                    "o$",
+                    "Ref",
+                    new KOp("==>", new KOp("!=", State(t.Context, o), I(EfDetached)), new KOp("!", Isa(o, d)))));
             }
             _known = null;
             LinqFact(new KOp("==", new KVar(all), none), at);
@@ -548,13 +518,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 isMade = new KOp("&&", guard, isMade);
             }
-            LinqFact(new KQuant
-            {
-                Forall = true,
-                Var = "r$",
-                Type = "Ref",
-                Body = new KOp("==", new KOp("sel", after, r), new KOp("||", Alloc(r), new KOp("&&", new KOp("!=", r, Null), isMade))),
-            }, at);
+            LinqFact(KQuant.ForAll(
+                "r$",
+                "Ref",
+                new KOp("==", new KOp("sel", after, r), new KOp("||", Alloc(r), new KOp("&&", new KOp("!=", r, Null), isMade)))), at);
             Emit(new KRow
             {
                 Map = "$Alloc",
@@ -672,15 +639,12 @@ namespace CsVerify.Verifier.Boogie
                     KExpr S(KExpr x) => Column(nav, x);
                     KExpr In(KExpr x, KExpr z) => new KOp("sel", new KVar(members), S(x), z);
                     LinqFact(level.All(x => ListMade(S(x))), at);
-                    LinqFact(level.All(x => new KQuant
-                    {
-                        Forall = true,
-                        Var = "z$",
-                        Type = "Ref",
-                        Body = new KOp("==>", In(x, new KVar("z$")),
+                    LinqFact(level.All(x => KQuant.ForAll(
+                        "z$",
+                        "Ref",
+                        new KOp("==>", In(x, new KVar("z$")),
                         new KOp("&&", new KOp("&&", new KOp("!=", new KVar("z$"), Null), new KOp("!", new KOp("sel", new KVar("$Alloc"), new KVar("z$")))),
-                            new KOp("&&", new KOp("&&", Isa(new KVar("z$"), sd), ForeignKey(sfk, new KVar("z$"), e.Key[0], x)), Filtered(t, sd, new KVar("z$"))))),
-                    }), at);
+                            new KOp("&&", new KOp("&&", Isa(new KVar("z$"), sd), ForeignKey(sfk, new KVar("z$"), e.Key[0], x)), Filtered(t, sd, new KVar("z$"))))))), at);
                     var sets = ChildOf(level, S, false, null, at);
                     made.Add(sets);
                     child = MembersOf(sets, (set, z) => new KOp("sel", new KVar(members), set, z), sd, at);
@@ -798,14 +762,11 @@ namespace CsVerify.Verifier.Boogie
                 }
                 else
                 {
-                    LinqFact(new KQuant
-                    {
-                        Forall = true,
-                        Var = "r$",
-                        Type = "Ref",
-                        Body = new KOp("==>", new KOp("sel", new KVar(_unshared), new KVar("r$")),
-                                                         new KOp("==", new KOp("sel", new KVar(map), new KVar("r$")), new KOp("sel", new KVar(snap), new KVar("r$")))),
-                    }, _decl);
+                    LinqFact(KQuant.ForAll(
+                        "r$",
+                        "Ref",
+                        new KOp("==>", new KOp("sel", new KVar(_unshared), new KVar("r$")),
+                                                         new KOp("==", new KOp("sel", new KVar(map), new KVar("r$")), new KOp("sel", new KVar(snap), new KVar("r$"))))), _decl);
                 }
             }
         }

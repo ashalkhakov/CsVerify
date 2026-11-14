@@ -581,14 +581,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var allowed = Conjunction(new[] { frame });
                 var r = new MVar("r$");
-                Assert(new MQuant
-                {
-                    Forall = true,
-                    Var = "r$",
-                    Type = "Ref",
-                    Range = null,
-                    Body = new MOp("==>", new MOp("sel", _m.Frame, r), new MOp("sel", allowed, r)),
-                },
+                Assert(MQuant.ForAll("r$", "Ref", new MOp("==>", new MOp("sel", _m.Frame, r), new MOp("sel", allowed, r))),
                     At("CSV1018", decl, $"Spec.Modifies of '{m.Name}' might not be within that of {b.ContainingType.Name}.{b.Name}, which it overrides"), true);
             }
         }

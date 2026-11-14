@@ -77,6 +77,27 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Range, Body;
         /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
         public KExpr[] Trigger;
+
+        /// <summary>forall var: int, (range ==>) body.</summary>
+        public static KQuant ForAll(string var, KExpr body, KExpr range = null) => ForAll(var, "int", body, range);
+
+        /// <summary>forall var: type, (range ==>) body.</summary>
+        public static KQuant ForAll(string var, string type, KExpr body, KExpr range = null) => Quant(true, var, type, body, range);
+
+        /// <summary>exists var: int, (range &&) body.</summary>
+        public static KQuant Exists(string var, KExpr body, KExpr range = null) => Exists(var, "int", body, range);
+
+        /// <summary>exists var: type, (range &&) body.</summary>
+        public static KQuant Exists(string var, string type, KExpr body, KExpr range = null) => Quant(false, var, type, body, range);
+
+        private static KQuant Quant(bool forall, string var, string type, KExpr body, KExpr range) => new KQuant
+        {
+            Forall = forall,
+            Var = var,
+            Type = type,
+            Range = range,
+            Body = body,
+        };
     }
 
     /// <summary>

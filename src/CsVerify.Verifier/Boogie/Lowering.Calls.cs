@@ -100,13 +100,9 @@ namespace CsVerify.Verifier.Boogie
                     var (lo, hi) = (args[0], args[1]);
                     Emit(new KCheck
                     {
-                        Cond = new KQuant
-                        {
-                            Forall = true,
-                            Var = "q$i",
-                            Range = null,
-                            Body = new KOp("==>", new KOp("&&", new KOp("<=", lo, new KVar("q$i")), new KOp("<", new KVar("q$i"), hi)), new KOp("$pre." + key, d, new KVar("q$i"))),
-                        },
+                        Cond = KQuant.ForAll(
+                            "q$i",
+                            new KOp("==>", new KOp("&&", new KOp("<=", lo, new KVar("q$i")), new KOp("<", new KVar("q$i"), hi)), new KOp("$pre." + key, d, new KVar("q$i")))),
                         Id = "CSV1001",
                         At = a.Syntax,
                         Message = $"'{m.Name}' calls this with each index from {ordered[0].Value.Syntax} up to {ordered[1].Value.Syntax}, but it might not accept them all",
@@ -224,13 +220,9 @@ namespace CsVerify.Verifier.Boogie
                 if (kind == "index")
                 {
                     var (lo, hi) = (vals[0], vals[1]);
-                    each = new KQuant
-                    {
-                        Forall = true,
-                        Var = "q$i",
-                        Range = null,
-                        Body = new KOp("==>", new KOp("&&", new KOp("<=", lo, new KVar("q$i")), new KOp("<", new KVar("q$i"), hi)), new KOp("$pre." + key, d, new KVar("q$i"))),
-                    };
+                    each = KQuant.ForAll(
+                        "q$i",
+                        new KOp("==>", new KOp("&&", new KOp("<=", lo, new KVar("q$i")), new KOp("<", new KVar("q$i"), hi)), new KOp("$pre." + key, d, new KVar("q$i"))));
                     what = $"each index from {others[0].Value.Syntax} up to {others[1].Value.Syntax}";
                 }
                 else if (kind == "each" && quiet && type.DelegateInvokeMethod.Parameters.Length == 1)
@@ -252,13 +244,9 @@ namespace CsVerify.Verifier.Boogie
                         var items = ModelOf("Items", (INamedTypeSymbol)st).Name;
                         Elem = i => new KOp("sel", new KVar(items), src, i);
                     }
-                    each = new KQuant
-                    {
-                        Forall = true,
-                        Var = "q$i",
-                        Range = null,
-                        Body = new KOp("==>", new KOp("&&", new KOp("<=", new KLit("0"), new KVar("q$i")), new KOp("<", new KVar("q$i"), len)), new KOp("$pre." + key, d, Elem(new KVar("q$i")))),
-                    };
+                    each = KQuant.ForAll(
+                        "q$i",
+                        new KOp("==>", new KOp("&&", new KOp("<=", new KLit("0"), new KVar("q$i")), new KOp("<", new KVar("q$i"), len)), new KOp("$pre." + key, d, Elem(new KVar("q$i")))));
                     what = $"each element of {srcOp.Syntax}";
                 }
                 if (each != null)
@@ -473,12 +461,9 @@ namespace CsVerify.Verifier.Boogie
                 var old = new KVar(LinqMap("[int]" + ElementValue(map)));
                 Emit(new KSpecStmt
                 {
-                    Spec = new KQuant
-                    {
-                        Forall = true,
-                        Var = "i$r",
-                        Body = new KOp("==", new KOp("sel", old, new KVar("i$r")), new KOp("sel", new KVar(map), a, new KVar("i$r"))),
-                    },
+                    Spec = KQuant.ForAll(
+                        "i$r",
+                        new KOp("==", new KOp("sel", old, new KVar("i$r")), new KOp("sel", new KVar(map), a, new KVar("i$r")))),
                     Assume = true,
                     Free = true,
                     At = call.Syntax,
@@ -495,13 +480,10 @@ namespace CsVerify.Verifier.Boogie
                 var i = new KVar("i$r");
                 Emit(new KSpecStmt
                 {
-                    Spec = new KQuant
-                    {
-                        Forall = true,
-                        Var = "i$r",
-                        Body = new KOp("==>", new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(a))),
-                                                                                                   new KOp("==", new KOp("sel", row, i), new KOp("sel", old, new KOp("-", new KOp("-", Len(a), new KLit("1")), i)))),
-                    },
+                    Spec = KQuant.ForAll(
+                        "i$r",
+                        new KOp("==>", new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(a))),
+                                                                                                   new KOp("==", new KOp("sel", row, i), new KOp("sel", old, new KOp("-", new KOp("-", Len(a), new KLit("1")), i))))),
                     Assume = true,
                     Free = true,
                     At = call.Syntax,
@@ -529,12 +511,7 @@ namespace CsVerify.Verifier.Boogie
                 var i = new KVar("i$c");
                 Emit(new KSpecStmt
                 {
-                    Spec = new KQuant
-                    {
-                        Forall = true,
-                        Var = "i$c",
-                        Body = new KOp("==", new KOp("sel", old, i), new KOp("sel", new KVar(map), dst, i)),
-                    },
+                    Spec = KQuant.ForAll("i$c", new KOp("==", new KOp("sel", old, i), new KOp("sel", new KVar(map), dst, i))),
                     Assume = true,
                     Free = true,
                     At = call.Syntax,
@@ -550,13 +527,10 @@ namespace CsVerify.Verifier.Boogie
                 });
                 Emit(new KSpecStmt
                 {
-                    Spec = new KQuant
-                    {
-                        Forall = true,
-                        Var = "i$c",
-                        Body = new KOp("==>", new KOp("||", new KOp("<", i, di), new KOp("<=", new KOp("+", di, n), i)),
-                                                                                                   new KOp("==", new KOp("sel", row, i), new KOp("sel", old, i))),
-                    },
+                    Spec = KQuant.ForAll(
+                        "i$c",
+                        new KOp("==>", new KOp("||", new KOp("<", i, di), new KOp("<=", new KOp("+", di, n), i)),
+                                                                                                   new KOp("==", new KOp("sel", row, i), new KOp("sel", old, i)))),
                     Assume = true,
                     Free = true,
                     At = call.Syntax,
@@ -1459,12 +1433,7 @@ namespace CsVerify.Verifier.Boogie
                 });
                 Emit(new KSpecStmt
                 {
-                    Spec = new KQuant
-                    {
-                        Forall = true,
-                        Var = "i$f",
-                        Body = new KOp("==", new KOp("sel", new KVar(row), new KVar("i$f")), v[1]),
-                    },
+                    Spec = KQuant.ForAll("i$f", new KOp("==", new KOp("sel", new KVar(row), new KVar("i$f")), v[1])),
                     Assume = true,
                     Free = true,
                     At = call.Syntax,

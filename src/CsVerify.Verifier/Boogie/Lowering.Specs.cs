@@ -725,13 +725,10 @@ namespace CsVerify.Verifier.Boogie
             var of = Spec(lcon.Instance, result);
             var x = Spec(lcon.Arguments[0].Value, result);
             var v = "q$c" + _linq++;
-            return new KOp("&&", new KOp("!=", of, new KLit("null")), new KQuant
-            {
-                Forall = false,
-                Var = v,
-                Range = new KOp("&&", new KOp("<=", new KLit("0"), new KVar(v)), new KOp("<", new KVar(v), new KOp("sel", new KVar(SizeMap), of))),
-                Body = SameValue(new KOp("sel", new KVar(items.Name), of, new KVar(v)), x, lcl.TypeArguments[0]),
-            });
+            return new KOp("&&", new KOp("!=", of, new KLit("null")), KQuant.Exists(
+                v,
+                SameValue(new KOp("sel", new KVar(items.Name), of, new KVar(v)), x, lcl.TypeArguments[0]),
+                range: new KOp("&&", new KOp("<=", new KLit("0"), new KVar(v)), new KOp("<", new KVar(v), new KOp("sel", new KVar(SizeMap), of)))));
         }
 
         private KExpr SpecContainsKey(IInvocationOperation ck, INamedTypeSymbol cd, IParameterSymbol result)

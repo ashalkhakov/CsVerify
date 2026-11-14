@@ -470,13 +470,7 @@ namespace CsVerify.Verifier.Boogie
         {
             for (int k = vars.Count - 1; k >= 0; k--)
             {
-                body = new KQuant
-                {
-                    Forall = true,
-                    Var = vars[k].name,
-                    Type = vars[k].type,
-                    Body = body,
-                };
+                body = KQuant.ForAll(vars[k].name, vars[k].type, body);
             }
             return body;
         }

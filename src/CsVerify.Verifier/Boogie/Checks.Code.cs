@@ -156,25 +156,12 @@ namespace CsVerify.Verifier.Boogie
                             {
                                 MAssert a => new MAssert
                                 {
-                                    Cond = new MQuant
-                                    {
-                                        Forall = true,
-                                        Var = q.Var,
-                                        Range = null,
-                                        Body = a.Cond,
-                                    },
+                                    Cond = MQuant.ForAll(q.Var, a.Cond),
                                     Check = a.Check,
                                     NotAssumedAfter = a.NotAssumedAfter,
                                 },
                                 MAssume { Always: true } a when !Mentions(a.Cond, new HashSet<string> { q.Var }) => a,
-                                MAssume a => new MAssume { Cond = new MQuant
-                                {
-                                    Forall = true,
-                                    Var = q.Var,
-                                    Range = null,
-                                    Body = a.Cond,
-                                }
-                                },
+                                MAssume a => new MAssume { Cond = MQuant.ForAll(q.Var, a.Cond) },
                                 _ => throw new NotTranslated("a quantifier whose body changes state"),
                             });
                         }

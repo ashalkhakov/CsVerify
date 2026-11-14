@@ -551,13 +551,7 @@ namespace CsVerify.Verifier.Boogie
                     var definition = new MOp("==", app, M(sig.FunctionBody));
                     _facts.Clear();
                     _facts.AddRange(saved);
-                    _facts.Add(new MQuant
-                    {
-                        Forall = true,
-                        Var = var,
-                        Range = null,
-                        Body = Implies(Conj(range, pre), definition),
-                    });
+                    _facts.Add(MQuant.ForAll(var, Implies(Conj(range, pre), definition)));
                 }
             }
             finally
