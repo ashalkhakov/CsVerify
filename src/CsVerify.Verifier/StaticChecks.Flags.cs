@@ -1,8 +1,6 @@
 using System.Linq;
-using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Operations;
 
 namespace CsVerify.Verifier
 {

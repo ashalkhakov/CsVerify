@@ -1,7 +1,3 @@
-using System;
-using System.IO;
-using System.Linq;
-using CsVerify.Verifier;
 using Xunit;
 
 namespace CsVerify.Tests

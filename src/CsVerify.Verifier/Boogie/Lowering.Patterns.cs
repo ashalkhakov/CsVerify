@@ -1,11 +1,7 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
 using static CsVerify.Verifier.Boogie.KOp;

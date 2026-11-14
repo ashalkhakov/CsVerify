@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
 using static CsVerify.Verifier.Boogie.MOp;
