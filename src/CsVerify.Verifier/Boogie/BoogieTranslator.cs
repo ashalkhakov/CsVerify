@@ -76,23 +76,116 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ the subset
 
         /// <summary>Could this method be a procedure (before its body is looked at)?</summary>
-        public static bool Candidate(IMethodSymbol m, Contract c, bool asContract = false) => EmptyDataConstructor(m) ||
-            (m.MethodKind == MethodKind.DelegateInvoke ? c.OfDelegate && IsDelegate(m.ContainingType) :
-             // (a lambda or a local function: a unit of its own, in a class's member or a static one)
-             IsNested(m) ? StaticContext(m) || IsClass(m.ContainingType) :
-             m.IsStatic ? m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet
-                        : (IsClass(m.ContainingType) || IsInterface(m.ContainingType) && m.IsAbstract ||
-                           IsData(m.ContainingType) && m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride) &&
-                          (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet || m.MethodKind == MethodKind.Constructor && IsClass(m.ContainingType) ||
-                           m.MethodKind == MethodKind.ExplicitInterfaceImplementation && IsClass(m.ContainingType)) ||
-                          m.MethodKind == MethodKind.Constructor && IsStruct(m.ContainingType) ||
-                          // (a struct's member that reads it: this, a value; one that writes it isn't translated: not verified, CSV1902)
-                          IsStruct(m.ContainingType) && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsOverride) &&
-            (!m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma) && (!m.IsGenericMethod || !m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) && KnownAttributes(m) &&
-            (Returns(m) == null || InSubset(Returns(m))) && m.Parameters.All(p => (p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type) || InValue(p)) && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && (!IsShare(p.Type) || HoldsShare(p))) &&
-            (c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet || IsNested(m)) && (asContract || !c.IsTrusted) &&
-            // (a base of the library's, IDisposable.Dispose say, with no contract: nothing inherited)
-            c.Bases.All(b => b.Method.DeclaringSyntaxReferences.Length > 0 || b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null);
+        public static bool Candidate(IMethodSymbol m, Contract c, bool asContract = false)
+        {
+            if (EmptyDataConstructor(m))
+            {
+                return true;
+            }
+            return KindInSubset(m, c) &&
+                   AsyncInSubset(m, c) &&
+                   GenericInSubset(m) &&
+                   KnownAttributes(m) &&
+                   ReturnsInSubset(m) &&
+                   m.Parameters.All(ParameterInSubset) &&
+                   ReadsInSubset(m, c) &&
+                   (asContract || !c.IsTrusted) &&
+                   c.Bases.All(InheritsNoUnseenContract);
+        }
+
+        /// <summary>A kind of method the translation takes, where it is declared.</summary>
+        private static bool KindInSubset(IMethodSymbol m, Contract c)
+        {
+            if (m.MethodKind == MethodKind.DelegateInvoke)
+            {
+                return c.OfDelegate && IsDelegate(m.ContainingType);
+            }
+            // (a lambda or a local function: a unit of its own, in a class's member or a static one)
+            if (IsNested(m))
+            {
+                return StaticContext(m) || IsClass(m.ContainingType);
+            }
+            if (m.IsStatic)
+            {
+                return m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet;
+            }
+            var ofItsType = OwnerTakesInstanceMember(m) && InstanceKindInSubset(m);
+            return ofItsType || StructConstructor(m) || StructReader(m);
+        }
+
+        /// <summary>A member of a class, an interface's abstract one, or a data type's plain method.</summary>
+        private static bool OwnerTakesInstanceMember(IMethodSymbol m)
+        {
+            var t = m.ContainingType;
+            var plainMethod = m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride;
+            return IsClass(t) || IsInterface(t) && m.IsAbstract || IsData(t) && plainMethod;
+        }
+
+        /// <summary>A method or a property's accessor; a constructor or an explicit interface implementation only of a class.</summary>
+        private static bool InstanceKindInSubset(IMethodSymbol m)
+        {
+            if (m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet)
+            {
+                return true;
+            }
+            var classOnly = m.MethodKind is MethodKind.Constructor or MethodKind.ExplicitInterfaceImplementation;
+            return classOnly && IsClass(m.ContainingType);
+        }
+
+        private static bool StructConstructor(IMethodSymbol m) => m.MethodKind == MethodKind.Constructor && IsStruct(m.ContainingType);
+
+        /// <summary>A struct's member that reads it (this, a value); one that writes it isn't translated: not verified, CSV1902.</summary>
+        private static bool StructReader(IMethodSymbol m)
+        {
+            var reads = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet;
+            return IsStruct(m.ContainingType) && reads && !m.IsVirtual && !m.IsOverride;
+        }
+
+        /// <summary>Not async, or async returning a task, and code (not [Pure], not a lemma).</summary>
+        private static bool AsyncInSubset(IMethodSymbol m, Contract c) => !m.IsAsync || IsTaskLike(m.ReturnType) && !c.IsPure && !c.IsLemma;
+
+        /// <summary>Not generic, or generic but not virtual, each type parameter one the translation models.</summary>
+        private static bool GenericInSubset(IMethodSymbol m)
+        {
+            if (!m.IsGenericMethod)
+            {
+                return true;
+            }
+            var nonVirtual = !m.IsVirtual && !m.IsAbstract && !m.IsOverride;
+            return nonVirtual && m.TypeParameters.All(IsGenericParameter);
+        }
+
+        /// <summary>It gives back nothing, or a value of a type of the subset.</summary>
+        private static bool ReturnsInSubset(IMethodSymbol m)
+        {
+            var returns = Returns(m);
+            return returns == null || InSubset(returns);
+        }
+
+        /// <summary>
+        /// A parameter of a type of the subset, not ref readonly; an in one only a share it holds, a memory view or a value;
+        /// a share only one it holds.
+        /// </summary>
+        private static bool ParameterInSubset(IParameterSymbol p)
+        {
+            var inTaken = p.RefKind != RefKind.In || HoldsShare(p) || IsMemView(p.Type) || InValue(p);
+            var shareHeld = !IsShare(p.Type) || HoldsShare(p);
+            return inTaken && p.RefKind != RefKind.RefReadOnlyParameter && InSubset(p.Type) && shareHeld;
+        }
+
+        /// <summary>Spec.Reads only of a [Pure] one, a getter, or a lambda or local function.</summary>
+        private static bool ReadsInSubset(IMethodSymbol m, Contract c) =>
+            c.Reads == null || c.IsPure || m.MethodKind == MethodKind.PropertyGet || IsNested(m);
+
+        /// <summary>A base's contract, seen: one of the program's, or a library's with none (IDisposable.Dispose, say).</summary>
+        private static bool InheritsNoUnseenContract(Contract b)
+        {
+            if (b.Method.DeclaringSyntaxReferences.Length > 0)
+            {
+                return true;
+            }
+            return b.Requires.Count == 0 && b.Ensures.Count == 0 && b.ThrowEnsures.Count == 0 && b.Modifies == null;
+        }
 
         /// <summary>A data type's constructor that does nothing (a closed base's private Avl() { }): nothing to verify.</summary>
         public static bool EmptyDataConstructor(IMethodSymbol m) =>
@@ -117,13 +210,60 @@ namespace CsVerify.Verifier.Boogie
                 .Any(a => a.ConstructorArguments.Concat(a.NamedArguments.Select(n => n.Value)).Any(v => v.Value is string name && name == m.Name));
 
         /// <summary>Why a method isn't a candidate (for CSVERIFY_TRACE).</summary>
-        public static string WhyNot(IMethodSymbol m, Contract c) =>
-            !StaticContext(m) && !IsClass(m.ContainingType) && !IsInterface(m.ContainingType) && !EmptyDataConstructor(m) ? "a member of " + m.ContainingType.Name + ", a type outside the subset" :
-            m.IsAsync && !IsTaskLike(m.ReturnType) ? "async void" : m.IsGenericMethod && !(!m.IsVirtual && !m.IsAbstract && !m.IsOverride && m.TypeParameters.All(IsGenericParameter)) ? "generic" : !KnownAttributes(m) ? "an attribute of CsVerify's the translation doesn't know" : m.MethodKind != MethodKind.Ordinary && !IsNested(m) && !(m.MethodKind == MethodKind.Constructor && !m.IsStatic) && m.MethodKind != MethodKind.StaticConstructor && !(m.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.ExplicitInterfaceImplementation) ? m.MethodKind.ToString() :
-            !(Returns(m) == null || InSubset(Returns(m))) ? "returns " + m.ReturnType :
-            m.Parameters.FirstOrDefault(p => p.RefKind == RefKind.In && !HoldsShare(p) && !IsMemView(p.Type) && !InValue(p) || p.RefKind == RefKind.RefReadOnlyParameter || !InSubset(p.Type) || IsShare(p.Type) && !HoldsShare(p)) is IParameterSymbol bad ? $"a parameter of {(bad.RefKind != RefKind.None ? bad.RefKind + " " : "")}{bad.Type}" :
-            c.Reads != null ? "Spec.Reads of what isn't [Pure]" : c.ThrowEnsures.Count > 0 ? "Spec.EnsuresOnThrow" :
-            c.IsTrusted ? "[Trusted]" : "an inherited contract";
+        public static string WhyNot(IMethodSymbol m, Contract c)
+        {
+            var t = m.ContainingType;
+            if (!StaticContext(m) && !IsClass(t) && !IsInterface(t) && !EmptyDataConstructor(m))
+            {
+                return "a member of " + t.Name + ", a type outside the subset";
+            }
+            if (m.IsAsync && !IsTaskLike(m.ReturnType))
+            {
+                return "async void";
+            }
+            if (!GenericInSubset(m))
+            {
+                return "generic";
+            }
+            if (!KnownAttributes(m))
+            {
+                return "an attribute of CsVerify's the translation doesn't know";
+            }
+            if (!TakenKind(m))
+            {
+                return m.MethodKind.ToString();
+            }
+            if (!ReturnsInSubset(m))
+            {
+                return "returns " + m.ReturnType;
+            }
+            if (m.Parameters.FirstOrDefault(p => !ParameterInSubset(p)) is IParameterSymbol bad)
+            {
+                var refKind = bad.RefKind != RefKind.None ? bad.RefKind + " " : "";
+                return $"a parameter of {refKind}{bad.Type}";
+            }
+            if (c.Reads != null)
+            {
+                return "Spec.Reads of what isn't [Pure]";
+            }
+            if (c.ThrowEnsures.Count > 0)
+            {
+                return "Spec.EnsuresOnThrow";
+            }
+            if (c.IsTrusted)
+            {
+                return "[Trusted]";
+            }
+            return "an inherited contract";
+        }
+
+        /// <summary>A kind of method the translation takes somewhere: a method, an accessor, a constructor, a lambda or local function.</summary>
+        private static bool TakenKind(IMethodSymbol m)
+        {
+            var taken = m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.ExplicitInterfaceImplementation;
+            var instanceConstructor = m.MethodKind == MethodKind.Constructor && !m.IsStatic;
+            return taken || instanceConstructor || IsNested(m);
+        }
 
         /// <summary>Each method's contract (CsVerify's reading of its Spec statements).</summary>
         public Func<IMethodSymbol, Contract> ContractOf;
