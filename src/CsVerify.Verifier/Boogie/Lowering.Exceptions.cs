@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -214,7 +215,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Label = pass,
                     Ordinal = tryRegion.FirstBlockOrdinal,
-                    Stmts = { new KAssume { Cond = new KOp("!", test) } },
+                    Stmts = { new KAssume { Cond = Not(test) } },
                 };
                 _p.Blocks.Add(next);
                 if (k == handlers.Count - 1)
@@ -349,7 +350,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Label = label,
                         Ordinal = end.Ordinal,
-                        Stmts = { new KAssume { Cond = new KOp("==", new KVar(v), new KLit(id.ToString())) } },
+                        Stmts = { new KAssume { Cond = Eq(new KVar(v), new KLit(id.ToString())) } },
                         Jump = then,
                     };
                     // (a return through the finally: the tasks are awaited by now, CSV1026)

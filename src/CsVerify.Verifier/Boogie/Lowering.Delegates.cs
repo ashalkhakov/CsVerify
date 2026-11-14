@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -209,7 +210,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 lam.Steady = false;
                 var frame = Spec(c.Reads, null);
-                lam.PreS = c.OwnRequires.Select(r => Spec(r, null)).Aggregate((a, b) => new KOp("&&", a, b));
+                lam.PreS = c.OwnRequires.Select(r => Spec(r, null)).Aggregate((a, b) => AndAlso(a, b));
                 lam.Reads = frame;
                 foreach (var o in objects)
                 {
@@ -260,7 +261,7 @@ namespace CsVerify.Verifier.Boogie
             }
             else if (c.OwnRequires.Count > 0)
             {
-                lam.Pre = c.OwnRequires.Select(r => Spec(r, null)).Aggregate((a, b) => new KOp("&&", a, b));
+                lam.Pre = c.OwnRequires.Select(r => Spec(r, null)).Aggregate((a, b) => AndAlso(a, b));
             }
             if (c.Modifies != null && Steady(c.Modifies, own))
             {
@@ -294,7 +295,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     try
                     {
-                        lam.PostsS.Add(new KOp("==", new KVar("result"), Spec(rv, null)));
+                        lam.PostsS.Add(Eq(new KVar("result"), Spec(rv, null)));
                     }
                     catch (NotTranslated) { }
                 }
@@ -305,7 +306,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 try
                 {
-                    lam.Posts.Add(new KOp("==", new KVar("result"), Spec(value, null)));
+                    lam.Posts.Add(Eq(new KVar("result"), Spec(value, null)));
                 }
                 catch (NotTranslated) { }
             }
@@ -368,7 +369,7 @@ namespace CsVerify.Verifier.Boogie
                 });
                 Emit(new KCheck
                 {
-                    Cond = new KOp("!=", new KVar(receiver), new KLit("null")),
+                    Cond = NotNull(new KVar(receiver)),
                     Id = "CSV1013",
                     At = instance.Syntax,
                     Message = $"'{instance.Syntax}' might be null in '{dc.Syntax}'",
@@ -400,7 +401,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (c.Requires.Count > 0)
             {
-                lam.Pre = c.Requires.Select(r => Spec(r, null)).Aggregate((a, b) => new KOp("&&", a, b));
+                lam.Pre = c.Requires.Select(r => Spec(r, null)).Aggregate((a, b) => AndAlso(a, b));
             }
             foreach (var post in c.Ensures.Where(e => e.Guard == null))
             {
@@ -452,7 +453,7 @@ namespace CsVerify.Verifier.Boogie
                 var spec = Spec(op, result);
                 return KernelTerms.IsMath(spec) ? KernelTerms.Map(spec, x => x is KVar v && given.TryGetValue(v.Name, out var value) ? value : null) : null;
             }
-            KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)new KLit("true"), (a, b) => new KOp("&&", a, b));
+            KExpr All(IEnumerable<KExpr> parts) => parts.Aggregate((KExpr)new KLit("true"), (a, b) => AndAlso(a, b));
             var dPre = dc.Requires.Select(r => Of(r, null)).ToList();
             var mPre = mc.Requires.Select(r => Of(r, null)).ToList();
             var mPost = mc.Ensures.Where(e => e.Guard == null).Select(e => Of(e.Expr, e.ResultParameter)).ToList();
@@ -462,7 +463,7 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             return (Forall(vars, new KOp("==>", All(dPre), All(mPre))),
-                    Forall(withResult, new KOp("==>", new KOp("&&", new KOp("&&", All(dPre), All(mPre)), All(mPost)), All(dPost))));
+                    Forall(withResult, new KOp("==>", AndAlso(AndAlso(All(dPre), All(mPre)), All(mPost)), All(dPost))));
         }
 
         /// <summary>For every value of these variables (none: the body itself).</summary>

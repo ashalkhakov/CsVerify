@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -26,10 +27,10 @@ namespace CsVerify.Verifier.Boogie
 
         private IEnumerable<Task> AllTasks() => _tasks.Values.Concat(_startedCaptures.Values).Concat(_detached);
 
-        private KExpr Running() => AllTasks().Select(t => (KExpr)new KOp("!", new KVar(t.Awaited))).DefaultIfEmpty(null).Aggregate((a, b) => a == null ? b : new KOp("||", a, b));
+        private KExpr Running() => AllTasks().Select(t => (KExpr)Not(new KVar(t.Awaited))).DefaultIfEmpty(null).Aggregate((a, b) => a == null ? b : OrElse(a, b));
 
         /// <summary>Running alongside other code here: always (a method that runs concurrently), or while a task it started does.</summary>
-        private KExpr Alongside(KExpr inHand) => Concurrent ? inHand : Running() is KExpr r ? new KOp("||", new KOp("!", r), inHand) : null;
+        private KExpr Alongside(KExpr inHand) => Concurrent ? inHand : Running() is KExpr r ? OrElse(Not(r), inHand) : null;
 
         // ------------------------------------------------------------------ async
 
@@ -160,7 +161,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KHavoc { Var = r });
             if (notNull && IsNullable(type) && NotNullable(type))
             {
-                Emit(new KAssume { Cond = new KOp("!=", new KVar(r), new KLit("null")) });
+                Emit(new KAssume { Cond = NotNull(new KVar(r)) });
             }
             return new KVar(r);
         }
@@ -337,7 +338,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             Emit(new KCheck
                             {
-                                Cond = new KOp("!=", recv, new KLit("null")),
+                                Cond = NotNull(recv),
                                 Id = "CSV1013",
                                 At = la.Instance.Syntax,
                                 Message = $"'{la.Instance.Syntax}' might be null in '{la.Syntax}'",
@@ -577,7 +578,7 @@ namespace CsVerify.Verifier.Boogie
             UnsharedAfter(unshared);
             foreach (var (f, t, owner) in kept)
             {
-                Emit(new KAssume { Cond = new KOp("==", new KField
+                Emit(new KAssume { Cond = Eq(new KField
                 {
                     Field = f,
                     Instance = owner,
@@ -890,7 +891,7 @@ namespace CsVerify.Verifier.Boogie
                 // (not null, where the code it runs doesn't return that)
                 if (IsNullable(tt.TypeArguments[0]) && NotNullable(tt.TypeArguments[0]))
                 {
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(unknown), new KLit("null")) });
+                    Emit(new KAssume { Cond = NotNull(new KVar(unknown)) });
                 }
                 result = new KVar(unknown);
             }
@@ -1034,7 +1035,7 @@ namespace CsVerify.Verifier.Boogie
             _p.Blocks.Add(skip);
             _p.Blocks.Add(after);
             _block = join;
-            Emit(new KAssume { Cond = new KOp("!", new KVar(t.Awaited)) });
+            Emit(new KAssume { Cond = Not(new KVar(t.Awaited)) });
             Join();
             join.Jump = new KGoto(after.Label);
             _block = skip;
@@ -1123,7 +1124,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KHavoc { Var = u });
                     if (IsNullable(rt.TypeArguments[0]) && NotNullable(rt.TypeArguments[0]))
                     {
-                        Emit(new KAssume { Cond = new KOp("!=", new KVar(u), new KLit("null")) });
+                        Emit(new KAssume { Cond = NotNull(new KVar(u)) });
                     }
                     t.Result = u;
                 }
@@ -1185,7 +1186,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var t = Declare("t$" + _temps++, call.Type);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(t)) });
             return new KVar(t);
         }
 
@@ -1232,7 +1233,7 @@ namespace CsVerify.Verifier.Boogie
             var src = Expr(Unconverted(source));
             Emit(new KCheck
             {
-                Cond = new KOp("!=", src, new KLit("null")),
+                Cond = NotNull(src),
                 Id = "CSV1013",
                 At = source.Syntax,
                 Message = $"'{source.Syntax}' might be null: LINQ would throw ArgumentNullException",
@@ -1381,7 +1382,7 @@ namespace CsVerify.Verifier.Boogie
         {
             _p.Awaits = true;
             _p.CallsDelegates = true;
-            var running = AllTasks().Select(t => (KExpr)new KOp("!", new KVar(t.Awaited))).Aggregate((a, b) => new KOp("||", a, b));
+            var running = AllTasks().Select(t => (KExpr)Not(new KVar(t.Awaited))).Aggregate((a, b) => OrElse(a, b));
             var k = new KAwait { When = running };
             if (!_opaque)
             {

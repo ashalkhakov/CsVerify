@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -75,7 +76,7 @@ namespace CsVerify.Verifier.Boogie
             var i = new KVar("i$k");
             Emit(new KSpecStmt
             {
-                Spec = KQuant.ForAll("i$k", new KOp("==", new KOp("sel", row, i), new KOp("sel", new KVar(map), src, new KOp("+", start, i)))),
+                Spec = KQuant.ForAll("i$k", Eq(new KOp("sel", row, i), Sel(map, src, new KOp("+", start, i)))),
                 Assume = true,
                 Free = true,
                 At = at,
@@ -203,7 +204,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var model = ModelOf(name, collection) ?? throw new NotTranslated("the model " + name);
             _p.Models[model.Name] = model;
-            return new KOp("sel", new KVar(model.Name), of);
+            return Sel(model.Name, of);
         }
 
         /// <summary>A value of locals, parameters, constants and array elements, whose locals and parameters the expression doesn't write.</summary>
@@ -428,7 +429,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(new KHavoc { Var = v });
                     if (IsNullable(acur.Element) && NotNullable(acur.Element))
                     {
-                        Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
+                        Emit(new KAssume { Cond = NotNull(new KVar(v)) });
                     }
                     return new KVar(v);
                 }
@@ -494,7 +495,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (IsNullable(srr.Type) && NotNullable(srr.Type))
                     {
-                        Emit(new KAssume { Cond = new KOp("!=", srv, new KLit("null")) });
+                        Emit(new KAssume { Cond = NotNull(srv) });
                     }
                     if (IsIntegral(srr.Type))
                     {
@@ -533,8 +534,8 @@ namespace CsVerify.Verifier.Boogie
                     },
                 });
                 var r = new KVar("$root");
-                Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")),
-                    new KOp("&&", new KOp("==", new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), new KOp("!=", new KOp("sel", r, new KVar(t)), new KVar(t)))) });
+                Emit(new KAssume { Cond = OrElse(IsNull(new KVar(t)),
+                    AndAlso(Eq(new KOp("sel", r, new KVar(t)), new KOp("sel", r, instance)), Ne(new KOp("sel", r, new KVar(t)), new KVar(t)))) });
                 return new KVar(t);
             }
             return Unbox(new KField
@@ -599,7 +600,7 @@ namespace CsVerify.Verifier.Boogie
             var what = CollectionKind(fv.Collection) switch { "Dictionary" => "dictionary", "HashSet" => "set", "Stack" => "stack", "Queue" => "queue", _ => "list" };
             Emit(new KCheck
             {
-                Cond = new KOp("==", new KOp("sel", new KVar(VersionMap), new KVar(fv.Array)), new KVar(fv.Version)),
+                Cond = Eq(Sel(VersionMap, new KVar(fv.Array)), new KVar(fv.Version)),
                 Id = "CSV1001",
                 At = fv.At,
                 Message = $"the {what} may have changed while it is enumerated: MoveNext would throw InvalidOperationException (collection was modified)",
@@ -612,7 +613,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var (i, n0) = (new KVar(fv.Index), new KVar(fv.Size0));
                 Emit(new KAssume { Cond = new KOp("==>", new KVar(more), new KOp("<", i, n0)) });
-                Emit(new KAssume { Cond = new KOp("==>", new KOp("&&", new KOp("!", new KVar(more)), new KOp("==", LengthOf(fv), n0)), new KOp("==", i, n0)) });
+                Emit(new KAssume { Cond = new KOp("==>", AndAlso(Not(new KVar(more)), Eq(LengthOf(fv), n0)), Eq(i, n0)) });
             }
             return new KVar(more);
         }
@@ -667,7 +668,7 @@ namespace CsVerify.Verifier.Boogie
                     var src = Expr(ci);
                     Emit(new KCheck
                     {
-                        Cond = new KOp("!=", src, new KLit("null")),
+                        Cond = NotNull(src),
                         Id = "CSV1013",
                         At = ci.Syntax,
                         Message = $"'{ci.Syntax}' might be null in '{cc.Operand.Syntax}'",
@@ -820,7 +821,7 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
-                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return new KOp("!", Expr(u.Operand));
+                case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return Not(Expr(u.Operand));
                 case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Minus && IsIntegral(u.Type):
@@ -906,7 +907,7 @@ namespace CsVerify.Verifier.Boogie
             switch (e)
             {
                 case IIsNullOperation isNull:
-                    return new KOp("==", Expr(Unconverted(isNull.Operand)), new KLit("null"));
+                    return IsNull(Expr(Unconverted(isNull.Operand)));
                 default: return ExprOther(e);
             }
         }
@@ -967,7 +968,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KHavoc { Var = lt });
             if (NotNullable(lockRead.Field.Type))
             {
-                Emit(new KAssume { Cond = new KOp("!=", new KVar(lt), new KLit("null")) });
+                Emit(new KAssume { Cond = NotNull(new KVar(lt)) });
             }
             return new KVar(lt);
         }
@@ -986,14 +987,14 @@ namespace CsVerify.Verifier.Boogie
             var cv = Expr(ctx);
             Emit(new KCheck
             {
-                Cond = new KOp("!=", cv, new KLit("null")),
+                Cond = NotNull(cv),
                 Id = "CSV1013",
                 At = ctx.Syntax,
                 Message = $"'{ctx.Syntax}' might be null in '{e.Syntax}'",
             });
             var table = Declare("t$" + _temps++, e.Type);
             Emit(new KHavoc { Var = table });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(table), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(table)) });
             return new KVar(table);
         }
 
@@ -1034,7 +1035,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var t = Declare("t$" + _temps++, cg.Type);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(t)) });
             return new KVar(t);
         }
 
@@ -1047,7 +1048,7 @@ namespace CsVerify.Verifier.Boogie
             });
             var boxed = Declare("t$" + _temps++, bx.Type);
             Emit(new KHavoc { Var = boxed });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(boxed), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(boxed)) });
             return new KVar(boxed);
         }
 
@@ -1097,7 +1098,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var str = Declare("t$" + _temps++, istr.Type);
             Emit(new KHavoc { Var = str });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(str), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(str)) });
             return new KVar(str);
         }
 
@@ -1154,7 +1155,7 @@ namespace CsVerify.Verifier.Boogie
             });
             for (int d = 0; d < sizes.Length; d++)
             {
-                Emit(new KAssume { Cond = new KOp("==", new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d]) });
+                Emit(new KAssume { Cond = Eq(new KOp("$dim", new KVar(t), new KLit(d.ToString())), sizes[d]) });
             }
             void Fill(IArrayInitializerOperation init, List<KExpr> prefix)
             {
@@ -1205,7 +1206,7 @@ namespace CsVerify.Verifier.Boogie
             Expr(other);
             var text = Declare("t$" + _temps++, so.Type);
             Emit(new KHavoc { Var = text });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(text), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(text)) });
             return stringLeft ? StringBinary(BinaryOperatorKind.Add, str, new KVar(text)) : StringBinary(BinaryOperatorKind.Add, new KVar(text), str);
         }
 
@@ -1271,7 +1272,7 @@ namespace CsVerify.Verifier.Boogie
                 Var = t,
                 Value = Expr(ci.Operand),
             });
-            Emit(new KAssume { Cond = new KOp("||", new KOp("==", new KVar(t), new KLit("null")), new KOp(IsArray(ci.Operand.Type) ? "$arr" : "$coll", new KVar(t))) });
+            Emit(new KAssume { Cond = OrElse(IsNull(new KVar(t)), new KOp(IsArray(ci.Operand.Type) ? "$arr" : "$coll", new KVar(t))) });
             return new KVar(t);
         }
 
@@ -1280,7 +1281,7 @@ namespace CsVerify.Verifier.Boogie
             Expr(dobj.Operand);
             var t = Declare("t$" + _temps++, dobj.Type);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(t)) });
             return new KVar(t);
         }
 
@@ -1305,7 +1306,7 @@ namespace CsVerify.Verifier.Boogie
                 Var = a0,
                 Value = Expr(ordered[0].Value),
             });
-            return new KOp("==", new KVar(a0), Expr(ordered[1].Value));
+            return Eq(new KVar(a0), Expr(ordered[1].Value));
         }
 
         private KExpr NewObject(IObjectCreationOperation oc)
@@ -1345,7 +1346,7 @@ namespace CsVerify.Verifier.Boogie
             if (IsModeledClass(oc.Type))
             {
                 _p.ClassTypes.Add(oc.Type.OriginalDefinition);
-                Emit(new KAssume { Cond = new KOp("==", new KOp("dtype", new KVar(t)), new KLit(TypeConst(oc.Type))) });
+                Emit(new KAssume { Cond = Eq(new KOp("dtype", new KVar(t)), new KLit(TypeConst(oc.Type))) });
             }
             // (a context made: it tracks nothing, and has nothing open)
             if (IsContext(oc.Type))
@@ -1383,7 +1384,7 @@ namespace CsVerify.Verifier.Boogie
             var vs = ns.Arguments.OrderBy(x => x.Parameter.Ordinal).Select(x => Operand(x.Value, Expr, false)).ToList();
             var t = Declare("t$" + _temps++, ns.Type);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("!=", new KVar(t), new KLit("null")) });
+            Emit(new KAssume { Cond = NotNull(new KVar(t)) });
             if (ns.Arguments.Length == 2 && IsIntegral(ns.Arguments[1].Value.Type) && ns.Arguments[0].Value.Type?.SpecialType == SpecialType.System_Char)
             {
                 Emit(new KCheck
@@ -1393,7 +1394,7 @@ namespace CsVerify.Verifier.Boogie
                     At = ns.Syntax,
                     Message = $"'{ns.Syntax}' might throw: its count might be negative",
                 });
-                Emit(new KAssume { Cond = new KOp("==", new KOp("slen", new KVar(t)), vs[1]) });
+                Emit(new KAssume { Cond = Eq(new KOp("slen", new KVar(t)), vs[1]) });
             }
             return new KVar(t);
         }
@@ -1407,7 +1408,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KOp("!=", iv, new KLit("null")),
+                        Cond = NotNull(iv),
                         Id = "CSV1013",
                         At = lp.Syntax,
                         Message = $"'{lp.Instance.Syntax}' might be null in '{lp.Syntax}'",
@@ -1436,7 +1437,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KHavoc { Var = lv });
             if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type))
             {
-                Emit(new KAssume { Cond = new KOp("!=", new KVar(lv), new KLit("null")) });
+                Emit(new KAssume { Cond = NotNull(new KVar(lv)) });
             }
             return new KVar(lv);
         }
@@ -1558,17 +1559,17 @@ namespace CsVerify.Verifier.Boogie
                     return Arith(Op(b.OperatorKind), l, r, b.Type, b.Syntax, b.IsChecked);
                 case var bk when IsBitwise(bk) && IsIntegral(b.Type):
                     return Bitwise(bk, l, r, b.Type, inSpec: false);
-                case BinaryOperatorKind.Equals: return new KOp("==", l, r);
-                case BinaryOperatorKind.NotEquals: return new KOp("!=", l, r);
+                case BinaryOperatorKind.Equals: return Eq(l, r);
+                case BinaryOperatorKind.NotEquals: return Ne(l, r);
                 case BinaryOperatorKind.LessThan: return new KOp("<", l, r);
                 case BinaryOperatorKind.LessThanOrEqual: return new KOp("<=", l, r);
                 case BinaryOperatorKind.GreaterThan: return new KOp(">", l, r);
                 case BinaryOperatorKind.GreaterThanOrEqual: return new KOp(">=", l, r);
                 case BinaryOperatorKind.And when b.Type.SpecialType == SpecialType.System_Boolean:
-                case BinaryOperatorKind.ConditionalAnd: return new KOp("&&", l, r);
+                case BinaryOperatorKind.ConditionalAnd: return AndAlso(l, r);
                 case BinaryOperatorKind.Or when b.Type.SpecialType == SpecialType.System_Boolean:
-                case BinaryOperatorKind.ConditionalOr: return new KOp("||", l, r);
-                case BinaryOperatorKind.ExclusiveOr when b.Type.SpecialType == SpecialType.System_Boolean: return new KOp("!=", l, r);
+                case BinaryOperatorKind.ConditionalOr: return OrElse(l, r);
+                case BinaryOperatorKind.ExclusiveOr when b.Type.SpecialType == SpecialType.System_Boolean: return Ne(l, r);
                 default: throw new NotTranslated("the operator " + b.OperatorKind);
             }
         }
@@ -1578,7 +1579,7 @@ namespace CsVerify.Verifier.Boogie
         private KExpr StringBinary(BinaryOperatorKind k, KExpr l, KExpr r) => k switch
         {
             BinaryOperatorKind.Equals => StringEqual(l, r),
-            BinaryOperatorKind.NotEquals => new KOp("!", StringEqual(l, r)),
+            BinaryOperatorKind.NotEquals => Not(StringEqual(l, r)),
             _ => new KOp("scat", l, r),
         };
 

@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -281,9 +282,9 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>Two objects told apart: both known, and not equal (a condition, false where either isn't known).</summary>
-        private static KExpr Apart(KExpr x, KExpr y) => x == null || y == null ? new KLit("false") : KeyOf(x) == KeyOf(y) && KeyOf(x) != "" ? new KLit("false") : new KOp("!=", x, y);
+        private static KExpr Apart(KExpr x, KExpr y) => x == null || y == null ? new KLit("false") : KeyOf(x) == KeyOf(y) && KeyOf(x) != "" ? new KLit("false") : Ne(x, y);
 
-        private static KExpr All(IEnumerable<KExpr> parts) => parts.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => new KOp("&&", a, b));
+        private static KExpr All(IEnumerable<KExpr> parts) => parts.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => AndAlso(a, b));
 
         /// <summary>The unguarded fields one writes and the other uses, with the condition that each such pair is on two objects.</summary>
         private static List<(ISymbol field, KExpr apart)> FieldRaces(Effects writer, Effects other)
@@ -318,7 +319,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var fields = FieldRaces(a, b).Concat(FieldRaces(b, a)).ToList();
             var fieldsApart = All(fields.Select(f => f.apart));
-            KExpr Or(KExpr c) => unless == null ? c : new KOp("||", unless, c);
+            KExpr Or(KExpr c) => unless == null ? c : OrElse(unless, c);
             if (fields.Count > 0)
             {
                 Emit(new KCheck
@@ -341,7 +342,7 @@ namespace CsVerify.Verifier.Boogie
             // (as an else of the fields': warned of only where those are apart)
             Emit(new KCheck
             {
-                Cond = Or(new KOp("||", new KOp("!", fieldsApart), new KOp("&&", ArraysApart(a, b), ArraysApart(b, a)))),
+                Cond = Or(OrElse(Not(fieldsApart), AndAlso(ArraysApart(a, b), ArraysApart(b, a)))),
                 Id = Warning,
                 At = at,
                 NotAssumedAfter = true,

@@ -5,6 +5,7 @@ using System.Numerics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -260,8 +261,7 @@ namespace CsVerify.Verifier.Boogie
                 return app;
             }
             Emit(new KAssume { Cond = RangeFacts(op, x, y, app) });
-            KExpr Disjoint(KExpr zeros, int k, KExpr low) => new KOp("&&", new KOp("&&",
-                new KOp("==", Mod(zeros, System.Math.Min(k, width)), Number(0)), new KOp("<=", Number(0), low)), new KOp("<", low, Number(Pow2(System.Math.Min(k, width)))));
+            KExpr Disjoint(KExpr zeros, int k, KExpr low) => AndAlso(AndAlso(                Eq(Mod(zeros, System.Math.Min(k, width)), Number(0)), new KOp("<=", Number(0), low)), new KOp("<", low, Number(Pow2(System.Math.Min(k, width)))));
             KExpr disjoint = kind == BinaryOperatorKind.And ? Number(0) : Plus(x, y);
             KExpr value = app;
             if (yz > 0)
@@ -281,7 +281,7 @@ namespace CsVerify.Verifier.Boogie
         private static KExpr RangeFacts(string op, KExpr x, KExpr y, KExpr r)
         {
             KExpr Le(KExpr a, KExpr b) => new KOp("<=", a, b);
-            KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => new KOp("&&", a, b));
+            KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => AndAlso(a, b));
             var nonNegative = And(Le(Number(0), x), Le(Number(0), y));
             var fact = op == "and" ? And(Le(Number(0), r), Le(r, x), Le(r, y))
                      : op == "or" ? And(Le(x, r), Le(y, r), Le(r, Plus(x, y)))
@@ -292,15 +292,15 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The result, bit by bit, and the value those bits add up to.</summary>
         private static KExpr BitFacts(string op, KExpr x, KExpr y, KExpr r, int width)
         {
-            KExpr Bit(KExpr t, int i) => new KOp("==", Mod(Shifted(t, i), 1), Number(1));
+            KExpr Bit(KExpr t, int i) => Eq(Mod(Shifted(t, i), 1), Number(1));
             var facts = new List<KExpr> { RangeFacts(op, x, y, r) };
             for (int i = 0; i < width; i++)
             {
-                facts.Add(new KOp("==", Bit(r, i), op == "and" ? new KOp("&&", Bit(x, i), Bit(y, i)) : op == "or" ? new KOp("||", Bit(x, i), Bit(y, i)) : new KOp("!=", Bit(x, i), Bit(y, i))));
+                facts.Add(Eq(Bit(r, i), op == "and" ? AndAlso(Bit(x, i), Bit(y, i)) : op == "or" ? OrElse(Bit(x, i), Bit(y, i)) : Ne(Bit(x, i), Bit(y, i))));
             }
             var sum = Enumerable.Range(0, width).Select(i => (KExpr)new KOp("ite", Bit(r, i), Number(Pow2(i)), Number(0))).Aggregate(Plus);
-            facts.Add(new KOp("==", Mod(r, width), sum));
-            return facts.Aggregate((a, b) => new KOp("&&", a, b));
+            facts.Add(Eq(Mod(r, width), sum));
+            return facts.Aggregate((a, b) => AndAlso(a, b));
         }
     }
 }

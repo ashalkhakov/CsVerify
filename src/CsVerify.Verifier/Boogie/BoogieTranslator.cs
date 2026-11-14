@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -478,7 +479,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var step = Atomics.StepOf(f).OriginalDefinition;
                 var (a, b) = (new MVar("x$old"), new MVar("x$now"));
-                _printer.AtomicSteps[FieldMap(f)] = new MOp("||", new MOp("==", a, b), Checks.MathOf(new KFnCall
+                _printer.AtomicSteps[FieldMap(f)] = OrElse(Eq(a, b), Checks.MathOf(new KFnCall
                 {
                     Callee = step,
                     Args = new KExpr[] { new KVar("x$old"), new KVar("x$now") },
@@ -788,7 +789,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
                             ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
-                              : new MOp("||", new MOp("==", new MOp(fn, new MVar("d")), new MLit("null")), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
+                              : OrElse(IsNull(new MOp(fn, new MVar("d"))), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
                             : IsIntegral(prop.OriginalDefinition.Type) ? MathTypes.InRange(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type) : null);
                     }
                 }
@@ -829,10 +830,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var f in Data.Fields(c).Where(f => HasInvariants(f.Type)))
                     {
-                        parts.Add(("$is." + CaseName(c).Substring(3), new MOp("||", new MOp("==", new MOp(FieldFunction(f), dv), new MLit("null")), new MOp(ValidName(f.Type), new MOp(FieldFunction(f), dv)))));
+                        parts.Add(("$is." + CaseName(c).Substring(3), OrElse(IsNull(new MOp(FieldFunction(f), dv)), new MOp(ValidName(f.Type), new MOp(FieldFunction(f), dv)))));
                     }
                 }
-                validity.Add((ValidName(t), invs.Count == 0 ? new MLit("true") : invs.Aggregate((a, b) => new MOp("&&", a, b)), parts));
+                validity.Add((ValidName(t), invs.Count == 0 ? new MLit("true") : invs.Aggregate((a, b) => AndAlso(a, b)), parts));
             }
             _printer.Valid(validity);
         }

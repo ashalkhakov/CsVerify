@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -291,7 +292,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Emit(new KCheck
                         {
-                            Cond = new KOp("!=", recv, new KLit("null")),
+                            Cond = NotNull(recv),
                             Id = "CSV1013",
                             At = src.Instance.Syntax,
                             Message = $"'{src.Instance.Syntax}' might be null in '{src.Syntax}'",
@@ -318,7 +319,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (fe.Mat != null)
             {
-                return new KOp("sel", new KVar(fe.Mat), new KVar(fe.Index));
+                return Sel(fe.Mat, new KVar(fe.Index));
             }
             // (an enumerator the kernel doesn't look into: a value of the element's type, not null where that says so)
             if (fe.Opaque)
@@ -327,7 +328,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KHavoc { Var = e });
                 if (IsNullable(fe.Element) && NotNullable(fe.Element))
                 {
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(e), new KLit("null")) });
+                    Emit(new KAssume { Cond = NotNull(new KVar(e)) });
                 }
                 return new KVar(e);
             }
@@ -350,10 +351,10 @@ namespace CsVerify.Verifier.Boogie
             if (fe.View == "Keys")
             {
                 // (a key it has: never null)
-                Emit(new KAssume { Cond = new KOp("sel", new KVar(ModelOf("Domain", fe.Collection).Name), new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
+                Emit(new KAssume { Cond = Sel(ModelOf("Domain", fe.Collection).Name, new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
                 if (fe.Element.IsReferenceType)
                 {
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(v), new KLit("null")) });
+                    Emit(new KAssume { Cond = NotNull(new KVar(v)) });
                 }
             }
             else if (fe.View == "Values") { } // (a value it has: not modeled)
@@ -361,13 +362,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 var key = Pair(new KVar(v), fe.Element, "Key");
                 var value = Pair(new KVar(v), fe.Element, "Value");
-                Emit(new KAssume { Cond = new KOp("&&", new KOp("sel", new KVar(ModelOf("Domain", fe.Collection).Name), new KVar(fe.Array), key),
-                                                       new KOp("==", new KOp("sel", new KVar(ModelOf("Entries", fe.Collection).Name), new KVar(fe.Array), key), value)) });
+                Emit(new KAssume { Cond = AndAlso(Sel(ModelOf("Domain", fe.Collection).Name, new KVar(fe.Array), key),
+                                                       Eq(Sel(ModelOf("Entries", fe.Collection).Name, new KVar(fe.Array), key), value)) });
             }
             // (a set's: one of its members, as the version at the start has them, in some order)
             else if (CollectionKind(fe.Collection) == "HashSet")
             {
-                Emit(new KAssume { Cond = new KOp("sel", new KVar(ModelOf("Members", fe.Collection).Name), new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
+                Emit(new KAssume { Cond = Sel(ModelOf("Members", fe.Collection).Name, new KVar(fe.Array), Keyed(new KVar(v), fe.Element)) });
             }
             return new KVar(v);
         }
@@ -381,7 +382,7 @@ namespace CsVerify.Verifier.Boogie
             return new KOp(member == "Key" ? "$kvp.Key." + k : "$kvp.Value." + v, pair);
         }
 
-        private static KExpr CurrentOf(ForEach fe) => fe.Collection != null ? new KOp("sel", new KVar(ModelOf("Items", fe.Collection).Name), new KVar(fe.Array), new KVar(fe.Index)) :
+        private static KExpr CurrentOf(ForEach fe) => fe.Collection != null ? Sel(ModelOf("Items", fe.Collection).Name, new KVar(fe.Array), new KVar(fe.Index)) :
             new KElem
             {
                 String = fe.String,
@@ -428,8 +429,8 @@ namespace CsVerify.Verifier.Boogie
                 list.Insert(0, new KSpec
                 {
                     Expr = fe.Opaque ? new KOp("<=", new KLit("0"), i)
-                         : fe.Version == null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true)))
-                         : fe.Size0 != null ? new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<=", i, new KVar(fe.Size0)))
+                         : fe.Version == null ? AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<=", i, LengthOf(fe, true)))
+                         : fe.Size0 != null ? AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<=", i, new KVar(fe.Size0)))
                          : new KOp("<=", new KLit("0"), i),
                     At = fe.At,
                 });

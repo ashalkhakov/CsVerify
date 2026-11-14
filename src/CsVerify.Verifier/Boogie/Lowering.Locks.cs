@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -69,7 +70,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Emit(new KCheck
                     {
-                        Cond = new KOp("!=", o, new KLit("null")),
+                        Cond = NotNull(o),
                         Id = "CSV1013",
                         At = stmt,
                         Message = $"'{lockOp.Syntax}' might be null in '{stmt}'",
@@ -432,7 +433,7 @@ namespace CsVerify.Verifier.Boogie
                 _gateOwner = Expr(fr.Instance);
                 Emit(new KCheck
                 {
-                    Cond = new KOp("!=", _gateOwner, new KLit("null")),
+                    Cond = NotNull(_gateOwner),
                     Id = "CSV1013",
                     At = fr.Syntax,
                     Message = $"'{fr.Instance.Syntax}' might be null in '{fr.Syntax}'",
@@ -602,7 +603,7 @@ namespace CsVerify.Verifier.Boogie
             // (taken again by the thread that has it: it isn't free)
             if (!givesBack && FlagHeldAt(call.Syntax, flag, ordered[0].Value.Syntax as ExpressionSyntax))
             {
-                Emit(new KAssume { Cond = new KOp("==", new KVar(was), new KLit(call.TargetMethod.ReturnType.SpecialType == SpecialType.System_Boolean ? "true" : "1")) });
+                Emit(new KAssume { Cond = Eq(new KVar(was), new KLit(call.TargetMethod.ReturnType.SpecialType == SpecialType.System_Boolean ? "true" : "1")) });
             }
             return new KVar(was);
         }
@@ -781,7 +782,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>An object only this code has: a confined local's.</summary>
         private KExpr InHand(KExpr o) =>
-            Confined().Select(l => (KExpr)new KOp("==", o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(new KLit("false")).Aggregate((a, b) => new KOp("||", a, b));
+            Confined().Select(l => (KExpr)Eq(o, new KVar(Declare(Local(l), l.Type)))).DefaultIfEmpty(new KLit("false")).Aggregate((a, b) => OrElse(a, b));
 
         /// <summary>
         /// A call under a lock of what may enter it again, which relies on its invariants: they hold at the call (CSV1024),

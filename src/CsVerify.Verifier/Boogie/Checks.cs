@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -213,7 +214,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var l = UnfoldOnce(a[0]);
                     var r = UnfoldOnce(a[1]);
-                    return ReferenceEquals(l, a[0]) && ReferenceEquals(r, a[1]) ? e : new MOp("&&", l, r);
+                    return ReferenceEquals(l, a[0]) && ReferenceEquals(r, a[1]) ? e : AndAlso(l, r);
                 }
                 case MFnApp app when app.Snap == null && !app.Plain && app.MapsAt == null && app.Callee.IsStatic:
                 {
@@ -358,7 +359,7 @@ namespace CsVerify.Verifier.Boogie
         }
 
         private static MExpr Allocated(MExpr o, MExpr v) =>
-            new MOp("==>", new MOp("&&", new MOp("sel", new MVar("$Alloc"), o), new MOp("!=", v, new MLit("null"))), new MOp("sel", new MVar("$Alloc"), v));
+            new MOp("==>", AndAlso(Sel("$Alloc", o), NotNull(v)), Sel("$Alloc", v));
 
         /// <summary>A field whose value, once its object is built, is never null.</summary>
         private static bool NonNullField(ISymbol field) => (!field.IsStatic || StaticStartsWithObject(field)) && IsNullable(FieldType(field)) && NotNullable(FieldType(field));
@@ -366,7 +367,7 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr And(IEnumerable<MExpr> xs)
         {
             var list = xs.ToList();
-            return list.Count == 0 ? new MLit("true") : list.Aggregate((a, b) => new MOp("&&", a, b));
+            return list.Count == 0 ? new MLit("true") : list.Aggregate((a, b) => AndAlso(a, b));
         }
 
         /// <summary>A clause of the contract as mathematics: the clause, its value, what makes it well-defined, what reading it gives.</summary>
@@ -658,7 +659,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new MAssign
                 {
                     Var = "alloc$entry",
-                    Value = _p.IsCtor ? new MOp("store", new MVar("$Alloc"), new MVar("this"), new MLit("false")) : new MVar("$Alloc"),
+                    Value = _p.IsCtor ? Store("$Alloc", new MVar("this"), new MLit("false")) : new MVar("$Alloc"),
                 });
             }
         }

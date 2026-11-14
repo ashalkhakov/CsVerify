@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -27,7 +28,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 throw new NotTranslated("an atomic field's step that isn't a function: " + step.Name);
             }
-            return new KOp("||", new KOp("==", old, now), new KFnCall
+            return OrElse(Eq(old, now), new KFnCall
             {
                 Callee = step,
                 Args = new[] { old, now },
@@ -46,7 +47,7 @@ namespace CsVerify.Verifier.Boogie
             // (others store what may be stored there: not null, where the field is declared so)
             if (IsNullable(FieldType(field)) && NotNullable(FieldType(field)))
             {
-                Emit(new KAssume { Cond = new KOp("!=", new KVar(now), new KLit("null")) });
+                Emit(new KAssume { Cond = NotNull(new KVar(now)) });
             }
             var last = new KField
             {
@@ -226,7 +227,7 @@ namespace CsVerify.Verifier.Boogie
                     return new KVar(t);
                 }
                 case "Exchange": Write(args[0]); return cur;
-                case "CompareExchange": Write(args[0], new KOp("==", cur, args[1])); return cur;
+                case "CompareExchange": Write(args[0], Eq(cur, args[1])); return cur;
                 // (bitwise, at once: the old value given back)
                 case "And" or "Or" when IsIntegral(type):
                 {

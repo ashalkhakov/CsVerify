@@ -65,6 +65,20 @@ namespace CsVerify.Verifier.Boogie
             Op = op;
             Args = args;
         }
+
+        /// <summary>A map read: map[at] (map[at][at2], with two).</summary>
+        public static KOp Sel(string map, params KExpr[] at) => new KOp("sel", at.Prepend(new KVar(map)).ToArray());
+
+        /// <summary>A map with one entry changed: map[at := value].</summary>
+        public static KOp Store(string map, KExpr at, KExpr value) => new KOp("store", new KVar(map), at, value);
+
+        public static KOp Eq(KExpr a, KExpr b) => new KOp("==", a, b);
+        public static KOp Ne(KExpr a, KExpr b) => new KOp("!=", a, b);
+        public static KOp Not(KExpr a) => new KOp("!", a);
+        public static KOp AndAlso(KExpr a, KExpr b) => new KOp("&&", a, b);
+        public static KOp OrElse(KExpr a, KExpr b) => new KOp("||", a, b);
+        public static KOp IsNull(KExpr a) => new KOp("==", a, new KLit("null"));
+        public static KOp NotNull(KExpr a) => new KOp("!=", a, new KLit("null"));
     }
 
     /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>

@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -38,9 +39,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 case "IsNaN": return Op("isNaN", a[0]);
                 case "IsInfinity": return Op("isInf", a[0]);
-                case "IsFinite": return new KOp("!", new KOp("||", Op("isNaN", a[0]), Op("isInf", a[0])));
-                case "IsPositiveInfinity": return new KOp("&&", Op("isInf", a[0]), Op("isPos", a[0]));
-                case "IsNegativeInfinity": return new KOp("&&", Op("isInf", a[0]), Op("isNeg", a[0]));
+                case "IsFinite": return Not(OrElse(Op("isNaN", a[0]), Op("isInf", a[0])));
+                case "IsPositiveInfinity": return AndAlso(Op("isInf", a[0]), Op("isPos", a[0]));
+                case "IsNegativeInfinity": return AndAlso(Op("isInf", a[0]), Op("isNeg", a[0]));
                 case "IsNormal": return Op("isNormal", a[0]);
                 case "IsSubnormal": return Op("isSubnormal", a[0]);
                 case "Abs" when a.Length == 1: return Op("abs", a[0]);
@@ -53,7 +54,7 @@ namespace CsVerify.Verifier.Boogie
                 case "Min" or "Max" when a.Length == 2:
                 {
                     bool min = name == "Min";
-                    var nan = new KOp("||", Op("isNaN", a[0]), Op("isNaN", a[1]));
+                    var nan = OrElse(Op("isNaN", a[0]), Op("isNaN", a[1]));
                     var less = Op(min ? "lt" : "gt", a[0], a[1]);
                     var more = Op(min ? "lt" : "gt", a[1], a[0]);
                     var keepA = Op(min ? "isNeg" : "isPos", a[0]);
@@ -97,14 +98,14 @@ namespace CsVerify.Verifier.Boogie
             var n = FloatSize(from);
             var (lo, hi) = Range(to);
             var t = new KOp("$fp.trunc" + n, v);
-            var fits = new KOp("&&", new KOp("&&", new KOp("!", new KOp("$fp.isNaN" + n, v)), new KOp("!", new KOp("$fp.isInf" + n, v))),
-                new KOp("&&", new KOp("$fp.geq" + n, t, new KOp("$fp.ofReal" + n, new KLit(lo + ".0"))), new KOp("$fp.lt" + n, t, new KOp("$fp.ofReal" + n, new KLit((hi + 1) + ".0")))));
+            var fits = AndAlso(AndAlso(Not(new KOp("$fp.isNaN" + n, v)), Not(new KOp("$fp.isInf" + n, v))),
+                AndAlso(new KOp("$fp.geq" + n, t, new KOp("$fp.ofReal" + n, new KLit(lo + ".0"))), new KOp("$fp.lt" + n, t, new KOp("$fp.ofReal" + n, new KLit((hi + 1) + ".0")))));
             var value = new KOp("$toint", new KOp("$fp.real" + n, t));
             // (in a specification, a cast that doesn't fit has no value: it must be shown to fit, as a divisor isn't zero)
             // (where it doesn't, a value of the type all the same, which nothing is then concluded from)
             if (inSpec)
             {
-                return new KOp("$need", fits, new KOp("ite", new KOp("&&", fits, new KOp("&&", new KOp("<=", Number(lo), value), new KOp("<=", value, Number(hi)))), value, Number(lo)));
+                return new KOp("$need", fits, new KOp("ite", AndAlso(fits, AndAlso(new KOp("<=", Number(lo), value), new KOp("<=", value, Number(hi)))), value, Number(lo)));
             }
             var mode = Mode(c.Syntax, c.IsChecked);
             // (checked: where it doesn't fit, it throws an OverflowException, which the handlers may catch; in a proof, it may not)

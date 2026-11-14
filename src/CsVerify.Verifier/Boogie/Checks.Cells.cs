@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -12,9 +13,9 @@ namespace CsVerify.Verifier.Boogie
     {
         /// <summary>Is cell (x, i) among c's, where g holds?</summary>
         internal static MExpr InCells(MExpr g, MCells c, MExpr x, MExpr i) =>
-            Conj(g, new MOp("&&", new MOp("&&", new MOp("==", x, c.Arr), new MOp("<=", c.Lo, i)), new MOp("<", i, c.Hi)));
+            Conj(g, AndAlso(AndAlso(Eq(x, c.Arr), new MOp("<=", c.Lo, i)), new MOp("<", i, c.Hi)));
 
-        private static MExpr Cell(MExpr x, MExpr i) => new MOp("sel", new MVar("cells"), x, i);
+        private static MExpr Cell(MExpr x, MExpr i) => Sel("cells", x, i);
 
         private void ChangeCells(MExpr g, MCells c, string op)
         {

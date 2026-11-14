@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -63,14 +64,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var (l, r) = (Code(eq.Args[0]), Code(eq.Args[1]));
                     Assume(Extensional(l, r));
-                    return new MOp("==", l, r);
+                    return Eq(l, r);
                 }
                 case KOp op: return new MOp(op.Op, op.Args.Select(Code).ToArray());
                 case KIfc ic:
                 {
                     var x = Code(ic.Of);
                     var i = ic.Index == null ? null : Code(ic.Index);
-                    Assert(new MOp("!=", x, new MLit("null")), NullAt(ic.At, ic.OfAt, $"'{ic.OfAt}' might be null in '{ic.At}'"));
+                    Assert(NotNull(x), NullAt(ic.At, ic.OfAt, $"'{ic.OfAt}' might be null in '{ic.At}'"));
                     MExpr count = MathTypes.IfcRead(x, null, ic.Element);
                     if (ic.Fresh)
                     {
@@ -82,21 +83,21 @@ namespace CsVerify.Verifier.Boogie
                     {
                         return count;
                     }
-                    Assert(new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
+                    Assert(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
                     return ic.Fresh ? Fresh(TypeOf(ic.Element)) : MathTypes.IfcRead(x, i, ic.Element);
                 }
                 case KMultiset ms:
                 {
                     var a = Code(ms.Array);
                     var n = Code(ms.Count);
-                    Assert(new MOp("!=", a, new MLit("null")), At("CSV1013", ms.At, $"'{ms.At}' might dereference null"));
-                    Assert(new MOp("&&", new MOp("<=", new MLit("0"), n), new MOp("<=", n, new MOp("len", a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
+                    Assert(NotNull(a), At("CSV1013", ms.At, $"'{ms.At}' might dereference null"));
+                    Assert(AndAlso(new MOp("<=", new MLit("0"), n), new MOp("<=", n, new MOp("len", a))), At("CSV1003", ms.At, $"'{ms.At}' might not be within the array"));
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
                         fuel = new MOp("$LS", fuel);
                     }
-                    return new MOp("$bag", fuel, new MOp("sel", new MVar(Elements(ms.ArrayType)), a), n);
+                    return new MOp("$bag", fuel, Sel(Elements(ms.ArrayType), a), n);
                 }
                 case KElem { String: true } sc: return StringChar(sc, Code(sc.Array), Code(sc.Index));
                 case KElem el:
@@ -110,7 +111,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Code(df.Value);
                     if (!df.Struct)
                     {
-                        Assert(new MOp("!=", v, new MLit("null")), NullAt(df.At, df.ValueAt, $"'{df.ValueAt}' might be null in '{df.At}'"));
+                        Assert(NotNull(v), NullAt(df.At, df.ValueAt, $"'{df.ValueAt}' might be null in '{df.At}'"));
                     }
                     return new MOp(df.Function, v);
                 }
@@ -136,7 +137,7 @@ namespace CsVerify.Verifier.Boogie
                     var lo = Code(((KOp)range.Args[0]).Args[0]);
                     var hi = Code(((KOp)range.Args[1]).Args[1]);
                     var v = new MVar(q.Var);
-                    var mathRange = new MOp("&&", new MOp("<=", lo, v), new MOp("<", v, hi));
+                    var mathRange = AndAlso(new MOp("<=", lo, v), new MOp("<", v, hi));
                     var outer = _out;
                     _out = new List<MStmt>();
                     MExpr body;
@@ -184,7 +185,7 @@ namespace CsVerify.Verifier.Boogie
                     var wf = new List<MExpr>();
                     if (receiver != null && !fc.ReceiverIsThis && !IsStruct(fc.Callee.ContainingType))
                     {
-                        wf.Add(new MOp("!=", receiver, new MLit("null")));
+                        wf.Add(NotNull(receiver));
                     }
                     var app = FunctionApp(fc, receiver, args, wf.Add);
                     _facts.Clear();
@@ -201,7 +202,7 @@ namespace CsVerify.Verifier.Boogie
                     if (st.Receiver != null)
                     {
                         receiver = Code(st.Receiver);
-                        Assert(new MOp("!=", receiver, new MLit("null")), NullAt(st.At, st.ReceiverAt, $"'{st.ReceiverAt}' might be null in '{st.At}'"));
+                        Assert(NotNull(receiver), NullAt(st.At, st.ReceiverAt, $"'{st.ReceiverAt}' might be null in '{st.At}'"));
                     }
                     var args = st.Args.Select(Code).ToArray();
                     var given = StubGiven(st.Callee, receiver, args);
@@ -224,8 +225,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A string's character s[i]: s not null, i within it.</summary>
         private MExpr StringChar(KElem sc, MExpr s, MExpr i)
         {
-            Assert(new MOp("!=", s, new MLit("null")), NullAt(sc.At, sc.ArrayAt, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
-            Assert(new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
+            Assert(NotNull(s), NullAt(sc.At, sc.ArrayAt, $"'{sc.ArrayAt}' might be null in '{sc.At}'"));
+            Assert(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("slen", s))), At("CSV1003", sc.At, $"index in '{sc.At}' might be out of range"));
             return new MOp("sat", s, i);
         }
 
@@ -236,7 +237,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (!el.NoNull)
                 {
-                    Assert(new MOp("!=", a, new MLit("null")), NullAt(el.At, el.ArrayAt, $"'{el.ArrayAt}' might be null in '{el.At}'"));
+                    Assert(NotNull(a), NullAt(el.At, el.ArrayAt, $"'{el.ArrayAt}' might be null in '{el.At}'"));
                 }
             }
             else
@@ -249,7 +250,7 @@ namespace CsVerify.Verifier.Boogie
                 Assert(Implies(Code(alongside), new MOp(">", Cell(a, i), new MLit("0.0"))),
                     At("CSV1016", el.At, $"'{el.At}' reads a cell this code has no Spec.Acc or Spec.AccRead for, and it runs alongside other code that could be writing it"));
             }
-            var ev = new MOp("sel", new MVar(Elements(el.ArrayType)), a, i);
+            var ev = Sel(Elements(el.ArrayType), a, i);
             // (an allocated array's element is an allocated object, as a field's value is; of its class's invariant)
             if (IsRefArray(el.ArrayType))
             {
@@ -262,7 +263,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An array's or a string's length: not null.</summary>
         private MExpr Len(KLen len, MExpr a)
         {
-            Assert(new MOp("!=", a, new MLit("null")), NullAt(len.At, len.ArrayAt, $"'{len.ArrayAt}' might be null in '{len.At}'"));
+            Assert(NotNull(a), NullAt(len.At, len.ArrayAt, $"'{len.ArrayAt}' might be null in '{len.At}'"));
             return new MOp(len.String ? "slen" : "len", a);
         }
 
@@ -271,33 +272,33 @@ namespace CsVerify.Verifier.Boogie
         {
             if (fd.Instance == null)
             {
-                var sv = new MOp("sel", new MVar(FieldMap(fd.Field)), new MLit("null"));
+                var sv = Sel(FieldMap(fd.Field), new MLit("null"));
                 if (NonNullField(fd.Field))
                 {
-                    Assume(new MOp("!=", sv, new MLit("null")));
+                    Assume(NotNull(sv));
                 }
                 return sv;
             }
             if (!fd.OnThis && !fd.NoNull)
             {
-                Assert(new MOp("!=", o, new MLit("null")), NullAt(fd.At, fd.InstanceAt, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
+                Assert(NotNull(o), NullAt(fd.At, fd.InstanceAt, $"'{fd.InstanceAt}' might be null in '{fd.At}'"));
             }
             // (a function with Spec.Reads reads only objects in it, as of entry: CSV1017)
             if (_p.ReadsFrame != null && !fd.Field.IsStatic)
             {
-                Assert(new MOp("sel", new MVar("r$entry"), o), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
+                Assert(Sel("r$entry", o), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
             }
             // (a query of an [Owned] class reads only its own tree)
             else if (_p.TreeReads && !fd.Field.IsStatic)
             {
-                Assert(new MOp("==", new MOp("sel", new MVar("$root"), o), new MOp("sel", new MVar("$root"), new MVar("this"))), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
+                Assert(Eq(Sel("$root", o), Sel("$root", new MVar("this"))), At("CSV1017", fd.At, $"'{fd.At}' reads an object that is not in Spec.Reads"));
             }
             // (in a predicate's body: read only what a Spec.Acc to its left holds, so it can't change while folded)
             if (_p.IsPredicate)
             {
                 Assert(CanWrite(o, fd.Field), At("CSV1016", fd.At, $"'{fd.At}' reads an object this predicate has no Spec.Acc for (to its left): its value could change while the predicate is folded"));
             }
-            var v = new MOp("sel", new MVar(FieldMap(fd.Field)), o);
+            var v = Sel(FieldMap(fd.Field), o);
             // (a non-nullable field of a built object: not this one's, while its constructor builds it. True in every
             // state, as the type says: not under a quantifier's range, whose variable it doesn't mention, where the
             // solver would have no term to instantiate it with)
@@ -305,7 +306,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new MAssume
                 {
-                    Cond = new MOp("==>", new MOp("!=", o, new MLit("null")), new MOp("!=", v, new MLit("null"))),
+                    Cond = new MOp("==>", NotNull(o), NotNull(v)),
                     Always = true,
                 });
             }
@@ -324,8 +325,8 @@ namespace CsVerify.Verifier.Boogie
 
         private void InBounds(MExpr a, MExpr i, SyntaxNode at, SyntaxNode arrayAt)
         {
-            Assert(new MOp("!=", a, new MLit("null")), NullAt(at, arrayAt, $"'{arrayAt}' might be null in '{at}'"));
-            Assert(new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
+            Assert(NotNull(a), NullAt(at, arrayAt, $"'{arrayAt}' might be null in '{at}'"));
+            Assert(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a))), At("CSV1003", at, $"index in '{at}' might be out of range"));
         }
 
         /// <summary>
@@ -337,17 +338,17 @@ namespace CsVerify.Verifier.Boogie
         {
             if (ar.Op == "/" || ar.Op == "%")
             {
-                Assert(new MOp("!=", r, new MLit("0")), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
+                Assert(Ne(r, new MLit("0")), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
                 if (ar.ThrowsTo != null)
                 {
                     Emit(new MFork
                     {
-                        Overflow = new MOp("!", new MOp("&&", new MOp("==", l, MathTypes.Number(Range(ar.Type).lo)), new MOp("==", r, new MLit("(-1)")))),
+                        Overflow = Not(AndAlso(Eq(l, MathTypes.Number(Range(ar.Type).lo)), Eq(r, new MLit("(-1)")))),
                         Target = ar.ThrowsTo,
                     });
                 }
                 // (MinValue / -1 throws in .NET, checked or not: a [Pure] member or lemma may not throw, so it's reported there)
-                var minOverMinus1 = new MOp("!", new MOp("&&", new MOp("==", l, MathTypes.Number(Range(ar.Type).lo)), new MOp("==", r, new MLit("(-1)"))));
+                var minOverMinus1 = Not(AndAlso(Eq(l, MathTypes.Number(Range(ar.Type).lo)), Eq(r, new MLit("(-1)"))));
                 if (_program.CheckOverflow && (_p.Contract.IsPure || _p.Contract.IsLemma) && ar.Mode != KMode.Math)
                 {
                     Assert(minOverMinus1, At("CSV1010", ar.At, $"arithmetic '{ar.At}' might overflow {ar.Type.Name}"));

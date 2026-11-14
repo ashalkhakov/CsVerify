@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -18,7 +19,7 @@ namespace CsVerify.Verifier.Boogie
         private KExpr ClassTest(KExpr v, ITypeSymbol t)
         {
             _p.ClassTypes.Add(t.OriginalDefinition);
-            var test = new KOp("&&", new KOp("!=", v, new KLit("null")), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(t))));
+            var test = AndAlso(NotNull(v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(t))));
             // (an instance of a class with invariants, in code: they hold, as of every one that was built)
             if (HasObjectInvariant(t) && _cfgBlock != null && !_inSpecTest)
             {
@@ -43,7 +44,7 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             _p.ClassTypes.Add(type.OriginalDefinition);
-            Emit(new KAssume { Cond = new KOp("==>", new KOp("!=", v, new KLit("null")), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(type)))) });
+            Emit(new KAssume { Cond = new KOp("==>", NotNull(v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(type)))) });
         }
 
         /// <summary>A pattern, as a condition of the value; the variables it declares bound to their parts.</summary>
@@ -62,14 +63,14 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A pattern of a nullable value: null, or a pattern of its value where it has one.</summary>
         private KExpr NullablePattern(IPatternOperation p, KExpr v, ITypeSymbol nullable, Func<IOperation, KExpr> lower, Action<ILocalSymbol, KExpr> bind)
         {
-            var has = new KOp("!=", v, new KLit("null"));
+            var has = NotNull(v);
             var u = Underlying(nullable);
             KExpr Sub(IPatternOperation q) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, lower, bind) : Pattern(q, NullableValue(v, nullable), u, lower, bind);
             switch (p)
             {
                 case IDiscardPatternOperation _: return new KLit("true");
-                case IConstantPatternOperation c when c.Value.ConstantValue is { HasValue: true, Value: null }: return new KOp("==", v, new KLit("null"));
-                case INegatedPatternOperation n: return new KOp("!", Sub(n.Pattern));
+                case IConstantPatternOperation c when c.Value.ConstantValue is { HasValue: true, Value: null }: return IsNull(v);
+                case INegatedPatternOperation n: return Not(Sub(n.Pattern));
                 case IBinaryPatternOperation b: return new KOp(b.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Sub(b.LeftPattern), Sub(b.RightPattern));
                 case IDeclarationPatternOperation d when d.MatchesNull:
                     if (d.DeclaredSymbol is ILocalSymbol dl)
@@ -84,7 +85,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return has;
                 case ITypePatternOperation _: return has;
-                default: return new KOp("&&", has, Pattern(p, NullableValue(v, nullable), u, lower, bind));
+                default: return AndAlso(has, Pattern(p, NullableValue(v, nullable), u, lower, bind));
             }
         }
 
@@ -122,12 +123,12 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return d.MatchesNull ? new KLit("true") : IsData(d.MatchedType) ? TypeTest(d.MatchedType) :
                            IsModeledClass(d.MatchedType) && !SymbolEqualityComparer.Default.Equals(d.MatchedType.OriginalDefinition, type.OriginalDefinition) ? ClassTest(v, d.MatchedType) :
-                           IsNullable(type) ? new KOp("!=", v, new KLit("null")) : new KLit("true");
+                           IsNullable(type) ? NotNull(v) : new KLit("true");
                 }
                 case ITypePatternOperation tp: return TypeTest(tp.MatchedType);
                 case IConstantPatternOperation sc when IsString(type) && sc.Value.ConstantValue is { HasValue: true, Value: string }:
-                    return new KOp("&&", new KOp("!=", v, new KLit("null")), new KOp("streq", v, lower(sc.Value)));
-                case IConstantPatternOperation cp: return new KOp("==", v, lower(cp.Value));
+                    return AndAlso(NotNull(v), new KOp("streq", v, lower(sc.Value)));
+                case IConstantPatternOperation cp: return Eq(v, lower(cp.Value));
                 case IRelationalPatternOperation rp:
                 {
                     var op = rp.OperatorKind switch
@@ -138,7 +139,7 @@ namespace CsVerify.Verifier.Boogie
                     };
                     return new KOp(op, v, lower(rp.Value));
                 }
-                case INegatedPatternOperation np: return new KOp("!", Pattern(np.Pattern, v, type, lower, bind));
+                case INegatedPatternOperation np: return Not(Pattern(np.Pattern, v, type, lower, bind));
                 case IBinaryPatternOperation bp:
                     return new KOp(bp.OperatorKind == BinaryOperatorKind.And ? "&&" : "||", Pattern(bp.LeftPattern, v, type, lower, bind), Pattern(bp.RightPattern, v, type, lower, bind));
                 // (x is { } y of a reference: not null)
@@ -147,7 +148,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         bind(rl, v);
                     }
-                    return new KOp("!=", v, new KLit("null"));
+                    return NotNull(v);
                 // (a class's property pattern, p is { F: 3 }: not null, and each field as its pattern says)
                 case IRecursivePatternOperation cp when IsClass(type) && !IsData(type) && cp.DeconstructionSubpatterns.Length == 0 &&
                                                         (cp.MatchedType == null || SymbolEqualityComparer.Default.Equals(cp.MatchedType.WithNullableAnnotation(NullableAnnotation.None), type.WithNullableAnnotation(NullableAnnotation.None))):
@@ -156,7 +157,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         bind(cl, v);
                     }
-                    KExpr cond = new KOp("!=", v, new KLit("null"));
+                    KExpr cond = NotNull(v);
                     foreach (var sp in cp.PropertySubpatterns)
                     {
                         var member = sp.Member switch { IFieldReferenceOperation f => (ISymbol)f.Field, IPropertyReferenceOperation pr => pr.Property, _ => null };
@@ -172,7 +173,7 @@ namespace CsVerify.Verifier.Boogie
                             At = sp.Syntax,
                             InstanceAt = sp.Syntax,
                         };
-                        cond = new KOp("&&", cond, Pattern(sp.Pattern, read, FieldType(member), lower, bind));
+                        cond = AndAlso(cond, Pattern(sp.Pattern, read, FieldType(member), lower, bind));
                     }
                     return cond;
                 }
@@ -187,7 +188,7 @@ namespace CsVerify.Verifier.Boogie
                     var parts = PartsOf(type).ToList();
                     for (int k = 0; k < parts.Count; k++)
                     {
-                        cond = new KOp("&&", cond, Pattern(tup.DeconstructionSubpatterns[k], TupleItem(v, type, k), parts[k], lower, bind));
+                        cond = AndAlso(cond, Pattern(tup.DeconstructionSubpatterns[k], TupleItem(v, type, k), parts[k], lower, bind));
                     }
                     return cond;
                 }
@@ -207,7 +208,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var prop = DataTypes.PositionalProperty((INamedTypeSymbol)matched, k) ?? throw new NotTranslated("a deconstruction of " + matched);
                         var actual = Actual(matched, prop.Name);
-                        cond = new KOp("&&", cond, Pattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, lower, bind));
+                        cond = AndAlso(cond, Pattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, lower, bind));
                     }
                     foreach (var sp in rp.PropertySubpatterns)
                     {
@@ -215,7 +216,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
                         }
-                        cond = new KOp("&&", cond, Pattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, lower, bind));
+                        cond = AndAlso(cond, Pattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, lower, bind));
                     }
                     return cond;
                 }
@@ -243,7 +244,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     int fixedCount = lp.Patterns.Length - (slice >= 0 ? 1 : 0);
                     var len = new KOp("len", v);
-                    KExpr cond = new KOp("&&", new KOp("!=", v, new KLit("null")), new KOp(slice >= 0 ? ">=" : "==", len, new KLit(fixedCount.ToString())));
+                    KExpr cond = AndAlso(NotNull(v), new KOp(slice >= 0 ? ">=" : "==", len, new KLit(fixedCount.ToString())));
                     // (.. var rest: a new array of the elements between, as C#'s GetSubArray makes; where v doesn't match
                     // the length, an empty one nothing reads)
                     if (sliceInSpec)
@@ -255,7 +256,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var between = new KOp("ite", cond, new KOp("-", len, new KLit(fixedCount.ToString())), new KLit("0"));
                         var rest = CopyOf(v, new KLit(slice.ToString()), between, type, lp.Syntax);
-                        cond = new KOp("&&", cond, Pattern(slicePattern, rest, type, lower, bind));
+                        cond = AndAlso(cond, Pattern(slicePattern, rest, type, lower, bind));
                     }
                     for (int k = 0; k < lp.Patterns.Length; k++)
                     {
@@ -275,7 +276,7 @@ namespace CsVerify.Verifier.Boogie
                             At = lp.Syntax,
                             ArrayAt = lp.Syntax,
                         };
-                        cond = new KOp("&&", cond, Pattern(lp.Patterns[k], element, at.ElementType, lower, bind));
+                        cond = AndAlso(cond, Pattern(lp.Patterns[k], element, at.ElementType, lower, bind));
                     }
                     return cond;
                 }

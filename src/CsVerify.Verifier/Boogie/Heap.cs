@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -23,8 +24,8 @@ namespace CsVerify.Verifier.Boogie
         {
             var t = new MVar(var);
             stmts.Add(new MHavoc { Var = var });
-            MExpr fresh = new MOp("&&", new MOp("!=", t, new MLit("null")), new MOp("!", new MOp("sel", new MVar("$Alloc"), t)));
-            stmts.Add(new MAssume { Cond = extra == null ? fresh : new MOp("&&", fresh, extra) });
+            MExpr fresh = AndAlso(NotNull(t), Not(Sel("$Alloc", t)));
+            stmts.Add(new MAssume { Cond = extra == null ? fresh : AndAlso(fresh, extra) });
             stmts.Add(new MMapUpdate
             {
                 Map = "$Alloc",
@@ -168,7 +169,7 @@ namespace CsVerify.Verifier.Boogie
                                 Map = fill.Map,
                                 Ref = new MLit("null"),
                                 Value = new MOp("lambda", new MLit("j$: int"),
-                                new MOp("ite", new MOp("&&", new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, new MOp("sel", new MVar(fill.Map), new MLit("null"), j))),
+                                new MOp("ite", AndAlso(new MOp("<=", fill.Lo, j), new MOp("<", j, fill.Hi)), fill.Value, Sel(fill.Map, new MLit("null"), j))),
                             });
                             break;
                         }
@@ -196,7 +197,7 @@ namespace CsVerify.Verifier.Boogie
                             p.Source.AnyWrites.Add(map);
                             // (a negative size throws: the path ends)
                             stmts.Add(new MAssume { Cond = new MOp(">=", n.Size, new MLit("0")) });
-                            Allocate(stmts, n.Var, new MOp("==", new MOp("len", t), n.Size));
+                            Allocate(stmts, n.Var, Eq(new MOp("len", t), n.Size));
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;

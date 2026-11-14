@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -95,9 +96,9 @@ namespace CsVerify.Verifier.Boogie
         private static MExpr Extensional(MExpr x, MExpr y)
         {
             var at = new MOp("sdiff", x, y);
-            return new MOp("==>", new MOp("&&", new MOp("&&", new MOp("&&", new MOp("!=", x, new MLit("null")), new MOp("!=", y, new MLit("null"))), new MOp("!=", x, y)),
-                                             new MOp("==", new MOp("slen", x), new MOp("slen", y))),
-                new MOp("&&", new MOp("&&", new MOp("<=", new MLit("0"), at), new MOp("<", at, new MOp("slen", x))), new MOp("!=", new MOp("sat", x, at), new MOp("sat", y, at))));
+            return new MOp("==>", AndAlso(AndAlso(AndAlso(NotNull(x), NotNull(y)), Ne(x, y)),
+                                             Eq(new MOp("slen", x), new MOp("slen", y))),
+                AndAlso(AndAlso(new MOp("<=", new MLit("0"), at), new MOp("<", at, new MOp("slen", x))), Ne(new MOp("sat", x, at), new MOp("sat", y, at))));
         }
 
         /// <summary>A stub's parameters given values: its receiver (@this, first), then the member's arguments.</summary>
@@ -194,18 +195,18 @@ namespace CsVerify.Verifier.Boogie
                 case KOp { Op: "ite" } ite:
                 {
                     var c = Spec(ite.Args[0], wf, guard);
-                    return new MOp("ite", c, Under(c, ite.Args[1]), Under(new MOp("!", c), ite.Args[2]));
+                    return new MOp("ite", c, Under(c, ite.Args[1]), Under(Not(c), ite.Args[2]));
                 }
                 case KOp { Op: "&&" } and:
                 {
                     // (the right only where the left lets it be evaluated)
                     var l = Spec(and.Args[0], wf, guard);
-                    return new MOp("&&", l, Under(l, and.Args[1]));
+                    return AndAlso(l, Under(l, and.Args[1]));
                 }
                 case KOp { Op: "||" } or:
                 {
                     var l = Spec(or.Args[0], wf, guard);
-                    return new MOp("||", l, Under(new MOp("!", l), or.Args[1]));
+                    return OrElse(l, Under(Not(l), or.Args[1]));
                 }
                 case KOp { Op: "old" } old:
                 {
@@ -231,7 +232,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         _facts.Add(Extensional(l, r));
                     }
-                    return new MOp("==", l, r);
+                    return Eq(l, r);
                 }
                 case KOp op:
                 {
@@ -243,7 +244,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var l = Spec(ar.Left, wf, guard);
                     var r = Spec(ar.Right, wf, guard);
-                    Need(new MOp("!=", r, new MLit("0")));
+                    Need(Ne(r, new MLit("0")));
                     return new MOp(ar.Op == "/" ? "div" : "rem", l, r);
                 }
                 case KIfc si:
@@ -251,7 +252,7 @@ namespace CsVerify.Verifier.Boogie
                     var x = Spec(si.Of, wf, guard);
                     var i = si.Index == null ? null : Spec(si.Index, wf, guard);
                     var count = MathTypes.IfcRead(x, null, si.Element);
-                    Need(i == null ? new MOp("!=", x, new MLit("null")) : new MOp("&&", new MOp("!=", x, new MLit("null")), new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, count))));
+                    Need(i == null ? NotNull(x) : AndAlso(NotNull(x), AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, count))));
                     return i == null ? count : MathTypes.IfcRead(x, i, si.Element);
                 }
                 case KLet let:
@@ -284,13 +285,13 @@ namespace CsVerify.Verifier.Boogie
                     // (well-defined within the array: 0 <= n <= a.Length; its contents as of where it's read)
                     var a = Spec(ms.Array, wf, guard);
                     var n = Spec(ms.Count, wf, guard);
-                    Need(new MOp("&&", new MOp("&&", new MOp("!=", a, new MLit("null")), new MOp("<=", new MLit("0"), n)), new MOp("<=", n, new MOp("len", a))));
+                    Need(AndAlso(AndAlso(NotNull(a), new MOp("<=", new MLit("0"), n)), new MOp("<=", n, new MOp("len", a))));
                     MExpr fuel = new MLit("$LZ");
                     for (int k = 0; k < ms.Levels; k++)
                     {
                         fuel = new MOp("$LS", fuel);
                     }
-                    return new MOp("$bag", fuel, new MOp("sel", new MVar(Elements(ms.ArrayType)), a), n);
+                    return new MOp("$bag", fuel, Sel(Elements(ms.ArrayType), a), n);
                 }
                 case KElem { Model: string model } le:
                 {
@@ -298,23 +299,23 @@ namespace CsVerify.Verifier.Boogie
                     var a = Spec(le.Array, wf, guard);
                     var i = Spec(le.Index, wf, guard);
                     Need(le.Domain != null
-                        ? new MOp("&&", new MOp("!=", a, new MLit("null")), new MOp("sel", new MVar(le.Domain), a, i))
-                        : new MOp("&&", new MOp("&&", new MOp("!=", a, new MLit("null")), new MOp("<=", new MLit("0"), i)), new MOp("<", i, new MOp("sel", new MVar(SizeMap), a))));
-                    return new MOp("sel", new MVar(model), a, i);
+                        ? AndAlso(NotNull(a), Sel(le.Domain, a, i))
+                        : AndAlso(AndAlso(NotNull(a), new MOp("<=", new MLit("0"), i)), new MOp("<", i, Sel(SizeMap, a))));
+                    return Sel(model, a, i);
                 }
                 case KElem el:
                 {
                     var a = Spec(el.Array, wf, guard);
                     var i = Spec(el.Index, wf, guard);
-                    Need(el.Unchecked ? (el.NoNull ? new MLit("true") : new MOp("!=", a, new MLit("null"))) : new MOp("&&", new MOp("&&", new MOp("!=", a, new MLit("null")), new MOp("<=", new MLit("0"), i)), new MOp("<", i, new MOp(el.String ? "slen" : "len", a))));
-                    return el.String ? new MOp("sat", a, i) : new MOp("sel", new MVar(Elements(el.ArrayType)), a, i);
+                    Need(el.Unchecked ? (el.NoNull ? new MLit("true") : NotNull(a)) : AndAlso(AndAlso(NotNull(a), new MOp("<=", new MLit("0"), i)), new MOp("<", i, new MOp(el.String ? "slen" : "len", a))));
+                    return el.String ? new MOp("sat", a, i) : Sel(Elements(el.ArrayType), a, i);
                 }
                 case KDataField df:
                 {
                     var v = Spec(df.Value, wf, guard);
                     if (!df.Struct)
                     {
-                        Need(new MOp("!=", v, new MLit("null")));
+                        Need(NotNull(v));
                     }
                     return new MOp(df.Function, v);
                 }
@@ -327,7 +328,7 @@ namespace CsVerify.Verifier.Boogie
                 case KLen len:
                 {
                     var a = Spec(len.Array, wf, guard);
-                    Need(new MOp("!=", a, new MLit("null")));
+                    Need(NotNull(a));
                     return new MOp(len.String ? "slen" : "len", a);
                 }
                 case KFnCall { Stub: true } st:
@@ -336,7 +337,7 @@ namespace CsVerify.Verifier.Boogie
                     if (st.Receiver != null)
                     {
                         receiver = Spec(st.Receiver, wf, guard);
-                        Need(new MOp("!=", receiver, new MLit("null")));
+                        Need(NotNull(receiver));
                     }
                     var args = st.Args.Select(a => Spec(a, wf, guard)).ToArray();
                     var given = StubGiven(st.Callee, receiver, args);
@@ -373,33 +374,33 @@ namespace CsVerify.Verifier.Boogie
                     var i = new MVar("i$");
                     return MQuant.ForAll(
                         "i$",
-                        Implies(new MOp("&&", new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))));
+                        Implies(AndAlso(new MOp("<=", lo, i), new MOp("<", i, hi)), new MOp(">=", Cell(a, i), Amount(cl.Read))));
                 }
                 case KInst inst:
                 {
                     var q = Instance(inst.Pred, inst.Args.Select(a => Spec(a, wf, guard)).ToArray());
-                    return _held ? new MOp(">=", new MOp("sel", new MVar("pinst"), q), new MLit("1")) : new MLit("true");
+                    return _held ? new MOp(">=", Sel("pinst", q), new MLit("1")) : new MLit("true");
                 }
                 case KField fd:
                 {
                     if (fd.Instance == null)
                     {
-                        var sv = new MOp("sel", new MVar(FieldMap(fd.Field)), new MLit("null"));
+                        var sv = Sel(FieldMap(fd.Field), new MLit("null"));
                         if (NonNullField(fd.Field))
                         {
-                            _facts.Add(new MOp("!=", sv, new MLit("null")));
+                            _facts.Add(NotNull(sv));
                         }
                         return sv;
                     }
                     var o = Spec(fd.Instance, wf, guard);
                     if (!fd.OnThis && !fd.NoNull)
                     {
-                        Need(new MOp("!=", o, new MLit("null")));
+                        Need(NotNull(o));
                     }
-                    var v = new MOp("sel", new MVar(FieldMap(fd.Field)), o);
+                    var v = Sel(FieldMap(fd.Field), o);
                     if (NonNullField(fd.Field) && !(_p.IsCtor && fd.OnThis) && !Mentions(o, _bound))
                     {
-                        _facts.Add(new MOp("==>", new MOp("!=", o, new MLit("null")), new MOp("!=", v, new MLit("null"))));
+                        _facts.Add(new MOp("==>", NotNull(o), NotNull(v)));
                     }
                     if (IsRef(FieldType(fd.Field)) && !Mentions(o, _bound))
                     {
@@ -434,7 +435,7 @@ namespace CsVerify.Verifier.Boogie
                     // (Range is lo <= q && q < hi, from Lowering)
                     var lo = Spec(((KOp)((KOp)q.Range).Args[0]).Args[0], wf, guard);
                     var hi = Spec(((KOp)((KOp)q.Range).Args[1]).Args[1], wf, guard);
-                    var range = new MOp("&&", new MOp("<=", lo, new MVar(q.Var)), new MOp("<", new MVar(q.Var), hi));
+                    var range = AndAlso(new MOp("<=", lo, new MVar(q.Var)), new MOp("<", new MVar(q.Var), hi));
                     // (its body well-defined over the range: each condition quantified the same way)
                     var inner = new List<MExpr>();
                     bool added = _bound.Add(q.Var);
@@ -478,7 +479,7 @@ namespace CsVerify.Verifier.Boogie
                         receiver = Spec(fn.Receiver, wf, guard);
                         if (!fn.ReceiverIsThis && !IsStruct(fn.Callee.ContainingType))
                         {
-                            Need(new MOp("!=", receiver, new MLit("null")));
+                            Need(NotNull(receiver));
                         }
                     }
                     var args = fn.Args.Select(a => Spec(a, wf, guard)).ToArray();

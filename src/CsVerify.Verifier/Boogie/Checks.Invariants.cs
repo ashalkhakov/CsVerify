@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -32,7 +33,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            Assume(new MOp("||", new MOp("==", o, new MLit("null")), inv));
+            Assume(OrElse(IsNull(o), inv));
         }
 
         /// <summary>The class's [Invariant]s of o (null if it has none).</summary>
@@ -76,7 +77,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var g in InstanceFields(type).Where(g => IsRef(FieldType(g))))
                 {
-                    Assume(Allocated(o, new MOp("sel", new MVar(FieldMap(g)), o)));
+                    Assume(Allocated(o, Sel(FieldMap(g), o)));
                 }
             }
         }

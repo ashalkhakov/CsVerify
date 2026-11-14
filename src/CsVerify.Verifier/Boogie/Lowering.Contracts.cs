@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -91,7 +92,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static void ContractOf(Lowering l, Contract contract)
         {
-            KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => new KOp("&&", a, b));
+            KExpr And(IEnumerable<KExpr> xs) => xs.DefaultIfEmpty(new KLit("true")).Aggregate((a, b) => AndAlso(a, b));
             foreach (var r in contract.Requires)
             {
                 l._p.Requires.Add(new KSpec
@@ -130,7 +131,7 @@ namespace CsVerify.Verifier.Boogie
                 l._p.Ensures.Add(new KSpec
                 {
                     At = l._m.DeclaringSyntaxReferences[0].GetSyntax(),
-                    Expr = new KOp("==", new KVar("result"),
+                    Expr = Eq(new KVar("result"),
                     new KFnCall
                     {
                         Callee = l._m.OriginalDefinition,

@@ -62,6 +62,20 @@ namespace CsVerify.Verifier.Boogie
             Op = op;
             Args = args;
         }
+
+        /// <summary>A map read: map[at] (map[at][at2], with two).</summary>
+        public static MOp Sel(string map, params MExpr[] at) => new MOp("sel", at.Prepend(new MVar(map)).ToArray());
+
+        /// <summary>A map with one entry changed: map[at := value].</summary>
+        public static MOp Store(string map, MExpr at, MExpr value) => new MOp("store", new MVar(map), at, value);
+
+        public static MOp Eq(MExpr a, MExpr b) => new MOp("==", a, b);
+        public static MOp Ne(MExpr a, MExpr b) => new MOp("!=", a, b);
+        public static MOp Not(MExpr a) => new MOp("!", a);
+        public static MOp AndAlso(MExpr a, MExpr b) => new MOp("&&", a, b);
+        public static MOp OrElse(MExpr a, MExpr b) => new MOp("||", a, b);
+        public static MOp IsNull(MExpr a) => new MOp("==", a, new MLit("null"));
+        public static MOp NotNull(MExpr a) => new MOp("!=", a, new MLit("null"));
     }
 
     /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>

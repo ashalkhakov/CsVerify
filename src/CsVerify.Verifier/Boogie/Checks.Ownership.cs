@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -13,10 +14,10 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ ownership
 
         /// <summary>Is the object's view in hand (full permission)?</summary>
-        private static MExpr Held(MExpr o) => new MOp("sel", new MVar("perm"), o);
+        private static MExpr Held(MExpr o) => Sel("perm", o);
 
         /// <summary>Is the object's view in a package held here?</summary>
-        private static MExpr Packed(MExpr o) => new MOp("sel", new MVar("pkg"), o);
+        private static MExpr Packed(MExpr o) => Sel("pkg", o);
 
         /// <summary>A package arrives (a parameter, a call's result, a ref or out argument): its views, packed, are in hand, each different from the others and from the views in hand.</summary>
         private void Arrive(MExpr p, ITypeSymbol type)
@@ -24,13 +25,13 @@ namespace CsVerify.Verifier.Boogie
             foreach (var f in PackageViews(type))
             {
                 var v = new MOp(FieldFunction(f), p);
-                Assume(new MOp("!=", v, new MLit("null")));
+                Assume(NotNull(v));
                 AssumeInvariant(ViewOf(f.Type), v);
-                Assume(new MOp("&&", new MOp("!", Held(v)), new MOp("!", Packed(v))));
+                Assume(AndAlso(Not(Held(v)), Not(Packed(v))));
                 // (a view's object is its tree's root, packed or not)
                 if (KernelTypes.Trees)
                 {
-                    Assume(new MOp("==", new MOp("sel", new MVar("$root"), v), v));
+                    Assume(Eq(Sel("$root", v), v));
                 }
                 Emit(new MMapUpdate
                 {
@@ -52,27 +53,27 @@ namespace CsVerify.Verifier.Boogie
             foreach (var root in _p.LentRoots)
             {
                 var x = Code(root);
-                any = new MOp("||", any, KernelTypes.Trees ? new MOp("&&", new MOp("!=", x, new MLit("null")), new MOp("==", new MOp("sel", new MVar("$root"), o), new MOp("sel", new MVar("$root"), x)))
-                                                           : new MOp("==", o, x));
+                any = OrElse(any, KernelTypes.Trees ? AndAlso(NotNull(x), Eq(Sel("$root", o), Sel("$root", x)))
+                                                           : Eq(o, x));
             }
             return any;
         }
 
-        private static MExpr Whole(MExpr o) => new MOp("&&", Held(o), new MOp(">=", new MOp("sel", new MVar("pk"), o), new MLit("0")));
+        private static MExpr Whole(MExpr o) => AndAlso(Held(o), new MOp(">=", Sel("pk", o), new MLit("0")));
 
         private void Shares(MExpr o, int by) =>
             Emit(new MMapUpdate
             {
                 Map = "pk",
                 Ref = o,
-                Value = new MOp(by > 0 ? "+" : "-", new MOp("sel", new MVar("pk"), o), new MLit(System.Math.Abs(by).ToString())),
+                Value = new MOp(by > 0 ? "+" : "-", Sel("pk", o), new MLit(System.Math.Abs(by).ToString())),
             });
 
         /// <summary>A view received: nobody else has it (views are linear), so it isn't one in hand already; now it is.</summary>
         private void Receive(MExpr o)
         {
-            Assume(new MOp("!", Held(o)));
-            Assume(new MOp("!", Packed(o)));
+            Assume(Not(Held(o)));
+            Assume(Not(Packed(o)));
             Emit(new MMapUpdate
             {
                 Map = "perm",
@@ -82,7 +83,7 @@ namespace CsVerify.Verifier.Boogie
             // (an object whose view is in hand is its tree's root: no [Owns] field holds it)
             if (KernelTypes.Trees)
             {
-                Assume(new MOp("==", new MOp("sel", new MVar("$root"), o), o));
+                Assume(Eq(Sel("$root", o), o));
             }
         }
 
@@ -151,7 +152,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var param in m.Parameters.Where(HoldsView))
             {
                 var v = new MVar(Local(param));
-                Assume(new MOp("!=", v, new MLit("null")));
+                Assume(NotNull(v));
                 AssumeInvariant(ViewOf(param.Type), v);
                 if (grant)
                 {
@@ -162,7 +163,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var param in m.Parameters.Where(HoldsShare))
             {
                 var v = new MVar(Local(param));
-                Assume(new MOp("!=", v, new MLit("null")));
+                Assume(NotNull(v));
                 AssumeInvariant(ViewOf(param.Type), v);
                 if (!grant)
                 {
@@ -170,7 +171,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 if (IsView(param.Type))
                 {
-                    Assume(new MOp("!", Held(v)));
+                    Assume(Not(Held(v)));
                 }
                 Shares(v, 1);
             }

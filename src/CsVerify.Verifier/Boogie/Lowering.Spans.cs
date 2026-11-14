@@ -2,6 +2,7 @@ using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -27,7 +28,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var t = Declare("t$" + _temps++, type);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("&&", new KOp("==", SBase(new KVar(t)), @base), new KOp("&&", new KOp("==", SOff(new KVar(t)), offset), new KOp("==", Len(new KVar(t)), length))) });
+            Emit(new KAssume { Cond = AndAlso(Eq(SBase(new KVar(t)), @base), AndAlso(Eq(SOff(new KVar(t)), offset), Eq(Len(new KVar(t)), length))) });
             return new KVar(t);
         }
 
@@ -37,8 +38,8 @@ namespace CsVerify.Verifier.Boogie
             var t = Declare("t$" + _temps++, type);
             var s = new KVar(t);
             Emit(new KHavoc { Var = t });
-            Emit(new KAssume { Cond = new KOp("ite", new KOp("==", a, new KLit("null")), new KOp("==", Len(s), new KLit("0")),
-                new KOp("&&", new KOp("==", SBase(s), a), new KOp("&&", new KOp("==", SOff(s), new KLit("0")), new KOp("==", Len(s), Len(a))))) });
+            Emit(new KAssume { Cond = new KOp("ite", IsNull(a), Eq(Len(s), new KLit("0")),
+                AndAlso(Eq(SBase(s), a), AndAlso(Eq(SOff(s), new KLit("0")), Eq(Len(s), Len(a))))) });
             return s;
         }
 
@@ -47,7 +48,7 @@ namespace CsVerify.Verifier.Boogie
         {
             Emit(new KCheck
             {
-                Cond = new KOp("&&", new KOp("&&", new KOp("<=", new KLit("0"), start), new KOp("<=", new KLit("0"), length)), new KOp("<=", new KOp("+", start, length), Len(s))),
+                Cond = AndAlso(AndAlso(new KOp("<=", new KLit("0"), start), new KOp("<=", new KLit("0"), length)), new KOp("<=", new KOp("+", start, length), Len(s))),
                 Id = "CSV1001",
                 At = at,
                 Message = $"'{at}': the range might not be within the span (it would throw ArgumentOutOfRangeException)",
@@ -58,7 +59,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>s[i]: i within the span (CSV1003); the base's cell.</summary>
         private (KExpr array, KExpr index) SpanCell(KExpr s, KExpr i, SyntaxNode at, bool inSpec, out KExpr within)
         {
-            within = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(s)));
+            within = AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<", i, Len(s)));
             if (!inSpec)
             {
                 Emit(new KCheck
@@ -80,7 +81,7 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation { Property.Name: "Length" or "Count", Instance: { } si } when IsSpan(si.Type):
                     return Len(lower(si));
                 case IPropertyReferenceOperation { Property.Name: "IsEmpty", Instance: { } se } when IsSpan(se.Type):
-                    return new KOp("==", Len(lower(se)), new KLit("0"));
+                    return Eq(Len(lower(se)), new KLit("0"));
                 case IPropertyReferenceOperation { Property.IsIndexer: true, Instance: { } sx, Arguments.Length: 1 } ix when IsSpan(sx.Type):
                 {
                     var s = lower(sx);
@@ -133,7 +134,7 @@ namespace CsVerify.Verifier.Boogie
                     var args = Operands(inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray());
                     Emit(new KCheck
                     {
-                        Cond = new KOp("!=", args[0], new KLit("null")),
+                        Cond = NotNull(args[0]),
                         Id = "CSV1013",
                         At = inv.Arguments[0].Value.Syntax,
                         Message = $"'{inv.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value.Syntax}' might be null in '{inv.Syntax}'",
@@ -170,9 +171,9 @@ namespace CsVerify.Verifier.Boogie
                     var map = Elements(CellsOf(cp.Instance.Type));
                     var (lo, hi) = (SOff(d), new KOp("+", SOff(d), Len(s)));
                     var y = new KVar("y$");
-                    var copied = new KOp("ite", new KOp("&&", new KOp("<=", lo, y), new KOp("<", y, hi)),
-                        new KOp("sel", new KVar(map), SBase(s), new KOp("+", SOff(s), new KOp("-", y, lo))), new KOp("sel", new KVar(map), SBase(d), y));
-                    var row = cp.TargetMethod.Name == "CopyTo" ? copied : new KOp("ite", fits, copied, new KOp("sel", new KVar(map), SBase(d), y));
+                    var copied = new KOp("ite", AndAlso(new KOp("<=", lo, y), new KOp("<", y, hi)),
+                        Sel(map, SBase(s), new KOp("+", SOff(s), new KOp("-", y, lo))), Sel(map, SBase(d), y));
+                    var row = cp.TargetMethod.Name == "CopyTo" ? copied : new KOp("ite", fits, copied, Sel(map, SBase(d), y));
                     Emit(new KRow
                     {
                         Map = map,
@@ -191,11 +192,11 @@ namespace CsVerify.Verifier.Boogie
                     var st = Unconverted(ordered[0].Value).Type;
                     var sp = lower(Unconverted(ordered[0].Value));
                     var map = Elements(CellsOf(st));
-                    KExpr At(KExpr span, KExpr i) => new KOp("sel", new KVar(map), SBase(span), new KOp("+", SOff(span), i));
+                    KExpr At(KExpr span, KExpr i) => Sel(map, SBase(span), new KOp("+", SOff(span), i));
                     var i = new KVar("i$m");
                     KExpr Within(KExpr lo, KExpr hi, KExpr body) => KQuant.ForAll(
                         "i$m",
-                        new KOp("==>", new KOp("&&", new KOp("<=", lo, i), new KOp("<", i, hi)), body));
+                        new KOp("==>", AndAlso(new KOp("<=", lo, i), new KOp("<", i, hi)), body));
                     var r = Declare("t$" + _temps++, se.Type);
                     Emit(new KHavoc { Var = r });
                     var rv = new KVar(r);
@@ -206,11 +207,11 @@ namespace CsVerify.Verifier.Boogie
                             return null;
                         }
                         var v = lower(ordered[1].Value);
-                        Emit(new KAssume { Cond = new KOp("&&", new KOp("<=", new KLit("-1"), rv), new KOp("<", rv, Len(sp))) });
-                        Emit(new KAssume { Cond = new KOp("==>", new KOp(">=", rv, new KLit("0")), new KOp("==", At(sp, rv), v)) });
+                        Emit(new KAssume { Cond = AndAlso(new KOp("<=", new KLit("-1"), rv), new KOp("<", rv, Len(sp))) });
+                        Emit(new KAssume { Cond = new KOp("==>", new KOp(">=", rv, new KLit("0")), Eq(At(sp, rv), v)) });
                         Emit(new KSpecStmt
                         {
-                            Spec = Within(new KLit("0"), new KOp("ite", new KOp("<", rv, new KLit("0")), Len(sp), rv), new KOp("!=", At(sp, i), v)),
+                            Spec = Within(new KLit("0"), new KOp("ite", new KOp("<", rv, new KLit("0")), Len(sp), rv), Ne(At(sp, i), v)),
                             Assume = true,
                             Free = true,
                             At = se.Syntax,
@@ -226,7 +227,7 @@ namespace CsVerify.Verifier.Boogie
                         var pre = lower(Unconverted(ordered[1].Value));
                         Emit(new KSpecStmt
                         {
-                            Spec = new KOp("==", rv, new KOp("&&", new KOp("<=", Len(pre), Len(sp)), Within(new KLit("0"), Len(pre), new KOp("==", At(sp, i), At(pre, i))))),
+                            Spec = Eq(rv, AndAlso(new KOp("<=", Len(pre), Len(sp)), Within(new KLit("0"), Len(pre), Eq(At(sp, i), At(pre, i))))),
                             Assume = true,
                             Free = true,
                             At = se.Syntax,
@@ -241,7 +242,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = fl.TargetMethod.Name == "Fill" ? lower(fl.Arguments[0].Value) : Default(SpanElement(fl.Instance.Type));
                     var map = Elements(CellsOf(fl.Instance.Type));
                     var y = new KVar("y$");
-                    var row = new KOp("ite", new KOp("&&", new KOp("<=", SOff(s), y), new KOp("<", y, new KOp("+", SOff(s), Len(s)))), v, new KOp("sel", new KVar(map), SBase(s), y));
+                    var row = new KOp("ite", AndAlso(new KOp("<=", SOff(s), y), new KOp("<", y, new KOp("+", SOff(s), Len(s)))), v, Sel(map, SBase(s), y));
                     Emit(new KRow
                     {
                         Map = map,

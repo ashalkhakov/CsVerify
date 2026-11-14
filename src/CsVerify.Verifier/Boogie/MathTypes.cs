@@ -3,6 +3,7 @@ using System.Linq;
 using System.Numerics;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -35,7 +36,7 @@ namespace CsVerify.Verifier.Boogie
         public static MExpr InRange(MExpr e, ITypeSymbol t)
         {
             var (lo, hi) = Range(t);
-            return new MOp("&&", new MOp("<=", Number(lo), e), new MOp("<=", e, Number(hi)));
+            return AndAlso(new MOp("<=", Number(lo), e), new MOp("<=", e, Number(hi)));
         }
 
         /// <summary>e wrapped around into t's range: two's complement, as Euclidean mod.</summary>
@@ -54,11 +55,11 @@ namespace CsVerify.Verifier.Boogie
             // (an open type's values: of any case, those the program has or others)
             if (Data.IsOpen(DataTypes.Def(type)))
             {
-                return new MOp("!=", v, new MLit("null"));
+                return NotNull(v);
             }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (MExpr)new MOp("$is." + CaseName(c).Substring(3), v)).ToList();
-            var any = tags.Count == 0 ? new MLit("false") : tags.Aggregate((a, b) => new MOp("||", a, b));
-            return new MOp("&&", new MOp("!=", v, new MLit("null")), any);
+            var any = tags.Count == 0 ? new MLit("false") : tags.Aggregate((a, b) => OrElse(a, b));
+            return AndAlso(NotNull(v), any);
         }
 
         /// <summary>A value as a box (where generic code takes it).</summary>
@@ -72,11 +73,11 @@ namespace CsVerify.Verifier.Boogie
             var kind = Kind(element);
             if (index == null)
             {
-                return new MOp("ite", new MOp("$arr", x), new MOp("len", x), new MOp("ite", new MOp("$coll", x), new MOp("sel", new MVar(SizeMap), x), new MOp("$ocount", x, new MOp("$state"))));
+                return new MOp("ite", new MOp("$arr", x), new MOp("len", x), new MOp("ite", new MOp("$coll", x), Sel(SizeMap, x), new MOp("$ocount", x, new MOp("$state"))));
             }
             var array = (IArrayTypeSymbol)KernelTypes.Compilation.CreateArrayTypeSymbol(element);
-            return new MOp("ite", new MOp("$arr", x), new MOp("sel", new MVar(Elements(array)), x, index),
-                new MOp("ite", new MOp("$coll", x), new MOp("sel", new MVar(ModelOf("Items", list).Name), x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));
+            return new MOp("ite", new MOp("$arr", x), Sel(Elements(array), x, index),
+                new MOp("ite", new MOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new MOp("$oitem." + kind, x, index, new MOp("$state"))));
         }
     }
 }

@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -74,7 +75,7 @@ namespace CsVerify.Verifier.Boogie
             var m = _p.Method;
             foreach (var param in m.Parameters.Where(x => x.RefKind is RefKind.Ref or RefKind.Out && IsNullable(x.Type) && NotNullable(x.Type)))
             {
-                Assert(new MOp("!=", new MVar(Local(param)), new MLit("null")), At("CSV1014", ret.At, $"'{param.Name}' might be null on return, but its type '{param.Type}' is not nullable"));
+                Assert(NotNull(new MVar(Local(param))), At("CSV1014", ret.At, $"'{param.Name}' might be null on return, but its type '{param.Type}' is not nullable"));
             }
             if (_p.IsCtor)
             {
@@ -82,14 +83,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (!IsRequired(field) || m.GetAttributes().Any(a => a.AttributeClass?.Name == "SetsRequiredMembersAttribute"))
                     {
-                        Assert(new MOp("!=", new MOp("sel", new MVar(FieldMap(field)), new MVar("this")), new MLit("null")),
+                        Assert(NotNull(Sel(FieldMap(field), new MVar("this"))),
                             At("CSV1014", ret.At, $"field '{field.Name}' is not nullable, but might be null when the constructor of {m.ContainingType.Name} returns"));
                     }
                 }
             }
             if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m)))
             {
-                Assert(new MOp("!=", new MVar("result"), new MLit("null")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable" +
+                Assert(NotNull(new MVar("result")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable" +
                     NullReasons(ret.At is Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax rs ? rs.Expression : ret.At is Microsoft.CodeAnalysis.CSharp.Syntax.ArrowExpressionClauseSyntax ar ? ar.Expression : ret.At)));
             }
         }
@@ -105,7 +106,7 @@ namespace CsVerify.Verifier.Boogie
                     var value = Code(a.Value);
                     if (a.NotNullAt != null)
                     {
-                        Assert(new MOp("!=", value, new MLit("null")), At("CSV1014", a.NotNullAt, $"'{a.NotNullAt}' might store null, but '{a.NotNullName}' is not nullable"));
+                        Assert(NotNull(value), At("CSV1014", a.NotNullAt, $"'{a.NotNullAt}' might store null, but '{a.NotNullName}' is not nullable"));
                     }
                     Emit(new MAssign
                     {
@@ -154,7 +155,7 @@ namespace CsVerify.Verifier.Boogie
                     var v = Code(th.Value);
                     if (!(_p.Ghost || _p.Contract.IsPure || _p.Contract.IsLemma))
                     {
-                        Assert(new MOp("!=", v, new MLit("null")), At("CSV1013", th.At, $"'{th.At}' might be null: throwing it would throw a NullReferenceException"));
+                        Assert(NotNull(v), At("CSV1013", th.At, $"'{th.At}' might be null: throwing it would throw a NullReferenceException"));
                     }
                     if (th.Seen)
                     {
@@ -244,7 +245,7 @@ namespace CsVerify.Verifier.Boogie
                 case KOwn { Kind: "unshare" } unshare:
                 {
                     var v = Code(unshare.Obj);
-                    Assert(new MOp("==", Code(unshare.Value), v), At("CSV1016", unshare.At, $"'{unshare.ValueAt}' might not be a share of '{unshare.SlotAt}'"));
+                    Assert(Eq(Code(unshare.Value), v), At("CSV1016", unshare.At, $"'{unshare.ValueAt}' might not be a share of '{unshare.SlotAt}'"));
                     return;
                 }
                 case KOwn { Kind: "dropshare" } dropShare:
@@ -346,7 +347,7 @@ namespace CsVerify.Verifier.Boogie
                         Emit(new MAssign
                         {
                             Var = "cells",
-                            Value = new MOp("store", new MVar("cells"), new MVar(n.Var), new MLit("(lambda i$: int :: 1.0)")),
+                            Value = Store("cells", new MVar(n.Var), new MLit("(lambda i$: int :: 1.0)")),
                         });
                     }
                     return;
@@ -358,7 +359,7 @@ namespace CsVerify.Verifier.Boogie
                     var o = Code(ai.Obj);
                     if (HasObjectInvariant(ai.Type) && Invariant(ai.Type, o) is MExpr inv)
                     {
-                        Assume(new MOp("==>", Code(ai.When), new MOp("||", new MOp("==", o, new MLit("null")), inv)));
+                        Assume(new MOp("==>", Code(ai.When), OrElse(IsNull(o), inv)));
                     }
                     return;
                 }
@@ -418,7 +419,7 @@ namespace CsVerify.Verifier.Boogie
             var o = fs.Instance == null ? new MLit("null") : Code(fs.Instance);
             if (fs.Instance != null && !fs.OnThis)
             {
-                Assert(new MOp("!=", o, new MLit("null")), NullAt(fs.At, fs.InstanceAt, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
+                Assert(NotNull(o), NullAt(fs.At, fs.InstanceAt, $"'{fs.InstanceAt}' might be null in '{fs.At}'"));
             }
             if (fs.Instance != null && !IsOwnedField(fs.Field))
             {
@@ -426,11 +427,11 @@ namespace CsVerify.Verifier.Boogie
             }
             if (IsOwnedField(fs.Field))
             {
-                Assert(new MOp("||", _p.UsesFields ? new MOp("||", Whole(o), FieldHeld(o, fs.Field)) : Whole(o), Lent(o)), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                Assert(OrElse(_p.UsesFields ? OrElse(Whole(o), FieldHeld(o, fs.Field)) : Whole(o), Lent(o)), At("CSV1016", fs.At, $"'{fs.At}' changes an [Owned] {fs.Field.ContainingType.Name} without holding its view (Own<{fs.Field.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
             }
             if (NonNullField(fs.Field))
             {
-                Assert(new MOp("!=", value, new MLit("null")), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
+                Assert(NotNull(value), At("CSV1014", fs.At, $"'{fs.At}' might store null, but field '{fs.Field.Name}' is not nullable"));
             }
             Emit(new MFieldStore
             {
@@ -479,8 +480,8 @@ namespace CsVerify.Verifier.Boogie
             // c's tree splits: what was below the object is now in its own tree, or still in c's
             var c = Code(take.Obj);
             Assert(Whole(c), At("CSV1016", take.At, $"'{take.SlotAt}' changes an [Owned] {take.Field.ContainingType.Name} without holding its view"));
-            var x = new MOp("sel", new MVar(FieldMap(take.Field)), c);
-            Assert(new MOp("!=", x, new MLit("null")), At("CSV1016", take.At, $"'{take.SlotAt}' might be null: there is nothing to take"));
+            var x = Sel(FieldMap(take.Field), c);
+            Assert(NotNull(x), At("CSV1016", take.At, $"'{take.SlotAt}' might be null: there is nothing to take"));
             Emit(new MAssign
             {
                 Var = take.View,
@@ -489,15 +490,15 @@ namespace CsVerify.Verifier.Boogie
             var child = new MVar(take.View);
             // (what an [Owns] field holds is in its container's tree, and isn't its root)
             var root = new MVar("$root");
-            Assume(new MOp("&&", new MOp("==", new MOp("sel", root, child), new MOp("sel", root, c)), new MOp("!=", new MOp("sel", root, child), child)));
+            Assume(AndAlso(Eq(new MOp("sel", root, child), new MOp("sel", root, c)), Ne(new MOp("sel", root, child), child)));
             var siblings = InstanceFields(take.Field.ContainingType).Where(g => SpecSymbols.IsOwnsField(g) && !SymbolEqualityComparer.Default.Equals(g, take.Field.OriginalDefinition)).Select(FieldMap).ToList();
             // (and so is what the container's other [Owns] fields hold, each a different object: they stay in its tree)
             foreach (var g in siblings)
             {
-                var held = new MOp("sel", new MVar(g), c);
-                Assume(new MOp("||", new MOp("==", held, new MLit("null")),
-                    new MOp("&&", new MOp("&&", new MOp("==", new MOp("sel", root, held), new MOp("sel", root, c)), new MOp("!=", new MOp("sel", root, held), held)),
-                        new MOp("!=", held, child))));
+                var held = Sel(g, c);
+                Assume(OrElse(IsNull(held),
+                    AndAlso(AndAlso(Eq(new MOp("sel", root, held), new MOp("sel", root, c)), Ne(new MOp("sel", root, held), held)),
+                        Ne(held, child))));
             }
             Emit(new MFieldStore
             {
@@ -535,10 +536,10 @@ namespace CsVerify.Verifier.Boogie
             var x = Code(give.Value);
             var v = Code(give.ViewValue);
             Assert(Whole(c), At("CSV1016", give.At, $"'{give.SlotAt}' changes an [Owned] {give.Field.ContainingType.Name} without holding its view"));
-            Assert(new MOp("==", new MOp("sel", new MVar(FieldMap(give.Field)), c), new MLit("null")), At("CSV1016", give.At, $"'{give.SlotAt}' might still own an object: take it first"));
-            Assert(new MOp("==", v, x), At("CSV1016", give.At, $"'{give.ViewAt}' might not be the view of '{give.ValueAt}'"));
+            Assert(IsNull(Sel(FieldMap(give.Field), c)), At("CSV1016", give.At, $"'{give.SlotAt}' might still own an object: take it first"));
+            Assert(Eq(v, x), At("CSV1016", give.At, $"'{give.ViewAt}' might not be the view of '{give.ValueAt}'"));
             Assert(Whole(x), At("CSV1016", give.At, $"'{give.ValueAt}' might have read shares out: join them back (Own.Unshare) first"));
-            Assert(new MOp("!=", new MOp("sel", new MVar("$root"), c), x), At("CSV1016", give.At, $"'{give.ValueAt}' might own the container: ownership would be a cycle"));
+            Assert(Ne(Sel("$root", c), x), At("CSV1016", give.At, $"'{give.ValueAt}' might own the container: ownership would be a cycle"));
             ProveInvariant(give.Type, x, give.At, "when it is given to its owner");
             Emit(new MMapUpdate
             {
@@ -570,7 +571,7 @@ namespace CsVerify.Verifier.Boogie
             // (a call of a delegate: not null, and it accepts the arguments; what it gives is its $post)
             var d = Code(iv.Delegate);
             var args = iv.Args.Select(Code).ToArray();
-            Assert(new MOp("!=", d, new MLit("null")), NullAt(iv.At, iv.DelegateAt, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
+            Assert(NotNull(d), NullAt(iv.At, iv.DelegateAt, $"'{iv.DelegateAt}' might be null in '{iv.At}'"));
             Assert(new MOp("$preS." + iv.Key, new[] { d, new MOp("$state") }.Concat(args).ToArray()),
                 At("CSV1001", iv.At, $"'{iv.DelegateAt}' might not accept these arguments: say what it accepts with Spec.Requires(Spec.Pre({iv.DelegateAt}, ...))"));
             Emit(new MInvoke
@@ -621,7 +622,7 @@ namespace CsVerify.Verifier.Boogie
         {
             // a view taken out of its package: in hand again, its invariant holding
             var x = Code(unpack.Obj);
-            Assume(new MOp("!=", x, new MLit("null")));
+            Assume(NotNull(x));
             Emit(new MMapUpdate
             {
                 Map = "pkg",
@@ -637,7 +638,7 @@ namespace CsVerify.Verifier.Boogie
             AssumeInvariant(unpack.Type, x);
             if (KernelTypes.Trees)
             {
-                Assume(new MOp("==", new MOp("sel", new MVar("$root"), x), x));
+                Assume(Eq(Sel("$root", x), x));
             }
             return;
         }
@@ -677,7 +678,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var f in InstanceFields(n.Type).Where(f => IsRef(FieldType(f)) && _p.Fields.Contains(f)))
                 {
-                    Assume(Allocated(new MVar(n.Var), new MOp("sel", new MVar(FieldMap(f)), new MVar(n.Var))));
+                    Assume(Allocated(new MVar(n.Var), Sel(FieldMap(f), new MVar(n.Var))));
                 }
             }
             // (and its ghost sets of objects hold allocated ones)
@@ -685,7 +686,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var f in InstanceFields(n.Type).Where(f => IsObjSet(IsGhost(FieldType(f)) ? GhostOf(FieldType(f)) : FieldType(f)) && _p.Fields.Contains(f)))
                 {
-                    Assume(new MOp("set.subset", new MOp("sel", new MVar(FieldMap(f)), new MVar(n.Var)), new MVar("$Alloc")));
+                    Assume(new MOp("set.subset", Sel(FieldMap(f), new MVar(n.Var)), new MVar("$Alloc")));
                 }
             }
             ObjectInvariant(new MVar(n.Var), n.Type);
@@ -703,9 +704,9 @@ namespace CsVerify.Verifier.Boogie
             if (row.At != null && _p.UsesCells)
             {
                 var i = new MVar("i$");
-                Assert(new MOp("||", new MOp("==", r, new MLit("null")), MQuant.ForAll(
+                Assert(OrElse(IsNull(r), MQuant.ForAll(
                     "i$",
-                    Implies(new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))))),
+                    Implies(AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", r))), new MOp(">=", Cell(r, i), new MLit("1.0"))))),
                        At("CSV1016", row.At, $"'{row.At}' writes the whole array: this method needs Spec.Acc of all its cells"));
             }
             var v = Spec(row.Value, out _);
@@ -728,7 +729,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (!st.NoNull)
                 {
-                    Assert(new MOp("!=", a, new MLit("null")), NullAt(st.At, st.ArrayAt, $"'{st.ArrayAt}' might be null in '{st.At}'"));
+                    Assert(NotNull(a), NullAt(st.At, st.ArrayAt, $"'{st.ArrayAt}' might be null in '{st.At}'"));
                 }
             }
             else
@@ -790,8 +791,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 var a = Code(array);
                 var i = new MVar("i$");
-                var inRange = new MOp("&&", new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a)));
-                Assert(new MOp("||", new MOp("==", a, new MLit("null")),
+                var inRange = AndAlso(new MOp("<=", new MLit("0"), i), new MOp("<", i, new MOp("len", a)));
+                Assert(OrElse(IsNull(a),
                                MQuant.ForAll(
                                    "i$",
                                    Implies(inRange, la.Write ? new MOp(">=", Cell(a, i), new MLit("1.0")) : new MOp(">", Cell(a, i), new MLit("0.0"))))),

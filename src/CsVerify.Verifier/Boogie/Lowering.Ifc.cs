@@ -2,6 +2,7 @@ using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -31,7 +32,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Label = name + "f",
                 Ordinal = from.Ordinal,
-                Stmts = { new KAssume { Cond = new KOp("!", cond) } },
+                Stmts = { new KAssume { Cond = Not(cond) } },
             };
             var join = new KBlock
             {
@@ -95,7 +96,7 @@ namespace CsVerify.Verifier.Boogie
             var receiver = Expr(call.Instance);
             Emit(new KCheck
             {
-                Cond = new KOp("!=", receiver, new KLit("null")),
+                Cond = NotNull(receiver),
                 Id = "CSV1013",
                 At = call.Instance.Syntax,
                 Message = $"'{call.Instance.Syntax}' might be null in '{call.Syntax}'",
@@ -174,7 +175,7 @@ namespace CsVerify.Verifier.Boogie
             });
             Emit(new KCheck
             {
-                Cond = new KOp("!=", receiver, new KLit("null")),
+                Cond = NotNull(receiver),
                 Id = "CSV1013",
                 At = pr.Instance.Syntax,
                 Message = $"'{pr.Instance.Syntax}' might be null in '{pr.Syntax}'",

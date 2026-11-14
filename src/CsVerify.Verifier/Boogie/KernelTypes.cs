@@ -7,6 +7,7 @@ using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -391,15 +392,15 @@ namespace CsVerify.Verifier.Boogie
             var addr = MemProp("Addr", v, type);
             if (SpecSymbols.IsCsVerifyType(type, "PointsTo`1"))
             {
-                return new KOp("==", new KOp("sel", map, new KLit("null"), addr), MemProp("Value", v, type));
+                return Eq(new KOp("sel", map, new KLit("null"), addr), MemProp("Value", v, type));
             }
             var i = new KVar("m$i");
-            KExpr range = new KOp("&&", new KOp("<=", new KLit("0"), i), new KOp("<", i, MemProp("Length", v, type)));
-            KExpr body = new KOp("==", new KOp("sel", map, new KLit("null"), new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
+            KExpr range = AndAlso(new KOp("<=", new KLit("0"), i), new KOp("<", i, MemProp("Length", v, type)));
+            KExpr body = Eq(new KOp("sel", map, new KLit("null"), new KOp("+", addr, i)), new KOp("sel", MemProp("Elems", v, type), i));
             // (a hole's: all but its index)
             if (SpecSymbols.IsCsVerifyType(type, "ArrayHole`1"))
             {
-                body = new KOp("==>", new KOp("!=", i, MemProp("Index", v, type)), body);
+                body = new KOp("==>", Ne(i, MemProp("Index", v, type)), body);
             }
             return KQuant.ForAll("m$i", body, range: range);
         }
@@ -487,11 +488,11 @@ namespace CsVerify.Verifier.Boogie
             // (an open type's values: of any case, those the program has or others)
             if (Data.IsOpen(DataTypes.Def(type)))
             {
-                return new KOp("!=", v, new KLit("null"));
+                return NotNull(v);
             }
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (KExpr)new KOp("$is." + CaseName(c).Substring(3), v)).ToList();
-            var any = tags.Count == 0 ? new KLit("false") : tags.Aggregate((a, b) => new KOp("||", a, b));
-            return new KOp("&&", new KOp("!=", v, new KLit("null")), any);
+            var any = tags.Count == 0 ? new KLit("false") : tags.Aggregate((a, b) => OrElse(a, b));
+            return AndAlso(NotNull(v), any);
         }
 
         /// <summary>A value as a box (where generic code takes it), and back.</summary>
@@ -756,11 +757,11 @@ namespace CsVerify.Verifier.Boogie
             var kind = Kind(element);
             if (index == null)
             {
-                return new KOp("ite", new KOp("$arr", x), new KOp("len", x), new KOp("ite", new KOp("$coll", x), new KOp("sel", new KVar(SizeMap), x), new KOp("$ocount", x, new KOp("$state"))));
+                return new KOp("ite", new KOp("$arr", x), new KOp("len", x), new KOp("ite", new KOp("$coll", x), Sel(SizeMap, x), new KOp("$ocount", x, new KOp("$state"))));
             }
             var array = (IArrayTypeSymbol)Compilation.CreateArrayTypeSymbol(element);
-            return new KOp("ite", new KOp("$arr", x), new KOp("sel", new KVar(Elements(array)), x, index),
-                new KOp("ite", new KOp("$coll", x), new KOp("sel", new KVar(ModelOf("Items", list).Name), x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
+            return new KOp("ite", new KOp("$arr", x), Sel(Elements(array), x, index),
+                new KOp("ite", new KOp("$coll", x), Sel(ModelOf("Items", list).Name, x, index), new KOp("$oitem." + kind, x, index, new KOp("$state"))));
         }
 
         /// <summary>The BCL collections whose contents CsVerify.Bcl's models are (their stub contracts speak of them).</summary>
@@ -811,8 +812,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Two values equal as Equals has it: of a class with an Equals of its own, of one class of equals (null only to null).</summary>
         public static KExpr EqualAs(KExpr a, KExpr b, ITypeSymbol t) => CustomEquality(t)
-            ? new KOp("||", new KOp("==", a, b), new KOp("&&", new KOp("&&", new KOp("!=", a, new KLit("null")), new KOp("!=", b, new KLit("null"))), new KOp("==", new KOp("$eqc", a), new KOp("$eqc", b))))
-            : new KOp("==", a, b);
+            ? OrElse(Eq(a, b), AndAlso(AndAlso(NotNull(a), NotNull(b)), Eq(new KOp("$eqc", a), new KOp("$eqc", b))))
+            : Eq(a, b);
 
         public static bool IsList(ITypeSymbol t) => CollectionKind(t) == "List" && IsCollection(t);
 
@@ -1086,7 +1087,7 @@ namespace CsVerify.Verifier.Boogie
         public static KExpr InRange(KExpr e, ITypeSymbol t)
         {
             var (lo, hi) = Range(t);
-            return new KOp("&&", new KOp("<=", Number(lo), e), new KOp("<=", e, Number(hi)));
+            return AndAlso(new KOp("<=", Number(lo), e), new KOp("<=", e, Number(hi)));
         }
 
         /// <summary>e wrapped around into t's range: two's complement, as Euclidean mod.</summary>

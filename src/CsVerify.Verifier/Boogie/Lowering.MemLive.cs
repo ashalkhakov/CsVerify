@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using CsVerify.Analyzers;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -18,7 +19,7 @@ namespace CsVerify.Verifier.Boogie
         private string _memLive;
 
         private static KExpr InCells(List<KCells> cells, KExpr a) =>
-            cells.Select(c => (KExpr)new KOp("&&", new KOp("<=", c.Lo, a), new KOp("<", a, c.Hi))).Aggregate((x, y) => new KOp("||", x, y));
+            cells.Select(c => (KExpr)AndAlso(new KOp("<=", c.Lo, a), new KOp("<", a, c.Hi))).Aggregate((x, y) => OrElse(x, y));
 
         /// <summary>At the start: whether the method has views, and its parameters' cells apart and live.</summary>
         private void MemLiveEntry()
@@ -42,7 +43,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 ShapeFact(KQuant.ForAll(
                     "m$a",
-                    new KOp("==>", InCells(MemCells(new KVar(Local(x)), x.Type, _decl), a), new KOp("sel", new KVar(_memLive), a))), _decl);
+                    new KOp("==>", InCells(MemCells(new KVar(Local(x)), x.Type, _decl), a), Sel(_memLive, a))), _decl);
             }
             // (two ranges apart, each pair of theirs: an empty one is apart from any)
             for (int i = 0; i < views.Count; i++)
@@ -53,8 +54,8 @@ namespace CsVerify.Verifier.Boogie
                     {
                         foreach (var y in MemCells(new KVar(Local(views[j])), views[j].Type, _decl))
                         {
-                            ShapeFact(new KOp("||", new KOp("||", new KOp("<=", x.Hi, x.Lo), new KOp("<=", y.Hi, y.Lo)),
-                                                    new KOp("||", new KOp("<=", x.Hi, y.Lo), new KOp("<=", y.Hi, x.Lo))), _decl);
+                            ShapeFact(OrElse(OrElse(new KOp("<=", x.Hi, x.Lo), new KOp("<=", y.Hi, y.Lo)),
+                                                    OrElse(new KOp("<=", x.Hi, y.Lo), new KOp("<=", y.Hi, x.Lo))), _decl);
                         }
                     }
                 }
@@ -70,11 +71,11 @@ namespace CsVerify.Verifier.Boogie
             }
             var a = new KVar("m$a");
             var cells = MemCells(view, type, at);
-            ShapeFact(KQuant.ForAll("m$a", new KOp("==>", InCells(cells, a), new KOp("!", new KOp("sel", new KVar(_memLive), a)))), at);
+            ShapeFact(KQuant.ForAll("m$a", new KOp("==>", InCells(cells, a), Not(Sel(_memLive, a)))), at);
             // (said of each range's first cell too, for the solver to find)
             foreach (var c in cells)
             {
-                ShapeFact(new KOp("==>", new KOp("<", c.Lo, c.Hi), new KOp("!", new KOp("sel", new KVar(_memLive), c.Lo))), at);
+                ShapeFact(new KOp("==>", new KOp("<", c.Lo, c.Hi), Not(Sel(_memLive, c.Lo))), at);
             }
             MemLive(view, type, at, true);
         }
@@ -88,11 +89,11 @@ namespace CsVerify.Verifier.Boogie
             }
             var a = new KVar("m$a");
             var cells = InCells(MemCells(view, type, at), a);
-            var was = new KOp("sel", new KVar(_memLive), a);
+            var was = Sel(_memLive, a);
             Emit(new KAssign
             {
                 Var = _memLive,
-                Value = new KOp("lambda", new KLit("m$a: int"), live ? new KOp("||", was, cells) : new KOp("&&", was, new KOp("!", cells))),
+                Value = new KOp("lambda", new KLit("m$a: int"), live ? OrElse(was, cells) : AndAlso(was, Not(cells))),
             });
         }
 
@@ -178,8 +179,7 @@ namespace CsVerify.Verifier.Boogie
                 At = at,
                 ArrayAt = at,
             });
-            KExpr Eq(KExpr a, KExpr b) => new KOp("==", a, b);
-            KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => new KOp("&&", a, b));
+            KExpr And(params KExpr[] xs) => xs.Aggregate((a, b) => AndAlso(a, b));
             KExpr Plus(KExpr a, KExpr b) => new KOp("+", a, b);
             switch (m.Name)
             {

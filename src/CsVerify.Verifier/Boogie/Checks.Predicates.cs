@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -64,22 +65,22 @@ namespace CsVerify.Verifier.Boogie
                 case KOp { Op: "||" } or:
                 {
                     var l = CWalk(or.Args[0], guard);
-                    var r = CWalk(or.Args[1], Conj(guard, new MOp("!", l)));
-                    return new MOp("||", l, r);
+                    var r = CWalk(or.Args[1], Conj(guard, Not(l)));
+                    return OrElse(l, r);
                 }
                 case KOp { Op: "ite" } ite:
                 {
                     var c = CWalk(ite.Args[0], guard);
                     var t = CWalk(ite.Args[1], Conj(guard, c));
-                    var f = CWalk(ite.Args[2], Conj(guard, new MOp("!", c)));
+                    var f = CWalk(ite.Args[2], Conj(guard, Not(c)));
                     return Ite(c, t, f);
                 }
                 case KAcc acc:
                 {
                     var o = CWalk(acc.Obj, guard);
                     // (no permission to null is ever held)
-                    Assume(Implies(guard, new MOp("!=", o, new MLit("null"))));
-                    SetPerm(o, new MOp("||", Held(o), guard));
+                    Assume(Implies(guard, NotNull(o)));
+                    SetPerm(o, OrElse(Held(o), guard));
                     return new MLit("true");
                 }
                 case KInst inst:
@@ -91,10 +92,10 @@ namespace CsVerify.Verifier.Boogie
                 case KFieldAcc fa:
                 {
                     var o = CWalk(fa.Obj, guard);
-                    Assume(Implies(guard, new MOp("!=", o, new MLit("null"))));
+                    Assume(Implies(guard, NotNull(o)));
                     if (_p.UsesFields)
                     {
-                        SetField(o, fa.Field, new MOp("||", FieldHeld(o, fa.Field), guard));
+                        SetField(o, fa.Field, OrElse(FieldHeld(o, fa.Field), guard));
                     }
                     return new MLit("true");
                 }

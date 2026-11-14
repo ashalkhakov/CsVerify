@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -25,7 +26,7 @@ namespace CsVerify.Verifier.Boogie
                     instArgs[map[k]] = args[k];
                 }
             }
-            return new MOp("sel", new MVar("psnap"), Instance(pred, instArgs));
+            return Sel("psnap", Instance(pred, instArgs));
         }
 
         /// <summary>
@@ -44,7 +45,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            var snap = new MOp("$sst", new MOp("sel", new MVar("psnap"), Instance(pred, args)));
+            var snap = new MOp("$sst", Sel("psnap", Instance(pred, args)));
             // (every map read, a library function's arguments' too: those Plain lets through are of its arguments alone)
             MExpr In(MExpr e) => MathTerms.Map(e, x => x is MVar v && (v.Name.StartsWith("$E.") || v.Name.StartsWith("$F.")) ? new MOp("$st." + v.Name, snap) : null);
             // (of no memory now, no old(...), no other snapshot)
@@ -92,9 +93,9 @@ namespace CsVerify.Verifier.Boogie
                     Callee = f,
                     Function = FunctionName(f),
                     Args = args,
-                    Snap = new MOp("sel", new MVar("psnap"), p),
+                    Snap = Sel("psnap", p),
                 };
-                MExpr fact = Implies(pre, new MOp("==", app, M(sig.FunctionBody)));
+                MExpr fact = Implies(pre, Eq(app, M(sig.FunctionBody)));
                 for (int k = map.Length - 1; k >= 0; k--)
                 {
                     if (map[k] < 0)

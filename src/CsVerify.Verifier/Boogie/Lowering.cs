@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -441,7 +442,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         CallersRun();
                         Emit(new KHavoc { Var = "result" });
-                        Emit(new KAssume { Cond = new KOp("!=", new KVar("result"), new KLit("null")) });
+                        Emit(new KAssume { Cond = NotNull(new KVar("result")) });
                     }
                     // (an [Atomic] field's step: a step after a step is a step, so what other threads do between two reads is one; CSV1030)
                     if (KernelTypes.SteppedBy?.Invoke(_m)?.FirstOrDefault() is IFieldSymbol stepped && _m.IsStatic && _m.Parameters.Length == 2 && _isFunction(_m))
@@ -454,7 +455,7 @@ namespace CsVerify.Verifier.Boogie
                             At = _decl,
                         };
                         KExpr R(string x) => IsIntegral(ft) ? InRange(new KVar(x), ft) : new KLit("true");
-                        KExpr body = new KOp("==>", new KOp("&&", S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
+                        KExpr body = new KOp("==>", AndAlso(S("q$a", "q$b"), S("q$b", "q$c")), S("q$a", "q$c"));
                         foreach (var v in new[] { "q$c", "q$b", "q$a" })
                         {
                             body = KQuant.ForAll(v, TypeOf(ft), new KOp("==>", R(v), body));
@@ -572,7 +573,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     into.Stmts.Add(new KSpecStmt
                     {
-                        Spec = new KOp("==", new KVar(var), value),
+                        Spec = Eq(new KVar(var), value),
                         Assume = true,
                         Free = true,
                         At = _decl,

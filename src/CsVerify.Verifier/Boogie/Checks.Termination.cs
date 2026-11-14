@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -90,8 +91,8 @@ namespace CsVerify.Verifier.Boogie
             int n = Math.Min(next.Count, before.Count);
             MExpr Below(int k)
             {
-                var down = new MOp("&&", new MOp("<=", new MLit("0"), before[k]), new MOp("<", next[k], before[k]));
-                return k == n - 1 ? down : new MOp("||", down, new MOp("&&", new MOp("==", next[k], before[k]), Below(k + 1)));
+                var down = AndAlso(new MOp("<=", new MLit("0"), before[k]), new MOp("<", next[k], before[k]));
+                return k == n - 1 ? down : OrElse(down, AndAlso(Eq(next[k], before[k]), Below(k + 1)));
             }
             return n == 0 ? new MLit("false") : Below(0);
         }

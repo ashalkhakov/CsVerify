@@ -4,6 +4,7 @@ using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -121,7 +122,7 @@ namespace CsVerify.Verifier.Boogie
             var receiver = Code(c.Receiver);
             if (!c.ReceiverIsThis && !IsStruct(c.Callee.ContainingType))
             {
-                Assert(new MOp("!=", receiver, new MLit("null")), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
+                Assert(NotNull(receiver), NullAt(c.At, c.ReceiverAt, $"'{c.ReceiverAt}' might be null in '{c.At}'"));
             }
             return receiver;
         }
@@ -136,7 +137,7 @@ namespace CsVerify.Verifier.Boogie
             call.OwnedReceiver = call.Receiver != null && IsOwnedClass(callee.ContainingType) && !_program.ContractOf(callee).IsPure;
             if (call.OwnedReceiver)
             {
-                Assert(new MOp("||", Whole(call.Receiver), Lent(call.Receiver)), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
+                Assert(OrElse(Whole(call.Receiver), Lent(call.Receiver)), At("CSV1016", c.At, $"'{c.At}' changes an [Owned] {callee.ContainingType.Name} without holding its view (Own<{callee.ContainingType.Name}>, with no read shares out) or a frame lent to it"));
                 ProveInvariant(callee.ContainingType, call.Receiver, c.At, $"when '{callee.Name}' is called on it");
             }
             // (a share, or a view lent read-only: whoever gets it relies on the invariant; a share by value goes with it)
@@ -198,7 +199,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var x = Subst(Spec(root, out _), call.Given);
                 _facts.Clear();
-                Assert(new MOp("||", Whole(x), Lent(x)), At("CSV1016", call.C.At, $"'{call.Callee.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here"));
+                Assert(OrElse(Whole(x), Lent(x)), At("CSV1016", call.C.At, $"'{call.Callee.Name}' borrows a tree through Spec.Modifies, but its root's view is not in hand here"));
             }
         }
 
@@ -237,7 +238,7 @@ namespace CsVerify.Verifier.Boogie
                     "r$",
                     "Ref",
                     new MOp("==>", new MOp("sel", theirs, r),
-                    new MOp("||", new MOp("sel", new MVar("w$entry"), r), new MOp("!", new MOp("sel", new MVar("alloc$entry"), r))))),
+                    OrElse(Sel("w$entry", r), Not(Sel("alloc$entry", r))))),
                 UnlessWritesArrays = callee,
                 UnlessKind = "any",
                 Check = At("CSV1017", c.At, $"Spec.Modifies of '{callee.Name}' might not be within this method's"),
@@ -360,7 +361,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (ordinal, var) in c.RefOuts.Where(x => IsView(callee.Parameters[x.param].Type)))
             {
                 var v = new MVar(var);
-                Assume(new MOp("!=", v, new MLit("null")));
+                Assume(NotNull(v));
                 AssumeInvariant(ViewOf(callee.Parameters[ordinal].Type), v);
                 Receive(v);
             }
@@ -518,7 +519,7 @@ namespace CsVerify.Verifier.Boogie
                 var param = callee != null && k < callee.Parameters.Length ? callee.Parameters[k] : null;
                 if (param != null && param.RefKind != RefKind.Out && IsNullable(param.Type) && NotNullable(param.Type))
                 {
-                    Assert(new MOp("!=", args[k], new MLit("null")), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
+                    Assert(NotNull(args[k]), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
                 }
             }
             return args;

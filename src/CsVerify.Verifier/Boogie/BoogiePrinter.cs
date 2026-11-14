@@ -5,6 +5,7 @@ using System.Text;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.MOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -1086,7 +1087,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 var map = FieldMap(f);
                 var t = FieldType(f);
-                var where = IsIntegral(t) ? $" where (forall o: Ref :: {E(MathTypes.InRange(new MOp("sel", new MVar(map), new MVar("o")), t), InProcedure)})" : "";
+                var where = IsIntegral(t) ? $" where (forall o: Ref :: {E(MathTypes.InRange(Sel(map, new MVar("o")), t), InProcedure)})" : "";
                 Line($"var {map}: [Ref]{TypeOf(t)}{where};");
             }
             // (each object's ownership tree's root)

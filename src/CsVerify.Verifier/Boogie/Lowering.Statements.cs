@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FlowAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
+using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
 {
@@ -494,7 +495,7 @@ namespace CsVerify.Verifier.Boogie
             var coll = Expr(Unconverted(ec));
             Emit(new KCheck
             {
-                Cond = new KOp("!=", coll, new KLit("null")),
+                Cond = NotNull(coll),
                 Id = "CSV1013",
                 At = ec.Syntax,
                 Message = $"'{ec.Syntax}' might be null in '{en.Value.Syntax}'",
@@ -513,7 +514,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(new KAssign
             {
                 Var = version,
-                Value = new KOp("sel", new KVar(VersionMap), coll),
+                Value = Sel(VersionMap, coll),
             });
             _enumerators[enl] = (held, version, (INamedTypeSymbol)ec.Type);
             return;
@@ -578,7 +579,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         Emit(new KCheck
                         {
-                            Cond = new KOp("!=", Expr(lkf.Instance), new KLit("null")),
+                            Cond = NotNull(Expr(lkf.Instance)),
                             Id = "CSV1013",
                             At = lkf.Syntax,
                             Message = $"'{lkf.Instance.Syntax}' might be null in '{lkf.Syntax}'",
@@ -634,7 +635,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(new KCheck
                 {
-                    Cond = new KOp("!=", new KVar(fe.Array), new KLit("null")),
+                    Cond = NotNull(new KVar(fe.Array)),
                     Id = "CSV1013",
                     At = fe.At,
                     Message = $"'{fe.At}' might be null in '{fe.At}'",
@@ -649,7 +650,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(new KAssign
                 {
                     Var = fe.Version,
-                    Value = new KOp("sel", new KVar(VersionMap), new KVar(fe.Array)),
+                    Value = Sel(VersionMap, new KVar(fe.Array)),
                 });
             }
             if (fe.Size0 != null)
@@ -907,7 +908,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 else if (IsRef(parts[k].Type) && NotNullable(field.Type))
                 {
-                    Emit(new KAssume { Cond = new KOp("!=", new KVar(local), new KLit("null")) });
+                    Emit(new KAssume { Cond = NotNull(new KVar(local)) });
                 }
                 if (HasInvariants(parts[k].Type))
                 {
@@ -940,12 +941,12 @@ namespace CsVerify.Verifier.Boogie
             KExpr all = new KLit("true");
             for (int d = 0; d < ix.Count; d++)
             {
-                var within = new KOp("&&", new KOp("<=", new KLit("0"), ix[d]), new KOp("<", ix[d], new KOp("$dim", a, new KLit(d.ToString()))));
+                var within = AndAlso(new KOp("<=", new KLit("0"), ix[d]), new KOp("<", ix[d], new KOp("$dim", a, new KLit(d.ToString()))));
                 // (null first: a null array's check is its own)
-                var cond = new KOp("||", new KOp("==", a, new KLit("null")), within);
+                var cond = OrElse(IsNull(a), within);
                 if (inSpec)
                 {
-                    all = new KOp("&&", all, cond);
+                    all = AndAlso(all, cond);
                 }
                 else
                 {
@@ -1099,7 +1100,7 @@ namespace CsVerify.Verifier.Boogie
                     var recv = Expr(Unconverted(lps.Instance));
                     Emit(new KCheck
                     {
-                        Cond = new KOp("!=", recv, new KLit("null")),
+                        Cond = NotNull(recv),
                         Id = "CSV1013",
                         At = lps.Instance.Syntax,
                         Message = $"'{lps.Instance.Syntax}' might be null in '{lps.Syntax}'",
@@ -1228,7 +1229,7 @@ namespace CsVerify.Verifier.Boogie
                         Var = name,
                         Value = c,
                     });
-                    cond = b.ConditionKind == ControlFlowConditionKind.WhenTrue ? new KVar(name) : new KOp("!", new KVar(name));
+                    cond = b.ConditionKind == ControlFlowConditionKind.WhenTrue ? new KVar(name) : Not(new KVar(name));
                 }
                 _block.Jump = new KGoto(then, otherwise);
                 var thenBlock = new KBlock
@@ -1244,7 +1245,7 @@ namespace CsVerify.Verifier.Boogie
                 if (cond != null)
                 {
                     thenBlock.Stmts.Add(new KAssume { Cond = cond });
-                    elseBlock.Stmts.Add(new KAssume { Cond = new KOp("!", cond) });
+                    elseBlock.Stmts.Add(new KAssume { Cond = Not(cond) });
                 }
                 thenBlock.Jump = Edge(b, b.ConditionalSuccessor);
                 elseBlock.Jump = Edge(b, fall);
