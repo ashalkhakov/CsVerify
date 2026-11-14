@@ -21,7 +21,7 @@ namespace CsVerify.Verifier.Boogie
             // the permissions the postconditions give back are in hand
             if (_p.UsesPerm)
             {
-                _old = OldAtEntry;
+                _oldAtEntry = true;
                 try
                 {
                     foreach (var e in _rawEnsures)
@@ -31,7 +31,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 finally
                 {
-                    _old = null;
+                    _oldAtEntry = false;
                 }
             }
             var before = new List<MExpr>();

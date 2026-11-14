@@ -358,7 +358,8 @@ namespace CsVerify.Verifier.Boogie
             {
                 back[Local(callee.Parameters[ordinal])] = new MVar(var);
             }
-            _old = x => OldBefore(x, frame);
+            _oldBeforeCall = true;
+            _oldFrame = frame;
             try
             {
                 if (!pure)
@@ -371,7 +372,8 @@ namespace CsVerify.Verifier.Boogie
             }
             finally
             {
-                _old = null;
+                _oldBeforeCall = false;
+                _oldFrame = null;
             }
             foreach (var e in sig.Ensures)
             {

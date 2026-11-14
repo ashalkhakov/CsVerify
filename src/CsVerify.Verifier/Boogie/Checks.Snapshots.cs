@@ -45,10 +45,9 @@ namespace CsVerify.Verifier.Boogie
             }
             var snap = new MOp("$sst", Sel("psnap", Instance(pred, args)));
             var given = pred.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => args[x.k]);
-            var facts = new List<(MExpr g, MExpr f)>();
-            var saved = _old;
-            Walk(sig.FunctionBody, given, g, (_, __) => { }, (gg, f) => facts.Add((gg, f)));
-            foreach (var (gg, f) in facts.Where(x => IsPlain(x.f) && IsPlain(x.g)))
+            var body = new BodyFacts();
+            Walk(sig.FunctionBody, given, g, body);
+            foreach (var (gg, f) in body.Facts.Where(x => IsPlain(x.f) && IsPlain(x.g)))
             {
                 _p.UsesState = true;
                 Assume(Implication(InSnapshot(gg, snap), InSnapshot(f, snap)));
