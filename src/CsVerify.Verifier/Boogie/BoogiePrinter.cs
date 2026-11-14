@@ -920,14 +920,12 @@ namespace CsVerify.Verifier.Boogie
             _ => false,
         };
 
-        /// <summary>The queries of [Owned] classes (no parameters, no arrays read): each reads only its object's tree.</summary>
-        private readonly List<(IMethodSymbol method, List<string> fields)> _ownedQueries = new List<(IMethodSymbol, List<string>)>();
-
         /// <summary>
-        /// TODO: this looked for the kernel's KElem and KLen, which a function's body after Checks never holds (mathematics
-        /// reads an array as sel($E...) and len), so it never found one; kept so, until it is fixed with a test of its own.
+        /// The queries of [Owned] classes (no parameters): each reads only its object's tree's fields (CSV1017). After a call,
+        /// of an object whose tree the caller keeps, a query is what it was of the fields the call wrote; the arrays it
+        /// reads are the memory's now on both sides of that equation, so it holds of a query that reads arrays too.
         /// </summary>
-        private static bool ReadsArrays(MExpr e) => false;
+        private readonly List<(IMethodSymbol method, List<string> fields)> _ownedQueries = new List<(IMethodSymbol, List<string>)>();
 
         /// <summary>An override's dispatch: of an object exactly of its class, the base member's function is the override's.</summary>
         public void Dispatch(IMethodSymbol b, List<string> bFields, IMethodSymbol o, List<string> oFields, IEnumerable<ISymbol> symbols)
@@ -945,7 +943,7 @@ namespace CsVerify.Verifier.Boogie
         public void Function(HProcedure p, List<string> fields, IEnumerable<ISymbol> symbols, bool overInstances = false)
         {
             var m = p.Source.Method;
-            if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null && !ReadsArrays(p.FunctionBody))
+            if (KernelTypes.Trees && !m.IsStatic && SpecSymbols.IsOwned(m.ContainingType) && m.Parameters.Length == 0 && p.FunctionBody != null)
                 _ownedQueries.Add((m, fields));
             var name = FunctionName(m);
             var self = m.IsStatic ? "" : ", this: Ref";

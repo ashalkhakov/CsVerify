@@ -144,8 +144,8 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>
         /// A condition with each function application among its conjuncts (a static function of the program's with a body
-        /// that applies no function, and no precondition, of the memory now) replaced by its body; the same object where
-        /// there is none.
+        /// and no precondition, of the memory now) replaced by its body, once (the functions it applies stay applications);
+        /// the same object where there is none. Its definition says the two are equal, at every argument.
         /// </summary>
         private MExpr UnfoldOnce(MExpr e)
         {
@@ -160,9 +160,7 @@ namespace CsVerify.Verifier.Boogie
                 case MFnApp app when app.Snap == null && !app.Plain && app.MapsAt == null && app.Callee.IsStatic:
                 {
                     var sig = _program.Signature(app.Callee);
-                    // (TODO: a function's call in a kernel body is a KFnCall, not a KFnApp: this test of "applies no function" never holds)
-                    static bool Applies(KExpr x) => x is KFnApp || x is KOp op && op.Args.Any(Applies);
-                    if (sig.FunctionBody == null || sig.Requires.Count > 0 || app.Args.Length != app.Callee.Parameters.Length || Applies(sig.FunctionBody)) return e;
+                    if (sig.FunctionBody == null || sig.Requires.Count > 0 || app.Args.Length != app.Callee.Parameters.Length) return e;
                     var given = app.Callee.Parameters.Select((x, k) => (x, k)).ToDictionary(x => Local(x.x), x => app.Args[x.k]);
                     var saved = _facts.ToList();
                     _facts.Clear();
@@ -182,7 +180,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void Assert(MExpr cond, Check check, bool notAssumedAfter = false)
         {
-            // (a postcondition or a loop invariant that is a function, Wf(p), of one that calls no other: its body asserted
+            // (a postcondition or a loop invariant that is a function, Wf(p), of no precondition: its body asserted
             // first, unfolded once, a conjunct at a time, as Dafny does. The function's definition, an equation, holds its
             // quantifiers where the solver can't use them to prove it; its body proved, the equation gives it)
             if (!notAssumedAfter && check?.Id is "CSV1002" or "CSV1005" or "CSV1006" && _unfoldingAssert == 0)
@@ -350,7 +348,7 @@ namespace CsVerify.Verifier.Boogie
                 if (b == _p.Blocks[0] && _m.ReadsFrame != null) Emit(new MAssign { Var = "r$entry", Value = _m.ReadsFrame });
                 if (b == _p.Blocks[0])
                 {
-                    // (a precondition that is a function, Wf(p), of one that calls no other: its body too, unfolded once, so
+                    // (a precondition that is a function, Wf(p), of no precondition: its body too, unfolded once, so
                     // that its quantifiers are facts the solver uses as they are, not inside the function's equation)
                     foreach (var r in requires)
                     {
