@@ -396,52 +396,50 @@ namespace CsVerify.Verifier.Boogie
                 case KQuant q when q.Range == null:
                 {
                     // (over all of its type: a delegate's arguments)
-                    bool added = _bound.Add(q.Var);
+                    var name = Opened();
+                    var opened = q.OpenedAt(name);
+                    _bound.Add(name);
                     try
                     {
-                        var body = Spec(q.Body, new List<MExpr>(), new List<MExpr>());
-                        return MQuant.Of(q, null, body);
+                        var body = Spec(opened.body, new List<MExpr>(), new List<MExpr>());
+                        return MQuant.Of(q, name, null, body);
                     }
                     finally
                     {
-                        if (added)
-                        {
-                            _bound.Remove(q.Var);
-                        }
+                        _bound.Remove(name);
                     }
                 }
                 case KQuant q:
                 {
+                    var name = Opened();
+                    var opened = q.OpenedAt(name);
                     // (Range is lo <= q && q < hi, from Lowering)
-                    var lo = Spec(((KOp)((KOp)q.Range).Args[0]).Args[0], wf, guard);
-                    var hi = Spec(((KOp)((KOp)q.Range).Args[1]).Args[1], wf, guard);
-                    var range = AndAlso(Le(lo, new MVar(q.Var)), Lt(new MVar(q.Var), hi));
+                    var lo = Spec(((KOp)((KOp)opened.range).Args[0]).Args[0], wf, guard);
+                    var hi = Spec(((KOp)((KOp)opened.range).Args[1]).Args[1], wf, guard);
+                    var range = AndAlso(Le(lo, new MVar(name)), Lt(new MVar(name), hi));
                     // (its body well-defined over the range: each condition quantified the same way)
                     var inner = new List<MExpr>();
-                    bool added = _bound.Add(q.Var);
+                    _bound.Add(name);
                     MExpr body;
                     MExpr[] trigger = null;
                     try
                     {
-                        body = Spec(q.Body, inner, new List<MExpr> { range });
-                        trigger = q.Trigger?.Select(t => Spec(t, new List<MExpr>(), new List<MExpr>())).ToArray();
+                        body = Spec(opened.body, inner, new List<MExpr> { range });
+                        trigger = opened.trigger?.Select(t => Spec(t, new List<MExpr>(), new List<MExpr>())).ToArray();
                     }
                     finally
                     {
-                        if (added)
-                        {
-                            _bound.Remove(q.Var);
-                        }
+                        _bound.Remove(name);
                     }
                     foreach (var c in inner)
                     {
-                        AddWellDefinedness(MQuant.ForAll(q.Var, c), wf, guard);
+                        AddWellDefinedness(MQuant.ForAll(name, c), wf, guard);
                     }
                     if (!range.Mentions(_bound))
                     {
-                        Unfoldings(q.Var, range, body);
+                        Unfoldings(name, range, body);
                     }
-                    return MQuant.Of(q, range, body, trigger);
+                    return MQuant.Of(q, name, range, body, trigger);
                 }
                 case KFnCall fn:
                 {

@@ -23,7 +23,7 @@ namespace CsVerify.Verifier.Boogie
             }
             return this switch
             {
-                KLit or KVar => this,
+                KLit or KVar or KBound => this,
                 KOp op => new KOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
                 KQuant q => q.WithParts(q.Range?.Rewrite(at), q.Body.Rewrite(at), q.Trigger?.Select(x => x.Rewrite(at)).ToArray()),
                 KFnApp f => f.WithArgs(f.Args.Select(x => x.Rewrite(at)).ToArray(), f.Snap?.Rewrite(at)),
@@ -58,7 +58,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Its immediate parts, as Subterms takes them.</summary>
         public IEnumerable<KExpr> Children() => this switch
         {
-            KLit or KVar => Enumerable.Empty<KExpr>(),
+            KLit or KVar or KBound => Enumerable.Empty<KExpr>(),
             KOp op => op.Args,
             KQuant q => q.Range == null ? new[] { q.Body } : new[] { q.Range, q.Body },
             KFnApp f => f.Snap == null ? f.Args : f.Args.Append(f.Snap),
@@ -68,7 +68,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Is it mathematics through and through?</summary>
         public bool IsMath() => this switch
         {
-            KLit or KVar => true,
+            KLit or KVar or KBound => true,
             KOp op => op.Args.All(a => a.IsMath()),
             KQuant q => (q.Range == null || q.Range.IsMath()) && q.Body.IsMath() && (q.Trigger == null || q.Trigger.All(t => t.IsMath())),
             KFnApp f => f.Args.All(a => a.IsMath()) && (f.Snap == null || f.Snap.IsMath()),

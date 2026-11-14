@@ -619,13 +619,9 @@ namespace CsVerify.Verifier.Boogie
                         throw new NotTranslated("a quantifier's body");
                     }
                     var q = "q$" + fn.Symbol.Parameters[0].Name;
-                    return new KQuant
-                    {
-                        Forall = inv.TargetMethod.Name == "Forall",
-                        Var = q,
-                        Range = AndAlso(Le(lo, new KVar(q)), Lt(new KVar(q), hi)),
-                        Body = Spec(ret.ReturnedValue, result),
-                    };
+                    var range = AndAlso(Le(lo, new KVar(q)), Lt(new KVar(q), hi));
+                    var body = Spec(ret.ReturnedValue, result);
+                    return KQuant.Over(inv.TargetMethod.Name == "Forall", q, "int", range, body);
                 }
                 default: throw new NotTranslated("Spec." + inv.TargetMethod.Name + " in a specification");
             }

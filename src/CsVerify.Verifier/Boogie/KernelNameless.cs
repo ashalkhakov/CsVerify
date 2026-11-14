@@ -4,11 +4,11 @@ using System.Linq;
 
 namespace CsVerify.Verifier.Boogie
 {
-    // Locally nameless terms (Charguéraud), inside the LINQ and EF lowering: a bound variable is a De Bruijn index
-    // (KBound), a free one a name. A binder's body is made of a fresh atom (a name of its own, ln$n) and closed over it,
-    // the atom becoming an index; a template (KAbs) is instantiated by opening it at locally closed terms. Neither can
-    // capture. Where a term leaves the lowering, Named makes each nameless quantifier a named KQuant; an index left
-    // dangling, or an atom left free, is an error there (and anywhere a term is opened or closed).
+    // Locally nameless terms (Charguéraud): a bound variable is a De Bruijn index (KBound), a free one a name. A binder's
+    // body is made of a name (a fresh atom, ln$n, in the LINQ and EF lowering) and closed over it, the name becoming an
+    // index; a template (KAbs) is instantiated by opening it at locally closed terms; a pass that goes under a binder
+    // opens it at a fresh name. None of them can capture. Where a term leaves the LINQ lowering, an index left dangling,
+    // or an atom left free, is an error (Leaving); names are the printer's alone.
 
     /// <summary>A bound variable: of the index-th binder out from here (0, the nearest).</summary>
     internal sealed class KBound : KExpr
@@ -19,17 +19,6 @@ namespace CsVerify.Verifier.Boogie
         {
             Index = index;
         }
-    }
-
-    /// <summary>forall or exists over a variable of its own: index 0 in its range, body and triggers.</summary>
-    internal sealed class KNameless : KExpr
-    {
-        public bool Forall;
-        /// <summary>Its variable's Boogie type (int, unless said).</summary>
-        public string Type = "int";
-        public KExpr Range, Body;
-        /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
-        public KExpr[] Trigger;
     }
 
     /// <summary>A term over its Arity variables (indices 0 to Arity - 1 at its top, the first 0).</summary>
@@ -66,8 +55,8 @@ namespace CsVerify.Verifier.Boogie
 
     /// <summary>
     /// A rewrite of kernel expressions: each node rebuilt of its parts rewritten (a literal, a variable or an index kept),
-    /// unless an override says otherwise. Binders: a nameless quantifier's parts are visited one level deeper (Depth); a
-    /// named quantifier's or a let's, at the same (they bind names, not indices). Any other kind is an error.
+    /// unless an override says otherwise. Binders: a quantifier's parts are visited one level deeper (Depth); a let's at
+    /// the same (it binds a name, not an index). Any other kind is an error.
     /// </summary>
     internal abstract class KRewriter
     {
@@ -79,7 +68,7 @@ namespace CsVerify.Verifier.Boogie
             KBound b => VisitBound(b),
             KVar v => VisitVar(v),
             KLit => e,
-            KNameless q => VisitNameless(q),
+            KQuant q => VisitQuant(q),
             _ => Rebuild(e),
         };
 
@@ -87,19 +76,12 @@ namespace CsVerify.Verifier.Boogie
 
         protected virtual KExpr VisitVar(KVar v) => v;
 
-        protected virtual KExpr VisitNameless(KNameless q)
+        protected virtual KExpr VisitQuant(KQuant q)
         {
             Depth++;
             try
             {
-                return new KNameless
-                {
-                    Forall = q.Forall,
-                    Type = q.Type,
-                    Range = Visit(q.Range),
-                    Body = Visit(q.Body),
-                    Trigger = All(q.Trigger),
-                };
+                return q.WithParts(Visit(q.Range), Visit(q.Body), All(q.Trigger));
             }
             finally
             {
@@ -112,15 +94,6 @@ namespace CsVerify.Verifier.Boogie
         private KExpr Rebuild(KExpr e) => e switch
         {
             KOp op => new KOp(op.Op, All(op.Args)),
-            KQuant q => new KQuant
-            {
-                Forall = q.Forall,
-                Var = q.Var,
-                Type = q.Type,
-                Range = Visit(q.Range),
-                Body = Visit(q.Body),
-                Trigger = All(q.Trigger),
-            },
             KFnApp f => f.WithArgs(All(f.Args), Visit(f.Snap)),
             KLet l => KLet.Of(l.Var, Visit(l.Value), Visit(l.Body)),
             KArith a => new KArith
@@ -275,6 +248,9 @@ namespace CsVerify.Verifier.Boogie
             return new Closer(atoms.Select(a => a.Name).ToArray()).Visit(body);
         }
 
+        /// <summary>body with a variable's name an index at its top (a quantifier made of a named variable's body).</summary>
+        public static KExpr CloseName(KExpr body, string name) => new Closer(new[] { name }).Visit(body);
+
         /// <summary>body with a free atom given a (locally closed) value.</summary>
         public static KExpr Substitute(KExpr body, KVar atom, KExpr value)
         {
@@ -282,13 +258,11 @@ namespace CsVerify.Verifier.Boogie
             return new Substituter(atom.Name, value).Visit(body);
         }
 
-        /// <summary>The term with each nameless quantifier named (its variable lq$i n, n from next); no index, no atom left.</summary>
-        public static KExpr Named(KExpr e, ref int next)
+        /// <summary>A term as it leaves the lowering of queries: no index dangling, no atom free in it (an error otherwise).</summary>
+        public static KExpr Leaving(KExpr e)
         {
-            var namer = new Namer(next);
-            var named = namer.Visit(e);
-            next = namer.Next;
-            return named;
+            new LeavingCheck().Visit(e);
+            return e;
         }
 
         /// <summary>A term no index of which is dangling (an error otherwise).</summary>
@@ -360,36 +334,13 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        private sealed class Namer : KRewriter
+        private sealed class LeavingCheck : KRewriter
         {
-            public int Next;
-
-            public Namer(int next)
-            {
-                Next = next;
-            }
-
-            protected override KExpr VisitBound(KBound b) => throw new InvalidOperationException($"a dangling index where a term leaves the lowering: {b.Index}");
+            protected override KExpr VisitBound(KBound b) =>
+                b.Index >= Depth ? throw new InvalidOperationException($"a dangling index where a term leaves the lowering: {b.Index} at depth {Depth}") : b;
 
             protected override KExpr VisitVar(KVar v) =>
                 v.Name.StartsWith(AtomPrefix) ? throw new InvalidOperationException("an atom where a term leaves the lowering: " + v.Name) : v;
-
-            protected override KExpr VisitNameless(KNameless q)
-            {
-                var name = new KVar("lq$i" + Next++);
-                var one = new[] { name };
-                return new KQuant
-                {
-                    Forall = q.Forall,
-                    Var = name.Name,
-                    Type = q.Type,
-                    Range = Visit(OpenPart(q.Range, one)),
-                    Body = Visit(OpenPart(q.Body, one)),
-                    Trigger = q.Trigger?.Select(t => Visit(OpenPart(t, one))).ToArray(),
-                };
-            }
-
-            private static KExpr OpenPart(KExpr part, KExpr[] name) => part == null ? null : new Opener(name).Visit(part);
         }
     }
 }

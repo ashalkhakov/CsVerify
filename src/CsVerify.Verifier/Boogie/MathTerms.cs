@@ -128,6 +128,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case KLit l: return new MLit(l.Text);
                 case KVar v: return new MVar(v.Name);
+                case KBound b: return new MBound(b.Index);
                 case KOp op: return AllToMath(op.Args) is MExpr[] operands ? new MOp(op.Op, operands) : null;
                 case KQuant q:
                 {

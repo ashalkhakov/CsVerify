@@ -156,16 +156,32 @@ namespace CsVerify.Verifier.Boogie
         public static KOp NotNull(KExpr a) => new KOp("!=", a, KLit.Null);
     }
 
-    /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>
+    /// <summary>
+    /// forall or exists over a variable of its own (an int, unless said): range ==> body, or range && body. Locally
+    /// nameless: the variable is index 0 in its parts (KBound); a name is the printer's.
+    /// </summary>
     internal sealed class KQuant : KExpr
     {
         public bool Forall;
-        public string Var;
         /// <summary>Its variable's Boogie type (int, unless said).</summary>
-        public string Type = "int";
+        public string Type;
         public KExpr Range, Body;
         /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
         public KExpr[] Trigger;
+
+        /// <summary>A quantifier of these parts, each already of its variable as index 0.</summary>
+        public KQuant(bool forall, string type, KExpr range, KExpr body, KExpr[] trigger = null)
+        {
+            Forall = forall;
+            Type = type;
+            Range = range;
+            Body = body;
+            Trigger = trigger;
+        }
+
+        /// <summary>A quantifier of these parts, each of a variable of this name: closed over it.</summary>
+        public static KQuant Over(bool forall, string var, string type, KExpr range, KExpr body, KExpr[] trigger = null) =>
+            new KQuant(forall, type, range == null ? null : Nameless.CloseName(range, var), Nameless.CloseName(body, var), trigger?.Select(t => Nameless.CloseName(t, var)).ToArray());
 
         /// <summary>forall var: int, (range ==>) body.</summary>
         public static KQuant ForAll(string var, KExpr body, KExpr range = null) => ForAll(var, "int", body, range);
@@ -179,25 +195,20 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>exists var: type, (range &&) body.</summary>
         public static KQuant Exists(string var, string type, KExpr body, KExpr range = null) => Quant(false, var, type, body, range);
 
-        private static KQuant Quant(bool forall, string var, string type, KExpr body, KExpr range) => new KQuant
-        {
-            Forall = forall,
-            Var = var,
-            Type = type,
-            Range = range,
-            Body = body,
-        };
+        private static KQuant Quant(bool forall, string var, string type, KExpr body, KExpr range) => Over(forall, var, type, range, body);
 
-        /// <summary>Over the same variable (forall or exists as this is), of these parts.</summary>
-        public KQuant WithParts(KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant
+        /// <summary>Of the same kind and type as this, of these parts (each already of the variable as index 0).</summary>
+        public KQuant WithParts(KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant(Forall, Type, range, body, trigger);
+
+        /// <summary>Its parts of its variable as this name (opened at it): range (or null), body, triggers (or null).</summary>
+        public (KExpr range, KExpr body, KExpr[] trigger) OpenedAt(string var)
         {
-            Forall = Forall,
-            Var = Var,
-            Type = Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
-        };
+            var at = new KExpr[] { new KVar(var) };
+            var range = Range == null ? null : Nameless.Open(Range, at);
+            var body = Nameless.Open(Body, at);
+            var trigger = Trigger?.Select(t => Nameless.Open(t, at)).ToArray();
+            return (range, body, trigger);
+        }
     }
 
     /// <summary>

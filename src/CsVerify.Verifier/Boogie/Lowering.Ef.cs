@@ -298,12 +298,7 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>forall (or exists) z: Ref :: body, z an atom in it.</summary>
-        private static KNameless Objects(KVar z, KExpr body, bool forall = true) => new KNameless
-        {
-            Forall = forall,
-            Type = "Ref",
-            Body = Nameless.Close(body, z),
-        };
+        private static KQuant Objects(KVar z, KExpr body, bool forall = true) => new KQuant(forall, "Ref", null, Nameless.Close(body, z));
 
         /// <summary>body (a term over an object) of each object of the level (forall), or of some one (exists).</summary>
         private KExpr Each(Made m, KAbs body, bool forall)
