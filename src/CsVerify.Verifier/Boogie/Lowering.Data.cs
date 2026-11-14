@@ -786,7 +786,7 @@ namespace CsVerify.Verifier.Boogie
                 "precondition 'Q.Count(source) > 0' of 'First' might not hold"));
             var kv = Declare("t$" + _temps++, gkey.body.Type);
             Emit(KHavoc.Of(kv));
-            ShapeFact(Eq(new KVar(kv), Apply(gkey, gsrc.Elem(KLit.Zero))), fg.Syntax);
+            ShapeFact(Eq(new KVar(kv), Apply(gkey, gsrc.Elem.At(KLit.Zero))), fg.Syntax);
             return new KVar(kv);
         }
 

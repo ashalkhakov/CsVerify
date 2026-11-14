@@ -211,12 +211,13 @@ namespace CsVerify.Verifier.Boogie
                 else if (kind == "each" && quiet && type.DelegateInvokeMethod.Parameters.Length == 1)
                 {
                     var st = srcOp.Type;
+                    var qi = new KVar("q$i");
                     KExpr len;
-                    System.Func<KExpr, KExpr> Elem;
+                    KExpr element;
                     if (IsArray(st))
                     {
                         len = Length(src);
-                        Elem = i => Sel(Elements(st), src, i);
+                        element = Sel(Elements(st), src, qi);
                     }
                     else
                     {
@@ -226,11 +227,9 @@ namespace CsVerify.Verifier.Boogie
                         }
                         len = Sel(SizeMap, src);
                         var items = ModelOf("Items", (INamedTypeSymbol)st).Name;
-                        Elem = i => Sel(items, src, i);
+                        element = Sel(items, src, qi);
                     }
-                    each = KQuant.ForAll(
-                        "q$i",
-                        Implies(AndAlso(Le(KLit.Zero, new KVar("q$i")), Lt(new KVar("q$i"), len)), new KOp("$pre." + key, d, Elem(new KVar("q$i")))));
+                    each = KQuant.ForAll("q$i", Implies(AndAlso(Le(KLit.Zero, qi), Lt(qi, len)), new KOp("$pre." + key, d, element)));
                     what = $"each element of {srcOp.Syntax}";
                 }
                 if (each != null)
@@ -1222,7 +1221,8 @@ namespace CsVerify.Verifier.Boogie
                 var src = Sequence(call.Instance);
                 var x = Declare("t$" + _temps++, call.Arguments[0].Value.Type);
                 Emit(KAssign.Of(x, Expr(call.Arguments[0].Value)));
-                var has = new KQuantOver(this, KLit.Zero, src.Length, k => SameValue(src.Elem(k), new KVar(x), src.Type), forall: false).Q;
+                var k = Atom();
+                var has = Over(KLit.Zero, src.Length, k, SameValue(src.Elem.At(k), new KVar(x), src.Type), forall: false);
                 var r = Declare("t$" + _temps++, call.Type);
                 Emit(KHavoc.Of(r));
                 KExpr fact;
@@ -1233,11 +1233,12 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     var rv = new KVar(r);
-                    var at = AndAlso(AndAlso(Le(KLit.Zero, rv), Lt(rv, src.Length)), SameValue(src.Elem(rv), new KVar(x), src.Type));
-                    var first = new KQuantOver(this, KLit.Zero, rv, j => Not(SameValue(src.Elem(j), new KVar(x), src.Type)), forall: true).Q;
+                    var at = AndAlso(AndAlso(Le(KLit.Zero, rv), Lt(rv, src.Length)), SameValue(src.Elem.At(rv), new KVar(x), src.Type));
+                    var j = Atom();
+                    var first = Over(KLit.Zero, rv, j, Not(SameValue(src.Elem.At(j), new KVar(x), src.Type)), forall: true);
                     fact = OrElse(AndAlso(Eq(rv, KLit.MinusOne), Not(has)), AndAlso(at, first));
                 }
-                Emit(KSpecStmt.AssumedFree(fact, call.Syntax, argumentAt: call.Syntax));
+                ShapeFact(fact, call.Syntax);
                 return new KVar(r);
             }
             // (a.GetLength(d) of a one-dimensional array: its length, d being 0, CSV1003)
