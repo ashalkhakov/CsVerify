@@ -84,7 +84,7 @@ namespace CsVerify.Verifier.Boogie
         private string LinqMap(string type)
         {
             var name = "lq$" + _linq++;
-            _p.Locals.Add(KLocal.Of(name, type));
+            _p.AddLocal(KLocal.Of(name, type));
             Emit(KHavoc.Of(name));
             return name;
         }
@@ -408,7 +408,7 @@ namespace CsVerify.Verifier.Boogie
                 DelegatesHere("a library call of a delegate");
                 var d = Expr(args[1].Value);
                 var key = FuncKey(args[1].Parameter.Type);
-                _p.DelegateKeys.Add(key);
+                _p.AddDelegateKey(key);
                 _p.CallsDelegates = true;
                 var (lambda, quiet, free) = Handed(args[1]);
                 if (!free)
@@ -944,7 +944,7 @@ namespace CsVerify.Verifier.Boogie
                     // (a row is its outer element's index)
                     if (!_p.Locals.Any(x => x.Name == Local(l)))
                     {
-                        _p.Locals.Add(KLocal.Of(Local(l), "int"));
+                        _p.AddLocal(KLocal.Of(Local(l), "int"));
                     }
                 }
             }
@@ -970,7 +970,7 @@ namespace CsVerify.Verifier.Boogie
                 Mat = "fe$" + n + "$m",
                 Count = Declare($"fe${n}$n", _model.Compilation.GetSpecialType(SpecialType.System_Int32)),
             };
-            _p.Locals.Add(KLocal.Of(fe.Mat, "[int]" + (IsGrouping(element) || joinRows ? "int" : TypeOf(element))));
+            _p.AddLocal(KLocal.Of(fe.Mat, "[int]" + (IsGrouping(element) || joinRows ? "int" : TypeOf(element))));
             _forEach[capture.Id] = fe;
             _forEachAt[head.Ordinal] = fe;
             foreach (var l in fo.Locals)

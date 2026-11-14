@@ -101,7 +101,7 @@ namespace CsVerify.Verifier.Boogie
             var throwsTo = _cfgBlock != null ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
             var values = Operands(new[] { call.Instance }.Concat(call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToArray());
             var key = FuncKey(call.Instance.Type);
-            _p.DelegateKeys.Add(key);
+            _p.AddDelegateKey(key);
             _p.CallsDelegates = true;
             var result = call.TargetMethod.ReturnsVoid ? null : Declare("t$" + _temps++, call.TargetMethod.ReturnType);
             // (under Spec.Modifies: what it may change must be in the frame; one that changes nothing is, any other may not be, CSV1017)
@@ -162,7 +162,7 @@ namespace CsVerify.Verifier.Boogie
             var c = _contractOf?.Invoke(fn) ?? throw new NotTranslated("a lambda without its contract");
             var own = new HashSet<ISymbol>(fn.Parameters, SymbolEqualityComparer.Default);
             var key = FuncKey(dc.Type);
-            _p.DelegateKeys.Add(key);
+            _p.AddDelegateKey(key);
             var invoke = ((INamedTypeSymbol)dc.Type).DelegateInvokeMethod;
             var t = Declare("t$" + _temps++, dc.Type);
             var lam = new KLambda
@@ -175,7 +175,7 @@ namespace CsVerify.Verifier.Boogie
             };
             foreach (var p in fn.Parameters)
             {
-                lam.Params.Add(("q$" + p.Name, TypeOf(p.Type)));
+                lam.AddParam(("q$" + p.Name, TypeOf(p.Type)));
             }
             if (!c.OwnRequires.All(r => Steady(r, own)))
             {
@@ -246,7 +246,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             continue;
                         }
-                        lam.PostsS.Add(Spec(post.Expr, post.ResultParameter));
+                        lam.AddPostS(Spec(post.Expr, post.ResultParameter));
                     }
                 }
             }
@@ -270,7 +270,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     continue;
                 }
-                lam.Posts.Add(Spec(post.Expr, post.ResultParameter));
+                lam.AddPost(Spec(post.Expr, post.ResultParameter));
             }
             // (of Spec.Reads, changing nothing: the value it returns, where its body is specifications and a return, of its frame)
             if (!lam.Steady && lam.NoChange && lam.Reads != null && !invoke.ReturnsVoid && fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax lfn)
@@ -286,7 +286,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     try
                     {
-                        lam.PostsS.Add(Eq(new KVar("result"), Spec(rv, null)));
+                        lam.AddPostS(Eq(new KVar("result"), Spec(rv, null)));
                     }
                     catch (NotTranslated) { }
                 }
@@ -297,7 +297,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 try
                 {
-                    lam.Posts.Add(Eq(new KVar("result"), Spec(value, null)));
+                    lam.AddPost(Eq(new KVar("result"), Spec(value, null)));
                 }
                 catch (NotTranslated) { }
             }
@@ -357,7 +357,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(KCheck.Of(NotNull(new KVar(receiver)), "CSV1013", instance.Syntax, $"'{instance.Syntax}' might be null in '{dc.Syntax}'"));
             }
             var key = FuncKey(dc.Type);
-            _p.DelegateKeys.Add(key);
+            _p.AddDelegateKey(key);
             var t = Declare("t$" + _temps++, dc.Type);
             var lam = new KLambda
             {
@@ -373,7 +373,7 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var p in fn.Parameters)
             {
-                lam.Params.Add(("q$" + p.Name, TypeOf(p.Type)));
+                lam.AddParam(("q$" + p.Name, TypeOf(p.Type)));
                 lam.Rename[Local(p)] = Box(new KVar("q$" + p.Name), def.Parameters[p.Ordinal].Type, p.Type);
             }
             if (!fn.ReturnsVoid)
@@ -393,7 +393,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 if (Steady(post.Expr, mine))
                 {
-                    lam.Posts.Add(Spec(post.Expr, post.ResultParameter));
+                    lam.AddPost(Spec(post.Expr, post.ResultParameter));
                 }
             }
             Emit(lam);

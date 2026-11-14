@@ -65,7 +65,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var f in InstanceFields(m.ContainingType))
                 {
-                    _p.Fields.Add(f);
+                    _p.AddField(f);
                 }
             }
             // (of its contract; Run decides again with its body)
@@ -157,8 +157,8 @@ namespace CsVerify.Verifier.Boogie
                 bool notNull = sym is ILocalSymbol && IsNullable(type) && model != null && NeverWritten(sym) &&
                                ops.OfType<ILocalReferenceOperation>().Any(r => SymbolEqualityComparer.Default.Equals(r.Local, sym) && r.Syntax.SyntaxTree == model.SyntaxTree &&
                                                                               model.GetTypeInfo(r.Syntax).Nullability.FlowState == NullableFlowState.NotNull);
-                _p.Captured.Add((input, type, notNull));
-                _p.CapturedSymbols.Add(sym);
+                _p.AddCaptured((input, type, notNull));
+                _p.AddCapturedSymbol(sym);
             }
         }
 
@@ -203,7 +203,7 @@ namespace CsVerify.Verifier.Boogie
             // (a data type's constructor that does nothing: a procedure of no statements, and no object)
             if (BoogieTranslator.EmptyDataConstructor(_m))
             {
-                _p.Blocks.Add(KBlock.Of("b0", 0, jump: KReturn.Of(_decl)));
+                _p.AddBlock(KBlock.Of("b0", 0, jump: KReturn.Of(_decl)));
                 return _p;
             }
             // (Dafny's dynamic frames: what it may write. An [Owned] class's objects are framed by their views instead)
@@ -249,14 +249,14 @@ namespace CsVerify.Verifier.Boogie
                     _p.Models[model.Name] = model;
                     if (_contract.Modifies != null)
                     {
-                        _p.Modifies.Add(model.Name);
-                        _p.AnyWrites.Add(model.Name);
+                        _p.AddModifies(model.Name);
+                        _p.AddAnyWrite(model.Name);
                     }
                 }
                 if (_p.ListCtor)
                 {
-                    _p.Modifies.Add("$Alloc");
-                    _p.AnyWrites.Add("$Alloc");
+                    _p.AddModifies("$Alloc");
+                    _p.AddAnyWrite("$Alloc");
                 }
                 return _p;
             }
@@ -374,7 +374,7 @@ namespace CsVerify.Verifier.Boogie
             else if (_m.Parameters.Any(x => IsMemView(x.Type) && x.RefKind != RefKind.Out))
             {
                 _block = KBlock.Of("mem", -1, jump: new KGoto("b0"));
-                _p.Blocks.Add(_block);
+                _p.AddBlock(_block);
                 foreach (var x in _m.Parameters.Where(x => IsMemView(x.Type) && x.RefKind != RefKind.Out))
                 {
                     Emit(KAssume.Of(MemTie(new KVar(Local(x)), x.Type)));
@@ -383,7 +383,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var b in cfg.Blocks)
             {
                 _block = KBlock.Of($"b{b.Ordinal}", b.Ordinal);
-                _p.Blocks.Add(_block);
+                _p.AddBlock(_block);
                 _cfgBlock = b;
                 // (its data values are valid: their invariants hold)
                 if (b.Ordinal == 0)
@@ -458,7 +458,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var sp in SteadyParams(_m).Where(x => IsFunc(x.Type)))
                     {
-                        _p.DelegateKeys.Add(FuncKey(sp.Type));
+                        _p.AddDelegateKey(FuncKey(sp.Type));
                         Emit(KAssume.Of(new KOp("$steady", new KVar(Local(_m.Parameters[sp.Ordinal])))));
                     }
                 }
@@ -523,20 +523,20 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var into in _p.Blocks.Where(x => x.Ordinal < h && x.Jump is KGoto g && g.Targets.Contains($"b{h}")))
                 {
-                    into.Stmts.Add(KSpecStmt.AssumedFree(Eq(new KVar(var), value), _decl, argumentAt: _decl));
+                    into.AddStmt(KSpecStmt.AssumedFree(Eq(new KVar(var), value), _decl, argumentAt: _decl));
                 }
             }
             // (no task started in a loop is running at the method's entry)
             // (each loop it's started in: the one of the last round was awaited on every way back, so at the head none is running)
             foreach (var (aw, block, awAt, awName) in _awaitedAtEntry)
             {
-                _p.Blocks[0].Stmts.Insert(0, KAssign.Of(aw, KLit.True));
+                _p.Blocks[0].InsertStmt(0, KAssign.Of(aw, KLit.True));
                 foreach (var (h, last) in _p.LoopBodies.Where(lb => lb.Key <= block && block <= lb.Value))
                 {
                     _p.Blocks.FirstOrDefault(x => x.Label == $"b{h}")?.Stmts.Insert(0, KAssume.Of(new KVar(aw)));
                     foreach (var back in _p.Blocks.Where(x => x.Ordinal >= h && x.Ordinal <= last && x.Jump is KGoto g && g.Targets.Contains($"b{h}")))
                     {
-                        back.Stmts.Add(KCheck.Of(
+                        back.AddStmt(KCheck.Of(
                             new KVar(aw),
                             "CSV1026",
                             awAt,
@@ -547,7 +547,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (_exitUsed)
             {
-                _p.Blocks.Add(new KBlock
+                _p.AddBlock(new KBlock
                 {
                     Label = "x$exit",
                     Ordinal = cfg.Blocks.Length,
@@ -592,7 +592,7 @@ namespace CsVerify.Verifier.Boogie
 
         private void Emit(KStmt s)
         {
-            _block.Stmts.Add(s);
+            _block.AddStmt(s);
             Track(s);
         }
 
@@ -600,7 +600,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (!_p.Locals.Any(l => l.Name == name))
             {
-                _p.Locals.Add(new KLocal
+                _p.AddLocal(new KLocal
                 {
                     Name = name,
                     Type = type,

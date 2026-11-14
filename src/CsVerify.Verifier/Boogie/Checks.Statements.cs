@@ -421,8 +421,8 @@ namespace CsVerify.Verifier.Boogie
             // (a new tree of its own)
             if (KernelTypes.Trees)
             {
-                _p.Modifies.Add("$root");
-                _p.AnyWrites.Add("$root");
+                _p.AddModifies("$root");
+                _p.AddAnyWrite("$root");
                 Emit(MMapUpdate.Of("$root", o, o));
             }
             Receive(o);
@@ -460,10 +460,10 @@ namespace CsVerify.Verifier.Boogie
                 At = take.At,
                 InstanceAt = take.At,
             });
-            _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root");
+            _p.AddModifies("$root"); _p.AddAnyWrite("$root");
             if (!_p.Locals.Any(l => l.Name == "split$"))
             {
-                _p.Locals.Add(KLocal.Of("split$", "[Ref]bool"));
+                _p.AddLocal(KLocal.Of("split$", "[Ref]bool"));
             }
             Emit(new MRoots
             {
@@ -498,7 +498,7 @@ namespace CsVerify.Verifier.Boogie
                 At = give.At,
                 InstanceAt = give.At,
             });
-            _p.Modifies.Add("$root"); _p.AnyWrites.Add("$root");
+            _p.AddModifies("$root"); _p.AddAnyWrite("$root");
             Emit(new MRoots
             {
                 Join = true,

@@ -14,7 +14,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>o is C, of a class or an interface: not null, and of a dynamic type below C's.</summary>
         private KExpr ClassTest(KExpr v, ITypeSymbol t)
         {
-            _p.ClassTypes.Add(t.OriginalDefinition);
+            _p.AddClassType(t.OriginalDefinition);
             var test = AndAlso(NotNull(v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(t))));
             // (an instance of a class with invariants, in code: they hold, as of every one that was built)
             if (HasObjectInvariant(t) && _cfgBlock != null && !_inSpecTest)
@@ -34,7 +34,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            _p.ClassTypes.Add(type.OriginalDefinition);
+            _p.AddClassType(type.OriginalDefinition);
             Emit(KAssume.Of(Implies(NotNull(v), new KOp("sub", new KOp("dtype", v), new KLit(TypeConst(type))))));
         }
 

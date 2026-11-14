@@ -552,6 +552,10 @@ namespace CsVerify.Verifier.Boogie
         public List<(string map, string fresh)> Fresh = new List<(string, string)>();
         public bool Write, Plain;
         public SyntaxNode At;
+
+        public void AddArray((KExpr array, string map, string row) array) => Arrays.Add(array);
+
+        public void AddFresh((string map, string fresh) fresh) => Fresh.Add(fresh);
     }
 
     /// <summary>Map[Ref] := Value, Value a specification (a new array's row, a new list's Items or Size: LINQ's copies).</summary>
@@ -674,6 +678,12 @@ namespace CsVerify.Verifier.Boogie
         public KExpr Changes;
         /// <summary>A method group's parameters, as its contract names them, to the bound variables.</summary>
         public Dictionary<string, KExpr> Rename = new Dictionary<string, KExpr>();
+
+        public void AddParam((string name, string type) param) => Params.Add(param);
+
+        public void AddPost(KExpr post) => Posts.Add(post);
+
+        public void AddPostS(KExpr postS) => PostsS.Add(postS);
     }
 
     /// <summary>A check Lowering decides on: a specification (mathematics, its own well-definedness not checked), reported as given.</summary>
@@ -728,6 +738,8 @@ namespace CsVerify.Verifier.Boogie
         public KExpr When;
         /// <summary>The method holds permissions (cells, views): what they cover is kept too.</summary>
         public bool Cells, Perm;
+
+        public void AddKeep(string keep) => Keep.Add(keep);
     }
 
     /// <summary>A data value's field: checked not null in code, well-defined if so in a specification.</summary>
@@ -859,6 +871,10 @@ namespace CsVerify.Verifier.Boogie
         public int Ordinal;
         public List<KStmt> Stmts = new List<KStmt>();
         public KJump Jump;
+
+        public void AddStmt(KStmt stmt) => Stmts.Add(stmt);
+
+        public void InsertStmt(int index, KStmt stmt) => Stmts.Insert(index, stmt);
 
         public static KBlock Of(string label, int ordinal, KJump jump = null) => new KBlock
         {
@@ -1079,5 +1095,55 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>For the library report: each variable's causes (Lowering.Causes), and the variables its values were made from.</summary>
         public readonly Dictionary<string, HashSet<string>> Causes = new Dictionary<string, HashSet<string>>();
         public readonly Dictionary<string, HashSet<string>> Deps = new Dictionary<string, HashSet<string>>();
+
+        public bool AddAnyWrite(string anyWrite) => AnyWrites.Add(anyWrite);
+
+        public void AddBaseFrame((IMethodSymbol method, KExpr frame) baseFrame) => BaseFrames.Add(baseFrame);
+
+        public void AddBaseRequire((IMethodSymbol method, List<KExpr> requires) baseRequire) => BaseRequires.Add(baseRequire);
+
+        public void AddBlock(KBlock block) => Blocks.Add(block);
+
+        public bool AddCall(IMethodSymbol call) => Calls.Add(call);
+
+        public void AddCaptured((string input, ITypeSymbol type, bool notNull) captured) => Captured.Add(captured);
+
+        public void AddCapturedSymbol(ISymbol capturedSymbol) => CapturedSymbols.Add(capturedSymbol);
+
+        public bool AddClassType(ITypeSymbol classType) => ClassTypes.Add(classType);
+
+        public bool AddDataType(INamedTypeSymbol dataType) => DataTypes.Add(dataType);
+
+        public bool AddDelegateKey(string delegateKey) => DelegateKeys.Add(delegateKey);
+
+        public void AddEnsures(KSpec ensures) => Ensures.Add(ensures);
+
+        public bool AddExceptionType(ITypeSymbol exceptionType) => ExceptionTypes.Add(exceptionType);
+
+        public bool AddField(ISymbol field) => Fields.Add(field);
+
+        public bool AddFunction(string function) => Functions.Add(function);
+
+        public void AddLentRoot(KExpr lentRoot) => LentRoots.Add(lentRoot);
+
+        public bool AddLibCall(IMethodSymbol libCall) => LibCalls.Add(libCall);
+
+        public void AddLocal(KLocal local) => Locals.Add(local);
+
+        public bool AddModifies(string modifies) => Modifies.Add(modifies);
+
+        public bool AddPair((string key, string value) pair) => Pairs.Add(pair);
+
+        public bool AddPred(IMethodSymbol pred) => Preds.Add(pred);
+
+        public void AddRequires(KSpec requires) => Requires.Add(requires);
+
+        public bool AddStub(IMethodSymbol stub) => Stubs.Add(stub);
+
+        public void AddThrowEnsure((ITypeSymbol type, KExpr cond, SyntaxNode at) throwEnsure) => ThrowEnsures.Add(throwEnsure);
+
+        public bool AddValid(INamedTypeSymbol valid) => Valid.Add(valid);
+
+        public void AddWarning(VerificationDiagnostic warning) => Warnings.Add(warning);
     }
 }

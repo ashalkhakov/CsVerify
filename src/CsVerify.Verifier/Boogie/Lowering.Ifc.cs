@@ -36,15 +36,15 @@ namespace CsVerify.Verifier.Boogie
             };
             var join = KBlock.Of(name + "j", from.Ordinal);
             from.Jump = new KGoto(yes.Label, no.Label);
-            _p.Blocks.Add(yes);
+            _p.AddBlock(yes);
             _block = yes;
             then();
             _block.Jump = new KGoto(join.Label);
-            _p.Blocks.Add(no);
+            _p.AddBlock(no);
             _block = no;
             otherwise();
             _block.Jump = new KGoto(join.Label);
-            _p.Blocks.Add(join);
+            _p.AddBlock(join);
             _block = join;
         }
 

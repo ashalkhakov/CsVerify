@@ -94,7 +94,7 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var r in contract.Requires)
             {
-                l._p.Requires.Add(KSpec.Of(l.Spec(r, null), r.Syntax));
+                l._p.AddRequires(KSpec.Of(l.Spec(r, null), r.Syntax));
             }
             foreach (var (type, cond, at) in contract.ThrowEnsures)
             {
@@ -102,8 +102,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     throw new NotTranslated("Spec.EnsuresOnThrow of " + type);
                 }
-                l._p.ThrowEnsures.Add((type, l.Spec(cond, null), at));
-                l._p.ExceptionTypes.Add(type);
+                l._p.AddThrowEnsure((type, l.Spec(cond, null), at));
+                l._p.AddExceptionType(type);
             }
             foreach (var e in contract.Ensures)
             {
@@ -112,14 +112,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     post = Implies(Old(AndAll(e.Guard.Select(g => l.Spec(g, null)))), post);
                 }
-                l._p.Ensures.Add(KSpec.Of(post, e.Syntax));
+                l._p.AddEnsures(KSpec.Of(post, e.Syntax));
             }
             // (a function over a predicate, with its body: its procedure gives its value, of the instance's snapshot, as
             // the body says where it unfolds it; so a call of it in code tells what a specification's use of it reads)
             if (l._m.IsStatic && l._isFunction(l._m) && contract.PureBody != null && contract.Requires.Any(HasAtoms) && l._m.DeclaringSyntaxReferences.Length > 0 &&
                 l._m.DeclaringSyntaxReferences[0].GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>().Any(i => i.Expression.ToString() == "Spec.Unfold"))
             {
-                l._p.Ensures.Add(KSpec.Of(
+                l._p.AddEnsures(KSpec.Of(
                     at: l._m.DeclaringSyntaxReferences[0].GetSyntax(),
                     expr: Eq(new KVar("result"),
                    new KFnCall
@@ -141,14 +141,14 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl))
                     {
-                        l._p.Requires.Add(KSpec.Of(c, decl));
+                        l._p.AddRequires(KSpec.Of(c, decl));
                     }
                 }
                 if (p.RefKind != RefKind.None)
                 {
                     foreach (var c in MemCells(new KVar(Local(p)), p.Type, decl))
                     {
-                        l._p.Ensures.Add(KSpec.Of(c, decl));
+                        l._p.AddEnsures(KSpec.Of(c, decl));
                     }
                 }
             }
@@ -156,7 +156,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var c in MemCells(new KVar("result"), rt, decl))
                 {
-                    l._p.Ensures.Add(KSpec.Of(c, decl));
+                    l._p.AddEnsures(KSpec.Of(c, decl));
                 }
             }
             if (contract.Reads != null)
@@ -168,12 +168,12 @@ namespace CsVerify.Verifier.Boogie
                 l._p.OwnRequires = contract.OwnRequires.Select(r => l.Spec(r, null)).ToList();
                 foreach (var b in contract.Bases)
                 {
-                    l._p.BaseRequires.Add((b.Method, b.Requires.Select(r => l.Spec(r, null)).ToList()));
+                    l._p.AddBaseRequire((b.Method, b.Requires.Select(r => l.Spec(r, null)).ToList()));
                 }
             }
             foreach (var (b, frame) in contract.BaseModifies.Where(x => !ReferenceEquals(x.Frame, contract.Modifies)))
             {
-                l._p.BaseFrames.Add((b.Method, l.Spec(frame, null)));
+                l._p.AddBaseFrame((b.Method, l.Spec(frame, null)));
             }
         }
 
@@ -242,7 +242,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _codeArith = false;
             }
-            _p.Blocks.Add(KBlock.Of("b0", 0, jump: new KStop()));
+            _p.AddBlock(KBlock.Of("b0", 0, jump: new KStop()));
             return _p;
         }
 
@@ -340,7 +340,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (SpecSymbols.IsCsVerifyType(t.TargetMethod.ContainingType, "Own") && t.TargetMethod.Name == "Tree" && t.Arguments.Length == 1)
                 {
-                    _p.LentRoots.Add(Spec(Unconverted(t.Arguments[0].Value), null));
+                    _p.AddLentRoot(Spec(Unconverted(t.Arguments[0].Value), null));
                 }
             }
         }
@@ -405,7 +405,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (_capturedParams.FirstOrDefault(c => SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, sp)) is IParameterSymbol cp)
                 {
-                    _p.DelegateKeys.Add(FuncKey(cp.Type));
+                    _p.AddDelegateKey(FuncKey(cp.Type));
                     Emit(KAssume.Of(new KOp("$steady", new KVar(_capturedIn[cp]))));
                 }
             }

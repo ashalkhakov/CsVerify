@@ -346,7 +346,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (!_p.Locals.Any(l => l.Name == name))
                 {
-                    _p.Locals.Add(KLocal.Of(name, raw));
+                    _p.AddLocal(KLocal.Of(name, raw));
                 }
             }
             Emit(MAssign.Of("footprint$", new MVar("owner")));
@@ -360,7 +360,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (!_p.Locals.Any(l => l.Name == name))
                     {
-                        _p.Locals.Add(KLocal.Of(name, raw));
+                        _p.AddLocal(KLocal.Of(name, raw));
                     }
                 }
             }
@@ -552,7 +552,7 @@ namespace CsVerify.Verifier.Boogie
                 return g;
             }
             var name = "g$h" + _holds++;
-            _p.Locals.Add(KLocal.Of(name, "bool"));
+            _p.AddLocal(KLocal.Of(name, "bool"));
             Emit(MAssign.Of(name, g));
             return new MVar(name);
         }
@@ -562,7 +562,7 @@ namespace CsVerify.Verifier.Boogie
             g = Conj(g, Eq(Sel("pinst", q), MLit.Zero));
             if (!_p.Locals.Any(l => l.Name == "snap$"))
             {
-                _p.Locals.Add(KLocal.Of("snap$", "int"));
+                _p.AddLocal(KLocal.Of("snap$", "int"));
             }
             Emit(MHavoc.Of("snap$"));
             Emit(MAssign.Of("psnap", Store("psnap", q, Ite(g, new MVar("snap$"), Sel("psnap", q)))));
@@ -605,7 +605,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(MAssign.Of("own$", FieldHeld(fa.Obj, fa.Field)));
             if (!_p.Locals.Any(l => l.Name == "own$"))
             {
-                _p.Locals.Add(KLocal.Of("own$", "bool"));
+                _p.AddLocal(KLocal.Of("own$", "bool"));
             }
             var split = Conj(g, Not(new MVar("own$")));
             SetPerm(fa.Obj, AndAlso(Held(fa.Obj), Not(split)));
@@ -630,7 +630,7 @@ namespace CsVerify.Verifier.Boogie
             Emit(MAssign.Of("all$", ConjAll(fields.Select(f => FieldHeld(fa.Obj, f)).Prepend(g))));
             if (!_p.Locals.Any(l => l.Name == "all$"))
             {
-                _p.Locals.Add(KLocal.Of("all$", "bool"));
+                _p.AddLocal(KLocal.Of("all$", "bool"));
             }
             foreach (var f in fields)
             {
@@ -668,15 +668,15 @@ namespace CsVerify.Verifier.Boogie
             }
             if (known && !_p.Locals.Any(l => l.Name == $"l${head}$perm"))
             {
-                _p.Locals.Add(KLocal.Of($"l${head}$perm", "[Ref]bool"));
-                _p.Locals.Add(KLocal.Of($"l${head}$pinst", "[Inst]int"));
+                _p.AddLocal(KLocal.Of($"l${head}$perm", "[Ref]bool"));
+                _p.AddLocal(KLocal.Of($"l${head}$pinst", "[Inst]int"));
                 if (_p.UsesCells)
                 {
-                    _p.Locals.Add(KLocal.Of($"l${head}$cells", "[Ref][int]real"));
+                    _p.AddLocal(KLocal.Of($"l${head}$cells", "[Ref][int]real"));
                 }
                 if (_p.UsesFields)
                 {
-                    _p.Locals.Add(KLocal.Of($"l${head}$fperm", "[Ref][int]bool"));
+                    _p.AddLocal(KLocal.Of($"l${head}$fperm", "[Ref][int]bool"));
                 }
             }
             return known;

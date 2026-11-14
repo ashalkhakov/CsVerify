@@ -25,6 +25,16 @@ namespace CsVerify.Verifier
             public readonly HashSet<IMethodSymbol> Callees = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             /// <summary>May write any heap field (a virtual call, a library call handed a callback or an object).</summary>
             public bool All;
+
+            public bool AddCallee(IMethodSymbol callee) => Callees.Add(callee);
+
+            public bool AddRead(ISymbol read) => Reads.Add(read);
+
+            public bool AddSelfWrite(ISymbol selfWrite) => SelfWrites.Add(selfWrite);
+
+            public bool AddWrite(ISymbol write) => Writes.Add(write);
+
+            public void AddWrites(IEnumerable<ISymbol> other) => Writes.UnionWith(other);
         }
 
         private readonly Engine _engine;
@@ -160,7 +170,7 @@ namespace CsVerify.Verifier
             if (m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Constructor && m.ContainingType.DeclaringSyntaxReferences.Length > 0) return d;
             // a virtual member may run any override: they are all reachable from it
             if (Engine.IsOverridable(m))
-                foreach (var o in Overrides(m)) d.Callees.Add(o);
+                foreach (var o in Overrides(m)) d.AddCallee(o);
             var c = _engine.ContractOf(m.OriginalDefinition);
             if (!c.HasSource || c.IsStub)
             {
@@ -168,8 +178,8 @@ namespace CsVerify.Verifier
                 // (its receiver included: a delegate's Invoke)
                 d.All = RunsUserCode(m) && !c.IsPure; // (a [Pure] stub says it has no effects: trusted, like all it says)
                 // model state: a stub says what it changes (Spec.Modifies, or nothing); without one, anything it reaches
-                if (!c.IsStub && MayTouchModels(m)) d.Writes.UnionWith(MutableModels());
-                if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor)) d.Writes.UnionWith(ModelsOf(m.ContainingType));
+                if (!c.IsStub && MayTouchModels(m)) d.AddWrites(MutableModels());
+                if (c.IsStub && (c.Modifies != null || m.MethodKind == MethodKind.Constructor)) d.AddWrites(ModelsOf(m.ContainingType));
                 if (c.IsStub) AddModelReads(d, c);
                 return d;
             }
@@ -184,12 +194,12 @@ namespace CsVerify.Verifier
                         ExpressionSyntax access = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : (ExpressionSyntax)name;
                         var (read, write) = Usage(access);
                         var key = Key(s);
-                        if (read) d.Reads.Add(key);
+                        if (read) d.AddRead(key);
                         // (reading an atomic field moves what the reader knows of it on, past the others' steps)
                         if (write || read && Atomics.IsAtomic(s))
                         {
                             bool onThis = access is SimpleNameSyntax || access is MemberAccessExpressionSyntax mt && mt.Expression is ThisExpressionSyntax;
-                            if (ctor && onThis) d.SelfWrites.Add(key); else d.Writes.Add(key);
+                            if (ctor && onThis) d.AddSelfWrite(key); else d.AddWrite(key);
                         }
                         break;
                     }
@@ -204,7 +214,7 @@ namespace CsVerify.Verifier
                         break;
                     }
                     case InvocationExpressionSyntax inv when c.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee:
-                        if (SpecSymbols.IsModel(callee.ReducedFrom ?? callee.OriginalDefinition)) d.Reads.Add((callee.ReducedFrom ?? callee).OriginalDefinition);
+                        if (SpecSymbols.IsModel(callee.ReducedFrom ?? callee.OriginalDefinition)) d.AddRead((callee.ReducedFrom ?? callee).OriginalDefinition);
                         else if (!SpecSymbols.IsSpecClass(callee.ContainingType)) AddCallee(d, callee);
                         break;
                     case BaseObjectCreationExpressionSyntax oc when c.Model.GetSymbolInfo(oc).Symbol is IMethodSymbol ctorCallee:
@@ -225,7 +235,7 @@ namespace CsVerify.Verifier
                 if (stub.Model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)
                 {
                     var key = (callee.ReducedFrom ?? callee).OriginalDefinition;
-                    if (SpecSymbols.IsModel(key)) d.Reads.Add(key);
+                    if (SpecSymbols.IsModel(key)) d.AddRead(key);
                     else if (!SpecSymbols.IsSpecClass(callee.ContainingType) && !SpecSymbols.IsSeqType(callee.ContainingType)) AddCallee(d, callee);
                 }
             // (and the stubbed members its contract names: list.Count)
@@ -334,7 +344,7 @@ namespace CsVerify.Verifier
 
         private void AddCallee(Direct d, IMethodSymbol callee)
         {
-            d.Callees.Add(Normal(callee));
+            d.AddCallee(Normal(callee));
         }
 
         /// <summary>Is the access read, written, or both (<c>o.F += 1</c>, <c>o.F++</c>, <c>ref o.F</c>)?</summary>

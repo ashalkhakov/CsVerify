@@ -143,7 +143,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (!InSpec(call.Syntax) && CallCause(call.TargetMethod) is string lib && lib.StartsWith("library "))
                 {
-                    lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((lib.Substring("library ".Length), call.Syntax.SyntaxTree.FilePath + ":" + call.Syntax.SpanStart));
+                    lock (_p.Result.LibraryCalls) _p.Result.AddLibraryCall((lib.Substring("library ".Length), call.Syntax.SyntaxTree.FilePath + ":" + call.Syntax.SpanStart));
                 }
             }
         }

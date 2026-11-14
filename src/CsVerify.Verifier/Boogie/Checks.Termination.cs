@@ -52,7 +52,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (c.At != null)
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, self
+                _p.AddWarning(new VerificationDiagnostic("CSV1900", false, self
                     ? $"recursive call without Spec.Decreases in '{_p.Method.Name}'; termination is not checked"
                     : $"mutually recursive call from '{_p.Method.Name}' to '{c.Callee.Name}' without Spec.Decreases on both; termination is not checked", c.At.GetLocation().GetLineSpan()));
             }

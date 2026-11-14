@@ -80,7 +80,7 @@ namespace CsVerify.Verifier.Boogie
                     continue;
                 }
                 var key = FuncKey(type);
-                _p.DelegateKeys.Add(key);
+                _p.AddDelegateKey(key);
                 var d = args[a.Parameter.Ordinal];
                 if (!(made || value is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation))
                 {
@@ -179,7 +179,7 @@ namespace CsVerify.Verifier.Boogie
             var da = call.Arguments.First(a => IsFunc(a.Parameter.Type));
             var type = (INamedTypeSymbol)da.Parameter.Type;
             var key = FuncKey(type);
-            _p.DelegateKeys.Add(key);
+            _p.AddDelegateKey(key);
             _p.CallsDelegates = true;
             Assumed(m);
             var srcArg = kind == "index" || call.Instance != null ? null : call.Arguments.First(a => a.Parameter.Ordinal == 0);
@@ -298,7 +298,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var type = (INamedTypeSymbol)x.Parameter.Type;
             var key = FuncKey(type);
-            _p.DelegateKeys.Add(key);
+            _p.AddDelegateKey(key);
             var stub = _contractOf?.Invoke(ctor);
             bool pre = stub != null && stub.IsStub && type.DelegateInvokeMethod.Parameters.Length == 0 && stub.Requires.Any(r => r.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i =>
                 SpecSymbols.IsSpecClass(i.TargetMethod.ContainingType) && i.TargetMethod.Name is "Pre" or "Total" && i.Arguments.Length == 1 &&
@@ -497,7 +497,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (_p.Result != null && _contractOf?.Invoke(m) is Contract c && c.IsStub)
             {
-                lock (_p.Result.Assumptions) _p.Result.Assumptions.Add(c.Method.ToDisplayString());
+                lock (_p.Result.Assumptions) _p.Result.AddAssumption(c.Method.ToDisplayString());
             }
         }
 
@@ -653,7 +653,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var (da, dv) in delegates)
             {
                 var key = FuncKey(da.Parameter.Type);
-                _p.DelegateKeys.Add(key);
+                _p.AddDelegateKey(key);
                 _p.CallsDelegates = true;
                 var (lambda, quiet, free) = Handed(da);
                 if (!free)
@@ -705,12 +705,12 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var t in ElementTypes)
                     {
-                        la.Fresh.Add((ElementMap(t), LinqMap("[Ref][int]" + ElementValue(t))));
+                        la.AddFresh((ElementMap(t), LinqMap("[Ref][int]" + ElementValue(t))));
                     }
                 }
                 foreach (var (array, type) in cellArrays)
                 {
-                    la.Arrays.Add((array, Elements(type), arrays ? LinqMap("[int]" + ElementValue(Elements(type))) : null));
+                    la.AddArray((array, Elements(type), arrays ? LinqMap("[int]" + ElementValue(Elements(type))) : null));
                 }
                 Emit(la);
             }
@@ -817,7 +817,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KFnCall StubCall(IInvocationOperation call, Func<IOperation, KExpr> eval)
         {
-            _p.Stubs.Add(call.TargetMethod.OriginalDefinition);
+            _p.AddStub(call.TargetMethod.OriginalDefinition);
             var ordered = call.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToList();
             KExpr receiver = null;
             KExpr[] args;
@@ -1348,7 +1348,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     throw new NotTranslated("a list with permissions");
                 }
-                _p.LibCalls.Add(callee);
+                _p.AddLibCall(callee);
                 foreach (var model in ModelsOf((INamedTypeSymbol)callee.ContainingType))
                 {
                     _p.Models[model.Name] = model;
@@ -1362,7 +1362,7 @@ namespace CsVerify.Verifier.Boogie
             bool lib = !list && LibraryStub(callee);
             if (lib)
             {
-                _p.LibCalls.Add(callee);
+                _p.AddLibCall(callee);
             }
             if (list || lib)
             {
@@ -1374,7 +1374,7 @@ namespace CsVerify.Verifier.Boogie
             }
             UnderLock(callee, at, instance, arguments);
             ReentryUnderLock(callee, at);
-            _p.Calls.Add(callee);
+            _p.AddCall(callee);
             var ordered = arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             // (a local function's: what it captures, passed after its arguments, as they are here; and this, where it has it)
             var localCaptures = callee.MethodKind == MethodKind.LocalFunction ? LocalFunctionCaptures(callee) : null;

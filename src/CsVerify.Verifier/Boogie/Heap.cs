@@ -62,11 +62,11 @@ namespace CsVerify.Verifier.Boogie
                         case MFieldStore fs:
                         {
                             var map = FieldMap(fs.Field);
-                            p.Source.Modifies.Add(map);
+                            p.Source.AddModifies(map);
                             // (an [Owned] object's field is written only with its view: framed by the views a call gets)
                             if (!(p.Source.IsCtor && fs.OnThis) && !IsOwnedField(fs.Field))
                             {
-                                p.Source.AnyWrites.Add(map);
+                                p.Source.AddAnyWrite(map);
                             }
                             stmts.Add(MMapUpdate.Of(map, fs.Instance, fs.Value));
                             break;
@@ -74,13 +74,13 @@ namespace CsVerify.Verifier.Boogie
                         case MNewObj n:
                         {
                             var t = new MVar(n.Var);
-                            p.Source.Modifies.Add("$Alloc");
-                            p.Source.AnyWrites.Add("$Alloc");
+                            p.Source.AddModifies("$Alloc");
+                            p.Source.AddAnyWrite("$Alloc");
                             Allocate(stmts, n.Var);
                             foreach (var field in InstanceFields(n.Type))
                             {
                                 var map = FieldMap(field);
-                                p.Source.Modifies.Add(map);
+                                p.Source.AddModifies(map);
                                 // (a generic class's field of T: the default of a T the class doesn't know, a box nothing is known of)
                                 if (!IsTypeParameter(FieldType(field)))
                                 {
@@ -107,7 +107,7 @@ namespace CsVerify.Verifier.Boogie
                                     var u = "u$" + FieldMap(field);
                                     if (!p.Source.Locals.Any(l => l.Name == u))
                                     {
-                                        p.Source.Locals.Add(new KLocal
+                                        p.Source.AddLocal(new KLocal
                                         {
                                             Name = u,
                                             Type = FieldType(field),
@@ -121,19 +121,19 @@ namespace CsVerify.Verifier.Boogie
                         }
                         case MRow row when row.Ref == null:
                             // (the whole map: a library call's arrays, any of them)
-                            p.Source.Modifies.Add(row.Map);
-                            p.Source.AnyWrites.Add(row.Map);
+                            p.Source.AddModifies(row.Map);
+                            p.Source.AddAnyWrite(row.Map);
                             stmts.Add(MAssign.Of(row.Map, row.Value));
                             break;
                         case MRow row:
-                            p.Source.Modifies.Add(row.Map);
-                            p.Source.AnyWrites.Add(row.Map);
+                            p.Source.AddModifies(row.Map);
+                            p.Source.AddAnyWrite(row.Map);
                             stmts.Add(MMapUpdate.Of(row.Map, row.Ref, row.Value));
                             break;
                         case MFill fill:
                         {
-                            p.Source.Modifies.Add(fill.Map);
-                            p.Source.AnyWrites.Add(fill.Map);
+                            p.Source.AddModifies(fill.Map);
+                            p.Source.AddAnyWrite(fill.Map);
                             var j = new MVar("j$");
                             stmts.Add(MMapUpdate.Of(
                                 fill.Map,
@@ -145,8 +145,8 @@ namespace CsVerify.Verifier.Boogie
                         case MStore st:
                         {
                             var map = Elements(st.ArrayType);
-                            p.Source.Modifies.Add(map);
-                            p.Source.AnyWrites.Add(map);
+                            p.Source.AddModifies(map);
+                            p.Source.AddAnyWrite(map);
                             stmts.Add(MMapUpdate.Of(map, st.Array, index: st.Index, value: st.Value));
                             break;
                         }
@@ -154,10 +154,10 @@ namespace CsVerify.Verifier.Boogie
                         {
                             var map = Elements(n.ArrayType);
                             var t = new MVar(n.Var);
-                            p.Source.Modifies.Add("$Alloc");
-                            p.Source.Modifies.Add(map);
-                            p.Source.AnyWrites.Add("$Alloc");
-                            p.Source.AnyWrites.Add(map);
+                            p.Source.AddModifies("$Alloc");
+                            p.Source.AddModifies(map);
+                            p.Source.AddAnyWrite("$Alloc");
+                            p.Source.AddAnyWrite(map);
                             // (a negative size throws: the path ends)
                             stmts.Add(MAssume.Of(Ge(n.Size, MLit.Zero)));
                             Allocate(stmts, n.Var, Eq(Length(t), n.Size));
@@ -181,8 +181,8 @@ namespace CsVerify.Verifier.Boogie
                         }
                         case MLambda lam:
                             // (a new reference: no other delegate's facts are its)
-                            p.Source.Modifies.Add("$Alloc");
-                            p.Source.AnyWrites.Add("$Alloc");
+                            p.Source.AddModifies("$Alloc");
+                            p.Source.AddAnyWrite("$Alloc");
                             Allocate(stmts, lam.Var);
                             stmts.Add(lam);
                             break;
@@ -220,7 +220,7 @@ namespace CsVerify.Verifier.Boogie
                         case MStore st when st.Array is MVar v && !assigned.Contains(v.Name):
                             if (!frame.Writers.Any(w => ((MVar)w).Name == v.Name))
                             {
-                                frame.Writers.Add(v);
+                                frame.AddWriter(v);
                             }
                             break;
                         case MStore _:
@@ -230,10 +230,10 @@ namespace CsVerify.Verifier.Boogie
                             keeps = false;
                             break; // (a delegate, or unknown code, may write any array) // (a delegate, or unknown code, may write any array)
                         case MCall c:
-                            frame.Callees.Add(c.Callee);
+                            frame.AddCallee(c.Callee);
                             break;
                         case MNewObj o when o.Ctor != null:
-                            frame.Callees.Add(o.Ctor);
+                            frame.AddCallee(o.Ctor);
                             break;
                     }
                 }
@@ -266,17 +266,17 @@ namespace CsVerify.Verifier.Boogie
                             case MCall kc2:
                                 foreach (var a in kc2.Args.OfType<MVar>().Where(a => cf.Locals.ContainsKey(a.Name)))
                                 {
-                                    cf.Locals.Remove(a.Name);
+                                    cf.RemoveLocal(a.Name);
                                 }
                                 break;
                         }
                     }
                     if (cf.Locals.Count > 0)
                     {
-                        hEntry.Stmts.Insert(0, cf);
+                        hEntry.InsertStmt(0, cf);
                         foreach (var b in hInto)
                         {
-                            b.Stmts.Add(new HConfinedSnapshot { Head = head });
+                            b.AddStmt(new HConfinedSnapshot { Head = head });
                         }
                     }
                 }
@@ -288,18 +288,18 @@ namespace CsVerify.Verifier.Boogie
                     if (atomic.Count > 0 && into.Count > 0)
                     {
                         steps.Head = head;
-                        p.Source.Locals.Add(KLocal.Of($"as{head}$Alloc", "[Ref]bool"));
+                        p.Source.AddLocal(KLocal.Of($"as{head}$Alloc", "[Ref]bool"));
                         foreach (var (map, type) in atomic)
                         {
-                            steps.Maps.Add(map);
-                            p.Source.Locals.Add(KLocal.Of($"as{head}{map}", "[Ref]" + type));
+                            steps.AddMap(map);
+                            p.Source.AddLocal(KLocal.Of($"as{head}{map}", "[Ref]" + type));
                         }
                         foreach (var b in into)
                         {
-                            b.Stmts.Add(MAssign.Of($"as{head}$Alloc", new MVar("$Alloc")));
+                            b.AddStmt(MAssign.Of($"as{head}$Alloc", new MVar("$Alloc")));
                             foreach (var (map, _) in atomic)
                             {
-                                b.Stmts.Add(MAssign.Of($"as{head}{map}", new MVar(map)));
+                                b.AddStmt(MAssign.Of($"as{head}{map}", new MVar(map)));
                             }
                         }
                     }
@@ -308,10 +308,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     continue;
                 }
-                hEntry.Stmts.Insert(0, frame);
+                hEntry.InsertStmt(0, frame);
                 foreach (var b in hInto)
                 {
-                    b.Stmts.Add(new HSnapshot { Frame = frame });
+                    b.AddStmt(new HSnapshot { Frame = frame });
                 }
             }
         }

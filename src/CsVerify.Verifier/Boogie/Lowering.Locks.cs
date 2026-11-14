@@ -104,7 +104,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     var t = Declare("t$" + _temps++, FieldType(g));
                     Emit(KHavoc.Of(t));
-                    _p.Fields.Add(g.OriginalDefinition);
+                    _p.AddField(g.OriginalDefinition);
                     Emit(new KFieldStore
                     {
                         Field = g.OriginalDefinition,
@@ -255,7 +255,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var t = Declare("t$" + _temps++, FieldType(g));
                 Emit(KHavoc.Of(t));
-                _p.Fields.Add(g.OriginalDefinition);
+                _p.AddField(g.OriginalDefinition);
                 Emit(new KFieldStore
                 {
                     Field = g.OriginalDefinition,
@@ -313,7 +313,7 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr KeyOf(IFieldSymbol key, KExpr owner)
         {
-            _p.Fields.Add(key.OriginalDefinition);
+            _p.AddField(key.OriginalDefinition);
             return new KField
             {
                 Field = key.OriginalDefinition,
@@ -477,7 +477,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 var t = Declare("t$" + _temps++, FieldType(g));
                 Emit(KHavoc.Of(t));
-                _p.Fields.Add(g.OriginalDefinition);
+                _p.AddField(g.OriginalDefinition);
                 Emit(new KFieldStore
                 {
                     Field = g.OriginalDefinition,

@@ -448,7 +448,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case MVar v when v.Name == "psnap": return new MVar($"s{frame.Id}$psnap");
                 case MVar v when v.Name.StartsWith("$"):
-                    frame.OldGlobals.Add(v.Name);
+                    frame.AddOldGlobal(v.Name);
                     return new MVar($"s{frame.Id}{v.Name}");
                 // (a function over a predicate: of the snapshot as it was, at no layer and of no maps)
                 case MFnApp f when f.Snap != null:
@@ -457,7 +457,7 @@ namespace CsVerify.Verifier.Boogie
                 case MFnApp f when !f.Plain:
                     foreach (var map in ElementTypes.Select(ElementMap).Concat(f.Fields))
                     {
-                        frame.OldGlobals.Add(map);
+                        frame.AddOldGlobal(map);
                     }
                     return f.ReadingMapsAt($"s{frame.Id}", ArgsBefore(f, frame));
                 case MFnApp f:

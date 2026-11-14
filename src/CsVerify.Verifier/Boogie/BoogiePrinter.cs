@@ -597,6 +597,10 @@ namespace CsVerify.Verifier.Boogie
             public int Tag;
             public List<(string name, string type, bool data, string field)> Params = new List<(string, string, bool, string)>();
             public List<(string function, MExpr value)> Fields = new List<(string, MExpr)>();
+
+            public void AddField((string function, MExpr value) field) => Fields.Add(field);
+
+            public void AddParam((string name, string type, bool data, string field) param) => Params.Add(param);
         }
 
         /// <summary>
@@ -1190,6 +1194,10 @@ namespace CsVerify.Verifier.Boogie
         /// reads are the memory's now on both sides of that equation, so it holds of a query that reads arrays too.
         /// </summary>
         private readonly List<(IMethodSymbol method, List<string> fields)> _ownedQueries = new List<(IMethodSymbol, List<string>)>();
+
+        public void ClearStarted() => Started.Clear();
+
+        public void ClearThrowing() => Throwing.Clear();
 
         /// <summary>An override's dispatch: of an object exactly of its class, the base member's function is the override's.</summary>
         public void Dispatch(IMethodSymbol b, List<string> bFields, IMethodSymbol o, List<string> oFields, IEnumerable<ISymbol> symbols)

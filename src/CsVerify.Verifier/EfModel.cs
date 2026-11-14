@@ -38,6 +38,16 @@ namespace CsVerify.Verifier
             /// <summary>A collection navigation's foreign key, a property of the entity it holds (where the model says which).</summary>
             public Dictionary<IPropertySymbol, IPropertySymbol> CollectionKeys = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
 
+            public void AddFilter(IAnonymousFunctionOperation filter) => Filters.Add(filter);
+
+            public void AddKey(IEnumerable<IPropertySymbol> collection) => Key.AddRange(collection);
+
+            public bool AddRowVersion(IPropertySymbol rowVersion) => RowVersions.Add(rowVersion);
+
+            public void AddToken(IPropertySymbol token) => Tokens.Add(token);
+
+            public void AddUnique(List<IPropertySymbol> unique) => Unique.Add(unique);
+
             /// <summary>Every set of properties that identifies a row: the key, then the unique ones.</summary>
             public IEnumerable<List<IPropertySymbol>> Identifying => (Key.Count > 0 ? new[] { Key } : Array.Empty<List<IPropertySymbol>>()).Concat(Unique);
         }
@@ -126,7 +136,7 @@ namespace CsVerify.Verifier
             foreach (var (tree, inv, builder) in Configuration(compilation, userTrees)) ReadFluent(compilation, tree, inv, builder);
             foreach (var e in _entities.Values)
             {
-                if (e.Key.Count == 0) e.Key.AddRange(ConventionKey(e.Type));
+                if (e.Key.Count == 0) e.AddKey(ConventionKey(e.Type));
                 foreach (var p in PropertiesOf(e.Type))
                     if (NavigationTarget(p.Type, out bool many) is INamedTypeSymbol target && _entities.ContainsKey(target))
                         (many ? e.Collections : e.References).Add(p);
@@ -311,10 +321,10 @@ namespace CsVerify.Verifier
                 for (var up = e.Type.BaseType; up != null && b == null; up = up.BaseType) b = EntityOf(up);
                 if (b == null) continue;
                 if (b.Key.Count > 0) e.Key = new List<IPropertySymbol>(b.Key);
-                foreach (var filter in b.Filters) if (!e.Filters.Contains(filter)) e.Filters.Add(filter);
-                foreach (var u in b.Unique) e.Unique.Add(u);
-                foreach (var token in b.Tokens) if (!e.Tokens.Contains(token)) e.Tokens.Add(token);
-                foreach (var v in b.RowVersions) e.RowVersions.Add(v);
+                foreach (var filter in b.Filters) if (!e.Filters.Contains(filter)) e.AddFilter(filter);
+                foreach (var u in b.Unique) e.AddUnique(u);
+                foreach (var token in b.Tokens) if (!e.Tokens.Contains(token)) e.AddToken(token);
+                foreach (var v in b.RowVersions) e.AddRowVersion(v);
             }
         }
 
@@ -381,8 +391,8 @@ namespace CsVerify.Verifier
             if (keys.Count > 0) e.Key = keys;
             foreach (var p in props)
             {
-                if (Has(p, "ConcurrencyCheckAttribute")) e.Tokens.Add(p);
-                if (Has(p, "TimestampAttribute")) { e.Tokens.Add(p); e.RowVersions.Add(p); }
+                if (Has(p, "ConcurrencyCheckAttribute")) e.AddToken(p);
+                if (Has(p, "TimestampAttribute")) { e.AddToken(p); e.AddRowVersion(p); }
             }
             // [Index(nameof(A), nameof(B), IsUnique = true)] on the class
             foreach (var a in e.Type.GetAttributes().Where(a => a.AttributeClass?.Name == "IndexAttribute"))
@@ -391,7 +401,7 @@ namespace CsVerify.Verifier
                 if (!unique) continue;
                 var names = a.ConstructorArguments.SelectMany(c => c.Kind == TypedConstantKind.Array ? (IEnumerable<TypedConstant>)c.Values : new[] { c }).Select(c => c.Value as string).ToList();
                 var set = names.Select(n => props.FirstOrDefault(p => p.Name == n)).ToList();
-                if (set.Count > 0 && set.All(p => p != null)) e.Unique.Add(set);
+                if (set.Count > 0 && set.All(p => p != null)) e.AddUnique(set);
             }
         }
 
@@ -436,21 +446,21 @@ namespace CsVerify.Verifier
                     else Unread.Add((inv.GetLocation(), "a key the verifier can't read"));
                     break;
                 case "HasAlternateKey":
-                    if (Properties(model, arg, e) is List<IPropertySymbol> alt) e.Unique.Add(alt);
+                    if (Properties(model, arg, e) is List<IPropertySymbol> alt) e.AddUnique(alt);
                     break;
                 case "HasIndex":
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
                         && Properties(model, arg, e) is List<IPropertySymbol> index)
-                        e.Unique.Add(index);
+                        e.AddUnique(index);
                     break;
                 case "Property":
                     if (Properties(model, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
-                        if (Called("IsRowVersion", out _, next)) { if (!e.Tokens.Contains(p[0])) e.Tokens.Add(p[0]); e.RowVersions.Add(p[0]); }
+                        if (Called("IsRowVersion", out _, next)) { if (!e.Tokens.Contains(p[0])) e.AddToken(p[0]); e.AddRowVersion(p[0]); }
                         else if (Called("IsConcurrencyToken", out var token, next) &&
                                  !(token.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax f && f.IsKind(SyntaxKind.FalseLiteralExpression)) &&
                                  !e.Tokens.Contains(p[0]))
-                            e.Tokens.Add(p[0]);
+                            e.AddToken(p[0]);
                     }
                     break;
                 case "HasOne":
@@ -464,7 +474,7 @@ namespace CsVerify.Verifier
                     break;
                 case "HasQueryFilter":
                     if (arg is LambdaExpressionSyntax lambda && model.GetOperation(lambda) is IAnonymousFunctionOperation filter)
-                        e.Filters.Add(filter);
+                        e.AddFilter(filter);
                     // (a filter that isn't a lambda only removes rows: it says nothing, which is what is assumed)
                     break;
             }

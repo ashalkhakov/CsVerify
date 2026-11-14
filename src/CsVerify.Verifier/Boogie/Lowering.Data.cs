@@ -40,17 +40,17 @@ namespace CsVerify.Verifier.Boogie
                 InvariantBody(inv.OriginalDefinition, _isFunction, _literal, _contractOf);
             }
             Data(t);
-            _p.Valid.Add(DataTypes.Def(t));
+            _p.AddValid(DataTypes.Def(t));
             Emit(KAssume.Of(OrElse(IsNull(v), new KOp(ValidName(t), v))));
         }
 
         private void Data(ITypeSymbol t)
         {
             var def = DataTypes.Def(t);
-            _p.DataTypes.Add(def);
+            _p.AddDataType(def);
             foreach (var c in KernelTypes.Data.KnownCases(def))
             {
-                _p.DataTypes.Add(c);
+                _p.AddDataType(c);
             }
         }
 

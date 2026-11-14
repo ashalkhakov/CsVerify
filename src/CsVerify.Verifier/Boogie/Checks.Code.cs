@@ -194,7 +194,7 @@ namespace CsVerify.Verifier.Boogie
                         _facts.Clear();
                         Assert(pre, At("CSV1001", st.At, $"'{st.At}' might throw: its precondition '{r.At}' might not hold"));
                     }
-                    _p.Stubs.Add(st.Callee);
+                    _p.AddStub(st.Callee);
                     return StubApp(st.Callee, receiver, args);
                 }
                 case KArith ar: return Arith(ar, Code(ar.Left), Code(ar.Right));

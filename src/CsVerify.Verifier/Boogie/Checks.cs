@@ -181,7 +181,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var into in _headInto)
                 {
-                    into.Stmts.Add(MAssume.Of(always.Cond, always: true));
+                    into.AddStmt(MAssume.Of(always.Cond, always: true));
                 }
             }
         }
@@ -283,7 +283,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (check != null)
             {
-                check.Causes.UnionWith(CausesOf(cond));
+                check.AddCauses(CausesOf(cond));
             }
             Emit(MAssert.Of(cond, check, notAssumedAfter: notAssumedAfter));
         }
@@ -340,7 +340,7 @@ namespace CsVerify.Verifier.Boogie
         private MVar Fresh(string type)
         {
             var name = "f$" + _fresh++;
-            _p.Locals.Add(KLocal.Of(name, type));
+            _p.AddLocal(KLocal.Of(name, type));
             Emit(MHavoc.Of(name));
             return new MVar(name);
         }
@@ -398,7 +398,7 @@ namespace CsVerify.Verifier.Boogie
             // (an abstract member: nothing of its own to check, its contract is what calls of it use)
             if (_p.Abstract)
             {
-                _m.Entry.Clear();
+                _m.ClearEntry();
                 _m.Obligations = 0;
                 return;
             }
@@ -462,14 +462,14 @@ namespace CsVerify.Verifier.Boogie
             {
                 _m.ReadsFrame = Spec(_p.ReadsFrame, out _);
                 _facts.Clear();
-                _p.Locals.Add(KLocal.Of("r$entry", "[Ref]bool"));
+                _p.AddLocal(KLocal.Of("r$entry", "[Ref]bool"));
             }
             if (_p.Frame != null)
             {
                 _m.Frame = Spec(_p.Frame, out _);
                 _facts.Clear();
-                _p.Locals.Add(KLocal.Of("w$entry", "[Ref]bool"));
-                _p.Locals.Add(KLocal.Of("alloc$entry", "[Ref]bool"));
+                _p.AddLocal(KLocal.Of("w$entry", "[Ref]bool"));
+                _p.AddLocal(KLocal.Of("alloc$entry", "[Ref]bool"));
             }
         }
 
@@ -655,7 +655,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         foreach (var f in inv.Facts)
                         {
-                            into.Stmts.Add(MAssume.Of(f));
+                            into.AddStmt(MAssume.Of(f));
                         }
                     }
                     foreach (var f in inv.Facts)

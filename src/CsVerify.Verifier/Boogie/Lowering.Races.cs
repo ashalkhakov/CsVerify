@@ -26,6 +26,14 @@ namespace CsVerify.Verifier.Boogie
             public readonly List<KExpr> UsedArrays = new List<KExpr>();
             /// <summary>It has permissions for all it does to arrays, as is proved: so it stays out of what others hold.</summary>
             public bool Covered;
+
+            public void AddReads(IEnumerable<(ISymbol field, KExpr on)> collection) => Reads.AddRange(collection);
+
+            public void AddUsedArray(KExpr usedArray) => UsedArrays.Add(usedArray);
+
+            public void AddWrites(IEnumerable<(ISymbol field, KExpr on)> collection) => Writes.AddRange(collection);
+
+            public void AddWrittenArray(KExpr writtenArray) => WrittenArrays.Add(writtenArray);
         }
 
         private sealed class EffectScope
@@ -161,19 +169,19 @@ namespace CsVerify.Verifier.Boogie
                 }
                 if (KernelTypes.FieldWrites != null)
                 {
-                    e.Writes.AddRange(KernelTypes.FieldWrites(m).Select(x => (x, (KExpr)null)));
+                    e.AddWrites(KernelTypes.FieldWrites(m).Select(x => (x, (KExpr)null)));
                 }
                 if (KernelTypes.FieldReads != null)
                 {
-                    e.Reads.AddRange(KernelTypes.FieldReads(m).Select(x => (x, (KExpr)null)));
+                    e.AddReads(KernelTypes.FieldReads(m).Select(x => (x, (KExpr)null)));
                 }
                 if (KernelTypes.MayWriteHeap?.Invoke(m) == true)
                 {
-                    e.WrittenArrays.Add(null);
+                    e.AddWrittenArray(null);
                 }
                 if (KernelTypes.MayTouchArrays?.Invoke(m) == true)
                 {
-                    e.UsedArrays.Add(null);
+                    e.AddUsedArray(null);
                 }
                 return;
             }
@@ -261,10 +269,10 @@ namespace CsVerify.Verifier.Boogie
                     case ElementAccessExpressionSyntax ea when model.GetTypeInfo(ea.Expression).Type is IArrayTypeSymbol:
                     {
                         var array = ObjectOf(ea.Expression, model, scope);
-                        e.UsedArrays.Add(array);
+                        e.AddUsedArray(array);
                         if (LockGuards.IsWriteTarget(ea))
                         {
-                            e.WrittenArrays.Add(array);
+                            e.AddWrittenArray(array);
                         }
                         break;
                     }
@@ -373,7 +381,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (message != null)
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, message, at.GetLocation().GetLineSpan()));
+                _p.AddWarning(new VerificationDiagnostic("CSV1900", false, message, at.GetLocation().GetLineSpan()));
             }
         }
 

@@ -21,6 +21,8 @@ namespace CsVerify.Verifier.Boogie
         public string ReportAs;
         /// <summary>What the unknown values its conditions read come from (the library report's causes).</summary>
         public readonly HashSet<string> Causes = new HashSet<string>();
+
+        public void AddCauses(IEnumerable<string> other) => Causes.UnionWith(other);
     }
 
     /// <summary>A construct outside the subset the Boogie translation covers: the method is verified the other way.</summary>
@@ -644,20 +646,20 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var frame in p.Blocks.SelectMany(b => b.Stmts).OfType<MCallFrame>().Where(f => !f.After))
                 {
-                    frame.Maps.AddRange((writes.TryGetValue(frame.Callee.OriginalDefinition, out var w) ? w : new HashSet<string>())
+                    frame.AddMaps((writes.TryGetValue(frame.Callee.OriginalDefinition, out var w) ? w : new HashSet<string>())
                         .Where(_printer.OwnedMaps.Contains).OrderBy(x => x, StringComparer.Ordinal));
-                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$perm", "[Ref]bool"));
-                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$pinst", "[Inst]int"));
-                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$owner", "[Ref]Inst"));
-                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$psnap", "[Inst]int"));
-                    p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$Alloc", "[Ref]bool"));
+                    p.Source.AddLocal(KLocal.Of($"s{frame.Id}$perm", "[Ref]bool"));
+                    p.Source.AddLocal(KLocal.Of($"s{frame.Id}$pinst", "[Inst]int"));
+                    p.Source.AddLocal(KLocal.Of($"s{frame.Id}$owner", "[Ref]Inst"));
+                    p.Source.AddLocal(KLocal.Of($"s{frame.Id}$psnap", "[Inst]int"));
+                    p.Source.AddLocal(KLocal.Of($"s{frame.Id}$Alloc", "[Ref]bool"));
                     if (KernelTypes.Trees)
                     {
-                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$root", "[Ref]Ref"));
+                        p.Source.AddLocal(KLocal.Of($"s{frame.Id}$root", "[Ref]Ref"));
                     }
                     foreach (var map in frame.Maps)
                     {
-                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}{map}", $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}"));
+                        p.Source.AddLocal(KLocal.Of($"s{frame.Id}{map}", $"[Ref]{TypeOf(FieldType(fields.First(f => FieldMap(f) == map)))}"));
                     }
                     foreach (var map in frame.Maps)
                     {
@@ -665,17 +667,17 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (frame.Fields)
                     {
-                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$fperm", "[Ref][int]bool"));
-                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$fowner", "[Ref][int]Inst"));
+                        p.Source.AddLocal(KLocal.Of($"s{frame.Id}$fperm", "[Ref][int]bool"));
+                        p.Source.AddLocal(KLocal.Of($"s{frame.Id}$fowner", "[Ref][int]Inst"));
                     }
                     if (frame.Cells)
                     {
-                        frame.ElementMaps.AddRange((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));
-                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$cells", "[Ref][int]real"));
-                        p.Source.Locals.Add(KLocal.Of($"s{frame.Id}$cowner", "[Ref][int]Inst"));
+                        frame.AddElementMaps((w ?? new HashSet<string>()).Where(x => x.StartsWith("$E.")).OrderBy(x => x, StringComparer.Ordinal));
+                        p.Source.AddLocal(KLocal.Of($"s{frame.Id}$cells", "[Ref][int]real"));
+                        p.Source.AddLocal(KLocal.Of($"s{frame.Id}$cowner", "[Ref][int]Inst"));
                         foreach (var map in frame.ElementMaps)
                         {
-                            p.Source.Locals.Add(KLocal.Of($"s{frame.Id}{map}", "[Ref][int]" + ElementValue(map)));
+                            p.Source.AddLocal(KLocal.Of($"s{frame.Id}{map}", "[Ref][int]" + ElementValue(map)));
                         }
                     }
                     // (and the globals its postconditions read as they were)
@@ -685,7 +687,7 @@ namespace CsVerify.Verifier.Boogie
                                 : fields.FirstOrDefault(f => FieldMap(f) == g) is ISymbol fs ? $"[Ref]{TypeOf(FieldType(fs))}" : null;
                         if (raw != null)
                         {
-                            p.Source.Locals.Add(KLocal.Of($"s{frame.Id}{g}", raw));
+                            p.Source.AddLocal(KLocal.Of($"s{frame.Id}{g}", raw));
                         }
                     }
                 }
@@ -714,7 +716,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var (name, type) in _printer.StateMaps)
                     {
-                        p.Source.Locals.Add(KLocal.Of($"k${keep.Id}{name}", type));
+                        p.Source.AddLocal(KLocal.Of($"k${keep.Id}{name}", type));
                     }
                 }
             }
@@ -725,7 +727,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var (name, type) in _printer.StateMaps)
                     {
-                        p.Source.Locals.Add(KLocal.Of($"c${cf.Head}{name}", type));
+                        p.Source.AddLocal(KLocal.Of($"c${cf.Head}{name}", type));
                     }
                 }
             }
@@ -743,10 +745,10 @@ namespace CsVerify.Verifier.Boogie
                     {
                         continue;
                     }
-                    p.Source.Locals.Add(KLocal.Of($"s${frame.Head}$Alloc", "[Ref]bool"));
+                    p.Source.AddLocal(KLocal.Of($"s${frame.Head}$Alloc", "[Ref]bool"));
                     foreach (var map in frame.Maps)
                     {
-                        p.Source.Locals.Add(KLocal.Of($"s${frame.Head}{map}", "[Ref][int]" + ElementValue(map)));
+                        p.Source.AddLocal(KLocal.Of($"s${frame.Head}{map}", "[Ref][int]" + ElementValue(map)));
                     }
                 }
             }
@@ -779,7 +781,7 @@ namespace CsVerify.Verifier.Boogie
                 var clauses = sig.ThrowEnsures.Select(t => (t.type, Checks.MathOf(t.cond, this, callee))).ToList();
                 _printer.Throws(sig, writes.TryGetValue(callee, out var w) || writes.TryGetValue(callee.OriginalDefinition, out w) ? w : _allMaps, clauses);
             }
-            _printer.Throwing.Clear();
+            _printer.ClearThrowing();
             // the twins of what's started as a task or a thread: its preconditions free, as its start checked them
             foreach (var callee in _printer.Started.ToList())
             {
@@ -794,7 +796,7 @@ namespace CsVerify.Verifier.Boogie
                 twin.Source.FreeRequires = true;
                 _printer.Procedure(twin, writes[p.Source.Method], any[p.Source.Method], null);
             }
-            _printer.Started.Clear();
+            _printer.ClearStarted();
             _printer.Tuples();
             _printer.StaticReadonlyFacts();
             foreach (var p in _pending.Where(p => p.Source.Result != null && p.Source.Warnings.Count > 0))
@@ -846,7 +848,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var p in ctor.Parameters)
                 {
                     var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
-                    dc.Params.Add((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
+                    dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
                 }
                 foreach (var prop in Data.Fields(c))
                 {
@@ -854,7 +856,7 @@ namespace CsVerify.Verifier.Boogie
                     MExpr value = SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
                         ? new MVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
                         : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
-                    dc.Fields.Add((fn, value));
+                    dc.AddField((fn, value));
                     // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
                     // an integer one in its type's range)
                     if (!fields.ContainsKey(fn))
@@ -959,6 +961,8 @@ namespace CsVerify.Verifier.Boogie
                 n is InvocationExpressionSyntax inv && !(inv.Expression.ToString().StartsWith("Spec.") || inv.Expression.ToString().StartsWith("Math."))));
 
         private HashSet<string> _allMaps = new HashSet<string>();
+
+        public bool AddDisabled(int disabled) => Disabled.Add(disabled);
 
         /// <summary>A set of globals of each procedure's, with those of everything it calls.</summary>
         private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<HProcedure, HashSet<string>> own)

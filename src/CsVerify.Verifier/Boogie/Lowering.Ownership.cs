@@ -87,7 +87,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var args = own.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
                     var container = slot.Instance is IInstanceReferenceOperation ? new KVar("this") : Expr(slot.Instance);
-                    _p.Fields.Add(owns.OriginalDefinition);
+                    _p.AddField(owns.OriginalDefinition);
                     if (own.TargetMethod.Name == "Take")
                     {
                         var view = RefVariable(args[1]);

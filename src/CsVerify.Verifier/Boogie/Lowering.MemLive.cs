@@ -32,7 +32,7 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             _memLive = "m$live";
-            _p.Locals.Add(KLocal.Of(_memLive, "[int]bool"));
+            _p.AddLocal(KLocal.Of(_memLive, "[int]bool"));
             Emit(KHavoc.Of(_memLive));
             var a = new KVar("m$a");
             foreach (var x in views)

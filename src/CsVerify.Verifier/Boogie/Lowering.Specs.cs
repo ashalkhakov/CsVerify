@@ -291,7 +291,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Models[model.Name] = model;
             }
-            _p.Stubs.Add(gm);
+            _p.AddStub(gm);
             var args = pi.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Spec(a.Value, result)).ToArray();
             return new KFnCall
             {
@@ -491,7 +491,7 @@ namespace CsVerify.Verifier.Boogie
                                                   fa.Arguments.Length == 2 && IsOwnedClass(Unconverted(fa.Arguments[0].Value).Type):
                     return SpecAccOfField(fa, result);
                 case IInvocationOperation pc when SpecSymbols.IsPredicate(pc.TargetMethod.OriginalDefinition) && pc.TargetMethod.IsStatic:
-                    _p.Preds.Add(pc.TargetMethod.OriginalDefinition);
+                    _p.AddPred(pc.TargetMethod.OriginalDefinition);
                     return new KInst
                     {
                         Pred = pc.TargetMethod.OriginalDefinition,
@@ -543,7 +543,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var f = Unconverted(inv.Arguments[0].Value);
                     var key = FuncKey(f.Type);
-                    _p.DelegateKeys.Add(key);
+                    _p.AddDelegateKey(key);
                     var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Select((a, k) => k == 0 ? Spec(f, result) : Spec(a.Value, result)).ToList();
                     // (a parameter this method takes to be steady: in every state; any other, in this one)
                     // (one a lambda captures, of the method it's in: steady too, where nothing writes it)
@@ -570,7 +570,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var f = Unconverted(inv.Arguments[0].Value);
                     var key = FuncKey(f.Type);
-                    _p.DelegateKeys.Add(key);
+                    _p.AddDelegateKey(key);
                     var given = Unconverted(inv.Arguments[1].Value);
                     var ps = new List<(string name, string type)>();
                     KExpr within;
@@ -662,7 +662,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 _p.Models[model.Name] = model;
             }
-            _p.Stubs.Add(fm);
+            _p.AddStub(fm);
             var ordered = cm.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var args = ordered.Select(a => (KExpr)(CustomEquality(fm.Parameters[a.Parameter.Ordinal].Type) ? Spec(a.Value, result) : Keyed(Spec(a.Value, result), fm.Parameters[a.Parameter.Ordinal].Type))).ToArray();
             return new KFnCall
@@ -763,7 +763,7 @@ namespace CsVerify.Verifier.Boogie
             var span = npr.Syntax.GetLocation().GetLineSpan();
             if (!_p.Warnings.Any(w => w.Span.Equals(span)))
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"'{npr.Property.Name}' is not a [Pure] property and cannot be used in a specification; treated as unknown", span));
+                _p.AddWarning(new VerificationDiagnostic("CSV1900", false, $"'{npr.Property.Name}' is not a [Pure] property and cannot be used in a specification; treated as unknown", span));
             }
             return new KVar(Declare("t$" + _temps++, npr.Type));
         }
@@ -773,7 +773,7 @@ namespace CsVerify.Verifier.Boogie
             var span = slp.Syntax.GetLocation().GetLineSpan();
             if (!_p.Warnings.Any(w => w.Span.Equals(span)))
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1901", true, $"property '{slp.Property.Name}' is not supported: only auto-properties, properties with code, and properties of immutable types are", span));
+                _p.AddWarning(new VerificationDiagnostic("CSV1901", true, $"property '{slp.Property.Name}' is not supported: only auto-properties, properties with code, and properties of immutable types are", span));
             }
             // (in an assertion, a value of its own; in a contract, which is outside the body, its type's default: the error stands either way)
             if (slp.Syntax.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault(i => i.Expression.ToString() is "Spec.Assert" or "Spec.Assume") != null)
@@ -788,7 +788,7 @@ namespace CsVerify.Verifier.Boogie
             var span = np.Syntax.GetLocation().GetLineSpan();
             if (!_p.Warnings.Any(w => w.Span.Equals(span)))
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"'{np.TargetMethod.Name}' is not [Pure] and cannot be used in a specification; treated as unknown", span));
+                _p.AddWarning(new VerificationDiagnostic("CSV1900", false, $"'{np.TargetMethod.Name}' is not [Pure] and cannot be used in a specification; treated as unknown", span));
             }
             return new KVar(Declare("t$" + _temps++, np.Type));
         }
@@ -798,7 +798,7 @@ namespace CsVerify.Verifier.Boogie
             var m = dbf.TargetMethod;
             var args = (dbf.Instance == null ? new IOperation[0] : new[] { dbf.Instance }).Concat(dbf.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value)).ToList();
             var name = "$db." + Ident(m.ContainingType.ToDisplayString() + "." + m.Name) + "." + string.Join("_", args.Select(a => TypeOf(a.Type).Replace("[", "_").Replace("]", "_")));
-            _p.Functions.Add($"function {name}({string.Join(", ", args.Select((a, k) => $"a{k}: {TypeOf(a.Type)}"))}): {TypeOf(m.ReturnType)};");
+            _p.AddFunction($"function {name}({string.Join(", ", args.Select((a, k) => $"a{k}: {TypeOf(a.Type)}"))}): {TypeOf(m.ReturnType)};");
             return new KOp(name, args.Select(a => Spec(a, result)).ToArray());
         }
 
@@ -861,7 +861,7 @@ namespace CsVerify.Verifier.Boogie
                 var span = fa.Syntax.GetLocation().GetLineSpan();
                 if (_p.Result != null && !_p.Warnings.Any(w => w.Span.Equals(span) && w.Id == "CSV1016"))
                 {
-                    _p.Warnings.Add(new VerificationDiagnostic("CSV1016", true, $"Spec.Acc of a single field: {why}", span));
+                    _p.AddWarning(new VerificationDiagnostic("CSV1016", true, $"Spec.Acc of a single field: {why}", span));
                 }
                 return KLit.True;
             }

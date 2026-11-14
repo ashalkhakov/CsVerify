@@ -184,7 +184,7 @@ namespace CsVerify.Verifier.Boogie
                 var all = h.ExceptionType == null || h.ExceptionType.ToDisplayString() == "System.Exception";
                 if (!all)
                 {
-                    _p.ExceptionTypes.Add(h.ExceptionType);
+                    _p.AddExceptionType(h.ExceptionType);
                 }
                 var test = all ? (KExpr)KLit.True : new KOp("sub", new KOp("dtype", ex), new KLit(TypeConst(h.ExceptionType)));
                 string here = k == 0 ? label : $"{label}$n{k - 1}", take = $"{label}$h{k}", pass = $"{label}$t{k}";
@@ -194,9 +194,9 @@ namespace CsVerify.Verifier.Boogie
                 }
                 else
                 {
-                    _p.Blocks.Add(KBlock.Of(here, tryRegion.FirstBlockOrdinal, jump: new KGoto(take, pass)));
+                    _p.AddBlock(KBlock.Of(here, tryRegion.FirstBlockOrdinal, jump: new KGoto(take, pass)));
                 }
-                _p.Blocks.Add(new KBlock
+                _p.AddBlock(new KBlock
                 {
                     Label = take,
                     Ordinal = tryRegion.FirstBlockOrdinal,
@@ -209,7 +209,7 @@ namespace CsVerify.Verifier.Boogie
                     Ordinal = tryRegion.FirstBlockOrdinal,
                     Stmts = { KAssume.Of(Not(test)) },
                 };
-                _p.Blocks.Add(next);
+                _p.AddBlock(next);
                 if (k == handlers.Count - 1)
                 {
                     next.Jump = outer == null ? new KStop() : new KGoto(outer);
@@ -217,14 +217,14 @@ namespace CsVerify.Verifier.Boogie
                 else
                 {
                     next.Jump = new KGoto($"{label}$n{k}");
-                    _p.Blocks.Add(KBlock.Of($"{label}$n{k}", tryRegion.FirstBlockOrdinal));
+                    _p.AddBlock(KBlock.Of($"{label}$n{k}", tryRegion.FirstBlockOrdinal));
                 }
                 // (a filter: its type matched, it runs; false, on to the next handler as if the type hadn't)
                 if (h.Kind == ControlFlowRegionKind.FilterAndHandler)
                 {
                     var filter = h.NestedRegions.First(x => x.Kind == ControlFlowRegionKind.Filter);
                     _filterFalse[filter] = $"{label}$f{k}";
-                    _p.Blocks.Add(KBlock.Of(
+                    _p.AddBlock(KBlock.Of(
                         $"{label}$f{k}",
                         tryRegion.FirstBlockOrdinal,
                         jump: k == handlers.Count - 1 ? (outer == null ? new KStop() : new KGoto(outer)) : new KGoto($"{label}$n{k}")));
@@ -232,7 +232,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (handlers.Count == 0)
             {
-                _p.Blocks.Add(KBlock.Of(label, tryRegion.FirstBlockOrdinal, jump: outer == null ? new KStop() : new KGoto(outer)));
+                _p.AddBlock(KBlock.Of(label, tryRegion.FirstBlockOrdinal, jump: outer == null ? new KStop() : new KGoto(outer)));
             }
             return label;
         }
@@ -271,7 +271,7 @@ namespace CsVerify.Verifier.Boogie
             var id = exits.Count;
             exits.Add((id, then));
             var label = $"e${_edges++}";
-            _p.Blocks.Add(new KBlock
+            _p.AddBlock(new KBlock
             {
                 Label = label,
                 Ordinal = ordinal,
@@ -335,7 +335,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         TasksAwaited(fb);
                     }
-                    _p.Blocks.Add(fb);
+                    _p.AddBlock(fb);
                 }
                 end.Jump = new KGoto(labels.ToArray());
             }

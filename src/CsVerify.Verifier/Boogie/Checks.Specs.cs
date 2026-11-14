@@ -342,7 +342,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     _facts.Clear();
                     _facts.AddRange(saved);
-                    _p.Stubs.Add(st.Callee);
+                    _p.AddStub(st.Callee);
                     return StubApp(st.Callee, receiver, args);
                 }
                 case KAcc acc:
@@ -511,7 +511,7 @@ namespace CsVerify.Verifier.Boogie
             // (the fields it reads are the procedure's too: what's known of them, a reference field's object allocated, holds)
             foreach (var ff in _program.FunctionFieldSymbols(fn.Callee))
             {
-                _p.Fields.Add(ff);
+                _p.AddField(ff);
             }
             return new MFnApp
             {

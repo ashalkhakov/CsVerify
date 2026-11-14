@@ -43,6 +43,12 @@ namespace CsVerify.Verifier
         public List<string> References = new List<string>();
         /// <summary>The kinds of check proved (<see cref="Verifier.Checks"/>); null for all. The rest are assumed.</summary>
         public HashSet<string> CheckKinds;
+
+        public void AddDefine(string define) => Defines.Add(define);
+
+        public void AddOnly(string only) => Only.Add(only);
+
+        public void AddReference(string reference) => References.Add(reference);
         /// <summary>Is an obligation (or a diagnostic) with this id checked in the profile?</summary>
         internal bool Checked(string id) => CheckKinds == null || !(Verifier.Checks.KindOf(id) is string kind) || CheckKinds.Contains(kind);
     }
@@ -94,6 +100,20 @@ namespace CsVerify.Verifier
         /// <summary>A lambda's or a local function's flow graph (its enclosing method's gives it).</summary>
         internal Microsoft.CodeAnalysis.FlowAnalysis.ControlFlowGraph Graph;
 
+        public bool AddAssumption(string assumption) => Assumptions.Add(assumption);
+
+        public void AddAssumptions(IEnumerable<string> other) => Assumptions.UnionWith(other);
+
+        public void AddDiagnostic(VerificationDiagnostic diagnostic) => Diagnostics.Add(diagnostic);
+
+        public void AddDiagnostics(IEnumerable<VerificationDiagnostic> collection) => Diagnostics.AddRange(collection);
+
+        public bool AddLibraryCall((string member, string at) libraryCall) => LibraryCalls.Add(libraryCall);
+
+        public void AddLibraryCalls(IEnumerable<(string member, string at)> other) => LibraryCalls.UnionWith(other);
+
+        public int RemoveDiagnostics(Predicate<VerificationDiagnostic> match) => Diagnostics.RemoveAll(match);
+
         /// <summary>Starts the method's results over (for a run again: see Engine.RunMethod).</summary>
         internal void Clear()
         {
@@ -114,6 +134,14 @@ namespace CsVerify.Verifier
         public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts some proof assumed.</summary>
         public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
+
+        public void AddAnalyzerError(VerificationDiagnostic analyzerError) => AnalyzerErrors.Add(analyzerError);
+
+        public void AddAssumptions(IEnumerable<string> other) => Assumptions.UnionWith(other);
+
+        public void AddCompilationError(VerificationDiagnostic compilationError) => CompilationErrors.Add(compilationError);
+
+        public void AddMethod(MethodResult method) => Methods.Add(method);
         public IEnumerable<VerificationDiagnostic> Diagnostics =>
             CompilationErrors.Concat(AnalyzerErrors).Concat(Methods.SelectMany(m => m.Diagnostics));
         public bool Success => !Diagnostics.Any(d => d.IsError);
@@ -631,7 +659,7 @@ namespace CsVerify.Verifier
 
             var result = new VerificationResult();
             foreach (var d in compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
-                result.CompilationErrors.Add(new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan()));
+                result.AddCompilationError(new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan()));
             if (result.CompilationErrors.Count > 0) return result;
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
@@ -703,7 +731,7 @@ namespace CsVerify.Verifier
                     var mr = new MethodResult { Name = method.ContainingType.Name + "." + method.Name, Declared = span.Path + ":" + (span.StartLinePosition.Line + 1) };
                     // (its lambdas and local functions, each a unit of its own: selected or not, as it is)
                     if (!options.Selects(mr.Name)) { RunNested(engine, decl, model, mr.Name, result, declarations, options, forBoogie); continue; }
-                    result.Methods.Add(mr);
+                    result.AddMethod(mr);
                     declarations.Add((decl, mr));
                     if (Boogie.BoogieTranslator.Candidate(method, contract) && Sequential(engine, method, decl, model)) forBoogie.Add((method, contract, decl, mr));
                     else NotVerified(engine, contract, mr, decl.GetLocation(), null, Boogie.BoogieTranslator.Candidate(method, contract) ? "a field guarded by a semaphore or a flag" : Boogie.BoogieTranslator.WhyNot(method, contract));
@@ -737,7 +765,7 @@ namespace CsVerify.Verifier
                     var span = node.GetLocation().GetLineSpan();
                     var mr = new MethodResult { Name = hasCode ? accessor.ContainingType.Name + "." + accessor.Name : null, Declared = span.Path + ":" + (span.StartLinePosition.Line + 1) };
                     if (hasCode && !options.Selects(mr.Name)) continue;
-                    if (hasCode) { result.Methods.Add(mr); declarations.Add((node, mr)); boogieAccessors.Add(node); }
+                    if (hasCode) { result.AddMethod(mr); declarations.Add((node, mr)); boogieAccessors.Add(node); }
                     forBoogie.Add((accessor, contract, node, mr));
                 }
             }
@@ -791,7 +819,7 @@ namespace CsVerify.Verifier
                     var where = node.GetLocation().GetLineSpan();
                     var mr = new MethodResult { Name = accessor.ContainingType.Name + "." + accessor.Name, Declared = where.Path + ":" + (where.StartLinePosition.Line + 1) };
                     if (!options.Selects(mr.Name)) continue;
-                    result.Methods.Add(mr);
+                    result.AddMethod(mr);
                     declarations.Add((node, mr));
                     NotVerified(engine, engine.ContractOf(accessor), mr, node.GetLocation(), null,
                                 Boogie.BoogieTranslator.Candidate(accessor, engine.ContractOf(accessor)) ? "a field guarded by a semaphore or a flag" : Boogie.BoogieTranslator.WhyNot(accessor, engine.ContractOf(accessor)));
@@ -810,8 +838,8 @@ namespace CsVerify.Verifier
                         if (nulls.Count == 0 || !options.Selects(mr.Name)) continue;
                         mr.Obligations = nulls.Count;
                         foreach (var (_, at, message) in nulls)
-                            mr.Diagnostics.Add(new VerificationDiagnostic("CSV1014", true, message, at.GetLocation().GetLineSpan()));
-                        result.Methods.Add(mr);
+                            mr.AddDiagnostic(new VerificationDiagnostic("CSV1014", true, message, at.GetLocation().GetLineSpan()));
+                        result.AddMethod(mr);
                     }
                 }
             // a stub that specifies nothing (a typo in a name or a parameter type) would silently leave a member unspecified
@@ -819,9 +847,9 @@ namespace CsVerify.Verifier
             {
                 var location = stubMethod?.Locations.FirstOrDefault();
                 if (location == null || !userTrees.Contains(location.SourceTree) && !(location.SourceTree?.FilePath.StartsWith("<CsVerify.Spec>") == true)) continue;
-                result.AnalyzerErrors.Add(new VerificationDiagnostic("CSV1021", true, message, location.GetLineSpan()));
+                result.AddAnalyzerError(new VerificationDiagnostic("CSV1021", true, message, location.GetLineSpan()));
             }
-            result.Assumptions.UnionWith(result.Methods.SelectMany(mr => mr.Assumptions));
+            result.AddAssumptions(result.Methods.SelectMany(mr => mr.Assumptions));
             AddAnalyzerErrors(compilation, userTrees, declarations, result, options);
             return result;
         }
@@ -855,7 +883,7 @@ namespace CsVerify.Verifier
                 var nmr = new MethodResult { Name = owner + "." + NestedName(nested), Graph = graph,
                                              Declared = where.Path + ":" + (where.StartLinePosition.Line + 1) + ":" + (where.StartLinePosition.Character + 1) };
                 if (!options.Selects(nmr.Name)) continue;
-                result.Methods.Add(nmr);
+                result.AddMethod(nmr);
                 declarations.Add((syntax, nmr));
                 var contract = engine.ContractOf(nested);
                 if (Boogie.BoogieTranslator.Candidate(nested, contract) && Sequential(engine, nested, syntax, model)) forBoogie.Add((nested, contract, syntax, nmr));
@@ -1004,8 +1032,8 @@ namespace CsVerify.Verifier
                 var libraryCalls = x.result.LibraryCalls.ToList();
                 var assumed = x.result.Assumptions.ToList();
                 x.result.Clear();
-                x.result.LibraryCalls.UnionWith(libraryCalls);
-                x.result.Assumptions.UnionWith(assumed);
+                x.result.AddLibraryCalls(libraryCalls);
+                x.result.AddAssumptions(assumed);
                 // (a failed check of a warning's: the warning, CSV1900, not an error)
                 mine = mine.Select(d => d.Id == Boogie.Lowering.Warning ? new VerificationDiagnostic("CSV1900", false, d.Message.Replace(" (boogie)", ""), d.Span) : d).ToList();
                 // (outside the check profile: assumed, not proved; Boogie assumes what it asserts, so it is)
@@ -1020,24 +1048,24 @@ namespace CsVerify.Verifier
                         return new VerificationDiagnostic("CSV1901", false, d.Message.Replace(" (boogie)", "") + " (not modeled: treated as unknown)", d.Span);
                     }).ToList();
                 mine = mine.Where(d => !d.IsError || engine.Options.Checked(d.Id)).ToList();
-                x.result.Diagnostics.AddRange(mine);
+                x.result.AddDiagnostics(mine);
                 if (undecided != null)
-                    x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1902", true, $"'{x.result.Name}' is not verified: Boogie couldn't decide it in time ({undecided.Message})", x.decl.GetLocation().GetLineSpan()));
+                    x.result.AddDiagnostic(new VerificationDiagnostic("CSV1902", true, $"'{x.result.Name}' is not verified: Boogie couldn't decide it in time ({undecided.Message})", x.decl.GetLocation().GetLineSpan()));
                 // (what's checked from the syntax and the declarations, as for any method: locking, concurrency marks, ...)
                 if (x.result.Name != null)
                 {
                     var staticResult = new MethodResult();
                     try { new StaticChecks(engine, x.contract, staticResult) { NestedGraph = x.result.Graph }.Run(); }
-                    catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan())); }
-                    x.result.Diagnostics.AddRange(staticResult.Diagnostics);
+                    catch (Exception e) { staticResult.AddDiagnostic(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan())); }
+                    x.result.AddDiagnostics(staticResult.Diagnostics);
                 }
-                x.result.Diagnostics.AddRange(translator.Warnings(x.result));
+                x.result.AddDiagnostics(translator.Warnings(x.result));
                 x.result.Obligations = translator.Obligations.TryGetValue(x.result, out var n) ? n : 0;
                 x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count(d => d.IsError));
                 x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
                 // (past its time budget: not verified, never verified)
                 if (engine.Options.MethodBudgetMs > 0 && x.result.Milliseconds > engine.Options.MethodBudgetMs)
-                    x.result.Diagnostics.Add(new VerificationDiagnostic("CSV1901", true,
+                    x.result.AddDiagnostic(new VerificationDiagnostic("CSV1901", true,
                         $"time budget ({engine.Options.MethodBudgetMs} ms) reached; the rest of '{x.result.Name}' is not verified", x.decl.GetLocation().GetLineSpan()));
             }
             return null;
@@ -1052,9 +1080,9 @@ namespace CsVerify.Verifier
             mr.Clear();
             var staticResult = new MethodResult();
             try { new StaticChecks(engine, contract, staticResult) { NestedGraph = nested }.Run(); }
-            catch (Exception e) { staticResult.Diagnostics.Add(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan())); }
-            mr.Diagnostics.AddRange(staticResult.Diagnostics);
-            mr.Diagnostics.Add(new VerificationDiagnostic("CSV1902", true, $"'{mr.Name}' is not verified: {reason}", at.GetLineSpan()));
+            catch (Exception e) { staticResult.AddDiagnostic(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan())); }
+            mr.AddDiagnostics(staticResult.Diagnostics);
+            mr.AddDiagnostic(new VerificationDiagnostic("CSV1902", true, $"'{mr.Name}' is not verified: {reason}", at.GetLineSpan()));
             Trace($"not verified: {mr.Name}: {reason}");
         }
 
@@ -1071,10 +1099,10 @@ namespace CsVerify.Verifier
                 if (owner.result != null)
                 {
                     // (a method with an analyzer error isn't verified: that it isn't translated isn't news, CSV1902 goes)
-                    owner.result.Diagnostics.RemoveAll(x => x.Id == "CSV1902");
-                    owner.result.Diagnostics.Add(vd);
+                    owner.result.RemoveDiagnostics(x => x.Id == "CSV1902");
+                    owner.result.AddDiagnostic(vd);
                 }
-                else result.AnalyzerErrors.Add(vd);
+                else result.AddAnalyzerError(vd);
             }
         }
 

@@ -140,7 +140,7 @@ namespace CsVerify.Verifier.Boogie
                 return; // (this(...): the constructor it calls runs them, called on this as base(...) is)
             } // (this(...): the constructor it calls runs them, called on this as base(...) is)
             _block = KBlock.Of("init", -1, jump: new KGoto("b0"));
-            _p.Blocks.Add(_block);
+            _p.AddBlock(_block);
             foreach (var member in _m.ContainingType.GetMembers().Where(x => !x.IsStatic && (x is IFieldSymbol || x is IPropertySymbol)))
             {
                 foreach (var syntax in member.DeclaringSyntaxReferences.Select(r => r.GetSyntax()))
@@ -167,7 +167,7 @@ namespace CsVerify.Verifier.Boogie
                         throw new NotTranslated("the initializer of " + member.Name);
                     }
                     var value = Expr(op.Value);
-                    _p.Fields.Add(member.OriginalDefinition);
+                    _p.AddField(member.OriginalDefinition);
                     Emit(new KFieldStore
                     {
                         Field = member.OriginalDefinition,
@@ -323,7 +323,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var l in Confined())
                 {
-                    jk.Keep.Add(Declare(Local(l), l.Type));
+                    jk.AddKeep(Declare(Local(l), l.Type));
                 }
             }
             _p.Awaits = true;
@@ -730,7 +730,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 throw new NotTranslated("a call of " + ctor.ContainingType.Name + "'s constructor");
             }
-            _p.Calls.Add(ctor);
+            _p.AddCall(ctor);
             var ordered = chain.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var args = Operands(ordered.Select(a => a.Value).ToArray());
             Emit(new KCall
@@ -1134,8 +1134,8 @@ namespace CsVerify.Verifier.Boogie
                 var elseBlock = KBlock.Of(otherwise, b.Ordinal);
                 if (cond != null)
                 {
-                    thenBlock.Stmts.Add(KAssume.Of(cond));
-                    elseBlock.Stmts.Add(KAssume.Of(Not(cond)));
+                    thenBlock.AddStmt(KAssume.Of(cond));
+                    elseBlock.AddStmt(KAssume.Of(Not(cond)));
                 }
                 thenBlock.Jump = Edge(b, b.ConditionalSuccessor);
                 elseBlock.Jump = Edge(b, fall);
@@ -1158,8 +1158,8 @@ namespace CsVerify.Verifier.Boogie
                 {
                     TasksAwaited(elseBlock);
                 }
-                _p.Blocks.Add(thenBlock);
-                _p.Blocks.Add(elseBlock);
+                _p.AddBlock(thenBlock);
+                _p.AddBlock(elseBlock);
                 return;
             }
             if (fall?.Semantics == ControlFlowBranchSemantics.Return && b.BranchValue != null)
@@ -1238,7 +1238,7 @@ namespace CsVerify.Verifier.Boogie
         {
             if (to != null && _forEachAt.TryGetValue(to.Ordinal, out var fe) && from.Ordinal >= fe.Head)
             {
-                edge.Stmts.Add(KAssign.Of(fe.Index, Plus(new KVar(fe.Index), KLit.One)));
+                edge.AddStmt(KAssign.Of(fe.Index, Plus(new KVar(fe.Index), KLit.One)));
             }
         }
 

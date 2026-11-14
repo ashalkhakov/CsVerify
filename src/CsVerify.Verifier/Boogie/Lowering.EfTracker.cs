@@ -57,10 +57,10 @@ namespace CsVerify.Verifier.Boogie
                 Type = "[Ref]bool",
             };
             _failed = "ef$failed"; _savedAlone = "ef$savedAlone"; _stale = "ef$stale"; _read = "ef$read";
-            _p.Locals.Add(KLocal.Of(_failed, "[Ref]bool"));
-            _p.Locals.Add(KLocal.Of(_savedAlone, "[Ref]bool"));
-            _p.Locals.Add(KLocal.Of(_stale, "[Ref][Ref]bool"));
-            _p.Locals.Add(KLocal.Of(_read, "[Ref][Ref]bool"));
+            _p.AddLocal(KLocal.Of(_failed, "[Ref]bool"));
+            _p.AddLocal(KLocal.Of(_savedAlone, "[Ref]bool"));
+            _p.AddLocal(KLocal.Of(_stale, "[Ref][Ref]bool"));
+            _p.AddLocal(KLocal.Of(_read, "[Ref][Ref]bool"));
         }
 
         /// <summary>At entry: nothing of the method's own record (each, for every context, false).</summary>
@@ -87,7 +87,7 @@ namespace CsVerify.Verifier.Boogie
                 return name;
             }
             name = "ef$token" + _tokenRead.Count;
-            _p.Locals.Add(KLocal.Of(name, "[Ref][Ref]" + TypeOf(e.Tokens[j].Type)));
+            _p.AddLocal(KLocal.Of(name, "[Ref][Ref]" + TypeOf(e.Tokens[j].Type)));
             _tokenRead[(e, j)] = name;
             return name;
         }
@@ -116,7 +116,7 @@ namespace CsVerify.Verifier.Boogie
         {
             foreach (var p in e.Key)
             {
-                _p.Fields.Add(p.OriginalDefinition);
+                _p.AddField(p.OriginalDefinition);
             }
             return AndAll(e.Key.Select(p => IsString(p.Type) ? new KOp("streq", Column(p, a), Column(p, b)) : (KExpr)Eq(Column(p, a), Column(p, b))));
         }
@@ -151,7 +151,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     return KLit.False;
                 }
-                _p.Fields.Add(p.OriginalDefinition);
+                _p.AddField(p.OriginalDefinition);
                 parts.Add(Eq(Column(p, o), Null));
             }
             foreach (var p in e.Collections)
@@ -160,7 +160,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     return KLit.False;
                 }
-                _p.Fields.Add(p.OriginalDefinition);
+                _p.AddField(p.OriginalDefinition);
                 var l = Column(p, o);
                 if (IsList(p.Type))
                 {
@@ -282,7 +282,7 @@ namespace CsVerify.Verifier.Boogie
                     return (false, null);
                 }
                 var task = "t$" + _temps++;
-                _p.Locals.Add(KLocal.Of(task, "Ref"));
+                _p.AddLocal(KLocal.Of(task, "Ref"));
                 Emit(KHavoc.Of(task));
                 Emit(KAssume.Of(Ne(new KVar(task), Null)));
                 return (true, new KVar(task));
@@ -307,7 +307,7 @@ namespace CsVerify.Verifier.Boogie
                 UsableContext(ec, at);
                 foreach (var p in EfModel.PropertiesOf(ee.Type).Where(IsField))
                 {
-                    _p.Fields.Add(p.OriginalDefinition);
+                    _p.AddField(p.OriginalDefinition);
                     var v = Declare("t$" + _temps++, p.Type);
                     Emit(KHavoc.Of(v));
                     Emit(new KFieldStore
@@ -598,7 +598,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     throw new NotTranslated($"{e.Type.Name}'s concurrency token {token.Name}, of {token.Type}");
                 }
-                _p.Fields.Add(token.OriginalDefinition);
+                _p.AddField(token.OriginalDefinition);
                 var read = Sel(_read, c, o);
                 TrackerCheck(Implies(read, Eq(Column(token, o), Sel(TokenRead(e, j), c, o))), "CSV1034", at,
                     $"'{at}' takes {token.Name}, a concurrency token, as the value the row had when read, but it was changed since: EF would check the row against the new value. {then}");
@@ -624,7 +624,7 @@ namespace CsVerify.Verifier.Boogie
             MayThrow(() => SetLocal(_failed, c, KLit.True), () => SetLocal(_failed, c, new KVar(was)));
             foreach (var p in KernelTypes.Ef.Entities.SelectMany(e => e.RowVersions).Where(IsField).Select(p => p.OriginalDefinition).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default))
             {
-                _p.Fields.Add(p);
+                _p.AddField(p);
                 var fresh = new KVar(LinqMap("[Ref]" + TypeOf(p.Type)));
                 Emit(KRow.Of(
                     FieldMap(p),
@@ -670,12 +670,12 @@ namespace CsVerify.Verifier.Boogie
             var ks = parts.Select(p => Once(p)).ToList();
             // (a reference, which may be null)
             var r = "t$" + _temps++;
-            _p.Locals.Add(KLocal.Of(r, "Ref"));
+            _p.AddLocal(KLocal.Of(r, "Ref"));
             Emit(KHavoc.Of(r));
             var rv = new KVar(r);
             foreach (var p in e.Key)
             {
-                _p.Fields.Add(p.OriginalDefinition);
+                _p.AddField(p.OriginalDefinition);
             }
             var match = AndAll(e.Key.Select((p, j) => IsString(p.Type) ? new KOp("streq", Sel(FieldMap(p.OriginalDefinition), rv), ks[j]) : (KExpr)Eq(Sel(FieldMap(p.OriginalDefinition), rv), ks[j])));
             Emit(KAssume.Of(OrElse(Eq(rv, Null), AndAlso(Isa(rv, e), match))));
@@ -926,7 +926,7 @@ namespace CsVerify.Verifier.Boogie
                     continue;
                 }
                 var map = TokenRead(e, j);
-                _p.Fields.Add(e.Tokens[j].OriginalDefinition);
+                _p.AddField(e.Tokens[j].OriginalDefinition);
                 Emit(KAssign.Of(
                     map,
                     Store(map, c, MapLambda("y$: Ref",

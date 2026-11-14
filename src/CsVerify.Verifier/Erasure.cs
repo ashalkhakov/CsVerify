@@ -22,6 +22,10 @@ namespace CsVerify.Verifier
         public readonly List<ErasedFile> Files = new List<ErasedFile>();
         /// <summary>Errors compiling the erased program: ghost code the program still depends on at run time.</summary>
         public readonly List<VerificationDiagnostic> Errors = new List<VerificationDiagnostic>();
+
+        public void AddError(VerificationDiagnostic error) => Errors.Add(error);
+
+        public void AddFile(ErasedFile file) => Files.Add(file);
         public bool Success => Errors.Count == 0;
     }
 
@@ -69,7 +73,7 @@ namespace CsVerify.Verifier
 
             int n = 0;
             foreach (var tree in userTrees)
-                result.Files.Add(new ErasedFile
+                result.AddFile(new ErasedFile
                 {
                     OriginalPath = tree.FilePath,
                     OutputName = $"{n++:D3}_{Path.GetFileName(tree.FilePath)}",
@@ -79,7 +83,7 @@ namespace CsVerify.Verifier
             // second CsVerify.Ptr<T> (CS0436), not the one the referenced project's methods take.
             if (!RuntimeIn(refs))
                 foreach (var tree in specTrees)
-                    result.Files.Add(new ErasedFile
+                    result.AddFile(new ErasedFile
                     {
                         OriginalPath = tree.FilePath,
                         OutputName = Path.Combine(RuntimeFolder, Path.GetFileName(tree.FilePath)),
@@ -92,7 +96,7 @@ namespace CsVerify.Verifier
                 result.Files.Select(f => CSharpSyntaxTree.ParseText(f.Text, erasedParse, f.OutputName)), refs,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable));
             foreach (var d in erased.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
-                result.Errors.Add(new VerificationDiagnostic("CSV2001", true,
+                result.AddError(new VerificationDiagnostic("CSV2001", true,
                     $"the erased program does not compile ({d.Id}: {d.GetMessage()}): run-time code depends on ghost code", d.Location.GetMappedLineSpan()));
             if (!result.Success) result.Errors.InsertRange(0, bindingErrors);
             return result;

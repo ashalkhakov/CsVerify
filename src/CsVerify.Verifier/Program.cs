@@ -65,9 +65,9 @@ options:
                         case "--method-budget": options.MethodBudgetMs = int.Parse(args[++i]); break;
                         case "--z3": options.Z3Path = args[++i]; break;
                         case "--boogie-out": options.BoogieOut = args[++i]; break;
-                        case "-d": options.Defines.Add(args[++i]); break;
-                        case "-r": options.References.Add(args[++i]); break;
-                        case "--only": options.Only.Add(args[++i]); break;
+                        case "-d": options.AddDefine(args[++i]); break;
+                        case "-r": options.AddReference(args[++i]); break;
+                        case "--only": options.AddOnly(args[++i]); break;
                         case "-v": verbose = true; break;
                         case "--library-report": libraryReport = true; break;
                         case "--each": each = true; break;

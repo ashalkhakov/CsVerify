@@ -243,7 +243,7 @@ namespace CsVerify.Verifier.Boogie
                 throw new NotTranslated("the member " + symbol.Name);
             }
             symbol = symbol.OriginalDefinition;
-            _p.Fields.Add(symbol);
+            _p.AddField(symbol);
             var name = (access.Syntax as MemberAccessExpressionSyntax)?.Name ?? access.Syntax;
             if (symbol.IsStatic)
             {
@@ -296,7 +296,7 @@ namespace CsVerify.Verifier.Boogie
                     continue;
                 }
                 var t = Declare("t$" + _temps++, ops[k].Type);
-                _block.Stmts.Insert(after[k], KAssign.Of(t, values[k]));
+                _block.InsertStmt(after[k], KAssign.Of(t, values[k]));
                 values[k] = new KVar(t);
             }
             return values;
@@ -318,7 +318,7 @@ namespace CsVerify.Verifier.Boogie
             var throwsTo = _cfgBlock != null && (mode == KMode.Checked || op is "/" or "%") && !_codeArith ? ThrowTarget(_cfgBlock.EnclosingRegion) : null;
             if (throwsTo != null)
             {
-                _p.ExceptionTypes.Add(_model.Compilation.GetTypeByMetadataName("System.OverflowException"));
+                _p.AddExceptionType(_model.Compilation.GetTypeByMetadataName("System.OverflowException"));
             }
             return new KArith
             {
@@ -1234,7 +1234,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             }
             if (!isImplicit)
             {
-                _p.Calls.Add(ctor);
+                _p.AddCall(ctor);
             }
             var ordered = oc.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
             var args = Operands(ordered.Select(a => a.Value).ToArray());
@@ -1246,7 +1246,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             var t = Declare("t$" + _temps++, oc.Type);
             foreach (var f in InstanceFields(oc.Type))
             {
-                _p.Fields.Add(f);
+                _p.AddField(f);
             }
             Emit(new KNewObj
             {
@@ -1260,7 +1260,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             // (exactly a C)
             if (IsModeledClass(oc.Type))
             {
-                _p.ClassTypes.Add(oc.Type.OriginalDefinition);
+                _p.AddClassType(oc.Type.OriginalDefinition);
                 Emit(KAssume.Of(Eq(new KOp("dtype", new KVar(t)), new KLit(TypeConst(oc.Type)))));
             }
             // (a context made: it tracks nothing, and has nothing open)
@@ -1330,11 +1330,11 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             bool stubbed = _contractOf?.Invoke(prop.GetMethod.OriginalDefinition) is Contract sc && sc.IsStub;
             if (!shared && !stubbed && !(prop.Name == "Current" && prop.ContainingType.Name == "IAsyncEnumerator") && !_p.Warnings.Any(w => w.Span.Equals(span)))
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown", span));
+                _p.AddWarning(new VerificationDiagnostic("CSV1900", false, $"property '{prop.Name}' of {prop.ContainingType.Name} is not modeled; its value is unknown", span));
             }
             if (_p.Result != null)
             {
-                lock (_p.Result.LibraryCalls) _p.Result.LibraryCalls.Add((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
+                lock (_p.Result.LibraryCalls) _p.Result.AddLibraryCall((prop.OriginalDefinition.ToDisplayString(), lp.Syntax.SyntaxTree.FilePath + ":" + lp.Syntax.SpanStart));
             }
             var lv = Declare("t$" + _temps++, lp.Type);
             Emit(KHavoc.Of(lv));
@@ -1369,7 +1369,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 Expr(a.Value);
             }
             var t = Declare("t$" + _temps++, ne.Type);
-            _p.ExceptionTypes.Add(ne.Type);
+            _p.AddExceptionType(ne.Type);
             Emit(new KNewExc
             {
                 Var = t,

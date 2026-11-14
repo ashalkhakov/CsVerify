@@ -62,7 +62,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         if (c.Id == Checks.Candidate && redo.Contains(c.Method))
                         {
-                            program.Disabled.Add(line);
+                            program.AddDisabled(line);
                         }
                     }
                 }
@@ -70,7 +70,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     foreach (var line in facts)
                     {
-                        program.Disabled.Add(line);
+                        program.AddDisabled(line);
                     }
                 }
                 var (redone0, undecidedAgain0, factsAgain) = Run(program, z3Path, quick, null, factsIn, names);

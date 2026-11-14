@@ -22,6 +22,8 @@ namespace CsVerify.Verifier.Boogie
         public List<MStmt> Entry = new List<MStmt>();
         public List<MBlock> Blocks = new List<MBlock>();
         public int Obligations;
+
+        public void ClearEntry() => Entry.Clear();
     }
 
     // ------------------------------------------------------------------ expressions
@@ -317,6 +319,12 @@ namespace CsVerify.Verifier.Boogie
         public bool Fields;
         /// <summary>The globals the callee's postconditions read as they were (old): snapshotted before the call.</summary>
         public HashSet<string> OldGlobals = new HashSet<string>();
+
+        public void AddElementMaps(IEnumerable<string> collection) => ElementMaps.AddRange(collection);
+
+        public void AddMaps(IEnumerable<string> collection) => Maps.AddRange(collection);
+
+        public bool AddOldGlobal(string oldGlobal) => OldGlobals.Add(oldGlobal);
     }
 
     /// <summary>new E(...) of an exception type: a new exception of exactly that type (dtype).</summary>
@@ -512,6 +520,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The loop head whose entry took a snapshot of these maps (as{Head}map, as{Head}$Alloc), the steps since then; -1: since the method's entry.</summary>
         public int Head = -1;
         public List<string> Maps = new List<string>();
+
+        public void AddMap(string map) => Maps.Add(map);
     }
 
     /// <summary>An await: other code may run, changing anything but the objects of these (confined) locals.</summary>
@@ -588,6 +598,8 @@ namespace CsVerify.Verifier.Boogie
         public List<MStmt> Stmts = new List<MStmt>();
         public KJump Jump;
 
+        public void AddStmt(MStmt stmt) => Stmts.Add(stmt);
+
         public static MBlock Of(string label, int ordinal, KJump jump = null) => new MBlock
         {
             Label = label,
@@ -626,6 +638,10 @@ namespace CsVerify.Verifier.Boogie
         public int Ordinal;
         public List<IHeapStmt> Stmts = new List<IHeapStmt>();
         public KJump Jump;
+
+        public void AddStmt(IHeapStmt stmt) => Stmts.Add(stmt);
+
+        public void InsertStmt(int index, IHeapStmt stmt) => Stmts.Insert(index, stmt);
     }
 
     /// <summary>
@@ -638,6 +654,10 @@ namespace CsVerify.Verifier.Boogie
         public List<MExpr> Writers = new List<MExpr>();
         public HashSet<IMethodSymbol> Callees = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         public List<string> Maps = new List<string>();
+
+        public bool AddCallee(IMethodSymbol callee) => Callees.Add(callee);
+
+        public void AddWriter(MExpr writer) => Writers.Add(writer);
     }
 
     /// <summary>On the way into a loop: the maps its frame keeps, as they are now.</summary>
@@ -655,6 +675,8 @@ namespace CsVerify.Verifier.Boogie
         public int Head;
         /// <summary>Each local (its Boogie name), with the maps the loop writes through it ("$M." for any of a collection's models).</summary>
         public Dictionary<string, HashSet<string>> Locals = new Dictionary<string, HashSet<string>>();
+
+        public bool RemoveLocal(string key) => Locals.Remove(key);
     }
 
     /// <summary>On the way into a loop: every state map, as it is now (for its HConfinedFrame).</summary>

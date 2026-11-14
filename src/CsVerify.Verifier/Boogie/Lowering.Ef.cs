@@ -30,6 +30,14 @@ namespace CsVerify.Verifier.Boogie
             /// <summary>The types on the last path, to find one that comes back to a type on it (CSV1032 without tracking).</summary>
             public List<ITypeSymbol> IncludePath = new List<ITypeSymbol>();
             public SyntaxNode Cycle;
+
+            public bool AddInclude(IPropertySymbol include) => Includes.Add(include);
+
+            public void AddIncludePath(List<IPropertySymbol> includePath) => IncludePaths.Add(includePath);
+
+            public void AddToIncludePath(ITypeSymbol toIncludePath) => IncludePath.Add(toIncludePath);
+
+            public void ClearIncludePath() => IncludePath.Clear();
             public string Key => $"{(Context as KVar)?.Name}/{Entity.Type.ToDisplayString()}/{NoTracking}/{IdentityResolution}/{IgnoreFilters}/{UnknownInclude}/" +
                                  string.Join(";", IncludePaths.Select(p => string.Join(".", p.Select(n => n.Name))));
         }
@@ -117,8 +125,8 @@ namespace CsVerify.Verifier.Boogie
                             }
                             if (ef.TargetMethod.Name == "Include")
                             {
-                                src.IncludePaths.Add(new List<IPropertySymbol> { nav });
-                                src.Includes.Add(nav);
+                                src.AddIncludePath(new List<IPropertySymbol> { nav });
+                                src.AddInclude(nav);
                                 src.IncludePath = new List<ITypeSymbol> { src.Entity.Type.OriginalDefinition };
                             }
                             else if (src.IncludePaths.Count > 0)
@@ -133,14 +141,14 @@ namespace CsVerify.Verifier.Boogie
                             var to = EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition;
                             if (to == null)
                             {
-                                src.IncludePath.Clear();
+                                src.ClearIncludePath();
                                 return src;
                             }
                             if (src.IncludePath.Count > 0 && src.IncludePath.Contains(to, SymbolEqualityComparer.Default))
                             {
                                 src.Cycle ??= ef.Syntax;
                             }
-                            src.IncludePath.Add(to);
+                            src.AddToIncludePath(to);
                             return src;
                         }
                         default: return null;
@@ -197,7 +205,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var p in key)
                 {
-                    _p.Fields.Add(p.OriginalDefinition);
+                    _p.AddField(p.OriginalDefinition);
                 }
                 LinqFact(Over(KLit.Zero, len, i => Over(KLit.Zero, len, j => OrElse(Eq(i, j),
                     Not(AndAll(key.Select(p => SameColumn(p, Column(p, Sel(rows, i)), Column(p, Sel(rows, j))))))))), at);
@@ -231,7 +239,7 @@ namespace CsVerify.Verifier.Boogie
             else
             {
                 var k = "ef$known" + _temps++;
-                _p.Locals.Add(KLocal.Of(k, "bool"));
+                _p.AddLocal(KLocal.Of(k, "bool"));
                 Emit(KHavoc.Of(k));
                 var o = new KVar("o$");
                 var none = KQuant.ForAll("o$", "Ref", Implies(Ne(State(t.Context, o), I(EfDetached)), Not(Isa(o, e))));
@@ -337,7 +345,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var nav in e.References.Where(IsField))
                 {
-                    _p.Fields.Add(nav.OriginalDefinition);
+                    _p.AddField(nav.OriginalDefinition);
                     if (t.Includes.Contains(nav.OriginalDefinition) || loadedTypes.Contains(nav.Type.OriginalDefinition))
                     {
                         continue;
@@ -346,7 +354,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 foreach (var nav in e.Collections.Where(IsField))
                 {
-                    _p.Fields.Add(nav.OriginalDefinition);
+                    _p.AddField(nav.OriginalDefinition);
                     if (t.Includes.Contains(nav.OriginalDefinition) || loadedTypes.Contains(EfModel.NavigationTarget(nav.Type, out _)?.OriginalDefinition))
                     {
                         continue;
@@ -402,7 +410,7 @@ namespace CsVerify.Verifier.Boogie
                 Emit(KAssign.Of(_unshared, MapLambda("r$: Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"), before)))));
                 foreach (var p in KernelTypes.Ef.Entities.SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField))
                 {
-                    _p.Fields.Add(p.OriginalDefinition);
+                    _p.AddField(p.OriginalDefinition);
                 }
             }
         }
@@ -436,7 +444,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 && KeyMatches(fk, p.Key[0]))
                 {
-                    _p.Fields.Add(nav.OriginalDefinition);
+                    _p.AddField(nav.OriginalDefinition);
                     LinqFact(top.All(x => OrElse(Eq(Column(nav, x), Null), AndAlso(Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))))), at);
                 }
                 else
@@ -447,7 +455,7 @@ namespace CsVerify.Verifier.Boogie
             // (none of the types the paths load tracked before either)
             var types = t.IncludePaths.SelectMany(x => x).Select(nav => KernelTypes.Ef.EntityOf(EfModel.NavigationTarget(nav.Type, out _))).Where(x => x != null).Distinct().ToList();
             var all = "ef$known" + _temps++;
-            _p.Locals.Add(KLocal.Of(all, "bool"));
+            _p.AddLocal(KLocal.Of(all, "bool"));
             Emit(KHavoc.Of(all));
             var o = new KVar("o$");
             KExpr none = known;
@@ -480,10 +488,10 @@ namespace CsVerify.Verifier.Boogie
         private string Allocate(List<Made> made, KExpr guard, SyntaxNode at)
         {
             KExpr Null = KLit.Null;
-            _p.Modifies.Add("$Alloc");
-            _p.AnyWrites.Add("$Alloc");
+            _p.AddModifies("$Alloc");
+            _p.AddAnyWrite("$Alloc");
             var before = "ef$alloc" + _temps++;
-            _p.Locals.Add(KLocal.Of(before, "[Ref]bool"));
+            _p.AddLocal(KLocal.Of(before, "[Ref]bool"));
             Emit(KAssign.Of(before, new KVar("$Alloc")));
             if (made.Count == 0)
             {
@@ -509,7 +517,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var p in EfModel.PropertiesOf(m.Entity.Type).Where(p => IsField(p) && IsRef(p.Type)))
                 {
-                    _p.Fields.Add(p.OriginalDefinition);
+                    _p.AddField(p.OriginalDefinition);
                     LinqFact(m.All(x => OrElse(Eq(Column(p, x), Null), Sel("$Alloc", Column(p, x)))), at);
                 }
             }
@@ -529,7 +537,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return false;
             }
-            _p.Fields.Add(fk.OriginalDefinition); _p.Fields.Add(key.OriginalDefinition);
+            _p.AddField(fk.OriginalDefinition); _p.AddField(key.OriginalDefinition);
             return true;
         }
 
@@ -561,7 +569,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     throw new NotTranslated("EF's Include of " + nav.Name);
                 }
-                _p.Fields.Add(nav.OriginalDefinition);
+                _p.AddField(nav.OriginalDefinition);
                 var after = PathsAfter(paths, nav);
                 Made child;
                 if (e.References.Contains(nav) && e.ForeignKeys.TryGetValue(nav, out var fk) && KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity p && p.Key.Count == 1 &&
@@ -687,7 +695,7 @@ namespace CsVerify.Verifier.Boogie
                 .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).ToList();
             foreach (var p in columns)
             {
-                _p.Fields.Add(p);
+                _p.AddField(p);
             }
             var maps = columns.Select(p => (FieldMap(p), "[Ref]" + TypeOf(FieldType(p)))).ToList();
             var lists = _p.Models.Values.Where(m => m.Type.StartsWith("[Ref]") && !m.Name.StartsWith("$F.$ef.")).ToList();
@@ -709,7 +717,7 @@ namespace CsVerify.Verifier.Boogie
         private void KeepMap(string map, string type, bool whole, List<(string, string, bool)> kept)
         {
             var snap = "ef$kept" + _temps++;
-            _p.Locals.Add(KLocal.Of(snap, type));
+            _p.AddLocal(KLocal.Of(snap, type));
             Emit(KAssign.Of(snap, new KVar(map)));
             kept.Add((map, snap, whole));
         }
@@ -934,7 +942,7 @@ namespace CsVerify.Verifier.Boogie
             if (root.DescendantsAndSelf().OfType<IAwaitOperation>().Any() && EntitiesStayHere())
             {
                 _unshared = "ef$unshared";
-                _p.Locals.Add(KLocal.Of(_unshared, "[Ref]bool"));
+                _p.AddLocal(KLocal.Of(_unshared, "[Ref]bool"));
             }
             foreach (var op in root.DescendantsAndSelf())
             {

@@ -515,7 +515,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var f in KernelTypes.Locks.GuardedBy(g).Where(f => f.IsStatic == g.IsStatic && IsField(f)))
                 {
                     var t = Declare("t$" + _temps++, FieldType(f));
-                    _p.Fields.Add(f.OriginalDefinition);
+                    _p.AddField(f.OriginalDefinition);
                     Emit(KAssign.Of(
                         t,
                         new KField
@@ -535,7 +535,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var l in Confined())
                 {
-                    keep.Keep.Add(Declare(Local(l), l.Type));
+                    keep.AddKeep(Declare(Local(l), l.Type));
                 }
             }
             var unshared = UnsharedBefore();
@@ -578,6 +578,8 @@ InstanceAt = aw.Syntax,
             public HashSet<ILocalSymbol> Shared = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
             /// <summary>Kept somewhere else (a field, a discard): this method needn't await it.</summary>
             public bool Kept;
+
+            public bool AddShared(ILocalSymbol shared) => Shared.Add(shared);
         }
 
         private readonly Dictionary<ILocalSymbol, Task> _tasks = new Dictionary<ILocalSymbol, Task>(SymbolEqualityComparer.Default);
@@ -678,7 +680,7 @@ InstanceAt = aw.Syntax,
                 if (r is IFieldReferenceOperation { Field: { IsStatic: true } sf } && IsField(sf))
                 {
                     var field = sf.OriginalDefinition;
-                    _p.Fields.Add(field);
+                    _p.AddField(field);
                     forget.Add(() =>
                     {
                         var v = Declare("t$" + _temps++, sf.Type);
@@ -713,7 +715,7 @@ InstanceAt = aw.Syntax,
                 else if (r is IFieldReferenceOperation fr && IsField(fr.Field))
                 {
                     var field = fr.Field.OriginalDefinition;
-                    _p.Fields.Add(field);
+                    _p.AddField(field);
                     forget.Add(() =>
                     {
                         var v = Declare("t$" + _temps++, fr.Field.Type);
@@ -884,7 +886,7 @@ InstanceAt = aw.Syntax,
                 {
                     if (_model.GetSymbolInfo(w).Symbol is ILocalSymbol cl && !lambda.Span.Contains(cl.DeclaringSyntaxReferences.FirstOrDefault()?.Span ?? default) && InSubset(cl.Type))
                     {
-                        task.Shared.Add(cl);
+                        task.AddShared(cl);
                     }
                 }
             }
@@ -942,9 +944,9 @@ InstanceAt = aw.Syntax,
                                        KBlock.Of($"b{_cfgBlock.Ordinal}$j{n}$no", _cfgBlock.Ordinal),
                                        KBlock.Of($"b{_cfgBlock.Ordinal}$j{n}$after", _cfgBlock.Ordinal));
             _block.Jump = new KGoto(join.Label, skip.Label);
-            _p.Blocks.Add(join);
-            _p.Blocks.Add(skip);
-            _p.Blocks.Add(after);
+            _p.AddBlock(join);
+            _p.AddBlock(skip);
+            _p.AddBlock(after);
             _block = join;
             Emit(KAssume.Of(Not(new KVar(t.Awaited))));
             Join(st, t);
@@ -1193,7 +1195,7 @@ InstanceAt = aw.Syntax,
             }
             var d = Expr(arg.Value);
             var key = FuncKey(dc.Type);
-            _p.DelegateKeys.Add(key);
+            _p.AddDelegateKey(key);
             Emit(KCheck.Of(
                 new KOp("$pre." + key, d),
                 "CSV1029",
@@ -1273,7 +1275,7 @@ InstanceAt = aw.Syntax,
             // (a thread needn't be joined: nothing is lost if it isn't; a task, a Task.Run's too, must be awaited)
             foreach (var t in AllTasks().Where(t => !t.RealThread && !t.Kept))
             {
-                at.Stmts.Add(KCheck.Of(
+                at.AddStmt(KCheck.Of(
                     new KVar(t.Awaited),
                     "CSV1026",
                     t.RunAt ?? t.At,
@@ -1298,7 +1300,7 @@ InstanceAt = aw.Syntax,
             {
                 foreach (var l in Confined())
                 {
-                    k.Keep.Add(Declare(Local(l), l.Type));
+                    k.AddKeep(Declare(Local(l), l.Type));
                 }
             }
             Emit(k);

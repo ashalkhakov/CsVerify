@@ -338,7 +338,7 @@ namespace CsVerify.Verifier.Boogie
             // (through the enumerator: what it gives isn't known; a dictionary's, a pair it has)
             if (!_p.Warnings.Any(w => w.Message.Contains("'Current'") && w.Span.Equals(fe.At.GetLocation().GetLineSpan())))
             {
-                _p.Warnings.Add(new VerificationDiagnostic("CSV1900", false, "property 'Current' of Enumerator is not modeled; its value is unknown", fe.At.GetLocation().GetLineSpan()));
+                _p.AddWarning(new VerificationDiagnostic("CSV1900", false, "property 'Current' of Enumerator is not modeled; its value is unknown", fe.At.GetLocation().GetLineSpan()));
             }
             var v = Declare("t$" + _temps++, fe.Element);
             Emit(KHavoc.Of(v));
@@ -373,7 +373,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var args = ((INamedTypeSymbol)type).TypeArguments;
             var (k, v) = (Kind(args[0]), Kind(args[1]));
-            _p.Pairs.Add((k, v));
+            _p.AddPair((k, v));
             return new KOp(member == "Key" ? "$kvp.Key." + k : "$kvp.Value." + v, pair);
         }
 

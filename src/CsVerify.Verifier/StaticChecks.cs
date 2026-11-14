@@ -95,7 +95,7 @@ namespace CsVerify.Verifier
         {
             if (isError && !_engine.Options.Checked(id)) return;
             if (!_reported.Add((id, at.Span))) return;
-            _result.Diagnostics.Add(new VerificationDiagnostic(id, isError, message, at.GetLocation().GetLineSpan())
+            _result.AddDiagnostic(new VerificationDiagnostic(id, isError, message, at.GetLocation().GetLineSpan())
             {
                 Causes = causes ?? (IReadOnlyCollection<string>)Array.Empty<string>(),
             });
