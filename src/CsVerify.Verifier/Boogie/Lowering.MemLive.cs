@@ -86,7 +86,7 @@ namespace CsVerify.Verifier.Boogie
             var a = new KVar("m$a");
             var cells = InCells(MemCells(view, type, at), a);
             var was = Sel(_memLive, a);
-            Emit(KAssign.Of(_memLive, MapLambda("m$a: int", live ? OrElse(was, cells) : AndAlso(was, Not(cells)))));
+            Emit(KAssign.Of(_memLive, MapLambda("m$a", "int", live ? OrElse(was, cells) : AndAlso(was, Not(cells)))));
         }
 
         /// <summary>

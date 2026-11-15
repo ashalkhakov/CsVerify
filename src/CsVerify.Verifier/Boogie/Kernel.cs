@@ -103,8 +103,8 @@ namespace CsVerify.Verifier.Boogie
         public static KOp Length(KExpr a) => new KOp("len", a);
         public static KOp Old(KExpr a) => new KOp("old", a);
 
-        /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
-        public static KOp MapLambda(string binder, KExpr body) => new KOp("lambda", new KLit(binder), body);
+        /// <summary>A map as Boogie's lambda: (lambda var: type :: body), closed over var.</summary>
+        public static KMapLambda MapLambda(string var, string type, KExpr body) => KMapLambda.Of(var, type, body);
 
         /// <summary>The conjunction of these, left to right; true, of none.</summary>
         public static KExpr AndAll(IEnumerable<KExpr> xs)
@@ -156,16 +156,32 @@ namespace CsVerify.Verifier.Boogie
         public static KOp NotNull(KExpr a) => new KOp("!=", a, KLit.Null);
     }
 
-    /// <summary>forall or exists over an int variable: range ==> body, or range && body.</summary>
+    /// <summary>
+    /// forall or exists over a variable of its own (an int, unless said): range ==> body, or range && body. Locally
+    /// nameless: the variable is index 0 in its parts (KBound); a name is the printer's.
+    /// </summary>
     internal sealed class KQuant : KExpr
     {
         public bool Forall;
-        public string Var;
         /// <summary>Its variable's Boogie type (int, unless said).</summary>
-        public string Type = "int";
+        public string Type;
         public KExpr Range, Body;
         /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
         public KExpr[] Trigger;
+
+        /// <summary>A quantifier of these parts, each already of its variable as index 0.</summary>
+        public KQuant(bool forall, string type, KExpr range, KExpr body, KExpr[] trigger = null)
+        {
+            Forall = forall;
+            Type = type;
+            Range = range;
+            Body = body;
+            Trigger = trigger;
+        }
+
+        /// <summary>A quantifier of these parts, each of a variable of this name: closed over it.</summary>
+        public static KQuant Over(bool forall, string var, string type, KExpr range, KExpr body, KExpr[] trigger = null) =>
+            new KQuant(forall, type, range == null ? null : Nameless.CloseName(range, var), Nameless.CloseName(body, var), trigger?.Select(t => Nameless.CloseName(t, var)).ToArray());
 
         /// <summary>forall var: int, (range ==>) body.</summary>
         public static KQuant ForAll(string var, KExpr body, KExpr range = null) => ForAll(var, "int", body, range);
@@ -179,36 +195,20 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>exists var: type, (range &&) body.</summary>
         public static KQuant Exists(string var, string type, KExpr body, KExpr range = null) => Quant(false, var, type, body, range);
 
-        private static KQuant Quant(bool forall, string var, string type, KExpr body, KExpr range) => new KQuant
-        {
-            Forall = forall,
-            Var = var,
-            Type = type,
-            Range = range,
-            Body = body,
-        };
+        private static KQuant Quant(bool forall, string var, string type, KExpr body, KExpr range) => Over(forall, var, type, range, body);
 
-        /// <summary>Over the same variable (forall or exists as this is), of these parts.</summary>
-        public KQuant WithParts(KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant
-        {
-            Forall = Forall,
-            Var = Var,
-            Type = Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
-        };
+        /// <summary>Of the same kind and type as this, of these parts (each already of the variable as index 0).</summary>
+        public KQuant WithParts(KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant(Forall, Type, range, body, trigger);
 
-        /// <summary>Over a level 2 quantifier's variable (forall or exists as it is), of these parts.</summary>
-        public static KQuant Of(MQuant binder, KExpr range, KExpr body, KExpr[] trigger = null) => new KQuant
+        /// <summary>Its parts of its variable as this name (opened at it): range (or null), body, triggers (or null).</summary>
+        public (KExpr range, KExpr body, KExpr[] trigger) OpenedAt(string var)
         {
-            Forall = binder.Forall,
-            Var = binder.Var,
-            Type = binder.Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
-        };
+            var at = new KExpr[] { new KVar(var) };
+            var range = Range == null ? null : Nameless.Open(Range, at);
+            var body = Nameless.Open(Body, at);
+            var trigger = Trigger?.Select(t => Nameless.Open(t, at)).ToArray();
+            return (range, body, trigger);
+        }
     }
 
     /// <summary>
@@ -295,15 +295,41 @@ namespace CsVerify.Verifier.Boogie
     /// <summary>let Var = Value in Body: a local of a [Pure] body of statements (Checks substitutes it).</summary>
     internal sealed class KLet : KExpr
     {
-        public string Var;
-        public KExpr Value, Body;
+        /// <summary>Its value, and its body of the variable as index 0 (KBound).</summary>
+        public readonly KExpr Value, Body;
 
-        public static KLet Of(string var, KExpr value, KExpr body) => new KLet
+        public KLet(KExpr value, KExpr body)
         {
-            Var = var,
-            Value = value,
-            Body = body,
-        };
+            Value = value;
+            Body = body;
+        }
+
+        /// <summary>let var := value in body, closed over var.</summary>
+        public static KLet Of(string var, KExpr value, KExpr body) => new KLet(value, Nameless.CloseName(body, var));
+
+        /// <summary>Its body of its variable as this name (opened at it).</summary>
+        public KExpr BodyAt(string var) => Nameless.Open(Body, new KExpr[] { new KVar(var) });
+    }
+
+    /// <summary>A map as Boogie's lambda, over one variable of its type: index 0 in its body (KBound).</summary>
+    internal sealed class KMapLambda : KExpr
+    {
+        public readonly string Type;
+        public readonly KExpr Body;
+
+        public KMapLambda(string type, KExpr body)
+        {
+            Type = type;
+            Body = body;
+        }
+
+        /// <summary>(lambda var: type :: body), closed over var.</summary>
+        public static KMapLambda Of(string var, string type, KExpr body) => new KMapLambda(type, Nameless.CloseName(body, var));
+
+        public KMapLambda WithBody(KExpr body) => new KMapLambda(Type, body);
+
+        /// <summary>Its body of its variable as this name (opened at it).</summary>
+        public KExpr BodyAt(string var) => Nameless.Open(Body, new KExpr[] { new KVar(var) });
     }
 
     /// <summary>Spec.Multiset(a, n): the multiset of an integer array's a[0..n), unfolded Levels elements where it's used.</summary>

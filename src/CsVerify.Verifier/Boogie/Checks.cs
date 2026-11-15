@@ -325,6 +325,11 @@ namespace CsVerify.Verifier.Boogie
         private readonly List<MExpr> _facts = new List<MExpr>();
         private readonly HashSet<string> _bound = new HashSet<string>();
 
+        private int _opened;
+
+        /// <summary>A fresh name, a quantifier's variable opened at it while its body is lowered (closed over it again after).</summary>
+        private string Opened() => "bq$" + _opened++;
+
         private void Facts()
         {
             foreach (var f in _facts)

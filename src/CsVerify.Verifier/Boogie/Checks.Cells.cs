@@ -20,7 +20,7 @@ namespace CsVerify.Verifier.Boogie
             var (x, i) = (new MVar("x$"), new MVar("i$"));
             Emit(MAssign.Of(
                 "cells",
-                MapLambda("x$: Ref", MapLambda("i$: int",
+                MapLambda("x$", "Ref", MapLambda("i$", "int",
         Ite(InCells(g, c, x, i), new MOp(op, Cell(x, i), Amount(c.Read)), Cell(x, i))))));
         }
 

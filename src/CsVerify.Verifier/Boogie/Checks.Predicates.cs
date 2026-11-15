@@ -113,6 +113,11 @@ namespace CsVerify.Verifier.Boogie
                 case KOp op:
                     return new MOp(op.Op, op.Args.Select(a => CWalk(a, guard)).ToArray());
                 case KLit _: case KVar _: return MathTerms.Math(e);
+                case KMapLambda lam:
+                {
+                    var name = Opened();
+                    return MMapLambda.Of(name, lam.Type, CWalk(lam.BodyAt(name), guard));
+                }
                 case KField fd: return Guarded(guard, () => Field(fd, fd.Instance == null ? null : CWalk(fd.Instance, guard)));
                 case KQuant q: return Guarded(guard, () => Code(q));
                 case KFnCall fn: return Guarded(guard, () => Code(fn));

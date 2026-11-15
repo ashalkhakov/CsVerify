@@ -404,7 +404,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     if (_unshared != null)
                     {
-                        Emit(KAssign.Of(_unshared, MapLambda("r$: Ref", KLit.False)));
+                        Emit(KAssign.Of(_unshared, MapLambda("r$", "Ref", KLit.False)));
                     }
                     TrackerEntry();
                     MemLiveEntry();

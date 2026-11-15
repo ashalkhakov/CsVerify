@@ -298,12 +298,7 @@ namespace CsVerify.Verifier.Boogie
         };
 
         /// <summary>forall (or exists) z: Ref :: body, z an atom in it.</summary>
-        private static KNameless Objects(KVar z, KExpr body, bool forall = true) => new KNameless
-        {
-            Forall = forall,
-            Type = "Ref",
-            Body = Nameless.Close(body, z),
-        };
+        private static KQuant Objects(KVar z, KExpr body, bool forall = true) => new KQuant(forall, "Ref", null, Nameless.Close(body, z));
 
         /// <summary>body (a term over an object) of each object of the level (forall), or of some one (exists).</summary>
         private KExpr Each(Made m, KAbs body, bool forall)
@@ -509,7 +504,7 @@ namespace CsVerify.Verifier.Boogie
             // (no other code reaches them, if the method lets none out: an await leaves their columns as they were)
             if (_unshared != null)
             {
-                Emit(KAssign.Of(_unshared, MapLambda("r$: Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"), before)))));
+                Emit(KAssign.Of(_unshared, MapLambda("r$", "Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"), before)))));
                 foreach (var p in KernelTypes.Ef.Entities.SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField))
                 {
                     _p.AddField(p.OriginalDefinition);
@@ -574,7 +569,7 @@ namespace CsVerify.Verifier.Boogie
             var maybe = new KVar(LinqMap("[Ref]bool"));
             var y = new KVar("y$");
             KExpr ofTypes = OrAny(types.Select(d => Isa(y, d)));
-            SetStates(t.Context, MapLambda("y$: Ref", Ite(AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
+            SetStates(t.Context, MapLambda("y$", "Ref", Ite(AndAlso(Eq(State(t.Context, y), I(EfDetached)), ofTypes),
                 Ite(Sel(maybe, y), I(Unchanged), I(EfDetached)), State(t.Context, y))));
         }
 

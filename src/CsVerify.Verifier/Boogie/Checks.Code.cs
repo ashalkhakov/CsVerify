@@ -47,6 +47,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 case null: return null;
                 case KLit _: case KVar _: case KFnApp _: return MathTerms.Math(e);
+                case KMapLambda lam:
+                {
+                    var name = Opened();
+                    return MMapLambda.Of(name, lam.Type, Code(lam.BodyAt(name)));
+                }
                 case KOp { Op: "scat" } cat:
                 {
                     var (l, r) = (Code(cat.Args[0]), Code(cat.Args[1]));
@@ -125,12 +130,15 @@ namespace CsVerify.Verifier.Boogie
                     return v;
                 }
                 case KLen len: return Len(len, Code(len.Array));
-                case KQuant q when q.Range is KOp { Op: "&&" } range:
+                case KQuant q when q.Range is KOp { Op: "&&" }:
                 {
                     // its bounds evaluated, then its body's checks, each for every value in its range (and under the guards in it)
+                    var name = Opened();
+                    var opened = q.OpenedAt(name);
+                    var range = (KOp)opened.range;
                     var lo = Code(((KOp)range.Args[0]).Args[0]);
                     var hi = Code(((KOp)range.Args[1]).Args[1]);
-                    var v = new MVar(q.Var);
+                    var v = new MVar(name);
                     var mathRange = AndAlso(Le(lo, v), Lt(v, hi));
                     var outer = _out;
                     _out = new List<MStmt>();
@@ -138,7 +146,7 @@ namespace CsVerify.Verifier.Boogie
                     _inQuantifier++;
                     try
                     {
-                        body = CWalk(q.Body, mathRange);
+                        body = CWalk(opened.body, mathRange);
                     }
                     finally
                     {
@@ -149,14 +157,14 @@ namespace CsVerify.Verifier.Boogie
                         {
                             Emit(s switch
                             {
-                                MAssert a => MAssert.Of(MQuant.ForAll(q.Var, a.Cond), a.Check, notAssumedAfter: a.NotAssumedAfter),
-                                MAssume { Always: true } a when !a.Cond.Mentions(new HashSet<string> { q.Var }) => a,
-                                MAssume a => MAssume.Of(MQuant.ForAll(q.Var, a.Cond)),
+                                MAssert a => MAssert.Of(MQuant.ForAll(name, a.Cond), a.Check, notAssumedAfter: a.NotAssumedAfter),
+                                MAssume { Always: true } a when !a.Cond.Mentions(new HashSet<string> { name }) => a,
+                                MAssume a => MAssume.Of(MQuant.ForAll(name, a.Cond)),
                                 _ => throw new NotTranslated("a quantifier whose body changes state"),
                             });
                         }
                     }
-                    return MQuant.Of(q, mathRange, body);
+                    return MQuant.Of(q, name, mathRange, body);
                 }
                 case KFnCall fc when !fc.Stub:
                 {

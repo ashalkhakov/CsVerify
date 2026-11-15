@@ -947,6 +947,7 @@ namespace CsVerify.Verifier.Boogie
                 s.Args[1] is MVar a && mine.Contains(a.Name) && Reads(s.Args[2], mine, own),
             MOp op => op.Args.All(x => Reads(x, mine, own)),
             MQuant q => (q.Range == null || Reads(q.Range, mine, own)) && Reads(q.Body, mine, own),
+            MMapLambda l => Reads(l.Body, mine, own),
             MFnApp f => own.Contains(f.Callee) && ArrayParams(f.Callee).All(o => f.Args[o.arg] is MVar a && mine.Contains(a.Name)) && f.Args.All(x => Reads(x, mine, own)),
             _ => true,
         };

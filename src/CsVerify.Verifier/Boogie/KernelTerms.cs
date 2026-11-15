@@ -5,7 +5,7 @@ using System.Linq;
 namespace CsVerify.Verifier.Boogie
 {
     /// <summary>
-    /// The traversal of the kernel's mathematics (KLit, KVar, KOp, KQuant, KFnApp), in one place: Rewrite rewrites, Subterms
+    /// The traversal of the kernel's mathematics (KLit, KVar, KBound, KOp, KQuant, KMapLambda, KFnApp), in one place: Rewrite rewrites, Subterms
     /// queries. Any other kind, met here, is an error: no walk skips one it doesn't know.
     /// </summary>
     internal abstract partial class KExpr
@@ -23,9 +23,10 @@ namespace CsVerify.Verifier.Boogie
             }
             return this switch
             {
-                KLit or KVar => this,
+                KLit or KVar or KBound => this,
                 KOp op => new KOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
                 KQuant q => q.WithParts(q.Range?.Rewrite(at), q.Body.Rewrite(at), q.Trigger?.Select(x => x.Rewrite(at)).ToArray()),
+                KMapLambda l => l.WithBody(l.Body.Rewrite(at)),
                 KFnApp f => f.WithArgs(f.Args.Select(x => x.Rewrite(at)).ToArray(), f.Snap?.Rewrite(at)),
                 _ => throw KernelTerms.NotMath(this),
             };
@@ -58,9 +59,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Its immediate parts, as Subterms takes them.</summary>
         public IEnumerable<KExpr> Children() => this switch
         {
-            KLit or KVar => Enumerable.Empty<KExpr>(),
+            KLit or KVar or KBound => Enumerable.Empty<KExpr>(),
             KOp op => op.Args,
             KQuant q => q.Range == null ? new[] { q.Body } : new[] { q.Range, q.Body },
+            KMapLambda l => new[] { l.Body },
             KFnApp f => f.Snap == null ? f.Args : f.Args.Append(f.Snap),
             _ => throw KernelTerms.NotMath(this),
         };
@@ -68,9 +70,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Is it mathematics through and through?</summary>
         public bool IsMath() => this switch
         {
-            KLit or KVar => true,
+            KLit or KVar or KBound => true,
             KOp op => op.Args.All(a => a.IsMath()),
             KQuant q => (q.Range == null || q.Range.IsMath()) && q.Body.IsMath() && (q.Trigger == null || q.Trigger.All(t => t.IsMath())),
+            KMapLambda l => l.Body.IsMath(),
             KFnApp f => f.Args.All(a => a.IsMath()) && (f.Snap == null || f.Snap.IsMath()),
             _ => false,
         };
@@ -97,7 +100,8 @@ namespace CsVerify.Verifier.Boogie
             MLit l => new KLit(l.Text),
             MVar v => new KVar(v.Name),
             MOp op => new KOp(op.Op, op.Args.Select(Of).ToArray()),
-            MQuant q => KQuant.Of(q, Of(q.Range), Of(q.Body), q.Trigger?.Select(Of).ToArray()),
+            // (what comes back to the kernel is literals and defaults: no quantifier)
+            MQuant => throw new System.InvalidOperationException("a level 2 quantifier back in the kernel"),
             MFnApp f => KFnApp.Of(f, f.Args.Select(Of).ToArray(), Of(f.Snap)),
             _ => throw new System.InvalidOperationException("not mathematics: " + e.GetType().Name),
         };

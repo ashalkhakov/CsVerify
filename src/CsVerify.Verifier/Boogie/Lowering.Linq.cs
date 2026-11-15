@@ -110,22 +110,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A fresh atom: a name a binder's body is made of, then closed over (Nameless).</summary>
         private KVar Atom() => new KVar(Nameless.AtomPrefix + _atoms++);
 
-        /// <summary>
-        /// forall (or exists) i in [lo, hi): body, i an atom in it (and in the triggers'). Nameless: it is named where it
-        /// leaves the lowering (Named).
-        /// </summary>
-        private static KNameless Over(KExpr lo, KExpr hi, KVar i, KExpr body, bool forall = true, KExpr[] trigger = null) => new KNameless
-        {
-            Forall = forall,
-            Range = Nameless.Close(Between(lo, i, hi), i),
-            Body = Nameless.Close(body, i),
-            Trigger = trigger?.Select(t => Nameless.Close(t, i)).ToArray(),
-        };
+        /// <summary>forall (or exists) i in [lo, hi): body, i an atom in it (and in the triggers').</summary>
+        private static KQuant Over(KExpr lo, KExpr hi, KVar i, KExpr body, bool forall = true, KExpr[] trigger = null) =>
+            new KQuant(forall, "int", Nameless.Close(Between(lo, i, hi), i), Nameless.Close(body, i), trigger?.Select(t => Nameless.Close(t, i)).ToArray());
 
-        private int _boundNames;
-
-        /// <summary>A term as it leaves the lowering of queries: its quantifiers named, no index or atom left in it.</summary>
-        private KExpr Named(KExpr e) => Nameless.Named(e, ref _boundNames);
+        /// <summary>A term as it leaves the lowering of queries: no index dangling, no atom free in it.</summary>
+        private static KExpr Named(KExpr e) => Nameless.Leaving(e);
 
         /// <summary>A pure lambda's body (one expression, writing nothing, calling only functions), and its parameters.</summary>
         private (IOperation body, IParameterSymbol p1, IParameterSymbol p2)? PureLambda(IOperation arg)
@@ -1580,7 +1570,7 @@ namespace CsVerify.Verifier.Boogie
                     Emit(KRow.Of(
                         Elements(callType),
                         new KVar(t),
-                        MapLambda("j$: int", Ite(Between(KLit.Zero, new KVar("j$"), s.Length), s.Elem.At(new KVar("j$")), new KLit(Default(s.Type) is KLit d ? d.Text : "0")))));
+                        MapLambda("j$", "int", Ite(Between(KLit.Zero, new KVar("j$"), s.Length), s.Elem.At(new KVar("j$")), new KLit(Default(s.Type) is KLit d ? d.Text : "0")))));
                     return new KVar(t);
                 }
                 case "ToList" when args.Count == 1 && IsList(callType):
@@ -1591,7 +1581,7 @@ namespace CsVerify.Verifier.Boogie
                     var t = Declare("t$" + _temps++, callType);
                     Emit(KAssign.Of(t, list));
                     var items = ModelOf("Items", (INamedTypeSymbol)callType);
-                    Emit(KRow.Of(items.Name, new KVar(t), MapLambda("j$: int", s.Elem.At(new KVar("j$")))));
+                    Emit(KRow.Of(items.Name, new KVar(t), MapLambda("j$", "int", s.Elem.At(new KVar("j$")))));
                     Emit(KRow.Of(SizeMap, new KVar(t), s.Length));
                     return new KVar(t);
                 }

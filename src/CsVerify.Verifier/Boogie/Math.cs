@@ -108,8 +108,8 @@ namespace CsVerify.Verifier.Boogie
         public static MOp Length(MExpr a) => new MOp("len", a);
         public static MOp Old(MExpr a) => new MOp("old", a);
 
-        /// <summary>A map as Boogie's lambda: (lambda binder :: body), the binder written out ("o$: Ref").</summary>
-        public static MOp MapLambda(string binder, MExpr body) => new MOp("lambda", new MLit(binder), body);
+        /// <summary>A map as Boogie's lambda: (lambda var: type :: body), closed over var.</summary>
+        public static MMapLambda MapLambda(string var, string type, MExpr body) => MMapLambda.Of(var, type, body);
 
         /// <summary>The conjunction of these, left to right; true, of none.</summary>
         public static MExpr AndAll(IEnumerable<MExpr> xs)
@@ -141,12 +141,24 @@ namespace CsVerify.Verifier.Boogie
     internal sealed class MQuant : MExpr
     {
         public bool Forall;
-        public string Var;
-        /// <summary>Its variable's Boogie type (int, unless said).</summary>
-        public string Type = "int";
+        /// <summary>Its variable's Boogie type (int, unless said); the variable itself is index 0 in its parts (MBound).</summary>
+        public string Type;
         public MExpr Range, Body;
         /// <summary>Its triggers, each one on its own (null: the solver's choice).</summary>
         public MExpr[] Trigger;
+
+        /// <summary>A quantifier of these parts, each already of its variable as index 0.</summary>
+        public MQuant(bool forall, string type, MExpr range, MExpr body, MExpr[] trigger = null)
+        {
+            Forall = forall;
+            Type = type;
+            Range = range;
+            Body = body;
+            Trigger = trigger;
+        }
+
+        /// <summary>A quantifier's parts as they are of its variable's name: closed over it, the name an index.</summary>
+        private static MExpr Close(MExpr part, string var) => part?.CloseOver(var);
 
         /// <summary>forall var: int, (range ==>) body.</summary>
         public static MQuant ForAll(string var, MExpr body, MExpr range = null) => ForAll(var, "int", body, range);
@@ -160,36 +172,46 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>exists var: type, (range &&) body.</summary>
         public static MQuant Exists(string var, string type, MExpr body, MExpr range = null) => Quant(false, var, type, body, range);
 
-        private static MQuant Quant(bool forall, string var, string type, MExpr body, MExpr range) => new MQuant
-        {
-            Forall = forall,
-            Var = var,
-            Type = type,
-            Range = range,
-            Body = body,
-        };
+        private static MQuant Quant(bool forall, string var, string type, MExpr body, MExpr range) => new MQuant(forall, type, Close(range, var), Close(body, var));
 
-        /// <summary>Over the same variable (forall or exists as this is), of these parts.</summary>
-        public MQuant WithParts(MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant
-        {
-            Forall = Forall,
-            Var = Var,
-            Type = Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
-        };
+        /// <summary>Of the same kind and type as this, of these parts (each already of the variable as index 0).</summary>
+        public MQuant WithParts(MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant(Forall, Type, range, body, trigger);
 
-        /// <summary>Over a kernel quantifier's variable (forall or exists as it is), of these parts.</summary>
-        public static MQuant Of(KQuant binder, MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant
+        /// <summary>A kernel quantifier at level 2, of these parts (each already of its variable as index 0).</summary>
+        public static MQuant Of(KQuant binder, MExpr range, MExpr body, MExpr[] trigger = null) => new MQuant(binder.Forall, binder.Type, range, body, trigger);
+
+        /// <summary>A kernel quantifier at level 2, of these parts of its variable as this name (it opened at it): closed over it.</summary>
+        public static MQuant Of(KQuant binder, string var, MExpr range, MExpr body, MExpr[] trigger = null) =>
+            Of(binder, Close(range, var), Close(body, var), trigger?.Select(t => Close(t, var)).ToArray());
+    }
+
+    /// <summary>A map as Boogie's lambda, over one variable of its type: index 0 in its body (MBound).</summary>
+    internal sealed class MMapLambda : MExpr
+    {
+        public readonly string Type;
+        public readonly MExpr Body;
+
+        public MMapLambda(string type, MExpr body)
         {
-            Forall = binder.Forall,
-            Var = binder.Var,
-            Type = binder.Type,
-            Range = range,
-            Body = body,
-            Trigger = trigger,
-        };
+            Type = type;
+            Body = body;
+        }
+
+        /// <summary>(lambda var: type :: body), closed over var.</summary>
+        public static MMapLambda Of(string var, string type, MExpr body) => new MMapLambda(type, body.CloseOver(var));
+
+        public MMapLambda WithBody(MExpr body) => new MMapLambda(Type, body);
+    }
+
+    /// <summary>A bound variable: of the index-th binder (quantifier or lambda) out from here (0, the nearest).</summary>
+    internal sealed class MBound : MExpr
+    {
+        public readonly int Index;
+
+        public MBound(int index)
+        {
+            Index = index;
+        }
     }
 
     /// <summary>

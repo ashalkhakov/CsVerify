@@ -23,9 +23,10 @@ namespace CsVerify.Verifier.Boogie
             }
             return this switch
             {
-                MLit or MVar => this,
+                MLit or MVar or MBound => this,
                 MOp op => new MOp(op.Op, op.Args.Select(x => x.Rewrite(at)).ToArray()),
                 MQuant q => q.WithParts(q.Range?.Rewrite(at), q.Body.Rewrite(at), q.Trigger?.Select(x => x.Rewrite(at)).ToArray()),
+                MMapLambda l => l.WithBody(l.Body.Rewrite(at)),
                 MFnApp f => f.WithArgs(f.Args.Select(x => x.Rewrite(at)).ToArray(), f.Snap?.Rewrite(at)),
                 _ => throw MathTerms.NotMath(this),
             };
@@ -58,14 +59,43 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Its immediate parts, as Subterms takes them.</summary>
         public IEnumerable<MExpr> Children() => this switch
         {
-            MLit or MVar => Enumerable.Empty<MExpr>(),
+            MLit or MVar or MBound => Enumerable.Empty<MExpr>(),
             MOp op => op.Args,
             MQuant q => q.Range == null ? new[] { q.Body } : new[] { q.Range, q.Body },
+            MMapLambda l => new[] { l.Body },
             MFnApp f => f.Snap == null ? f.Args : f.Args.Append(f.Snap),
             _ => throw MathTerms.NotMath(this),
         };
 
         public bool IsTrue => this is MLit { Text: "true" };
+
+        /// <summary>This term with a variable's name the index of a quantifier around it (0 here, one more under each quantifier in it).</summary>
+        public MExpr CloseOver(string name) => CloseOver(name, 0);
+
+        private MExpr CloseOver(string name, int depth) => this switch
+        {
+            MVar v when v.Name == name => new MBound(depth),
+            MLit or MVar or MBound => this,
+            MOp op => new MOp(op.Op, op.Args.Select(a => a.CloseOver(name, depth)).ToArray()),
+            MQuant q => q.WithParts(q.Range?.CloseOver(name, depth + 1), q.Body.CloseOver(name, depth + 1), q.Trigger?.Select(t => t.CloseOver(name, depth + 1)).ToArray()),
+            MMapLambda l => l.WithBody(l.Body.CloseOver(name, depth + 1)),
+            MFnApp f => f.WithArgs(f.Args.Select(a => a.CloseOver(name, depth)).ToArray(), f.Snap?.CloseOver(name, depth)),
+            _ => throw MathTerms.NotMath(this),
+        };
+
+        /// <summary>Does it mention a quantifier's variable from outside it (an index no quantifier in it binds)?</summary>
+        public bool HasLooseBound() => HasLooseBound(0);
+
+        private bool HasLooseBound(int depth) => this switch
+        {
+            MBound b => b.Index >= depth,
+            MLit or MVar => false,
+            MOp op => op.Args.Any(a => a.HasLooseBound(depth)),
+            MQuant q => q.Range?.HasLooseBound(depth + 1) == true || q.Body.HasLooseBound(depth + 1) || q.Trigger?.Any(t => t.HasLooseBound(depth + 1)) == true,
+            MMapLambda l => l.Body.HasLooseBound(depth + 1),
+            MFnApp f => f.Args.Any(a => a.HasLooseBound(depth)) || f.Snap?.HasLooseBound(depth) == true,
+            _ => throw MathTerms.NotMath(this),
+        };
 
         /// <summary>Its conjuncts: the operands of its &&s, left to right (itself, if it isn't one).</summary>
         public IEnumerable<MExpr> Conjuncts() => this is MOp { Op: "&&" } and ? and.Args.SelectMany(a => a.Conjuncts()) : new[] { this };
@@ -84,6 +114,7 @@ namespace CsVerify.Verifier.Boogie
         {
             MFnApp f => new[] { f }.Concat(f.Args.SelectMany(a => a.Applications())),
             MOp op => op.Args.SelectMany(a => a.Applications()),
+            MMapLambda l => l.Body.Applications(),
             // (not into a nested quantifier: its applications are of its own variable, unfolded there)
             _ => Enumerable.Empty<MFnApp>(),
         };
@@ -102,6 +133,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case KLit l: return new MLit(l.Text);
                 case KVar v: return new MVar(v.Name);
+                case KBound b: return new MBound(b.Index);
                 case KOp op: return AllToMath(op.Args) is MExpr[] operands ? new MOp(op.Op, operands) : null;
                 case KQuant q:
                 {
@@ -114,6 +146,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return MQuant.Of(q, range, body, trigger);
                 }
+                case KMapLambda l: return ToMath(l.Body) is MExpr lb ? new MMapLambda(l.Type, lb) : null;
                 case KFnApp f:
                 {
                     var args = AllToMath(f.Args);

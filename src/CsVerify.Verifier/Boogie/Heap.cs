@@ -120,7 +120,7 @@ namespace CsVerify.Verifier.Boogie
                             stmts.Add(MMapUpdate.Of(
                                 fill.Map,
                                 MLit.Null,
-                                MapLambda("j$: int",
+                                MapLambda("j$", "int",
                         Ite(AndAlso(Le(fill.Lo, j), Lt(j, fill.Hi)), fill.Value, Sel(fill.Map, MLit.Null, j)))));
                             break;
                         }
@@ -149,8 +149,8 @@ namespace CsVerify.Verifier.Boogie
                             stmts.Add(MMapUpdate.Of(
                                 map,
                                 t,
-                                IsStruct(element) ? MapLambda("j: int", MathTypes.StructDefault(element))
-                                                                         : IsFloating(element) ? MapLambda("j: int", MathTypes.FloatLiteral(0.0, element))
+                                IsStruct(element) ? MapLambda("j", "int", MathTypes.StructDefault(element))
+                                                                         : IsFloating(element) ? MapLambda("j", "int", MathTypes.FloatLiteral(0.0, element))
                                                                          : new MLit($"(lambda j: int :: {zero})")));
                             if (n.Elements != null)
                             {

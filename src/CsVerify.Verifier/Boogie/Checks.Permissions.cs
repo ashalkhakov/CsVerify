@@ -408,7 +408,7 @@ namespace CsVerify.Verifier.Boogie
                     ExhaleCells(g, cl, at, $"'{cl.At}' is needed here, but those cells are not all in hand");
                     Emit(MAssign.Of(
                         "cowner",
-                        MapLambda("x$: Ref", MapLambda("i$: int",
+                        MapLambda("x$", "Ref", MapLambda("i$", "int",
                 Ite(InCells(g, cl, new MVar("x$"), new MVar("i$")), p, Sel("cowner", new MVar("x$"), new MVar("i$")))))));
                     return;
                 case MAcc acc:
@@ -430,7 +430,7 @@ namespace CsVerify.Verifier.Boogie
                     var y = new MVar("y$");
                     Emit(MAssign.Of(
                         "owner",
-                        MapLambda("y$: Ref",
+                        MapLambda("y$", "Ref",
                 Ite(Conj(g, Eq(Sel("owner", y), q)), p, Sel("owner", y)))));
                     return;
                 }
@@ -556,7 +556,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 elsewhere = Ite(OrAny(nested.Select(n => (MExpr)Eq(Footprint(yv), n.q))), None, Footprint(yv));
             }
-            Emit(MAssign.Of("owner", MapLambda("y$: Ref", Ite(Eq(Footprint(yv), p), to, elsewhere))));
+            Emit(MAssign.Of("owner", MapLambda("y$", "Ref", Ite(Eq(Footprint(yv), p), to, elsewhere))));
         }
 
         private MExpr Footprint(MExpr y) => Sel("footprint$", y);
@@ -586,7 +586,7 @@ namespace CsVerify.Verifier.Boogie
             }
             Emit(MAssign.Of(
                 "cowner",
-                MapLambda("x$: Ref", MapLambda("i$: int", Ite(Eq(CellFootprint(xv, iv), p), cto, celsewhere)))));
+                MapLambda("x$", "Ref", MapLambda("i$", "int", Ite(Eq(CellFootprint(xv, iv), p), cto, celsewhere)))));
         }
 
         private MExpr CellFootprint(MVar xv, MVar iv) => Sel("cfootprint$", xv, iv);
