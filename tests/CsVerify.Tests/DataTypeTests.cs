@@ -23,6 +23,9 @@ namespace CsVerify.Tests
         [InlineData("static void M(int[] xs, int b) { Shape s = new Shape.Dot(b); for (int i = 0; i < xs.Length; i++) { Spec.Invariant(1 != (s switch { Shape.Seg q => q.Lo, _ => -1 })); } Spec.Assert(false); }")]
         [InlineData("static void M(object o) { Spec.Requires(o is string); Spec.Assert(!(o is Frac) || ((Frac)o).D > 0); Spec.Assert(false); }")]
         [InlineData("static void M(object o) { Spec.Requires(o is string); Spec.Assert(o is Range r ? r.Lo <= r.Hi : true); Spec.Assert(false); }")]
+        // (a constructor's argument outside its field's type: in ghost code, int.MaxValue + 1; a Dot of it isn't one whose X is that)
+        [InlineData("[Lemma, Conditional(\"CSVERIFY_SPEC\")] static void M(int b) { Spec.Requires(b == int.MaxValue); Shape s = new Shape.Dot(b + 1); Spec.Assert(false); }")]
+        [InlineData("[Lemma, Conditional(\"CSVERIFY_SPEC\")] static void M(int b) { Spec.Requires(b == int.MaxValue); Spec.Assert(new Shape.Dot(b + 1).X == b + 1); }")]
         public void ADeadCaseProvesNothing(string m) => Assert.Contains("CSV1004", DeadErrors(m));
 
         [Theory]
@@ -33,6 +36,8 @@ namespace CsVerify.Tests
         [InlineData("static void M(Frac f) { Spec.Assert(f.D > 0); }")]
         [InlineData("static void M(object o) { if (o is Frac f) Spec.Assert(f.D > 0); }")]
         [InlineData("static void M(object o) { if (o is Range r) Spec.Assert(r.Lo <= r.Hi); }")]
+        // (in its field's type, a constructor's argument is its field's value)
+        [InlineData("[Lemma, Conditional(\"CSVERIFY_SPEC\")] static void M(int b) { Spec.Requires(b < int.MaxValue); Spec.Assert(new Shape.Dot(b + 1).X == b + 1); }")]
         public void ALiveCaseStillProves(string m) => Assert.Empty(DeadErrors(m));
 
         private const string ListType = @"

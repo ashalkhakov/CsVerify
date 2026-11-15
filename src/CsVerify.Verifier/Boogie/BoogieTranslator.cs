@@ -849,6 +849,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
                     dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
+                    if (MathTypes.OfType(new MVar(Local(p)), p.Type) is MExpr typed)
+                    {
+                        dc.AddGuard(typed);
+                    }
                 }
                 foreach (var prop in Data.Fields(c))
                 {
@@ -856,7 +860,22 @@ namespace CsVerify.Verifier.Boogie
                     MExpr value = SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
                         ? new MVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
                         : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
-                    dc.AddField((fn, value));
+                    // (a computed one, as a base's argument: an integer the C# value, wrapped into the field's range as unchecked
+                    // arithmetic does (checked, one that overflows throws, so there is no such value); a data value the
+                    // field's where it is of the field's type)
+                    var type = prop.OriginalDefinition.Type;
+                    if (value is MVar)
+                    {
+                        dc.AddField((fn, value, null));
+                    }
+                    else if (IsIntegral(type))
+                    {
+                        dc.AddField((fn, MathTypes.Wrap(value, type), null));
+                    }
+                    else
+                    {
+                        dc.AddField((fn, value, MathTypes.OfType(value, type)));
+                    }
                     // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
                     // an integer one in its type's range)
                     if (!fields.ContainsKey(fn))
