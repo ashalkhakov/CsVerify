@@ -761,7 +761,8 @@ namespace CsVerify.Verifier.Boogie
             var known = _known;
             _known = null;
             ShapeFact(Le(KLit.Zero, len), at);
-            ShapeFact(Over(KLit.Zero, len, i => EachTracked(i, idx, el, e, c)), at);
+            var i2 = Atom();
+            ShapeFact(Over(KLit.Zero, len, i2, EachTracked(i2, idx, el, e, c)), at);
             ShapeFact(Implies(Lt(KLit.Zero, len), EachTracked(KLit.Zero, idx, el, e, c)), at);
             var y = new KVar("y$");
             ShapeFact(KQuant.ForAll(
@@ -770,10 +771,11 @@ namespace CsVerify.Verifier.Boogie
                 Implies(AndAlso(Isa(y, e), IsLive(y, c)),
                 AndAll(new KExpr[] { Le(KLit.Zero, Sel(idx, y)), Lt(Sel(idx, y), len), Eq(Sel(el, Sel(idx, y)), y) }))), at);
             _known = known;
+            var i = Atom();
             return new LSeq
             {
                 Length = len,
-                Elem = i => Sel(el, i),
+                Elem = KAbs.Of(i, Sel(el, i)),
                 Type = e.Type,
             };
         }

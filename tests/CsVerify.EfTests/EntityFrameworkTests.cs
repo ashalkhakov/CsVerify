@@ -371,6 +371,18 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().Include(p => p.Tags).ToListAsync(); " +
             "if (r.Count == 0) return; var p = r[0]; foreach (var t in p.Tags) Spec.Assert(t.Id == p.Id); } }"));
 
+        private const string Notes =
+            "public sealed class Note { public int Id { get; set; } public int TagId { get; set; } }\n" +
+            "public sealed class Tag { public int Id { get; set; } public int PostId { get; set; } public HashSet<Note> Notes { get; set; } = new HashSet<Note>(); }\n" +
+            "public sealed class Post { public int Id { get; set; } public HashSet<Tag> Tags { get; set; } = new HashSet<Tag>(); }\n" +
+            "public sealed class Blog : DbContext { public DbSet<Post> Posts => Set<Post>(); public DbSet<Tag> Tags => Set<Tag>(); public DbSet<Note> Notes => Set<Note>(); }\n";
+
+        // (a set under a set: each note is its own tag's, not one the inner set's variable stands for)
+        [Fact]
+        public void ThenInclude_AHashSetUnderAHashSet_HoldsTheRowsWithItsParentsKey() => Assert.Empty(Errors("M", Notes +
+            "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().Include(p => p.Tags).ThenInclude(t => t.Notes).ToListAsync(); " +
+            "if (r.Count == 0) return; var p = r[0]; foreach (var t in p.Tags) { foreach (var n in t.Notes) Spec.Assert(n.TagId == t.Id); } } }"));
+
         [Fact]
         public void Include_AnIList_HoldsTheRowsWithThisKey() => Assert.Empty(Errors("M", Interfaces +
             "public static class C { public static async Task M(Room db) { var r = await db.Shelves.AsNoTracking().Include(b => b.Items).ToListAsync(); " +
