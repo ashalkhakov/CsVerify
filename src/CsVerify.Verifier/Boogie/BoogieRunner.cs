@@ -235,7 +235,10 @@ namespace CsVerify.Verifier.Boogie
 
             // (procedures verified side by side, a solver each: their results don't depend on each other)
             var cores = "/vcsCores:" + solvers;
-            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores }.Concat(only).Concat(extra).ToArray());
+            // (Dafny's eager threshold: quantifiers instantiated less eagerly, so a query whose goal is plain arithmetic
+            // isn't lost in instantiations first, case split by case split: AtsBinHeap.Pop's termination check)
+            var lazier = "/proverOpt:O:smt.qi.eager_threshold=100";
+            options.Parse(new[] { "/proverOpt:PROVER_PATH=" + z3Path, "/timeLimit:" + Math.Max(1, timeoutMs / 1000), cores, lazier }.Concat(only).Concat(extra).ToArray());
             using var engine = new ExecutionEngine(options, new EmptyVerificationResultCache(), scheduler, false);
             if (Parser.Parse(program.Text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
             {
