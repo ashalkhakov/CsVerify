@@ -1441,10 +1441,11 @@ namespace CsVerify.Verifier
                 x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count(d => d.IsError));
                 x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
                 // (past its time budget: not verified, never verified)
-                if (engine.Options.MethodBudgetMs > 0 && x.result.Milliseconds > engine.Options.MethodBudgetMs)
+                var budget = engine.Options.MethodBudgetMs * Boogie.BoogieRunner.TimeScale;
+                if (budget > 0 && x.result.Milliseconds > budget)
                 {
                     x.result.AddDiagnostic(new VerificationDiagnostic("CSV1901", true,
-                        $"time budget ({engine.Options.MethodBudgetMs} ms) reached; the rest of '{x.result.Name}' is not verified", x.decl.GetLocation().GetLineSpan()));
+                        $"time budget ({budget} ms) reached; the rest of '{x.result.Name}' is not verified", x.decl.GetLocation().GetLineSpan()));
                 }
             }
             return null;

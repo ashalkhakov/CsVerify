@@ -33,6 +33,9 @@ namespace CsVerify.Verifier.Boogie
         private static readonly SemaphoreSlim Gate = new SemaphoreSlim(2);
         private static int _running;
 
+        /// <summary>CSVERIFY_TIME_SCALE: every time limit (the solver's, a method's budget) this many times as long (a slow machine: CI's Windows runner).</summary>
+        public static readonly int TimeScale = int.TryParse(Environment.GetEnvironmentVariable("CSVERIFY_TIME_SCALE"), out var scale) && scale > 1 ? scale : 1;
+
         /// <summary>
         /// The failures, each a diagnostic of the method it is in; an error of Boogie's own is thrown. A procedure that
         /// times out is verified once more an assertion at a time (/vcsSplitOnEveryAssert): a long one that is hard as a
@@ -49,7 +52,8 @@ namespace CsVerify.Verifier.Boogie
             // (again, of only the procedures whose facts failed: the others' results stand)
             // (first, each whole in a quarter of the time: one that is hard whole is mostly easy split, which gets all of it;
             // only one that split doesn't decide is tried whole again, for all of it)
-            int quick = timeoutMs <= 10000 ? timeoutMs : Math.Max(10000, timeoutMs / 4);
+            int quick = (timeoutMs <= 10000 ? timeoutMs : Math.Max(10000, timeoutMs / 4)) * TimeScale;
+            timeoutMs *= TimeScale;
             var names = new Dictionary<MethodResult, string>();
             var (failures, undecided, factsIn) = Run(program, z3Path, quick, null, null, names);
             for (int round = 1; factsIn.Count > 0; round++)
