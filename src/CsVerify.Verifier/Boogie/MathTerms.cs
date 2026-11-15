@@ -69,6 +69,9 @@ namespace CsVerify.Verifier.Boogie
 
         public bool IsTrue => this is MLit { Text: "true" };
 
+        /// <summary>An integer literal other than 0 (a divisor that needs no check).</summary>
+        public bool IsNonzeroLiteral => this is MLit l && long.TryParse(l.Text, out var v) && v != 0;
+
         /// <summary>This term with a variable's name the index of a quantifier around it (0 here, one more under each quantifier in it).</summary>
         public MExpr CloseOver(string name) => CloseOver(name, 0);
 

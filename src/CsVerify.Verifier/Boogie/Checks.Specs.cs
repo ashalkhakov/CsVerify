@@ -235,7 +235,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var l = Spec(ar.Left, wf, guard);
                     var r = Spec(ar.Right, wf, guard);
-                    AddWellDefinedness(Ne(r, MLit.Zero), wf, guard);
+                    if (!r.IsNonzeroLiteral)
+                    {
+                        AddWellDefinedness(Ne(r, MLit.Zero), wf, guard);
+                    }
                     return new MOp(ar.Op == "/" ? "div" : "rem", l, r);
                 }
                 case KIfc si:
