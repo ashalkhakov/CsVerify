@@ -18,6 +18,15 @@ namespace CsVerify.Verifier
         /// under which alone the base promised it (evaluated in the entry state).
         /// </summary>
         public IReadOnlyList<IOperation> Guard;
+
+        /// <summary>This postcondition, promised only under these preconditions.</summary>
+        public Postcondition Guarded(IReadOnlyList<IOperation> guard) => new Postcondition
+        {
+            Expr = Expr,
+            ResultParameter = ResultParameter,
+            Syntax = Syntax,
+            Guard = guard,
+        };
     }
 
     /// <summary>A method's contract, read from the Spec.* statements at the top level of its body.</summary>
@@ -50,7 +59,7 @@ namespace CsVerify.Verifier
         public IOperation PureBody;
         /// <summary>
         /// For other [Pure] methods: the body's statements (contract calls removed), from which a definition is read if
-        /// they are local declarations, ifs and returns (MethodVerifier.PureStatementsTerm).
+        /// they are local declarations, ifs and returns (StaticChecks.PureStatementsTerm).
         /// </summary>
         public IReadOnlyList<IOperation> PureStatements;
         public bool HasSource => Declaration != null;
@@ -82,10 +91,15 @@ namespace CsVerify.Verifier
             var c = Read(stub, compilation, isStub: true);
             c.Method = member.OriginalDefinition;
             c.Stub = stub.OriginalDefinition;
-            if (ContractStubs.TakesReceiver(stub)) c.StubReceiver = c.Stub.Parameters[0];
+            if (ContractStubs.TakesReceiver(stub))
+            {
+                c.StubReceiver = c.Stub.Parameters[0];
+            }
             c.Aliases.Add(c.Stub);
             if (c.IsPure)
+            {
                 c.StubDefinition = c.Ensures.Select(e => Definition(e.Expr, e.ResultParameter)).FirstOrDefault(d => d != null);
+            }
             c.StubFreshResult = c.Ensures.Any(e => e.Expr != null && e.Expr.DescendantsAndSelf().OfType<IInvocationOperation>().Any(i =>
                 SpecSymbols.IsSpecClass(i.TargetMethod.ContainingType) && i.TargetMethod.Name == "Fresh" && Mentions(i.Arguments[0].Value, e.ResultParameter)));
             return c;
@@ -95,26 +109,50 @@ namespace CsVerify.Verifier
         private static IOperation Definition(IOperation post, IParameterSymbol result)
         {
             post = Unwrap(post);
-            if (!(post is IBinaryOperation b)) return null;
-            if (b.OperatorKind == BinaryOperatorKind.ConditionalAnd)
-                return Definition(b.LeftOperand, result) ?? Definition(b.RightOperand, result);
-            if (b.OperatorKind != BinaryOperatorKind.Equals) return null;
-            bool IsResult(IOperation o)
+            if (!(post is IBinaryOperation b))
             {
-                o = Unwrap(o);
-                if (o is IInvocationOperation g && SpecSymbols.IsGhostOf(g.TargetMethod)) o = Unwrap(g.Arguments[0].Value);
-                return o is IParameterReferenceOperation p && result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result) ||
-                       o is IInvocationOperation r && SpecSymbols.IsSpecClass(r.TargetMethod.ContainingType) && r.TargetMethod.Name == "Result";
+                return null;
             }
-            if (IsResult(b.LeftOperand) && !Mentions(b.RightOperand, result)) return b.RightOperand;
-            if (IsResult(b.RightOperand) && !Mentions(b.LeftOperand, result)) return b.LeftOperand;
+            if (b.OperatorKind == BinaryOperatorKind.ConditionalAnd)
+            {
+                return Definition(b.LeftOperand, result) ?? Definition(b.RightOperand, result);
+            }
+            if (b.OperatorKind != BinaryOperatorKind.Equals)
+            {
+                return null;
+            }
+            if (IsResult(b.LeftOperand, result) && !Mentions(b.RightOperand, result))
+            {
+                return b.RightOperand;
+            }
+            if (IsResult(b.RightOperand, result) && !Mentions(b.LeftOperand, result))
+            {
+                return b.LeftOperand;
+            }
             return null;
+        }
+
+        private static bool IsResult(IOperation o, IParameterSymbol result)
+        {
+            o = Unwrap(o);
+            if (o is IInvocationOperation g && SpecSymbols.IsGhostOf(g.TargetMethod))
+            {
+                o = Unwrap(g.Arguments[0].Value);
+            }
+            return o is IParameterReferenceOperation p && result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result) ||
+                   o is IInvocationOperation r && SpecSymbols.IsSpecClass(r.TargetMethod.ContainingType) && r.TargetMethod.Name == "Result";
         }
 
         private static IOperation Unwrap(IOperation o)
         {
-            while (o is IConversionOperation conv && conv.IsImplicit) o = conv.Operand;
-            while (o is IParenthesizedOperation p) o = p.Operand;
+            while (o is IConversionOperation conv && conv.IsImplicit)
+            {
+                o = conv.Operand;
+            }
+            while (o is IParenthesizedOperation p)
+            {
+                o = p.Operand;
+            }
             return o;
         }
 
@@ -127,7 +165,10 @@ namespace CsVerify.Verifier
         private static Contract Read(IMethodSymbol method, Compilation compilation, bool isStub)
         {
             method = method.OriginalDefinition;
-            if (method.ReducedFrom != null) method = method.ReducedFrom;
+            if (method.ReducedFrom != null)
+            {
+                method = method.ReducedFrom;
+            }
             var c = new Contract
             {
                 Method = method,
@@ -136,15 +177,34 @@ namespace CsVerify.Verifier
                 IsPure = SpecSymbols.IsPure(method),
             };
             var syntax = method.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).FirstOrDefault();
-            BlockSyntax block; ExpressionSyntax exprBody;
+            BlockSyntax block;
+            ExpressionSyntax exprBody;
             switch (syntax)
             {
-                case MethodDeclarationSyntax m: block = m.Body; exprBody = m.ExpressionBody?.Expression; break;
-                case LocalFunctionStatementSyntax lf: block = lf.Body; exprBody = lf.ExpressionBody?.Expression; break;
-                case ConstructorDeclarationSyntax ctor: block = ctor.Body; exprBody = ctor.ExpressionBody?.Expression; break;
-                case AccessorDeclarationSyntax acc: block = acc.Body; exprBody = acc.ExpressionBody?.Expression; break;
-                case ArrowExpressionClauseSyntax arrow: block = null; exprBody = arrow.Expression; break; // int P => ...
-                case AnonymousFunctionExpressionSyntax lambda: block = lambda.Block; exprBody = lambda.ExpressionBody; break; // x => ...
+                case MethodDeclarationSyntax m:
+                    block = m.Body;
+                    exprBody = m.ExpressionBody?.Expression;
+                    break;
+                case LocalFunctionStatementSyntax lf:
+                    block = lf.Body;
+                    exprBody = lf.ExpressionBody?.Expression;
+                    break;
+                case ConstructorDeclarationSyntax ctor:
+                    block = ctor.Body;
+                    exprBody = ctor.ExpressionBody?.Expression;
+                    break;
+                case AccessorDeclarationSyntax acc:
+                    block = acc.Body;
+                    exprBody = acc.ExpressionBody?.Expression;
+                    break;
+                case ArrowExpressionClauseSyntax arrow:
+                    block = null;
+                    exprBody = arrow.Expression;
+                    break; // int P => ... // int P => ...
+                case AnonymousFunctionExpressionSyntax lambda:
+                    block = lambda.Block;
+                    exprBody = lambda.ExpressionBody;
+                    break; // x => ... // x => ...
                 case SyntaxNode clause when method.MethodKind == MethodKind.AnonymousFunction:
                     // a query clause's lambda (select x + y, where p, let y = ...): its expression, without a specification
                     c.Declaration = clause;
@@ -154,15 +214,22 @@ namespace CsVerify.Verifier
             }
             c.Declaration = syntax;
             c.Model = compilation.GetSemanticModel(syntax.SyntaxTree);
-
             if (exprBody != null)
             {
-                if (isStub) return c; // (a stub's body is not a definition)
-                if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted) c.PureBody = c.Model.GetOperation(exprBody);
+                if (isStub)
+                {
+                    return c; // (a stub's body is not a definition)
+                } // (a stub's body is not a definition)
+                if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted)
+                {
+                    c.PureBody = c.Model.GetOperation(exprBody);
+                }
                 return c;
             }
-            if (block == null) return c;
-
+            if (block == null)
+            {
+                return c;
+            }
             var rest = new List<StatementSyntax>();
             foreach (var stmt in block.Statements)
             {
@@ -172,24 +239,44 @@ namespace CsVerify.Verifier
                     var arg = op.Arguments.Length > 0 ? op.Arguments[0].Value : null;
                     switch (op.TargetMethod.Name)
                     {
-                        case "Requires": c.Requires.Add(arg); c.OwnRequires.Add(arg); continue;
-                        case "Decreases": c.Decreases = op.Arguments.Select(a => a.Value).ToList(); continue;
-                        case "Ensures": c.Ensures.Add(ReadEnsures(arg, inv)); continue;
-                        case "EnsuresOnThrow": c.ThrowEnsures.Add((op.TargetMethod.TypeArguments[0], arg, inv)); continue;
-                        case "Modifies": c.Modifies = arg; continue;
-                        case "Reads": c.Reads = arg; continue;
+                        case "Requires":
+                            c.Requires.Add(arg);
+                            c.OwnRequires.Add(arg);
+                            continue;
+                        case "Decreases":
+                            c.Decreases = op.Arguments.Select(a => a.Value).ToList();
+                            continue;
+                        case "Ensures":
+                            c.Ensures.Add(ReadEnsures(arg, inv));
+                            continue;
+                        case "EnsuresOnThrow":
+                            c.ThrowEnsures.Add((op.TargetMethod.TypeArguments[0], arg, inv));
+                            continue;
+                        case "Modifies":
+                            c.Modifies = arg;
+                            continue;
+                        case "Reads":
+                            c.Reads = arg;
+                            continue;
                     }
                 }
                 rest.Add(stmt);
             }
             // (Spec.Unfold statements before the return only give the definition's checks the predicate's facts)
-            if (isStub) return c;
+            if (isStub)
+            {
+                return c;
+            }
             rest.RemoveAll(s => s is ExpressionStatementSyntax es && es.Expression is InvocationExpressionSyntax inv &&
                                 c.Model.GetOperation(inv) is IInvocationOperation op && SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType) && op.TargetMethod.Name == "Unfold");
             if ((c.IsPure || SpecSymbols.IsPredicate(method)) && !c.IsTrusted && rest.Count == 1 && rest[0] is ReturnStatementSyntax ret && ret.Expression != null)
+            {
                 c.PureBody = c.Model.GetOperation(ret.Expression);
+            }
             else if (c.IsPure && !c.IsTrusted && rest.Count > 0)
+            {
                 c.PureStatements = rest.Select(st => c.Model.GetOperation(st)).ToList();
+            }
             return c;
         }
 
@@ -216,12 +303,18 @@ namespace CsVerify.Verifier
                 Aliases.AddRange(b.Aliases);
                 bool weakened = OwnRequires.Count > 0 && b.Requires.Count > 0;
                 foreach (var post in b.Ensures)
-                    Ensures.Add(weakened && post.Guard == null
-                        ? new Postcondition { Expr = post.Expr, ResultParameter = post.ResultParameter, Syntax = post.Syntax, Guard = b.Requires }
-                        : post);
+                {
+                    Ensures.Add(weakened && post.Guard == null ? post.Guarded(b.Requires) : post);
+                }
                 ThrowEnsures.AddRange(b.ThrowEnsures); // (what the base promises on a throw, every override does)
-                if (OwnRequires.Count == 0 && Requires.Count == 0) Requires.AddRange(b.Requires);
-                if (b.Modifies != null) BaseModifies.Add((b, b.Modifies));
+                if (OwnRequires.Count == 0 && Requires.Count == 0)
+                {
+                    Requires.AddRange(b.Requires);
+                }
+                if (b.Modifies != null)
+                {
+                    BaseModifies.Add((b, b.Modifies));
+                }
                 Modifies ??= b.Modifies;
                 Reads ??= b.Reads;
             }
@@ -232,9 +325,18 @@ namespace CsVerify.Verifier
             if (arg is IDelegateCreationOperation dc && dc.Target is IAnonymousFunctionOperation fn)
             {
                 var body = fn.Body.Operations.OfType<IReturnOperation>().FirstOrDefault()?.ReturnedValue;
-                return new Postcondition { Expr = body, ResultParameter = fn.Symbol.Parameters.FirstOrDefault(), Syntax = syntax };
+                return new Postcondition
+                {
+                    Expr = body,
+                    ResultParameter = fn.Symbol.Parameters.FirstOrDefault(),
+                    Syntax = syntax,
+                };
             }
-            return new Postcondition { Expr = arg, Syntax = syntax };
+            return new Postcondition
+            {
+                Expr = arg,
+                Syntax = syntax,
+            };
         }
     }
 }

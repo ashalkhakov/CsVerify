@@ -164,9 +164,31 @@ namespace CsVerify.Tests
         [Fact]
         public void Struct_InAClassField_IsRejected() => Assert.Equal(new[] { "CSV1901" }, StructErrors("M", "static void M(Box b) { b.P.X = 3; }"));
 
+        // (a struct's method that writes this has it by reference, as C# does: its writes reach the receiver)
         [Fact]
-        public void Struct_MethodWritingThis_IsRejected() => Assert.Equal(new[] { "CSV1901" },
-            Harness.Verify("public struct S { public int X; public void Move(int d) { X = d; } }", overflow: false).Errors("Move"));
+        public void Struct_MethodWritingThis_WritesTheReceiver()
+        {
+            var r = Harness.Verify(@"
+public struct S
+{
+    public int X; public int Y;
+    public void Move(int d) { Spec.Requires(d > -100 && d < 100 && X > -1000 && X < 1000); Spec.Ensures(X == Spec.Old(X) + d && Y == Spec.Old(Y)); X = X + d; }
+    public void Twice() { Spec.Requires(X > -1000 && X < 998); Spec.Ensures(X == Spec.Old(X) + 2); Move(1); Move(1); }
+    public void Bad() { Spec.Requires(X < 1000); Spec.Ensures(X == Spec.Old(X)); X = X + 1; }
+}
+public static class M
+{
+    public static void Local() { var p = new S(); p.Move(3); Spec.Assert(p.X == 3 && p.Y == 0); }
+    public static void LocalBad() { var p = new S(); p.Move(3); Spec.Assert(p.X == 4); }
+    public static void Param(S p) { Spec.Requires(p.X == 5); p.Twice(); Spec.Assert(p.X == 7); }
+    public static void Cell(S[] a) { Spec.Requires(a != null && a.Length > 0 && a[0].X == 1); a[0].Move(2); Spec.Assert(a[0].X == 3); }
+    public static void Ref(ref S p) { Spec.Requires(p.X == 1); Spec.Ensures(p.X == 2); p.Move(1); }
+}");
+            foreach (var good in new[] { "S.Move", "S.Twice", "M.Local", "M.Param", "M.Cell", "M.Ref" })
+                Assert.True(r[good].Verified, good + ": " + string.Join("; ", r[good].Diagnostics.Select(d => d.Message)));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("S.Bad"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("M.LocalBad"));
+        }
 
         // ---- erasure ---------------------------------------------------------------------------------------------
 

@@ -11,7 +11,7 @@ using Xunit;
 namespace CsVerify.Tests
 {
     /// <summary>
-    /// What the verifier's model of Entity Framework Core says (MethodVerifier.EntityFramework, .EfTracker), checked
+    /// What the verifier's model of Entity Framework Core says (StaticChecks.EntityFramework, .EfTracker), checked
     /// against EF itself: each rule the model reports or relies on, shown to be EF's behaviour, on SQLite and on SQL
     /// Server. Where the two differ (collation, arithmetic, asynchronous commands), each test says what each does; the
     /// model claims only what holds of both.

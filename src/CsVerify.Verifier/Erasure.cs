@@ -22,6 +22,10 @@ namespace CsVerify.Verifier
         public readonly List<ErasedFile> Files = new List<ErasedFile>();
         /// <summary>Errors compiling the erased program: ghost code the program still depends on at run time.</summary>
         public readonly List<VerificationDiagnostic> Errors = new List<VerificationDiagnostic>();
+
+        public void AddError(VerificationDiagnostic error) => Errors.Add(error);
+
+        public void AddFile(ErasedFile file) => Files.Add(file);
         public bool Success => Errors.Count == 0;
     }
 
@@ -69,22 +73,28 @@ namespace CsVerify.Verifier
 
             int n = 0;
             foreach (var tree in userTrees)
-                result.Files.Add(new ErasedFile
+            {
+                result.AddFile(new ErasedFile
                 {
                     OriginalPath = tree.FilePath,
                     OutputName = $"{n++:D3}_{Path.GetFileName(tree.FilePath)}",
                     Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: false, checkedBuild).Run(),
                 });
+            }
             // A project referencing another erased project gets the runtime from it: a copy of its own would be a
             // second CsVerify.Ptr<T> (CS0436), not the one the referenced project's methods take.
             if (!RuntimeIn(refs))
+            {
                 foreach (var tree in specTrees)
-                    result.Files.Add(new ErasedFile
+                {
+                    result.AddFile(new ErasedFile
                     {
                         OriginalPath = tree.FilePath,
                         OutputName = Path.Combine(RuntimeFolder, Path.GetFileName(tree.FilePath)),
                         Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: true).Run(),
                     });
+                }
+            }
 
             // The check: the erased program compiles on its own, without CSVERIFY_SPEC and without the CsVerify assembly.
             var erasedParse = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: defines);
@@ -92,9 +102,14 @@ namespace CsVerify.Verifier
                 result.Files.Select(f => CSharpSyntaxTree.ParseText(f.Text, erasedParse, f.OutputName)), refs,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable));
             foreach (var d in erased.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
-                result.Errors.Add(new VerificationDiagnostic("CSV2001", true,
+            {
+                result.AddError(new VerificationDiagnostic("CSV2001", true,
                     $"the erased program does not compile ({d.Id}: {d.GetMessage()}): run-time code depends on ghost code", d.Location.GetMappedLineSpan()));
-            if (!result.Success) result.Errors.InsertRange(0, bindingErrors);
+            }
+            if (!result.Success)
+            {
+                result.Errors.InsertRange(0, bindingErrors);
+            }
             return result;
         }
 
@@ -108,7 +123,10 @@ namespace CsVerify.Verifier
         /// <summary>The project's references minus the CsVerify assembly itself (the runtime comes in as source).</summary>
         internal static List<MetadataReference> ReferencesFor(IReadOnlyList<string> references)
         {
-            if (references.Count == 0) return Engine.FrameworkReferences().ToList();
+            if (references.Count == 0)
+            {
+                return Engine.FrameworkReferences().ToList();
+            }
             return references
                 .Where(r => !IsCsVerifyAssembly(r))
                 .Select(r => (MetadataReference)MetadataReference.CreateFromFile(r)).ToList();
@@ -130,10 +148,22 @@ namespace CsVerify.Verifier
 
         private static bool IsProofType(ITypeSymbol type, HashSet<ITypeSymbol> seen)
         {
-            if (!(type is INamedTypeSymbol named)) return false;
-            if (SpecSymbols.IsGhostType(named) || SpecSymbols.IsSeqType(named)) return true;
-            if (!named.IsValueType || !SpecSymbols.IsLinear(named)) return false;
-            if (!seen.Add(named.OriginalDefinition)) return true;
+            if (!(type is INamedTypeSymbol named))
+            {
+                return false;
+            }
+            if (SpecSymbols.IsGhostType(named) || SpecSymbols.IsSeqType(named))
+            {
+                return true;
+            }
+            if (!named.IsValueType || !SpecSymbols.IsLinear(named))
+            {
+                return false;
+            }
+            if (!seen.Add(named.OriginalDefinition))
+            {
+                return true;
+            }
             return named.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).All(f => IsProofType(f.Type, seen));
         }
 
@@ -143,12 +173,20 @@ namespace CsVerify.Verifier
         /// </summary>
         internal static bool IsErasedMethod(IMethodSymbol m)
         {
-            if (m == null) return false;
+            if (m == null)
+            {
+                return false;
+            }
             m = m.ReducedFrom ?? m.OriginalDefinition;
             if (SpecSymbols.IsLemma(m) || SpecSymbols.IsGhostFunction(m) || SpecSymbols.IsPredicate(m) || SpecSymbols.IsModel(m) || SpecSymbols.IsSpecClass(m.ContainingType) ||
                 SpecSymbols.IsGhostOf(m) || SpecSymbols.IsSeqType(m.ContainingType))
+            {
                 return true;
-            if (!SpecSymbols.IsTrusted(m)) return false;
+            }
+            if (!SpecSymbols.IsTrusted(m))
+            {
+                return false;
+            }
             bool proofResult = !m.ReturnsVoid && IsProofType(m.ReturnType);
             bool proofParams = m.Parameters.All(p => IsProofType(p.Type));
             return proofParams && (proofResult || (m.ReturnsVoid && m.Parameters.Length > 0));
@@ -184,14 +222,27 @@ namespace CsVerify.Verifier
                 var root = _tree.GetRoot();
                 foreach (var node in root.DescendantNodes())
                 {
-                    if (_checked) CheckedNode(node);
+                    if (_checked)
+                    {
+                        CheckedNode(node);
+                    }
                     switch (node)
                     {
-                        case BaseTypeDeclarationSyntax type: TypeDeclaration(type); break;
-                        case MemberDeclarationSyntax member: Member(member); break;
-                        case LocalFunctionStatementSyntax lf: Signature(lf.ParameterList, lf.ReturnType, lf.Body, lf.ExpressionBody, lf.SemicolonToken); break;
-                        case StatementSyntax stmt: Statement(stmt); break;
-                        case ArgumentListSyntax args: Arguments(args); break;
+                        case BaseTypeDeclarationSyntax type:
+                            TypeDeclaration(type);
+                            break;
+                        case MemberDeclarationSyntax member:
+                            Member(member);
+                            break;
+                        case LocalFunctionStatementSyntax lf:
+                            Signature(lf.ParameterList, lf.ReturnType, lf.Body, lf.ExpressionBody, lf.SemicolonToken);
+                            break;
+                        case StatementSyntax stmt:
+                            Statement(stmt);
+                            break;
+                        case ArgumentListSyntax args:
+                            Arguments(args);
+                            break;
                     }
                 }
                 return Apply();
@@ -201,15 +252,26 @@ namespace CsVerify.Verifier
             {
                 // a package keeps its run-time parts: its proof-typed positional parameters go
                 if (type is RecordDeclarationSyntax record && record.ParameterList != null && _model.GetDeclaredSymbol(type) is INamedTypeSymbol rt && !IsProofType(rt))
+                {
                     RemoveFromList(record.ParameterList.Parameters, p => p.Type != null && _model.GetTypeInfo(p.Type).Type is ITypeSymbol pt && IsProofType(pt));
+                }
                 // contracts, not code: [ContractsFor] stubs and [ContractClassFor] classes
-                if (_model.GetDeclaredSymbol(type) is INamedTypeSymbol ct && SpecSymbols.IsContractsClass(ct)) { Delete(type.FullSpan); return; }
-                if (!_library) return;
+                if (_model.GetDeclaredSymbol(type) is INamedTypeSymbol ct && SpecSymbols.IsContractsClass(ct))
+                {
+                    Delete(type.FullSpan);
+                    return;
+                }
+                if (!_library)
+                {
+                    return;
+                }
                 // the runtime keeps no ghost types: a leftover use of one in the program is a compile error
                 if (_model.GetDeclaredSymbol(type) is INamedTypeSymbol t &&
                     (IsProofType(t) || SpecSymbols.IsSpecClass(t) || SpecSymbols.IsSeqType(t) ||
                      SpecSymbols.IsCsVerifyType(t, "Ghost") || SpecSymbols.IsCsVerifyType(t, "GhostException")))
+                {
                     Delete(type.FullSpan);
+                }
             }
 
             private void Member(MemberDeclarationSyntax member)
@@ -218,15 +280,25 @@ namespace CsVerify.Verifier
                 {
                     case BaseMethodDeclarationSyntax method:
                         var symbol = _model.GetDeclaredSymbol(method) as IMethodSymbol;
-                        if (IsErasedMethod(symbol)) { Delete(method.FullSpan); return; }
+                        if (IsErasedMethod(symbol))
+                        {
+                            Delete(method.FullSpan);
+                            return;
+                        }
                         Signature(method.ParameterList, (method as MethodDeclarationSyntax)?.ReturnType, method.Body, method.ExpressionBody,
                             (method as MethodDeclarationSyntax)?.SemicolonToken ?? default);
                         break;
                     case FieldDeclarationSyntax field:
-                        if (_model.GetTypeInfo(field.Declaration.Type).Type is ITypeSymbol ft && IsProofType(ft)) Delete(field.FullSpan);
+                        if (_model.GetTypeInfo(field.Declaration.Type).Type is ITypeSymbol ft && IsProofType(ft))
+                        {
+                            Delete(field.FullSpan);
+                        }
                         break;
                     case PropertyDeclarationSyntax property:
-                        if (_model.GetTypeInfo(property.Type).Type is ITypeSymbol pt && IsProofType(pt)) Delete(property.FullSpan);
+                        if (_model.GetTypeInfo(property.Type).Type is ITypeSymbol pt && IsProofType(pt))
+                        {
+                            Delete(property.FullSpan);
+                        }
                         break;
                 }
             }
@@ -235,18 +307,27 @@ namespace CsVerify.Verifier
             private void Signature(ParameterListSyntax parameters, TypeSyntax returnType, BlockSyntax body, ArrowExpressionClauseSyntax arrow, SyntaxToken semicolon)
             {
                 RemoveFromList(parameters.Parameters, p => p.Type != null && _model.GetTypeInfo(p.Type).Type is ITypeSymbol t && IsProofType(t));
-                if (returnType == null || !(_model.GetTypeInfo(returnType).Type is ITypeSymbol rt) || !IsProofType(rt)) return;
+                if (returnType == null || !(_model.GetTypeInfo(returnType).Type is ITypeSymbol rt) || !IsProofType(rt))
+                {
+                    return;
+                }
                 Replace(returnType.Span, "void");
                 if (arrow != null && !IsKeptCall(arrow.Expression))
                 {
                     Replace(arrow.Span, "{ }");
-                    if (!semicolon.IsKind(SyntaxKind.None)) Replace(semicolon.Span, " ");
+                    if (!semicolon.IsKind(SyntaxKind.None))
+                    {
+                        Replace(semicolon.Span, " ");
+                    }
                 }
             }
 
             private void Statement(StatementSyntax stmt)
             {
-                if (_handled.Contains(stmt)) return;
+                if (_handled.Contains(stmt))
+                {
+                    return;
+                }
                 switch (stmt)
                 {
                     case ExpressionStatementSyntax es:
@@ -261,15 +342,27 @@ namespace CsVerify.Verifier
                                 break;
                             case AssignmentExpressionSyntax asg when IsProof(asg.Left):
                                 // a view moved or produced: keep a call that does real work, drop the rest
-                                if (IsKeptCall(asg.Right)) Delete(TextSpan.FromBounds(es.SpanStart, asg.Right.SpanStart));
-                                else DeleteStatement(es);
+                                if (IsKeptCall(asg.Right))
+                                {
+                                    Delete(TextSpan.FromBounds(es.SpanStart, asg.Right.SpanStart));
+                                }
+                                else
+                                {
+                                    DeleteStatement(es);
+                                }
                                 break;
                         }
                         break;
                     case LocalDeclarationStatementSyntax decl when _model.GetTypeInfo(decl.Declaration.Type).Type is ITypeSymbol lt && IsProofType(lt):
                         var init = decl.Declaration.Variables.Count == 1 ? decl.Declaration.Variables[0].Initializer?.Value : null;
-                        if (init != null && IsKeptCall(init)) Delete(TextSpan.FromBounds(decl.SpanStart, init.SpanStart));
-                        else Delete(decl.Span);
+                        if (init != null && IsKeptCall(init))
+                        {
+                            Delete(TextSpan.FromBounds(decl.SpanStart, init.SpanStart));
+                        }
+                        else
+                        {
+                            Delete(decl.Span);
+                        }
                         break;
                     case ReturnStatementSyntax ret when ret.Expression != null && IsProof(ret.Expression):
                         if (IsKeptCall(ret.Expression))
@@ -277,7 +370,10 @@ namespace CsVerify.Verifier
                             Replace(ret.ReturnKeyword.Span, "{");
                             Replace(ret.SemicolonToken.Span, "; return; }");
                         }
-                        else Replace(ret.Span, "return;");
+                        else
+                        {
+                            Replace(ret.Span, "return;");
+                        }
                         break;
                 }
             }
@@ -297,9 +393,15 @@ namespace CsVerify.Verifier
                 for (int i = 0; i < parts.Count; i++)
                 {
                     var p = DataTypes.PositionalProperty(type, i);
-                    if (p != null && !IsProofType(p.Type)) kept.Add((parts[i], p.Name));
+                    if (p != null && !IsProofType(p.Type))
+                    {
+                        kept.Add((parts[i], p.Name));
+                    }
                 }
-                if (kept.Count == parts.Count) return;
+                if (kept.Count == parts.Count)
+                {
+                    return;
+                }
                 var right = unpack.Right.ToString();
                 string text = kept.Count == 0 ? "_ = " + right + ";"
                     : kept.Count == 1 ? $"{kept[0].target} = ({right}).{kept[0].property};"
@@ -309,7 +411,10 @@ namespace CsVerify.Verifier
 
             private void Arguments(ArgumentListSyntax args)
             {
-                if (!(args.Parent is ExpressionSyntax call)) return;
+                if (!(args.Parent is ExpressionSyntax call))
+                {
+                    return;
+                }
                 if (!(_model.GetSymbolInfo(call).Symbol is IMethodSymbol m))
                 {
                     // a call that does not bind, to a method of an erased assembly whose signature has lost its proof
@@ -317,7 +422,10 @@ namespace CsVerify.Verifier
                     RemoveFromList(args.Arguments, a => IsProof(a.Expression));
                     return;
                 }
-                if (IsErasedMethod(m)) return; // the whole call goes
+                if (IsErasedMethod(m))
+                {
+                    return; // the whole call goes
+                } // the whole call goes
                 RemoveFromList(args.Arguments, a =>
                 {
                     var p = ParameterOf(a, m);
@@ -327,7 +435,10 @@ namespace CsVerify.Verifier
 
             private static IParameterSymbol ParameterOf(ArgumentSyntax a, IMethodSymbol m)
             {
-                if (a.NameColon != null) return m.Parameters.FirstOrDefault(p => p.Name == a.NameColon.Name.Identifier.ValueText);
+                if (a.NameColon != null)
+                {
+                    return m.Parameters.FirstOrDefault(p => p.Name == a.NameColon.Name.Identifier.ValueText);
+                }
                 var list = (ArgumentListSyntax)a.Parent;
                 int i = list.Arguments.IndexOf(a);
                 return i < m.Parameters.Length ? m.Parameters[i] : m.Parameters.LastOrDefault(p => p.IsParams);
@@ -343,11 +454,21 @@ namespace CsVerify.Verifier
             private void RemoveFromList<T>(SeparatedSyntaxList<T> list, Func<T, bool> remove) where T : SyntaxNode
             {
                 var gone = list.Select(remove).ToArray();
-                if (!gone.Any(g => g)) return;
-                if (gone.All(g => g)) { Delete(TextSpan.FromBounds(list[0].SpanStart, list[list.Count - 1].Span.End)); return; }
+                if (!gone.Any(g => g))
+                {
+                    return;
+                }
+                if (gone.All(g => g))
+                {
+                    Delete(TextSpan.FromBounds(list[0].SpanStart, list[list.Count - 1].Span.End));
+                    return;
+                }
                 for (int i = 0; i < list.Count; i++)
                 {
-                    if (!gone[i]) continue;
+                    if (!gone[i])
+                    {
+                        continue;
+                    }
                     bool keptAfter = gone.Skip(i + 1).Any(g => !g);
                     Delete(keptAfter
                         ? TextSpan.FromBounds(list[i].SpanStart, list[i + 1].SpanStart)                      // "x, "
@@ -360,8 +481,14 @@ namespace CsVerify.Verifier
             /// <summary>In a block a statement can go; as the body of an if/while/else it becomes an empty block.</summary>
             private void DeleteStatement(StatementSyntax stmt)
             {
-                if (stmt.Parent is BlockSyntax || stmt.Parent is SwitchSectionSyntax) Delete(stmt.Span);
-                else Replace(stmt.Span, "{ }");
+                if (stmt.Parent is BlockSyntax || stmt.Parent is SwitchSectionSyntax)
+                {
+                    Delete(stmt.Span);
+                }
+                else
+                {
+                    Replace(stmt.Span, "{ }");
+                }
             }
             private void Replace(TextSpan span, string text) => _edits.Add((span, text, 0));
 
@@ -373,18 +500,27 @@ namespace CsVerify.Verifier
                 var text = _text.ToString();
                 var sb = new StringBuilder();
                 // the program's files map back to the originals; the runtime is generated code with nothing to map to
-                if (_library) sb.Append("// <auto-generated/> CsVerify runtime: the Spec library with every proof erased\n");
+                if (_library)
+                {
+                    sb.Append("// <auto-generated/> CsVerify runtime: the Spec library with every proof erased\n");
+                }
                 else
                 {
                     // (a checked build passes volatile [Atomic] fields by ref to its checks)
-                    if (_checked) sb.Append("#pragma warning disable 420\n");
+                    if (_checked)
+                    {
+                        sb.Append("#pragma warning disable 420\n");
+                    }
                     sb.Append("#line 1 \"").Append(_tree.FilePath.Replace("\\", "\\\\")).Append("\"\n");
                 }
                 int pos = 0;
                 // (insertions at a place go before what replaces text starting there, in their order)
                 foreach (var (span, replacement, _) in _edits.OrderBy(e => e.span.Start).ThenBy(e => e.span.Length == 0 ? 0 : 1).ThenBy(e => e.order).ThenByDescending(e => e.span.Length))
                 {
-                    if (span.Start < pos) continue; // inside a region already deleted or replaced
+                    if (span.Start < pos)
+                    {
+                        continue; // inside a region already deleted or replaced
+                    } // inside a region already deleted or replaced
                     sb.Append(text, pos, span.Start - pos);
                     // a deletion keeps the line breaks it spans, so the lines after it keep their numbers
                     sb.Append(replacement ?? new string(text.Substring(span.Start, span.Length).Where(c => c == '\n').ToArray()));

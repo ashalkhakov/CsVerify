@@ -170,5 +170,66 @@ namespace CsVerify.Tests
         [InlineData("CSV1004", C + "static void N(Cell c, Cell d) { c.V = 7; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0); Spec.Ensures<int>(r => r == c.V); d.V = 0; return c.V; }; var r = h(1); Spec.Assert(r == 7); } }")]
         [InlineData("CSV1004", C + "static void N(Cell c, Cell d) { c.V = 7; d.V = 1; Func<int, int> h = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(c.V > 0); return d.V; }; var r = h(1); Spec.Assert(r == 1); } }")]
         public void ReadsOf_Reported(string id, string code) => Assert.Contains(id, Ids(code));
+
+        // (Spec.Total of a delegate that reads state: it accepts every argument in this state)
+        [Fact]
+        public void Total_OfADelegateThatReadsState() => Assert.Empty(Ids(C + "static int M(Cell c) { Spec.Requires(c != null); " +
+            "Func<int, int> f = x => { Spec.Reads(ObjSet.Of(c)); return c.V; }; Spec.Assert(Spec.Total(f)); return 0; } }"));
+
+        [Fact]
+        public void Total_OfADelegateThatReadsState_WithAPrecondition() => Assert.Contains("CSV1004", Ids(C + "static int M(Cell c) { Spec.Requires(c != null && c.V > 0); " +
+            "Func<int, int> f = x => { Spec.Reads(ObjSet.Of(c)); Spec.Requires(x < c.V); return c.V; }; Spec.Assert(Spec.Total(f)); return 0; } }"));
+
+        // (under Spec.Modifies: a lambda that changes nothing is called freely; one that may change anything breaks the frame)
+        [Fact]
+        public void Lambdas_UnderSpecModifies() => Assert.Empty(Ids(C + "static int M(Cell c) { Spec.Requires(c != null); Spec.Modifies(ObjSet.Of(c)); c.V = 1; " +
+            "Func<int, int> f = x => { Spec.Requires(x < 100); return x + 1; }; return f(2); } }"));
+
+        [Fact]
+        public void Lambdas_UnderSpecModifies_ThatMayWriteAnything() => Assert.Contains("CSV1017", Ids(C + "static void M(Cell c, Cell d) { Spec.Requires(c != null && d != null); " +
+            "Spec.Modifies(ObjSet.Of(c)); Action a = () => { d.V = 5; }; a(); } }"));
+
+        // (holding permissions: a delegate is given none, so it may only be one that changes nothing)
+        [Fact]
+        public void Delegates_HoldingPermissions() => Assert.Empty(Ids(C + "static int M(int[] b, Func<int, int> g) { Spec.Requires(Spec.Acc(b) && b.Length > 0 && g != null && Spec.ChangesNothing(g) && Spec.Total(g)); " +
+            "Spec.Ensures(Spec.Acc(b)); b[0] = 2; Func<int, int> f = x => { Spec.Requires(x < 100); return x + 1; }; var r = f(1); g(r); Spec.Assert(b[0] == 2 && r == 2); return r; } }"));
+
+        [Fact]
+        public void Delegates_HoldingPermissions_ThatMayWriteAnything() => Assert.Contains("CSV1016", Ids(C + "static void M(int[] b, Action f) { Spec.Requires(Spec.Acc(b) && f != null && Spec.Total(f)); Spec.Ensures(Spec.Acc(b)); f(); } }"));
+
+        // (a lambda a library member runs alongside (a thread pool's, a timer's) may run at any moment: it may only change nothing)
+        [Fact]
+        public void ALambdaRunAlongside_ThatChangesNothing() => Assert.Empty(Ids(C + "static void M() { System.Threading.ThreadPool.QueueUserWorkItem(_ => { }); } }"));
+
+        [Fact]
+        public void ALambdaRunAlongside_ThatWrites() => Assert.Contains("CSV1027", Ids(C + "static void M(Cell c) { Spec.Requires(c != null); System.Threading.ThreadPool.QueueUserWorkItem(_ => { c.V = 1; }); } }"));
+
+        // (a library call handed an object, under cell permissions: where it may write arrays, it may write ones this method can't hold)
+        [Fact]
+        public void ALibraryCall_HandedAnObject_UnderCellPermissions() => Assert.Contains("CSV1016", Ids("public sealed class Holder { public int[] A = new int[1]; } " + C +
+            "static void M(int[] b, Holder h) { Spec.Requires(Spec.Acc(b) && h != null); Spec.Ensures(Spec.Acc(b)); Array.Clear(h.A, 0, 1); } }"));
+
+        // (a generic method's group, Twice<int>: its contract, its T's values boxed)
+        private const string Generic = "public static class G { public static int Twice<T>(T x, int n) { Spec.Requires(n >= 0 && n < 100); Spec.Ensures<int>(r => r == 2 * n); return 2 * n; } } ";
+
+        [Fact]
+        public void GenericMethodGroup_HasItsContract() => Assert.Empty(Ids(Generic + C + "static int M() { Spec.Ensures<int>(r => r == 6); Func<int, int, int> f = G.Twice<int>; return f(7, 3); } }"));
+
+        [Theory]
+        [InlineData("CSV1002", C + "static int M() { Spec.Ensures<int>(r => r == 7); Func<int, int, int> f = G.Twice<int>; return f(7, 3); } }")]
+        [InlineData("CSV1001", C + "static int M() { Func<string, int, int> f = G.Twice<string>; return f(\"a\", 300); } }")]
+        public void GenericMethodGroup_Reported(string id, string code) => Assert.Contains(id, Ids(Generic + code));
+
+        // (o.M as a delegate: o evaluated where it's made, M's contract the delegate's)
+        private const string Doubler = "public sealed class Dbl { public Dbl() { } public int Twice(int x) { Spec.Requires(x >= 0 && x < 100); Spec.Ensures<int>(r => r == 2 * x); return 2 * x; } } ";
+
+        [Fact]
+        public void InstanceMethodGroup_HasItsContract() => Assert.Empty(Ids(Doubler + C + "static int M(Dbl a) { Spec.Requires(a != null); Spec.Ensures<int>(r => r == 6); Func<int, int> f = a.Twice; return f(3); } }"));
+
+        [Theory]
+        [InlineData("CSV1002", C + "static int M(Dbl a) { Spec.Requires(a != null); Spec.Ensures<int>(r => r == 7); Func<int, int> f = a.Twice; return f(3); } }")]
+        [InlineData("CSV1001", C + "static int M(Dbl a) { Spec.Requires(a != null); Func<int, int> f = a.Twice; return f(300); } }")]
+        [InlineData("CSV1013", C + "static int M(Dbl? a) { Func<int, int> f = a!.Twice; return 0; } }")]
+        public void InstanceMethodGroup_Reported(string id, string code) => Assert.Contains(id, Ids(Doubler + code));
     }
 }

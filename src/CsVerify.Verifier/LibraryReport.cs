@@ -80,21 +80,33 @@ namespace CsVerify.Verifier
                 .OrderByDescending(x => x.failures).ThenByDescending(x => x.calls).ThenBy(x => x.member, StringComparer.Ordinal).ToList();
             sb.AppendLine();
             sb.AppendLine("library members without contracts, by the failures they cause");
-            if (members.Count == 0) sb.AppendLine("  (none)");
+            if (members.Count == 0)
+            {
+                sb.AppendLine("  (none)");
+            }
             else
             {
                 sb.AppendLine("  failures  calls  member");
-                foreach (var x in members) sb.AppendLine($"  {x.failures,8}  {x.calls,5}  {x.member}");
+                foreach (var x in members)
+                {
+                    sb.AppendLine($"  {x.failures,8}  {x.calls,5}  {x.member}");
+                }
             }
 
             var sources = Charged(failures, Source).OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal).ToList();
             sb.AppendLine();
             sb.AppendLine("methods of the program without postconditions, by the failures their calls cause");
-            if (sources.Count == 0) sb.AppendLine("  (none)");
+            if (sources.Count == 0)
+            {
+                sb.AppendLine("  (none)");
+            }
             else
             {
                 sb.AppendLine("  failures  method");
-                foreach (var x in sources) sb.AppendLine($"  {x.Value,8}  {x.Key}");
+                foreach (var x in sources)
+                {
+                    sb.AppendLine($"  {x.Value,8}  {x.Key}");
+                }
             }
 
             // the classes of failure: what each failed obligation's unknown values come from (a failure may have several)
@@ -108,8 +120,13 @@ namespace CsVerify.Verifier
             sb.AppendLine();
             sb.AppendLine("failed obligations by kind");
             foreach (var g in failures.GroupBy(d => d.Id).OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal))
+            {
                 Row(sb, g.Count(), $"{g.Key}  {Kinds.GetValueOrDefault(g.Key, "")}");
-            if (failures.Count == 0) sb.AppendLine("  (none)");
+            }
+            if (failures.Count == 0)
+            {
+                sb.AppendLine("  (none)");
+            }
 
             Grouped(sb, "unsupported constructs (CSV1901): each leaves its method not verified",
                 result.Methods.SelectMany(m => m.Diagnostics).Where(d => d.Id == "CSV1901"));
@@ -133,8 +150,14 @@ namespace CsVerify.Verifier
             sb.AppendLine(title);
             var groups = diagnostics.GroupBy(d => Quoted.Replace(d.Message, "'…'"), StringComparer.Ordinal)
                 .OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal).ToList();
-            if (groups.Count == 0) sb.AppendLine("  (none)");
-            foreach (var g in groups) Row(sb, g.Count(), g.Key);
+            if (groups.Count == 0)
+            {
+                sb.AppendLine("  (none)");
+            }
+            foreach (var g in groups)
+            {
+                Row(sb, g.Count(), g.Key);
+            }
         }
     }
 }

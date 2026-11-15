@@ -195,6 +195,19 @@ public sealed class Shop : DbContext
             "public static class C { public static async Task M(Shop db) { var r = await db.Orders.AsNoTracking().Where(o => o.Rating != 3 && o.Total > 5).ToListAsync(); " +
             "Spec.Assert(Spec.Forall(0, r.Count, i => r[i].Total > 5 && r[i].Rating != 3)); } }"));
 
+        // (objects: a navigation that may be null compared with another is SQL's unknown there; with the literal null, IS NULL)
+        private const string EitherCustomer = "public static class C { public static bool M(Shop db, Customer c) { Spec.Requires(c != null); Spec.Ensures<bool>(r => r); return db.Orders.All(o => o.Customer != c || o.Customer == c); } }";
+
+        [Fact]
+        public void Nulls_Relational_ObjectsComparedAreUnknownWhereNull() => Assert.Equal(new[] { "CSV1002" }, Errors("M", RelationalNulls + EitherCustomer));
+
+        [Fact]
+        public void Nulls_ByDefault_ObjectsCompareAsInCSharp() => Assert.Empty(Errors("M", EitherCustomer));
+
+        [Fact]
+        public void Nulls_Relational_IsNullIsExact() => Assert.Empty(Errors("M", RelationalNulls +
+            "public static class C { public static bool M(Shop db) { Spec.Ensures<bool>(r => r); return db.Orders.All(o => o.Customer == null || o.Customer != null); } }"));
+
         // ---- what compares values: groups, Distinct, set operators ----
 
         [Fact]
@@ -357,6 +370,18 @@ public sealed class Shop : DbContext
         public void Include_AHashSet_SaysNothingElse() => Assert.NotEmpty(Errors("M", Posts +
             "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().Include(p => p.Tags).ToListAsync(); " +
             "if (r.Count == 0) return; var p = r[0]; foreach (var t in p.Tags) Spec.Assert(t.Id == p.Id); } }"));
+
+        private const string Notes =
+            "public sealed class Note { public int Id { get; set; } public int TagId { get; set; } }\n" +
+            "public sealed class Tag { public int Id { get; set; } public int PostId { get; set; } public HashSet<Note> Notes { get; set; } = new HashSet<Note>(); }\n" +
+            "public sealed class Post { public int Id { get; set; } public HashSet<Tag> Tags { get; set; } = new HashSet<Tag>(); }\n" +
+            "public sealed class Blog : DbContext { public DbSet<Post> Posts => Set<Post>(); public DbSet<Tag> Tags => Set<Tag>(); public DbSet<Note> Notes => Set<Note>(); }\n";
+
+        // (a set under a set: each note is its own tag's, not one the inner set's variable stands for)
+        [Fact]
+        public void ThenInclude_AHashSetUnderAHashSet_HoldsTheRowsWithItsParentsKey() => Assert.Empty(Errors("M", Notes +
+            "public static class C { public static async Task M(Blog db) { var r = await db.Posts.AsNoTracking().Include(p => p.Tags).ThenInclude(t => t.Notes).ToListAsync(); " +
+            "if (r.Count == 0) return; var p = r[0]; foreach (var t in p.Tags) { foreach (var n in t.Notes) Spec.Assert(n.TagId == t.Id); } } }"));
 
         [Fact]
         public void Include_AnIList_HoldsTheRowsWithThisKey() => Assert.Empty(Errors("M", Interfaces +
@@ -692,6 +717,16 @@ public sealed class Shop : DbContext
         [Fact]
         public void AContextMadeInTaskRun_Verifies() => Assert.Empty(Errors("M",
             "public static class C { public static async Task M(IDbContextFactory<Shop> factory) { await Task.Run(() => { using var db = factory.CreateDbContext(); return db.Orders.Count(); }); } }"));
+
+        // (a call EF translates, in a database lambda: the database's function of its arguments)
+        [Fact]
+        public void ATranslatedCallInAQuery_Verifies() => Assert.Empty(Errors("M",
+            "public static class C { public static int M(Shop db) { return db.Customers.Where(c => c.Name.ToUpper() == \"A\").Count(); } }"));
+
+        [Fact]
+        public void GroupsAndGroupJoins_OnTheDatabase_Verify() => Assert.Empty(Errors("M",
+            "public static class C { public static int M(Shop db) { return db.Orders.GroupBy(o => o.CustomerId).Select(g => g.Count()).Count() + " +
+            "db.Customers.GroupJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, os) => new { c.Id, N = os.Count() }).Count(); } }", overflow: false));
 
         [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +

@@ -51,18 +51,30 @@ namespace CsVerify.Analyzers
                 .Where(u => u.symbol != null && SpecSymbols.IsLinear(u.arg.Value.Type) && !SpecSymbols.IsInGhostContext(u.arg.Syntax, context.Operation.SemanticModel))
                 .GroupBy(u => u.symbol, SymbolEqualityComparer.Default);
             foreach (var g in uses)
+            {
                 if (g.Count() > 1 && g.Any(u => u.arg.Parameter?.RefKind != RefKind.In))
+                {
                     context.ReportDiagnostic(Diagnostic.Create(Descriptors.PassedTwice, g.Last().arg.Syntax.GetLocation(), g.Key.Name));
+                }
+            }
         }
 
         private static void CheckStorage(SymbolAnalysisContext context)
         {
             var type = context.Symbol is IFieldSymbol f ? f.Type : ((IPropertySymbol)context.Symbol).Type;
-            if (context.Symbol.IsImplicitlyDeclared || !SpecSymbols.IsLinear(type)) return;
-            if (context.Symbol is IPropertySymbol p && !IsAutoProperty(p)) return;
+            if (context.Symbol.IsImplicitlyDeclared || !SpecSymbols.IsLinear(type))
+            {
+                return;
+            }
+            if (context.Symbol is IPropertySymbol p && !IsAutoProperty(p))
+            {
+                return;
+            }
             if (!SpecSymbols.IsLinear(context.Symbol.ContainingType))
+            {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.Copied, context.Symbol.Locations.FirstOrDefault(),
                     "stored in a field of non-linear type '" + context.Symbol.ContainingType.Name + "'"));
+            }
         }
 
         private static bool IsAutoProperty(IPropertySymbol p) =>
@@ -71,10 +83,19 @@ namespace CsVerify.Analyzers
         private static void CheckForge(OperationAnalysisContext context)
         {
             var type = context.Operation.Type;
-            if (type == null || !SpecSymbols.IsLinear(type) || SpecSymbols.IsTrusted(context.ContainingSymbol)) return;
-            if (SpecSymbols.IsInGhostContext(context.Operation.Syntax, context.Operation.SemanticModel)) return;
+            if (type == null || !SpecSymbols.IsLinear(type) || SpecSymbols.IsTrusted(context.ContainingSymbol))
+            {
+                return;
+            }
+            if (SpecSymbols.IsInGhostContext(context.Operation.Syntax, context.Operation.SemanticModel))
+            {
+                return;
+            }
             // a package is made of linear values already had: building it consumes them
-            if (context.Operation is IObjectCreationOperation && SpecSymbols.IsLinearPackage(type)) return;
+            if (context.Operation is IObjectCreationOperation && SpecSymbols.IsLinearPackage(type))
+            {
+                return;
+            }
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Forged, context.Operation.Syntax.GetLocation(), type.Name));
         }
 
@@ -82,14 +103,26 @@ namespace CsVerify.Analyzers
         {
             var op = context.Operation;
             var symbol = op is ILocalReferenceOperation l ? (ISymbol)l.Local : ((IParameterReferenceOperation)op).Parameter;
-            if (!SpecSymbols.IsLinear(op.Type) || SpecSymbols.IsTrusted(context.ContainingSymbol)) return;
+            if (!SpecSymbols.IsLinear(op.Type) || SpecSymbols.IsTrusted(context.ContainingSymbol))
+            {
+                return;
+            }
             for (var cur = op.Parent; cur != null; cur = cur.Parent)
             {
                 ISymbol fn = cur is IAnonymousFunctionOperation af ? af.Symbol
                     : cur is ILocalFunctionOperation lf ? lf.Symbol : null;
-                if (fn == null) continue;
-                if (SymbolEqualityComparer.Default.Equals(symbol.ContainingSymbol, fn)) return;
-                if (SpecSymbols.IsInGhostContext(op.Syntax, op.SemanticModel)) return;
+                if (fn == null)
+                {
+                    continue;
+                }
+                if (SymbolEqualityComparer.Default.Equals(symbol.ContainingSymbol, fn))
+                {
+                    return;
+                }
+                if (SpecSymbols.IsInGhostContext(op.Syntax, op.SemanticModel))
+                {
+                    return;
+                }
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.Captured, op.Syntax.GetLocation(), symbol.Name));
                 return;
             }
@@ -118,16 +151,26 @@ namespace CsVerify.Analyzers
 
         private static void AnalyzeBody(OperationAnalysisContext context)
         {
-            if (SpecSymbols.IsTrusted(context.ContainingSymbol)) return;
+            if (SpecSymbols.IsTrusted(context.ContainingSymbol))
+            {
+                return;
+            }
             ControlFlowGraph cfg;
             switch (context.Operation)
             {
-                case IMethodBodyOperation mb: cfg = ControlFlowGraph.Create(mb); break;
-                case IConstructorBodyOperation cb: cfg = ControlFlowGraph.Create(cb); break;
+                case IMethodBodyOperation mb:
+                    cfg = ControlFlowGraph.Create(mb);
+                    break;
+                case IConstructorBodyOperation cb:
+                    cfg = ControlFlowGraph.Create(cb);
+                    break;
                 default: return;
             }
             var method = context.ContainingSymbol as IMethodSymbol;
-            if (method == null) return;
+            if (method == null)
+            {
+                return;
+            }
 
             var vars = new List<ISymbol>();
             var borrowed = new List<bool>();
@@ -143,7 +186,10 @@ namespace CsVerify.Analyzers
                 vars.Add(local);
                 borrowed.Add(false);
             }
-            if (vars.Count == 0) return;
+            if (vars.Count == 0)
+            {
+                return;
+            }
 
             var ctx = new Ctx
             {
@@ -152,23 +198,38 @@ namespace CsVerify.Analyzers
                 Borrowed = borrowed.ToArray(),
                 Index = new Dictionary<ISymbol, int>(SymbolEqualityComparer.Default),
             };
-            for (int i = 0; i < ctx.Vars.Length; i++) ctx.Index[ctx.Vars[i]] = i;
+            for (int i = 0; i < ctx.Vars.Length; i++)
+            {
+                ctx.Index[ctx.Vars[i]] = i;
+            }
             foreach (var block in cfg.Blocks)
+            {
                 foreach (var a in block.Operations.Concat(block.BranchValue != null ? new[] { block.BranchValue } : new IOperation[0])
                              .SelectMany(o => o.DescendantsAndSelf()).OfType<IArgumentOperation>())
+                {
                     if (a.Value is IFlowCaptureReferenceOperation r && (a.Parameter?.RefKind ?? RefKind.None) != RefKind.None)
+                    {
                         ctx.RefCaptures[r.Id] = a.Parameter.RefKind;
+                    }
+                }
+            }
 
             var entry = new St[ctx.Vars.Length];
             for (int i = 0; i < entry.Length; i++)
+            {
                 entry[i] = ctx.Vars[i] is IParameterSymbol p && p.RefKind != RefKind.Out ? St.Live : St.Unassigned;
+            }
 
             var inStates = WithHandlers(cfg, ctx, entry);
 
             ctx.Diags = new List<Diagnostic>();
             foreach (var block in cfg.Blocks)
+            {
                 if (inStates[block.Ordinal] != null && block.Kind == BasicBlockKind.Block)
+                {
                     Transfer(block, (St[])inStates[block.Ordinal].Clone(), ctx);
+                }
+            }
 
             var exit = inStates[cfg.Blocks.Last().Ordinal];
             if (exit != null)
@@ -178,16 +239,22 @@ namespace CsVerify.Analyzers
                     var v = ctx.Vars[i];
                     bool mustBeLive = ctx.Borrowed[i] || (v is IParameterSymbol p && (p.RefKind == RefKind.Out || p.RefKind == RefKind.Ref));
                     if (!mustBeLive && (exit[i] & St.Live) != 0)
+                    {
                         ctx.Report(Descriptors.NotConsumed, v.Locations.FirstOrDefault(), v.Name,
                             (exit[i] & St.Consumed) != 0 ? " (it is consumed on some paths only)" : "");
+                    }
                     if (mustBeLive && (exit[i] & St.Consumed) != 0)
+                    {
                         ctx.Report(Descriptors.NotConsumed, v.Locations.FirstOrDefault(), v.Name,
                             ": a ref/out linear parameter must hold a value when the method returns");
+                    }
                 }
             }
 
             foreach (var d in ctx.Diags.GroupBy(d => (d.Id, d.Location.SourceSpan)).Select(g => g.First()))
+            {
                 context.ReportDiagnostic(d);
+            }
         }
 
         private static IEnumerable<ILocalSymbol> CollectLocals(ControlFlowGraph cfg)
@@ -195,8 +262,14 @@ namespace CsVerify.Analyzers
             var seen = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
             void Walk(ControlFlowRegion r)
             {
-                foreach (var l in r.Locals) seen.Add(l);
-                foreach (var n in r.NestedRegions) Walk(n);
+                foreach (var l in r.Locals)
+                {
+                    seen.Add(l);
+                }
+                foreach (var n in r.NestedRegions)
+                {
+                    Walk(n);
+                }
             }
             Walk(cfg.Root);
             return seen;
@@ -217,7 +290,10 @@ namespace CsVerify.Analyzers
             {
                 inStates = Fixpoint(cfg, ctx, entry, seeds, out var outStates);
                 var next = HandlerSeeds(cfg, ctx, inStates, outStates);
-                if (next.Count == seeds.Count && next.All(kv => seeds.TryGetValue(kv.Key, out var old) && old.SequenceEqual(kv.Value))) break;
+                if (next.Count == seeds.Count && next.All(kv => seeds.TryGetValue(kv.Key, out var old) && old.SequenceEqual(kv.Value)))
+                {
+                    break;
+                }
                 seeds = next;
             }
             return inStates;
@@ -228,32 +304,55 @@ namespace CsVerify.Analyzers
             var seeds = new Dictionary<int, St[]>();
             void Visit(ControlFlowRegion r)
             {
-                foreach (var n in r.NestedRegions) Visit(n);
-                if (r.Kind != ControlFlowRegionKind.TryAndCatch && r.Kind != ControlFlowRegionKind.TryAndFinally) return;
+                foreach (var n in r.NestedRegions)
+                {
+                    Visit(n);
+                }
+                if (r.Kind != ControlFlowRegionKind.TryAndCatch && r.Kind != ControlFlowRegionKind.TryAndFinally)
+                {
+                    return;
+                }
                 var tryRegion = r.NestedRegions[0];
                 if (r.Kind == ControlFlowRegionKind.TryAndFinally)
                 {
                     var none = new St[ctx.Vars.Length];
-                    for (int i = 0; i < none.Length; i++) none[i] = St.Consumed;
+                    for (int i = 0; i < none.Length; i++)
+                    {
+                        none[i] = St.Consumed;
+                    }
                     seeds[r.NestedRegions[1].FirstBlockOrdinal] = none;
                     return;
                 }
                 var seen = new St[ctx.Vars.Length];
                 bool reached = false;
                 for (int b = tryRegion.FirstBlockOrdinal; b <= tryRegion.LastBlockOrdinal; b++)
+                {
                     foreach (var st in new[] { inStates[b], outStates[b] })
+                    {
                         if (st != null)
                         {
                             reached = true;
-                            for (int i = 0; i < seen.Length; i++) seen[i] |= st[i];
+                            for (int i = 0; i < seen.Length; i++)
+                            {
+                                seen[i] |= st[i];
+                            }
                         }
-                if (!reached) return;
+                    }
+                }
+                if (!reached)
+                {
+                    return;
+                }
                 var lent = LentByRef(cfg, tryRegion, ctx);
                 var state = new St[ctx.Vars.Length];
                 for (int i = 0; i < state.Length; i++)
+                {
                     state[i] = (seen[i] & St.Consumed) != 0 || lent.Contains(i) ? St.Consumed : seen[i];
+                }
                 foreach (var handler in r.NestedRegions.Skip(1))
+                {
                     seeds[handler.Kind == ControlFlowRegionKind.FilterAndHandler ? handler.NestedRegions[0].FirstBlockOrdinal : handler.FirstBlockOrdinal] = state;
+                }
             }
             Visit(cfg.Root);
             return seeds;
@@ -264,9 +363,18 @@ namespace CsVerify.Analyzers
         {
             var lent = new HashSet<int>();
             for (int b = region.FirstBlockOrdinal; b <= region.LastBlockOrdinal; b++)
+            {
                 foreach (var op in cfg.Blocks[b].Operations.Concat(cfg.Blocks[b].BranchValue != null ? new[] { cfg.Blocks[b].BranchValue } : new IOperation[0]))
+                {
                     foreach (var arg in op.DescendantsAndSelf().OfType<IArgumentOperation>())
-                        if (arg.Parameter?.RefKind == RefKind.Ref && TryVar(Unwrap(arg.Value), ctx, out int i)) lent.Add(i);
+                    {
+                        if (arg.Parameter?.RefKind == RefKind.Ref && TryVar(Unwrap(arg.Value), ctx, out int i))
+                        {
+                            lent.Add(i);
+                        }
+                    }
+                }
+            }
             return lent;
         }
 
@@ -289,18 +397,36 @@ namespace CsVerify.Analyzers
                 outStates[block.Ordinal] = outState;
                 foreach (var succ in new[] { block.FallThroughSuccessor, block.ConditionalSuccessor })
                 {
-                    if (succ?.Destination == null) continue;
+                    if (succ?.Destination == null)
+                    {
+                        continue;
+                    }
                     // Leaving a region by an exception is not an exit we account for (as in ATS, exceptions leak views).
-                    if (succ.Semantics == ControlFlowBranchSemantics.Throw || succ.Semantics == ControlFlowBranchSemantics.Rethrow) continue;
+                    if (succ.Semantics == ControlFlowBranchSemantics.Throw || succ.Semantics == ControlFlowBranchSemantics.Rethrow)
+                    {
+                        continue;
+                    }
                     int d = succ.Destination.Ordinal;
-                    if (inStates[d] == null) { inStates[d] = (St[])outState.Clone(); work.Enqueue(d); continue; }
+                    if (inStates[d] == null)
+                    {
+                        inStates[d] = (St[])outState.Clone();
+                        work.Enqueue(d);
+                        continue;
+                    }
                     bool changed = false;
                     for (int i = 0; i < outState.Length; i++)
                     {
                         var merged = inStates[d][i] | outState[i];
-                        if (merged != inStates[d][i]) { inStates[d][i] = merged; changed = true; }
+                        if (merged != inStates[d][i])
+                        {
+                            inStates[d][i] = merged;
+                            changed = true;
+                        }
                     }
-                    if (changed) work.Enqueue(d);
+                    if (changed)
+                    {
+                        work.Enqueue(d);
+                    }
                 }
             }
             return inStates;
@@ -308,7 +434,10 @@ namespace CsVerify.Analyzers
 
         private static St[] Transfer(BasicBlock block, St[] state, Ctx ctx)
         {
-            foreach (var op in block.Operations) Visit(op, state, ctx);
+            foreach (var op in block.Operations)
+            {
+                Visit(op, state, ctx);
+            }
             if (block.BranchValue != null)
             {
                 bool returns = block.FallThroughSuccessor?.Semantics == ControlFlowBranchSemantics.Return;
@@ -316,14 +445,20 @@ namespace CsVerify.Analyzers
                 {
                     Consume(i, block.BranchValue, state, ctx);
                 }
-                else Visit(block.BranchValue, state, ctx);
+                else
+                {
+                    Visit(block.BranchValue, state, ctx);
+                }
             }
             return state;
         }
 
         private static IOperation Unwrap(IOperation op)
         {
-            while (op is IConversionOperation c && c.Conversion.IsIdentity) op = c.Operand;
+            while (op is IConversionOperation c && c.Conversion.IsIdentity)
+            {
+                op = c.Operand;
+            }
             return op;
         }
 
@@ -338,49 +473,93 @@ namespace CsVerify.Analyzers
 
         private static void Visit(IOperation op, St[] state, Ctx ctx)
         {
-            if (op == null) return;
-            if (op is IAnonymousFunctionOperation || op is ILocalFunctionOperation) return; // captures are checked separately
+            if (op == null)
+            {
+                return;
+            }
+            if (op is IAnonymousFunctionOperation || op is ILocalFunctionOperation)
+            {
+                return; // captures are checked separately
+            } // captures are checked separately
 
             if (op is IDeconstructionAssignmentOperation da && SpecSymbols.IsLinearPackage(da.Value.Type))
             {
                 // taking a package apart consumes it and gives each linear part a variable of its own
                 Visit(da.Value, state, ctx);
                 foreach (var target in Leaves(da.Target))
-                    if (TryVar(target, ctx, out int t)) Define(t, target, state, ctx);
+                {
+                    if (TryVar(target, ctx, out int t))
+                    {
+                        Define(t, target, state, ctx);
+                    }
+                }
                 return;
             }
             if (op is ISimpleAssignmentOperation asg)
             {
                 Visit(asg.Value, state, ctx);
-                if (TryVar(asg.Target, ctx, out int t)) Define(t, asg.Target, state, ctx);
-                else Visit(asg.Target, state, ctx);
+                if (TryVar(asg.Target, ctx, out int t))
+                {
+                    Define(t, asg.Target, state, ctx);
+                }
+                else
+                {
+                    Visit(asg.Target, state, ctx);
+                }
                 return;
             }
 
-            foreach (var child in op.ChildOperations) Visit(child, state, ctx);
+            foreach (var child in op.ChildOperations)
+            {
+                Visit(child, state, ctx);
+            }
 
-            if (!TryVar(op, ctx, out int i) || IsGhost(op, ctx)) return;
+            if (!TryVar(op, ctx, out int i) || IsGhost(op, ctx))
+            {
+                return;
+            }
             IOperation self = op, parent = op.Parent;
-            while ((parent is IConversionOperation c && c.Conversion.IsIdentity) || parent is IDeclarationExpressionOperation) { self = parent; parent = parent.Parent; }
+            while ((parent is IConversionOperation c && c.Conversion.IsIdentity) || parent is IDeclarationExpressionOperation)
+            {
+                self = parent;
+                parent = parent.Parent;
+            }
 
             switch (parent)
             {
                 case IArgumentOperation arg:
                     var refKind = arg.Parameter?.RefKind ?? RefKind.None;
-                    if (refKind == RefKind.Out) Define(i, op, state, ctx);
-                    else if (refKind == RefKind.None) Consume(i, op, state, ctx);
-                    else Borrow(i, op, state, ctx);
+                    if (refKind == RefKind.Out)
+                    {
+                        Define(i, op, state, ctx);
+                    }
+                    else if (refKind == RefKind.None)
+                    {
+                        Consume(i, op, state, ctx);
+                    }
+                    else
+                    {
+                        Borrow(i, op, state, ctx);
+                    }
                     break;
                 case ISimpleAssignmentOperation a when a.Value == self:
                     if (!(Unwrap(a.Target) is ILocalReferenceOperation) && !(Unwrap(a.Target) is IParameterReferenceOperation) &&
                         !SpecSymbols.IsLinear(ContainingTypeOf(a.Target)))
+                    {
                         ctx.Report(Descriptors.Copied, a.Syntax.GetLocation(), "stored outside a linear variable");
+                    }
                     Consume(i, op, state, ctx);
                     break;
                 case IFlowCaptureOperation fc when ctx.RefCaptures.TryGetValue(fc.Id, out var captureRef):
                     // (captured to be passed by reference: lent, or, for out, defined)
-                    if (captureRef == RefKind.Out) Define(i, op, state, ctx);
-                    else Borrow(i, op, state, ctx);
+                    if (captureRef == RefKind.Out)
+                    {
+                        Define(i, op, state, ctx);
+                    }
+                    else
+                    {
+                        Borrow(i, op, state, ctx);
+                    }
                     break;
                 case IReturnOperation _:
                 case IFlowCaptureOperation _:
@@ -407,13 +586,24 @@ namespace CsVerify.Analyzers
         /// <summary>The variables a deconstruction writes (through nested tuples and declarations).</summary>
         private static IEnumerable<IOperation> Leaves(IOperation target)
         {
-            if (target is IDeclarationExpressionOperation d) target = d.Expression;
+            if (target is IDeclarationExpressionOperation d)
+            {
+                target = d.Expression;
+            }
             if (target is ITupleOperation tuple)
             {
                 foreach (var e in tuple.Elements)
-                    foreach (var leaf in Leaves(e)) yield return leaf;
+                {
+                    foreach (var leaf in Leaves(e))
+                    {
+                        yield return leaf;
+                    }
+                }
             }
-            else yield return target;
+            else
+            {
+                yield return target;
+            }
         }
 
         private static ITypeSymbol ContainingTypeOf(IOperation target) =>
@@ -422,20 +612,32 @@ namespace CsVerify.Analyzers
         private static void Consume(int i, IOperation at, St[] state, Ctx ctx)
         {
             var name = ctx.Vars[i].Name;
-            if (ctx.Borrowed[i]) { ctx.Report(Descriptors.BorrowConsumed, at.Syntax.GetLocation(), name); return; }
-            if ((state[i] & St.Consumed) != 0) ctx.Report(Descriptors.UsedAfterConsume, at.Syntax.GetLocation(), name);
+            if (ctx.Borrowed[i])
+            {
+                ctx.Report(Descriptors.BorrowConsumed, at.Syntax.GetLocation(), name);
+                return;
+            }
+            if ((state[i] & St.Consumed) != 0)
+            {
+                ctx.Report(Descriptors.UsedAfterConsume, at.Syntax.GetLocation(), name);
+            }
             state[i] = St.Consumed;
         }
 
         private static void Borrow(int i, IOperation at, St[] state, Ctx ctx)
         {
-            if ((state[i] & St.Consumed) != 0) ctx.Report(Descriptors.UsedAfterConsume, at.Syntax.GetLocation(), ctx.Vars[i].Name);
+            if ((state[i] & St.Consumed) != 0)
+            {
+                ctx.Report(Descriptors.UsedAfterConsume, at.Syntax.GetLocation(), ctx.Vars[i].Name);
+            }
         }
 
         private static void Define(int i, IOperation at, St[] state, Ctx ctx)
         {
             if ((state[i] & St.Live) != 0)
+            {
                 ctx.Report(Descriptors.NotConsumed, at.Syntax.GetLocation(), ctx.Vars[i].Name, ": it is overwritten while it still holds a value");
+            }
             state[i] = St.Live;
         }
     }

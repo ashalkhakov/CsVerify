@@ -66,5 +66,49 @@ public static class P
             foreach (var m in new[] { "Other", "Break", "Read", "DictRemove" }) Assert.Empty(r.Errors("P." + m));
             Assert.Equal(new[] { "CSV1001" }, r.Errors("P.MaybeSame"));
         }
+
+        // (through an enumerator, Spec.Index counts the elements gone through; an unchanged collection gives its Count)
+        [Fact]
+        public void ThroughAnEnumerator_TheIndexCounts()
+        {
+            var r = Harness.Verify(@"
+using System.Collections.Generic;
+public static class P
+{
+    public static int Count(Dictionary<int, int> d) { Spec.Requires(d != null); Spec.Ensures((int r) => r == d.Count); int n = 0; foreach (var kv in d) { Spec.Invariant(n == Spec.Index(kv)); n = n + 1; } return n; }
+    public static int Members(HashSet<int> s) { Spec.Requires(s != null); Spec.Ensures((int r) => r == s.Count); int n = 0; foreach (var x in s) { Spec.Invariant(n == Spec.Index(x)); n = n + 1; } return n; }
+    public static int Off(Dictionary<int, int> d) { Spec.Requires(d != null); Spec.Ensures((int r) => r == d.Count + 1); int n = 0; foreach (var kv in d) { Spec.Invariant(n == Spec.Index(kv)); n = n + 1; } return n; }
+    // (a Remove goes on while it's enumerated: then fewer than the Count it began with may be given)
+    public static int Removes(Dictionary<int, int> d) { Spec.Requires(d != null); Spec.Modifies(ObjSet.Of(d)); Spec.Ensures((int r) => r == Spec.Old(d.Count));
+        int n = 0; foreach (var kv in d) { Spec.Invariant(n == Spec.Index(kv)); d.Remove(kv.Key); n = n + 1; } return n; }
+}");
+            Assert.Empty(r.Errors("P.Count"));
+            Assert.Empty(r.Errors("P.Members"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("P.Off"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("P.Removes"));
+        }
+
+        // (an iterator's body runs lazily: at its start and after each yield return, its caller's code may have changed
+        // anything; a foreach over what it gives may run that body at each MoveNext)
+        [Fact]
+        public void Iterators_AndForeachOverAnyEnumerable()
+        {
+            var r = Harness.Verify(@"
+using System.Collections.Generic;
+public sealed class Box { public int V; public Box() { } }
+public static class P
+{
+    public static IEnumerable<int> Range(int n) { Spec.Requires(n >= 0); for (int i = 0; i < n; i++) yield return i; }
+    public static IEnumerable<int> Div(int n, int d) { yield return n / d; }
+    public static IEnumerable<int> Stale(Box b) { Spec.Requires(b != null && b.V == 1); yield return 0; Spec.Assert(b.V == 1); }
+    public static int Use() { int s = 0; foreach (var x in Range(3)) { s = x; } return s; }
+    public static int Count(IEnumerable<int> xs) { Spec.Requires(xs != null); int n = 0; foreach (var x in xs) { Spec.Invariant(n == Spec.Index(x) && n < 1000); if (n == 999) break; n = n + 1; } return n; }
+    public static void Keeps(Box b) { Spec.Requires(b != null); b.V = 1; foreach (var x in Range(2)) { } Spec.Assert(b.V == 1); }
+}", overflow: false);
+            foreach (var m in new[] { "Range", "Use", "Count" }) Assert.Empty(r.Errors("P." + m));
+            Assert.Equal(new[] { "CSV1009" }, r.Errors("P.Div"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Stale"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("P.Keeps"));
+        }
     }
 }

@@ -64,14 +64,20 @@ namespace CsVerify.Verifier
 
             private void CheckedStatement(ExpressionStatementSyntax es)
             {
-                if (_handled.Contains(es)) return;
+                if (_handled.Contains(es))
+                {
+                    return;
+                }
                 if (es.Expression is InvocationExpressionSyntax inv && _model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && SpecSymbols.IsSpecClass(m.ContainingType))
                 {
                     var kind = m.Name;
                     if ((kind == "Requires" || kind == "Assert" || kind == "Invariant") && inv.ArgumentList.Arguments.Count == 1)
                     {
                         var cond = inv.ArgumentList.Arguments[0].Expression;
-                        if (!CanRun(cond, es, olds: false)) return;
+                        if (!CanRun(cond, es, olds: false))
+                        {
+                            return;
+                        }
                         _handled.Add(es);
                         Replace(es.Span, KeepLines(es, $"{Checked}{kind}({Render(cond, null)}, {Message(cond)});"));
                     }
@@ -100,19 +106,30 @@ namespace CsVerify.Verifier
             /// </summary>
             private void Postconditions(BlockSyntax body, IMethodSymbol method)
             {
-                if (method.IsAsync && method.ReturnsVoid) return;
+                if (method.IsAsync && method.ReturnsVoid)
+                {
+                    return;
+                }
                 var ensures = body.Statements.OfType<ExpressionStatementSyntax>()
                     .Select(es => (es, inv: es.Expression as InvocationExpressionSyntax))
                     .Where(x => x.inv != null && _model.GetSymbolInfo(x.inv).Symbol is IMethodSymbol m && SpecSymbols.IsSpecClass(m.ContainingType) && m.Name == "Ensures")
                     .ToList();
-                if (ensures.Count == 0) return;
+                if (ensures.Count == 0)
+                {
+                    return;
+                }
                 var own = body.DescendantNodes(n => !(n is AnonymousFunctionExpressionSyntax || n is LocalFunctionStatementSyntax)).ToList();
-                if (own.OfType<YieldStatementSyntax>().Any()) return;
+                if (own.OfType<YieldStatementSyntax>().Any())
+                {
+                    return;
+                }
                 var returns = own.OfType<ReturnStatementSyntax>().ToList();
                 // the value returned: of the method, or of its task
                 ITypeSymbol result = method.ReturnsVoid ? null : method.ReturnType;
                 if (method.IsAsync && result is INamedTypeSymbol task)
+                {
                     result = task.TypeArguments.Length == 1 ? task.TypeArguments[0] : null;
+                }
                 bool inStruct = method.ContainingType?.IsValueType == true && !method.IsStatic;
 
                 var checks = new List<(string open, string close, string statement)>();
@@ -125,21 +142,28 @@ namespace CsVerify.Verifier
                     var declarations = "";
                     bool runs = arg != null && returns.All(r => CanRun(arg, r, olds: true)) && (returns.Count > 0 || CanRun(arg, null, olds: true));
                     if (runs)
+                    {
                         foreach (var old in arg.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(IsOld))
                         {
                             var name = "__cv_old" + _olds++;
                             olds[old.Span] = name;
                             declarations += $"var {name} = {Render(old.ArgumentList.Arguments[0].Expression, null)}; ";
                         }
+                    }
                     Replace(es.Span, KeepLines(es, declarations));
-                    if (!runs) continue;
+                    if (!runs)
+                    {
+                        continue;
+                    }
                     if (m.IsGenericMethod && arg is LambdaExpressionSyntax lambda && result != null && !inStruct)
                     {
                         var r = m.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                         checks.Add(($"{Checked}Ensures<{r}>(", $", {Render(lambda, olds)}, {Message(arg)})", null));
                     }
                     else if (!m.IsGenericMethod && result == null)
+                    {
                         checks.Add((null, null, $"{Checked}Ensures({Render(arg, olds)}, {Message(arg)});"));
+                    }
                     else if (!m.IsGenericMethod && !inStruct)
                     {
                         var r = result.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -162,7 +186,9 @@ namespace CsVerify.Verifier
                     }
                 }
                 if (statements.Length > 0 && EndReached(body))
+                {
                     Insert(body.CloseBraceToken.SpanStart, statements, int.MinValue);
+                }
             }
 
             private bool EndReached(BlockSyntax body) =>
@@ -183,22 +209,43 @@ namespace CsVerify.Verifier
                     bool inOld = olds && n.Ancestors().TakeWhile(a => a != cond).OfType<InvocationExpressionSyntax>().Any(IsOld);
                     var at = inOld ? null : site;
                     var symbol = _model.GetSymbolInfo(n).Symbol;
-                    if (symbol is ITypeSymbol || symbol is INamespaceSymbol) continue; // (a name, as Spec in Spec.Old)
-                    if (n is ExpressionSyntax e && _model.GetTypeInfo(e).Type is ITypeSymbol t && (IsProofType(t) || InCsVerify(t))) return false;
+                    if (symbol is ITypeSymbol || symbol is INamespaceSymbol)
+                    {
+                        continue; // (a name, as Spec in Spec.Old)
+                    } // (a name, as Spec in Spec.Old)
+                    if (n is ExpressionSyntax e && _model.GetTypeInfo(e).Type is ITypeSymbol t && (IsProofType(t) || InCsVerify(t)))
+                    {
+                        return false;
+                    }
                     switch (symbol)
                     {
                         case IMethodSymbol m:
                             if (SpecSymbols.IsSpecClass(m.ContainingType))
                             {
-                                if (m.Name == "Forall" && m.Parameters.Length == 3) break;
-                                if (m.Name == "Old" && olds) break;
+                                if (m.Name == "Forall" && m.Parameters.Length == 3)
+                                {
+                                    break;
+                                }
+                                if (m.Name == "Old" && olds)
+                                {
+                                    break;
+                                }
                                 return false;
                             }
-                            if (IsErasedMethod(m) || InCsVerify(m.ContainingType)) return false;
+                            if (IsErasedMethod(m) || InCsVerify(m.ContainingType))
+                            {
+                                return false;
+                            }
                             break;
                         case IFieldSymbol f:
-                            if (Atomics.IsAtomic(f) || f.IsVolatile) return false;
-                            if (GuardOf(f) is string guard && !(at != null && HeldAt(at, f.ContainingType, guard))) return false;
+                            if (Atomics.IsAtomic(f) || f.IsVolatile)
+                            {
+                                return false;
+                            }
+                            if (GuardOf(f) is string guard && !(at != null && HeldAt(at, f.ContainingType, guard)))
+                            {
+                                return false;
+                            }
                             break;
                         case IPropertySymbol p when InCsVerify(p.ContainingType):
                             return false;
@@ -229,7 +276,10 @@ namespace CsVerify.Verifier
             private void LockStatement(LockStatementSyntax lk)
             {
                 var (field, receiver, index) = LockField(lk.Expression);
-                if (field == null) return;
+                if (field == null)
+                {
+                    return;
+                }
                 var invariant = Invariants(field, receiver, lk);
                 var level = LevelOf(field);
                 string taking = "", took = "", released = "";
@@ -242,7 +292,10 @@ namespace CsVerify.Verifier
                     took = $"{Checked}Took({n}, {order}, {name}); ";
                     released = $" {Checked}Released({n}, {order});";
                 }
-                if (invariant == null && taking.Length == 0) return;
+                if (invariant == null && taking.Length == 0)
+                {
+                    return;
+                }
                 int depth = Depth(lk);
                 if (taking.Length > 0)
                 {
@@ -266,14 +319,20 @@ namespace CsVerify.Verifier
                 {
                     awaited = true;
                     e = aw.Expression;
-                    if (e is InvocationExpressionSyntax ca && ca.Expression is MemberAccessExpressionSyntax cm && cm.Name.Identifier.Text == "ConfigureAwait") e = cm.Expression;
+                    if (e is InvocationExpressionSyntax ca && ca.Expression is MemberAccessExpressionSyntax cm && cm.Name.Identifier.Text == "ConfigureAwait")
+                    {
+                        e = cm.Expression;
+                    }
                 }
                 return e as InvocationExpressionSyntax;
             }
 
             private (string invariant, bool taking)? Lock(InvocationExpressionSyntax inv, bool awaited)
             {
-                if (inv == null || !(_model.GetSymbolInfo(inv).Symbol is IMethodSymbol m) || !m.ReturnsVoid && m.ReturnType.Name != "Task") return null;
+                if (inv == null || !(_model.GetSymbolInfo(inv).Symbol is IMethodSymbol m) || !m.ReturnsVoid && m.ReturnType.Name != "Task")
+                {
+                    return null;
+                }
                 var type = m.ContainingType?.ToDisplayString();
                 ExpressionSyntax target;
                 bool taking;
@@ -289,9 +348,15 @@ namespace CsVerify.Verifier
                     target = ma.Expression;
                     taking = m.Name != "Release";
                 }
-                else return null;
+                else
+                {
+                    return null;
+                }
                 var (field, receiver, _) = LockField(target);
-                if (field == null) return null;
+                if (field == null)
+                {
+                    return null;
+                }
                 return Invariants(field, receiver, inv) is string invariant ? (invariant, taking) : ((string, bool)?)null;
             }
 
@@ -304,7 +369,10 @@ namespace CsVerify.Verifier
                     index = ea.ArgumentList.Arguments[0].ToString();
                     e = ea.Expression;
                 }
-                if (!(_model.GetSymbolInfo(e).Symbol is IFieldSymbol f)) return (null, null, null);
+                if (!(_model.GetSymbolInfo(e).Symbol is IFieldSymbol f))
+                {
+                    return (null, null, null);
+                }
                 var receiver = e is MemberAccessExpressionSyntax ma && !(ma.Expression is ThisExpressionSyntax) && !f.IsStatic ? ma.Expression : null;
                 return (f, receiver, index);
             }
@@ -320,7 +388,10 @@ namespace CsVerify.Verifier
                                 _model.IsAccessible(at.SpanStart, m) && (m.IsStatic == field.IsStatic))
                     .Select(m => (m.IsStatic ? m.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "." : Prefix(receiver)) + m.Name + "()")
                     .ToList();
-                if (calls.Count == 0) return null;
+                if (calls.Count == 0)
+                {
+                    return null;
+                }
                 var what = SymbolDisplay.FormatLiteral($"{string.Join(" && ", calls)} ({field.Name}) {Where(at)}", true);
                 return $"{Checked}LockInvariant({string.Join(" && ", calls)}, {what});";
             }
@@ -328,7 +399,10 @@ namespace CsVerify.Verifier
             private static (int level, string orderedBy)? LevelOf(IFieldSymbol f)
             {
                 var a = f.GetAttributes().FirstOrDefault(x => x.AttributeClass?.Name == "LockLevelAttribute");
-                if (a == null || !(a.ConstructorArguments.FirstOrDefault().Value is int level)) return null;
+                if (a == null || !(a.ConstructorArguments.FirstOrDefault().Value is int level))
+                {
+                    return null;
+                }
                 return (level, a.NamedArguments.FirstOrDefault(kv => kv.Key == "OrderedBy").Value.Value as string);
             }
 
@@ -336,7 +410,10 @@ namespace CsVerify.Verifier
 
             private void CheckedCall(InvocationExpressionSyntax inv)
             {
-                if (!(_model.GetSymbolInfo(inv).Symbol is IMethodSymbol m)) return;
+                if (!(_model.GetSymbolInfo(inv).Symbol is IMethodSymbol m))
+                {
+                    return;
+                }
                 var type = m.ContainingType?.ToDisplayString();
                 var args = inv.ArgumentList.Arguments;
                 if (type == "System.Threading.Interlocked" && args.Count >= 1 && args[0].RefKindKeyword.IsKind(SyntaxKind.RefKeyword) &&
@@ -365,7 +442,10 @@ namespace CsVerify.Verifier
             /// <summary>The step of an [Atomic] field, as a method group that can be named here; null if it has none.</summary>
             private string StepRef(IFieldSymbol f, SyntaxNode at)
             {
-                if (!Atomics.IsAtomic(f) || !(Atomics.StepOf(f) is IMethodSymbol step) || !step.IsStatic || !_model.IsAccessible(at.SpanStart, step)) return null;
+                if (!Atomics.IsAtomic(f) || !(Atomics.StepOf(f) is IMethodSymbol step) || !step.IsStatic || !_model.IsAccessible(at.SpanStart, step))
+                {
+                    return null;
+                }
                 return step.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "." + step.Name;
             }
 
@@ -381,13 +461,20 @@ namespace CsVerify.Verifier
             {
                 var all = new Dictionary<TextSpan, string>(subs ?? new Dictionary<TextSpan, string>());
                 foreach (var inv in e.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+                {
                     if (_model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && SpecSymbols.IsSpecClass(m.ContainingType) && m.Name == "Forall")
+                    {
                         all[inv.Expression.Span] = Checked + "Forall";
+                    }
+                }
                 var text = _text.ToString(e.Span);
                 foreach (var kv in all.Where(kv => e.Span.Contains(kv.Key)).OrderByDescending(kv => kv.Key.Start))
                 {
                     int at = kv.Key.Start - e.SpanStart;
-                    if (all.Keys.Any(k => k != kv.Key && k.Contains(kv.Key))) continue; // inside another replaced span
+                    if (all.Keys.Any(k => k != kv.Key && k.Contains(kv.Key)))
+                    {
+                        continue; // inside another replaced span
+                    } // inside another replaced span
                     text = text.Substring(0, at) + kv.Value + text.Substring(at + kv.Key.Length);
                 }
                 return "(" + System.Text.RegularExpressions.Regex.Replace(text, @"\s*\r?\n\s*", " ") + ")";

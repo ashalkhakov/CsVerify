@@ -216,7 +216,10 @@ namespace CsVerify.Tests.Fuzz
                         catch (TargetInvocationException e) when (e.InnerException?.GetType().Name == "Skip" || Allowed(e)) { } // (partial correctness: leaving by a throw is allowed)
                         catch (TargetInvocationException e) { failure = e.InnerException?.GetType().Name + ": " + e.InnerException?.Message; }
                         if (failure == null) continue;
-                        o.Problems.Add($"seed {seed}, {m.Name}: verified, but on {input}: {failure}\n{Text(m, keep, -1, post, throwPost)}");
+                        // (and what the verifier said of it, each unit's diagnostics, warnings too: why it took it for verified)
+                        var said = string.Concat(result.Methods.Where(r => r.Name == "G." + m.Name + "T" || r.Name.StartsWith("G." + m.Name + "T."))
+                            .Select(r => $"    // {r.Name}: {r.Obligations} obligations, {r.Milliseconds} ms{string.Concat(r.Diagnostics.Select(d => $"; {d.Id} {d.Message}"))}\n"));
+                        o.Problems.Add($"seed {seed}, {m.Name}: verified, but on {input}: {failure}\n{Text(m, keep, -1, post, throwPost)}\n{said}");
                         break;
                     }
                 }

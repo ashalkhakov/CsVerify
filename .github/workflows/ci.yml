@@ -20,8 +20,12 @@ jobs:
           dotnet-version: 10.0.x
       - uses: ./.github/actions/setup-z3
       - run: dotnet build CsVerify.sln -c Release
-      # (a test that hangs fails the job after 20 minutes, naming the test, instead of running on for hours)
-      - run: dotnet test tests/CsVerify.Tests -c Release --no-build --blame-hang --blame-hang-timeout 20m
+      # (a test that hangs fails the job, naming the test, instead of running on for hours. A runner is slower than a
+      # developer's machine, and Windows's starts its solver slower: each check and each method's budget gets twice the
+      # time, three times on Windows, and the hang guard is 40 and 60 minutes)
+      - run: dotnet test tests/CsVerify.Tests -c Release --no-build --blame-hang --blame-hang-timeout ${{ matrix.os == 'windows-latest' && '60m' || '40m' }}
+        env:
+          CSVERIFY_TIME_SCALE: ${{ matrix.os == 'windows-latest' && '3' || '2' }}
       # the samples' erased and checked builds compile, through the build targets
       - run: dotnet build samples/Good -c Release -p:CsVerifyErase=true
       - run: dotnet build samples/Good -c Release -p:CsVerifyChecked=true

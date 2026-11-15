@@ -54,7 +54,12 @@ namespace CsVerify.Analyzers
         public static bool IsOwned(ITypeSymbol type)
         {
             for (var t = type as INamedTypeSymbol; t != null; t = t.BaseType)
-                if (HasAttribute(t, "OwnedAttribute")) return true;
+            {
+                if (HasAttribute(t, "OwnedAttribute"))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -63,13 +68,23 @@ namespace CsVerify.Analyzers
         {
             for (var t = type as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
             {
-                if (IsLinearPackage(t)) return true;
-                if (!t.IsRecord || t.TypeKind != TypeKind.Class) return false;
+                if (IsLinearPackage(t))
+                {
+                    return true;
+                }
+                if (!t.IsRecord || t.TypeKind != TypeKind.Class)
+                {
+                    return false;
+                }
                 foreach (var f in t.GetMembers().OfType<IFieldSymbol>())
+                {
                     if (!f.IsStatic && !(f.AssociatedSymbol is IPropertySymbol p && p.SetMethod?.IsInitOnly != false &&
                                          p.DeclaringSyntaxReferences.Length > 0 &&
                                          p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax)))
+                    {
                         return false;
+                    }
+                }
             }
             return true;
         }
@@ -90,7 +105,12 @@ namespace CsVerify.Analyzers
         public static bool IsTrusted(ISymbol s)
         {
             for (var cur = s; cur != null; cur = cur.ContainingSymbol)
-                if (HasAttribute(cur, "TrustedAttribute")) return true;
+            {
+                if (HasAttribute(cur, "TrustedAttribute"))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -105,7 +125,12 @@ namespace CsVerify.Analyzers
         public static bool IsLinear(ITypeSymbol type)
         {
             for (var t = type; t != null; t = t.BaseType)
-                if (HasAttribute(t.OriginalDefinition, "LinearAttribute")) return true;
+            {
+                if (HasAttribute(t.OriginalDefinition, "LinearAttribute"))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -126,7 +151,10 @@ namespace CsVerify.Analyzers
                 switch (cur)
                 {
                     case ArgumentSyntax arg when arg.Parent?.Parent is InvocationExpressionSyntax inv:
-                        if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && IsGhostMethod(m)) return true;
+                        if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && IsGhostMethod(m))
+                        {
+                            return true;
+                        }
                         break;
                     case MethodDeclarationSyntax md:
                         var declared = model.GetDeclaredSymbol(md);
@@ -134,7 +162,10 @@ namespace CsVerify.Analyzers
                         return IsLemma(declared) || IsGhostFunction(declared) || IsPredicate(declared) || IsModel(declared) ||
                                declared != null && IsContractsClass(declared.ContainingType);
                     case LocalFunctionStatementSyntax lf:
-                        if (IsLemma(model.GetDeclaredSymbol(lf))) return true;
+                        if (IsLemma(model.GetDeclaredSymbol(lf)))
+                        {
+                            return true;
+                        }
                         break;
                 }
             }
@@ -145,8 +176,12 @@ namespace CsVerify.Analyzers
         public static IMethodSymbol EnclosingMember(SyntaxNode node, SemanticModel model)
         {
             for (var cur = node; cur != null; cur = cur.Parent)
+            {
                 if (cur is BaseMethodDeclarationSyntax || cur is AccessorDeclarationSyntax || cur is LocalFunctionStatementSyntax)
+                {
                     return model.GetDeclaredSymbol(cur) as IMethodSymbol;
+                }
+            }
             return null;
         }
 
@@ -159,9 +194,15 @@ namespace CsVerify.Analyzers
         /// </summary>
         public static bool MustBePure(SyntaxNode node, SemanticModel model)
         {
-            if (node.AncestorsAndSelf().OfType<AttributeListSyntax>().Any()) return false;
+            if (node.AncestorsAndSelf().OfType<AttributeListSyntax>().Any())
+            {
+                return false;
+            }
             var member = EnclosingMember(node, model);
-            if (member != null && IsTrusted(member)) return false;
+            if (member != null && IsTrusted(member))
+            {
+                return false;
+            }
             return IsProofMethod(member) || IsInGhostContext(node, model);
         }
 
@@ -185,8 +226,13 @@ namespace CsVerify.Analyzers
                           (cur is ArgumentSyntax arg ? arg.Parent?.Parent as InvocationExpressionSyntax : null);
                 if (inv != null && (cur == inv || cur.Parent?.Parent == inv) &&
                     model.GetSymbolInfo(inv).Symbol is IMethodSymbol m && IsSpecClass(m.ContainingType) && m.ReturnsVoid)
+                {
                     found = inv;
-                if (cur is MemberDeclarationSyntax) break;
+                }
+                if (cur is MemberDeclarationSyntax)
+                {
+                    break;
+                }
             }
             return found;
         }

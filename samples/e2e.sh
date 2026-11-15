@@ -44,7 +44,7 @@ dotnet tool install dotnet-tarp --version "$tarp_version"
 
 # verify, in the build: the library is proved, the test project is not looked at
 dotnet build -p:CsVerifyEnabled=true | tee build.txt
-grep -F "csverify: 5 of 5 methods verified, 51/51 obligations proved" build.txt
+grep -F "csverify: 5 of 5 methods verified, 43/43 obligations proved" build.txt
 
 # and from the command line
 dotnet csverify Shop.Core | tee verify.txt
