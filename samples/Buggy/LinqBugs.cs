@@ -37,12 +37,12 @@ namespace Samples.Linq
             return scores.Distinct().Count();
         }
 
-        // a group's members share its key (x % 10), not equal it (CSV1004)
+        // a group's key is its members' last digit, x % 10, which is negative for a negative score (CSV1004)
         public static void Groups(int[] scores)
         {
             foreach (var g in scores.GroupBy(s => s % 10))
-                foreach (var s in g)
-                    Spec.Assert(s == g.Key);
+                // (-15 % 10 is -5)
+                Spec.Assert(g.Key >= 0);
         }
 
         // every basket may be empty: then there is no first item (CSV1001)
