@@ -321,6 +321,10 @@ namespace CsVerify.Verifier.Boogie
             if (ar.Op == "/" || ar.Op == "%")
             {
                 Assert(Ne(r, MLit.Zero), At("CSV1009", ar.At, $"division by zero in '{ar.At}'"));
+                if (IsDecimal(ar.Type))
+                {
+                    return DecimalQuotient(ar.Op, l, r);
+                }
                 if (ar.ThrowsTo != null)
                 {
                     Emit(new MFork
@@ -353,6 +357,10 @@ namespace CsVerify.Verifier.Boogie
             }
             return Fit(value, ar.Type, ar.Mode, ar.At, $"arithmetic '{ar.At}' might overflow {ar.Type.Name}");
         }
+
+        /// <summary>l / r of decimals, $dq of the exact quotient (in units, l * 10^28 / r); l % r, exact.</summary>
+        internal static MExpr DecimalQuotient(string op, MExpr l, MExpr r) =>
+            op == "/" ? new MOp("$dq", Times(l, MathTypes.Number(Lowering.DecimalOne)), r) : new MOp("rem", l, r);
 
         /// <summary>An explicit conversion between integer types: as arithmetic where it narrows; a widening one is the value.</summary>
         private MExpr Convert(KConv cv, MExpr value)

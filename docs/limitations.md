@@ -49,7 +49,7 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 
 **Unsupported constructs**
 - Rejected as CSV1901 (the method is not verified): see [What it cannot model, it rejects](how-it-works.md) in How it works.
-- `decimal` multiplication, division and remainder are not translated (CSV1902); `+`, `-` and comparisons are exact, rounding where .NET does ([Decimals](boogie.md)).
+- `decimal` arithmetic is exact where the result is representable; elsewhere only its sign is known, not how .NET rounds it ([Decimals](boogie.md)). A conversion to `double` is not translated (CSV1902).
 - Unknown values, which are sound (CSV1900 warning): bitwise operators on enums, floating-point `%` and transcendental functions, library properties without a `[Pure]` stub, non-pure calls in specifications, the elements of a `foreach` over a library collection (a `List<T>` whose loop may change a list included) or a span.
 - `Spec.Acc` permissions cover one-dimensional arrays only: a method whose contract gives array permissions cannot write a rectangular array's cells (CSV1016).
 - Library members without a stub have no contract beyond their nullability annotations (see [Contracts for code without sources](library-contracts.md)). Arrays, strings' `Length` and indexer, spans (their indexer, `Slice`, `CopyTo`, `TryCopyTo`, `Fill`, `Clear`, `ToArray`, `AsSpan`) and `Math.Min`/`Max`/`Abs` are built in, and a stub for them is not used.
