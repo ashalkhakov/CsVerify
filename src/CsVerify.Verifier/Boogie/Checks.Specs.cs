@@ -239,7 +239,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         AddWellDefinedness(Ne(r, MLit.Zero), wf, guard);
                     }
-                    return new MOp(ar.Op == "/" ? "div" : "rem", l, r);
+                    return IsDecimal(ar.Type) ? DecimalQuotient(ar.Op, l, r) : new MOp(ar.Op == "/" ? "div" : "rem", l, r);
                 }
                 case KIfc si:
                 {

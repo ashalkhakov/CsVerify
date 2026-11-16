@@ -569,10 +569,11 @@ their other operators and members are not translated (CSV1902). A `Guid` is an `
 all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe).
 
 **Decimals.** A `decimal` is an `int`, its value in units of 10^-28 (every decimal is *m* / 10^*e*, |*m*| < 2^96,
-0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result: the result itself where
+0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result, and `*` and `/` are
+`$dq(n, d)` of the exact result *n* / *d* (in units, *a* · *b* / 10^28 and *a* · 10^28 / *b*): the result itself where
 it is representable (`$drep`, *m* / 10^*e* for some *e*), else a rounded value of its sign, as .NET's, whose rounding
-depends on the exact result alone. Past `MaxValue` they throw an `OverflowException`. An integer converts exactly;
-`*`, `/` and `%` are not translated (CSV1902).
+depends on the exact result alone. Past `MaxValue` they throw an `OverflowException`. `%` is exact (`cs#remI` of the
+units), and `/` or `%` by zero is CSV1009, as for integers. An integer converts exactly.
 
 **Record structs.** A positional `record struct` of the subset (`readonly record struct OrderId(Guid Value)`) is a
 struct: its primary constructor gives the struct of its arguments, and its `==` compares its fields, where each
@@ -975,9 +976,10 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
   failing proof never saturates), and not null where its type says so (each construction checks its arguments,
   CSV1014); an integer one is in its type's range, and one of a non-nullable reference type is not null. A
   parameter, `this` and a result are of their type's cases.
-- An array or collection interface of a type parameter (a `params TEvent[]`, an `IReadOnlyList<TEvent>` field) is a
+- An array or collection interface of a type parameter (a `params T[]`, an `IReadOnlyList<T>` field) is a
   reference that generic code passes on and stores, but doesn't read; where the type argument is known, it is read as
-  that type's collection.
+  that type's collection. A static method that makes a case (`Grant(params T[] xs) => new Granted(xs)`) tells its
+  callers which case it gives only if it is `[Pure]` (its body is then its function) or says so in a postcondition.
 - Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,
   `var`, discard, `not`, `and`, `or`, positional and property patterns) test tags and fields and bind their variables;
   a specification's `switch` is an `if`-chain. A cast to a case: in code, where it fails it throws; in a proof, CSV1011.
