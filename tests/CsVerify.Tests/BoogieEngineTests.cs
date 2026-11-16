@@ -37,7 +37,7 @@ public static class A
     public static void Assertion(int x) { Spec.Requires(x > 3); Spec.Assert(x > 4); }
     public static int BadInv(int n) { Spec.Requires(n >= 0 && n < 100); int i = 0; while (i < n) { Spec.Invariant(i < n); i++; } return i; }
     public static int BadPost(int x) { Spec.Ensures<int>(r => r > x); return x; }
-    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); decimal d = 0.5m; d = d + 1m; return x; }
+    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); decimal d = 0.5m; d = d * 2m; return x; }
     public static void Fill(int[] a, int v) { Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length && Spec.Forall(0, i, k => a[k] == v)); a[i] = v; } }
     public static int First(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
     public static int FirstBad(int[] a) => a[0];
