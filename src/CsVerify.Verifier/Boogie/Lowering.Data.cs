@@ -455,6 +455,12 @@ namespace CsVerify.Verifier.Boogie
                 case IBinaryOperation eq when eq.OperatorMethod != null && eq.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
                                               IsData(eq.OperatorMethod.ContainingType):
                     return RecordEquality(eq, mode);
+                // (a value object's == and !=: the same object, or two whose fields are equal; not where its own Equals decides)
+                case IBinaryOperation vo when vo.OperatorMethod != null && vo.OperatorMethod.IsImplicitlyDeclared && vo.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                                              IsValueObject(vo.OperatorMethod.ContainingType) &&
+                                              !vo.OperatorMethod.ContainingType.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => !m.IsImplicitlyDeclared && m.Parameters.Length == 1 &&
+                                                  SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, vo.OperatorMethod.ContainingType)):
+                    return ValueObjectEquality(vo, mode);
                 default: return DataExprCoreOther(e, mode);
             }
         }
@@ -892,6 +898,40 @@ namespace CsVerify.Verifier.Boogie
             // (the object's contents: the same object, the same string)
             Emit(KAssume.Of(Eq(new KOp("$strOf", new KVar(o)), sv)));
             return new KVar(o);
+        }
+
+        /// <summary>
+        /// A record class's synthesized ==, as C# defines it: the same reference, or neither null and each field equal by
+        /// EqualityComparer&lt;T&gt;.Default (the EqualityContracts of a sealed record's two objects are the same).
+        /// </summary>
+        private KExpr ValueObjectEquality(IBinaryOperation eq, LowerMode mode)
+        {
+            var l = Lower(eq.LeftOperand, mode);
+            var r = Lower(eq.RightOperand, mode);
+            bool withNull = Unconverted(eq.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(eq.RightOperand).ConstantValue is { HasValue: true, Value: null };
+            var same = withNull ? (KExpr)Eq(l, r)
+                : OrElse(Eq(l, r), AndAlso(AndAlso(NotNull(l), NotNull(r)), FieldsEqual(l, r, eq.OperatorMethod.ContainingType, eq.Syntax, 0)));
+            return eq.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+        }
+
+        /// <summary>Each field of two objects of a value object, neither null, equal as EqualityComparer&lt;T&gt;.Default compares it.</summary>
+        private KExpr FieldsEqual(KExpr l, KExpr r, ITypeSymbol type, SyntaxNode at, int depth)
+        {
+            KExpr all = KLit.True;
+            foreach (var f in InstanceFields(type))
+            {
+                var ft = FieldType(f);
+                _p.AddField(f);
+                KExpr Read(KExpr o) => new KField { Field = f, Instance = o, NoNull = true, At = at, InstanceAt = at };
+                var (a, b) = (Read(l), Read(r));
+                all = AndAlso(all,
+                    Scalar(ft) ? Eq(a, b)
+                    : IsString(ft) ? new KOp("streq", a, b)
+                    : IsData(ft) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)ft) ? Eq(a, b)
+                    : IsValueObject(ft) && depth < 4 ? OrElse(Eq(a, b), AndAlso(AndAlso(NotNull(a), NotNull(b)), FieldsEqual(a, b, ft, at, depth + 1)))
+                    : throw new NotTranslated("== of " + type.Name + ", whose field " + f.Name + " is a " + ft));
+            }
+            return all;
         }
 
         private KExpr RecordEquality(IBinaryOperation eq, LowerMode mode)

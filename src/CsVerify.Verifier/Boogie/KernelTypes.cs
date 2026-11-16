@@ -713,10 +713,13 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsSequence(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && FuncValue(n.TypeArguments[0]);
 
-        /// <summary>A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values.</summary>
+        /// <summary>
+        /// A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values, or of
+        /// data values, as a List's may be (never compared: Lowering refuses Contains, IndexOf and Remove of them).
+        /// </summary>
         public static bool IsCollectionInterface(ITypeSymbol t) =>
             t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
-            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && FuncValue(n.TypeArguments[0]);
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]));
 
         /// <summary>The program's own classes or structs that implement a collection interface: then a read through it is unknown at each read.</summary>
         public static bool ImplementedHere(INamedTypeSymbol ifc)
@@ -980,18 +983,28 @@ namespace CsVerify.Verifier.Boogie
             // (an invariant of an [Owned] class travels with its view; any other's is an immutable object's, assumed of every one)
             (SpecSymbols.IsOwned(n) || !HasInvariantMethods(n) || Immutable(n));
 
-        /// <summary>A class declared in the program: not static, not a record, not generic but as the subset allows, not nested in a generic one (an anonymous type's values are tuples).</summary>
+        /// <summary>
+        /// A class declared in the program: not static, not a record but a sealed one that isn't data (a value object: an
+        /// object, its == its fields'), not generic but as the subset allows, not nested in a generic one (an anonymous
+        /// type's values are tuples).
+        /// </summary>
         private static bool PlainClassOfTheProgram(INamedTypeSymbol n) =>
-            n.TypeKind == TypeKind.Class && !n.IsStatic && !n.IsRecord && !n.IsAnonymousType && GenericClassArguments(n) &&
+            n.TypeKind == TypeKind.Class && !n.IsStatic && (!n.IsRecord || IsValueObject(n)) && !n.IsAnonymousType && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0;
 
         /// <summary>Derived from object, or from a class of the subset, a library base or a library exception (an [Owned] one from object); or an EF context.</summary>
         private static bool BaseOfTheSubset(INamedTypeSymbol n) =>
             n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n);
 
-        /// <summary>Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's; any, of an EF context.</summary>
+        /// <summary>A sealed record class that isn't data (its state not positional): a class whose == compares its fields.</summary>
+        public static bool IsValueObject(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsRecord: true, IsSealed: true } n && !IsData(n) && n.BaseType?.SpecialType == SpecialType.System_Object &&
+            n.DeclaringSyntaxReferences.Length > 0;
+
+        /// <summary>Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's, a record's IEquatable of itself; any, of an EF context.</summary>
         private static bool InterfacesOfTheSubset(INamedTypeSymbol n) =>
-            n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i)) || IsContext(n);
+            n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i) ||
+                                     n.IsRecord && i.OriginalDefinition.ToDisplayString() == "System.IEquatable<T>" && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], n)) || IsContext(n);
 
         /// <summary>One of CsVerify's attributes on the class but [Owned], [RunsConcurrently] and the lock order's.</summary>
         private static bool HasSpecAttributes(INamedTypeSymbol n) =>
