@@ -819,6 +819,19 @@ public static class Pw
         }
 
         [Fact]
+        public void AContractNamingALocal_IsReported_AndTheRestVerified()
+        {
+            // (its contract has no meaning: nothing of it is translated, so the program's other methods still verify)
+            var b = Harness.Verify(Harness.Usings + @"public static class C
+{
+    public static int Bad(int x) { var y = x + 1; Spec.Requires(y > 0); return x; }
+    public static int Good(int x) { Spec.Requires(x > 0); Spec.Ensures<int>(r => r > 0); return x; }
+}");
+            Assert.Contains("CSV0014", b.Errors("Bad"));
+            Assert.Empty(b.Errors("Good"));
+        }
+
+        [Fact]
         public void Exceptions_AreBoogies()
         {
             // throw, try/catch by type, rethrow, checked overflow caught, EnsuresOnThrow

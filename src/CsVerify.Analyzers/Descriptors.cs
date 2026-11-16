@@ -64,6 +64,10 @@ namespace CsVerify.Analyzers
             "Spec.Result/Spec.Old outside a postcondition",
             "'{0}' can only be used inside Spec.Ensures (Spec.Old also inside Spec.Invariant and Spec.Assert)");
 
+        public static readonly DiagnosticDescriptor LocalInContract = Error("CSV0014", Ghosts,
+            "A contract names a local of the body",
+            "'{0}' is a local of the body: a contract (Spec.Requires, Ensures, Decreases, Modifies, Reads) is of the parameters alone");
+
         public static readonly DiagnosticDescriptor ImpureGhost = Error("CSV0013", Ghosts,
             "Side effect in ghost or pure code",
             "{0}: lemmas, [Pure] and [GhostFunction] bodies and specification arguments must not have side effects");

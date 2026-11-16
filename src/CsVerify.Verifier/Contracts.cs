@@ -37,6 +37,8 @@ namespace CsVerify.Verifier
         public SemanticModel Model;
         /// <summary>The effective precondition: the method's own, or else the one it inherits.</summary>
         public readonly List<IOperation> Requires = new List<IOperation>();
+        /// <summary>A local of the body that a contract names (CSV0014): the contract has no meaning, nothing is translated.</summary>
+        public string BodyLocal;
         /// <summary>The effective postcondition: its own and everything it inherits.</summary>
         public readonly List<Postcondition> Ensures = new List<Postcondition>();
         /// <summary>Spec.EnsuresOnThrow&lt;E&gt;(cond): what holds if the method exits by throwing an E.</summary>
@@ -237,6 +239,10 @@ namespace CsVerify.Verifier
                     c.Model.GetOperation(inv) is IInvocationOperation op && SpecSymbols.IsSpecClass(op.TargetMethod.ContainingType))
                 {
                     var arg = op.Arguments.Length > 0 ? op.Arguments[0].Value : null;
+                    if (SpecSymbols.ContractNames.Contains(op.TargetMethod.Name))
+                    {
+                        c.BodyLocal ??= SpecSymbols.BodyLocalIn(op, stmt)?.Name;
+                    }
                     switch (op.TargetMethod.Name)
                     {
                         case "Requires":

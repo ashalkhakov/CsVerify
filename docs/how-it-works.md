@@ -28,6 +28,7 @@
 - `Ghost<T>.Value`, `Spec.Forall`/`Exists` only in ghost context: `Spec.*` arguments, lemma arguments, lemma bodies (CSV0010).
 - `Spec.Result` only inside `Spec.Ensures`; `Spec.Old` inside `Spec.Ensures`, `Spec.Invariant` and `Spec.Assert` (CSV0012). `Old` rewinds the heap and the parameters to method entry; locals keep their current values, as in Dafny.
 - A `[Lemma]` must be `void` and `[Conditional("CSVERIFY_SPEC")]`, so its calls are erased (CSV0011).
+- A contract is of the parameters: `Spec.Requires`, `Ensures`, `Decreases`, `Modifies` and `Reads` name no local of the body (CSV0014).
 
 **Purity** (`PurityAnalyzer`, CSV0013). Proofs and specifications have no side effects. The rule covers the bodies of lemmas, `[Pure]` and `[GhostFunction]` methods, and every `Spec.*` argument; the verifier relies on it.
 - **What's allowed:** a proof may assign only its own locals and value parameters, and may call only lemmas, pure functions (library members whose stub is `[Pure]` too), the spec library and `System.Math`.

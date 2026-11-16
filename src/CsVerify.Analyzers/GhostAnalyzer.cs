@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -11,7 +12,7 @@ namespace CsVerify.Analyzers
     public sealed class GhostAnalyzer : DiagnosticAnalyzer
     {
         public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-            ImmutableArray.Create(Descriptors.GhostOutsideSpec, Descriptors.BadLemma, Descriptors.ResultOutsideEnsures);
+            ImmutableArray.Create(Descriptors.GhostOutsideSpec, Descriptors.BadLemma, Descriptors.ResultOutsideEnsures, Descriptors.LocalInContract);
 
         public override void Initialize(AnalysisContext context)
         {
@@ -66,6 +67,12 @@ namespace CsVerify.Analyzers
             }
             if (!SpecSymbols.IsSpecClass(m.ContainingType))
             {
+                return;
+            }
+            if (SpecSymbols.ContractNames.Contains(m.Name) && op.Syntax.Parent is ExpressionStatementSyntax statement && statement.Parent is BlockSyntax &&
+                SpecSymbols.BodyLocalIn(op, statement) is ILocalSymbol local)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.LocalInContract, op.Syntax.GetLocation(), local.Name));
                 return;
             }
             if (m.Name == "Forall" || m.Name == "Exists" || m.Name == "Index")
