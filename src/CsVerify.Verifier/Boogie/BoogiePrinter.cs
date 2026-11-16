@@ -24,6 +24,8 @@ namespace CsVerify.Verifier.Boogie
         };
         /// <summary>Where a case's test is printed as its tag, the cases' tags.</summary>
         private Dictionary<string, int> _tags;
+        /// <summary>The data types' cases' tags, once Data has printed them.</summary>
+        private Dictionary<string, int> _caseTags;
 
         private readonly StringBuilder _text = new StringBuilder();
         private int _line = 1;
@@ -628,17 +630,24 @@ namespace CsVerify.Verifier.Boogie
             public string Name;
             public int Tag;
             public List<(string name, string type, bool data, string field)> Params = new List<(string, string, bool, string)>();
-            public List<(string function, MExpr value)> Fields = new List<(string, MExpr)>();
+            /// <summary>Its fields' values (a guard, where one is computed: it holds where the value is of the field's type).</summary>
+            public List<(string function, MExpr value, MExpr guard)> Fields = new List<(string, MExpr, MExpr)>();
+            /// <summary>Its parameters of their types: where the constructor's facts hold.</summary>
+            public List<MExpr> Guards = new List<MExpr>();
 
-            public void AddField((string function, MExpr value) field) => Fields.Add(field);
+            public void AddField((string function, MExpr value, MExpr guard) field) => Fields.Add(field);
+
+            public void AddGuard(MExpr guard) => Guards.Add(guard);
 
             public void AddParam((string name, string type, bool data, string field) param) => Params.Add(param);
         }
 
         /// <summary>
         /// Data types as Dafny's: boxes for generic values; a value's tag ($tag, tested by $is.C) and rank ($rank, never
-        /// negative); each field a function; each case's constructor a function whose value has its tag, its fields,
-        /// and a rank above its data parts'; and a value of a case is that case's constructor of its fields.
+        /// negative); each field a function, its values of its type; each case's constructor a function whose value,
+        /// of arguments of their types, has its tag, its fields, and a rank above its data parts'; and a value of a case
+        /// is that case's constructor of its fields. (Unguarded, a constructor's value of an argument outside its type
+        /// would have a field outside it: false.)
         /// </summary>
         public void Data(List<DataCase> cases, List<(string function, string type, MExpr fact)> fields)
         {
@@ -648,7 +657,8 @@ namespace CsVerify.Verifier.Boogie
             var cx = InProcedure;
             // (a field's case, by its tag: a test of the case ($is.C) would be a term that makes the case's value its
             // constructor of its fields, whose fields' cases would make more, without end)
-            _tags = cases.ToDictionary(c => "$is." + c.Name.Substring(3), c => c.Tag);
+            _caseTags = cases.ToDictionary(c => "$is." + c.Name.Substring(3), c => c.Tag);
+            _tags = _caseTags;
             foreach (var (function, type, fact) in fields)
             {
                 Line($"function {function}(d: Ref): {type};");
@@ -665,18 +675,35 @@ namespace CsVerify.Verifier.Boogie
                 var app = $"{c.Name}({string.Join(", ", c.Params.Select(x => x.name))})";
                 Line($"function {c.Name}({ps}): Ref;");
                 var facts = new List<string> { $"{app} != null", $"$tag({app}) == {c.Tag}" };
-                foreach (var (function, value) in c.Fields)
+                foreach (var (function, value, typed) in c.Fields)
                 {
-                    facts.Add($"{function}({app}) == {E(value, cx)}");
+                    var fact = $"{function}({app}) == {E(value, cx)}";
+                    facts.Add(typed == null ? fact : $"({ByTag(typed, cx)} ==> {fact})");
                 }
                 foreach (var x in c.Params.Where(x => x.data))
                 {
                     facts.Add($"({x.name} != null ==> $rank({x.name}) < $rank({app}))");
                 }
-                Line(c.Params.Count == 0 ? $"axiom {string.Join(" && ", facts)};" : $"axiom (forall {ps} :: {{ {app} }} {string.Join(" && ", facts)});");
+                var guard = string.Join(" && ", c.Guards.Select(g => ByTag(g, cx)));
+                var holds = guard.Length == 0 ? string.Join(" && ", facts) : $"{guard} ==> {string.Join(" && ", facts)}";
+                Line(c.Params.Count == 0 ? $"axiom {string.Join(" && ", facts)};" : $"axiom (forall {ps} :: {{ {app} }} {holds});");
                 // (a value of the case is the case's constructor of its fields)
                 var eta = $"{c.Name}({string.Join(", ", c.Params.Select(x => $"{x.field}(d)"))})";
                 Line($"axiom (forall d: Ref :: {{ $is.{c.Name.Substring(3)}(d) }} d != null && $is.{c.Name.Substring(3)}(d) ==> d == {eta});");
+            }
+        }
+
+        /// <summary>e with each case's test as its tag (as a field's case is: a test would make the case's value its constructor).</summary>
+        private string ByTag(MExpr e, Context cx)
+        {
+            _tags = _caseTags;
+            try
+            {
+                return E(e, cx);
+            }
+            finally
+            {
+                _tags = null;
             }
         }
 
@@ -1308,6 +1335,13 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {guard} ==> {E(e.Expr, cx)});");
             }
+            // (a value of data type, of arguments of their types, is of its type: as its body is checked to give)
+            if (IsData(m.ReturnType))
+            {
+                var result = ByTag(MathTypes.OfType(new MLit(FunctionAt("ly", name, memoryArgs, args)), m.ReturnType), cx);
+                var typed = m.Parameters.Select(x => MathTypes.OfType(new MVar(Local(x)), x.Type)).Where(g => g != null).Select(g => ByTag(g, cx)).ToList();
+                Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {(typed.Count == 0 ? "" : string.Join(" && ", typed) + " ==> ")}{result});");
+            }
             if (!p.Source.Ghost && IsIntegral(m.ReturnType))
             {
                 Line($"axiom (forall {bound} :: {{ {FunctionAt("ly", name, memoryArgs, args)} }} {E(MathTypes.InRange(new MLit(FunctionAt("ly", name, memoryArgs, args)), m.ReturnType), cx)});");
@@ -1474,6 +1508,18 @@ namespace CsVerify.Verifier.Boogie
             {
                 Line($"  free ensures {E(MathTypes.InRange(new MVar("result"), Returns(m)), cx)};");
             }
+            // (a struct's or a tuple's parts: each of its type, an integer in its range, a data value one of its cases)
+            if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt)) && !p.Source.Ghost)
+            {
+                var parts = IsTuple(rt) ? PartsOf(rt) : StructFields(rt).Select(f => f.Type).ToList();
+                for (int k = 0; k < parts.Count; k++)
+                {
+                    if (IsIntegral(parts[k]) || IsData(parts[k]))
+                    {
+                        Line($"  free ensures {ByTag(MathTypes.OfType(MathTypes.TupleItem(new MVar("result"), rt, k), parts[k]), cx)};");
+                    }
+                }
+            }
             if (functionFields != null)
             {
                 Line($"  free ensures result == {E(new MFnApp
@@ -1538,11 +1584,12 @@ namespace CsVerify.Verifier.Boogie
             }
             // (an integer variable is always in its type's range: where Boogie havocs it, at a loop head, too. A variable of
             // the program's of a non-nullable reference type is never null: each write to it is checked, and it's read only
-            // once written)
+            // once written; one of data type holds a value of its type)
             foreach (var l in p.Source.Locals)
             {
                 Line(l.Raw != null ? $"  var {l.Name}: {l.Raw};" :
                      IsIntegral(l.Type) ? $"  var {l.Name}: int where {E(MathTypes.InRange(new MVar(l.Name), l.Type), cx)};" :
+                     l.Name.StartsWith("l$") && (IsData(l.Type) || IsGhost(l.Type) && IsData(GhostOf(l.Type))) && _caseTags != null ? $"  var {l.Name}: Ref where {ByTag(MathTypes.OfType(new MVar(l.Name), l.Type), cx)};" :
                      l.Name.StartsWith("l$") && IsNullable(l.Type) && NotNullable(l.Type) && TypeOf(l.Type) == "Ref" ? $"  var {l.Name}: Ref where {l.Name} != null;" :
                      $"  var {l.Name}: {TypeOf(l.Type)};");
             }

@@ -62,6 +62,15 @@ namespace CsVerify.Verifier.Boogie
             return AndAlso(NotNull(v), any);
         }
 
+        /// <summary>
+        /// v is a value of t, as far as t says: a data value one of its cases (or null, where t is nullable), an integer
+        /// in its range; null where t says no more.
+        /// </summary>
+        public static MExpr OfType(MExpr v, ITypeSymbol t) =>
+            IsGhost(t) ? OfType(v, GhostOf(t))
+            : IsData(t) ? (NotNullable(t) ? IsCase(v, t) : OrElse(IsNull(v), IsCase(v, t)))
+            : IsIntegral(t) ? InRange(v, t) : null;
+
         /// <summary>A value as a box (where generic code takes it).</summary>
         public static MExpr Box(MExpr v, ITypeSymbol def, ITypeSymbol actual) =>
             IsTypeParameter(def) && !IsTypeParameter(actual) && actual != null ? new MOp("$box." + BoxKind(actual), v) : v;

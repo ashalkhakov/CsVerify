@@ -1,6 +1,7 @@
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace CsVerify.Analyzers
 {
@@ -217,6 +218,27 @@ namespace CsVerify.Analyzers
                           m.IsStatic && (m.ContainingType?.SpecialType == SpecialType.System_Double || m.ContainingType?.SpecialType == SpecialType.System_Single));
 
         /// <summary>The outermost Spec statement (void Spec.* call) that is <paramref name="node"/> or contains it in its arguments.</summary>
+        /// <summary>The contracts of a body: what each states of its parameters, before its statements run.</summary>
+        public static readonly string[] ContractNames = { "Requires", "Ensures", "EnsuresOnThrow", "Decreases", "Modifies", "Reads" };
+
+        /// <summary>
+        /// A local of the body that a contract statement's argument names (declared in the body, outside the contract):
+        /// a contract is of the parameters, so it has no value there. Null if there is none.
+        /// </summary>
+        public static ILocalSymbol BodyLocalIn(IOperation contract, SyntaxNode statement)
+        {
+            var body = statement.Parent;
+            foreach (var r in contract.DescendantsAndSelf().OfType<ILocalReferenceOperation>())
+            {
+                var at = r.Local.DeclaringSyntaxReferences.FirstOrDefault()?.Span;
+                if (at is { } span && body != null && body.Span.Contains(span) && !statement.Span.Contains(span))
+                {
+                    return r.Local;
+                }
+            }
+            return null;
+        }
+
         public static InvocationExpressionSyntax EnclosingSpecCall(SyntaxNode node, SemanticModel model)
         {
             InvocationExpressionSyntax found = null;

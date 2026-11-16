@@ -92,6 +92,10 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private static void ContractOf(Lowering l, Contract contract)
         {
+            if (contract.BodyLocal != null)
+            {
+                throw new NotTranslated($"its contract names '{contract.BodyLocal}', a local of its body (CSV0014)");
+            }
             foreach (var r in contract.Requires)
             {
                 l._p.AddRequires(KSpec.Of(l.Spec(r, null), r.Syntax));

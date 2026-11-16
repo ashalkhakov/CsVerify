@@ -172,6 +172,17 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void Contract_NamingALocalOfTheBody_IsReported()
+        {
+            Assert.Equal(new[] { "CSV0014" }, Harness.Analyze("static class C { static void M(int x) { var y = x + 1; Spec.Requires(y > 0); } }"));
+            Assert.Equal(new[] { "CSV0014" }, Harness.Analyze("static class C { static int M(int x) { int y = x; Spec.Ensures<int>(r => r == y); return y; } }"));
+            // (its own pattern variables, a quantifier's parameters, what a lambda's contract captures: not the body's locals)
+            Assert.Empty(Harness.Analyze("static class C { static void M(object o) { Spec.Requires(o is string s && s.Length > 0); } }"));
+            Assert.Empty(Harness.Analyze("static class C { static void M(int[] a) { Spec.Requires(Spec.Forall(0, a.Length, i => a[i] > 0)); } }"));
+            Assert.Empty(Harness.Analyze("static class C { static void M(int k) { int y = k; System.Func<int, int> f = x => { Spec.Requires(x < y); return x; }; } }"));
+        }
+
+        [Fact]
         public void GhostFunction_BodyIsGhost_ButCallsAreSpecOnly()
         {
             const string fn = "[GhostFunction] static bool AllZero(Seq<int> s, int n) => Spec.Forall(0, n, j => s[j].Value == 0); ";

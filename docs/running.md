@@ -68,7 +68,7 @@ csverify: 21 of 21 methods verified, 1004/1004 obligations proved; checks: null,
 
 Obligations of the other kinds are assumed, so a result holds only where they do. The summary line counts them.
 Some diagnostics are reported whatever the profile, because the verifier's own soundness depends on them: the ghost
-analyzer (CSV0010–CSV0013), aliased by-reference arguments (CSV1020), and ill-formed stubs (CSV1021).
+analyzer (CSV0010–CSV0014), aliased by-reference arguments (CSV1020), and ill-formed stubs (CSV1021).
 
 Within a profile, a construct the verifier does not model is a warning (CSV1901, "not modeled: treated as unknown")
 instead of an error. Its value is unknown (not null, if its type is not nullable), and the method is verified around
@@ -140,6 +140,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV0007 | analyzer | one linear value passed to two parameters of a call |
 | CSV0012 | analyzer | `Spec.Result` outside `Spec.Ensures`; `Spec.Old` outside `Ensures`/`Invariant`/`Assert` |
 | CSV0013 | analyzer | side effect in a proof (lemma, `[Pure]`, `[GhostFunction]`) or a specification argument |
+| CSV0014 | analyzer | a contract (`Spec.Requires`, `Ensures`, `Decreases`, `Modifies`, `Reads`) names a local of the body |
 | CSV0020 | analyzer | a disposable this method owns is not disposed on every path (or is overwritten while it holds one) |
 | CSV0021 | analyzer | a disposable used, or disposed again, after it may have been disposed |
 | CSV0022 | analyzer | a class owns a disposable field but is not IDisposable, or its Dispose never disposes the field |
