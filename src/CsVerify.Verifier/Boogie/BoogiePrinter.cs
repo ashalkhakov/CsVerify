@@ -30,6 +30,9 @@ namespace CsVerify.Verifier.Boogie
         private readonly StringBuilder _text = new StringBuilder();
         private int _line = 1;
 
+        /// <summary>The line the next one printed will be.</summary>
+        public int NextLine => _line;
+
         public readonly Dictionary<int, Check> Lines = new Dictionary<int, Check>();
 
         /// <summary>
@@ -59,7 +62,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     int end = l.IndexOf('\u0002');
                     var key = l.Substring(Tagged.Length, end - Tagged.Length);
-                    return used.Contains(key) ? l.Substring(end + 1) : "";
+                    return key.Split('|').Any(used.Contains) ? l.Substring(end + 1) : "";
                 })));
             }
         }
@@ -154,7 +157,7 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        /// <summary>A prelude line kept only where the program names this.</summary>
+        /// <summary>A prelude line kept only where the program names this (or one of the names a | separates).</summary>
         private void Optional(string key, string text) => Line(Tagged + key + "\u0002" + text);
 
         private void Line(string text, Check check = null)
@@ -252,10 +255,10 @@ namespace CsVerify.Verifier.Boogie
             Line("const null: Ref;");
             Line("var $Alloc: [Ref]bool;");
             Line("function len(a: Ref): int;");
-            Optional("$arr(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
-            Optional("$arr(", "function $arr(r: Ref): bool;");
-            Optional("$arr(", "function $coll(r: Ref): bool;");
-            Optional("$arr(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
+            Optional("$arr(|$coll(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
+            Optional("$arr(|$coll(", "function $arr(r: Ref): bool;");
+            Optional("$arr(|$coll(", "function $coll(r: Ref): bool;");
+            Optional("$arr(|$coll(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
             // (EF's entities: what type an object is, where the change tracker asks; Lowering.EfTracker)
             if (KernelTypes.Ef != null)
             {

@@ -831,6 +831,27 @@ public static class Pw
             Assert.Empty(b.Errors("Good"));
         }
 
+        // (#43: a HashSet exposed as an IReadOnlyCollection: what the collection is behind its interface is declared)
+        [Fact]
+        public void ASetBehindACollectionInterface_Verifies()
+        {
+            var b = Harness.Verify(@"using System.Collections.Generic;
+public enum Report { Late, Early }
+public sealed class Tracker
+{
+    private readonly HashSet<Report> reported = new();
+    public IReadOnlyCollection<Report> Reported => reported;
+    public void Add(Report r) => reported.Add(r);
+}
+public static class Other
+{
+    public static int Inc(int x) { Spec.Requires(x < 100); Spec.Ensures<int>(r => r == x + 1); return x + 1; }
+}");
+            Assert.True(b.Errors("get_Reported").Length == 0, b.Explain("get_Reported"));
+            Assert.Empty(b.Errors("Tracker.Add"));
+            Assert.Empty(b.Errors("Inc"));
+        }
+
         [Fact]
         public void Exceptions_AreBoogies()
         {

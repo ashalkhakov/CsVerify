@@ -51,6 +51,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>How many obligations each procedure has.</summary>
         public readonly Dictionary<MethodResult, int> Obligations = new Dictionary<MethodResult, int>();
 
+        /// <summary>The lines each method's declarations were printed on (its procedure, implementation, function; its twins).</summary>
+        public readonly List<(int from, int to, MethodResult result)> Spans = new List<(int, int, MethodResult)>();
+
         /// <summary>The warnings of a method's procedure (none if it isn't one).</summary>
         public IEnumerable<VerificationDiagnostic> Warnings(MethodResult r) => _warnings.TryGetValue(r, out var w) ? w : Enumerable.Empty<VerificationDiagnostic>();
 
@@ -771,7 +774,9 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending)
             {
                 // (the function's value is its body's: not where an override may answer the call)
+                var from = _printer.NextLine;
                 _printer.Procedure(p, writes[p.Source.Method], any[p.Source.Method], IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && !Engine.IsOverridable(p.Source.Method) ? FunctionFields(p.Source.Method) : null);
+                Spans.Add((from, _printer.NextLine - 1, p.Source.Result));
                 Obligations[p.Source.Result] = p.Obligations;
             }
             // the twins of what throws, for the ways calls of them throw
@@ -794,7 +799,9 @@ namespace CsVerify.Verifier.Boogie
                 twin.Source.Name = p.Source.Name + "$started";
                 twin.Source.Abstract = true;
                 twin.Source.FreeRequires = true;
+                var start = _printer.NextLine;
                 _printer.Procedure(twin, writes[p.Source.Method], any[p.Source.Method], null);
+                Spans.Add((start, _printer.NextLine - 1, p.Source.Result));
             }
             _printer.ClearStarted();
             _printer.Tuples();

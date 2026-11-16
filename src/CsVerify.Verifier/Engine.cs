@@ -1334,13 +1334,28 @@ namespace CsVerify.Verifier
                         Trace($"not translated to Boogie, nor its contract: {x.result.Name}: {nc.Message}");
                     }
                 }
-                if (refused.Count == 0)
+                if (refused.Count > 0)
+                {
+                    included = included.Except(refused).ToList();
+                    continue;
+                }
+                translator.Finish();
+                // (a method whose translation Boogie doesn't type check: left out, as one that doesn't translate is, and
+                // the rest translated again, its callers left out too. An error outside every method's: all fail, below)
+                var errors = Boogie.BoogieRunner.TypeErrors(translator.Text)
+                    .Select(e => (e.message, result: translator.Spans.FirstOrDefault(s => s.from <= e.line && e.line <= s.to).result)).ToList();
+                if (errors.Count == 0 || errors.Any(e => e.result == null))
                 {
                     break;
                 }
-                included = included.Except(refused).ToList();
+                foreach (var (message, result) in errors)
+                {
+                    why.TryAdd(result, "its translation doesn't type check: " + message);
+                    Trace($"not type checked by Boogie: {result.Name}: {message}");
+                }
+                var illTyped = errors.Select(e => e.result).ToHashSet();
+                included = included.Where(x => !illTyped.Contains(x.result)).ToList();
             }
-            translator.Finish();
             if (engine.Options.BoogieOut != null)
             {
                 System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
