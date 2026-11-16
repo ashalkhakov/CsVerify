@@ -813,6 +813,13 @@ namespace CsVerify.Verifier.Boogie
             _pending.Clear();
         }
 
+        /// <summary>
+        /// What a data field's value is, of its type: one of its cases, in its range; not null, a reference its type says
+        /// isn't (each construction checks its arguments, CSV1014).
+        /// </summary>
+        private static MExpr FieldOfType(MExpr v, ITypeSymbol t) =>
+            MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
+
         /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
         private void DataTypes()
         {
@@ -856,7 +863,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
                     dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
-                    if (MathTypes.OfType(new MVar(Local(p)), p.Type) is MExpr typed)
+                    if (FieldOfType(new MVar(Local(p)), p.Type) is MExpr typed)
                     {
                         dc.AddGuard(typed);
                     }
@@ -881,7 +888,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     else
                     {
-                        dc.AddField((fn, value, MathTypes.OfType(value, type)));
+                        dc.AddField((fn, value, FieldOfType(value, type)));
                     }
                     // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
                     // an integer one in its type's range)
@@ -890,7 +897,7 @@ namespace CsVerify.Verifier.Boogie
                         fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
                             ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
                               : OrElse(IsNull(new MOp(fn, new MVar("d"))), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
-                            : IsIntegral(prop.OriginalDefinition.Type) ? MathTypes.InRange(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type) : null);
+                            : FieldOfType(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type));
                     }
                 }
                 list.Add(dc);

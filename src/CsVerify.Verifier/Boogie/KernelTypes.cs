@@ -197,7 +197,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Collections, as their models: the BCL's, their interfaces, a dictionary's pairs, sequences, LINQ's groups and queries.</summary>
         private static bool IsCollectionType(ITypeSymbol t) =>
-            IsCollection(t) || IsCollectionInterface(t) || IsPair(t) || IsSequence(t) || IsLinqGroup(t) || IsQueryHandle(t);
+            IsCollection(t) || IsCollectionInterface(t) || IsPair(t) || IsSequence(t) || IsLinqGroup(t) || IsQueryHandle(t) || IsGenericCollection(t);
 
         /// <summary>CsVerify's own: views and shares, ghosts of the subset's, object sets, memory values, sequences of values.</summary>
         private static bool IsSpecType(ITypeSymbol t) =>
@@ -716,7 +716,17 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (LockGuards: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsSequence(t) || t?.SpecialType == SpecialType.System_Object;
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsSequence(t) || IsGenericCollection(t) || t?.SpecialType == SpecialType.System_Object;
+
+        /// <summary>
+        /// An array, a sequence or a collection interface of a type parameter (a params T[], an IReadOnlyList&lt;T&gt;
+        /// field of a generic record): a reference, which generic code hands on and stores but doesn't read (its
+        /// elements are Box values, which no element map holds); where T is known, the caller's type reads it.
+        /// </summary>
+        public static bool IsGenericCollection(ITypeSymbol t) =>
+            t is IArrayTypeSymbol { IsSZArray: true, ElementType: ITypeParameterSymbol } ||
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } n && n.TypeArguments[0] is ITypeParameterSymbol && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" &&
+            n.Name is "IList" or "IReadOnlyList" or "ICollection" or "IReadOnlyCollection" or "IEnumerable";
 
         /// <summary>
         /// An IEnumerable&lt;T&gt; of the subset's values: a reference, nothing known of what it gives where it isn't a LINQ

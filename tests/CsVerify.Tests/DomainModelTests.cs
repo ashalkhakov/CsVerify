@@ -99,7 +99,47 @@ public static class Ids
             Assert.Equal(new[] { "CSV1004" }, r.Errors("WrongEmpty"));
         }
 
-        private const string ValueObjects =@"public sealed record Ref
+        [Fact]
+        public void AGenericDecisionRecord_TakesParamsAndKeepsTheList()
+        {
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed record Moved(int Pence);
+public enum Reason { NotPositive }
+public abstract record Outcome<TEvent, TReason>
+{
+    private Outcome() { }
+    public static Outcome<TEvent, TReason> Accept(params TEvent[] events) { Spec.Ensures<Outcome<TEvent, TReason>>(r => r is Accepted a && (object)a.Events == events); return new Accepted(events); }
+    public static Outcome<TEvent, TReason> Reject(TReason reason) { Spec.Ensures<Outcome<TEvent, TReason>>(r => r is Rejected); return new Rejected(reason); }
+    public sealed record Accepted(IReadOnlyList<TEvent> Events) : Outcome<TEvent, TReason>;
+    public sealed record Rejected(TReason Reason) : Outcome<TEvent, TReason>;
+}
+public static class Decide
+{
+    public static Outcome<Moved, Reason> Move(int pence)
+    {
+        Spec.Ensures<Outcome<Moved, Reason>>(r => (r is Outcome<Moved, Reason>.Accepted) == (pence > 0));
+        return pence > 0 ? Outcome<Moved, Reason>.Accept(new Moved(pence)) : Outcome<Moved, Reason>.Reject(Reason.NotPositive);
+    }
+    public static int First(Outcome<Moved, Reason> o)
+    {
+        Spec.Requires(o is Outcome<Moved, Reason>.Accepted a0 && a0.Events.Count > 0);
+        var e = ((Outcome<Moved, Reason>.Accepted)o).Events[0];
+        return e == null ? 0 : e.Pence;
+    }
+    public static Outcome<Moved, Reason> Wrong(int pence)
+    {
+        Spec.Ensures<Outcome<Moved, Reason>>(r => r is Outcome<Moved, Reason>.Accepted);
+        return pence > 0 ? Outcome<Moved, Reason>.Accept(new Moved(pence)) : Outcome<Moved, Reason>.Reject(Reason.NotPositive);
+    }
+}");
+            foreach (var ok in new[] { "Accept", "Reject", "Move", "First" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        private const string ValueObjects = @"public sealed record Ref
 {
     private Ref(string value) { Spec.Requires(value.Length > 0); Spec.Ensures(Value == value); Value = value; }
     public string Value { get; }
