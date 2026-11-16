@@ -73,7 +73,33 @@ public sealed class Aggregate
             Assert.True(r.Errors("get_Unsaved").Length == 0, r.Explain("get_Unsaved"));
         }
 
-        private const string ValueObjects = @"public sealed record Ref
+        [Fact]
+        public void TypedIds_OfGuidsAndTimes_AreValues()
+        {
+            var r = Harness.Verify(@"public readonly record struct OrderId(Guid Value);
+public readonly record struct At(DateTime When);
+public sealed class Order { public OrderId Id { get; } public Order(OrderId id) { Spec.Ensures(Id == id); Id = id; } }
+public static class Ids
+{
+    public static OrderId Same(OrderId id) { Spec.Ensures<OrderId>(r => r == id); return id; }
+    public static Guid Raw(OrderId a) { Spec.Ensures<Guid>(g => g == a.Value); return a.Value; }
+    public static bool Later(At a, At b) => a.When > b.When;
+    public static OrderId New() => new OrderId(Guid.NewGuid());
+    public static bool IsEmpty(OrderId a) => a.Value == Guid.Empty;
+    public static void ById(Guid g) { var a = new OrderId(g); var b = new OrderId(g); Spec.Assert(a == b && a.Value == g); }
+    public static void Keeps(Guid g) { var o = new Order(new OrderId(g)); Spec.Assert(o.Id.Value == g); }
+    public static void Wrong(OrderId a, OrderId b) { Spec.Assert(a == b); }
+    public static void WrongEmpty() { var a = new OrderId(Guid.NewGuid()); Spec.Assert(a.Value != Guid.Empty); }
+}");
+            foreach (var ok in new[] { "Same", "Raw", "Later", "New", "IsEmpty", "ById", "Keeps", "Order..ctor" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("WrongEmpty"));
+        }
+
+        private const string ValueObjects =@"public sealed record Ref
 {
     private Ref(string value) { Spec.Requires(value.Length > 0); Spec.Ensures(Value == value); Value = value; }
     public string Value { get; }

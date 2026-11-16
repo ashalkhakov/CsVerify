@@ -663,11 +663,23 @@ namespace CsVerify.Verifier.Boogie
              n.Name is "IQueryable" or "IOrderedQueryable" && n.ContainingNamespace?.ToDisplayString() == "System.Linq");
 
         /// <summary>
-        /// A value of the library's the kernel keeps but doesn't compute with (DateTime): an int, its ticks' stand-in, which a
-        /// field holds, a parameter takes, a call gives, and an EF concurrency token is compared by; its operators and
-        /// members are the library's (not translated yet, but what calls give it).
+        /// A value of the library's the kernel keeps but doesn't compute with (DateTime, a Guid): an int, its ticks' or its
+        /// bits' stand-in, which a field holds, a parameter takes, a call gives, and an EF concurrency token is compared by;
+        /// its operators and members are the library's (not translated yet, but what calls give it, and a Guid's ==).
         /// </summary>
-        public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.Threading.Tasks.ValueTask";
+        public static bool IsOpaqueValue(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan" or "System.Threading.Tasks.ValueTask" or "System.Guid";
+
+        /// <summary>A Guid: an id, of which == is all there is (an int each, one per value).</summary>
+        public static bool IsOpaqueId(ITypeSymbol t) => t?.ToDisplayString() == "System.Guid";
+
+        /// <summary>
+        /// A record struct of the subset whose synthesized == is its representation's: each field compared as its value
+        /// (scalars, DateTime's ticks, Guids, data of value equality, such record structs), the struct one value of them.
+        /// </summary>
+        public static bool HasStructEquality(ITypeSymbol t) =>
+            t is INamedTypeSymbol { IsRecord: true, TypeKind: TypeKind.Struct } n && IsStruct(n) &&
+            !n.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => !m.IsImplicitlyDeclared && m.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type, n)) &&
+            StructFields(n).All(f => Scalar(f.Type) || IsOpaqueTicks(f.Type) || IsOpaqueId(f.Type) || IsData(f.Type) && Data.HasValueEquality((INamedTypeSymbol)f.Type));
 
         /// <summary>A DateTime or a TimeSpan: the int the kernel keeps is its Ticks, which its ==, &lt; and the rest compare.</summary>
         public static bool IsOpaqueTicks(ITypeSymbol t) => t?.ToDisplayString() is "System.DateTime" or "System.TimeSpan";
