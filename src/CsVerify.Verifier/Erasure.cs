@@ -54,8 +54,13 @@ namespace CsVerify.Verifier
         /// A checked build: the specifications that can run are kept as run-time checks (<see cref="CheckedSpecs"/>),
         /// calling the runtime's <c>CsVerify.Checked</c>.
         /// </param>
-        public static ErasureResult Erase(IEnumerable<(string path, string text)> sources, IReadOnlyList<string> references, IEnumerable<string> defines, bool checkedBuild = false)
+        /// <param name="analyzers">Analyzer assemblies whose source generators the program's code relies on (with their config): run on it, and on the erased program.</param>
+        public static ErasureResult Erase(IEnumerable<(string path, string text)> sources, IReadOnlyList<string> references, IEnumerable<string> defines, bool checkedBuild = false,
+            IReadOnlyList<string> analyzers = null, IReadOnlyList<string> analyzerConfigs = null)
         {
+            analyzers ??= new string[0];
+            analyzerConfigs ??= new string[0];
+            var warnings = new List<string>();
             // Bind with CSVERIFY_SPEC defined, like the verifier, so specification arguments have semantics too.
             var parse = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: new[] { SpecSymbols.SpecSymbol }.Concat(defines));
             var userTrees = sources.Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.path)).ToList();
@@ -63,6 +68,8 @@ namespace CsVerify.Verifier
             var refs = ReferencesFor(references);
             var compilation = CSharpCompilation.Create("CsVerifyErasure", userTrees.Concat(specTrees), refs,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable));
+            // (what generators add is bound with the program, and not written: the compiler generates it again)
+            compilation = Generators.Run(compilation, parse, analyzers, analyzerConfigs, warnings).compilation;
 
             var result = new ErasureResult();
             // Errors binding the sources are not final: a project referencing another erased project calls its
@@ -101,6 +108,11 @@ namespace CsVerify.Verifier
             var erased = CSharpCompilation.Create("CsVerifyErased",
                 result.Files.Select(f => CSharpSyntaxTree.ParseText(f.Text, erasedParse, f.OutputName)), refs,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable));
+            erased = Generators.Run(erased, erasedParse, analyzers, analyzerConfigs, warnings).compilation;
+            foreach (var w in warnings.Distinct())
+            {
+                Console.Error.WriteLine("csverify erase: warning: " + w);
+            }
             foreach (var d in erased.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
             {
                 result.AddError(new VerificationDiagnostic("CSV2001", true,
