@@ -37,7 +37,7 @@ public static class A
     public static void Assertion(int x) { Spec.Requires(x > 3); Spec.Assert(x > 4); }
     public static int BadInv(int n) { Spec.Requires(n >= 0 && n < 100); int i = 0; while (i < n) { Spec.Invariant(i < n); i++; } return i; }
     public static int BadPost(int x) { Spec.Ensures<int>(r => r > x); return x; }
-    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); decimal d = 0.5m; d = d + 1m; return x; }
+    public static int Elsewhere(int x) { Spec.Ensures<int>(r => r == x); decimal d = 0.5m; d = d * 2m; return x; }
     public static void Fill(int[] a, int v) { Spec.Ensures(Spec.Forall(0, a.Length, k => a[k] == v)); for (int i = 0; i < a.Length; i++) { Spec.Invariant(0 <= i && i <= a.Length && Spec.Forall(0, i, k => a[k] == v)); a[i] = v; } }
     public static int First(int[] a) { Spec.Requires(a.Length > 0); return a[0]; }
     public static int FirstBad(int[] a) => a[0];
@@ -829,6 +829,27 @@ public static class Pw
 }");
             Assert.Contains("CSV0014", b.Errors("Bad"));
             Assert.Empty(b.Errors("Good"));
+        }
+
+        // (#43: a HashSet exposed as an IReadOnlyCollection: what the collection is behind its interface is declared)
+        [Fact]
+        public void ASetBehindACollectionInterface_Verifies()
+        {
+            var b = Harness.Verify(@"using System.Collections.Generic;
+public enum Report { Late, Early }
+public sealed class Tracker
+{
+    private readonly HashSet<Report> reported = new();
+    public IReadOnlyCollection<Report> Reported => reported;
+    public void Add(Report r) => reported.Add(r);
+}
+public static class Other
+{
+    public static int Inc(int x) { Spec.Requires(x < 100); Spec.Ensures<int>(r => r == x + 1); return x + 1; }
+}");
+            Assert.True(b.Errors("get_Reported").Length == 0, b.Explain("get_Reported"));
+            Assert.Empty(b.Errors("Tracker.Add"));
+            Assert.Empty(b.Errors("Inc"));
         }
 
         [Fact]

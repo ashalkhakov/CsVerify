@@ -30,6 +30,9 @@ namespace CsVerify.Verifier.Boogie
         private readonly StringBuilder _text = new StringBuilder();
         private int _line = 1;
 
+        /// <summary>The line the next one printed will be.</summary>
+        public int NextLine => _line;
+
         public readonly Dictionary<int, Check> Lines = new Dictionary<int, Check>();
 
         /// <summary>
@@ -59,7 +62,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     int end = l.IndexOf('\u0002');
                     var key = l.Substring(Tagged.Length, end - Tagged.Length);
-                    return used.Contains(key) ? l.Substring(end + 1) : "";
+                    return key.Split('|').Any(used.Contains) ? l.Substring(end + 1) : "";
                 })));
             }
         }
@@ -154,7 +157,7 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
-        /// <summary>A prelude line kept only where the program names this.</summary>
+        /// <summary>A prelude line kept only where the program names this (or one of the names a | separates).</summary>
         private void Optional(string key, string text) => Line(Tagged + key + "\u0002" + text);
 
         private void Line(string text, Check check = null)
@@ -247,15 +250,20 @@ namespace CsVerify.Verifier.Boogie
             Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, n: int :: { $bag($LS(ly), r, n) } 0 < n ==> $bag($LS(ly), r, n) == $badd($bag(ly, r, n - 1), r[n - 1]));");
             Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, i: int, v: int, n: int :: { $bag(ly, r[i := v], n) } 0 <= i && i < n ==> $bag(ly, r[i := v], n) == $badd($bremove($bag(ly, r, n), r[i]), v));");
             Optional("$bag", "axiom (forall ly: LayerType, r: [int]int, i: int, v: int, n: int :: { $bag(ly, r[i := v], n) } (i < 0 || n <= i) ==> $bag(ly, r[i := v], n) == $bag(ly, r, n));");
+            Optional("$dround(", "// decimals: an int each, its value in units of 10^-28. $drep: representable, m / 10^e with |m| < 2^96, 0 <= e <= 28;");
+            Optional("$dround(", "// $dround: an exact result rounded as decimal arithmetic rounds it, itself where representable, of its sign");
+            Optional("$dround(", "function $drep(u: int): bool { (u mod 10000000000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000000000) || (u mod 1000000000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000000000) || (u mod 100000000000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000000000) || (u mod 10000000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000000) || (u mod 1000000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000000) || (u mod 100000000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000000) || (u mod 10000000000000000000000 == 0 && -792281625142643375935439503360000000000000000000000 < u && u < 792281625142643375935439503360000000000000000000000) || (u mod 1000000000000000000000 == 0 && -79228162514264337593543950336000000000000000000000 < u && u < 79228162514264337593543950336000000000000000000000) || (u mod 100000000000000000000 == 0 && -7922816251426433759354395033600000000000000000000 < u && u < 7922816251426433759354395033600000000000000000000) || (u mod 10000000000000000000 == 0 && -792281625142643375935439503360000000000000000000 < u && u < 792281625142643375935439503360000000000000000000) || (u mod 1000000000000000000 == 0 && -79228162514264337593543950336000000000000000000 < u && u < 79228162514264337593543950336000000000000000000) || (u mod 100000000000000000 == 0 && -7922816251426433759354395033600000000000000000 < u && u < 7922816251426433759354395033600000000000000000) || (u mod 10000000000000000 == 0 && -792281625142643375935439503360000000000000000 < u && u < 792281625142643375935439503360000000000000000) || (u mod 1000000000000000 == 0 && -79228162514264337593543950336000000000000000 < u && u < 79228162514264337593543950336000000000000000) || (u mod 100000000000000 == 0 && -7922816251426433759354395033600000000000000 < u && u < 7922816251426433759354395033600000000000000) || (u mod 10000000000000 == 0 && -792281625142643375935439503360000000000000 < u && u < 792281625142643375935439503360000000000000) || (u mod 1000000000000 == 0 && -79228162514264337593543950336000000000000 < u && u < 79228162514264337593543950336000000000000) || (u mod 100000000000 == 0 && -7922816251426433759354395033600000000000 < u && u < 7922816251426433759354395033600000000000) || (u mod 10000000000 == 0 && -792281625142643375935439503360000000000 < u && u < 792281625142643375935439503360000000000) || (u mod 1000000000 == 0 && -79228162514264337593543950336000000000 < u && u < 79228162514264337593543950336000000000) || (u mod 100000000 == 0 && -7922816251426433759354395033600000000 < u && u < 7922816251426433759354395033600000000) || (u mod 10000000 == 0 && -792281625142643375935439503360000000 < u && u < 792281625142643375935439503360000000) || (u mod 1000000 == 0 && -79228162514264337593543950336000000 < u && u < 79228162514264337593543950336000000) || (u mod 100000 == 0 && -7922816251426433759354395033600000 < u && u < 7922816251426433759354395033600000) || (u mod 10000 == 0 && -792281625142643375935439503360000 < u && u < 792281625142643375935439503360000) || (u mod 1000 == 0 && -79228162514264337593543950336000 < u && u < 79228162514264337593543950336000) || (u mod 100 == 0 && -7922816251426433759354395033600 < u && u < 7922816251426433759354395033600) || (u mod 10 == 0 && -792281625142643375935439503360 < u && u < 792281625142643375935439503360) || (-79228162514264337593543950336 < u && u < 79228162514264337593543950336) }");
+            Optional("$dround(", "function $dround(u: int): int;");
+            Optional("$dround(", "axiom (forall u: int :: { $dround(u) } ($drep(u) ==> $dround(u) == u) && (u >= 0 ==> $dround(u) >= 0) && (u <= 0 ==> $dround(u) <= 0));");
             Line("// arrays: references, the allocated ones, each one's length, and a map of elements per element type");
             Line("type Ref;");
             Line("const null: Ref;");
             Line("var $Alloc: [Ref]bool;");
             Line("function len(a: Ref): int;");
-            Optional("$arr(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
-            Optional("$arr(", "function $arr(r: Ref): bool;");
-            Optional("$arr(", "function $coll(r: Ref): bool;");
-            Optional("$arr(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
+            Optional("$arr(|$coll(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
+            Optional("$arr(|$coll(", "function $arr(r: Ref): bool;");
+            Optional("$arr(|$coll(", "function $coll(r: Ref): bool;");
+            Optional("$arr(|$coll(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
             // (EF's entities: what type an object is, where the change tracker asks; Lowering.EfTracker)
             if (KernelTypes.Ef != null)
             {

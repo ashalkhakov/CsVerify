@@ -114,8 +114,13 @@ namespace CsVerify.Verifier
                           t.TypeKind == TypeKind.Interface && (_tags.Keys.Any(r => r.AllInterfaces.Contains(t, SymbolEqualityComparer.Default)) ||
                                                                _stringInterfaces.Contains(t.OriginalDefinition)));
 
-        /// <summary>The primary constructor of the definition (its parameters are what the record header's base arguments refer to).</summary>
-        public static IMethodSymbol PrimaryConstructor(INamedTypeSymbol t) => Def(t).InstanceConstructors.FirstOrDefault(IsPrimary);
+        /// <summary>
+        /// The primary constructor of the definition (its parameters are what the record header's base arguments refer to); for a
+        /// record without a parameter list (<c>sealed record Started : Event;</c>), its implicit parameterless one.
+        /// </summary>
+        public static IMethodSymbol PrimaryConstructor(INamedTypeSymbol t) =>
+            Def(t).InstanceConstructors.FirstOrDefault(IsPrimary) ??
+            Def(t).InstanceConstructors.FirstOrDefault(c => c.IsImplicitlyDeclared && c.Parameters.Length == 0);
 
         /// <summary>The positional properties (of the definition), its bases' first: the arguments of its value constructor.</summary>
         public IReadOnlyList<IPropertySymbol> Fields(INamedTypeSymbol t)

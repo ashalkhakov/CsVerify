@@ -51,6 +51,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>How many obligations each procedure has.</summary>
         public readonly Dictionary<MethodResult, int> Obligations = new Dictionary<MethodResult, int>();
 
+        /// <summary>The lines each method's declarations were printed on (its procedure, implementation, function; its twins).</summary>
+        public readonly List<(int from, int to, MethodResult result)> Spans = new List<(int, int, MethodResult)>();
+
         /// <summary>The warnings of a method's procedure (none if it isn't one).</summary>
         public IEnumerable<VerificationDiagnostic> Warnings(MethodResult r) => _warnings.TryGetValue(r, out var w) ? w : Enumerable.Empty<VerificationDiagnostic>();
 
@@ -771,7 +774,9 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in _pending)
             {
                 // (the function's value is its body's: not where an override may answer the call)
+                var from = _printer.NextLine;
                 _printer.Procedure(p, writes[p.Source.Method], any[p.Source.Method], IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && !Engine.IsOverridable(p.Source.Method) ? FunctionFields(p.Source.Method) : null);
+                Spans.Add((from, _printer.NextLine - 1, p.Source.Result));
                 Obligations[p.Source.Result] = p.Obligations;
             }
             // the twins of what throws, for the ways calls of them throw
@@ -794,7 +799,9 @@ namespace CsVerify.Verifier.Boogie
                 twin.Source.Name = p.Source.Name + "$started";
                 twin.Source.Abstract = true;
                 twin.Source.FreeRequires = true;
+                var start = _printer.NextLine;
                 _printer.Procedure(twin, writes[p.Source.Method], any[p.Source.Method], null);
+                Spans.Add((start, _printer.NextLine - 1, p.Source.Result));
             }
             _printer.ClearStarted();
             _printer.Tuples();
@@ -805,6 +812,13 @@ namespace CsVerify.Verifier.Boogie
             }
             _pending.Clear();
         }
+
+        /// <summary>
+        /// What a data field's value is, of its type: one of its cases, in its range; not null, a reference its type says
+        /// isn't (each construction checks its arguments, CSV1014).
+        /// </summary>
+        private static MExpr FieldOfType(MExpr v, ITypeSymbol t) =>
+            MathTypes.OfType(v, t) ?? (!IsData(t) && TypeOf(t) == "Ref" && IsNullable(t) && NotNullable(t) ? NotNull(v) : null);
 
         /// <summary>The data types named, their cases and the data types of their fields: Dafny's datatypes.</summary>
         private void DataTypes()
@@ -849,7 +863,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var prop = Verifier.DataTypes.PositionalProperty(c, p.Ordinal);
                     dc.AddParam((Local(p), TypeOf(p.Type), IsData(p.Type), FieldFunction(prop)));
-                    if (MathTypes.OfType(new MVar(Local(p)), p.Type) is MExpr typed)
+                    if (FieldOfType(new MVar(Local(p)), p.Type) is MExpr typed)
                     {
                         dc.AddGuard(typed);
                     }
@@ -874,7 +888,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     else
                     {
-                        dc.AddField((fn, value, MathTypes.OfType(value, type)));
+                        dc.AddField((fn, value, FieldOfType(value, type)));
                     }
                     // (a field of data type: one of its cases, and not null where its type says so, as each construction is checked;
                     // an integer one in its type's range)
@@ -883,7 +897,7 @@ namespace CsVerify.Verifier.Boogie
                         fields[fn] = (TypeOf(prop.OriginalDefinition.Type), IsData(prop.Type)
                             ? NotNullable(prop.OriginalDefinition.Type) ? MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type)
                               : OrElse(IsNull(new MOp(fn, new MVar("d"))), MathTypes.IsCase(new MOp(fn, new MVar("d")), prop.Type))
-                            : IsIntegral(prop.OriginalDefinition.Type) ? MathTypes.InRange(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type) : null);
+                            : FieldOfType(new MOp(fn, new MVar("d")), prop.OriginalDefinition.Type));
                     }
                 }
                 list.Add(dc);

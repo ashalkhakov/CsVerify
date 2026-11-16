@@ -24,6 +24,9 @@ options:
   --boogie-out <file> write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
+  -a <analyzer.dll>   run the source generators of this analyzer assembly on the program (generated
+                      code is compiled, not verified)
+  --analyzer-config <file>  an .editorconfig or .globalconfig the generators read
   --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
@@ -85,6 +88,12 @@ options:
                             break;
                         case "-r":
                             options.AddReference(args[++i]);
+                            break;
+                        case "-a":
+                            options.Analyzers.Add(args[++i]);
+                            break;
+                        case "--analyzer-config":
+                            options.AnalyzerConfigs.Add(args[++i]);
                             break;
                         case "--only":
                             options.AddOnly(args[++i]);
@@ -193,12 +202,13 @@ options:
             }
         }
 
-        private const string EraseUsage = @"usage: csverify erase --out <dir> [--checked] [-r <reference.dll>]... [-d <symbol>]... <file.cs | directory | @paths.rsp>...
+        private const string EraseUsage = @"usage: csverify erase --out <dir> [--checked] [-r <reference.dll>]... [-a <analyzer.dll>]... [--analyzer-config <file>]... [-d <symbol>]... <file.cs | directory | @paths.rsp>...
 
 Writes the program with all proofs erased (specifications, lemmas, ghost parameters, views) to <dir>, plus the
 erased CsVerify runtime under <dir>/CsVerify.Runtime, and checks that it compiles without CsVerify: if it does
 not, run-time code depends on ghost code (CSV2001). With -r, those references (minus the CsVerify assembly) are
-used for the check; without, the shared framework.
+used for the check; without, the shared framework. With -a, the source generators of those analyzer assemblies
+run on the program and on the erased one (what they generate is not written: the compiler generates it again).
 
 --checked   a checked build: the specifications that can run are kept as run-time checks (preconditions,
             postconditions, assertions, loop invariants, lock invariants, [Atomic] steps, lock levels), which
@@ -209,6 +219,8 @@ used for the check; without, the shared framework.
             string outDir = null;
             var references = new List<string>();
             var defines = new List<string>();
+            var analyzers = new List<string>();
+            var analyzerConfigs = new List<string>();
             var inputs = new List<string>();
             bool checkedBuild = false;
             try
@@ -225,6 +237,12 @@ used for the check; without, the shared framework.
                             break;
                         case "-r":
                             references.Add(args[++i]);
+                            break;
+                        case "-a":
+                            analyzers.Add(args[++i]);
+                            break;
+                        case "--analyzer-config":
+                            analyzerConfigs.Add(args[++i]);
                             break;
                         case "-d":
                             defines.Add(args[++i]);
@@ -247,7 +265,7 @@ used for the check; without, the shared framework.
                     return 2;
                 }
                 var files = inputs.SelectMany(Expand).Distinct().ToList();
-                var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines, checkedBuild);
+                var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines, checkedBuild, analyzers, analyzerConfigs);
                 if (Directory.Exists(outDir))
                 {
                     Directory.Delete(outDir, recursive: true);

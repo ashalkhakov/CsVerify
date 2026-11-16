@@ -157,6 +157,37 @@ namespace CsVerify.Verifier.Boogie
             return failures.Where(f => !redone.Contains(f.method)).Concat(decidedSplit).Concat(undecidedAgain).ToList();
         }
 
+        /// <summary>
+        /// Where the program doesn't parse or type check: each error's line and Boogie's message (an error without a
+        /// line, line 0). Empty where it does.
+        /// </summary>
+        public static List<(int line, string message)> TypeErrors(string text)
+        {
+            var options = new CommandLineOptions(new StringWriter(), new ConsolePrinter());
+            options.Parse(new string[0]);
+            if (Parser.Parse(text, "csverify.bpl", out Microsoft.Boogie.Program parsed, false) != 0 || parsed == null)
+            {
+                return new List<(int, string)> { (0, "the translated program doesn't parse") };
+            }
+            var sink = new Errors();
+            var resolution = new ResolutionContext(sink, options);
+            parsed.Resolve(resolution);
+            if (resolution.ErrorCount == 0)
+            {
+                var typing = new TypecheckingContext(sink, options);
+                parsed.Typecheck(typing);
+            }
+            return sink.All;
+        }
+
+        /// <summary>Boogie's resolution and type errors, each at its line.</summary>
+        private sealed class Errors : IErrorSink
+        {
+            public readonly List<(int line, string message)> All = new List<(int, string)>();
+
+            public void Error(IToken tok, string msg) => All.Add((tok?.line ?? 0, msg));
+        }
+
         private static object DiagnosticKey((MethodResult method, VerificationDiagnostic diagnostic) f) => (f.diagnostic.Id, f.diagnostic.Span.StartLinePosition, f.diagnostic.Span.EndLinePosition);
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(

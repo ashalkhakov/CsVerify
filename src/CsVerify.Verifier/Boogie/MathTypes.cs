@@ -69,7 +69,8 @@ namespace CsVerify.Verifier.Boogie
         public static MExpr OfType(MExpr v, ITypeSymbol t) =>
             IsGhost(t) ? OfType(v, GhostOf(t))
             : IsData(t) ? (NotNullable(t) ? IsCase(v, t) : OrElse(IsNull(v), IsCase(v, t)))
-            : IsIntegral(t) ? InRange(v, t) : null;
+            : IsIntegral(t) ? InRange(v, t)
+            : IsDecimal(t) ? AndAlso(Le(Number(-Lowering.DecimalMax), v), Le(v, Number(Lowering.DecimalMax))) : null;
 
         /// <summary>A value as a box (where generic code takes it).</summary>
         public static MExpr Box(MExpr v, ITypeSymbol def, ITypeSymbol actual) =>

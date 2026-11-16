@@ -59,6 +59,14 @@ fi
 grep -E "Planted\.cs\(4,[0-9]+\): error CSV1003: index in 'a\[0\]' might be out of range" bug.txt
 rm Shop.Core/Planted.cs
 
+# generated code: the SDK's global usings and a source generator's output reach the verifier and erasure, compiled
+# with the program, not verified
+printf 'using System.Text.RegularExpressions;\nnamespace Shop.Core;\npublic static partial class Codes\n{\n    [GeneratedRegex("^[A-Z]{3}$")]\n    public static partial Regex ThreeLetters();\n    public static int Count(List<int> xs) => xs.Count;\n}\n' > Shop.Core/Codes.cs
+dotnet build -p:CsVerifyEnabled=true -p:ImplicitUsings=enable | tee generated.txt
+grep -F "csverify: 6 of 6 methods verified" generated.txt
+dotnet build -p:CsVerifyErase=true -p:ImplicitUsings=enable
+rm Shop.Core/Codes.cs
+
 # erasure: the program without its proofs, compiled without the CsVerify assembly
 dotnet build -p:CsVerifyErase=true
 erased=Shop.Core/obj/csverify-erased/Debug/net10.0

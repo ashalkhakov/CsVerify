@@ -197,7 +197,7 @@ the hand-written tests and samples. By area:
 
 | Area | Generated | Not yet generated |
 |---|---|---|
-| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, shifts and bitwise operators, `Math`, `decimal` (unknown values) | |
+| Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, shifts and bitwise operators, `Math`, `decimal` `+`, `-` (rounded where not representable, `OverflowException`) and comparisons | `decimal` `*`, `/`, `%` |
 | Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
 | Strings | literals, concatenation, interpolation, `Length`, characters (`s[i]`, `foreach`), `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
 | Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |

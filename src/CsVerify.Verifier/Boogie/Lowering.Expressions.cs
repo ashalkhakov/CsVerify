@@ -356,6 +356,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return new KOp((op switch { "+" => "$fp.add", "-" => "$fp.sub", "*" => "$fp.mul", _ => "$fp.div" }) + FloatSize(type), AsFloat(l, type), AsFloat(r, type));
             }
+            if (IsDecimal(type))
+            {
+                return DecimalArith(op, l, r, at, inSpec: false);
+            }
             if (!IsIntegral(type))
             {
                 throw new NotTranslated("arithmetic on " + type);
@@ -648,6 +652,12 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                // (a throw expression's value, as the control flow graph has it after the branch that throws: never reached)
+                case IConversionOperation { Operand.Kind: OperationKind.None, Syntax: Microsoft.CodeAnalysis.CSharp.Syntax.ThrowExpressionSyntax } th:
+                {
+                    Emit(KAssume.Of(KLit.False));
+                    return Unknown(null, th.Type, false);
+                }
                 // (a transaction as an object, compared with null: itself)
                 case IConversionOperation { IsImplicit: true, Conversion.IsReference: true } txc when IsEfTransaction(txc.Operand.Type):
                     return Expr(txc.Operand);

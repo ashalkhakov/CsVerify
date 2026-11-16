@@ -565,7 +565,23 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
 **Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
 parameter takes it, a call gives it, and an EF concurrency token is compared by it. That int is its `Ticks`, so
 `==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do, and `.Ticks` is it;
-their other operators and members are not translated (CSV1902).
+their other operators and members are not translated (CSV1902). A `Guid` is an `int` too, of which `==` and `!=` are
+all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe).
+
+**Decimals.** A `decimal` is an `int`, its value in units of 10^-28 (every decimal is *m* / 10^*e*, |*m*| < 2^96,
+0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result: the result itself where
+it is representable (`$drep`, *m* / 10^*e* for some *e*), else a rounded value of its sign, as .NET's, whose rounding
+depends on the exact result alone. Past `MaxValue` they throw an `OverflowException`. An integer converts exactly;
+`*`, `/` and `%` are not translated (CSV1902).
+
+**Record structs.** A positional `record struct` of the subset (`readonly record struct OrderId(Guid Value)`) is a
+struct: its primary constructor gives the struct of its arguments, and its `==` compares its fields, where each
+compares as a value (integers, `DateTime`s, `Guid`s, data of value equality).
+
+**Value objects.** A sealed record class that isn't data (its state not positional: a private constructor that
+validates, get-only properties) is a class of the program's. Its `==` is C#'s: the same reference, or neither null
+and each field equal (integers and enums, strings by content, data, other value objects), unless the record
+declares its own `Equals`.
 
 **Library nullness.** A library member's non-nullable result is not null, an out
 parameter `[MaybeNullWhen(b)]` is not null where the member returns `!b` (in a collection stub's procedure too), a
@@ -957,8 +973,11 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
 - A field of a data type is one of its cases (said by its tag, `$tag(f) == 3`: a test `$is.`*C*`(f)` would trigger
   the case's constructor of `f`'s fields, whose fields' cases would trigger more without end, a matching loop that a
   failing proof never saturates), and not null where its type says so (each construction checks its arguments,
-  CSV1014); an integer one is in its type's range. A parameter, `this` and a result are of their type's
-  cases.
+  CSV1014); an integer one is in its type's range, and one of a non-nullable reference type is not null. A
+  parameter, `this` and a result are of their type's cases.
+- An array or collection interface of a type parameter (a `params TEvent[]`, an `IReadOnlyList<TEvent>` field) is a
+  reference that generic code passes on and stores, but doesn't read; where the type argument is known, it is read as
+  that type's collection.
 - Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,
   `var`, discard, `not`, `and`, `or`, positional and property patterns) test tags and fields and bind their variables;
   a specification's `switch` is an `if`-chain. A cast to a case: in code, where it fails it throws; in a proof, CSV1011.
@@ -1137,7 +1156,12 @@ Also strings and the string members with stub contracts, and quantifiers in code
 Also inheritance: base classes, virtual, abstract and override methods, interfaces, properties with code, and
 `Spec.Reads`.
 
-Also exceptions: `throw`, `try`/`catch` by type, rethrow, `finally`, `using`, caught checked overflow, `Spec.EnsuresOnThrow`.
+Also exceptions: `throw`, `try`/`catch` by type, rethrow, `finally`, `using`, caught checked overflow, `Spec.EnsuresOnThrow`,
+and a `throw` expression (a `switch` arm's `_ => throw ...`).
+
+**Generated code and ill-typed translations.** Generated files are compiled with the program but not verified. A
+method whose translation Boogie doesn't type check is left out (CSV1902), with its callers, and the rest of the
+program translated again.
 
 **Lambdas and local functions** are units of their own: a procedure each
 (`C.nested$<position>$<parameter types>`), which nothing calls; a call of the delegate is of its contract. What one

@@ -21,14 +21,19 @@
           Condition="'$(CsVerifyEnabled)' == 'true' and '$(IsTestProject)' != 'true' and '$(CsVerifyExclude)' != 'true'"
           Inputs="@(Compile)" Outputs="$(IntermediateOutputPath)csverify.stamp">
     <ItemGroup>
-      <_CsVerifySource Include="@(Compile)" Exclude="$(IntermediateOutputPath)**" />
+      <!-- the project's sources, the SDK's under obj/ too (global usings, assembly attributes); its source generators
+           run in the verifier, whose generated code is compiled with the program, not verified -->
+      <_CsVerifySource Include="@(Compile)" />
     </ItemGroup>
     <ItemGroup>
+      <_CsVerifyGenerator Include="@(Analyzer)" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />
       <!-- the project's references, but the shared framework's (the verifier has its own) and CsVerify's (its sources
            come with the verifier) -->
       <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(ReferencePathWithRefAssemblies.FrameworkReferenceName)' == '' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
       <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
+      <_CsVerifyArgs Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
+      <_CsVerifyArgs Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
     </ItemGroup>
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifyArgs)" Overwrite="true" />
     <PropertyGroup>
@@ -79,6 +84,8 @@
     <ItemGroup>
       <_CsVerifyEraseArgs Include="@(Compile->'%(FullPath)')" />
       <_CsVerifyEraseArgs Include="@(ReferencePathWithRefAssemblies->'-r %(FullPath)')" />
+      <_CsVerifyEraseArgs Include="@(Analyzer->'-a %(FullPath)')" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />
+      <_CsVerifyEraseArgs Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
     </ItemGroup>
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify-erase.rsp" Lines="@(_CsVerifyEraseArgs)" Overwrite="true" />
     <PropertyGroup>
