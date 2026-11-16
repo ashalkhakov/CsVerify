@@ -13,7 +13,7 @@ namespace Samples
         /// <summary>id: each index itself.</summary>
         public sealed record Id() : Sub;
         /// <summary>↑ⁿ: index i to i + n.</summary>
-        public sealed record Up(int N) : Sub;
+        public sealed record Up(Nat N) : Sub;
         /// <summary>t · σ: index 0 to t, i + 1 to what σ gives i.</summary>
         public sealed record Cons(Db Head, Sub Tail) : Sub;
         /// <summary>⇑σ, σ under a binder: index 0 to itself, i + 1 to what σ gives i, shifted past the binder.</summary>
@@ -27,15 +27,15 @@ namespace Samples
 
         /// <summary>What σ gives index i.</summary>
         [GhostFunction]
-        public static Db Lookup(Sub s, int i)
+        public static Db Lookup(Sub s, Nat i)
         {
             Spec.Decreases(s);
             return s switch
             {
                 Sub.Id => new Db.Var(i),
-                Sub.Up u => new Db.Var(i + u.N),
-                Sub.Cons c => i == 0 ? c.Head : Lookup(c.Tail, i - 1),
-                Sub.Lift l => i <= 0 ? new Db.Var(i) : DeBruijn.Shift(Lookup(l.Under, i - 1), 1, 0),
+                Sub.Up u => new Db.Var(Naturals.Add(i, u.N)),
+                Sub.Cons c => i is Nat.S p ? Lookup(c.Tail, p.Pred) : c.Head,
+                Sub.Lift l => i is Nat.S p ? DeBruijn.Shift(Lookup(l.Under, p.Pred), Naturals.One(), new Nat.Z()) : new Db.Var(i),
             };
         }
 
@@ -54,49 +54,46 @@ namespace Samples
 
         /// <summary>σ under k binders: ⇑ᵏσ.</summary>
         [GhostFunction]
-        public static Sub Lifts(int k, Sub s)
+        public static Sub Lifts(Nat k, Sub s)
         {
-            Spec.Requires(k >= 0);
             Spec.Decreases(k);
-            return k == 0 ? s : new Sub.Lift(Lifts(k - 1, s));
+            return k is Nat.S p ? new Sub.Lift(Lifts(p.Pred, s)) : s;
         }
 
         /// <summary>s shifted past k binders: ↑ᵏ s, one place at a time.</summary>
         [GhostFunction]
-        public static Db ShiftN(Db s, int k)
+        public static Db ShiftN(Db s, Nat k)
         {
-            Spec.Requires(k >= 0);
             Spec.Decreases(k);
-            return k == 0 ? s : DeBruijn.Shift(ShiftN(s, k - 1), 1, 0);
+            return k is Nat.S p ? DeBruijn.Shift(ShiftN(s, p.Pred), Naturals.One(), new Nat.Z()) : s;
         }
 
         // ---------------------------------------------------------------- the identity
 
         /// <summary>id under binders gives each index itself.</summary>
         [Lemma, Conditional(Spec.Symbol)]
-        public static void LookupId(int k, int i)
+        public static void LookupId(Nat k, Nat i)
         {
-            Spec.Requires(k >= 0);
             Spec.Ensures(Lookup(Lifts(k, new Sub.Id()), i) == new Db.Var(i));
             Spec.Decreases(k);
-            if (k > 0 && i > 0)
+            if (k is Nat.S p && i is Nat.S q)
             {
-                LookupId(k - 1, i - 1);
+                LookupId(p.Pred, q.Pred);
+                Naturals.AddOne(q.Pred);
             }
         }
 
         /// <summary>t[⇑ᵏ id] = t.</summary>
         [Lemma, Conditional(Spec.Symbol)]
-        public static void ApplyId(Db t, int k)
+        public static void ApplyId(Db t, Nat k)
         {
-            Spec.Requires(k >= 0);
             Spec.Ensures(Apply(t, Lifts(k, new Sub.Id())) == t);
             Spec.Decreases(t);
             switch (t)
             {
                 case Db.Var v: LookupId(k, v.Index); break;
                 case Db.App a: ApplyId(a.Fun, k); ApplyId(a.Arg, k); break;
-                case Db.Lam l: ApplyId(l.Body, k + 1); break;
+                case Db.Lam l: ApplyId(l.Body, new Nat.S(k)); break;
             }
         }
 
@@ -104,44 +101,42 @@ namespace Samples
 
         /// <summary>(s · ↑) under j binders gives index j the term s shifted past them, and every other index itself.</summary>
         [Lemma, Conditional(Spec.Symbol)]
-        public static void LookupSubst(int j, Db s, int i)
+        public static void LookupSubst(Nat j, Db s, Nat i)
         {
-            Spec.Requires(j >= 0);
-            Spec.Ensures(Lookup(Lifts(j, new Sub.Cons(s, new Sub.Up(1))), i) == (i == j ? ShiftN(s, j) : new Db.Var(i)));
+            Spec.Ensures(Lookup(Lifts(j, new Sub.Cons(s, new Sub.Up(Naturals.One()))), i) == (i == j ? ShiftN(s, j) : new Db.Var(i)));
             Spec.Decreases(j);
-            var top = new Sub.Cons(s, new Sub.Up(1));
-            if (j == 0)
+            var top = new Sub.Cons(s, new Sub.Up(Naturals.One()));
+            if (i is Nat.S q)
             {
-                Spec.Assert(i == 0 || Lookup(top, i) == Lookup(new Sub.Up(1), i - 1));
-            }
-            else if (i > 0)
-            {
-                // (one level of each definition at a time: ⇑ᵏ, ⇑'s lookup, the shift of what's under it)
-                var under = Lifts(j - 1, top);
-                Spec.Assert(Lifts(j, top) == new Sub.Lift(under));
-                LookupSubst(j - 1, s, i - 1);
-                Spec.Assert(Lookup(new Sub.Lift(under), i) == DeBruijn.Shift(Lookup(under, i - 1), 1, 0));
-                Spec.Assert(i == j || DeBruijn.Shift(new Db.Var(i - 1), 1, 0) == new Db.Var(i));
-                Spec.Assert(i != j || ShiftN(s, j) == DeBruijn.Shift(ShiftN(s, j - 1), 1, 0));
-            }
-            else
-            {
-                Spec.Assert(Lifts(j, top) == new Sub.Lift(Lifts(j - 1, top)));
+                Naturals.AddOne(q.Pred);
+                if (j is Nat.S p)
+                {
+                    // (one level of each definition at a time: ⇑ʲ, ⇑'s lookup, the shift of what's under it)
+                    var under = Lifts(p.Pred, top);
+                    Spec.Assert(Lifts(j, top) == new Sub.Lift(under));
+                    LookupSubst(p.Pred, s, q.Pred);
+                    Spec.Assert(Lookup(new Sub.Lift(under), i) == DeBruijn.Shift(Lookup(under, q.Pred), Naturals.One(), new Nat.Z()));
+                    Spec.Assert(i == j || DeBruijn.Shift(new Db.Var(q.Pred), Naturals.One(), new Nat.Z()) == new Db.Var(i));
+                    Spec.Assert(i != j || ShiftN(s, j) == DeBruijn.Shift(ShiftN(s, p.Pred), Naturals.One(), new Nat.Z()));
+                }
+                else
+                {
+                    Spec.Assert(Lookup(top, i) == Lookup(new Sub.Up(Naturals.One()), q.Pred));
+                }
             }
         }
 
         /// <summary>The explicit substitution (s · ↑), under j binders, is DeBruijn.Subst at j.</summary>
         [Lemma, Conditional(Spec.Symbol)]
-        public static void ApplyIsSubst(Db t, int j, Db s)
+        public static void ApplyIsSubst(Db t, Nat j, Db s)
         {
-            Spec.Requires(j >= 0);
-            Spec.Ensures(Apply(t, Lifts(j, new Sub.Cons(s, new Sub.Up(1)))) == DeBruijn.Subst(t, j, ShiftN(s, j)));
+            Spec.Ensures(Apply(t, Lifts(j, new Sub.Cons(s, new Sub.Up(Naturals.One())))) == DeBruijn.Subst(t, j, ShiftN(s, j)));
             Spec.Decreases(t);
             switch (t)
             {
                 case Db.Var v: LookupSubst(j, s, v.Index); break;
                 case Db.App a: ApplyIsSubst(a.Fun, j, s); ApplyIsSubst(a.Arg, j, s); break;
-                case Db.Lam l: ApplyIsSubst(l.Body, j + 1, s); break;
+                case Db.Lam l: ApplyIsSubst(l.Body, new Nat.S(j), s); break;
             }
         }
 
@@ -149,8 +144,29 @@ namespace Samples
         [Lemma, Conditional(Spec.Symbol)]
         public static void ConsIsSubst(Db t, Db s)
         {
-            Spec.Ensures(Apply(t, new Sub.Cons(s, new Sub.Up(1))) == DeBruijn.Subst(t, 0, s));
-            ApplyIsSubst(t, 0, s);
+            Spec.Ensures(Apply(t, new Sub.Cons(s, new Sub.Up(Naturals.One()))) == DeBruijn.Subst(t, new Nat.Z(), s));
+            ApplyIsSubst(t, new Nat.Z(), s);
+        }
+
+        // ---------------------------------------------------------------- examples
+
+        /// <summary>(0 1)[s · ↑] is (s 1): index 0 is s, index 1 is shifted to itself; and so is [0 -> s] (0 1).</summary>
+        [Lemma, Conditional(Spec.Symbol)]
+        public static void Examples()
+        {
+            var zero = new Nat.Z();
+            var one = Naturals.One();
+            var s = new Db.Lam(new Db.Var(zero));
+            var sigma = new Sub.Cons(s, new Sub.Up(one));
+            var t = new Db.App(new Db.Var(zero), new Db.Var(one));
+            Spec.Assert(Lookup(sigma, zero) == s);
+            Spec.Assert(Naturals.Add(zero, one) == one);
+            Spec.Assert(Lookup(new Sub.Up(one), zero) == new Db.Var(one));
+            Spec.Assert(Lookup(sigma, one) == new Db.Var(one));
+            Spec.Assert(Apply(new Db.Var(zero), sigma) == s && Apply(new Db.Var(one), sigma) == new Db.Var(one));
+            Spec.Assert(Apply(t, sigma) == new Db.App(s, new Db.Var(one)));
+            ConsIsSubst(t, s);
+            Spec.Assert(DeBruijn.Subst(t, zero, s) == new Db.App(s, new Db.Var(one)));
         }
     }
 }
