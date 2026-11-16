@@ -356,6 +356,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return new KOp((op switch { "+" => "$fp.add", "-" => "$fp.sub", "*" => "$fp.mul", _ => "$fp.div" }) + FloatSize(type), AsFloat(l, type), AsFloat(r, type));
             }
+            if (IsDecimal(type))
+            {
+                return DecimalArith(op, l, r, at, inSpec: false);
+            }
             if (!IsIntegral(type))
             {
                 throw new NotTranslated("arithmetic on " + type);

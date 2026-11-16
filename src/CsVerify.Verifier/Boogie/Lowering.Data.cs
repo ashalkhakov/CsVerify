@@ -78,10 +78,14 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr DataExprCore(IOperation e, LowerMode mode)
         {
-            // (a span: Lowering.Spans)
+            // (a span: Lowering.Spans; a decimal: Lowering.Decimals)
             if (SpanExpr(e, mode) is KExpr span)
             {
                 return span;
+            }
+            if (DecimalExpr(e, mode) is KExpr dec)
+            {
+                return dec;
             }
             switch (e)
             {

@@ -139,6 +139,43 @@ public static class Decide
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
         }
 
+        [Fact]
+        public void Decimals_AreExact_WhereTheyAreRepresentable()
+        {
+            var r = Harness.Verify(@"public sealed record Payment(decimal Amount);
+public static class Amounts
+{
+    public static bool Positive(decimal amount) { Spec.Ensures<bool>(r => r == (amount > 0m)); return amount > 0m; }
+    public static decimal Sum(decimal a, decimal b) { Spec.Ensures<decimal>(r => r == a + b); return a + b; }
+    public static decimal Neg(decimal a) { Spec.Ensures<decimal>(r => r == -a); return -a; }
+    public static void Exact() { decimal x = 1.5m; decimal y = 2.25m; Spec.Assert(x + y == 3.75m); Spec.Assert(x - y == -0.75m); }
+    public static void Ints(int n) { Spec.Requires(n > 0 && n < 1000); decimal d = n; Spec.Assert(d > 0m && d + 1 > d); }
+    public static decimal Total(Payment[] ps)
+    {
+        decimal total = 0m;
+        for (int i = 0; i < ps.Length; i++)
+        {
+            Spec.Invariant(0 <= i && total >= 0m);
+            var p = ps[i];
+            if (p != null && p.Amount > 0m && p.Amount < 1000000m && total < 1000000000m) total += p.Amount;
+        }
+        Spec.Assert(total >= 0m);
+        return total;
+    }
+    public static decimal Overflows(decimal a) { Spec.Requires(a > 0m); Spec.EnsuresOnThrow<OverflowException>(false); return a + decimal.MaxValue; }
+    // (79228162514264337593543950334 + 10^-28 needs 57 digits: it rounds)
+    public static void Rounds() { decimal big = 79228162514264337593543950334m; decimal tiny = 0.0000000000000000000000000001m; Spec.Assert(big + tiny - big == tiny); }
+    public static void MayRound(decimal a) { Spec.Assert(a + 1m > a); }
+}");
+            foreach (var ok in new[] { "Positive", "Sum", "Neg", "Exact", "Ints", "Total" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Overflows"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Rounds"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("MayRound"));
+        }
+
         private const string ValueObjects = @"public sealed record Ref
 {
     private Ref(string value) { Spec.Requires(value.Length > 0); Spec.Ensures(Value == value); Value = value; }

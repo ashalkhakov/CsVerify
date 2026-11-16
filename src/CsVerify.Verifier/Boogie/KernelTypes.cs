@@ -145,6 +145,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A type's kind of scalar: an enum's is its underlying type's (an enum is an integer of it, any value of it).</summary>
         public static SpecialType Sp(ITypeSymbol t) => t is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } u } ? u.SpecialType : t?.SpecialType ?? SpecialType.None;
 
+        /// <summary>decimal: an int, its value in units of 10^-28 (Lowering.Decimals).</summary>
+        public static bool IsDecimal(ITypeSymbol t) => t?.SpecialType == SpecialType.System_Decimal;
+
         public static bool Scalar(ITypeSymbol t) => IsIntegral(t) || t?.SpecialType == SpecialType.System_Boolean;
 
         /// <summary>
@@ -189,7 +192,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Values: integers and bools, floats, structs, tuples, int?, data types, values the kernel knows only by equality.</summary>
         private static bool IsValueType(ITypeSymbol t) =>
-            Scalar(t) || IsFloating(t) || IsStruct(t) || IsTuple(t) || IsNullableValue(t) || IsData(t) || IsOpaqueValue(t) || IsGenericParameter(t);
+            Scalar(t) || IsFloating(t) || IsDecimal(t) || IsStruct(t) || IsTuple(t) || IsNullableValue(t) || IsData(t) || IsOpaqueValue(t) || IsGenericParameter(t);
 
         /// <summary>Objects: arrays (and spans of them), classes and interfaces of the program's, object, strings, exceptions, delegates.</summary>
         private static bool IsObjectType(ITypeSymbol t) =>
