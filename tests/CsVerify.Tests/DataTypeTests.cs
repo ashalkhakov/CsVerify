@@ -69,6 +69,22 @@ public abstract record List
 
         // (found by the fuzzer: a pattern on a value of another case assumed the value was of the pattern's case,
         // so the code after it was unreachable, and anything provable there)
+        // (#42: a case without a parameter list is the zero-field case, as Started() is)
+        [Fact]
+        public void ACaseWithoutAParameterList_IsTheZeroFieldCase()
+        {
+            const string Event = "public abstract record Event { private Event() { } public sealed record Started : Event; public sealed record Stopped(int At) : Event; } ";
+            var r = Harness.Verify(Event + "public static class C { " +
+                "static int Code(Event e) => e is Event.Started ? 1 : 2; " +
+                "static Event Make(bool b) { Spec.Ensures<Event>(x => (x is Event.Started) == b); return b ? new Event.Started() : new Event.Stopped(3); } " +
+                "static void Same() { Spec.Assert(new Event.Started() == new Event.Started()); Spec.Assert(new Event.Started() != (Event)new Event.Stopped(1)); } " +
+                "static void Wrong() { Spec.Assert(new Event.Started() != new Event.Started()); } }");
+            Assert.Empty(r.Errors("Code"));
+            Assert.Empty(r.Errors("Make"));
+            Assert.Empty(r.Errors("Same"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
         [Fact]
         public void Patterns_OfAnotherCase_LeaveTheRestReachable()
         {
