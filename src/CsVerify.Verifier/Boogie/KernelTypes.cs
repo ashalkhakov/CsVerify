@@ -154,13 +154,18 @@ namespace CsVerify.Verifier.Boogie
         /// A nullable value of a scalar (int?, bool?): a reference, null where it has no value, $nmk.U(v) where it has v,
         /// one reference per value (so == is the lifted operator's); $nv.U reads the value.
         /// </summary>
-        public static bool IsNullableValue(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n && Scalar(n.TypeArguments[0]);
+        public static bool IsNullableValue(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n &&
+            (Scalar(n.TypeArguments[0]) || IsOpaqueTicks(n.TypeArguments[0]) || IsOpaqueId(n.TypeArguments[0]));
+
+        /// <summary>A nullable value's functions' suffix: its scalar's (Int32), or the opaque value's name (DateTime, Guid).</summary>
+        private static string NullableKey(ITypeSymbol nullable) =>
+            Scalar(Underlying(nullable)) ? Sp(Underlying(nullable)).ToString().Substring("System_".Length) : Underlying(nullable).Name;
 
         public static ITypeSymbol Underlying(ITypeSymbol nullable) => ((INamedTypeSymbol)nullable).TypeArguments[0];
 
-        public static KExpr NullableValue(KExpr v, ITypeSymbol nullable) => new KOp("$nv." + Sp(Underlying(nullable)).ToString().Substring("System_".Length), v);
+        public static KExpr NullableValue(KExpr v, ITypeSymbol nullable) => new KOp("$nv." + NullableKey(nullable), v);
 
-        public static KExpr NullableOf(KExpr v, ITypeSymbol nullable) => new KOp("$nmk." + Sp(Underlying(nullable)).ToString().Substring("System_".Length), v);
+        public static KExpr NullableOf(KExpr v, ITypeSymbol nullable) => new KOp("$nmk." + NullableKey(nullable), v);
 
         public static bool IsArray(ITypeSymbol t) => t is IArrayTypeSymbol a && a.IsSZArray && IsElement(a.ElementType);
 
@@ -736,7 +741,7 @@ namespace CsVerify.Verifier.Boogie
         /// query read where it's made (Lowering.Linq), so that what a lambda gives a SelectMany, or a group, can be one.
         /// </summary>
         public static bool IsSequence(ITypeSymbol t) =>
-            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && FuncValue(n.TypeArguments[0]);
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1, Name: "IEnumerable" } n && n.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic" && (FuncValue(n.TypeArguments[0]) || IsData(n.TypeArguments[0]));
 
         /// <summary>
         /// A collection's interface (IList, IReadOnlyList, ICollection, IReadOnlyCollection) of the subset's values, or of

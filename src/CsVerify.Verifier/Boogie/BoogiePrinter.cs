@@ -137,14 +137,16 @@ namespace CsVerify.Verifier.Boogie
             // (a nullable value: null, or the one reference of its value)
             foreach (var u in _nullables.OrderBy(x => x, System.StringComparer.Ordinal))
             {
-                var st = System.Enum.Parse<SpecialType>("System_" + u);
-                var ty = st == SpecialType.System_Boolean ? "bool" : "int";
-                var range = st == SpecialType.System_Boolean ? "true" : $"{Range(st).lo} <= v && v <= {Range(st).hi}";
+                // (an opaque value's, DateTime's or Guid's: an int of no range)
+                var scalar = System.Enum.TryParse<SpecialType>("System_" + u, out var st) && (st == SpecialType.System_Boolean || KernelTypes.Widths.ContainsKey(st));
+                var ty = scalar && st == SpecialType.System_Boolean ? "bool" : "int";
+                var ranged = scalar && st != SpecialType.System_Boolean;
+                var range = ranged ? $"{Range(st).lo} <= v && v <= {Range(st).hi}" : "true";
                 Line($"function $nv.{u}(x: Ref): {ty};");
                 Line($"function $nmk.{u}(v: {ty}): Ref;");
                 Line($"axiom (forall v: {ty} :: {{ $nmk.{u}(v) }} {range} ==> $nmk.{u}(v) != null && $nv.{u}($nmk.{u}(v)) == v);");
                 Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} x != null ==> $nmk.{u}($nv.{u}(x)) == x);");
-                if (st != SpecialType.System_Boolean)
+                if (ranged)
                 {
                     Line($"axiom (forall x: Ref :: {{ $nv.{u}(x) }} {Range(st).lo} <= $nv.{u}(x) && $nv.{u}(x) <= {Range(st).hi});");
                 }
@@ -262,10 +264,13 @@ namespace CsVerify.Verifier.Boogie
             Line("const null: Ref;");
             Line("var $Alloc: [Ref]bool;");
             Line("function len(a: Ref): int;");
-            Optional("$arr(|$coll(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
-            Optional("$arr(|$coll(", "function $arr(r: Ref): bool;");
-            Optional("$arr(|$coll(", "function $coll(r: Ref): bool;");
-            Optional("$arr(|$coll(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
+            Optional("$arr(|$coll(|$aempty(", "// what a collection behind an interface is: an array, or a modeled collection (List, Dictionary, ...), never both");
+            Optional("$arr(|$coll(|$aempty(", "function $arr(r: Ref): bool;");
+            Optional("$arr(|$coll(|$aempty(", "function $coll(r: Ref): bool;");
+            Optional("$arr(|$coll(|$aempty(", "axiom (forall r: Ref :: { $arr(r) } { $coll(r) } !($arr(r) && $coll(r)));");
+            Optional("$aempty(", "// Array.Empty<T>(): an array of none");
+            Optional("$aempty(", "function $aempty(): Ref;");
+            Optional("$aempty(", "axiom $aempty() != null && $arr($aempty()) && len($aempty()) == 0;");
             // (EF's entities: what type an object is, where the change tracker asks; Lowering.EfTracker)
             if (KernelTypes.Ef != null)
             {

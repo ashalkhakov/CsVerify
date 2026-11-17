@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KernelTypes;
@@ -141,6 +142,43 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
+                // (a with expression's copy of a data value: the value, as a data value has no identity; of null it throws)
+                case IInvocationOperation { TargetMethod.Name: "<Clone>$", Instance: { } wi } when IsData(wi.Type):
+                {
+                    var v = Lower(wi, mode);
+                    if (!mode.InSpec)
+                    {
+                        Emit(KCheck.Of(NotNull(v), "CSV1013", wi.Syntax, $"'{wi.Syntax}' might be null in a with expression"));
+                    }
+                    return v;
+                }
+                // (Array.Empty<T>(): an empty array, the same each time)
+                case IInvocationOperation { TargetMethod: { Name: "Empty", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Array }, Arguments.Length: 0 }:
+                    return new KOp("$aempty");
+                // (char.IsAsciiDigit(c) and the other ASCII tests: ranges of its code)
+                case IInvocationOperation at when AsciiTest(at.TargetMethod) && at.Arguments.Length == 1:
+                {
+                    var c = Lower(at.Arguments[0].Value, mode);
+                    KExpr In(char lo, char hi) => AndAlso(Le(Number(lo), c), Le(c, Number(hi)));
+                    return at.TargetMethod.Name switch
+                    {
+                        "IsAsciiDigit" => In('0', '9'),
+                        "IsAsciiLetterUpper" => In('A', 'Z'),
+                        "IsAsciiLetterLower" => In('a', 'z'),
+                        "IsAsciiLetter" => OrElse(In('A', 'Z'), In('a', 'z')),
+                        "IsAsciiLetterOrDigit" => OrElse(In('0', '9'), OrElse(In('A', 'Z'), In('a', 'z'))),
+                        "IsAsciiHexDigit" => OrElse(In('0', '9'), OrElse(In('A', 'F'), In('a', 'f'))),
+                        _ => Le(c, Number(127)),
+                    };
+                }
+                // (x.CompareTo(y) of integers, decimals, DateTimes and TimeSpans: the sign of x - y)
+                case IInvocationOperation { TargetMethod.Name: "CompareTo", Instance: { } cx, Arguments.Length: 1 } ct when
+                    (IsIntegral(cx.Type) || IsDecimal(cx.Type) || IsOpaqueTicks(cx.Type)) &&
+                    SymbolEqualityComparer.Default.Equals(cx.Type, ct.Arguments[0].Value.Type) && ct.TargetMethod.DeclaringSyntaxReferences.Length == 0:
+                {
+                    var (l, r) = (Lower(cx, mode), Lower(ct.Arguments[0].Value, mode));
+                    return Ite(Lt(l, r), Minus(KLit.Zero, KLit.One), Ite(Gt(l, r), KLit.One, KLit.Zero));
+                }
                 // (its length of a dimension, d within its rank; and its Length, their product)
                 case IInvocationOperation gl when gl.TargetMethod.Name == "GetLength" && gl.TargetMethod.ContainingType?.SpecialType == SpecialType.System_Array && gl.Instance != null &&
                                                  Unconverted(gl.Instance) is IOperation gli && IsMultiArray(gli.Type) && gl.Arguments.Length == 1:
@@ -198,7 +236,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(Lower(si, mode), si.Type, sk);
+                    return StructItem(sm, si, sk, mode);
                 case IPropertyReferenceOperation np when np.Instance != null && IsNullableValue(np.Instance.Type) && np.Property.Name is "HasValue" or "Value":
                 {
                     var v = Lower(np.Instance, mode);
@@ -212,7 +250,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return NullableValue(v, np.Instance.Type);
                 }
-                case IPropertyReferenceOperation dp when dp.Instance != null && IsData(dp.Instance.Type) && DataTypes.IsPositional(dp.Property.OriginalDefinition):
+                case IPropertyReferenceOperation dp when dp.Instance != null && IsData(dp.Instance.Type) && DataTypes.IsDataField(dp.Property.OriginalDefinition):
                     return PositionalProperty(dp, mode);
                 case IPropertyReferenceOperation tk when tk.Property.Name == "Ticks" && tk.Instance != null && IsOpaqueTicks(tk.Instance.Type):
                     return Lower(tk.Instance, mode);
@@ -244,6 +282,25 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>char's ASCII tests, static and exact.</summary>
+        private static bool AsciiTest(IMethodSymbol m) =>
+            m.IsStatic && m.ContainingType?.SpecialType == SpecialType.System_Char && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Char &&
+            m.Name is "IsAsciiDigit" or "IsAsciiLetterUpper" or "IsAsciiLetterLower" or "IsAsciiLetter" or "IsAsciiLetterOrDigit" or "IsAsciiHexDigit" or "IsAscii";
+
+        /// <summary>
+        /// A struct's member: its element. In code, one of a non-nullable reference type is not null, as C#'s nullable
+        /// analysis has it (default(S) aside).
+        /// </summary>
+        private KExpr StructItem(IMemberReferenceOperation sm, IOperation whole, int k, LowerMode mode)
+        {
+            var item = TupleItem(Lower(whole, mode), whole.Type, k);
+            if (!mode.InSpec && !IsData(sm.Type) && IsNullable(sm.Type) && NotNullable(sm.Type))
+            {
+                Emit(KAssume.Of(NotNull(item)));
+            }
+            return item;
+        }
+
         /// <summary>DataExprCore of a field reference: its forms, in order; any other as DataExprCoreOther.</summary>
         private KExpr DataExprCoreOfFieldReference(IOperation e, LowerMode mode)
         {
@@ -251,7 +308,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(Lower(si, mode), si.Type, sk);
+                    return StructItem(sm, si, sk, mode);
                 case IFieldReferenceOperation { Instance: null, ConstantValue: { HasValue: true } fcv } ff when IsFloating(ff.Type):
                     return FloatLiteral(fcv.Value, ff.Type);
                 // (Guid.Empty: the id 0; a new Guid's isn't known, so it may be it)
@@ -271,7 +328,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(Lower(si, mode), si.Type, sk);
+                    return StructItem(sm, si, sk, mode);
                 default: return DataExprCoreOther(e, mode);
             }
         }
@@ -283,7 +340,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 // (a struct's member: its element)
                 case IMemberReferenceOperation sm when StructMember(sm) is (IOperation si, int sk):
-                    return TupleItem(Lower(si, mode), si.Type, sk);
+                    return StructItem(sm, si, sk, mode);
                 default: return DataExprCoreOther(e, mode);
             }
         }
@@ -324,7 +381,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case IObjectCreationOperation so when IsStruct(so.Type) && so.Initializer == null && (so.Constructor == null || so.Constructor.IsImplicitlyDeclared) && so.Arguments.Length == 0:
                     return StructDefault(so.Type);
-                case IObjectCreationOperation oc when IsData(oc.Type) && oc.Initializer == null && oc.Constructor != null:
+                case IObjectCreationOperation oc when IsData(oc.Type) && oc.Constructor != null && (oc.Initializer == null || InitFieldsSet(oc.Initializer) != null):
                     return NewData(oc, mode);
                 // (a positional record struct's primary constructor: the struct of its arguments)
                 case IObjectCreationOperation ps when IsStruct(ps.Type) && ps.Initializer == null && IsPositionalStruct(ps.Constructor):
@@ -449,7 +506,7 @@ namespace CsVerify.Verifier.Boogie
                                               Unconverted(rb.RightOperand).Type is { IsReferenceType: true } rt && !IsString(rt) && IsRef(rt):
                     return RelationalNullsCompared(rb, mode);
                 // (lifted: == on the values, or both null; the comparisons false where either is null)
-                case IBinaryOperation nb when nb.OperatorMethod == null && (IsNullableValue(nb.LeftOperand.Type) || nb.LeftOperand.Type == null) && (IsNullableValue(nb.RightOperand.Type) || nb.RightOperand.Type == null) &&
+                case IBinaryOperation nb when (nb.OperatorMethod == null || nb.IsLifted && OpaqueOperator(nb.OperatorMethod)) && (IsNullableValue(nb.LeftOperand.Type) || nb.LeftOperand.Type == null) && (IsNullableValue(nb.RightOperand.Type) || nb.RightOperand.Type == null) &&
                                               (IsNullableValue(nb.LeftOperand.Type) || IsNullableValue(nb.RightOperand.Type)):
                     return LiftedBinary(nb, mode);
                 // (DateTime and TimeSpan compared: their ticks, the int the kernel keeps for them, are what C# compares)
@@ -679,7 +736,11 @@ namespace CsVerify.Verifier.Boogie
             };
         }
 
-        private KExpr LiftedBoth(string op, ITypeSymbol t, IBinaryOperation nb, KExpr l, KExpr r) => IsIntegral(Underlying(t)) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
+        /// <summary>DateTime's, TimeSpan's or Guid's own operator (==, &lt;): as the int the kernel keeps for them compares.</summary>
+        private static bool OpaqueOperator(IMethodSymbol m) =>
+            m.DeclaringSyntaxReferences.Length == 0 && (IsOpaqueTicks(m.ContainingType) || IsOpaqueId(m.ContainingType));
+
+        private KExpr LiftedBoth(string op, ITypeSymbol t, IBinaryOperation nb, KExpr l, KExpr r) => (IsIntegral(Underlying(t)) || IsOpaqueTicks(Underlying(t))) && SymbolEqualityComparer.Default.Equals(t, nb.RightOperand.Type)
             ? AndAlso(AndAlso(NotNull(l), NotNull(r)), new KOp(op, NullableValue(l, t), NullableValue(r, t)))
             : throw new NotTranslated("the lifted operator " + nb.OperatorKind);
 
@@ -691,6 +752,45 @@ namespace CsVerify.Verifier.Boogie
             ctor.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax) &&
             StructFields(t).Select(f => (f.AssociatedSymbol as IPropertySymbol)?.Name).SequenceEqual(ctor.Parameters.Select(p => p.Name)) &&
             StructFields(t).All(f => f.AssociatedSymbol is IPropertySymbol p && DataTypes.IsPositional(p));
+
+        /// <summary>An object initializer of a case's init properties alone, { Undone = xs }: what it sets them to; else null.</summary>
+        private static Dictionary<IPropertySymbol, IOperation> InitFieldsSet(IObjectOrCollectionInitializerOperation init)
+        {
+            var set = new Dictionary<IPropertySymbol, IOperation>(SymbolEqualityComparer.Default);
+            foreach (var x in init.Initializers)
+            {
+                if (!(x is ISimpleAssignmentOperation { Target: IPropertyReferenceOperation { Instance: IInstanceReferenceOperation, Property: var p } } a) ||
+                    !DataTypes.IsInitField(p.OriginalDefinition) || !set.TryAdd(p.OriginalDefinition, a.Value))
+                {
+                    return null;
+                }
+            }
+            return set;
+        }
+
+        /// <summary>An init property's value as given: in code, not null where its type says so.</summary>
+        private KExpr InitValue(IOperation given, IPropertySymbol ip, ITypeSymbol actual, LowerMode mode)
+        {
+            var v = Lower(given, mode);
+            if (!mode.InSpec && IsNullable(ip.Type) && NotNullable(ip.Type))
+            {
+                Emit(KCheck.Of(NotNull(v), "CSV1014", given.Syntax, $"'{given.Syntax}' might be null, but property '{ip.Name}' is not nullable"));
+            }
+            return v;
+        }
+
+        /// <summary>An init property's initializer (a value, as a specification has it), or its type's default.</summary>
+        private KExpr InitDefault(IPropertySymbol ip, IMethodSymbol ctor)
+        {
+            if (!(DataTypes.InitializerOf(ip) is ExpressionSyntax syn))
+            {
+                return Default(ip.Type);
+            }
+            var model = KernelTypes.Compilation.GetSemanticModel(syn.SyntaxTree);
+            var op = model.GetOperation(syn) ?? throw new NotTranslated("the initializer of " + ip.Name);
+            var l = new Lowering(ctor, _contractOf(ctor), syn, model, null, _ => false, _isFunction, _literal, _contractOf);
+            return l.Spec(op, null);
+        }
 
         private KExpr NewData(IObjectCreationOperation oc, LowerMode mode)
         {
@@ -732,8 +832,15 @@ namespace CsVerify.Verifier.Boogie
                     }
                 }
             }
-            var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToArray();
-            var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args);
+            var args = ordered.Select((a, k) => Box(values[k], def.Parameters[a.Parameter.Ordinal].Type, a.Parameter.Type)).ToList();
+            // (a case's init properties: as the object initializer sets them, else their initializers)
+            var set = oc.Initializer == null ? new Dictionary<IPropertySymbol, IOperation>(SymbolEqualityComparer.Default) : InitFieldsSet(oc.Initializer);
+            foreach (var ip in DataTypes.InitFields((INamedTypeSymbol)oc.Type))
+            {
+                var actual = Actual(oc.Type, ip.Name)?.Type ?? ip.Type;
+                args.Add(Box(set.TryGetValue(ip, out var given) ? InitValue(given, ip, actual, mode) : InitDefault(ip, def), ip.Type, actual));
+            }
+            var made = new KOp(CaseName((INamedTypeSymbol)oc.Type), args.ToArray());
             if (mode.InSpec || !HasInvariants(oc.Type))
             {
                 return made;

@@ -75,8 +75,8 @@ namespace CsVerify.Verifier
                 }
                 switch (m)
                 {
-                    // every field is the backing field of a positional property
-                    case IFieldSymbol fd when !(fd.AssociatedSymbol is IPropertySymbol p && IsPositional(p)): return false;
+                    // every field is the backing field of a positional property, or of a case's init property
+                    case IFieldSymbol fd when !(fd.AssociatedSymbol is IPropertySymbol p && (IsPositional(p) || t.IsSealed && IsInitField(p))): return false;
                     // an explicit constructor may only be an abstract root's empty, parameterless one
                     case IMethodSymbol c when c.MethodKind == MethodKind.Constructor && !IsPrimary(c):
                         if (!t.IsAbstract || c.Parameters.Length > 0 ||
@@ -93,6 +93,25 @@ namespace CsVerify.Verifier
 
         public static bool IsPositional(IPropertySymbol p) =>
             p.DeclaringSyntaxReferences.Length > 0 && p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is ParameterSyntax);
+
+        /// <summary>
+        /// A case's init property besides its positional ones (public IReadOnlyList&lt;T&gt; Undone { get; init; } = ...):
+        /// a field of its value, its initializer's unless an object initializer or a with expression sets it.
+        /// </summary>
+        public static bool IsInitField(IPropertySymbol p) =>
+            !p.IsStatic && !IsPositional(p) && p.GetMethod != null && p.SetMethod is { IsInitOnly: true } && p.DeclaringSyntaxReferences.Length > 0 &&
+            p.DeclaringSyntaxReferences.All(r => r.GetSyntax() is PropertyDeclarationSyntax { AccessorList: { } al } && al.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
+
+        /// <summary>A data value's field: a positional property, or a case's init property.</summary>
+        public static bool IsDataField(IPropertySymbol p) => IsPositional(p) || IsInitField(p) && p.ContainingType.IsSealed;
+
+        /// <summary>A case's init properties, as declared.</summary>
+        public static IEnumerable<IPropertySymbol> InitFields(INamedTypeSymbol t) =>
+            Def(t).GetMembers().OfType<IPropertySymbol>().Where(IsInitField).OrderBy(p => p.DeclaringSyntaxReferences[0].Span.Start);
+
+        /// <summary>An init property's initializer, if it has one.</summary>
+        public static ExpressionSyntax InitializerOf(IPropertySymbol p) =>
+            p.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<PropertyDeclarationSyntax>().FirstOrDefault()?.Initializer?.Value;
 
         private static bool IsPrimary(IMethodSymbol ctor) =>
             ctor.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is RecordDeclarationSyntax);
@@ -122,12 +141,19 @@ namespace CsVerify.Verifier
             Def(t).InstanceConstructors.FirstOrDefault(IsPrimary) ??
             Def(t).InstanceConstructors.FirstOrDefault(c => c.IsImplicitlyDeclared && c.Parameters.Length == 0);
 
-        /// <summary>The positional properties (of the definition), its bases' first: the arguments of its value constructor.</summary>
+        /// <summary>
+        /// The positional properties (of the definition), its bases' first, then a case's init properties: the arguments
+        /// of its value constructor.
+        /// </summary>
         public IReadOnlyList<IPropertySymbol> Fields(INamedTypeSymbol t)
         {
             t = Def(t);
             var result = IsData(t.BaseType) ? Fields(Def(t.BaseType)).ToList() : new List<IPropertySymbol>();
             result.AddRange(t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && IsPositional(p)));
+            if (t.IsSealed)
+            {
+                result.AddRange(InitFields(t));
+            }
             return result;
         }
 

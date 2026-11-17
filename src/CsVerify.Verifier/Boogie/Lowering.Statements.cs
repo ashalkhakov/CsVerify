@@ -1015,6 +1015,21 @@ namespace CsVerify.Verifier.Boogie
                     }
                     return;
                 }
+                // (a data value's field set by an object initializer or a with expression, on the value it makes: that value
+                // made again, the field replaced)
+                case IPropertyReferenceOperation { Instance: IFlowCaptureReferenceOperation dcr } dfp when IsData(dcr.Type) && DataTypes.IsDataField(dfp.Property.OriginalDefinition):
+                {
+                    var made = Capture(dcr.Id, dcr.Type);
+                    var prop = dfp.Property.OriginalDefinition;
+                    if (IsNullable(prop.Type) && NotNullable(prop.Type))
+                    {
+                        Emit(KCheck.Of(NotNull(value), "CSV1014", dfp.Syntax.Parent ?? dfp.Syntax, $"'{dfp.Syntax.Parent ?? dfp.Syntax}' might be null, but property '{prop.Name}' is not nullable"));
+                    }
+                    var fields = KernelTypes.Data.Fields((INamedTypeSymbol)dcr.Type)
+                        .Select(f => SymbolEqualityComparer.Default.Equals(f, prop) ? Box(value, prop.Type, dfp.Property.Type) : (KExpr)new KOp(FieldFunction(f), new KVar(made)));
+                    Emit(KAssign.Of(made, new KOp(CaseName((INamedTypeSymbol)dcr.Type), fields.ToArray())));
+                    return;
+                }
                 // (a computed property: its setter, called with the value)
                 case IPropertyReferenceOperation sp when IsComputed(sp.Property) && sp.Property.SetMethod != null:
                     Invoke(sp.Property.SetMethod, sp.Instance, sp.Arguments, sp.Syntax, value);

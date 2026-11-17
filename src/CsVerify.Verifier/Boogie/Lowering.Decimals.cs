@@ -46,11 +46,11 @@ namespace CsVerify.Verifier.Boogie
                     var (l, r) = mode.InSpec ? (Lower(b.LeftOperand, mode), Lower(b.RightOperand, mode)) : (Operands(b.LeftOperand, b.RightOperand) is var v ? (v[0], v[1]) : default);
                     return b.OperatorKind switch
                     {
-                        BinaryOperatorKind.Add => DecimalArith("+", l, r, b.Syntax, mode.InSpec),
-                        BinaryOperatorKind.Subtract => DecimalArith("-", l, r, b.Syntax, mode.InSpec),
-                        BinaryOperatorKind.Multiply => DecimalArith("*", l, r, b.Syntax, mode.InSpec),
-                        BinaryOperatorKind.Divide => DecimalArith("/", l, r, b.Syntax, mode.InSpec),
-                        BinaryOperatorKind.Remainder => DecimalArith("%", l, r, b.Syntax, mode.InSpec),
+                        BinaryOperatorKind.Add => DecimalArith("+", l, r, b.Type, b.Syntax, mode.InSpec),
+                        BinaryOperatorKind.Subtract => DecimalArith("-", l, r, b.Type, b.Syntax, mode.InSpec),
+                        BinaryOperatorKind.Multiply => DecimalArith("*", l, r, b.Type, b.Syntax, mode.InSpec),
+                        BinaryOperatorKind.Divide => DecimalArith("/", l, r, b.Type, b.Syntax, mode.InSpec),
+                        BinaryOperatorKind.Remainder => DecimalArith("%", l, r, b.Type, b.Syntax, mode.InSpec),
                         BinaryOperatorKind.Equals => Eq(l, r),
                         BinaryOperatorKind.NotEquals => Ne(l, r),
                         BinaryOperatorKind.LessThan => Lt(l, r),
@@ -73,13 +73,12 @@ namespace CsVerify.Verifier.Boogie
         /// l op r of decimals: rounded where not representable; in code, an OverflowException past MaxValue. / and % are
         /// KArith, whose checks show the divisor isn't zero.
         /// </summary>
-        private KExpr DecimalArith(string op, KExpr l, KExpr r, SyntaxNode at, bool inSpec)
+        private KExpr DecimalArith(string op, KExpr l, KExpr r, ITypeSymbol decimalType, SyntaxNode at, bool inSpec)
         {
             if (op is not ("+" or "-" or "*" or "/" or "%"))
             {
                 throw new NotTranslated("decimal " + op);
             }
-            var decimalType = _model.Compilation.GetSpecialType(SpecialType.System_Decimal);
             if (op == "%")
             {
                 // (exact: l - r * truncate(l / r))

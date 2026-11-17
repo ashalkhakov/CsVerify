@@ -213,9 +213,19 @@ namespace CsVerify.Analyzers
         /// </summary>
         public static bool IsPureCallee(IMethodSymbol m) =>
             m != null && (IsGhostMethod(m) || IsProofMethod(m.OriginalDefinition) || m.ContainingType?.ToDisplayString() == "System.Math" ||
-                          m.Name == "GetLength" && m.ContainingType?.SpecialType == SpecialType.System_Array ||
+                          m.Name is "GetLength" or "Empty" && m.ContainingType?.SpecialType == SpecialType.System_Array ||
                           m.ContainingType?.ToDisplayString() == "System.MathF" ||
-                          m.IsStatic && (m.ContainingType?.SpecialType == SpecialType.System_Double || m.ContainingType?.SpecialType == SpecialType.System_Single));
+                          m.IsStatic && (m.ContainingType?.SpecialType == SpecialType.System_Double || m.ContainingType?.SpecialType == SpecialType.System_Single) ||
+                          OrderedCompareTo(m) ||
+                          m.IsStatic && m.ContainingType?.SpecialType == SpecialType.System_Char && m.Name.StartsWith("IsAscii", System.StringComparison.Ordinal));
+
+        /// <summary>x.CompareTo(y) of an integer, a char, a decimal, a DateTime or a TimeSpan: their order, a value.</summary>
+        private static bool OrderedCompareTo(IMethodSymbol m) =>
+            m.Name == "CompareTo" && !m.IsStatic && m.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type, m.ContainingType) &&
+            (m.ContainingType.SpecialType is SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or SpecialType.System_UInt16 or
+                 SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or SpecialType.System_Char or
+                 SpecialType.System_Decimal or SpecialType.System_DateTime ||
+             m.ContainingType.ToDisplayString() == "System.TimeSpan");
 
         /// <summary>The outermost Spec statement (void Spec.* call) that is <paramref name="node"/> or contains it in its arguments.</summary>
         /// <summary>The contracts of a body: what each states of its parameters, before its statements run.</summary>

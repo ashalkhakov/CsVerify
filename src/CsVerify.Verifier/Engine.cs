@@ -1336,7 +1336,7 @@ namespace CsVerify.Verifier
                         }
                         catch (Boogie.NotTranslated nt)
                         {
-                            Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {nt.Message}");
+                            Trace($"not translated to Boogie: {x.result.Name ?? x.method.ContainingType.Name + "." + x.method.Name + " (abstract)"}: {(Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2" ? nt.ToString() : nt.Message)}");
                             why[x.result] = nt.Message;
                             if (x.result.Name == null)
                             {
@@ -1479,6 +1479,7 @@ namespace CsVerify.Verifier
                     }
                     catch (Exception e)
                     {
+                        Trace($"internal error: {x.result.Name}: {e}");
                         staticResult.AddDiagnostic(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, x.decl.GetLocation().GetLineSpan()));
                     }
                     x.result.AddDiagnostics(staticResult.Diagnostics);
@@ -1512,6 +1513,7 @@ namespace CsVerify.Verifier
             }
             catch (Exception e)
             {
+                Trace($"internal error: {mr.Name}: {e}");
                 staticResult.AddDiagnostic(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan()));
             }
             mr.AddDiagnostics(staticResult.Diagnostics);

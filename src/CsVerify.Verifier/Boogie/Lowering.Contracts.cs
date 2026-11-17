@@ -26,7 +26,7 @@ namespace CsVerify.Verifier.Boogie
                 throw new NotTranslated("an invariant without an expression body: " + inv.Name);
             }
             if (c.PureBody.DescendantsAndSelf().Any(o => o is IInvocationOperation call && !IsOfValues(call, isFunction) || o is IFieldReferenceOperation ||
-                                                       o is IPropertyReferenceOperation pr && !(pr.Instance != null && IsData(pr.Instance.Type) && DataTypes.IsPositional(pr.Property.OriginalDefinition)) &&
+                                                       o is IPropertyReferenceOperation pr && !(pr.Instance != null && IsData(pr.Instance.Type) && DataTypes.IsDataField(pr.Property.OriginalDefinition)) &&
                                                        !IsViewsObject(pr) && !(pr.Property.Name == "Value" && pr.Instance is IPropertyReferenceOperation inner && IsViewsObject(inner))))
             {
                 // (one that reads mutable state is reported, from its declaration, by StaticChecks;

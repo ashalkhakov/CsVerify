@@ -83,7 +83,13 @@ namespace CsVerify.Verifier.Boogie
                         return count;
                     }
                     Assert(AndAlso(Le(MLit.Zero, i), Lt(i, count)), At("CSV1003", ic.At, $"index in '{ic.At}' might be out of range"));
-                    return ic.Fresh ? Fresh(TypeOf(ic.Element)) : MathTypes.IfcRead(x, i, ic.Element);
+                    var item = ic.Fresh ? Fresh(TypeOf(ic.Element)) : MathTypes.IfcRead(x, i, ic.Element);
+                    // (an element of a non-nullable reference type isn't null, as C#'s nullable analysis has it)
+                    if (IsNullable(ic.Element) && NotNullable(ic.Element))
+                    {
+                        Assume(NotNull(item));
+                    }
+                    return item;
                 }
                 case KMultiset ms:
                 {

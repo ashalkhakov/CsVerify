@@ -121,7 +121,7 @@ namespace CsVerify.Verifier.Boogie
         private (IOperation body, IParameterSymbol p1, IParameterSymbol p2)? PureLambda(IOperation arg)
         {
             // (a lambda made a delegate, or quoted as an expression tree, Queryable's)
-            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target)
+            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target) ?? MethodGroupLambda(dc.Target)
                    : Unconverted(arg) is IAnonymousFunctionOperation quoted ? quoted
                    : Unconverted(arg) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null;
             if (fn == null || fn.Body.Operations.Length != 1 || !(fn.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body }))
@@ -141,6 +141,7 @@ namespace CsVerify.Verifier.Boogie
                                                       Unconverted(gc.Arguments[0].Value) is IParameterReferenceOperation gp && fn.Symbol.Parameters.Contains(gp.Parameter, SymbolEqualityComparer.Default):
                         break;
                     case IInvocationOperation inv when !(_isFunction(inv.TargetMethod.OriginalDefinition) || inv.TargetMethod.ContainingType?.ToDisplayString() == "System.Math" ||
+                                                        AsciiTest(inv.TargetMethod) ||
                                                         SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) ||
                                                         // (a string's [Pure] member with a stub, a list's Contains: as a specification reads them)
                                                         IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) ||
@@ -149,6 +150,29 @@ namespace CsVerify.Verifier.Boogie
                 }
             }
             return (body, fn.Symbol.Parameters.ElementAtOrDefault(0), fn.Symbol.Parameters.ElementAtOrDefault(1));
+        }
+
+        /// <summary>
+        /// A static method group (char.IsAsciiDigit) as the lambda it stands for, (char x) =&gt; char.IsAsciiDigit(x):
+        /// bound speculatively where the group is.
+        /// </summary>
+        private IAnonymousFunctionOperation MethodGroupLambda(IOperation target)
+        {
+            if (!(target is IMethodReferenceOperation { Instance: null, Method: { IsStatic: true, IsGenericMethod: false } m }) || _model == null ||
+                m.Parameters.Any(p => p.RefKind != RefKind.None))
+            {
+                return null;
+            }
+            var format = SymbolDisplayFormat.FullyQualifiedFormat;
+            var ps = string.Join(", ", m.Parameters.Select((p, i) => p.Type.ToDisplayString(format) + " x" + i));
+            var call = m.ContainingType.ToDisplayString(format) + "." + m.Name + "(" + string.Join(", ", m.Parameters.Select((_, i) => "x" + i)) + ")";
+            var statement = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseStatement("var f = (" + ps + ") => " + call + ";");
+            if (!Microsoft.CodeAnalysis.CSharp.CSharpExtensions.TryGetSpeculativeSemanticModel(_model, target.Syntax.SpanStart, statement, out var speculative))
+            {
+                return null;
+            }
+            var lambda = statement.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LambdaExpressionSyntax>().First();
+            return speculative.GetOperation(lambda) as IAnonymousFunctionOperation;
         }
 
         /// <summary>A lambda the control flow graph has as a flow anonymous function (a query clause's): found in the method's operations by its symbol.</summary>
@@ -261,6 +285,20 @@ namespace CsVerify.Verifier.Boogie
                     Length = new KVar(n),
                     Elem = KAbs.Of(i, Sel(items, i)),
                     Type = elem,
+                };
+            }
+            // (a string: its chars)
+            if (IsString(type))
+            {
+                var st = Declare("t$" + _temps++, type);
+                Emit(KAssign.Of(st, Expr(src)));
+                Emit(KCheck.Of(NotNull(new KVar(st)), "CSV1013", src.Syntax, $"'{src.Syntax}' might be null: LINQ would throw ArgumentNullException"));
+                var ci = Atom();
+                return new LSeq
+                {
+                    Length = new KLen { String = true, Array = new KVar(st), At = src.Syntax, ArrayAt = src.Syntax },
+                    Elem = KAbs.Of(ci, new KElem { String = true, Unchecked = true, Array = new KVar(st), Index = ci, At = src.Syntax, ArrayAt = src.Syntax }),
+                    Type = KernelTypes.Compilation.GetSpecialType(SpecialType.System_Char),
                 };
             }
             if (elem == null || !InSubset(elem) || !(IsArray(type) || IsList(type) || IsCollectionInterface(type)))

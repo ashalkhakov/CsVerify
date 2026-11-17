@@ -187,6 +187,14 @@ namespace CsVerify.Verifier
                     block = m.Body;
                     exprBody = m.ExpressionBody?.Expression;
                     break;
+                case OperatorDeclarationSyntax op:
+                    block = op.Body;
+                    exprBody = op.ExpressionBody?.Expression;
+                    break;
+                case ConversionOperatorDeclarationSyntax conv:
+                    block = conv.Body;
+                    exprBody = conv.ExpressionBody?.Expression;
+                    break;
                 case LocalFunctionStatementSyntax lf:
                     block = lf.Body;
                     exprBody = lf.ExpressionBody?.Expression;
