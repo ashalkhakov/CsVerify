@@ -1277,7 +1277,7 @@ proved.) The group queries' failing assertions are decided whole, in seconds.
 `samples/Good` and `samples/Buggy` against a snapshot (`tests/CsVerify.Tests/Expected/BoogieEngine.json`, written
 with `CSVERIFY_RECORD=1`). The fuzz test checks that what verifies runs correctly.
 
-Boogie verifies the procedures side by side (`/vcsCores`, a solver each). Each is first tried whole in a quarter of
+Boogie verifies the procedures side by side (`/vcsCores`, a solver each; `--cores` sets how many). Each is first tried whole in a quarter of
 the time limit (at least 10 s). One that times out is verified once more an assertion at a time
 (`/vcsSplitOnEveryAssert`, for it alone, with the whole limit):
 a long one that is hard as a whole is often easy split (Base64's encoder, decoder and round trip, Utf8's decoder). A
@@ -1297,6 +1297,11 @@ time limits (five minutes at least) has lost a solver's answer and is ended; a r
 error, a dead solver, or Boogie's `TimeoutException` for an answer just past the limit) is run once more. Where the
 second run fails too, its methods are not verified (CSV1902, with Boogie's reason). `CSVERIFY_TRACE=2` prints each run
 and each failure Boogie reports.
+
+A solver that dies during a run (killed, out of memory) ends the check it was doing: that procedure is skipped, so
+undecided, and tried again in the next round; Boogie starts a new solver for the rest. Boogie itself would wait for
+ever on a dead solver's answer, and keep the solver's slot, so that once every slot was lost the run hung
+(`SolverFactory`: a check, or the reset before it, whose solver's output ends fails with an `IOException`).
 
 A procedure that fails is verified once more split, too. Once Boogie has a counterexample it looks for more, and where
 the solver then answers unknown it stops: the assertions it hadn't decided are reported neither failed nor undecided

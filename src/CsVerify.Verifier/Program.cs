@@ -20,6 +20,7 @@ options:
                       non-nullable reference types are known not to be null
   --timeout <ms>      per-query Z3 timeout (default 10000)
   --method-budget <ms> the most one method may take (all rounds); past it, the rest is not verified (default: none)
+  --cores <n>         solvers run side by side (default: one a core)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
   --boogie-out <file> write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
@@ -77,6 +78,9 @@ options:
                             break;
                         case "--method-budget":
                             options.MethodBudgetMs = int.Parse(args[++i]);
+                            break;
+                        case "--cores":
+                            options.Cores = int.Parse(args[++i]);
                             break;
                         case "--z3":
                             options.Z3Path = args[++i];

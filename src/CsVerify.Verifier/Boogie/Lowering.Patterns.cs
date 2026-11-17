@@ -81,6 +81,10 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr SubPattern(IPatternOperation q, KExpr v, ITypeSymbol nullable, LowerMode mode, ITypeSymbol u) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, mode) : Pattern(q, NullableValue(v, nullable), u, mode);
 
+        /// <summary>A part's pattern: a nullable value's as <see cref="NullablePattern"/> says.</summary>
+        private KExpr PartPattern(IPatternOperation p, KExpr v, ITypeSymbol type, LowerMode mode) =>
+            IsNullableValue(type) ? NullablePattern(p, v, type, mode) : Pattern(p, v, type, mode);
+
         private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, LowerMode mode)
         {
             switch (p)
@@ -136,6 +140,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
                         }
+                        _p.AddField(member.OriginalDefinition);
                         var read = new KField
                         {
                             Field = member.OriginalDefinition,
@@ -144,7 +149,7 @@ namespace CsVerify.Verifier.Boogie
                             At = sp.Syntax,
                             InstanceAt = sp.Syntax,
                         };
-                        cond = AndAlso(cond, Pattern(sp.Pattern, read, FieldType(member), mode));
+                        cond = AndAlso(cond, PartPattern(sp.Pattern, read, FieldType(member), mode));
                     }
                     return cond;
                 }
@@ -179,7 +184,7 @@ namespace CsVerify.Verifier.Boogie
                     {
                         var prop = DataTypes.PositionalProperty((INamedTypeSymbol)matched, k) ?? throw new NotTranslated("a deconstruction of " + matched);
                         var actual = Actual(matched, prop.Name);
-                        cond = AndAlso(cond, Pattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, mode));
+                        cond = AndAlso(cond, PartPattern(rp.DeconstructionSubpatterns[k], FieldOfData(v, prop, matched), actual?.Type ?? prop.Type, mode));
                     }
                     foreach (var sp in rp.PropertySubpatterns)
                     {
@@ -187,7 +192,7 @@ namespace CsVerify.Verifier.Boogie
                         {
                             throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
                         }
-                        cond = AndAlso(cond, Pattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, mode));
+                        cond = AndAlso(cond, PartPattern(sp.Pattern, FieldOfData(v, member.OriginalDefinition, matched), member.Type, mode));
                     }
                     return cond;
                 }
