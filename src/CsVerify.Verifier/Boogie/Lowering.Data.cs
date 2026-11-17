@@ -88,6 +88,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return dec;
             }
+            if (TimeArith(e, mode) is KExpr time)
+            {
+                return time;
+            }
             switch (e)
             {
                 case IArrayElementReferenceOperation: return DataExprCoreOfArrayElementReference(e, mode);
@@ -311,6 +315,8 @@ namespace CsVerify.Verifier.Boogie
                     return StructItem(sm, si, sk, mode);
                 case IFieldReferenceOperation { Instance: null, ConstantValue: { HasValue: true } fcv } ff when IsFloating(ff.Type):
                     return FloatLiteral(fcv.Value, ff.Type);
+                case IFieldReferenceOperation tc when TimeConstant(tc) is KExpr ticks:
+                    return ticks;
                 // (Guid.Empty: the id 0; a new Guid's isn't known, so it may be it)
                 case IFieldReferenceOperation { Instance: null, Field.Name: "Empty" } ge when IsOpaqueId(ge.Field.ContainingType):
                     return KLit.Zero;

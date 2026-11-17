@@ -1780,6 +1780,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return E(MathTypes.InRange(new MVar(local), type), cx);
             }
+            // (a DateTime's or a TimeSpan's ticks: within its range)
+            if (IsOpaqueTicks(type) && MathTypes.OfType(new MVar(local), type) is MExpr ticks)
+            {
+                yield return E(ticks, cx);
+            }
             // (a struct's integer fields: each in its type's range)
             if (IsStruct(type))
             {

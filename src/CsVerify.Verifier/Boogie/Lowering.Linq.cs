@@ -1045,9 +1045,10 @@ namespace CsVerify.Verifier.Boogie
             ILocalSymbol joinGroupOf = src is IPropertyReferenceOperation { Instance: ILocalReferenceOperation jr } jp && _joinRows.TryGetValue(jr.Local, out var jrow) &&
                                        jrow.members.TryGetValue(jp.Property.Name, out var jm) && jm == "group" ? jr.Local : null;
             bool joinRows = src is IInvocationOperation gjq && IsEnumerableCall(gjq.TargetMethod) && gjq.TargetMethod.Name == "GroupJoin";
-            // (and a collection interface's, a variable's: read where the loop starts, as a query is)
+            // (and a collection interface's, of any expression, a variable or a property: read where the loop starts, as a
+            // query is)
             if (groupOf == null && joinGroupOf == null && !(src is IInvocationOperation q && IsEnumerableCall(q.TargetMethod)) &&
-                !(IsCollectionInterface(src.Type) && src is IParameterReferenceOperation or ILocalReferenceOperation))
+                !IsCollectionInterface(src.Type))
             {
                 return false;
             }
