@@ -8,7 +8,7 @@ argument, or the test, that stands in for a proof.
 ## The claim
 
 **Theorem (informal).** Let a method M be reported verified, with no errors. Then every run of M that starts in a
-state satisfying M's preconditions, under the assumptions A1–A9 below, has these properties:
+state satisfying M's preconditions, under the assumptions A1–A10 below, has these properties:
 
 1. **Safety.** No obligation the verifier checks is violated: no `Spec.Assert` fails; no array or span index is out
    of range; no divisor is zero; no null is dereferenced or passed where a non-null is required; no run-time integer
@@ -56,6 +56,10 @@ is assumed, never in what is reported.
   (a method with an analyzer error is not verified).
 - **A9. Erasure.** The erased program (`-p:CsVerifyErase=true`) behaves as the original with its ghost code removed.
   Ghost code cannot write run-time state (purity analyzer), so removing it changes nothing observable.
+- **A10. Nullable element types.** Where C#'s nullable analysis says a value isn't null but doesn't check it, it is
+  assumed: a struct's field of a non-nullable reference type (not so in `default(S)`), and an element of a collection
+  or sequence (a list interface, `IEnumerable<T>`, `List<T>`) of a non-nullable reference type. An array's elements
+  are what the heap says, nulls included (`new string[n]` is all nulls): only a precondition says otherwise.
 
 Out of scope, as documented in [Limitations](limitations.md): running out of memory or stack, reflection, and
 termination of ordinary methods without `Spec.Decreases`.
@@ -200,7 +204,7 @@ the hand-written tests and samples. By area:
 | Integers | overflow obligations, `unchecked` (wraps), `checked` caught as `OverflowException`, division and remainder by zero, shifts and bitwise operators, `Math`, `decimal` `+`, `-`, `*`, `/` (rounded where not representable, `OverflowException`), `%` and comparisons | how `decimal` rounds |
 | Floats | `double` (rounding, NaN, infinities, -0.0, `Sqrt`, `Floor`, casts to `int`), `float` | |
 | Strings | literals, concatenation, interpolation, `Length`, characters (`s[i]`, `foreach`), `==`, `IsNullOrEmpty`, `Substring`, `StartsWith`, `Contains`, `IndexOf`, `Trim`, `ToUpperInvariant` | |
-| Null | parameters that may be null, `int?` (`??`, `HasValue`, lifted `+`, `.Value`, relational patterns) | |
+| Null | parameters that may be null, `int?` and `DateTime?` (`??`, `HasValue`, lifted `+` and `==`, `.Value`, relational patterns) | |
 | Arrays and memory | reads and writes with bounds, rectangular arrays, spans, `ref` locals, struct members by `ref`, list patterns, `foreach` | |
 | Control flow | `if`, `for` with and without invariants (inferred facts), termination measures, `while`, `do`, `switch` statements, `goto` loops, `foreach` | |
 | Exceptions | `throw`, `try`/`catch`, filters, rethrow, `finally`, `EnsuresOnThrow`, failed downcasts | |

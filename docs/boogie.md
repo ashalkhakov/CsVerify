@@ -473,9 +473,10 @@ struct value's integer fields are in their types' ranges.
 and from integers are the integers'. A switch expression no arm of which matches throws
 `SwitchExpressionException`: CSV1022.
 
-**Nullable values.** An `int?` (a `Nullable<T>` of an integer type or `bool`) is a reference: `null` where it has no
+**Nullable values.** An `int?` (a `Nullable<T>` of an integer type, `bool`, `DateTime`, `TimeSpan` or `Guid`) is a reference: `null` where it has no
 value, `$nmk.Int32(v)` where it has `v`, one reference per value (`$nmk` and `$nv`, its value, are each other's
-inverse, `$nv` in the type's range), so the lifted `==` is the references'. Conversions wrap (`null` and `default` are
+inverse, `$nv` in the type's range), so the lifted `==` is the references' (a `DateTime?`'s too, which C# lifts
+from `DateTime`'s own operator). Conversions wrap (`null` and `default` are
 `null`), `(int)x` and `x.Value` unwrap (CSV1013 where it may be null), `HasValue` is `!= null`, `GetValueOrDefault` an
 `if`, the lifted comparisons false where either is null, and patterns (`x is int k`, `x is null`, `x is > 0`) test the
 value where there is one. Lifted arithmetic (`x + 1`) is `null` where an operand is, else the operation on the values.
@@ -485,8 +486,9 @@ value where there is one. Lifted arithmetic (`x + 1`) is `null` where an operand
 comparison in code does (of one length and different, they differ somewhere).
 
 **LINQ.** LINQ to Objects is read member by member as its definitions (`Bcl/Linq.cs`) say
-(Lowering.Linq): a source the verifier indexes (an array, a List, a list interface) is a sequence of a length and
-elements, read where the call is (not null, CSV1013). `Select` maps it (with an index too), `Where` (with an index
+(Lowering.Linq): a source the verifier indexes (an array, a List, a list interface, a string's chars) is a sequence
+of a length and elements, read where the call is (not null, CSV1013). A static method group (`char.IsAsciiLetter`) is
+the lambda it stands for. `Select` maps it (with an index too), `Where` (with an index
 too) and `Distinct` filter it (a running count `c` of the matches and each match's index `ix`, increasing), `Take` and
 `Skip` keep the first `n` or the rest (`n` clamped to the length), `TakeLast` and `SkipLast` the last `n` or all
 but them, `TakeWhile` and `SkipWhile` up to the first element the predicate rejects or from it on (its index a
@@ -566,7 +568,9 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
 parameter takes it, a call gives it, and an EF concurrency token is compared by it. That int is its `Ticks`, so
 `==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do, and `.Ticks` is it;
 their other operators and members are not translated (CSV1902). A `Guid` is an `int` too, of which `==` and `!=` are
-all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe).
+all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe). `x.CompareTo(y)`
+of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `char`'s ASCII tests
+(`char.IsAsciiDigit`, `IsAsciiLetter`, `IsAsciiLetterUpper`, ...) are ranges of the code.
 
 **Decimals.** A `decimal` is an `int`, its value in units of 10^-28 (every decimal is *m* / 10^*e*, |*m*| < 2^96,
 0 <= *e* <= 28), so comparisons are exact. `+` and `-` are `$dround` of the exact result, and `*` and `/` are
@@ -577,7 +581,12 @@ units), and `/` or `%` by zero is CSV1009, as for integers. An integer converts 
 
 **Record structs.** A positional `record struct` of the subset (`readonly record struct OrderId(Guid Value)`) is a
 struct: its primary constructor gives the struct of its arguments, and its `==` compares its fields, where each
-compares as a value (integers, `DateTime`s, `Guid`s, data of value equality).
+compares as a value (integers, `DateTime`s, `Guid`s, data of value equality). A struct's field of a non-nullable
+reference type is not null where code reads it, as C#'s nullable analysis has it (`default(S)`'s is).
+
+**Operators.** A user-defined operator (`public static Price operator +(Price a, Price b)`) is a static method of
+the program's, and `a + b` a call of it, of its contract: a precondition there (`Spec.Requires(a.Currency ==
+b.Currency)`) is checked at each `a + b` (CSV1001).
 
 **Value objects.** A sealed record class that isn't data (its state not positional: a private constructor that
 validates, get-only properties) is a class of the program's. Its `==` is C#'s: the same reference, or neither null
@@ -980,6 +989,13 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
   reference that generic code passes on and stores, but doesn't read; where the type argument is known, it is read as
   that type's collection. A static method that makes a case (`Grant(params T[] xs) => new Granted(xs)`) tells its
   callers which case it gives only if it is `[Pure]` (its body is then its function) or says so in a postcondition.
+  `Array.Empty<T>()` is `$aempty()`, an array of none.
+- A case's init property besides its positional ones (`public IReadOnlyList<T> Undone { get; init; } = ...`) is a
+  field after them: `new Refused(why)` has its initializer's value, `new Refused(why) { Undone = xs }` has `xs`. A
+  `with` expression (`t with { Seen = t.Seen + 1 }`) is the case's constructor of the fields, those it sets replaced
+  (of null it throws, CSV1013).
+- A data type's plain getter (`public bool IsGranted => this is Granted;`, not virtual) is a method of it; `[Pure]`,
+  its callers know its body.
 - Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,
   `var`, discard, `not`, `and`, `or`, positional and property patterns) test tags and fields and bind their variables;
   a specification's `switch` is an `if`-chain. A cast to a case: in code, where it fails it throws; in a proof, CSV1011.

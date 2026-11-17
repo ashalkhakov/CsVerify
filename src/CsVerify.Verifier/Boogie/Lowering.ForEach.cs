@@ -311,6 +311,22 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Current(ForEach fe)
         {
+            var current = CurrentCore(fe);
+            // (an element of a collection (not an array's, which the heap has) of a non-nullable reference type isn't null, as
+            // C#'s nullable analysis has it; the collection's element type says, as a var loop variable is nullable)
+            var declared = fe.View == null && CollectionKind(fe.Type) != "Dictionary" ? ElementOf(fe.Type) : null;
+            if (current != null && !fe.String && !IsArray(fe.Type) && declared != null && IsNullable(declared) && NotNullable(declared))
+            {
+                var e = Declare("t$" + _temps++, fe.Element);
+                Emit(KAssign.Of(e, current));
+                Emit(KAssume.Of(NotNull(new KVar(e))));
+                return new KVar(e);
+            }
+            return current;
+        }
+
+        private KExpr CurrentCore(ForEach fe)
+        {
             if (fe.Mat != null)
             {
                 return Sel(fe.Mat, new KVar(fe.Index));

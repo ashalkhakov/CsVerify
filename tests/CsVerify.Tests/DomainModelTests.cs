@@ -1,3 +1,4 @@
+using System.Linq;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -237,6 +238,176 @@ public static class Amounts
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Overflows"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("WrongExact"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Thirds"));
+        }
+
+        private const string Prices = @"using System.Linq;
+public readonly record struct Price
+{
+    public Price(decimal value, string currency)
+    {
+        Spec.Ensures(Value == value && Currency == currency);
+        if (currency.Length != 3 || !currency.All(char.IsAsciiLetter)) throw new ArgumentException(""currency"");
+        Value = value;
+        Currency = currency;
+    }
+    public decimal Value { get; }
+    public string Currency { get; }
+    public static Price operator +(Price a, Price b)
+    {
+        Spec.Requires(a.Currency == b.Currency);
+        Spec.Ensures<Price>(r => r.Value == a.Value + b.Value && r.Currency == a.Currency);
+        return new(a.Value + b.Value, a.Currency);
+    }
+    public static Price operator -(Price a) { Spec.Ensures<Price>(r => r.Value == -a.Value && r.Currency == a.Currency); return new(-a.Value, a.Currency); }
+    public static bool operator <(Price a, Price b) { Spec.Requires(a.Currency == b.Currency); Spec.Ensures<bool>(r => r == (a.Value < b.Value)); return a.Order(b) < 0; }
+    public static bool operator >(Price a, Price b) { Spec.Requires(a.Currency == b.Currency); return a.Order(b) > 0; }
+    [Pure] public int Order(Price other) => Value.CompareTo(other.Value);
+}
+";
+
+        [Fact]
+        public void UserDefinedOperators_AreCallsOfTheirMethods_UnderTheirContracts()
+        {
+            var r = Harness.Verify(Prices + @"public static class Basket
+{
+    public static Price Total(Price a, Price b) { Spec.Requires(a.Currency == b.Currency); Spec.Ensures<Price>(p => p.Value == a.Value + b.Value); return a + b; }
+    public static bool Cheaper(Price a, Price b) { Spec.Requires(a.Currency == b.Currency); Spec.Ensures<bool>(c => c == (a.Value < b.Value)); return a < b; }
+    public static Price Refund(Price a) { Spec.Ensures<Price>(p => p.Value == -a.Value); return -a; }
+    // (a sum of two currencies: the operator's precondition)
+    public static Price Mixed(Price a, Price b) => a + b;
+    public static void Wrong(Price a, Price b) { Spec.Requires(a.Currency == b.Currency); var c = a + b; Spec.Assert(c.Value == a.Value); }
+    public static void Letters() { Spec.Assert(char.IsAsciiLetterUpper('Q') && char.IsAsciiDigit('7') && !char.IsAsciiLetter('7')); }
+    public static void NotLetters() { Spec.Assert(char.IsAsciiLetterLower('Q')); }
+}");
+            foreach (var ok in new[] { "Price..ctor", "op_Addition", "op_UnaryNegation", "op_LessThan", "op_GreaterThan", "Order", "Total", "Cheaper", "Refund", "Letters" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Mixed"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("NotLetters"));
+        }
+
+        [Fact]
+        public void AnOperatorWithoutAContract_IsNoInternalError()
+        {
+            // (#48: an operator's declaration had no syntax for the static checks; a callee's decimal postcondition had no model)
+            var r = Harness.Verify(@"public readonly record struct Weight(decimal Kg)
+{
+    public static Weight operator +(Weight a, Weight b) => new(a.Kg + b.Kg);
+    public static Weight Twice(Weight a) { Spec.Ensures<Weight>(w => w.Kg == a.Kg + a.Kg); return new(a.Kg + a.Kg); }
+}
+public static class Loads { public static Weight Four(Weight a) { var b = Weight.Twice(a); return b + b; } }");
+            Assert.DoesNotContain(r.Methods.SelectMany(m => m.Diagnostics), d => d.Id == "CSV1999");
+            foreach (var ok in new[] { "op_Addition", "Twice", "Four" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+        }
+
+        [Fact]
+        public void ACasesInitProperty_IsAFieldOfItsValue()
+        {
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public abstract record Verdict<TChange, TWhy>
+{
+    private Verdict() { }
+    public static Verdict<TChange, TWhy> Grant(params TChange[] changes) { Spec.Ensures<Verdict<TChange, TWhy>>(r => r is Granted); return new Granted(changes); }
+    [Pure] public static Verdict<TChange, TWhy> Unchanged() => new Granted(Array.Empty<TChange>());
+    public static Verdict<TChange, TWhy> Refuse(TWhy why) { Spec.Ensures<Verdict<TChange, TWhy>>(r => r is Refused); return new Refused(why); }
+    public static Verdict<TChange, TWhy> RefuseAfter(TWhy why, IReadOnlyList<TChange> done)
+    {
+        Spec.Ensures<Verdict<TChange, TWhy>>(r => r is Refused f && (object)f.Done == done);
+        return new Refused(why) { Done = done };
+    }
+    [Pure] public bool IsGranted => this is Granted;
+    public sealed record Granted(IReadOnlyList<TChange> Changes) : Verdict<TChange, TWhy>;
+    public sealed record Refused(TWhy Why) : Verdict<TChange, TWhy>
+    {
+        public IReadOnlyList<TChange> Done { get; init; } = Array.Empty<TChange>();
+    }
+}
+public sealed record Shipped(int Qty);
+public enum Why { NoStock }
+public static class Dispatch
+{
+    public static Verdict<Shipped, Why> Ship(int qty)
+    {
+        Spec.Ensures<Verdict<Shipped, Why>>(r => (r is Verdict<Shipped, Why>.Granted) == (qty > 0));
+        return qty > 0 ? Verdict<Shipped, Why>.Grant(new Shipped(qty)) : Verdict<Shipped, Why>.Refuse(Why.NoStock);
+    }
+    public static bool Granted(int qty) { Spec.Requires(qty > 0); Spec.Ensures<bool>(r => r); return Ship(qty).IsGranted; }
+    public static void None() { var v = Verdict<Shipped, Why>.Unchanged(); Spec.Assert(v is Verdict<Shipped, Why>.Granted g && g.Changes.Count == 0 && v.IsGranted); }
+    public static void Kept(IReadOnlyList<Shipped> done) { var v = Verdict<Shipped, Why>.RefuseAfter(Why.NoStock, done); Spec.Assert(!v.IsGranted); }
+    public static void Plain() { var v = new Verdict<Shipped, Why>.Refused(Why.NoStock); Spec.Assert(v.Done.Count == 0); }
+    public static void Same(IReadOnlyList<Shipped> d) { var a = new Verdict<Shipped, Why>.Refused(Why.NoStock) { Done = d }; var b = a with { }; Spec.Assert(b.Done == d && b.Why == a.Why); }
+    public static void Wrong() { var v = new Verdict<Shipped, Why>.Refused(Why.NoStock); Spec.Assert(v.Done.Count == 1); }
+}");
+            foreach (var ok in new[] { "Grant", "Unchanged", "Refuse", "RefuseAfter", "get_IsGranted", "Ship", "Granted", "None", "Kept", "Plain", "Same" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void ElementsOfANonNullableType_AreNotNull()
+        {
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed record Reading(int Value);
+public sealed class Probe { public int Value; }
+public static class Meter
+{
+    public static int Last(int start, IReadOnlyList<Reading> readings) { var v = start; foreach (var x in readings) { v = x.Value; } return v; }
+    public static int First(IReadOnlyList<Reading> readings) { Spec.Requires(readings.Count > 0); return readings[0].Value; }
+    public static int Seq(IEnumerable<Reading> readings) { var n = 0; foreach (var x in readings) { n = x.Value; } return n; }
+    public static int Objects(IReadOnlyList<Probe> ps) { var n = 0; foreach (var p in ps) { n = p.Value; } return n; }
+    public static int List(List<Reading> readings) { var n = 0; foreach (var x in readings) { n = x.Value; } return n; }
+    public static int Array(Reading[] readings) { Spec.Requires(Spec.Forall(0, readings.Length, i => readings[i] != null)); var n = 0; foreach (var x in readings) { n = x.Value; } return n; }
+    public static int Maybe(IReadOnlyList<Reading?> readings) { var n = 0; foreach (var x in readings) { n = x.Value; } return n; }
+    // (an array may hold nulls, new Reading[2]'s: only a precondition says it doesn't)
+    public static int Made() { var a = new Reading[2]; return a[0].Value; }
+    public static int Given(Reading[] readings) { var n = 0; foreach (var x in readings) { n = x.Value; } return n; }
+}");
+            foreach (var ok in new[] { "Last", "First", "Seq", "Objects", "List", "Array" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Maybe"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Made"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Given"));
+        }
+
+        [Fact]
+        public void WithExpressions_AndNullableTimes_AreValues()
+        {
+            var r = Harness.Verify(@"using System.Collections.Generic;
+using System.Linq;
+public sealed record Ticket(int Seen, DateTime? Closed);
+public static class Desk
+{
+    public static Ticket Bump(Ticket t)
+    {
+        Spec.Requires(t.Seen < int.MaxValue);
+        Spec.Ensures<Ticket>(r => r.Seen == t.Seen + 1 && r.Closed == t.Closed);
+        return t with { Seen = t.Seen + 1 };
+    }
+    public static Ticket Close(Ticket t, DateTime at) { Spec.Ensures<Ticket>(r => r.Closed == at && r.Seen == t.Seen); return t with { Closed = at }; }
+    public static bool ClosedAt(Ticket t, DateTime? at) { Spec.Ensures<bool>(r => r == (t.Closed == at)); return t.Closed == at; }
+    public static bool Open(Ticket t) { Spec.Ensures<bool>(r => r == (t.Closed == null)); return !t.Closed.HasValue; }
+    public static bool AnyAt(IReadOnlyList<Ticket> ts, DateTime? at) => ts.Any(t => t.Closed == at);
+    public static bool After(DateTime? a, DateTime b) => a.HasValue && a.Value > b;
+    public static void Wrong(Ticket t) { var u = t with { Seen = 3 }; Spec.Assert(u.Seen == t.Seen); }
+    public static void Closed(Ticket t) { Spec.Assert(t.Closed != null); }
+    public static int OfNull(Ticket? t) => (t with { Seen = 1 }).Seen;
+}");
+            foreach (var ok in new[] { "Bump", "Close", "ClosedAt", "Open", "AnyAt", "After" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Closed"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("OfNull"));
         }
 
         private const string ValueObjects = @"public sealed record Ref

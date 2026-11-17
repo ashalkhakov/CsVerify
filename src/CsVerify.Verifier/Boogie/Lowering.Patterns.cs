@@ -183,7 +183,7 @@ namespace CsVerify.Verifier.Boogie
                     }
                     foreach (var sp in rp.PropertySubpatterns)
                     {
-                        if (!(sp.Member is IPropertyReferenceOperation { Property: IPropertySymbol member }) || !DataTypes.IsPositional(member.OriginalDefinition))
+                        if (!(sp.Member is IPropertyReferenceOperation { Property: IPropertySymbol member }) || !DataTypes.IsDataField(member.OriginalDefinition))
                         {
                             throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
                         }

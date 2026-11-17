@@ -358,7 +358,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (IsDecimal(type))
             {
-                return DecimalArith(op, l, r, at, inSpec: false);
+                return DecimalArith(op, l, r, type, at, inSpec: false);
             }
             if (!IsIntegral(type))
             {
@@ -843,6 +843,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                case IUnaryOperation uo when UserOperator(uo.OperatorMethod):
+                    return OperatorCall(uo.OperatorMethod, uo.Syntax, uo.Operand);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Not: return Not(Expr(u.Operand));
                 case IUnaryOperation bn when bn.OperatorKind == UnaryOperatorKind.BitwiseNegation && IsIntegral(bn.Type): return Complement(Expr(bn.Operand), bn.Type);
                 case IUnaryOperation u when u.OperatorKind == UnaryOperatorKind.Plus: return Expr(u.Operand);
@@ -857,6 +859,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
         {
             switch (e)
             {
+                case IBinaryOperation bo when UserOperator(bo.OperatorMethod):
+                    return OperatorCall(bo.OperatorMethod, bo.Syntax, bo.LeftOperand, bo.RightOperand);
                 case IBinaryOperation b when b.OperatorMethod == null && !(IsString(b.Type) && b.OperatorKind == BinaryOperatorKind.Add) && (InSubset(b.LeftOperand.Type) && InSubset(b.RightOperand.Type) ||
                                              b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (RefOperand(b.LeftOperand) || RefOperand(b.RightOperand))):
                     return Binary(b);
@@ -874,6 +878,14 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 default: return ExprOther(e);
             }
         }
+
+        /// <summary>An operator the program declares (not a record's ==, which is its fields').</summary>
+        private static bool UserOperator(IMethodSymbol m) =>
+            m is { IsImplicitlyDeclared: false, MethodKind: MethodKind.UserDefinedOperator } && m.DeclaringSyntaxReferences.Length > 0;
+
+        /// <summary>a + b of a user-defined operator: a call of its method, op_Addition(a, b), by its contract.</summary>
+        private KExpr OperatorCall(IMethodSymbol op, SyntaxNode at, params IOperation[] operands) =>
+            Invoke(op, null, operands.Select((x, i) => (IArgumentOperation)new OperatorArgument(op.Parameters[i], x)).ToList(), at, null);
 
         /// <summary>Expr of a array element reference: its forms, in order; any other as ExprOther.</summary>
         private KExpr ExprOfArrayElementReference(IOperation e)

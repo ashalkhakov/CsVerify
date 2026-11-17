@@ -98,6 +98,9 @@ namespace CsVerify.Verifier.Boogie
                    c.Bases.All(InheritsNoUnseenContract);
         }
 
+        /// <summary>A data constructor's argument for a case's init property.</summary>
+        private static string InitParam(IPropertySymbol p) => "i$" + p.Name;
+
         /// <summary>A kind of method the translation takes, where it is declared.</summary>
         private static bool KindInSubset(IMethodSymbol m, Contract c)
         {
@@ -112,17 +115,17 @@ namespace CsVerify.Verifier.Boogie
             }
             if (m.IsStatic)
             {
-                return m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet;
+                return m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.UserDefinedOperator;
             }
             var ofItsType = OwnerTakesInstanceMember(m) && InstanceKindInSubset(m);
             return ofItsType || StructConstructor(m) || StructReader(m);
         }
 
-        /// <summary>A member of a class, an interface's abstract one, or a data type's plain method.</summary>
+        /// <summary>A member of a class, an interface's abstract one, or a data type's plain method or getter.</summary>
         private static bool OwnerTakesInstanceMember(IMethodSymbol m)
         {
             var t = m.ContainingType;
-            var plainMethod = m.MethodKind == MethodKind.Ordinary && !m.IsVirtual && !m.IsAbstract && !m.IsOverride;
+            var plainMethod = m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !m.IsVirtual && !m.IsAbstract && !m.IsOverride && !m.IsImplicitlyDeclared;
             return IsClass(t) || IsInterface(t) && m.IsAbstract || IsData(t) && plainMethod;
         }
 
@@ -265,7 +268,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A kind of method the translation takes somewhere: a method, an accessor, a constructor, a lambda or local function.</summary>
         private static bool TakenKind(IMethodSymbol m)
         {
-            var taken = m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.ExplicitInterfaceImplementation;
+            var taken = m.MethodKind is MethodKind.Ordinary or MethodKind.StaticConstructor or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.ExplicitInterfaceImplementation or
+                MethodKind.UserDefinedOperator;
             var instanceConstructor = m.MethodKind == MethodKind.Constructor && !m.IsStatic;
             return taken || instanceConstructor || IsNested(m);
         }
@@ -868,10 +872,20 @@ namespace CsVerify.Verifier.Boogie
                         dc.AddGuard(typed);
                     }
                 }
+                // (a case's init properties: arguments after the positional ones)
+                foreach (var ip in Verifier.DataTypes.InitFields(c))
+                {
+                    dc.AddParam((InitParam(ip), TypeOf(ip.Type), IsData(ip.Type), FieldFunction(ip)));
+                    if (FieldOfType(new MVar(InitParam(ip)), ip.Type) is MExpr typed)
+                    {
+                        dc.AddGuard(typed);
+                    }
+                }
                 foreach (var prop in Data.Fields(c))
                 {
                     var fn = FieldFunction(prop);
-                    MExpr value = SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
+                    MExpr value = Verifier.DataTypes.IsInitField(prop) ? new MVar(InitParam(prop))
+                        : SymbolEqualityComparer.Default.Equals(prop.ContainingType.OriginalDefinition, c.OriginalDefinition)
                         ? new MVar(Local(ctor.Parameters.First(x => x.Name == prop.Name)))
                         : Checks.MathOf(Lowering.BaseArgument(c, prop, IsFunction, Literal, ContractOf), this, ctor);
                     // (a computed one, as a base's argument: an integer the C# value, wrapped into the field's range as unchecked
