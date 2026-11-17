@@ -665,11 +665,12 @@ namespace CsVerify.Verifier.Boogie
         private void FlowCapture(IFlowCaptureOperation fc)
         {
             _captured[fc.Id] = fc.Value;
-            // (a field captured as what an assignment writes, x.f = c ? a : b: its object, kept)
-            if (fc.Value is IFieldReferenceOperation { Field.IsStatic: false } cf &&
-                cf.Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation)
+            // (a field or an auto-property captured as what an assignment writes, x.f = c ? a : b, P = P with { ... }: its
+            // object, kept)
+            if ((fc.Value is IFieldReferenceOperation { Field.IsStatic: false } || fc.Value is IPropertyReferenceOperation { Property: { IsStatic: false, IsIndexer: false } fp } && IsField(fp)) &&
+                ((IMemberReferenceOperation)fc.Value).Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation)
             {
-                _lvalues[fc.Id] = cf;
+                _lvalues[fc.Id] = fc.Value;
             }
             var value = Expr(fc.Value);
             Emit(KAssign.Of(Capture(fc.Id, fc.Value.Type), value));

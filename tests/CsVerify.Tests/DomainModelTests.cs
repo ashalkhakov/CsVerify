@@ -1,3 +1,4 @@
+using CsVerify.Verifier;
 using System.Linq;
 using Xunit;
 
@@ -408,6 +409,118 @@ public static class Desk
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Closed"));
             Assert.Equal(new[] { "CSV1013" }, r.Errors("OfNull"));
+        }
+
+        [Fact]
+        public void Only_ChecksItsMethods_AndCallsTheOthersByTheirContracts()
+        {
+            const string source = @"using System.Collections.Generic;
+public sealed record Shipped(int Qty);
+public sealed class Depot
+{
+    public bool Ship(int qty) { Spec.Ensures<bool>(r => r == (qty > 0)); return qty > 0 ? Verdict.Grant(new Shipped(qty)) : Verdict.Refuse(); }
+    public int Twice(int n) { Spec.Requires(n >= 0 && n < 1000); Spec.Ensures<int>(r => r == 2 * n); return Helpers.Double(n); }
+    public int Square(int n) { Spec.Requires(n >= 0 && n < 100); Spec.Ensures<int>(r => r == n * n); return Helpers.Square(n); }
+    private static class Verdict
+    {
+        public static bool Grant(params Shipped[] changes) { Spec.Ensures<bool>(r => r); return true; }
+        public static bool Refuse() { Spec.Ensures<bool>(r => !r); return false; }
+    }
+}
+public static class Helpers
+{
+    // (wrong: checked only where it's selected)
+    public static int Double(int n) { Spec.Requires(n >= 0 && n < 1000); Spec.Ensures<int>(r => r == 2 * n); return n; }
+    [Pure] public static int Square(int n) => n * n;
+}";
+            VerificationResult Run(params string[] only)
+            {
+                var o = new VerifierOptions();
+                foreach (var x in only)
+                {
+                    o.AddOnly(x);
+                }
+                return Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + source) }, o);
+            }
+            var depot = Run("Depot.");
+            Assert.Equal(new[] { "Depot.Ship", "Depot.Twice", "Depot.Square", "Verdict.Grant", "Verdict.Refuse" }, depot.Methods.Select(m => m.Name));
+            Assert.All(depot.Methods, m => Assert.True(m.Verified, m.Name + ": " + string.Join("; ", m.Diagnostics.Select(d => d.Message))));
+            // (a nested type's methods by their full name)
+            Assert.Equal(new[] { "Verdict.Grant", "Verdict.Refuse" }, Run("Depot.Verdict.").Methods.Select(m => m.Name));
+            Assert.Equal(new[] { "CSV1002" }, Run("Helpers.").Errors("Double"));
+        }
+
+        [Fact]
+        public void AForeachOverAListOfAnyExpression_ReadsItsElements()
+        {
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public sealed record Entry(int Line);
+public sealed record Batch(IReadOnlyList<Entry> Entries);
+public sealed class Journal
+{
+    private readonly List<Entry> pending = new();
+    private IReadOnlyList<Entry> last = new List<Entry>();
+    public int Line { get; private set; }
+    public void Take(Batch batch) { foreach (var e in batch.Entries) { Line = e.Line; pending.Add(e); } }
+    public int Again() { var n = 0; foreach (var e in last) { n = e.Line; } return n; }
+    public static IReadOnlyList<Entry> Of(Batch b) => b.Entries;
+    public static int Called(Batch b) { var n = 0; foreach (var e in Of(b)) { n = e.Line; } return n; }
+    public static void Wrong(Batch b) { var n = 0; foreach (var e in b.Entries) { n = e.Line; } Spec.Assert(n == 0); }
+}");
+            foreach (var ok in new[] { "Take", "Again", "Of", "Called" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void AWithCopyOfAProperty_AssignedBack_IsARead_ACopy_AndAWrite()
+        {
+            var r = Harness.Verify(@"public enum Status { Packed, Posted }
+public sealed record Label(string Code, Status Status);
+public sealed class Parcel
+{
+    public Label? Label { get; private set; }
+    public void Pack(string code) { Spec.Ensures(Label != null && Label.Status == Status.Packed); Label = new Label(code, Status.Packed); }
+    public void Post()
+    {
+        Spec.Ensures(Label == null || Label.Status == Status.Posted);
+        if (Label is not null)
+        {
+            Label = Label with { Status = Status.Posted };
+        }
+    }
+    public void PostAnyway() { Spec.Requires(Label != null); Spec.Ensures(Label != null && Label.Status == Status.Posted && Label.Code == Spec.Old(Label).Code); Label = Label! with { Status = Status.Posted }; }
+    public void Wrong() { Spec.Requires(Label != null); Spec.Ensures(Label != null && Label.Status == Status.Packed); Label = Label! with { Status = Status.Posted }; }
+}");
+            foreach (var ok in new[] { "Pack", "Post", "PostAnyway" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void TimeArithmetic_IsOnTicks()
+        {
+            var r = Harness.Verify(@"public static class Timer
+{
+    public static bool Expired(DateTime from, TimeSpan grace, DateTime now) { var deadline = from + grace; return now >= deadline; }
+    public static TimeSpan Remaining(DateTime deadline, DateTime now) => deadline - now;
+    public static TimeSpan Both(TimeSpan a, TimeSpan b) { Spec.EnsuresOnThrow<OverflowException>(true); return a + b; }
+    public static void Order(DateTime from, TimeSpan grace) { Spec.Requires(grace > TimeSpan.Zero && from < DateTime.MaxValue - grace); Spec.Assert(from + grace > from); }
+    public static void Back(DateTime a, DateTime b) { Spec.Assert(b + (a - b) == a); }
+    public static DateTime Throws(DateTime at, TimeSpan by) { Spec.EnsuresOnThrow<ArgumentOutOfRangeException>(false); return at + by; }
+    public static DateTime Safe(DateTime at, TimeSpan by) { Spec.Requires(by >= TimeSpan.Zero && at <= DateTime.MaxValue - by); Spec.EnsuresOnThrow<ArgumentOutOfRangeException>(false); return at + by; }
+    public static void Wrong(DateTime from, TimeSpan grace) { Spec.Assert(from + grace >= from); }
+}");
+            foreach (var ok in new[] { "Expired", "Remaining", "Both", "Order", "Back", "Safe" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Throws"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
         }
 
         private const string ValueObjects = @"public sealed record Ref

@@ -506,8 +506,8 @@ CSV1001 (an empty sequence has no `First`); a List's `Find`, `FindIndex`, `Exist
 are its first match (or the default), the first match's index (or -1), `Any` and `All`; `Index` pairs each element with its
 index; `ToDictionary` is a dictionary of the library's (what's in it unknown), its definition's precondition checked
 (no key null or an earlier one's, CSV1001); `ToArray` and `ToList` copy it into a new object. A double
-`Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query reads it into a map where the loop
-starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
+`Sum` adds in order from 0.0, rounding at each step. A `foreach` over a query, or over a list interface of any
+expression (a parameter, a property, a call's result), reads it into a map where the loop starts; `GroupBy` (with a result selector of the key and the group too) gives each key's first element's index, a
 selector reading its `Key` and `Count()` (exact: a running count of the source's elements of that key; a database's
 are bounds); over a `GroupBy`, each group is its key's first element's index, its `Key` that element's key, and a `foreach`
 over it the source's elements of that key, as read when the groups were. Lambdas are inlined where they are pure
@@ -564,10 +564,13 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
 - With SQL's nulls (`UseRelationalNulls`), objects compared in a database query's lambda (`o.Customer == c`) are SQL's
   unknown where one that may be null is, as strings and nullable values are; against the literal null, `IS NULL`, exact.
 
-**Opaque library values.** A `DateTime` is an `int` the kernel keeps but doesn't compute with: a field holds it, a
-parameter takes it, a call gives it, and an EF concurrency token is compared by it. That int is its `Ticks`, so
-`==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do, and `.Ticks` is it;
-their other operators and members are not translated (CSV1902). A `Guid` is an `int` too, of which `==` and `!=` are
+**Opaque library values.** A `DateTime` is an `int`: a field holds it, a parameter takes it, a call gives it, and an
+EF concurrency token is compared by it. That int is its `Ticks` (0 to `DateTime.MaxValue`'s; a `TimeSpan`'s, a
+`long`'s range), so `==`, `!=`, `<` and the rest of two `DateTime`s, or two `TimeSpan`s, compare it, as .NET's do,
+and `.Ticks` is it. `DateTime ± TimeSpan`, `DateTime - DateTime` and `TimeSpan ± TimeSpan` are the ticks' sum or
+difference: past `DateTime`'s range they throw an `ArgumentOutOfRangeException`, past `TimeSpan`'s an
+`OverflowException`. `MinValue`, `MaxValue` and `TimeSpan.Zero` are their ticks; their other operators and members are
+not translated (CSV1902). A `Guid` is an `int` too, of which `==` and `!=` are
 all there is: `Guid.Empty` is 0, and `Guid.NewGuid()` gives one nothing is known of (0 too, maybe). `x.CompareTo(y)`
 of integers, decimals, `DateTime`s and `TimeSpan`s is the sign of `x - y`, and `char`'s ASCII tests
 (`char.IsAsciiDigit`, `IsAsciiLetter`, `IsAsciiLetterUpper`, ...) are ranges of the code.
@@ -993,7 +996,7 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
 - A case's init property besides its positional ones (`public IReadOnlyList<T> Undone { get; init; } = ...`) is a
   field after them: `new Refused(why)` has its initializer's value, `new Refused(why) { Undone = xs }` has `xs`. A
   `with` expression (`t with { Seen = t.Seen + 1 }`) is the case's constructor of the fields, those it sets replaced
-  (of null it throws, CSV1013).
+  (of null it throws, CSV1013); `P = P with { ... }` of a field or an auto-property reads it, and writes the copy.
 - A data type's plain getter (`public bool IsGranted => this is Granted;`, not virtual) is a method of it; `[Pure]`,
   its callers know its body.
 - Type tests (`is`, `switch` statements and expressions) and patterns (declaration, type, constant, relational,

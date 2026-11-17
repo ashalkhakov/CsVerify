@@ -36,6 +36,19 @@ namespace CsVerify.Verifier
         /// <summary>Verify only the methods whose name (Type.Method) contains one of these; all, if empty.</summary>
         public List<string> Only = new List<string>();
         internal bool Selects(string method) => Only.Count == 0 || Only.Any(o => method.Contains(o, StringComparison.Ordinal));
+
+        /// <summary>Selected by its name (Type.Method) or its full one (Outer.Type.Method, a nested type's).</summary>
+        internal bool Selects(string method, IMethodSymbol m) => Selects(method) || Selects(FullName(m));
+
+        internal static string FullName(IMethodSymbol m)
+        {
+            var name = m.Name;
+            for (var t = m.ContainingType; t != null; t = t.ContainingType)
+            {
+                name = t.Name + "." + name;
+            }
+            return name;
+        }
         public string Z3Path;
         /// <summary>Where to write the Boogie program the engine verifies (to read the translation), if anywhere.</summary>
         public string BoogieOut;
@@ -87,6 +100,8 @@ namespace CsVerify.Verifier
     public sealed class MethodResult
     {
         public string Name;
+        /// <summary>A method --only leaves out: its contract, which its callers call; it isn't verified or reported.</summary>
+        internal bool Unselected;
         /// <summary>Where it is declared (file and line): which of several overloads it is.</summary>
         public string Declared;
         public int Obligations, Proved;
@@ -977,8 +992,9 @@ namespace CsVerify.Verifier
                         Declared = span.Path + ":" + (span.StartLinePosition.Line + 1),
                     };
                     // (its lambdas and local functions, each a unit of its own: selected or not, as it is)
-                    if (!options.Selects(mr.Name))
+                    if (!options.Selects(mr.Name, method))
                     {
+                        Unselected(method, contract, decl, forBoogie);
                         RunNested(engine, decl, model, mr.Name, result, declarations, options, forBoogie);
                         continue;
                     }
@@ -1031,8 +1047,9 @@ namespace CsVerify.Verifier
                         Name = hasCode ? accessor.ContainingType.Name + "." + accessor.Name : null,
                         Declared = span.Path + ":" + (span.StartLinePosition.Line + 1),
                     };
-                    if (hasCode && !options.Selects(mr.Name))
+                    if (hasCode && !options.Selects(mr.Name, accessor))
                     {
+                        Unselected(accessor, contract, node, forBoogie);
                         continue;
                     }
                     if (hasCode)
@@ -1306,7 +1323,7 @@ namespace CsVerify.Verifier
             var included = held.ToList();
             // (those whose bodies don't translate but whose contracts do: procedures of their contracts alone, which
             // their callers call; their bodies are verified as always)
-            var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method)).Select(x => x.result));
+            var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected).Select(x => x.result));
             var why = new Dictionary<MethodResult, string>();
             Boogie.BoogieTranslator translator;
             // (a method that doesn't translate leaves out those that call it: until none is left out)
@@ -1497,6 +1514,19 @@ namespace CsVerify.Verifier
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// A method --only leaves out, for its callers: the procedure of its contract alone, or a [Pure] one's function (its
+        /// body is what its callers know of it); neither verified nor reported.
+        /// </summary>
+        private static void Unselected(IMethodSymbol method, Contract contract, SyntaxNode decl, List<(IMethodSymbol, Contract, SyntaxNode, MethodResult)> forBoogie)
+        {
+            var pure = contract.IsPure && Boogie.BoogieTranslator.Candidate(method, contract);
+            if (pure || Boogie.BoogieTranslator.Candidate(method, contract, asContract: true))
+            {
+                forBoogie.Add((method, contract, decl, new MethodResult { Name = null, Unselected = !pure }));
+            }
         }
 
         /// <summary>

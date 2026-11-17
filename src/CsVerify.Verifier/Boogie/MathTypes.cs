@@ -70,7 +70,10 @@ namespace CsVerify.Verifier.Boogie
             IsGhost(t) ? OfType(v, GhostOf(t))
             : IsData(t) ? (NotNullable(t) ? IsCase(v, t) : OrElse(IsNull(v), IsCase(v, t)))
             : IsIntegral(t) ? InRange(v, t)
-            : IsDecimal(t) ? AndAlso(Le(Number(-Lowering.DecimalMax), v), Le(v, Number(Lowering.DecimalMax))) : null;
+            : IsDecimal(t) ? AndAlso(Le(Number(-Lowering.DecimalMax), v), Le(v, Number(Lowering.DecimalMax)))
+            // (a DateTime's ticks within its range, a TimeSpan's within long's)
+            : t?.ToDisplayString() == "System.DateTime" ? AndAlso(Le(MLit.Zero, v), Le(v, Number(Lowering.MaxTicks)))
+            : t?.ToDisplayString() == "System.TimeSpan" ? AndAlso(Le(Number(long.MinValue), v), Le(v, Number(long.MaxValue))) : null;
 
         /// <summary>A value as a box (where generic code takes it).</summary>
         public static MExpr Box(MExpr v, ITypeSymbol def, ITypeSymbol actual) =>

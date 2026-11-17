@@ -40,7 +40,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--boogie-out <file>` | write the Boogie program it verified ([the Boogie engine](boogie.md)) |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
 | `-a <dll>` / `--analyzer-config <file>` | run the source generators of this analyzer assembly on the program, with this `.editorconfig` or `.globalconfig` (the MSBuild targets pass the project's) |
-| `--only <text>` | verify only the methods whose name (`Type.Method`) contains the text (repeatable) |
+| `--only <text>` | verify only the methods whose name (`Type.Method`, or a nested type's `Outer.Type.Method`) contains the text (repeatable); the others are still called by their contracts, and a `[Pure]` one by its body, but aren't verified |
 | `-v` | list every method with its proved/total obligations, and the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed |
 | `--checks <kinds>` | prove only these kinds of obligation: a comma-separated list of `null`, `linear`, `bounds`, `overflow`, `contracts` (or `all`). See [Check profiles](#check-profiles) |
 | `--each` | verify each argument as a program of its own (a comma joins paths into one: `lemon/CsLemon,lemon/CsLemon.Runtime`), and combine the results, for programs that cannot be compiled together |

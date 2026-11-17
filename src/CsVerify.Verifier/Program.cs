@@ -27,7 +27,8 @@ options:
   -a <analyzer.dll>   run the source generators of this analyzer assembly on the program (generated
                       code is compiled, not verified)
   --analyzer-config <file>  an .editorconfig or .globalconfig the generators read
-  --only <text>       verify only the methods whose name (Type.Method) contains the text (repeatable)
+  --only <text>       verify only the methods whose name (Type.Method, or Outer.Type.Method) contains the
+                      text (repeatable); the others are called by their contracts, not verified
   -v                  list every method with its proved obligations, and the library contracts
                       ([ContractsFor] stubs, trusted) the proofs assumed
   --checks <kinds>    prove only these kinds of obligation, a comma-separated list of null, linear,
