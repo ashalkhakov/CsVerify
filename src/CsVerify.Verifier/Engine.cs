@@ -52,6 +52,8 @@ namespace CsVerify.Verifier
             return name;
         }
         public string Z3Path;
+        /// <summary>The file of the methods proved before (--cache): one whose proof depends on nothing changed isn't proved again.</summary>
+        public string CachePath;
         /// <summary>Where to write the Boogie program the engine verifies (to read the translation), if anywhere.</summary>
         public string BoogieOut;
         public List<string> Defines = new List<string>();
@@ -107,8 +109,10 @@ namespace CsVerify.Verifier
         /// <summary>Where it is declared (file and line): which of several overloads it is.</summary>
         public string Declared;
         public int Obligations, Proved;
-        /// <summary>How long verifying it took, all rounds included.</summary>
+        /// <summary>How long solving it took (milliseconds), all rounds included.</summary>
         public long Milliseconds;
+        /// <summary>Proved before, with what its proof depends on unchanged (--cache): not given to the solver this time.</summary>
+        public bool Cached;
         public readonly List<VerificationDiagnostic> Diagnostics = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts the proof of this method assumed.</summary>
         public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
@@ -157,6 +161,15 @@ namespace CsVerify.Verifier
         public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts some proof assumed.</summary>
         public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
+        /// <summary>How long each phase of the run took (milliseconds), in order: compiling, translating, solving...</summary>
+        public readonly List<(string phase, long ms)> Phases = new List<(string, long)>();
+
+        /// <summary>The phase that ends now: the time since the clock last started, which starts again.</summary>
+        internal void Lap(string phase, System.Diagnostics.Stopwatch clock)
+        {
+            Phases.Add((phase, clock.ElapsedMilliseconds));
+            clock.Restart();
+        }
 
         public void AddAnalyzerError(VerificationDiagnostic analyzerError) => AnalyzerErrors.Add(analyzerError);
 
@@ -184,6 +197,18 @@ namespace CsVerify.Verifier
                 all.CompilationErrors.AddRange(r.CompilationErrors);
                 all.AnalyzerErrors.AddRange(r.AnalyzerErrors);
                 all.Assumptions.UnionWith(r.Assumptions);
+                foreach (var (phase, ms) in r.Phases)
+                {
+                    var k = all.Phases.FindIndex(p => p.phase == phase);
+                    if (k < 0)
+                    {
+                        all.Phases.Add((phase, ms));
+                    }
+                    else
+                    {
+                        all.Phases[k] = (phase, all.Phases[k].ms + ms);
+                    }
+                }
             }
             return all;
         }
@@ -868,6 +893,8 @@ namespace CsVerify.Verifier
 
         public static VerificationResult VerifySources(IEnumerable<(string path, string text)> sources, VerifierOptions options)
         {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var result = new VerificationResult();
             var parse = new CSharpParseOptions(LanguageVersion.Latest,
                 preprocessorSymbols: new[] { SpecSymbols.SpecSymbol }.Concat(options.Defines));
             var trees = sources.Select(s => CSharpSyntaxTree.ParseText(s.text, parse, s.path)).ToList();
@@ -889,11 +916,11 @@ namespace CsVerify.Verifier
                 }
             }
 
-            var result = new VerificationResult();
             foreach (var d in compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
             {
                 result.AddCompilationError(new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan()));
             }
+            result.Lap("compile", clock);
             if (result.CompilationErrors.Count > 0)
             {
                 return result;
@@ -920,6 +947,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.Ef = engine.Ef;
             Boogie.KernelTypes.FieldWrites = m => engine.Fields.WritesOf(m).fields;
             Boogie.KernelTypes.FieldReads = engine.Fields.ReadsOf;
+            Boogie.KernelTypes.SelfWritesOf = engine.Fields.SelfWritesOf;
             Boogie.KernelTypes.FieldEffectsOf = m =>
             {
                 var (f, all) = engine.Fields.WritesOf(m);
@@ -928,6 +956,7 @@ namespace CsVerify.Verifier
             Boogie.KernelTypes.MayTouchArrays = engine.MayTouchArrays;
             Boogie.KernelTypes.Trees = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
                 .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
+            result.Lap("analyze", clock);
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             // (the Spec library's trusted lemmas the program calls, Ieee's: procedures of their contracts, as a trusted method of its own is)
@@ -1105,10 +1134,12 @@ namespace CsVerify.Verifier
                     RunNested(engine, init, model, member.ContainingType.Name + "." + member.Name, result, declarations, options, forBoogie);
                 }
             }
+            result.Lap("collect", clock);
             if (forBoogie.Count > 0)
             {
-                result.BoogieFailure = RunBoogie(engine, compilation, forBoogie);
+                result.BoogieFailure = RunBoogie(engine, compilation, forBoogie, result);
             }
+            clock.Restart();
             // accessors with code: properties are methods too
             foreach (var tree in userTrees)
             {
@@ -1185,7 +1216,9 @@ namespace CsVerify.Verifier
                 result.AddAnalyzerError(new VerificationDiagnostic("CSV1021", true, message, location.GetLineSpan()));
             }
             result.AddAssumptions(result.Methods.SelectMany(mr => mr.Assumptions));
+            result.Lap("the rest", clock);
             AddAnalyzerErrors(compilation, userTrees, declarations, result, options);
+            result.Lap("analyzers", clock);
             return result;
         }
 
@@ -1247,6 +1280,13 @@ namespace CsVerify.Verifier
 
         private static IEnumerable<(IMethodSymbol symbol, ControlFlowGraph graph)> NestedFunctions(SyntaxNode decl, SemanticModel model)
         {
+            // (none without a local function, a query (its clauses are lambdas) or a lambda outside specifications in its
+            // syntax: no flow graph to build)
+            if (!decl.DescendantNodes().Any(n => n is LocalFunctionStatementSyntax || n is QueryExpressionSyntax q && !SpecSymbols.IsInGhostContext(q, model) ||
+                                                 n is AnonymousFunctionExpressionSyntax a && !SpecSymbols.IsInGhostContext(a, model)))
+            {
+                yield break;
+            }
             ControlFlowGraph root;
             switch (model.GetOperation(decl))
             {
@@ -1319,10 +1359,16 @@ namespace CsVerify.Verifier
         /// The methods held back for Boogie: those whose bodies translate (and whose callees do), as one program, verified
         /// by it; the rest as always. If Boogie fails, they are all verified as always, and that is said.
         /// </summary>
-        private static string RunBoogie(Engine engine, CSharpCompilation compilation, List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> held)
+        private static string RunBoogie(Engine engine, CSharpCompilation compilation, List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> held,
+            VerificationResult run)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            var included = held.ToList();
+            var lap = System.Diagnostics.Stopwatch.StartNew();
+            long typeCheck = 0;
+            // (with --only, what the selected methods reach; the whole program again if that doesn't type check)
+            var whole = held.ToList();
+            var reached = engine.Options.Only.Count > 0 ? Reached(engine, compilation, held) : null;
+            var included = reached ?? whole;
             // (those whose bodies don't translate but whose contracts do: procedures of their contracts alone, which
             // their callers call; their bodies are verified as always)
             var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected).Select(x => x.result));
@@ -1393,8 +1439,19 @@ namespace CsVerify.Verifier
                 translator.Finish();
                 // (a method whose translation Boogie doesn't type check: left out, as one that doesn't translate is, and
                 // the rest translated again, its callers left out too. An error outside every method's: all fail, below)
+                var typing = System.Diagnostics.Stopwatch.StartNew();
                 var errors = Boogie.BoogieRunner.TypeErrors(translator.Text)
                     .Select(e => (e.message, result: translator.Spans.FirstOrDefault(s => s.from <= e.line && e.line <= s.to).result)).ToList();
+                typeCheck += typing.ElapsedMilliseconds;
+                if (reached != null && errors.Count > 0)
+                {
+                    Trace($"--only: what the selected methods reach doesn't type check ({errors[0].message}); the whole program instead");
+                    reached = null;
+                    included = whole;
+                    why.Clear();
+                    opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected).Select(x => x.result));
+                    continue;
+                }
                 if (errors.Count == 0 || errors.Any(e => e.result == null))
                 {
                     break;
@@ -1407,6 +1464,9 @@ namespace CsVerify.Verifier
                 var illTyped = errors.Select(e => e.result).ToHashSet();
                 included = included.Where(x => !illTyped.Contains(x.result)).ToList();
             }
+            run.Phases.Add(("translate", lap.ElapsedMilliseconds - typeCheck));
+            run.Phases.Add(("type check", typeCheck));
+            lap.Restart();
             if (engine.Options.BoogieOut != null)
             {
                 System.IO.File.WriteAllText(engine.Options.BoogieOut, translator.Text);
@@ -1422,16 +1482,41 @@ namespace CsVerify.Verifier
                 return null;
             }
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
+            var times = new Dictionary<MethodResult, long>();
+            // (with --only, the selected methods' procedures: the others are there for their callers, not to be verified)
+            var only = engine.Options.Only.Count == 0 ? null
+                : included.Where(x => x.result.Name != null).SelectMany(x => translator.Procedures.TryGetValue(x.result, out var p) ? p : new List<string>()).Distinct().ToList();
+            included = included.Where(x => only == null || x.result.Name != null).ToList();
+            // (--cache: a method proved before, what its proof depends on unchanged, is proved; it isn't given to the solver)
+            var cache = engine.Options.CachePath != null ? Boogie.ResultCache.Load(engine.Options.CachePath) : null;
+            var keys = new Dictionary<MethodResult, string>();
+            if (cache != null)
+            {
+                var named = included.Where(x => x.result.Name != null && translator.Procedures.ContainsKey(x.result)).ToList();
+                var procKeys = Boogie.ResultCache.Keys(translator.Text, named.SelectMany(x => translator.Procedures[x.result]), Salt(engine));
+                foreach (var x in named)
+                {
+                    var mine = translator.Procedures[x.result].Where(procKeys.ContainsKey).Select(p => procKeys[p]).ToList();
+                    if (mine.Count > 0)
+                    {
+                        keys[x.result] = Boogie.ResultCache.Hash(string.Join("\n", mine));
+                        x.result.Cached = cache.Proved(keys[x.result]);
+                    }
+                }
+                only = (only ?? named.SelectMany(x => translator.Procedures[x.result]).Distinct().ToList())
+                    .Where(p => !named.Any(x => x.result.Cached && translator.Procedures[x.result].Contains(p))).ToList();
+            }
             try
             {
                 // (once more if the run itself fails, as it can when the machine is loaded: talking to the solver times out)
                 try
                 {
-                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs, engine.Options.Cores);
+                    failures = only?.Count == 0 ? new List<(MethodResult, VerificationDiagnostic)>()
+                        : Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs, engine.Options.Cores, only, times);
                 }
                 catch (Exception first) when (!(first is InvalidOperationException))
                 {
-                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs * 2, engine.Options.Cores);
+                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs * 2, engine.Options.Cores, only, times);
                 }
             }
             catch (Exception e)
@@ -1446,9 +1531,17 @@ namespace CsVerify.Verifier
                 }
                 return e.GetType().Name + ": " + e.Message + "\n" + string.Join("\n", (e.StackTrace ?? "").Split('\n').Take(6));
             }
+            run.Phases.Add(("solve", lap.ElapsedMilliseconds));
+            lap.Restart();
+            // (what Boogie proved, nothing of it reported: kept for the next run)
+            var proved = new List<string>();
             foreach (var x in included)
             {
                 var mine = failures.Where(f => f.method == x.result).Select(f => f.diagnostic).ToList();
+                if (mine.Count == 0 && keys.TryGetValue(x.result, out var key))
+                {
+                    proved.Add(key);
+                }
                 // (Boogie couldn't decide it, in the time it had: not verified, what it did decide reported)
                 var undecided = mine.FirstOrDefault(d => d.Id == "CSV1900");
                 if (undecided != null)
@@ -1506,7 +1599,7 @@ namespace CsVerify.Verifier
                 x.result.AddDiagnostics(translator.Warnings(x.result));
                 x.result.Obligations = translator.Obligations.TryGetValue(x.result, out var n) ? n : 0;
                 x.result.Proved = Math.Max(0, x.result.Obligations - mine.Count(d => d.IsError));
-                x.result.Milliseconds = clock.ElapsedMilliseconds / included.Count;
+                x.result.Milliseconds = times.TryGetValue(x.result, out var ms) ? ms : 0;
                 // (past its time budget: not verified, never verified)
                 var budget = engine.Options.MethodBudgetMs * Boogie.BoogieRunner.TimeScale;
                 if (budget > 0 && x.result.Milliseconds > budget)
@@ -1515,7 +1608,223 @@ namespace CsVerify.Verifier
                         $"time budget ({budget} ms) reached; the rest of '{x.result.Name}' is not verified", x.decl.GetLocation().GetLineSpan()));
                 }
             }
+            // (a run of all the methods keeps only theirs; one of some, the others' too)
+            cache?.Save(proved, keepOthers: engine.Options.Only.Count > 0);
+            run.Phases.Add(("static checks", lap.ElapsedMilliseconds));
             return null;
+        }
+
+        /// <summary>
+        /// What a cached proof depends on beyond the program: the options that change what's proved or how long the solver
+        /// has, and the builds of the verifier, Boogie and the solver.
+        /// </summary>
+        private static string Salt(Engine engine)
+        {
+            var o = engine.Options;
+            return string.Join("|", typeof(Engine).Assembly.ManifestModule.ModuleVersionId, typeof(Microsoft.Boogie.ExecutionEngine).Assembly.GetName().Version,
+                SolverVersion(Z3.Find(o.Z3Path)), o.TimeoutMs, Boogie.BoogieRunner.TimeScale, o.CheckOverflow, o.Nullable,
+                o.CheckKinds == null ? "all" : string.Join(",", o.CheckKinds.OrderBy(k => k, StringComparer.Ordinal)),
+                Environment.GetEnvironmentVariable("CSVERIFY_BOOGIE_OPTIONS"));
+        }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _solverVersions =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+
+        /// <summary>What `z3 --version` says (the same on every machine with that release); the file's size where it can't be run.</summary>
+        private static string SolverVersion(string z3) => _solverVersions.GetOrAdd(z3 ?? "", path =>
+        {
+            try
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path, "--version")
+                    { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true });
+                var version = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(10000);
+                return version;
+            }
+            catch (Exception e) when (e is System.ComponentModel.Win32Exception || e is InvalidOperationException || e is IOException)
+            {
+                return File.Exists(path) ? new FileInfo(path).Length.ToString() : path;
+            }
+        });
+
+        /// <summary>
+        /// With --only, what the selected methods reach: what their code and contracts name (and the lambdas in them), the
+        /// members a virtual call may run or an override's contract comes from, and of each type they use its invariants,
+        /// operators, conversions, constructors and the members C# calls without naming them (GetEnumerator, Dispose,
+        /// Deconstruct, GetAwaiter...); and so on from those. The Spec library's lemmas and delegate types' contracts are
+        /// kept. The rest isn't translated.
+        /// </summary>
+        private static List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> Reached(
+            Engine engine, Compilation compilation, List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)> held)
+        {
+            var bySymbol = held.GroupBy(x => x.method.OriginalDefinition, SymbolEqualityComparer.Default)
+                .ToDictionary(g => (IMethodSymbol)g.Key, g => g.ToList(), SymbolEqualityComparer.Default);
+            var byType = held.Where(x => x.method.ContainingType != null).GroupBy(x => x.method.ContainingType.OriginalDefinition, SymbolEqualityComparer.Default)
+                .ToDictionary(g => (ITypeSymbol)g.Key, g => g.ToList(), SymbolEqualityComparer.Default);
+            var reached = new HashSet<SyntaxNode>();
+            var types = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+            var methods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            var code = new Stack<SyntaxNode>();
+            var scanned = new HashSet<SyntaxNode>();
+            var work = new Stack<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>(
+                held.Where(x => x.result.Name != null || x.method.MethodKind == MethodKind.DelegateInvoke ||
+                                x.decl.SyntaxTree.FilePath.StartsWith("<CsVerify.Spec>") || !engine.UserTrees.Contains(x.decl.SyntaxTree)));
+            void Method(IMethodSymbol m)
+            {
+                if (m == null)
+                {
+                    return;
+                }
+                m = (m.ReducedFrom ?? m).OriginalDefinition;
+                if (!methods.Add(m))
+                {
+                    return;
+                }
+                foreach (var x in bySymbol.TryGetValue(m, out var xs) ? xs : new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>())
+                {
+                    work.Push(x);
+                }
+                Type(m.ContainingType);
+                // (what a virtual call may run, and where an override's contract comes from)
+                if (IsOverridable(m))
+                {
+                    foreach (var o in engine.Fields.Overrides(m))
+                    {
+                        Method(o);
+                    }
+                }
+                Method(m.OverriddenMethod);
+                foreach (var i in m.ContainingType?.AllInterfaces.SelectMany(i => i.GetMembers(m.Name).OfType<IMethodSymbol>()) ?? Enumerable.Empty<IMethodSymbol>())
+                {
+                    if (SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(i)?.OriginalDefinition, m))
+                    {
+                        Method(i);
+                    }
+                }
+            }
+            void Symbol(ISymbol s)
+            {
+                switch (s)
+                {
+                    case IMethodSymbol m:
+                        Method(m);
+                        break;
+                    case IPropertySymbol p:
+                        Method(p.GetMethod);
+                        Method(p.SetMethod);
+                        Type(p.Type);
+                        break;
+                    case IFieldSymbol f:
+                        Type(f.ContainingType);
+                        Type(f.Type);
+                        break;
+                    case ILocalSymbol l:
+                        Type(l.Type);
+                        break;
+                    case IParameterSymbol p:
+                        Type(p.Type);
+                        break;
+                    case ITypeSymbol t:
+                        Type(t);
+                        break;
+                }
+            }
+            void Scan(SyntaxNode syntax, SemanticModel model)
+            {
+                foreach (var node in syntax.DescendantNodesAndSelf())
+                {
+                    var info = model.GetSymbolInfo(node);
+                    Symbol(info.Symbol);
+                    foreach (var c in info.CandidateSymbols)
+                    {
+                        Symbol(c);
+                    }
+                    if (node is ExpressionSyntax e)
+                    {
+                        var ti = model.GetTypeInfo(e);
+                        Type(ti.Type);
+                        Type(ti.ConvertedType);
+                        Method(model.GetConversion(e).MethodSymbol);
+                    }
+                    if (model.GetDeclaredSymbol(node) is ISymbol d)
+                    {
+                        Symbol(d);
+                    }
+                }
+            }
+            void Type(ITypeSymbol t)
+            {
+                if (t == null || !types.Add(t.OriginalDefinition))
+                {
+                    return;
+                }
+                // (its contract class: the contracts of its abstract members)
+                if (t is INamedTypeSymbol nt && engine.ContractClassOf(nt) is INamedTypeSymbol cc)
+                {
+                    foreach (var r in cc.DeclaringSyntaxReferences)
+                    {
+                        code.Push(r.GetSyntax());
+                    }
+                }
+                foreach (var a in (t as INamedTypeSymbol)?.TypeArguments ?? System.Collections.Immutable.ImmutableArray<ITypeSymbol>.Empty)
+                {
+                    Type(a);
+                }
+                if (t is IArrayTypeSymbol at)
+                {
+                    Type(at.ElementType);
+                }
+                Type(t.BaseType);
+                foreach (var i in t.AllInterfaces)
+                {
+                    Type(i);
+                }
+                Type(t.ContainingType);
+                foreach (var x in byType.TryGetValue(t.OriginalDefinition, out var xs) ? xs : new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>())
+                {
+                    var m = x.method;
+                    if (SpecSymbols.IsInvariant(m) || m.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion or MethodKind.Constructor or MethodKind.StaticConstructor ||
+                        m.Name is "GetEnumerator" or "MoveNext" or "get_Current" or "Dispose" or "DisposeAsync" or "Deconstruct" or "GetAwaiter" or "GetResult" or "get_IsCompleted" or "Add" ||
+                        m.AssociatedSymbol != null && SpecSymbols.IsInvariant(m.AssociatedSymbol))
+                    {
+                        work.Push(x);
+                    }
+                }
+            }
+            while (work.Count > 0 || code.Count > 0)
+            {
+                // (the code, contracts and contract classes reached: what they name)
+                if (code.Count > 0)
+                {
+                    var c = code.Pop();
+                    if (scanned.Add(c) && compilation.ContainsSyntaxTree(c.SyntaxTree))
+                    {
+                        Scan(c, compilation.GetSemanticModel(c.SyntaxTree));
+                    }
+                    continue;
+                }
+                var x = work.Pop();
+                if (!reached.Add(x.decl))
+                {
+                    continue;
+                }
+                Method(x.method);
+                code.Push(x.decl);
+                if (x.contract?.Declaration != null)
+                {
+                    code.Push(x.contract.Declaration);
+                }
+                // (its lambdas and local functions: units of their own)
+                foreach (var y in held.Where(y => y.decl != x.decl && y.decl.SyntaxTree == x.decl.SyntaxTree && x.decl.Span.Contains(y.decl.Span)))
+                {
+                    work.Push(y);
+                }
+            }
+            if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
+            {
+                Trace("--only reaches: " + string.Join(", ", held.Where(x => reached.Contains(x.decl)).Select(x => x.method.ContainingType?.Name + "." + x.method.Name)));
+            }
+            return held.Where(x => reached.Contains(x.decl)).ToList();
         }
 
         /// <summary>

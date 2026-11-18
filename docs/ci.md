@@ -77,6 +77,25 @@ jobs:
 
 The verifier's diagnostics have the compiler's format, so GitHub shows them on the pull request's files.
 
+### Keeping the proofs between runs
+
+The build keeps the methods it proved in `obj/.../csverify.cache`, and proves one again only when what its proof
+depends on changes ([Faster runs](running.md#faster-runs)). Kept between runs, a pull request is checked in about the
+time its changed methods take. Before the Verify step, restore it, falling back to the base branch's:
+
+```yaml
+      - uses: actions/cache@v4
+        with:
+          path: '**/obj/**/csverify.cache'
+          key: csverify-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            csverify-${{ github.ref }}-
+            csverify-refs/heads/${{ github.base_ref || 'main' }}-
+```
+
+A key holds only what was proved with the same verifier, Boogie and Z3, and the same options: after an upgrade, every
+method is proved again once.
+
 ## In Azure DevOps
 
 ```yaml

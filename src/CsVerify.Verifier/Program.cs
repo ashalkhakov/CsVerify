@@ -20,8 +20,10 @@ options:
                       non-nullable reference types are known not to be null
   --timeout <ms>      per-query Z3 timeout (default 10000)
   --method-budget <ms> the most one method may take (all rounds); past it, the rest is not verified (default: none)
-  --cores <n>         solvers run side by side (default: one a core)
+  --cores <n>         solvers run side by side (default: one a core, at most one per 4 GB of memory)
   --z3 <path>         Z3 executable (default: CSVERIFY_Z3, then PATH)
+  --cache <file>      keep the methods proved in this file, and don't prove one again while nothing its proof
+                      depends on has changed (the MSBuild target keeps it in obj/)
   --boogie-out <file> write the Boogie program it verifies
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
@@ -85,6 +87,9 @@ options:
                         case "--z3":
                             options.Z3Path = args[++i];
                             break;
+                        case "--cache":
+                            options.CachePath = args[++i];
+                            break;
                         case "--boogie-out":
                             options.BoogieOut = args[++i];
                             break;
@@ -133,6 +138,10 @@ options:
                     return 2;
                 }
 
+                if (options.Cores == 0)
+                {
+                    options.Cores = Boogie.BoogieRunner.DefaultCores;
+                }
                 var programs = each
                     ? inputs.Select(i => i.Split(',', StringSplitOptions.RemoveEmptyEntries)).ToList()
                     : new List<string[]> { inputs.ToArray() };
@@ -146,7 +155,7 @@ options:
                 {
                     foreach (var m in result.Methods)
                     {
-                        Console.WriteLine($"  {(m.Verified ? "ok  " : "FAIL")} {m.Name}: {m.Proved}/{m.Obligations} obligations proved");
+                        Console.WriteLine($"  {(m.Verified ? "ok  " : "FAIL")} {m.Name}: {m.Proved}/{m.Obligations} obligations proved, {(m.Cached ? "cached" : $"{m.Milliseconds / 1000.0:0.0} s")}");
                     }
                 }
                 // the stub contracts the proofs relied on: trusted, not proved
@@ -156,6 +165,7 @@ options:
                     {
                         Console.WriteLine($"  assumed {a}");
                     }
+                    Console.WriteLine("  time: " + string.Join(", ", result.Phases.Select(p => $"{p.phase} {p.ms / 1000.0:0.0} s")));
                 }
                 int failed = result.Methods.Count(m => !m.Verified);
                 Console.WriteLine(result.CompilationErrors.Count > 0

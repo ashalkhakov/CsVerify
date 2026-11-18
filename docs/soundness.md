@@ -60,6 +60,10 @@ is assumed, never in what is reported.
   assumed: a struct's field of a non-nullable reference type (not so in `default(S)`), and an element of a collection
   or sequence (a list interface, `IEnumerable<T>`, `List<T>`) of a non-nullable reference type. An array's elements
   are what the heap says, nulls included (`new string[n]` is all nulls): only a precondition says otherwise.
+- **A11. The cache.** With `--cache` (the MSBuild target's default), a method proved before is proved while its key is
+  unchanged: a hash of its procedure and of what its proof reaches in the Boogie program, the options and the builds
+  ([Faster runs](running.md#faster-runs)). An axiom that names nothing the proof reaches is not in the key; it can't
+  take part in the proof unless the axioms contradict each other, which no translation should give.
 
 Out of scope, as documented in [Limitations](limitations.md): running out of memory or stack, reflection, and
 termination of ordinary methods without `Spec.Decreases`.

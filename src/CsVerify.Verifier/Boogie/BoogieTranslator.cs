@@ -54,6 +54,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The lines each method's declarations were printed on (its procedure, implementation, function; its twins).</summary>
         public readonly List<(int from, int to, MethodResult result)> Spans = new List<(int, int, MethodResult)>();
 
+        /// <summary>The Boogie procedures of each method: its own, and its contract's well-formedness check.</summary>
+        public readonly Dictionary<MethodResult, List<string>> Procedures = new Dictionary<MethodResult, List<string>>();
+
         /// <summary>The warnings of a method's procedure (none if it isn't one).</summary>
         public IEnumerable<VerificationDiagnostic> Warnings(MethodResult r) => _warnings.TryGetValue(r, out var w) ? w : Enumerable.Empty<VerificationDiagnostic>();
 
@@ -383,14 +386,23 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The overrides of a virtual member, in the program: a call of it may run any of them.</summary>
         public Func<IMethodSymbol, IEnumerable<IMethodSymbol>> OverridesOf = _ => Enumerable.Empty<IMethodSymbol>();
 
-        /// <summary>The string literals: one constant per contents.</summary>
+        /// <summary>
+        /// The string literals: one constant per contents, named by a hash of it (so a method's translation, and its key in
+        /// the cache, doesn't change when other literals are added).
+        /// </summary>
         private readonly Dictionary<string, string> _literals = new Dictionary<string, string>(StringComparer.Ordinal);
 
         private string Literal(string s)
         {
             if (!_literals.TryGetValue(s, out var name))
             {
-                _literals[s] = name = "s#" + _literals.Count;
+                name = "s#" + ResultCache.Hash(s).Substring(0, 16);
+                // (two contents of one hash: the second numbered)
+                if (_literals.ContainsValue(name))
+                {
+                    name += "$" + _literals.Count;
+                }
+                _literals[s] = name;
             }
             return name;
         }
@@ -636,7 +648,7 @@ namespace CsVerify.Verifier.Boogie
             }
             _allMaps = new[] { "$Alloc" }.Concat(ElementTypes.Select(ElementMap)).Concat(fields.Select(FieldMap))
                 .Concat(models.Select(m => m.Name)).Concat(KernelTypes.Trees ? new[] { "$root" } : new string[0]).ToHashSet();
-            var writes = Closed(p => p.Source.CallsDelegates ? new HashSet<string>(p.Source.Modifies.Concat(_allMaps)) : p.Source.Modifies);
+            var writes = Closed(p => p.Source.CallsDelegates ? new HashSet<string>(p.Source.Modifies.Concat(_allMaps)) : p.Source.Modifies, selfWrites: true);
             var any = Closed(p => p.Source.CallsDelegates ? new HashSet<string>(p.Source.AnyWrites.Concat(_allMaps)) : p.Source.AnyWrites);
             _printer.UsesState |= _pending.Any(p => p.Source.UsesState);
             _printer.Delegates(_pending.SelectMany(p => p.Source.DelegateKeys).Concat(_signatures.Values.SelectMany(s => s.DelegateKeys)), _allMaps);
@@ -781,6 +793,11 @@ namespace CsVerify.Verifier.Boogie
                 var from = _printer.NextLine;
                 _printer.Procedure(p, writes[p.Source.Method], any[p.Source.Method], IsFunction(p.Source.Method) && !p.Source.IsPredicate && OverPredicate(p.Source.Method) == null && !Engine.IsOverridable(p.Source.Method) ? FunctionFields(p.Source.Method) : null);
                 Spans.Add((from, _printer.NextLine - 1, p.Source.Result));
+                if (p.Source.Result != null)
+                {
+                    (Procedures.TryGetValue(p.Source.Result, out var names) ? names : Procedures[p.Source.Result] = new List<string>())
+                        .AddRange(new[] { p.Source.Name, p.Source.Name + "$wf" });
+                }
                 Obligations[p.Source.Result] = p.Obligations;
             }
             // the twins of what throws, for the ways calls of them throw
@@ -1013,7 +1030,8 @@ namespace CsVerify.Verifier.Boogie
         public bool AddDisabled(int disabled) => Disabled.Add(disabled);
 
         /// <summary>A set of globals of each procedure's, with those of everything it calls.</summary>
-        private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<HProcedure, HashSet<string>> own)
+        /// <param name="selfWrites">With the fields of the new object a constructor not translated sets (written there only).</param>
+        private Dictionary<IMethodSymbol, HashSet<string>> Closed(Func<HProcedure, HashSet<string>> own, bool selfWrites = false)
         {
             var sets = _pending.ToDictionary(p => p.Source.Method, p => new HashSet<string>(own(p)), (IEqualityComparer<IMethodSymbol>)SymbolEqualityComparer.Default);
             // (a virtual member's call may run any override: what each does, it does; one of them not here, anything)
@@ -1052,7 +1070,9 @@ namespace CsVerify.Verifier.Boogie
                 var kept = all ? new HashSet<string>() : new HashSet<string>(_allMaps.Where(x => x.StartsWith("$F.")));
                 if (!all)
                 {
-                    foreach (var f in written)
+                    // (a constructor's: and the new object's fields it sets)
+                    var self = selfWrites && p.Source.Method.MethodKind == MethodKind.Constructor ? KernelTypes.SelfWritesOf?.Invoke(p.Source.Method) : null;
+                    foreach (var f in written.Concat(self ?? Enumerable.Empty<ISymbol>()))
                     {
                         kept.Remove(FieldMap(f));
                     }

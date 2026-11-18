@@ -794,7 +794,8 @@ a new object is none of them.
 **Methods whose bodies don't translate.** A method whose contract translates but whose body doesn't is a procedure of
 its contract alone for its callers (as an abstract member is), so they are Boogie's still; it may write what the
 effects analysis (`FieldEffects`) says it and its callees write (any field, where that says so), and every array
-unless it writes none (`MayWriteHeap`). Its own body is not verified (CSV1902, saying why).
+unless it writes none (`MayWriteHeap`); a constructor, the fields of the new object it sets too, at that object only.
+Its own body is not verified (CSV1902, saying why). So is a method `--only` leaves out, for its callers.
 
 **Loops and arrays.** Boogie forgets at a loop head every map the loop modifies. A loop frame keeps the rest: only the
 arrays the loop writes through a variable it doesn't change are forgotten (and all of them where it writes through
@@ -1300,7 +1301,10 @@ proved.) The group queries' failing assertions are decided whole, in seconds.
 `samples/Good` and `samples/Buggy` against a snapshot (`tests/CsVerify.Tests/Expected/BoogieEngine.json`, written
 with `CSVERIFY_RECORD=1`). The fuzz test checks that what verifies runs correctly.
 
-Boogie verifies the procedures side by side (`/vcsCores`, a solver each; `--cores` sets how many). Each is first tried whole in a quarter of
+Boogie verifies the procedures side by side (`/vcsCores`, a solver each; `--cores` sets how many, by default one a
+core and one per 4 GB of memory at most). With `--only`, the program holds what the selected methods reach, and only
+their procedures are verified (`/proc:`); with `--cache`, a method proved before whose key is unchanged isn't given to
+Boogie ([Faster runs](running.md#faster-runs)). Each is first tried whole in a quarter of
 the time limit (at least 10 s). One that times out is verified once more an assertion at a time
 (`/vcsSplitOnEveryAssert`, for it alone, with the whole limit):
 a long one that is hard as a whole is often easy split (Base64's encoder, decoder and round trip, Utf8's decoder). A

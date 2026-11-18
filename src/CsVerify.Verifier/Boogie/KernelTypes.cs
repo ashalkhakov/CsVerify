@@ -738,6 +738,8 @@ namespace CsVerify.Verifier.Boogie
         [System.ThreadStatic] public static System.Func<IMethodSymbol, bool> MayTouchArrays;
         /// <summary>CsVerify's effects analysis of a method: the fields it (or what it calls) writes, and whether it may write any.</summary>
         [System.ThreadStatic] public static System.Func<IMethodSymbol, (IEnumerable<ISymbol> fields, bool all)> FieldEffectsOf;
+        /// <summary>The fields of the new object a constructor sets (which FieldEffectsOf leaves out).</summary>
+        [System.ThreadStatic] public static System.Func<IMethodSymbol, IEnumerable<ISymbol>> SelfWritesOf;
 
         /// <summary>An object of a library class the program has no model of (Random, TextWriter): a reference, whose members are library calls.</summary>
         public static bool IsLibraryObject(ITypeSymbol t) =>
