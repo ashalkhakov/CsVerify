@@ -523,6 +523,27 @@ public sealed class Parcel
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Wrong"));
         }
 
+        [Fact]
+        public void APropertyPattern_ReadsAClassProperty()
+        {
+            var r = Harness.Verify(@"public enum Stage { Stored, Sent, Held }
+public sealed class Pin { public Stage State { get; set; } public int? Count { get; set; } }
+public sealed class Card { public Pin Pin { get; set; } = new(); }
+public static class Cards
+{
+    public static bool Stored(Card? c) { Spec.Ensures(Spec.Result<bool>() == (c != null && c.Pin.State == Stage.Stored)); return c is { Pin.State: Stage.Stored }; }
+    public static bool Sent(Pin? p) { Spec.Ensures(Spec.Result<bool>() == (p != null && p.State == Stage.Sent)); return p is { State: Stage.Sent }; }
+    public static int Of(Pin? p) => p switch { null => 0, { State: Stage.Sent or Stage.Held } => 1, { State: Stage.Stored } => 2, _ => throw new ArgumentOutOfRangeException(nameof(p)) };
+    public static bool Three(Pin p) { Spec.Ensures(Spec.Result<bool>() == (p.Count != null && p.Count.Value == 3)); return p is { Count: 3 }; }
+    public static bool Wrong(Pin? p) { Spec.Ensures(Spec.Result<bool>() == (p != null)); return p is { State: Stage.Sent }; }
+}");
+            foreach (var ok in new[] { "Stored", "Sent", "Of", "Three" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
         private const string ValueObjects = @"public sealed record Ref
 {
     private Ref(string value) { Spec.Requires(value.Length > 0); Spec.Ensures(Value == value); Value = value; }

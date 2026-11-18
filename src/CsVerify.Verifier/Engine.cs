@@ -33,6 +33,8 @@ namespace CsVerify.Verifier
         /// its remaining obligations are not proved (CSV1901): the method is reported not verified, never verified.
         /// </summary>
         public int MethodBudgetMs;
+        /// <summary>The solvers run side by side (Boogie's /vcsCores); 0 for one a core.</summary>
+        public int Cores;
         /// <summary>Verify only the methods whose name (Type.Method) contains one of these; all, if empty.</summary>
         public List<string> Only = new List<string>();
         internal bool Selects(string method) => Only.Count == 0 || Only.Any(o => method.Contains(o, StringComparison.Ordinal));
@@ -1425,11 +1427,11 @@ namespace CsVerify.Verifier
                 // (once more if the run itself fails, as it can when the machine is loaded: talking to the solver times out)
                 try
                 {
-                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs);
+                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs, engine.Options.Cores);
                 }
                 catch (Exception first) when (!(first is InvalidOperationException))
                 {
-                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs * 2);
+                    failures = Boogie.BoogieRunner.Verify(translator, Z3.Find(engine.Options.Z3Path), engine.Options.TimeoutMs * 2, engine.Options.Cores);
                 }
             }
             catch (Exception e)

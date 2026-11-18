@@ -36,6 +36,7 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--no-overflow` | make every integer mathematical, which is unsound where code can overflow (by default integers are bounded: see [Bounded integers](semantics.md#bounded-integers)) |
 | `--timeout <ms>` | Boogie's time limit for a procedure (default 10000; a procedure it can't decide is retried assertion by assertion, then whole with more time) |
 | `--method-budget <ms>` | the most time one method's verification may take, all rounds included; past it, its remaining obligations are not proved (CSV1901), so the method is reported not verified (default: no limit) |
+| `--cores <n>` | the solvers run side by side (Boogie's `/vcsCores`; default: one a core) |
 | `--z3 <path>` | Z3 executable |
 | `--boogie-out <file>` | write the Boogie program it verified ([the Boogie engine](boogie.md)) |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
