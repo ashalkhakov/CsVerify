@@ -10,7 +10,8 @@ REF="$1"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CS="${2:-$HERE/../CsLemon/bin/Debug/net10.0/cslemon.dll}"
 RUNTIME="$HERE/../CsLemon.Runtime/CsLemon.Runtime.csproj"
-WORK="${TMPDIR:-/tmp}/cslemon-parsertest.$$"
+# (its physical path, and the repo's SDK: outside the repo global.json does not apply)
+WORK="$(cd "${TMPDIR:-/tmp}" && pwd -P)/cslemon-parsertest.$$"
 pass=0; fail=0
 for d in "$HERE"/parsers/*/; do
   name="$(basename "$d")"
@@ -19,7 +20,7 @@ for d in "$HERE"/parsers/*/; do
   if ! (cd "$WORK/c" && "$REF" -q "$name.y" && cc -w -o parser "$name.c" driver.c); then
     fail=$((fail + 1)); echo "FAIL: $name: the C parser does not build"; continue
   fi
-  cp "$d"/cs/* "$WORK/cs/"
+  cp "$d"/cs/* "$HERE/../../global.json" "$WORK/cs/"
   cat > "$WORK/cs/parser.csproj" <<PROJ
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
