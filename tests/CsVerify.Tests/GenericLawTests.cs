@@ -9,9 +9,12 @@ namespace CsVerify.Tests
     /// </summary>
     public class GenericLawTests
     {
+        // (with a data type, whose rank is a function of its own)
         private const string Laws = @"using System.Collections.Generic;
+public abstract record Chain { private Chain() { } public sealed record End : Chain; public sealed record Link(int N, Chain Next) : Chain; }
 public static class Laws
 {
+    public static bool IsEnd(Chain c) => c is Chain.End;
     public static bool Same<T>(T a, T b) { Spec.Ensures<bool>(r => r == EqualityComparer<T>.Default.Equals(b, a)); return EqualityComparer<T>.Default.Equals(a, b); }
     public static bool Objects<T>(T a, T b) { Spec.Ensures<bool>(r => r == Equals(b, a)); return Equals(a, b); }
     public static bool NotNull<T>(T a, T b) where T : notnull { Spec.Ensures<bool>(r => r == b.Equals(a)); return a.Equals(b); }
@@ -35,7 +38,7 @@ public static class Laws
         public void ATypeParametersEqualityAndOrder_KeepToTheirLaws()
         {
             var r = Harness.Verify(Laws);
-            foreach (var ok in new[] { "Same", "Objects", "NotNull", "Equatable", "Hash", "Max", "Max3", "Compare", "Transitive", "Ints", "IntMax", "Strings" })
+            foreach (var ok in new[] { "IsEnd", "Same", "Objects", "NotNull", "Equatable", "Hash", "Max", "Max3", "Compare", "Transitive", "Ints", "IntMax", "Strings" })
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
