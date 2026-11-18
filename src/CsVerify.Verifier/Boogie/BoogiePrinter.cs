@@ -231,6 +231,9 @@ namespace CsVerify.Verifier.Boogie
             Optional("$eqk(", "axiom (forall b: Box :: { $eqk(b) } $eqk(b) == $eqk($box.Ref(null)) ==> b == $box.Ref(null));");
             Optional("$eqk(", "axiom (forall x: int :: { $eqk($box.int(x)) } $eqk($box.int(x)) == $box.int(x));");
             Optional("$eqk(", "axiom (forall x: bool :: { $eqk($box.bool(x)) } $eqk($box.bool(x)) == $box.bool(x));");
+            // (and only an integer's box is of an integer's class: a reference's class is never one)
+            Optional("$eqk(", "axiom (forall b: Box :: { $eqk(b) } $eqk(b) == $box.int($unbox.int($eqk(b))) ==> b == $eqk(b));");
+            Optional("$eqk(", "axiom (forall b: Box :: { $eqk(b) } $eqk(b) == $box.bool($unbox.bool($eqk(b))) ==> b == $eqk(b));");
             Optional("$hash(", "function $hash(b: Box): int; // of a class of equals");
             Optional("$hash(", "axiom (forall b: Box :: { $hash(b) } -2147483648 <= $hash(b) && $hash(b) <= 2147483647);");
             Optional("$cmp(", "function $order(b: Box): int; // a type parameter's CompareTo: its order, not known");
@@ -1543,13 +1546,9 @@ namespace CsVerify.Verifier.Boogie
             // (a struct's or a tuple's parts: each of its type, an integer in its range, a data value one of its cases)
             if (Returns(m) is ITypeSymbol rt && (IsStruct(rt) || IsTuple(rt)) && !p.Source.Ghost)
             {
-                var parts = IsTuple(rt) ? PartsOf(rt) : StructFields(rt).Select(f => f.Type).ToList();
-                for (int k = 0; k < parts.Count; k++)
+                foreach (var (part, pt) in MathTypes.Parts(new MVar("result"), rt).Where(x => IsIntegral(x.type) || IsData(x.type)))
                 {
-                    if (IsIntegral(parts[k]) || IsData(parts[k]))
-                    {
-                        Line($"  free ensures {ByTag(MathTypes.OfType(MathTypes.TupleItem(new MVar("result"), rt, k), parts[k]), cx)};");
-                    }
+                    Line($"  free ensures {ByTag(MathTypes.OfType(part, pt), cx)};");
                 }
             }
             if (functionFields != null)
@@ -1806,12 +1805,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return E(ticks, cx);
             }
-            // (a struct's integer fields: each in its type's range)
+            // (a struct's integer fields, at any depth: each in its type's range)
             if (IsStruct(type))
             {
-                foreach (var (f, k) in StructFields(type).Select((f, k) => (f, k)).Where(x => IsIntegral(x.f.Type)))
+                foreach (var (part, pt) in MathTypes.Parts(new MVar(local), type).Where(x => IsIntegral(x.type)))
                 {
-                    yield return E(MathTypes.InRange(MathTypes.TupleItem(new MVar(local), type, k), f.Type), cx);
+                    yield return E(MathTypes.InRange(part, pt), cx);
                 }
             }
             // (a span from elsewhere: its cells some array's, within its length)

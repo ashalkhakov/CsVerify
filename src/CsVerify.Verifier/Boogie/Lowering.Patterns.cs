@@ -82,6 +82,17 @@ namespace CsVerify.Verifier.Boogie
         private KExpr SubPattern(IPatternOperation q, KExpr v, ITypeSymbol nullable, LowerMode mode, ITypeSymbol u) => IsNullableValue(q.InputType) ? NullablePattern(q, v, nullable, mode) : Pattern(q, NullableValue(v, nullable), u, mode);
 
         /// <summary>A part's pattern: a nullable value's as <see cref="NullablePattern"/> says.</summary>
+        /// <summary>A struct's member k, as a read of it has it: not null where its type says so.</summary>
+        private KExpr StructPart(KExpr v, ITypeSymbol type, int k, ITypeSymbol member, LowerMode mode)
+        {
+            var item = TupleItem(v, type, k);
+            if (!mode.InSpec && !IsData(member) && IsNullable(member) && NotNullable(member))
+            {
+                Emit(KAssume.Of(NotNull(item)));
+            }
+            return item;
+        }
+
         private KExpr PartPattern(IPatternOperation p, KExpr v, ITypeSymbol type, LowerMode mode) =>
             IsNullableValue(type) ? NullablePattern(p, v, type, mode) : Pattern(p, v, type, mode);
 
@@ -150,6 +161,39 @@ namespace CsVerify.Verifier.Boogie
                             InstanceAt = sp.Syntax,
                         };
                         cond = AndAlso(cond, PartPattern(sp.Pattern, read, FieldType(member), mode));
+                    }
+                    return cond;
+                }
+                // (a struct's property pattern, s is { F.G: 3 }, or a record struct's positional one, (3, var y): each member as
+                // its pattern says; a struct is never null)
+                case IRecursivePatternOperation sp when IsStruct(type) &&
+                                                        (sp.MatchedType == null || SymbolEqualityComparer.Default.Equals(sp.MatchedType, type)) &&
+                                                        (sp.DeconstructionSubpatterns.Length == 0 || sp.DeconstructSymbol is IMethodSymbol { IsImplicitlyDeclared: true } && type.IsRecord):
+                {
+                    if (sp.DeclaredSymbol is ILocalSymbol sl)
+                    {
+                        Bind(sl, v, mode);
+                    }
+                    KExpr cond = KLit.True;
+                    for (int k = 0; k < sp.DeconstructionSubpatterns.Length; k++)
+                    {
+                        var member = DataTypes.PositionalProperty((INamedTypeSymbol)type, k);
+                        var at = member == null ? -1 : StructIndex(type, member);
+                        if (at < 0)
+                        {
+                            throw new NotTranslated("a positional pattern of " + type.Name);
+                        }
+                        cond = AndAlso(cond, PartPattern(sp.DeconstructionSubpatterns[k], StructPart(v, type, at, member.Type, mode), member.Type, mode));
+                    }
+                    foreach (var mp in sp.PropertySubpatterns)
+                    {
+                        var member = mp.Member switch { IFieldReferenceOperation f => (ISymbol)f.Field, IPropertyReferenceOperation pr => pr.Property, _ => null };
+                        var at = member == null || member.IsStatic ? -1 : StructIndex(type, member);
+                        if (at < 0)
+                        {
+                            throw new NotTranslated("a property pattern of " + mp.Member.Syntax);
+                        }
+                        cond = AndAlso(cond, PartPattern(mp.Pattern, StructPart(v, type, at, FieldType(member), mode), FieldType(member), mode));
                     }
                     return cond;
                 }

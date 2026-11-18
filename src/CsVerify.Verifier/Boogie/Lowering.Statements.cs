@@ -71,6 +71,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 t = captured;
             }
+            // (a struct's member, at any depth: the variable it is in, written whole)
+            while (StructMember(Unconverted(t)) is (IOperation whole, _))
+            {
+                t = whole;
+            }
             if (Unconverted(t) is IParameterReferenceOperation { Parameter: var p } && p.RefKind == RefKind.None && !found.Contains(p, SymbolEqualityComparer.Default))
             {
                 if (!InSubset(p.Type) || IsView(p.Type) || IsShare(p.Type) || IsPackage(p.Type))
@@ -910,7 +915,7 @@ namespace CsVerify.Verifier.Boogie
         {
             var was = Expr(whole);
             var parts = StructFields(whole.Type).Select((f, j) => j == k ? value : TupleItem(was, whole.Type, j)).ToArray();
-            var now = new KOp(TupleMaker(whole.Type), parts);
+            var now = MakeTuple(whole.Type, parts);
             switch (whole)
             {
                 case IInstanceReferenceOperation when _p.StructThis:
