@@ -583,8 +583,9 @@ depends on the exact result alone. Past `MaxValue` they throw an `OverflowExcept
 units), and `/` or `%` by zero is CSV1009, as for integers. An integer converts exactly.
 
 **Record structs.** A positional `record struct` of the subset (`readonly record struct OrderId(Guid Value)`) is a
-struct: its primary constructor gives the struct of its arguments, and its `==` compares its fields, where each
-compares as a value (integers, `DateTime`s, `Guid`s, data of value equality). A struct's field of a non-nullable
+struct: its primary constructor gives the struct of its arguments, and its `==` compares its fields, each as
+`EqualityComparer<T>.Default` does (integers, `DateTime`s, `Guid`s and data of value equality as values, a string's
+contents, a decimal's value, a record's own `==`), unless it declares its own `Equals`. A struct's field of a non-nullable
 reference type is not null where code reads it, as C#'s nullable analysis has it (`default(S)`'s is).
 
 **Operators.** A user-defined operator (`public static Price operator +(Price a, Price b)`) is a static method of
@@ -984,6 +985,10 @@ tag (`$tag`, tested by `$is.`*C*) the case's, each field (a function `$d.`*R.f*,
 record header gives it, as `Ind(Fact Prev) : Fact(Prev.N + 1, ...)`) what was given, and its rank (`$rank`, never
 negative) above its data parts'. A value of a case is that case's constructor of its fields (triggered on `$is.`*C*),
 so equal fields mean equal values, and a record's `==` (where its fields compare as values) is the references' `==`.
+  Where they don't (a string's), a record's synthesized `==` is C#'s: the same reference, or neither null, of one case
+  (its `EqualityContract`), each field equal as `EqualityComparer<T>.Default` compares it (a string's contents, a
+  record's own `==`); two values of cases not known, of an open data type, are `$dataEq`, a relation not known. A
+  record's own `Equals(R)` makes its `==` not known.
 - A field of a data type is one of its cases (said by its tag, `$tag(f) == 3`: a test `$is.`*C*`(f)` would trigger
   the case's constructor of `f`'s fields, whose fields' cases would trigger more without end, a matching loop that a
   failing proof never saturates), and not null where its type says so (each construction checks its arguments,
@@ -1022,8 +1027,17 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
 **Generics.** A type parameter's values are boxes (`Box`); `$box.`*T* and `$unbox.`*T* (each the other's inverse)
 take an integer, a boolean or a reference to a box and back where generic code meets code of a type argument: a
 generic method's arguments and result, a generic data type's fields. A generic data type is one data type for all its
-instantiations (`List<T>.Cons` of a `List<int>`), and a static generic method (of unconstrained type parameters) is one
-procedure.
+instantiations (`List<T>.Cons` of a `List<int>`), and a static generic method (of unconstrained type parameters, or
+of `notnull`, `IEquatable<T>` and `IComparable<T>`) is one procedure.
+
+A type parameter's equality and order keep to the laws every implementation must: `EqualityComparer<T>.Default.Equals`,
+`object.Equals(a, b)` and `a.Equals(b)` are `$eqk(a) == $eqk(b)` (each box's class of equals, so an equivalence; null
+equals only null), `GetHashCode` is `$hash($eqk(a))` (equal values hash the same), and `Comparer<T>.Default.Compare`
+and `a.CompareTo(b)` are `$cmp(a, b)`, whose sign is that of `$order(a) - $order(b)` (a total order). An integer's and a
+bool's class of equals is its value, and its order its value, so `Same(1, 2)` is false where `T` is `int`; a
+reference's are not known (a string's or a record's `Equals` is of its contents). `a.Equals(b)`, `a.GetHashCode()` and
+`a.CompareTo(b)` are of a `T` whose values its constraint says are not null (`notnull`, `IEquatable<T>`,
+`IComparable<T>`); that is trusted, as the nullable annotations of a type argument aren't checked.
 
 **Async.** An async method's contract is of its task's result (`T` of `Task<T>`, nothing of `Task`), its procedure's
 `result`. `await F(...)` of an async method of the program is a call of it; `await Task.Yield()`, `Task.Delay(...)`

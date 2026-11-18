@@ -116,7 +116,7 @@ namespace CsVerify.Analyzers
             {
                 return;
             }
-            if (!SpecSymbols.IsPureCallee(op.TargetMethod) && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod))
+            if (!SpecSymbols.IsPureCallee(op.TargetMethod) && SpecSymbols.GenericLaw(op, out _) == null && !ContractStubs.For(op.SemanticModel.Compilation).IsPureMember(op.TargetMethod))
             {
                 Report(context, op, $"call to '{op.TargetMethod.Name}', which is not a lemma or [Pure]");
             }

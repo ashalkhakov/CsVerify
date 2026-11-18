@@ -550,10 +550,16 @@ namespace CsVerify.Verifier.Boogie
                     return RecordEquality(eq, mode);
                 // (a value object's == and !=: the same object, or two whose fields are equal; not where its own Equals decides)
                 case IBinaryOperation vo when vo.OperatorMethod != null && vo.OperatorMethod.IsImplicitlyDeclared && vo.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
-                                              IsValueObject(vo.OperatorMethod.ContainingType) &&
-                                              !vo.OperatorMethod.ContainingType.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => !m.IsImplicitlyDeclared && m.Parameters.Length == 1 &&
-                                                  SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, vo.OperatorMethod.ContainingType)):
+                                              IsValueObject(vo.OperatorMethod.ContainingType) && !OwnEquals(vo.OperatorMethod.ContainingType):
                     return ValueObjectEquality(vo, mode);
+                // (a record struct's == and !=: each field equal, as its synthesized Equals compares them)
+                case IBinaryOperation rs when rs.OperatorMethod != null && rs.OperatorMethod.IsImplicitlyDeclared && rs.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals &&
+                                              IsStruct(rs.OperatorMethod.ContainingType) && !OwnEquals(rs.OperatorMethod.ContainingType):
+                {
+                    var t = rs.OperatorMethod.ContainingType;
+                    var same = ValuesEqual(Lower(rs.LeftOperand, mode), Lower(rs.RightOperand, mode), t, rs.Syntax, 0) ?? throw new NotTranslated("== of " + t.Name);
+                    return rs.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+                }
                 default: return DataExprCoreOther(e, mode);
             }
         }
@@ -1084,10 +1090,106 @@ namespace CsVerify.Verifier.Boogie
             return all;
         }
 
+        /// <summary>A type's own Equals of itself, which its == calls instead of comparing its fields.</summary>
+        private static bool OwnEquals(INamedTypeSymbol t) =>
+            t.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => !m.IsImplicitlyDeclared && m.Parameters.Length == 1 &&
+                SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, t.OriginalDefinition));
+
+        /// <summary>
+        /// Two values equal as EqualityComparer&lt;T&gt;.Default compares them, as a record's synthesized Equals does each
+        /// field; null where that isn't known (a float's Equals, a type's own Equals, an open data type).
+        /// </summary>
+        private KExpr ValuesEqual(KExpr a, KExpr b, ITypeSymbol t, SyntaxNode at, int depth)
+        {
+            if (Scalar(t) || IsDecimal(t) || IsNullableValue(t) || IsData(t) && KernelTypes.Data.HasValueEquality((INamedTypeSymbol)t))
+            {
+                return Eq(a, b);
+            }
+            if (IsString(t))
+            {
+                return new KOp("streq", a, b);
+            }
+            if (depth >= 4 || !(t is INamedTypeSymbol n) || OwnEquals(n))
+            {
+                return null;
+            }
+            if (IsStruct(n) && n.IsRecord)
+            {
+                KExpr all = KLit.True;
+                var fields = StructFields(n);
+                for (int k = 0; k < fields.Count; k++)
+                {
+                    if (!(ValuesEqual(TupleItem(a, n, k), TupleItem(b, n, k), fields[k].Type, at, depth + 1) is KExpr e))
+                    {
+                        return null;
+                    }
+                    all = AndAlso(all, e);
+                }
+                return all;
+            }
+            if (IsData(n) && !n.IsGenericType)
+            {
+                // (of one case, each of its fields equal: a record's EqualityContract is its type; two of cases not
+                // known, of an open data type, some relation not known)
+                var def = DataTypes.Def(n);
+                bool open = KernelTypes.Data.Cases(def) == null;
+                var cases = KernelTypes.Data.KnownCases(def);
+                // (a case not sealed may be a subclass's object, of fields and an EqualityContract of its own)
+                if (cases.Any(c => !c.IsSealed))
+                {
+                    return null;
+                }
+                KExpr any = KLit.False, aKnown = KLit.False, bKnown = KLit.False;
+                foreach (var c in cases)
+                {
+                    var tag = "$is." + CaseName(c).Substring(3);
+                    aKnown = OrElse(aKnown, new KOp(tag, a));
+                    bKnown = OrElse(bKnown, new KOp(tag, b));
+                    KExpr all = AndAlso(new KOp(tag, a), new KOp(tag, b));
+                    foreach (var f in KernelTypes.Data.Fields(c))
+                    {
+                        if (!(ValuesEqual(FieldOfData(a, f, c), FieldOfData(b, f, c), f.Type, at, depth + 1) is KExpr e))
+                        {
+                            return null;
+                        }
+                        all = AndAlso(all, e);
+                    }
+                    any = OrElse(any, all);
+                }
+                if (open)
+                {
+                    any = OrElse(any, AndAlso(AndAlso(Not(aKnown), Not(bKnown)), new KOp("$dataEq", a, b)));
+                }
+                return OrElse(Eq(a, b), AndAlso(AndAlso(NotNull(a), NotNull(b)), any));
+            }
+            if (IsValueObject(n))
+            {
+                return OrElse(Eq(a, b), AndAlso(AndAlso(NotNull(a), NotNull(b)), FieldsEqual(a, b, n, at, depth + 1)));
+            }
+            return null;
+        }
+
         private KExpr RecordEquality(IBinaryOperation eq, LowerMode mode)
         {
             // (with null: whether it is null, whatever its fields are)
             bool withNull = Unconverted(eq.LeftOperand).ConstantValue is { HasValue: true, Value: null } || Unconverted(eq.RightOperand).ConstantValue is { HasValue: true, Value: null };
+            // (a record of fields that compare as EqualityComparer<T>.Default does: each equal, of one case)
+            if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType) && !OwnEquals(eq.OperatorMethod.ContainingType))
+            {
+                var (dl, dr) = (Lower(eq.LeftOperand, mode), Lower(eq.RightOperand, mode));
+                if (ValuesEqual(dl, dr, eq.OperatorMethod.ContainingType, eq.Syntax, 0) is KExpr same)
+                {
+                    return eq.OperatorKind == BinaryOperatorKind.Equals ? same : Not(same);
+                }
+                if (mode.InSpec)
+                {
+                    var eqv = new KOp("$dataEq", dl, dr);
+                    return eq.OperatorKind == BinaryOperatorKind.Equals ? eqv : Not(eqv);
+                }
+                var unknown = Declare("t$" + _temps++, eq.Type);
+                Emit(KHavoc.Of(unknown));
+                return new KVar(unknown);
+            }
             // (fields that don't compare as values, strings': in code, whether they're equal isn't known)
             if (!withNull && !KernelTypes.Data.HasValueEquality((INamedTypeSymbol)eq.OperatorMethod.ContainingType))
             {

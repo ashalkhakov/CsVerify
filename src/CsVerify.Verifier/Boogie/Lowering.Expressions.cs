@@ -623,6 +623,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 case IInvocationOperation re when re.TargetMethod is { Name: "ReferenceEquals", IsStatic: true, ContainingType.SpecialType: SpecialType.System_Object } && re.Arguments.Length == 2 &&
                                                   re.Arguments.All(a => InSubset(a.Value.Type)):
                     return ReferenceEqualsCall(re);
+                case IInvocationOperation gl when SpecSymbols.GenericLaw(gl, out var lv) is string law:
+                    return Law(law, Operands(lv), lv[0].Type);
                 case IInvocationOperation call:
                     return Call(call);
                 default: return ExprOther(e);

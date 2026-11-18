@@ -427,10 +427,12 @@ namespace CsVerify.Verifier.Boogie
             Data != null && t is INamedTypeSymbol n && Data.IsData(n) &&
             (!n.IsGenericType || n.TypeArguments.All(a => IsTypeParameter(a) || FuncValue(a) || IsData(a)));
 
-        /// <summary>A type parameter without constraints: its values are boxes (Box), as Dafny's are.</summary>
+        /// <summary>A type parameter without constraints (but notnull, IEquatable&lt;T&gt;, IComparable&lt;T&gt;): its values are boxes (Box), as Dafny's are.</summary>
         public static bool IsTypeParameter(ITypeSymbol t) =>
             t is ITypeParameterSymbol tp && !tp.HasReferenceTypeConstraint && !tp.HasValueTypeConstraint && !tp.HasUnmanagedTypeConstraint &&
-            !tp.HasNotNullConstraint && !tp.HasConstructorConstraint && tp.ConstraintTypes.Length == 0;
+            !tp.HasConstructorConstraint &&
+            // (notnull, IEquatable<T> and IComparable<T> only narrow what instantiates it: their members are its laws)
+            tp.ConstraintTypes.All(c => SpecSymbols.IsLawInterface(c, "IEquatable", tp) || SpecSymbols.IsLawInterface(c, "IComparable", tp));
 
         /// <summary>
         /// A type parameter constrained to references (where T : class, or to interfaces and classes of the subset's): its
@@ -503,6 +505,21 @@ namespace CsVerify.Verifier.Boogie
             var tags = Data.Cases(DataTypes.Def(type)).Select(c => (KExpr)new KOp("$is." + CaseName(c).Substring(3), v)).ToList();
             var any = tags.Count == 0 ? KLit.False : OrAny(tags);
             return AndAlso(NotNull(v), any);
+        }
+
+        /// <summary>
+        /// An equality or an order of a type parameter's values (SpecSymbols.GenericLaw), as functions of their boxes:
+        /// Equals of their classes of equals ($eqk), GetHashCode of the class, Compare by their ranks ($cmp).
+        /// </summary>
+        public static KExpr Law(string law, KExpr[] values, ITypeSymbol t)
+        {
+            var b = values.Select(x => IsTypeParameter(t) ? x : new KOp("$box.Ref", x)).ToArray();
+            return law switch
+            {
+                "Equals" => Eq(new KOp("$eqk", b[0]), new KOp("$eqk", b[1])),
+                "GetHashCode" => new KOp("$hash", new KOp("$eqk", b[0])),
+                _ => new KOp("$cmp", b[0], b[1]),
+            };
         }
 
         /// <summary>A value as a box (where generic code takes it), and back.</summary>

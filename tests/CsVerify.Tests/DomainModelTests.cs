@@ -578,6 +578,38 @@ public static class Replies
             Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongCount"));
         }
 
+        [Fact]
+        public void ARecordsSynthesizedEquality_IsItsFields()
+        {
+            var r = Harness.Verify(@"public readonly record struct Price(decimal Amount, string Currency);
+public sealed record Tag(string Value);
+public sealed record Labelled(Tag Label, int N);
+public abstract record Mark { public sealed record Dot(string Name) : Mark; public sealed record Dash(string Name, int Len) : Mark; }
+public sealed record Loose(string V) { public bool Equals(Loose? o) => o is not null; public override int GetHashCode() => 0; }
+public static class Eqs
+{
+    public static bool Same(Price a, Price b) { Spec.Ensures<bool>(r => r == (a.Amount == b.Amount && a.Currency == b.Currency)); return a == b; }
+    public static bool Differs(Price a, Price b) { Spec.Ensures<bool>(r => r == (a.Amount != b.Amount || a.Currency != b.Currency)); return a != b; }
+    public static bool SameTag(Tag a, Tag b) { Spec.Ensures<bool>(r => r == (a.Value == b.Value)); return a == b; }
+    public static bool Copies() { Spec.Ensures<bool>(r => r); return new Tag(""x"") == new Tag(""x""); }
+    public static bool Nested() { Spec.Ensures<bool>(r => r); return new Labelled(new Tag(""a""), 1) == new Labelled(new Tag(""a""), 1); }
+    public static bool OtherCase() { Spec.Ensures<bool>(r => !r); Mark a = new Mark.Dot(""a""); Mark b = new Mark.Dash(""a"", 1); return a == b; }
+    public static bool SameCase() { Spec.Ensures<bool>(r => r); Mark a = new Mark.Dot(""a""); Mark b = new Mark.Dot(""a""); return a == b; }
+    public static bool InSpec(Tag a) { Spec.Ensures<bool>(r => r == (a == new Tag(a.Value))); return true; }
+    public static bool WrongPrice(Price a, Price b) { Spec.Ensures<bool>(r => r == (a.Amount == b.Amount)); return a == b; }
+    public static bool WrongTag() { Spec.Ensures<bool>(r => r); return new Tag(""x"") == new Tag(""y""); }
+    public static bool WrongOwn() { Spec.Ensures<bool>(r => !r); return new Loose(""x"") == new Loose(""y""); }
+}");
+            foreach (var ok in new[] { "Same", "Differs", "SameTag", "Copies", "Nested", "OtherCase", "SameCase", "InSpec" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            foreach (var wrong in new[] { "WrongPrice", "WrongTag", "WrongOwn" })
+            {
+                Assert.Equal(new[] { "CSV1002" }, r.Errors(wrong));
+            }
+        }
+
         private const string ValueObjects =@"public sealed record Ref
 {
     private Ref(string value) { Spec.Requires(value.Length > 0); Spec.Ensures(Value == value); Value = value; }
