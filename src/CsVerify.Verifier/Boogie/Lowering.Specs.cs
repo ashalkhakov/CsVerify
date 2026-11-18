@@ -190,7 +190,7 @@ namespace CsVerify.Verifier.Boogie
                         At = cp.Syntax,
                     };
                 case IPropertyReferenceOperation pf when !(IsComputed(pf.Property) && !IsField(pf.Property.OriginalDefinition) && !_isFunction(pf.Property.GetMethod)) && !LibraryProperty(pf) && !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
-                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !GenericCount(pf) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
                     return Unbox(new KField
@@ -238,8 +238,8 @@ namespace CsVerify.Verifier.Boogie
                 // (a started task's Result, in a specification: what it gave (its join, and that it has finished, are code's))
                 case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation srl } when _tasks.TryGetValue(srl.Local, out var srt) && srt.Result != null:
                     return new KVar(srt.Result);
-                case IPropertyReferenceOperation sr when sr.Instance != null && IsCollectionInterface(sr.Property.ContainingType) &&
-                                                         (sr.Property.Name == "Count" && sr.Arguments.Length == 0 || sr.Property.IsIndexer && sr.Arguments.Length == 1):
+                case IPropertyReferenceOperation sr when sr.Instance != null && (IsCollectionInterface(sr.Property.ContainingType) &&
+                                                         (sr.Property.Name == "Count" && sr.Arguments.Length == 0 || sr.Property.IsIndexer && sr.Arguments.Length == 1) || GenericCount(sr)):
                     return Ifc(sr, sr.Property.IsIndexer ? Spec(sr.Arguments[0].Value, result) : null, Spec(sr.Instance, result), inSpec: true);
                 case IPropertyReferenceOperation { Property.Name: "Count", Instance: IPropertyReferenceOperation { Property.Name: "Keys" or "Values", Instance: { } sd } } when CollectionOf(sd.Type) is INamedTypeSymbol sdc && CollectionKind(sdc) == "Dictionary":
                     return Model("Size", sdc, Spec(sd, result));

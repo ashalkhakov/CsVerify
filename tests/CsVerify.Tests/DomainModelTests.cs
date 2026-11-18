@@ -544,7 +544,41 @@ public static class Cards
             Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
         }
 
-        private const string ValueObjects = @"public sealed record Ref
+        [Fact]
+        public void AnArrayAsAList_HasItsLengthAndCells()
+        {
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public abstract record Reply
+{
+    private Reply() { }
+    public static Reply Give(params string[] notes) { Spec.Ensures<Reply>(r => r is Given g && g.Notes == notes); return new Given(notes); }
+    public sealed record Given(IReadOnlyList<string> Notes) : Reply;
+}
+public abstract record Reply<T>
+{
+    private Reply() { }
+    public static Reply<T> Make(params T[] items) { Spec.Ensures<Reply<T>>(r => r is Given g && g.Items == items); return new Given(items); }
+    public static Reply<T> None() { Spec.Ensures<Reply<T>>(r => r is Given g && g.Items.Count == 0); return new Given(Array.Empty<T>()); }
+    public sealed record Given(IReadOnlyList<T> Items) : Reply<T>;
+}
+public static class Replies
+{
+    public static Reply One(string note) { Spec.Ensures<Reply>(r => r is Reply.Given g && g.Notes.Count == 1 && g.Notes[0] == note); return Reply.Give(note); }
+    public static Reply<int> Two(int x) { Spec.Ensures<Reply<int>>(r => r is Reply<int>.Given g && g.Items.Count == 2 && g.Items[1] == x); return Reply<int>.Make(0, x); }
+    public static int CountOf<T>(IReadOnlyList<T> xs) { Spec.Ensures<int>(n => n == xs.Count); return xs.Count; }
+    public static int Counted() { Spec.Ensures<int>(n => n == 2); return CountOf(new[] { 1, 2 }); }
+    public static Reply<int> Wrong(int x) { Spec.Ensures<Reply<int>>(r => r is Reply<int>.Given g && g.Items.Count == 1); return Reply<int>.Make(0, x); }
+    public static int WrongCount() { Spec.Ensures<int>(n => n == 3); return CountOf(new[] { 1, 2 }); }
+}");
+            foreach (var ok in new[] { "Give", "Make", "None", "One", "Two", "CountOf", "Counted" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("WrongCount"));
+        }
+
+        private const string ValueObjects =@"public sealed record Ref
 {
     private Ref(string value) { Spec.Requires(value.Length > 0); Spec.Ensures(Value == value); Value = value; }
     public string Value { get; }

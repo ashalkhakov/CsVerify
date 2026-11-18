@@ -1487,6 +1487,10 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Line($"  free ensures {Local(x)} == null || $Alloc[{Local(x)}];");
                 }
+                if (IsArray(x.Type))
+                {
+                    Line($"  free ensures {Local(x)} == null || $arr({Local(x)});");
+                }
                 if (IsData(x.Type) && x.Type.IsValueType)
                 {
                     Line($"  free ensures {DataFacts(Local(x), x.Type, cx)};");
@@ -1549,6 +1553,10 @@ namespace CsVerify.Verifier.Boogie
             if (Returns(m) != null && IsRef(Returns(m)))
             {
                 Line("  free ensures result == null || $Alloc[result];");
+            }
+            if (Returns(m) != null && IsArray(Returns(m)))
+            {
+                Line("  free ensures result == null || $arr(result);");
             }
             // (a list's constructor: a new list)
             if (p.Source.ListCtor)
@@ -1801,6 +1809,11 @@ namespace CsVerify.Verifier.Boogie
             if (IsRef(type) || IsView(type) || IsShare(type))
             {
                 yield return $"{name} == null || $Alloc[{name}]";
+            }
+            // (an array: one, as a collection interface over it reads it)
+            if (IsArray(type))
+            {
+                yield return $"{name} == null || $arr({name})";
             }
             // (not null: checked at each call's argument)
             if (IsNullable(type) && (NotNullable(type) || x != null && IsQueryParameter(x)))

@@ -142,7 +142,7 @@ namespace CsVerify.Verifier.Boogie
                             p.Source.AddAnyWrite(map);
                             // (a negative size throws: the path ends)
                             stmts.Add(MAssume.Of(Ge(n.Size, MLit.Zero)));
-                            Allocate(stmts, n.Var, Eq(Length(t), n.Size));
+                            Allocate(stmts, n.Var, AndAlso(Eq(Length(t), n.Size), new MOp("$arr", t)));
                             var zero = ElementValue(map) switch { "bool" => "false", "Ref" => "null", _ => "0" };
                             // (a struct's array: each cell the struct's default value)
                             var element = ((IArrayTypeSymbol)n.ArrayType).ElementType;
