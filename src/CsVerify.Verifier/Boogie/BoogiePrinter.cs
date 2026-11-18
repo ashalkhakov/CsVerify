@@ -225,6 +225,19 @@ namespace CsVerify.Verifier.Boogie
             Optional("$sfInt(", "function $sfInt(k: int): int;");
             Optional("$sfBool(", "function $sfBool(k: int): bool;");
             Optional("$eqc(", "axiom (forall o: Ref :: { $eqc(o) } o != null ==> $eqc(o) != null);");
+            // (a type parameter's Equals, GetHashCode and CompareTo: what every implementation keeps to; an integer's and a
+            // bool's are of their values)
+            Optional("$eqk(", "function $eqk(b: Box): Box; // a type parameter's Equals: its class of equals, not known");
+            Optional("$eqk(", "axiom (forall b: Box :: { $eqk(b) } $eqk(b) == $eqk($box.Ref(null)) ==> b == $box.Ref(null));");
+            Optional("$eqk(", "axiom (forall x: int :: { $eqk($box.int(x)) } $eqk($box.int(x)) == $box.int(x));");
+            Optional("$eqk(", "axiom (forall x: bool :: { $eqk($box.bool(x)) } $eqk($box.bool(x)) == $box.bool(x));");
+            Optional("$hash(", "function $hash(b: Box): int; // of a class of equals");
+            Optional("$hash(", "axiom (forall b: Box :: { $hash(b) } -2147483648 <= $hash(b) && $hash(b) <= 2147483647);");
+            Optional("$cmp(", "function $rank(b: Box): int; // a type parameter's CompareTo: its order, not known");
+            Optional("$cmp(", "axiom (forall x: int :: { $rank($box.int(x)) } $rank($box.int(x)) == x);");
+            Optional("$cmp(", "axiom (forall x: bool :: { $rank($box.bool(x)) } $rank($box.bool(x)) == (if x then 1 else 0));");
+            Optional("$cmp(", "function $cmp(a: Box, b: Box): int;");
+            Optional("$cmp(", "axiom (forall a: Box, b: Box :: { $cmp(a, b) } -2147483648 <= $cmp(a, b) && $cmp(a, b) <= 2147483647 && ($cmp(a, b) < 0 <==> $rank(a) < $rank(b)) && ($cmp(a, b) == 0 <==> $rank(a) == $rank(b)));");
             Optional("$dataEq(", "function $dataEq(a: Ref, b: Ref): bool; // records' ==, of fields that don't compare as values (strings'): not known");
             Optional("$cell(", "// a rectangular array's cell: an injective pairing of its indices");
             Optional("$cell(", "function $cell(i: int, j: int): int;");

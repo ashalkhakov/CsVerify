@@ -1618,6 +1618,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 AssumeValid(new KVar(result), gives);
             }
+            // (a T given back as an integer or a bool: a box of one, which its laws read)
+            if (!list && gives != null && IsTypeParameter(Returns(callee.OriginalDefinition)) && Scalar(gives))
+            {
+                Emit(KAssume.Of(Eq(new KVar(result), Box(Unbox(new KVar(result), Returns(callee.OriginalDefinition), gives), Returns(callee.OriginalDefinition), gives))));
+            }
             return list || gives == null ? new KVar(result) : Unbox(new KVar(result), Returns(callee.OriginalDefinition), gives);
         }
 

@@ -415,6 +415,8 @@ namespace CsVerify.Verifier.Boogie
         {
             switch (e)
             {
+                case IInvocationOperation gl when SpecSymbols.GenericLaw(gl, out var lv) is string law:
+                    return Law(law, lv.Select(v => Spec(v, result)).ToArray(), lv[0].Type);
                 case IInvocationOperation sm when IntegerMath(sm):
                     return SpecIntegerMath(sm, result);
                 case IInvocationOperation se when StringEquals(se) is (IOperation ea, IOperation eb):

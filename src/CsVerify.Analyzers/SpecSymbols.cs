@@ -219,6 +219,70 @@ namespace CsVerify.Analyzers
                           OrderedCompareTo(m) ||
                           m.IsStatic && m.ContainingType?.SpecialType == SpecialType.System_Char && m.Name.StartsWith("IsAscii", System.StringComparison.Ordinal));
 
+        /// <summary>
+        /// An equality or an order of a type parameter's values, which every implementation must keep to (Equals an
+        /// equivalence, GetHashCode the same of equal values, CompareTo a total order): EqualityComparer&lt;T&gt;.Default's
+        /// Equals and GetHashCode, Comparer&lt;T&gt;.Default.Compare, object.Equals(a, b), and a.Equals(b), a.GetHashCode()
+        /// and a.CompareTo(b) of a T not null. "Equals", "GetHashCode" or "Compare", its values in order; else null.
+        /// </summary>
+        public static string GenericLaw(IInvocationOperation op, out IOperation[] values)
+        {
+            values = null;
+            var m = op?.TargetMethod;
+            if (m == null)
+            {
+                return null;
+            }
+            var args = op.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => Unconverted(a.Value)).ToArray();
+            ITypeSymbol t = null;
+            string law = null;
+            var owner = m.ContainingType?.OriginalDefinition.ToDisplayString();
+            if (owner is "System.Collections.Generic.EqualityComparer<T>" or "System.Collections.Generic.Comparer<T>" &&
+                op.Instance is IPropertyReferenceOperation { Property.Name: "Default", Instance: null })
+            {
+                t = m.ContainingType.TypeArguments[0];
+                law = owner.Contains("EqualityComparer") ? m.Name switch { "Equals" when args.Length == 2 => "Equals", "GetHashCode" when args.Length == 1 => "GetHashCode", _ => null }
+                    : m.Name == "Compare" && args.Length == 2 ? "Compare" : null;
+                values = args;
+            }
+            else if (m.IsStatic && m.Name == "Equals" && m.ContainingType?.SpecialType == SpecialType.System_Object && args.Length == 2)
+            {
+                t = args[0].Type;
+                law = "Equals";
+                values = args;
+            }
+            else if (!m.IsStatic && op.Instance?.Type is ITypeParameterSymbol r && NotNullParameter(r))
+            {
+                t = r;
+                values = new[] { op.Instance }.Concat(args).ToArray();
+                law = m.Name switch
+                {
+                    "Equals" when args.Length == 1 && (m.ContainingType.SpecialType == SpecialType.System_Object || IsLawInterface(m.ContainingType, "IEquatable", r)) => "Equals",
+                    "GetHashCode" when args.Length == 0 && m.ContainingType.SpecialType == SpecialType.System_Object => "GetHashCode",
+                    "CompareTo" when args.Length == 1 && IsLawInterface(m.ContainingType, "IComparable", r) => "Compare",
+                    _ => null,
+                };
+            }
+            if (law == null || !(t is ITypeParameterSymbol) || values.Any(v => !SymbolEqualityComparer.Default.Equals(v.Type, t)))
+            {
+                values = null;
+                return null;
+            }
+            return law;
+        }
+
+        /// <summary>A type parameter whose values aren't null: a struct's, notnull's, or one of IEquatable&lt;T&gt; or IComparable&lt;T&gt;.</summary>
+        private static bool NotNullParameter(ITypeParameterSymbol t) =>
+            t.HasValueTypeConstraint || t.HasNotNullConstraint || t.HasUnmanagedTypeConstraint ||
+            t.ConstraintTypes.Any(c => IsLawInterface(c, "IEquatable", t) || IsLawInterface(c, "IComparable", t));
+
+        /// <summary>IEquatable&lt;T&gt; or IComparable&lt;T&gt; of this T.</summary>
+        public static bool IsLawInterface(ITypeSymbol i, string name, ITypeSymbol t) =>
+            i is INamedTypeSymbol { Arity: 1 } n && n.Name == name && n.ContainingNamespace?.ToDisplayString() == "System" &&
+            SymbolEqualityComparer.Default.Equals(n.TypeArguments[0], t);
+
+        private static IOperation Unconverted(IOperation v) => v is IConversionOperation { IsImplicit: true } c ? Unconverted(c.Operand) : v;
+
         /// <summary>x.CompareTo(y) of an integer, a char, a decimal, a DateTime or a TimeSpan: their order, a value.</summary>
         private static bool OrderedCompareTo(IMethodSymbol m) =>
             m.Name == "CompareTo" && !m.IsStatic && m.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type, m.ContainingType) &&

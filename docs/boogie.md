@@ -1022,8 +1022,17 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
 **Generics.** A type parameter's values are boxes (`Box`); `$box.`*T* and `$unbox.`*T* (each the other's inverse)
 take an integer, a boolean or a reference to a box and back where generic code meets code of a type argument: a
 generic method's arguments and result, a generic data type's fields. A generic data type is one data type for all its
-instantiations (`List<T>.Cons` of a `List<int>`), and a static generic method (of unconstrained type parameters) is one
-procedure.
+instantiations (`List<T>.Cons` of a `List<int>`), and a static generic method (of unconstrained type parameters, or
+of `notnull`, `IEquatable<T>` and `IComparable<T>`) is one procedure.
+
+A type parameter's equality and order keep to the laws every implementation must: `EqualityComparer<T>.Default.Equals`,
+`object.Equals(a, b)` and `a.Equals(b)` are `$eqk(a) == $eqk(b)` (each box's class of equals, so an equivalence; null
+equals only null), `GetHashCode` is `$hash($eqk(a))` (equal values hash the same), and `Comparer<T>.Default.Compare`
+and `a.CompareTo(b)` are `$cmp(a, b)`, whose sign is that of `$rank(a) - $rank(b)` (a total order). An integer's and a
+bool's class of equals is its value, and its rank its value, so `Same(1, 2)` is false where `T` is `int`; a
+reference's are not known (a string's or a record's `Equals` is of its contents). `a.Equals(b)`, `a.GetHashCode()` and
+`a.CompareTo(b)` are of a `T` whose values its constraint says are not null (`notnull`, `IEquatable<T>`,
+`IComparable<T>`); that is trusted, as the nullable annotations of a type argument aren't checked.
 
 **Async.** An async method's contract is of its task's result (`T` of `Task<T>`, nothing of `Task`), its procedure's
 `result`. `await F(...)` of an async method of the program is a call of it; `await Task.Yield()`, `Task.Delay(...)`
