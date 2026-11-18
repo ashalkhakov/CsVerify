@@ -459,15 +459,23 @@ every element before assigning any. `t == u` of tuples of integers, enums, chars
 elements, then the right's, and compares them element by element; `!=` is its negation.
 
 **Structs.** A struct of the program whose instance fields (an auto-property's backing field too) are the subset's
-values, no struct or tuple among them, is a value as a tuple is, its fields its elements in declaration order: `p.X`
-reads one; `p.X = v` (of a local, a `ref` parameter, an array's cell, an object initializer's) makes a new value of the
-others and `v` and writes it where `p` is (a struct in a class's field written in place is
+values, structs and tuples among them, is a value as a tuple is, its fields its elements in declaration order: `p.X`
+reads one, `s.From.X` one of its struct's; `p.X = v` (of a local, a parameter, a `ref` parameter, an array's cell, an
+object initializer's; `s.From.X = v` at any depth) makes a new value of the others and `v` and writes it where `p` is,
+as far out as the variable (a struct in a class's field written in place is
 refused, CSV1901), so a copy is a copy. `default(S)`, `new S()` and a new array's cells are the default value; a
 constructor is a procedure giving the value it makes (`returns (this: Ref)`, the default to begin with). A member
 that reads `this` is a procedure of it, a value never null. One that writes it (a member, `this` itself, or by calling
 such a method on it) has `this` by reference, as C# does: in as `this$in`, out as `this`, `Spec.Old` of the value
 in; a call writes the value out back to the receiver (a local, a parameter, an array's cell, a struct's member). A
-struct value's integer fields are in their types' ranges.
+struct value's integer fields, at any depth, are in their types' ranges. A property pattern (`l is { Price.Amount: > 0m
+}`) reads its members, a record struct's positional one (`m is (> 0m, "USD")`) its primary constructor's.
+
+A generic struct (`Wrap<T>`, of type parameters whose values are boxes) is one struct for all its instantiations, as a
+generic data type is: its values are of its definition's elements, a `T`'s a box, so `$tupmk.Box` for `Wrap<int>` as
+for `Wrap<T>`; a read unboxes (`$unbox.int($tup.0.Box(w))`), and making one or writing a member boxes. A box whose
+class of equals is an integer's or a bool's box is that box (`$eqk`), so a value that comes back through generic code
+(`Get(Of(x))`, of `EqualityComparer<T>` postconditions) is the value.
 
 **Enums.** An enum is an integer of its underlying type (any value of it, not only the named ones); conversions to
 and from integers are the integers'. A switch expression no arm of which matches throws

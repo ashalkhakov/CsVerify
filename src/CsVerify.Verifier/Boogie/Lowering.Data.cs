@@ -394,7 +394,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var ordered = ps.Arguments.OrderBy(a => a.Parameter.Ordinal).Select(a => a.Value).ToArray();
                     var values = mode.InSpec ? ordered.Select(a => Lower(a, mode)).ToArray() : Operands(ordered);
-                    return new KOp(TupleMaker(ps.Type), values);
+                    return MakeTuple(ps.Type, values);
                 }
                 default: return DataExprCoreOther(e, mode);
             }
@@ -574,7 +574,7 @@ namespace CsVerify.Verifier.Boogie
                 case IIsPatternOperation ip when IsData(Unconverted(ip.Value).Type) || Scalar(ip.Value.Type) ||
                                                  (IsRef(ip.Value.Type) || IsString(ip.Value.Type)) && NullPattern(ip.Pattern) ||
                                                  IsArray(Unconverted(ip.Value).Type) && ip.Pattern is IListPatternOperation ||
-                                                 IsTuple(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
+                                                 IsTuple(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation || IsStruct(Unconverted(ip.Value).Type) ||
                                                  IsClass(Unconverted(ip.Value).Type) && !IsData(Unconverted(ip.Value).Type) && ip.Pattern is IRecursivePatternOperation ||
                                                  (IsRef(Unconverted(ip.Value).Type) || IsString(Unconverted(ip.Value).Type) || IsException(Unconverted(ip.Value).Type)) && !IsData(Unconverted(ip.Value).Type):
                     return IsPattern(ip, mode);
@@ -1108,6 +1108,11 @@ namespace CsVerify.Verifier.Boogie
             if (IsString(t))
             {
                 return new KOp("streq", a, b);
+            }
+            // (a type parameter's: its Equals, an equivalence)
+            if (IsGenericParameter(t))
+            {
+                return Law("Equals", new[] { a, b }, t);
             }
             if (depth >= 4 || !(t is INamedTypeSymbol n) || OwnEquals(n))
             {

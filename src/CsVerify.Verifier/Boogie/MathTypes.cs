@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
@@ -20,7 +21,27 @@ namespace CsVerify.Verifier.Boogie
             : new MLit(IsNullable(t) || TypeOf(t) == "Ref" ? "null" : t.SpecialType == SpecialType.System_Boolean ? "false" : "0");
 
         /// <summary>A struct's default value: each element its type's.</summary>
-        public static MExpr StructDefault(ITypeSymbol t) => new MOp(TupleMaker(t), StructFields(t).Select(f => Default(f.Type)).ToArray());
+        /// <summary>A struct's or a tuple's parts, at any depth (a struct's struct's fields too), each with its type.</summary>
+        public static IEnumerable<(MExpr part, ITypeSymbol type)> Parts(MExpr v, ITypeSymbol t, int depth = 0)
+        {
+            if (depth > 8 || !(IsStruct(t) || IsTuple(t)))
+            {
+                yield break;
+            }
+            var parts = IsTuple(t) ? PartsOf(t) : StructFields(t).Select(f => f.Type).ToList();
+            for (int k = 0; k < parts.Count; k++)
+            {
+                var item = TupleItem(v, t, k);
+                yield return (item, parts[k]);
+                foreach (var inner in Parts(item, parts[k], depth + 1))
+                {
+                    yield return inner;
+                }
+            }
+        }
+
+        public static MExpr StructDefault(ITypeSymbol t) =>
+            new MOp(TupleMaker(t), StructFields(t).Select((f, k) => Box(Default(f.Type), LayoutOf(t)[k], f.Type)).ToArray());
 
         /// <summary>A float's value, exactly: its bits.</summary>
         public static MExpr FloatLiteral(object v, ITypeSymbol t)
@@ -47,7 +68,8 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>A tuple's element i.</summary>
-        public static MExpr TupleItem(MExpr v, ITypeSymbol tuple, int i) => new MOp($"$tup.{i}.{TypeOf(PartsOf(tuple)[i]).Replace("[", "_").Replace("]", "_")}", v);
+        public static MExpr TupleItem(MExpr v, ITypeSymbol tuple, int i) =>
+            Unbox(new MOp($"$tup.{i}.{TypeOf(LayoutOf(tuple)[i]).Replace("[", "_").Replace("]", "_")}", v), LayoutOf(tuple)[i], PartsOf(tuple)[i]);
 
         /// <summary>A data value is of this type: not null, and its tag one of the type's cases'.</summary>
         public static MExpr IsCase(MExpr v, ITypeSymbol type)
@@ -75,9 +97,11 @@ namespace CsVerify.Verifier.Boogie
             : t?.ToDisplayString() == "System.DateTime" ? AndAlso(Le(MLit.Zero, v), Le(v, Number(Lowering.MaxTicks)))
             : t?.ToDisplayString() == "System.TimeSpan" ? AndAlso(Le(Number(long.MinValue), v), Le(v, Number(long.MaxValue))) : null;
 
-        /// <summary>A value as a box (where generic code takes it).</summary>
+        /// <summary>A value as a box (where generic code takes it), and back.</summary>
         public static MExpr Box(MExpr v, ITypeSymbol def, ITypeSymbol actual) =>
             IsTypeParameter(def) && !IsTypeParameter(actual) && actual != null ? new MOp("$box." + BoxKind(actual), v) : v;
+        public static MExpr Unbox(MExpr v, ITypeSymbol def, ITypeSymbol actual) =>
+            IsTypeParameter(def) && !IsTypeParameter(actual) && actual != null ? new MOp("$unbox." + BoxKind(actual), v) : v;
 
         /// <summary>A collection interface's Count or element, as an expression: an array's, a modeled collection's (Size, Items), or the state's.</summary>
         public static MExpr IfcRead(MExpr x, MExpr index, ITypeSymbol element)

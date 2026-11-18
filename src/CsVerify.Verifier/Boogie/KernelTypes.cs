@@ -222,9 +222,9 @@ namespace CsVerify.Verifier.Boogie
         public static bool IsTuple(ITypeSymbol t) => t is INamedTypeSymbol n && (n.IsTupleType || n.IsAnonymousType) && PartsOf(t).All(e => InSubset(e) && !IsTuple(e));
 
         /// <summary>
-        /// A struct of the program's, of the subset's values (no struct or tuple among them): a value, as a tuple is, its
-        /// instance fields (an auto-property's backing field too) its elements, in declaration order. A member written
-        /// makes a new value of the others and it.
+        /// A struct of the program's, of the subset's values (structs and tuples among them; generic, of boxed type
+        /// parameters): a value, as a tuple is, its instance fields (an auto-property's backing field too) its elements,
+        /// in declaration order. A member written makes a new value of the others and it.
         /// </summary>
         /// <summary>
         /// A struct's method (not readonly) that writes this: a member of it, this itself, or by a call of such a method on
@@ -293,7 +293,9 @@ namespace CsVerify.Verifier.Boogie
 
         public static bool IsStruct(ITypeSymbol t)
         {
-            if (!(t is INamedTypeSymbol { TypeKind: TypeKind.Struct, IsGenericType: false, IsRefLikeType: false } n) || n.DeclaringSyntaxReferences.Length == 0 ||
+            if (!(t is INamedTypeSymbol { TypeKind: TypeKind.Struct, IsRefLikeType: false } n) || n.DeclaringSyntaxReferences.Length == 0 ||
+                // (a generic struct: of type parameters whose values are boxes, each argument one that boxes)
+                n.IsGenericType && !n.OriginalDefinition.TypeParameters.Zip(n.TypeArguments, (p, a) => IsTypeParameter(p) && Instantiates(p, a)).All(x => x) ||
                 n.IsTupleType || n.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || IsData(n) ||
                 n.GetAttributes().Any(a => a.AttributeClass?.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace))
             {
@@ -306,7 +308,7 @@ namespace CsVerify.Verifier.Boogie
             try
             {
                 var fs = StructFields(n);
-                return fs.Count > 0 && fs.All(f => InSubset(f.Type) && !IsTuple(f.Type) && !IsStruct(f.Type) && !IsView(f.Type) && !IsShare(f.Type) && !IsGhost(f.Type));
+                return fs.Count > 0 && fs.All(f => InSubset(f.Type) && !IsView(f.Type) && !IsShare(f.Type) && !IsGhost(f.Type));
             }
             finally
             {
@@ -322,7 +324,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>A struct's element of a member (a field, or an auto-property): its position, or -1.</summary>
         public static int StructIndex(ITypeSymbol t, ISymbol member) =>
-            StructFields(t).FindIndex(f => SymbolEqualityComparer.Default.Equals(f, member.OriginalDefinition) || SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, member.OriginalDefinition));
+            StructFields(t.OriginalDefinition).FindIndex(f => SymbolEqualityComparer.Default.Equals(f, member.OriginalDefinition) || SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, member.OriginalDefinition));
 
         /// <summary>A struct's default value: each element its type's.</summary>
         public static KExpr StructDefault(ITypeSymbol t) => KernelTerms.Of(MathTypes.StructDefault(t));
@@ -336,12 +338,24 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>An anonymous object's member's position.</summary>
         public static int PartIndex(ITypeSymbol t, string name) => t.GetMembers().OfType<IPropertySymbol>().Select(p => p.Name).ToList().IndexOf(name);
 
+        /// <summary>
+        /// A tuple's or a struct's parts as its values hold them: a generic struct's as its definition has them (a T's a
+        /// box), so that it is one struct for all its instantiations, as a generic data type is.
+        /// </summary>
+        public static List<ITypeSymbol> LayoutOf(ITypeSymbol t) =>
+            t is INamedTypeSymbol { IsGenericType: true, TypeKind: TypeKind.Struct, IsTupleType: false } n ? StructFields(n.OriginalDefinition).Select(f => f.Type).ToList() : PartsOf(t);
+
         /// <summary>The function making a tuple of this type from its elements ($tupmk.int_int): its elements are its arguments.</summary>
         public static string TupleMaker(ITypeSymbol tuple) =>
-            "$tupmk." + string.Join("_", PartsOf(tuple).Select(e => TypeOf(e).Replace("[", "-").Replace("]", "-")));
+            "$tupmk." + string.Join("_", LayoutOf(tuple).Select(e => TypeOf(e).Replace("[", "-").Replace("]", "-")));
 
-        /// <summary>A tuple's element i.</summary>
-        public static KExpr TupleItem(KExpr v, ITypeSymbol tuple, int i) => new KOp($"$tup.{i}.{TypeOf(PartsOf(tuple)[i]).Replace("[", "_").Replace("]", "_")}", v);
+        /// <summary>A tuple or a struct of its parts, each boxed where its layout's is a type parameter's.</summary>
+        public static KExpr MakeTuple(ITypeSymbol t, IReadOnlyList<KExpr> parts) =>
+            new KOp(TupleMaker(t), parts.Select((v, k) => Box(v, LayoutOf(t)[k], PartsOf(t)[k])).ToArray());
+
+        /// <summary>A tuple's element i (unboxed where its layout's is a type parameter's).</summary>
+        public static KExpr TupleItem(KExpr v, ITypeSymbol tuple, int i) =>
+            Unbox(new KOp($"$tup.{i}.{TypeOf(LayoutOf(tuple)[i]).Replace("[", "_").Replace("]", "_")}", v), LayoutOf(tuple)[i], PartsOf(tuple)[i]);
 
         /// <summary>A task one is given (Task, Task&lt;T&gt; of the subset's values): a reference to work running elsewhere.</summary>
         public static bool IsGivenTask(ITypeSymbol t) =>
