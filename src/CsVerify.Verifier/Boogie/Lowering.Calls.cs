@@ -48,7 +48,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private bool ReadOtherwise(IPropertyReferenceOperation p) =>
             IsString(p.Instance?.Type) || IsString(p.Property.ContainingType) || p.Property.Name == "Length" && IsArray(ActualArray(p.Instance?.Type)) ||
-            CollectionOf(p.Instance?.Type) != null || IsCollection(p.Property.ContainingType) || IsCollectionInterface(p.Property.ContainingType) ||
+            CollectionOf(p.Instance?.Type) != null || IsCollection(p.Property.ContainingType) || IsCollectionInterface(p.Property.ContainingType) || GenericCount(p) ||
             IsPair(p.Instance?.Type) || IsMemValue(p.Instance?.Type) || IsGivenTask(p.Instance?.Type) || IsNullableValue(p.Instance?.Type) ||
             IsSpan(p.Instance?.Type) || IsMultiArray(p.Instance?.Type) || IsArray(p.Instance?.Type) || IsData(p.Property.ContainingType) || IsTuple(p.Instance?.Type) ||
             KernelTypes.Ef != null && (KernelTypes.Ef.IsContextType(p.Property.ContainingType) || IsQueryHandle(p.Type) || IsEfTransaction(p.Instance?.Type) || IsEfTransaction(p.Type));

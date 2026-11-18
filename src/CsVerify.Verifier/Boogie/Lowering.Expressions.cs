@@ -195,6 +195,10 @@ namespace CsVerify.Verifier.Boogie
             t is ITypeParameterSymbol tp && _contract.IsStub && IsCollection(_m.ContainingType) && tp.Ordinal < ((INamedTypeSymbol)_m.ContainingType).TypeArguments.Length
                 ? ((INamedTypeSymbol)_m.ContainingType).TypeArguments[tp.Ordinal] : t;
 
+        /// <summary>A collection interface's Count over a type parameter (an IReadOnlyList&lt;T&gt;'s): its elements aren't read, its Count is.</summary>
+        private static bool GenericCount(IPropertyReferenceOperation p) =>
+            p.Instance != null && p.Property.Name == "Count" && p.Arguments.Length == 0 && IsGenericCollection(p.Property.ContainingType);
+
         /// <summary>A collection interface's Count or element: of an array, a modeled collection, or the state (unknown at each read where the program implements it).</summary>
         private KExpr Ifc(IPropertyReferenceOperation p, KExpr index, KExpr of, bool inSpec)
         {
@@ -478,10 +482,10 @@ namespace CsVerify.Verifier.Boogie
                     return LibraryPropertyRead(lp);
                 // (a property that reads as a field: an auto-property, of no collection, no pair, no specification type)
                 case IPropertyReferenceOperation pf when !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
-                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !GenericCount(pf) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
                     return FieldRead(e);
-                case IPropertyReferenceOperation ir when ir.Instance != null && IsCollectionInterface(ir.Property.ContainingType) &&
-                                                         (ir.Property.Name == "Count" && ir.Arguments.Length == 0 || ir.Property.IsIndexer && ir.Arguments.Length == 1):
+                case IPropertyReferenceOperation ir when ir.Instance != null && (IsCollectionInterface(ir.Property.ContainingType) &&
+                                                         (ir.Property.Name == "Count" && ir.Arguments.Length == 0 || ir.Property.IsIndexer && ir.Arguments.Length == 1) || GenericCount(ir)):
                     return Ifc(ir, ir.Property.IsIndexer ? Expr(ir.Arguments[0].Value) : null, Expr(ir.Instance), inSpec: false);
                 case IPropertyReferenceOperation { Property.Name: "Result", Instance: ILocalReferenceOperation rl } when _tasks.TryGetValue(rl.Local, out var rt):
                     return ResultOf(rt, e.Syntax);

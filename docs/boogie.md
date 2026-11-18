@@ -885,7 +885,8 @@ CSV1001): a key is one it has, never null; a value isn't known. `Keys.Count` and
 
 Through their interfaces (`IList<T>`, `IReadOnlyList<T>`, `ICollection<T>`, `IReadOnlyCollection<T>`), a collection is
 a reference of one of three kinds: an array (`$arr`), a modeled collection (`$coll`: a `List`'s, or another's whose
-`Count` is `Size`), or anything else; a conversion from an array or a collection says which. `Count` is
+`Count` is `Size`), or anything else; a conversion from an array or a collection says which, and an array (one made,
+or a parameter or result of an array type) is `$arr`. `Count` is
 `if $arr(x) then len(x) else if $coll(x) then Size[x] else $ocount(x, $st(...))`, and `x[i]` the array's cell, the
 list's `Items`, or `$oitem(x, i, $st(...))`: a value of the whole state, so the same until something changes (an
 `l.Clear()` of a list that `x` may be changes `x.Count`). Where the program implements one of
@@ -989,8 +990,8 @@ so equal fields mean equal values, and a record's `==` (where its fields compare
   CSV1014); an integer one is in its type's range, and one of a non-nullable reference type is not null. A
   parameter, `this` and a result are of their type's cases.
 - An array or collection interface of a type parameter (a `params T[]`, an `IReadOnlyList<T>` field) is a
-  reference that generic code passes on and stores, but doesn't read; where the type argument is known, it is read as
-  that type's collection. A static method that makes a case (`Grant(params T[] xs) => new Granted(xs)`) tells its
+  reference that generic code passes on and stores, and reads only the `Count` of (its elements' map is its type
+  argument's); where the type argument is known, it is read as that type's collection. A static method that makes a case (`Grant(params T[] xs) => new Granted(xs)`) tells its
   callers which case it gives only if it is `[Pure]` (its body is then its function) or says so in a postcondition.
   `Array.Empty<T>()` is `$aempty()`, an array of none.
 - A case's init property besides its positional ones (`public IReadOnlyList<T> Undone { get; init; } = ...`) is a
