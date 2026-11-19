@@ -33,6 +33,14 @@ namespace CsVerify.Verifier.Boogie
         private static readonly SemaphoreSlim Gate = new SemaphoreSlim(2);
         private static int _running;
 
+        /// <summary>
+        /// The solvers csverify runs side by side when --cores doesn't say: one a core, and no more than one per 4 GB of
+        /// memory (a solver can take a gigabyte or more on a hard query; one a core on 24 GB and 12 cores, solvers died
+        /// mid-run on a large program). The engine's own default, with Cores 0, is one a core.
+        /// </summary>
+        public static int DefaultCores =>
+            Math.Max(1, (int)Math.Min(Environment.ProcessorCount, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (4L << 30)));
+
         /// <summary>CSVERIFY_TIME_SCALE: every time limit (the solver's, a method's budget) this many times as long (a slow machine: CI's Windows runner).</summary>
         public static readonly int TimeScale = int.TryParse(Environment.GetEnvironmentVariable("CSVERIFY_TIME_SCALE"), out var scale) && scale > 1 ? scale : 1;
 
@@ -45,7 +53,10 @@ namespace CsVerify.Verifier.Boogie
         /// whole didn't find failing is checked whole again, with more time (below); a method is verified only where
         /// Boogie said its procedure was correct.
         /// </summary>
-        public static List<(MethodResult method, VerificationDiagnostic diagnostic)> Verify(BoogieTranslator program, string z3Path, int timeoutMs, int cores = 0)
+        /// <param name="only">The procedures to verify (--only's); all, if null. The others are there for their callers.</param>
+        /// <param name="times">Filled with each method's solving time (milliseconds), all runs of it together.</param>
+        public static List<(MethodResult method, VerificationDiagnostic diagnostic)> Verify(BoogieTranslator program, string z3Path, int timeoutMs, int cores = 0, List<string> only = null,
+            Dictionary<MethodResult, long> times = null)
         {
             // (loops' inferred facts: one that doesn't hold on entry or at a back edge is left
             // out, and the program verified again, until those assumed all held; what that run says is what's reported)
@@ -55,7 +66,7 @@ namespace CsVerify.Verifier.Boogie
             int quick = (timeoutMs <= 10000 ? timeoutMs : Math.Max(10000, timeoutMs / 4)) * TimeScale;
             timeoutMs *= TimeScale;
             var names = new Dictionary<MethodResult, string>();
-            var (failures, undecided, factsIn) = Run(cores, program, z3Path, quick, null, null, names);
+            var (failures, undecided, factsIn) = Run(cores, program, z3Path, quick, null, only, names, times);
             for (int round = 1; factsIn.Count > 0; round++)
             {
                 var facts = failures.Where(f => f.diagnostic.Id == Checks.Candidate).Select(f => int.Parse(f.diagnostic.Message)).ToList();
@@ -77,7 +88,7 @@ namespace CsVerify.Verifier.Boogie
                         program.AddDisabled(line);
                     }
                 }
-                var (redone0, undecidedAgain0, factsAgain) = Run(cores, program, z3Path, quick, null, factsIn, names);
+                var (redone0, undecidedAgain0, factsAgain) = Run(cores, program, z3Path, quick, null, factsIn, names, times);
                 failures = failures.Where(f => !redo.Contains(f.method)).Concat(redone0).ToList();
                 undecided = undecided.Where(u => !factsIn.Contains(u)).Concat(undecidedAgain0).Distinct().ToList();
                 factsIn = round > 5 ? new List<string>() : factsAgain;
@@ -91,7 +102,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return failures;
             }
-            var (again, _, _) = Run(cores, program, z3Path, timeoutMs, splitProcs);
+            var (again, _, _) = Run(cores, program, z3Path, timeoutMs, splitProcs, times: times);
             // (a failure split finds that the whole didn't: Boogie reports the solver's unknown, where it gives up, as a
             // failure, and split, without what it learned from the others, it gives up more. So the method is verified
             // whole again, with four times the time: what that finds too is a failure, what it proves is proved; where the
@@ -105,7 +116,7 @@ namespace CsVerify.Verifier.Boogie
                 // whole may not find it again. Only a method the whole didn't find failing, a correct one maybe, is checked)
                 var failing = new HashSet<MethodResult>(failed);
                 var recheck = fresh.Select(f => f.method).Distinct().Where(names.ContainsKey).Where(m => !failing.Contains(m)).ToHashSet();
-                var (confirm, _, _) = Run(cores, program, z3Path, timeoutMs * 4, null, recheck.Select(m => names[m]).ToList());
+                var (confirm, _, _) = Run(cores, program, z3Path, timeoutMs * 4, null, recheck.Select(m => names[m]).ToList(), times: times);
                 var kept = confirm.Where(f => f.diagnostic.Id != "CSV1900").Select(f => (f.method, DiagnosticKey(f))).ToHashSet();
                 var timedOut = confirm.Where(f => f.diagnostic.Id == "CSV1900" && recheck.Contains(f.method)).ToList();
                 var outOfTime = timedOut.Select(f => f.method).ToHashSet();
@@ -150,7 +161,7 @@ namespace CsVerify.Verifier.Boogie
             if (quick < timeoutMs && undecidedAgain.Count > 0)
             {
                 var stillOpen = undecidedAgain.Select(u => u.Item1).Where(names.ContainsKey).Distinct().ToList();
-                var (whole, _, _) = Run(cores, program, z3Path, timeoutMs, null, stillOpen.Select(m => names[m]).ToList());
+                var (whole, _, _) = Run(cores, program, z3Path, timeoutMs, null, stillOpen.Select(m => names[m]).ToList(), times: times);
                 var proved = stillOpen.Where(m => !whole.Any(f => f.method == m)).ToHashSet();
                 undecidedAgain = undecidedAgain.Where(u => !proved.Contains(u.Item1)).ToList();
             }
@@ -191,7 +202,8 @@ namespace CsVerify.Verifier.Boogie
         private static object DiagnosticKey((MethodResult method, VerificationDiagnostic diagnostic) f) => (f.diagnostic.Id, f.diagnostic.Span.StartLinePosition, f.diagnostic.Span.EndLinePosition);
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
-            int cores, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null)
+            int cores, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split, List<string> procs = null, Dictionary<MethodResult, string> names = null,
+            Dictionary<MethodResult, long> times = null)
         {
             // (a run that a mishap of the solver's ended, not anything the program says, once more: Boogie's own wait for
             // a check is as long as the time limit the solver is given, so a solver that answers late (its process slow
@@ -209,7 +221,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     var alone = Interlocked.Increment(ref _running) == 1;
                     var all = cores > 0 ? cores : Environment.ProcessorCount;
-                    result = Run(scheduler, Math.Max(1, alone ? all : all / 2), program, z3Path, timeoutMs, split, procs, names);
+                    result = Run(scheduler, Math.Max(1, alone ? all : all / 2), program, z3Path, timeoutMs, split, procs, names, times);
                 }
                 catch (Exception e) when (attempt == 0 && SolverMishap(e))
                 {
@@ -233,12 +245,12 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Boogie's printer, keeping each procedure's outcome as Boogie decides it (its name, its line, the outcome).</summary>
         private sealed class OutcomePrinter : ConsolePrinter
         {
-            public readonly System.Collections.Concurrent.ConcurrentBag<(string impl, int line, VcOutcome outcome)> Outcomes =
-                new System.Collections.Concurrent.ConcurrentBag<(string, int, VcOutcome)>();
+            public readonly System.Collections.Concurrent.ConcurrentBag<(string impl, int line, VcOutcome outcome, TimeSpan time)> Outcomes =
+                new System.Collections.Concurrent.ConcurrentBag<(string, int, VcOutcome, TimeSpan)>();
 
             public override void ReportEndVerifyImplementation(Implementation implementation, ImplementationRunResult result)
             {
-                Outcomes.Add((implementation.Name, implementation.tok.line, result.VcOutcome));
+                Outcomes.Add((implementation.Name, implementation.tok.line, result.VcOutcome, result.Elapsed));
                 base.ReportEndVerifyImplementation(implementation, result);
             }
         }
@@ -251,7 +263,7 @@ namespace CsVerify.Verifier.Boogie
 
         private static (List<(MethodResult method, VerificationDiagnostic diagnostic)> failures, List<string> undecided, List<string> facts) Run(
             System.Threading.Tasks.TaskScheduler scheduler, int solvers, BoogieTranslator program, string z3Path, int timeoutMs, List<string> split,
-            List<string> procs, Dictionary<MethodResult, string> names)
+            List<string> procs, Dictionary<MethodResult, string> names, Dictionary<MethodResult, long> times)
         {
             var output = new StringWriter();
             if (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") == "2")
@@ -334,7 +346,20 @@ namespace CsVerify.Verifier.Boogie
             // (a procedure Boogie didn't find correct, but for which no failure came that maps to a check: undecided, never
             // verified. A method is verified only where Boogie said so)
             var reported = new HashSet<string>(failures.Where(f => f.Item1 != null).Select(f => names != null && names.TryGetValue(f.Item1, out var n) ? n : null).Where(n => n != null));
-            foreach (var (impl, line, vc) in outcomes.Outcomes)
+            if (times != null)
+            {
+                lock (times)
+                {
+                    foreach (var (_, line, _, time) in outcomes.Outcomes)
+                    {
+                        if (program.Lines.TryGetValue(line, out var at) && at.Method != null)
+                        {
+                            times[at.Method] = (times.TryGetValue(at.Method, out var t) ? t : 0) + (long)time.TotalMilliseconds;
+                        }
+                    }
+                }
+            }
+            foreach (var (impl, line, vc, _) in outcomes.Outcomes)
             {
                 if (vc == VcOutcome.Correct || reported.Contains(impl) || !program.Lines.TryGetValue(line, out var head) || head.Id != BoogieTranslator.Undecided || head.Method == null)
                 {

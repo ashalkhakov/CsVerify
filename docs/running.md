@@ -10,10 +10,16 @@ dotnet csverify -v samples/Good
 ```
 
 ```
-  ok   Arrays.BinarySearch: 20/20 obligations proved
+  ok   Arrays.BinarySearch: 20/20 obligations proved, 0.3 s
   ...
+  time: compile 0.8 s, analyze 1.6 s, collect 2.0 s, translate 4.0 s, type check 1.2 s, solve 106.1 s, ...
 csverify: 13 of 13 methods verified, 72/72 obligations proved
 ```
+
+With `-v`, each method's line says how long the solver took on it (all its rounds together), and the `time:` line how
+long each phase of the run took: compiling, the program-wide analyses, translating to Boogie, Boogie's type check,
+solving, and the checks made from the syntax. A method that takes long is one to split, or to give its callees
+contracts.
 
 ```bash
 dotnet csverify samples/Buggy
@@ -36,16 +42,39 @@ Arguments are `.cs` files, directories (searched recursively, skipping `bin/` an
 | `--no-overflow` | make every integer mathematical, which is unsound where code can overflow (by default integers are bounded: see [Bounded integers](semantics.md#bounded-integers)) |
 | `--timeout <ms>` | Boogie's time limit for a procedure (default 10000; a procedure it can't decide is retried assertion by assertion, then whole with more time) |
 | `--method-budget <ms>` | the most time one method's verification may take, all rounds included; past it, its remaining obligations are not proved (CSV1901), so the method is reported not verified (default: no limit) |
-| `--cores <n>` | the solvers run side by side (Boogie's `/vcsCores`; default: one a core) |
+| `--cores <n>` | the solvers run side by side (Boogie's `/vcsCores`; default: one a core, and no more than one per 4 GB of memory: a solver can take a gigabyte or more on a hard query) |
 | `--z3 <path>` | Z3 executable |
+| `--cache <file>` | keep the methods proved in this file, and prove one again only when what its proof depends on has changed ([Faster runs](#faster-runs)) |
 | `--boogie-out <file>` | write the Boogie program it verified ([the Boogie engine](boogie.md)) |
 | `-d <SYMBOL>` / `-r <dll>` | extra preprocessor symbol / metadata reference |
 | `-a <dll>` / `--analyzer-config <file>` | run the source generators of this analyzer assembly on the program, with this `.editorconfig` or `.globalconfig` (the MSBuild targets pass the project's) |
-| `--only <text>` | verify only the methods whose name (`Type.Method`, or a nested type's `Outer.Type.Method`) contains the text (repeatable); the others are still called by their contracts, and a `[Pure]` one by its body, but aren't verified |
-| `-v` | list every method with its proved/total obligations, and the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed |
+| `--only <text>` | verify only the methods whose name (`Type.Method`, or a nested type's `Outer.Type.Method`) contains the text (repeatable); the others are still called by their contracts, and a `[Pure]` one by its body, but aren't verified; only what the selected methods reach is translated ([Faster runs](#faster-runs)) |
+| `-v` | list every method with its proved/total obligations and its solving time, the library contracts (`[ContractsFor]` stubs, trusted) the proofs assumed, and the time of each phase |
 | `--checks <kinds>` | prove only these kinds of obligation: a comma-separated list of `null`, `linear`, `bounds`, `overflow`, `contracts` (or `all`). See [Check profiles](#check-profiles) |
 | `--each` | verify each argument as a program of its own (a comma joins paths into one: `lemon/CsLemon,lemon/CsLemon.Runtime`), and combine the results, for programs that cannot be compiled together |
 | `--library-report` | after the results, the [library report](#the-library-report) |
+
+## Faster runs
+
+**`--only` translates only what the selected methods reach**: the methods they call, and of those the contracts; what a
+virtual call may run; and of each type they use its invariants, operators, conversions, constructors and the members C#
+calls without naming them (`GetEnumerator`, `Dispose`, `Deconstruct`, `GetAwaiter`...). The rest of the program isn't
+translated, so a run of a few methods costs the compilation and the analyses of the whole program, and those methods.
+What isn't translated can only be assumed less, never more, so a method `--only` proves is proved. Where what the
+selected methods reach doesn't type check in Boogie on its own, the whole program is translated instead (with
+`CSVERIFY_TRACE`, a line says so).
+
+**`--cache <file>` proves a method again only when its proof would change.** Each method proved is kept by a key: a hash
+of its Boogie procedure and of every declaration its proof reaches (the contracts of what it calls, the functions,
+constants and variables it names, the axioms that name any of those, the types), of the options that change a proof
+(`--timeout`, `--checks`, `--no-overflow`, `--nullable`), and of the builds of the verifier, Boogie and Z3. A method
+whose key is in the cache is reported proved (`cached` in `-v`), and isn't given to the solver; one that failed is
+always verified again. So a change to a method's body proves it again, and a change to its contract proves its callers
+too. A run of every method keeps only theirs; a run with `--only` adds to what's there.
+
+The MSBuild target keeps the cache in `obj/` (`csverify.cache`): set `CsVerifyCache=false` to prove everything every
+time, or `CsVerifyCacheFile` to keep it elsewhere. In CI, restore it from the base branch (`actions/cache` with a key of
+the branch and a fallback to the base's) and a pull request is checked in about the time its changed methods take.
 
 ## Check profiles
 

@@ -12,6 +12,9 @@
   <PropertyGroup>
     <CsVerifyEnabled Condition="'$(CsVerifyEnabled)' == ''">false</CsVerifyEnabled>
     <CsVerifyArgs Condition="'$(CsVerifyArgs)' == ''"></CsVerifyArgs>
+    <!-- the methods proved, kept between builds (the verifier's cache option): one is proved again only when what its
+         proof depends on changes. CsVerifyCache=false proves them all every time; CsVerifyCacheFile moves it (a CI cache) -->
+    <CsVerifyCache Condition="'$(CsVerifyCache)' == ''">true</CsVerifyCache>
     <CsVerifyCommand Condition="'$(CsVerifyCommand)' == '' and Exists('$(MSBuildThisFileDirectory)../csverify.dll')">dotnet &quot;$(MSBuildThisFileDirectory)../csverify.dll&quot;</CsVerifyCommand>
     <CsVerifyCommand Condition="'$(CsVerifyCommand)' == ''">dotnet csverify</CsVerifyCommand>
   </PropertyGroup>
@@ -34,6 +37,12 @@
       <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
       <_CsVerifyArgs Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
+    </ItemGroup>
+    <PropertyGroup>
+      <CsVerifyCacheFile Condition="'$(CsVerifyCacheFile)' == ''">$(ProjectDir)$(IntermediateOutputPath)csverify.cache</CsVerifyCacheFile>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(CsVerifyCache)' == 'true'">
+      <_CsVerifyArgs Include="--cache $(CsVerifyCacheFile)" />
     </ItemGroup>
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifyArgs)" Overwrite="true" />
     <PropertyGroup>
