@@ -52,6 +52,20 @@ namespace CsVerify.Analyzers
             "Owned disposable field not disposed",
             "'{0}' holds a {1} that {2} owns, but {3}");
 
+        private const string Taint = "CsVerify.Taint";
+
+        public static readonly DiagnosticDescriptor SensitiveLogged = Error("CSV0030", Taint,
+            "Sensitive value reaches a log",
+            "{0} is sensitive ({1}) and reaches {2}");
+
+        public static readonly DiagnosticDescriptor UnsealOutsideUnseals = Error("CSV0031", Taint,
+            "Sealed value unsealed outside an [Unseals] method",
+            "Sealed.Unseal may be called only in the body of a method marked [Unseals] (not in a lambda or a local function), whose preconditions are the access check");
+
+        public static readonly DiagnosticDescriptor UnsealsWithoutCheck = Error("CSV0032", Taint,
+            "[Unseals] method without a precondition",
+            "'{0}' is marked [Unseals] but has no precondition: its preconditions are the access check that unsealing needs");
+
         public static readonly DiagnosticDescriptor GhostOutsideSpec = Error("CSV0010", Ghosts,
             "Ghost value read outside a specification",
             "'{0}' is ghost and can only be used inside Spec.* arguments, lemma arguments or lemma bodies");

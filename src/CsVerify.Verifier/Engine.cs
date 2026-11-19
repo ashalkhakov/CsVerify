@@ -967,10 +967,16 @@ namespace CsVerify.Verifier
                 foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol lm && lm.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && SpecSymbols.IsTrusted(lm) &&
+                        !SpecSymbols.IsCsVerifyType(lm.ContainingType, "Sealed") &&
                         lm.DeclaringSyntaxReferences.Length == 1 && !userTrees.Contains(lm.DeclaringSyntaxReferences[0].SyntaxTree) && libraryLemmas.Add(lm.OriginalDefinition) &&
                         Boogie.BoogieTranslator.Candidate(lm.OriginalDefinition, engine.ContractOf(lm.OriginalDefinition), asContract: true))
                     {
                         forBoogie.Add((lm.OriginalDefinition, engine.ContractOf(lm.OriginalDefinition), lm.DeclaringSyntaxReferences[0].GetSyntax(), new MethodResult { Name = null }));
+                    }
+                    else if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol nl && libraryLemmas.Contains(nl.OriginalDefinition) &&
+                             !forBoogie.Any(x => SymbolEqualityComparer.Default.Equals(x.method, nl.OriginalDefinition)))
+                    {
+                        Trace($"not a procedure of its contract: {nl.ContainingType.Name}.{nl.Name}: {Boogie.BoogieTranslator.WhyNot(nl.OriginalDefinition, engine.ContractOf(nl.OriginalDefinition))}");
                     }
                 }
             }
@@ -1866,7 +1872,7 @@ namespace CsVerify.Verifier
             List<(SyntaxNode decl, MethodResult result)> declarations, VerificationResult result, VerifierOptions options)
         {
             var analyzers = System.Collections.Immutable.ImmutableArray.Create<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer>(
-                new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer(), new DisposalAnalyzer());
+                new LinearityAnalyzer(), new GhostAnalyzer(), new PurityAnalyzer(), new DisposalAnalyzer(), new TaintAnalyzer());
             var diagnostics = compilation.WithAnalyzers(analyzers).GetAnalyzerDiagnosticsAsync().GetAwaiter().GetResult();
             foreach (var d in diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error && userTrees.Contains(d.Location.SourceTree) && options.Checked(d.Id)))
             {

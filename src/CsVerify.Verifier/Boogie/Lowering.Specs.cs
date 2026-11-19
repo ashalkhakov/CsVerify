@@ -190,7 +190,7 @@ namespace CsVerify.Verifier.Boogie
                         At = cp.Syntax,
                     };
                 case IPropertyReferenceOperation pf when !(IsComputed(pf.Property) && !IsField(pf.Property.OriginalDefinition) && !_isFunction(pf.Property.GetMethod)) && !LibraryProperty(pf) && !(pf.Property.Name == "Length" && IsArray(ActualArray(pf.Instance?.Type))) && !IsString(pf.Instance?.Type) && CollectionOf(pf.Instance?.Type) == null && !IsPair(pf.Instance?.Type) && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Seq`1") &&
-                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !GenericCount(pf) && !IsMemValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
+                                                      !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Ghost`1") && !SpecSymbols.IsCsVerifyType(pf.Instance?.Type, "Map`2") && !IsCollectionInterface(pf.Property.ContainingType) && !GenericCount(pf) && !IsMemValue(pf.Instance?.Type) && !IsSealedValue(pf.Instance?.Type) && !IsGivenTask(pf.Instance?.Type):
                 {
                     var (field, instance, onThis, instanceAt) = FieldOf(e, result, spec: true);
                     return Unbox(new KField

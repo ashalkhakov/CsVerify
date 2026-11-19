@@ -175,6 +175,9 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV0020 | analyzer | a disposable this method owns is not disposed on every path (or is overwritten while it holds one) |
 | CSV0021 | analyzer | a disposable used, or disposed again, after it may have been disposed |
 | CSV0022 | analyzer | a class owns a disposable field but is not IDisposable, or its Dispose never disposes the field |
+| CSV0030 | analyzer | a `[Sensitive]` value, or an object whose text shows one, reaches a log, or an exception's message ([Secrets and logs](taint.md)) |
+| CSV0031 | analyzer | `Sealed.Unseal` outside the body of an `[Unseals]` method |
+| CSV0032 | analyzer | an `[Unseals]` method without a precondition (its access check) |
 | CSV1001 | verifier | callee precondition might not hold |
 | CSV1002 | verifier | postcondition might not hold on a return path |
 | CSV1003 | verifier | index might be out of range / negative array size |

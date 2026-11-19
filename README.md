@@ -185,6 +185,7 @@ interpreter. See [lemon/README.md](lemon/README.md).
 - [Contracts for code without sources](docs/library-contracts.md): `[ContractsFor]` stubs and `[Model]` functions for
   the BCL and other assemblies, and the BCL contracts CsVerify ships.
 - [Proof erasure](docs/erasure.md).
+- [Secrets and logs](docs/taint.md): `[Sensitive]` values kept out of the logs, and sealed values unsealed only after an access check the verifier proves.
 - [Running the verifier](docs/running.md): the command line, MSBuild, diagnostics.
 - [CI](docs/ci.md): GitHub Actions, Azure DevOps, with Tarp; building and releasing CsVerify.
 - [Samples](docs/samples.md).

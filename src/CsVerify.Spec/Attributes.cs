@@ -248,4 +248,28 @@ namespace CsVerify
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class ModelAttribute : Attribute { }
+
+    /// <summary>
+    /// A value that must never reach a log (a password, a card number, a token): the taint analysis follows it, and
+    /// what is computed from it, to every sink (<see cref="LogSinkAttribute"/>, and loggers, the console, Debug and
+    /// Trace), and reports one that gets it (CSV0030). On a type, every value of it.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property | AttributeTargets.Parameter | AttributeTargets.ReturnValue |
+                    AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Struct)]
+    public sealed class SensitiveAttribute : Attribute { }
+
+    /// <summary>A method whose arguments are written out (a log): no <see cref="SensitiveAttribute"/> value may reach them.</summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor)]
+    public sealed class LogSinkAttribute : Attribute { }
+
+    /// <summary>A method whose result may be logged whatever its arguments are: a hash, a mask, a length (trusted).</summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class DeclassifyAttribute : Attribute { }
+
+    /// <summary>
+    /// A method that may unseal (<see cref="Sealed.Unseal{T}"/>): its preconditions are the access check (DiskSec's
+    /// unseal safety), proved at each of its calls. It must have one (CSV0032).
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Property)]
+    public sealed class UnsealsAttribute : Attribute { }
 }

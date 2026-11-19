@@ -274,6 +274,9 @@ namespace CsVerify.Verifier.Boogie
                 case IPropertyReferenceOperation mp when mp.Instance != null && IsMemValue(mp.Instance.Type) && mp.Property.Name is "Addr" or "Length" or "Index" or "Value" or "Elems":
                     _p.MemViews |= IsMemView(mp.Instance.Type);
                     return MemProp(mp.Property.Name, Lower(mp.Instance, mode), mp.Instance.Type);
+                // (a sealed value's content: a function of it)
+                case IPropertyReferenceOperation sv when sv.Instance != null && IsSealedValue(sv.Instance.Type) && sv.Property.Name == "Content":
+                    return SealedContent(Lower(sv.Instance, mode), sv.Instance.Type);
                 case IPropertyReferenceOperation { Property.Name: "Empty", Instance: null } oe when !mode.InSpec && IsObjSet(oe.Type):
                     return Spec(oe, null);
                 case IPropertyReferenceOperation gv when gv.Property.Name == "Value" && IsGhost(gv.Instance?.Type) &&

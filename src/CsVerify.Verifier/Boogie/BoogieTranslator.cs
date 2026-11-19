@@ -209,6 +209,8 @@ namespace CsVerify.Verifier.Boogie
         {
             "PureAttribute", "GhostFunctionAttribute", "LemmaAttribute", "PredicateAttribute", "InvariantAttribute", "GuardedByAttribute", "LockInvariantAttribute",
             "RunsConcurrentlyAttribute", "TakesNoLocksAttribute",
+            // (the taint analysis's and sealed values', the analyzer's to check: an [Unseals] method's access check is its precondition)
+            "SensitiveAttribute", "LogSinkAttribute", "DeclassifyAttribute", "UnsealsAttribute",
             // (a lock wrapper's: what it holds is the static checks' to follow, LockGuards; its body is code as any other)
             "AcquiresAttribute", "ReleasesAttribute", "TrustedAttribute",
         };

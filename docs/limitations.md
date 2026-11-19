@@ -33,6 +33,7 @@ What "verified" claims, and the assumptions it rests on, are in [Soundness](soun
 - **Struct members by reference** (`out a[i].X`, `ref s.X`) are written back after the call. A callee that may touch array contents itself can't be handed an array cell's member this way (CSV1901), since the cell and the parameter would disagree.
 - **Data types.** Closedness is checked within the compilation. A hierarchy whose root has only private constructors is closed, except that the record's synthesized protected copy constructor could in principle be derived through from another assembly. Data values have no identity, so code that relies on reference identity of records is not verified for it.
 - **Unfolding depth.** `Length(Cons(1, Nil))` needs `Length(Nil)` stated too, because a `[Pure]` definition unfolds one level per use. Concrete values are not evaluated to the end.
+- **Taint tracking** follows explicit flows only: branching on a `[Sensitive]` value and logging which way it went is not reported; sealed values rule that out ([Secrets and logs](taint.md)). A library method given a sensitive value is assumed to return it, not to log it, unless it is a known sink or `[LogSink]`. `[Declassify]` methods and `[Unseals]` methods' preconditions are trusted policy.
 - **Termination of ordinary methods** is only checked where `Spec.Decreases` is given (a warning otherwise).
 - **Virtual dispatch** is modular: a call uses the declared member's contract, and overrides are checked against it.
   - **Generic types:** their dynamic types are not modelled.
