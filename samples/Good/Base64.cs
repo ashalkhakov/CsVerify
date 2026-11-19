@@ -192,6 +192,16 @@ namespace Samples.Good
             return data;
         }
 
+        /// <summary>Three bytes are their base-256 number: of equal numbers, the bytes are equal.</summary>
+        [Lemma, System.Diagnostics.Conditional(Spec.Symbol)]
+        public static void Digits(int a, int b, int c, int x, int y, int z)
+        {
+            Spec.Requires(0 <= a && a < 256 && 0 <= b && b < 256 && 0 <= c && c < 256);
+            Spec.Requires(0 <= x && x < 256 && 0 <= y && y < 256 && 0 <= z && z < 256);
+            Spec.Requires(a * 65536 + b * 256 + c == x * 65536 + y * 256 + z);
+            Spec.Ensures(a == x && b == y && c == z);
+        }
+
         /// <summary>Encoding and decoding give the bytes back, whatever their number.</summary>
         public static void RoundTrip(byte[] data)
         {
@@ -207,7 +217,7 @@ namespace Samples.Good
                 Spec.Assert(Block(text[4 * k], text[4 * k + 1], text[4 * k + 2], text[4 * k + 3], data[3 * k], data[3 * k + 1], data[3 * k + 2]));
                 Spec.Assert(Block(text[4 * k], text[4 * k + 1], text[4 * k + 2], text[4 * k + 3], back[3 * k], back[3 * k + 1], back[3 * k + 2]));
                 Spec.Assert(data[3 * k] * 65536 + data[3 * k + 1] * 256 + data[3 * k + 2] == back[3 * k] * 65536 + back[3 * k + 1] * 256 + back[3 * k + 2]);
-                Spec.Assert(back[3 * k] == data[3 * k] && back[3 * k + 1] == data[3 * k + 1] && back[3 * k + 2] == data[3 * k + 2]);
+                Digits(data[3 * k], data[3 * k + 1], data[3 * k + 2], back[3 * k], back[3 * k + 1], back[3 * k + 2]);
             }
             if (data.Length % 3 == 1)
                 Spec.Assert(back[data.Length - 1] == data[data.Length - 1]);
