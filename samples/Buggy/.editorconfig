@@ -11,3 +11,6 @@ dotnet_diagnostic.CSV0011.severity = warning
 dotnet_diagnostic.CSV0012.severity = warning
 dotnet_diagnostic.CSV0007.severity = warning
 dotnet_diagnostic.CSV0013.severity = warning
+dotnet_diagnostic.CSV0030.severity = warning
+dotnet_diagnostic.CSV0031.severity = warning
+dotnet_diagnostic.CSV0032.severity = warning

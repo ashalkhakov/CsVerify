@@ -1334,6 +1334,13 @@
     "LinqBugs.Total@LinqBugs.cs:17": [
       "CSV1001@17"
     ],
+    "Locker..ctor@SecretBugs.cs:31": [],
+    "Locker.Open@SecretBugs.cs:41": [
+      "CSV0032@42"
+    ],
+    "Locker.Peek@SecretBugs.cs:38": [
+      "CSV0031@38"
+    ],
     "LyingPurse..ctor@OopBugs.cs:66": [],
     "LyingPurse.Add@OopBugs.cs:67": [
       "CSV1002@67"
@@ -1515,6 +1522,15 @@
       "CSV1003@20"
     ],
     "Ring.Valid@ViewtypeBugs.cs:11": [],
+    "SecretBugs.LogPayment@SecretBugs.cs:20": [
+      "CSV0030@20"
+    ],
+    "SecretBugs.LogToken@SecretBugs.cs:17": [
+      "CSV0030@17"
+    ],
+    "SecretBugs.Reject@SecretBugs.cs:23": [
+      "CSV0030@23"
+    ],
     "ShareBugs.Distinct@ShareBugs.cs:80": [
       "CSV1004@82"
     ],
@@ -1872,6 +1888,9 @@
     "Counter.Demo@StaticFields.cs:37": [],
     "Counter.Reset@StaticFields.cs:20": [],
     "Counter.Twice@StaticFields.cs:26": [],
+    "Credential..ctor@Secrets.cs:16": [],
+    "Credential.PasswordFor@Secrets.cs:25": [],
+    "Credential.ToString@Secrets.cs:33": [],
     "Ctx..ctor@Stlc.cs:20": [],
     "DafnyClassics.DutchFlag@DafnyClassics.cs:123": [],
     "DafnyClassics.FastPow@DafnyClassics.cs:103": [],
@@ -2203,6 +2222,9 @@
     "Retries.RetryAsync@Callbacks.cs:115": [],
     "SNode..ctor@ListSegments.cs:17": [],
     "SQueue..ctor@AtsQueue.cs:16": [],
+    "Secrets.Audit@Secrets.cs:54": [],
+    "Secrets.Login@Secrets.cs:42": [],
+    "Secrets.Mask@Secrets.cs:39": [],
     "SharedAccount..ctor@Locks.cs:37": [],
     "SharedAccount.Balance@Locks.cs:64": [],
     "SharedAccount.Deposit@Locks.cs:43": [],

@@ -209,7 +209,7 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>CsVerify's own: views and shares, ghosts of the subset's, object sets, memory values, sequences of values.</summary>
         private static bool IsSpecType(ITypeSymbol t) =>
-            IsView(t) || IsShare(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t);
+            IsView(t) || IsShare(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsSealedValue(t);
 
         /// <summary>The library's the kernel models by what they do: cancellation tokens, tasks one is given, library objects, EF's transactions and factories, semaphores.</summary>
         private static bool IsModeledLibraryType(ITypeSymbol t) =>
@@ -366,6 +366,14 @@ namespace CsVerify.Verifier.Boogie
         /// ATS's manual memory: a pointer (Ptr&lt;T&gt;), a view (PointsTo, ArrayView, ArrayHole) or a token (FreeGc) of
         /// scalars: a value, its ghost properties functions of it ($mem.Addr, $mem.Elems.Int32, ...).
         /// </summary>
+        /// <summary>A sealed value (Sealed&lt;T&gt;): a reference, whose content is a function of it (it never changes), which only Unseal reads.</summary>
+        public static bool IsSealedValue(ITypeSymbol t) =>
+            SpecSymbols.IsCsVerifyType(t, "Sealed`1") && ((INamedTypeSymbol)t).TypeArguments[0] is var e && (IsTypeParameter(e) || InSubset(e)) &&
+            TypeOf(e) is "int" or "bool" or "Ref" or "Box";
+
+        /// <summary>A sealed value's content.</summary>
+        public static KExpr SealedContent(KExpr v, ITypeSymbol type) => new KOp("$sealed." + TypeOf(((INamedTypeSymbol)type).TypeArguments[0]), v);
+
         public static bool IsMemValue(ITypeSymbol t) =>
             (IsMemView(t) || SpecSymbols.IsCsVerifyType(t, "Ptr`1") || SpecSymbols.IsCsVerifyType(t, "FreeGc`1")) && Scalar(((INamedTypeSymbol)t).TypeArguments[0]);
 
@@ -757,7 +765,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (LockGuards: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsSequence(t) || IsGenericCollection(t) || t?.SpecialType == SpecialType.System_Object;
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsSealedValue(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsSequence(t) || IsGenericCollection(t) || t?.SpecialType == SpecialType.System_Object;
 
         /// <summary>
         /// An array, a sequence or a collection interface of a type parameter (a params T[], an IReadOnlyList&lt;T&gt;

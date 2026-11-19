@@ -900,6 +900,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 return memValue;
             }
+            if (SealedCall(call, out var sealedValue))
+            {
+                return sealedValue;
+            }
             // (LINQ to Objects, read here: Lowering.Linq)
             if (IsEnumerableCall(call.TargetMethod) || IsQueryableMethod(call.TargetMethod) && call.Type is ITypeSymbol qt && !IsQueryHandle(qt))
             {

@@ -43,7 +43,11 @@
   - A pure function is an SMT function of its arguments, so an allocation would make `f() == f()` false.
   - An override could have a different body from the one the verifier unfolds.
 
-The verifier runs all three analyzers over the compilation it verifies: a method with an analyzer error is not verified.
+**Taint** (`TaintAnalyzer`): `[Sensitive]` values and what is computed from them, followed to the logs across the whole
+program (parameters callers fill, fields stored to, methods' results, to a fixed point), and sealed values unsealed
+only in `[Unseals]` methods ([Secrets and logs](taint.md)).
+
+The verifier runs the analyzers over the compilation it verifies: a method with an analyzer error is not verified.
 
 ## Layer 2: the verifier (Boogie and Z3)
 

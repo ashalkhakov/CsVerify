@@ -94,6 +94,41 @@ namespace CsVerify.Verifier.Boogie
         /// null; a view holds its cells while in hand, and says what they hold; reads and the proof functions (Split,
         /// Join, TakeOut, PutBack) change no memory.
         /// </summary>
+        /// <summary>
+        /// Sealed values: Seal makes one, not null, holding the value; Unseal reads what one holds (whether the caller may
+        /// is the analyzer's to check, CSV0031, and the [Unseals] method's precondition).
+        /// </summary>
+        private bool SealedCall(IInvocationOperation call, out KExpr value)
+        {
+            value = null;
+            var m = call.TargetMethod;
+            if (!(SpecSymbols.IsCsVerifyType(m.ContainingType, "Sealed") && m.IsGenericMethod && call.Arguments.Length == 1))
+            {
+                return false;
+            }
+            var type = m.Name == "Seal" ? m.ReturnType : m.Parameters[0].Type;
+            if (!IsSealedValue(type))
+            {
+                throw new NotTranslated("a sealed " + ((INamedTypeSymbol)type).TypeArguments[0]);
+            }
+            var x = Expr(call.Arguments[0].Value);
+            if (m.Name == "Seal")
+            {
+                var p = FreshLocal(m.ReturnType);
+                Assume(AndAll(NotNull(new KVar(p)), Eq(SealedContent(new KVar(p), type), x)));
+                value = new KVar(p);
+                return true;
+            }
+            CheckPrecondition(NotNull(x), "sealedValue != null", call.Syntax, m.Name);
+            value = SealedContent(x, type);
+            // (of a non-nullable type, not null: as a collection's elements are, A10)
+            if (NotNullable(((INamedTypeSymbol)type).TypeArguments[0]))
+            {
+                Assume(NotNull(value));
+            }
+            return true;
+        }
+
         private bool MemCall(IInvocationOperation call, out KExpr value)
         {
             value = null;

@@ -366,6 +366,11 @@ namespace CsVerify.Verifier.Boogie
                 Optional("$mem.", $"function $mem.Value.{k}(v: Ref): {ty};");
                 Optional("$mem.", $"function $mem.Elems.{k}(v: Ref): [int]{ty};");
             }
+            Optional("$sealed.", "// sealed values: what each holds, a function of it");
+            foreach (var ty in new[] { "int", "bool", "Ref", "Box" })
+            {
+                Optional("$sealed.", $"function $sealed.{ty}(s: Ref): {ty};");
+            }
             Line("// strings: values, of a length and UTF-16 code units (null counts as empty where it is concatenated)");
             Line("function slen(s: Ref): int;");
             Line("axiom (forall s: Ref :: { slen(s) } 0 <= slen(s) && slen(s) <= 2147483647);");
