@@ -42,6 +42,30 @@ namespace Newtonsoft.Json
                 .Select(d => $"{d.Location.GetLineSpan().StartLinePosition.Line + 1 - first + 1}: {d.GetMessage()}").OrderBy(x => x).ToArray();
         }
 
+        /// <summary>
+        /// The CSV0030 lines of a program (from its first line) that references a library compiled on its own: another
+        /// project of the solution, whose bodies the analysis doesn't see.
+        /// </summary>
+        private static int[] LinesWith(string library, string program)
+        {
+            var lib = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("Lib",
+                new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(Harness.Usings + library) }, Harness.References(),
+                new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+            var image = new System.IO.MemoryStream();
+            var emit = lib.Emit(image);
+            Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
+            var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(Logging + program, path: "App.cs");
+            var app = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("App", new[] { tree },
+                Harness.References().Append(Microsoft.CodeAnalysis.MetadataReference.CreateFromImage(image.ToArray())),
+                new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+            var errors = app.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
+            Assert.True(errors.Count == 0, string.Join("\n", errors));
+            var first = Logging.Split('\n').Length - 1;
+            return app.WithAnalyzers(System.Collections.Immutable.ImmutableArray.Create<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer>(new CsVerify.Analyzers.TaintAnalyzer()))
+                .GetAnalyzerDiagnosticsAsync().Result.Where(d => d.Id == "CSV0030")
+                .Select(d => d.Location.GetLineSpan().StartLinePosition.Line + 1 - first).OrderBy(n => n).ToArray();
+        }
+
         private static int[] Lines(string body) => Leaks(body).Select(l => int.Parse(l.Substring(0, l.IndexOf(":")))).OrderBy(n => n).ToArray();
 
         [Fact]
@@ -280,6 +304,105 @@ public sealed class Client(System.Net.Http.HttpClient http, ILogger log)
     }
 }");
             Assert.Equal(new[] { 11 }, lines);
+        }
+
+        [Fact]
+        public void AnotherProjectsCode_SaysWhatItHoldsByItsSensitiveMembers()
+        {
+            // (#85: services and entities of another project, called with a secret, don't become secrets; an interface's
+            // answer is the secret only where its type could be; a value's type is metadata. The leaks stay reported)
+            var lines = LinesWith(@"namespace Lib
+{
+    [Sensitive] public sealed record SortCode(string Value);
+    public abstract record Command;
+    public sealed record Link(SortCode SortCode) : Command;
+    public interface ICrypto { string Encrypt(string plaintext); }
+    public interface IRepository { System.Threading.Tasks.Task StageAsync(Account account); System.Threading.Tasks.Task<Account> LoadAsync(string userId); }
+    public sealed class Account
+    {
+        public string Id { get; } = ""acc-1"";
+        public bool Linked { get; private set; }
+        public bool Handle(Command command) { if (command is Link) { Linked = true; return true; } return false; }
+    }
+}", @"namespace App
+{
+using System.Threading.Tasks;
+using Lib;
+using Microsoft.Extensions.Logging;
+public sealed record Created(string? Id, string? Error);
+public interface IPlatform { Task<Created> CreateAsync(Link request); Task<string> EchoAsync(Link request); }
+public sealed class Steps(ILogger logger, ICrypto crypto, IPlatform platform)
+{
+    public void D1(SortCode sortCode, string userId)
+    {
+        _ = crypto.Encrypt(sortCode.Value);
+        var other = crypto.Encrypt(userId);
+        logger.LogInformation(""Encrypted for user {UserId}: {Other}"", userId, other);
+        logger.LogInformation(""{E}"", crypto.Encrypt(sortCode.Value));
+    }
+    public void D2(Account account, SortCode sortCode)
+    {
+        account.Handle(new Link(sortCode));
+        logger.LogInformation(""Linked account {AccountId}"", account.Id);
+    }
+    public async Task D3(SortCode sortCode)
+    {
+        var created = await platform.CreateAsync(new Link(sortCode));
+        logger.LogInformation(""Created {Id}, error {Error}"", created.Id, created.Error);
+        logger.LogInformation(""{E}"", await platform.EchoAsync(new Link(sortCode)));
+    }
+    public void D5(Command command, object members)
+    {
+        logger.LogInformation(""Could not record {Command}"", command.GetType().Name);
+        foreach (var member in members.GetType().GetProperties())
+        {
+            logger.LogInformation(""Member {Name}"", member.Name);
+        }
+    }
+    public void D5Call(SortCode sortCode) => D5(new Link(sortCode), new { SortCode = sortCode });
+    public void Kept(SortCode sortCode)
+    {
+        var list = new System.Collections.Generic.List<string>();
+        list.Add(sortCode.Value);
+        var b = new System.Text.StringBuilder();
+        b.Append(sortCode.Value);
+        logger.LogInformation(""{L} {B}"", list[0], b.ToString());
+    }
+}
+public sealed class Fields
+{
+    private readonly ILogger logger;
+    private readonly IRepository repository;
+    public Fields(ILogger logger, IRepository repository) { this.logger = logger; this.repository = repository; }
+    public async Task D9(string userId)
+    {
+        var loaded = await repository.LoadAsync(userId);
+        logger.LogInformation(""Loaded {AccountId}"", loaded.Id);
+    }
+    public async Task Stage(Account account, SortCode sortCode)
+    {
+        account.Handle(new Link(sortCode));
+        await repository.StageAsync(account);
+    }
+    public async Task D11(string userId, SortCode sortCode)
+    {
+        var account = await repository.LoadAsync(userId);
+        logger.LogInformation(""Setting up {AccountId}"", account.Id);
+        await Record(account, new Link(sortCode));
+    }
+    private async Task Record(Account account, Command command)
+    {
+        if (!account.Handle(command))
+        {
+            logger.LogError(new System.Exception(), ""Could not record a command on {AccountId}"", account.Id);
+            return;
+        }
+        await repository.StageAsync(account);
+    }
+}
+}");
+            // (Encrypt of the sort code, an interface's string answer to it, and a list and a builder that hold it)
+            Assert.Equal(new[] { 15, 26, 43, 43 }, lines);
         }
 
         [Fact]

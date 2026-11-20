@@ -35,8 +35,12 @@ a length. It is trusted.
 **What is followed** (CSV0030, at the sink, saying where the value came from):
 - through assignments, operators, string concatenation and interpolation, conversions, `?:` and `??`, tuples, arrays,
   `await`, members of a sensitive value, and calls: a call of the program's method given a sensitive value gives one
-  if the method may return it (a summary of each method's parameters), a library call given one always does, unless
-  it is `[Declassify]`;
+  if the method may return it (a summary of each method's parameters, an interface's or a virtual one's from its
+  implementations in sight), a library call given one always does, unless it is `[Declassify]`. A member of the
+  program with no body in sight (an interface's with no implementation in the project, or one of another project of
+  the solution, which the analysis doesn't see) gives one if its result's type can hold it: a string, an object, a
+  `T`, an interface, or a type with a `[Sensitive]` member or of a `[Sensitive]` type (`Task<Created>` of a record of
+  ids doesn't);
 - into objects: a constructor, an initializer or a `with` of the program's stores what it is given in members (a
   record's primary constructor in its properties), and those members are sources; the object itself is sensitive only
   where its text is made (below). A library object made with a sensitive value holds it;
@@ -45,7 +49,10 @@ a length. It is trusted.
   a field or property a sensitive value is stored in is a source wherever it is read. The message says where the
   value was first passed and stored (`passed to 'body' of 'Client.Send' at Client.cs(41,9)`);
 - into what holds it: a collection a sensitive value is added to (`list.Add(token)`: a library call given one taints
-  its receiver), `ref` and `out` arguments, and a lambda passed alongside it (`passwords.Select(p => p.Length)`);
+  its receiver, where it is the framework's object, or a collection, a builder or a writer of any library's), `ref`
+  and `out` arguments, and a lambda passed alongside it (`passwords.Select(p => p.Length)`). An object of the program's,
+  of this project or another (a service, an entity), says what it holds by its `[Sensitive]` members: a call given a
+  sensitive value doesn't make it, or a field that holds it, sensitive;
 - whole objects: a value whose text shows a `[Sensitive]` member (or one of a `[Sensitive]` type) is reported where it
   is logged, or made into text (`$"{order}"`, `"x" + order`, `order.ToString()`): a record (its synthesized `ToString`
   prints every property), a type whose own `ToString` returns a sensitive value, and, given to a logger, which may
@@ -63,7 +70,8 @@ a length. It is trusted.
 
 **What isn't** (implicit flows): branching on a sensitive value and logging which way it went
 (`if (pin[0] == '1') log("starts with 1")`, or `ok ? "accepted" : "refused"` of a password check) is not reported. That
-is noninterference, a property of two runs; sealed values rule it out where it matters. Nor are reflection, other
+is noninterference, a property of two runs; sealed values rule it out where it matters. A value's type (`GetType()`,
+and what is read of it: `Name`, `GetProperties()`) is its metadata, not the value. Nor are reflection, other
 serializers (XML, binary, a `JsonSerializer` given its type at run time), the text a response was deserialized from
 (`DeserializeObject<T>` of a `T` with a `[Sensitive]` member: the members read are sensitive, the raw string isn't), or
 code the analysis doesn't see (a library given a sensitive value is assumed to

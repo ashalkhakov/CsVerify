@@ -327,13 +327,80 @@ namespace CsVerify.Analyzers
             /// </summary>
             internal bool PassesOn(IMethodSymbol m, IParameterSymbol p)
             {
-                var d = m.ReducedFrom ?? m;
-                if (p == null || !_seen.Contains(d.OriginalDefinition) || d.IsVirtual || d.IsAbstract || d.IsOverride)
+                var d = (m.ReducedFrom ?? m).OriginalDefinition;
+                if (p == null)
                 {
                     return true;
                 }
-                return _passes.TryGetValue(d.OriginalDefinition, out var set) && set.Contains(p.Ordinal);
+                if (_seen.Contains(d) && !d.IsVirtual && !d.IsAbstract && !d.IsOverride)
+                {
+                    return Returns(d, p.Ordinal);
+                }
+                if (!IsProgramType(d.ContainingType))
+                {
+                    return true;
+                }
+                // (the program's dispatched member: what its implementations in sight may return; with none, an
+                // interface's or another project's, what its result's type can carry)
+                var impls = _seen.Where(s => s.Parameters.Length == d.Parameters.Length && Implements(s, d)).ToList();
+                return impls.Count > 0 ? impls.Any(s => Returns(s, p.Ordinal)) : Carries(d.ReturnType);
             }
+
+            private bool Returns(IMethodSymbol m, int ordinal) => _passes.TryGetValue(m.OriginalDefinition, out var set) && set.Contains(ordinal);
+
+            /// <summary>Is <paramref name="s"/> this member, an override of it, or an implementation of it (an interface's)?</summary>
+            private static bool Implements(IMethodSymbol s, IMethodSymbol d)
+            {
+                if (SymbolEqualityComparer.Default.Equals(s, d))
+                {
+                    return true;
+                }
+                for (var o = s.OverriddenMethod; o != null; o = o.OverriddenMethod)
+                {
+                    if (SymbolEqualityComparer.Default.Equals(o.OriginalDefinition, d))
+                    {
+                        return true;
+                    }
+                }
+                return d.ContainingType?.TypeKind == TypeKind.Interface && s.ContainingType != null &&
+                       SymbolEqualityComparer.Default.Equals(s.ContainingType.FindImplementationForInterfaceMember(d)?.OriginalDefinition, s);
+            }
+
+            /// <summary>
+            /// A type of the program: declared in it, or in an assembly that isn't the framework's (another project of
+            /// the solution, whose types say what they hold by their [Sensitive] members).
+            /// </summary>
+            internal static bool IsProgramType(ITypeSymbol t) =>
+                t != null && t.SpecialType == SpecialType.None && !(t.ContainingNamespace?.ToDisplayString() is string ns && (ns == "System" || ns.StartsWith("System.") || ns == "Microsoft" || ns.StartsWith("Microsoft.")));
+
+            /// <summary>Could a value of this type be (or hold) what a call was given: text, an object, a T, a type that holds a [Sensitive] value?</summary>
+            internal bool Carries(ITypeSymbol t)
+            {
+                if (t is INamedTypeSymbol { IsGenericType: true } task && task.TypeArguments.Length == 1 && task.Name is "Task" or "ValueTask")
+                {
+                    t = task.TypeArguments[0];
+                }
+                switch (t)
+                {
+                    case null: return false;
+                    case IArrayTypeSymbol a: return Carries(a.ElementType);
+                    case ITypeParameterSymbol _: return true;
+                }
+                if (t.SpecialType == SpecialType.System_Void || t.IsValueType && t.SpecialType != SpecialType.None)
+                {
+                    return false;
+                }
+                return t.SpecialType is SpecialType.System_String or SpecialType.System_Object || t.TypeKind is TypeKind.Interface or TypeKind.Delegate ||
+                       SensitiveType(t) != null || Serializes(t) != null || t is INamedTypeSymbol n && n.TypeArguments.Any(Carries);
+            }
+
+            /// <summary>
+            /// A library object that holds what a call gives it: one of the framework's, or a collection, a builder or a
+            /// writer of any library's. Not the program's (a service, an entity), whose [Sensitive] members say what it holds.
+            /// </summary>
+            internal static bool Holds(ITypeSymbol t) =>
+                t != null && (!IsProgramType(t) || t.SpecialType != SpecialType.System_String && t.AllInterfaces.Any(i => i.ToDisplayString() == "System.Collections.IEnumerable") ||
+                              t.Name.EndsWith("Builder") || t.Name.EndsWith("Writer") || t.Name.EndsWith("Stream"));
 
             internal void Returns(IMethodSymbol m, string why)
             {
@@ -673,7 +740,7 @@ namespace CsVerify.Analyzers
                 if (given != null && !IsDeclassify(m))
                 {
                     // (a collection given one holds it; so do ref and out arguments; a lambda given alongside it gets it)
-                    if (instance != null && m.MethodKind != MethodKind.PropertyGet && !Flow.InSource(m.ContainingType) && !Flow.IsHttpExchange(m))
+                    if (instance != null && m.MethodKind != MethodKind.PropertyGet && !Flow.InSource(m.ContainingType) && !Flow.IsHttpExchange(m) && Flow.Holds(instance.Type))
                     {
                         Into(instance, given);
                     }
@@ -846,7 +913,8 @@ namespace CsVerify.Analyzers
                         {
                             return text;
                         }
-                        if (Flow.IsHttpExchange(m))
+                        // (the server's answer; a value's type, its metadata, not the value)
+                        if (Flow.IsHttpExchange(m) || m.Name == "GetType" && m.Parameters.Length == 0 && m.ContainingType?.SpecialType == SpecialType.System_Object)
                         {
                             return null;
                         }
