@@ -747,6 +747,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 case IParameterReferenceOperation ap when _assigned.TryGetValue(ap.Parameter, out var apLocal): return new KVar(apLocal);
                 // (a compiled query's lambda's, where it's called: its argument)
                 case IParameterReferenceOperation cq when _compiledParams.Contains(cq.Parameter): return new KVar("q$" + cq.Parameter.Name);
+                case IParameterReferenceOperation pc when IsPrimaryParameter(pc.Parameter) && !_p.IsCtor: return PrimaryRead(pc.Parameter);
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && (p.Parameter.RefKind is RefKind.None or RefKind.Ref or RefKind.Out || p.Parameter.RefKind == RefKind.In && (IsMemView(p.Parameter.Type) || InValue(p.Parameter))):
                     return new KVar(Local(p.Parameter));
                 default: return ExprOther(e);

@@ -1484,6 +1484,11 @@ namespace CsVerify.Verifier.Boogie
                 Line("  " + l);
             }
             Given(p, atEntry);
+            // (a primary constructor: what its members read of its parameters)
+            foreach (var x in p.Source.IsCtor ? p.Source.PrimaryParameters.OrderBy(x => x.Ordinal) : Enumerable.Empty<IParameterSymbol>())
+            {
+                Line($"  free ensures {PrimaryFunction(x)}(this) == {Local(x)};");
+            }
             if (p.Source.StructRefThis)
             {
                 foreach (var fact in ValueFacts("this", m.ContainingType, null, cx))
@@ -1779,6 +1784,14 @@ namespace CsVerify.Verifier.Boogie
             foreach (var x in m.Parameters.Where(x => x.RefKind != RefKind.Out))
             {
                 foreach (var fact in ValueFacts(Local(x), x.Type, x, cx))
+                {
+                    Line($"  free requires {fact};");
+                }
+            }
+            // (a primary constructor's parameter its members read: a value of its type, not null if it's non-nullable)
+            foreach (var x in p.Source.IsCtor ? Enumerable.Empty<IParameterSymbol>() : p.Source.PrimaryParameters.OrderBy(x => x.Name, System.StringComparer.Ordinal))
+            {
+                foreach (var fact in ValueFacts($"{PrimaryFunction(x)}(this)", x.Type, x, cx))
                 {
                     Line($"  free requires {fact};");
                 }

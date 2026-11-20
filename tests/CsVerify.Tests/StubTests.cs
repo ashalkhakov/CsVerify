@@ -257,5 +257,23 @@ public static class BuilderContracts
             Assert.Equal(new[] { "CSV1016" }, r.Errors("C.FillNotHeld"));
             Assert.Equal(new[] { "CSV1016" }, r.Errors("C.SortNotHeld"));
         }
+
+        // (#83: a random number is in the range asked for, as RandomNumberGenerator's and Random's documentation says)
+        [Fact]
+        public void RandomNumbers_AreInTheRangeAskedFor()
+        {
+            var r = Harness.Verify(@"
+public static class C
+{
+    public static char Pick(string chars) { Spec.Requires(chars.Length > 0); return chars[System.Security.Cryptography.RandomNumberGenerator.GetInt32(chars.Length)]; }
+    public static int Roll(System.Random r) { var n = r.Next(1, 7); Spec.Assert(1 <= n && n <= 6); return n; }
+    public static int Past(int[] a) => a[System.Security.Cryptography.RandomNumberGenerator.GetInt32(a.Length + 1)];
+    public static int Empty(string s) => System.Security.Cryptography.RandomNumberGenerator.GetInt32(s.Length);
+}");
+            Assert.Empty(r.Errors("C.Pick"));
+            Assert.Empty(r.Errors("C.Roll"));
+            Assert.Contains("CSV1003", r.Errors("C.Past"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("C.Empty"));
+        }
     }
 }

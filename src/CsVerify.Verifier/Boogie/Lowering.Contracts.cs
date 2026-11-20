@@ -86,6 +86,22 @@ namespace CsVerify.Verifier.Boogie
             return l._p;
         }
 
+        /// <summary>A member's read of a primary constructor's parameter: what the constructor set it to, as nothing assigns it after.</summary>
+        private KExpr PrimaryRead(IParameterSymbol p)
+        {
+            if (!InSubset(p.Type) || p.RefKind != RefKind.None || !_p.HasThis)
+            {
+                throw new NotTranslated($"'{p.Name}', a primary constructor's parameter of {p.Type}");
+            }
+            if (PrimaryWritten(p))
+            {
+                throw new NotTranslated($"'{p.Name}', a primary constructor's parameter assigned after construction");
+            }
+            _p.AddFunction(PrimaryDeclaration(p));
+            _p.PrimaryParameters.Add(p);
+            return new KOp(PrimaryFunction(p), new KVar("this"));
+        }
+
         /// <summary>
         /// The contract: its requires, its ensures (an inherited one where its precondition was weakened: promised where the
         /// base's held on entry), its measure; an override's own precondition and each base's, and the bases' frames.
@@ -95,6 +111,15 @@ namespace CsVerify.Verifier.Boogie
             if (contract.BodyLocal != null)
             {
                 throw new NotTranslated($"its contract names '{contract.BodyLocal}', a local of its body (CSV0014)");
+            }
+            // (a primary constructor: it sets what its members read of its parameters)
+            foreach (var p in l._m.MethodKind == MethodKind.Constructor ? l._m.Parameters.Where(IsPrimaryParameter) : Enumerable.Empty<IParameterSymbol>())
+            {
+                if (InSubset(p.Type) && p.RefKind == RefKind.None)
+                {
+                    l._p.AddFunction(PrimaryDeclaration(p));
+                    l._p.PrimaryParameters.Add(p);
+                }
             }
             foreach (var r in contract.Requires)
             {

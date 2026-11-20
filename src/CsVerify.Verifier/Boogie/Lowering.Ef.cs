@@ -1216,7 +1216,8 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A column or a navigation: an auto-property with a setter, not [NotMapped].</summary>
         private static bool Mapped(IPropertySymbol p, EfModel.Entity e) =>
             e.References.Contains(p) || e.Collections.Contains(p) ||
-            IsField(p) && p.SetMethod != null && !p.GetAttributes().Any(a => a.AttributeClass?.Name == "NotMappedAttribute");
+            IsField(p) && (p.SetMethod != null || MetadataEntities.Current?.Columns.Contains(p.OriginalDefinition) == true) &&
+            !p.GetAttributes().Any(a => a.AttributeClass?.Name == "NotMappedAttribute");
 
         private static readonly HashSet<string> TranslatedTypes = new HashSet<string>
         {

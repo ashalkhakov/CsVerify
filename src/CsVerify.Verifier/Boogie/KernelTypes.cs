@@ -1124,7 +1124,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A field the kernel has: a heap field (an instance field or auto-property, or a mutable static field) of a class in the subset, of a type in it.</summary>
         public static bool IsField(ISymbol s) =>
             s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) && !IsLockObject(s) && // (a lock's object: no state of the kernel's)
-            (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && (!CsVerifyAttributes(s) || OnlyGuardedBy(s)) : IsClass(s.ContainingType));
+            (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && (!CsVerifyAttributes(s) || OnlyGuardedBy(s)) : IsClass(s.ContainingType) || MetadataEntities.IsEntity(s.ContainingType));
 
         public static ITypeSymbol FieldType(ISymbol s) => s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
 
@@ -1149,6 +1149,42 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A non-nullable reference type, in an enabled nullable context (an oblivious one promises nothing).</summary>
         /// (Not a type parameter's: where T : class may be instantiated with K?.)
         public static bool NotNullable(ITypeSymbol t) => IsGhost(t) ? NotNullable(GhostOf(t)) : t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
+
+        /// <summary>
+        /// A class's primary constructor parameter, as its members see it (C# keeps it in a hidden field): a function of the
+        /// object, set by the constructor, while nothing assigns it after construction.
+        /// </summary>
+        public static bool IsPrimaryParameter(IParameterSymbol p) =>
+            p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.Constructor } c && c.ContainingType is { TypeKind: TypeKind.Class, IsRecord: false } &&
+            c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is TypeDeclarationSyntax);
+
+        public static string PrimaryFunction(IParameterSymbol p) => "$pc." + Ident(p.ContainingType.ToDisplayString() + "." + p.Name);
+
+        public static string PrimaryDeclaration(IParameterSymbol p) => $"function {PrimaryFunction(p)}(this: Ref): {TypeOf(p.Type)};";
+
+        /// <summary>Is a primary constructor's parameter assigned (or passed by ref or out) in its class's code?</summary>
+        public static bool PrimaryWritten(IParameterSymbol p)
+        {
+            foreach (var r in p.ContainingType.DeclaringSyntaxReferences)
+            {
+                var node = r.GetSyntax();
+                var model = Compilation?.GetSemanticModel(node.SyntaxTree);
+                var targets = node.DescendantNodes().Select(n => n switch
+                {
+                    AssignmentExpressionSyntax a => a.Left,
+                    PrefixUnaryExpressionSyntax u when u.IsKind(SyntaxKind.PreIncrementExpression) || u.IsKind(SyntaxKind.PreDecrementExpression) => u.Operand,
+                    PostfixUnaryExpressionSyntax u when u.IsKind(SyntaxKind.PostIncrementExpression) || u.IsKind(SyntaxKind.PostDecrementExpression) => u.Operand,
+                    ArgumentSyntax g when !g.RefKindKeyword.IsKind(SyntaxKind.None) && !g.RefKindKeyword.IsKind(SyntaxKind.InKeyword) => g.Expression,
+                    RefExpressionSyntax re => re.Expression,
+                    _ => null,
+                }).OfType<IdentifierNameSyntax>().Where(id => id.Identifier.Text == p.Name);
+                if (targets.Any(id => model == null || SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, p)))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         public static string TypeOf(ITypeSymbol t) =>
             IsGhost(t) ? TypeOf(GhostOf(t)) : IsTypeParameter(t) ? "Box" : IsObjSet(t) ? "[Ref]bool" : IsMemValue(t) ? "Ref" : IsFloating(t) ? FloatType(t) : IsLinqGroup(t) ? "int" :

@@ -125,6 +125,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 case IParameterReferenceOperation p when result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result): return new KVar("result");
                 case IParameterReferenceOperation cp when _capturedIn.ContainsKey(cp.Parameter): return CapturedInSpec(cp.Parameter);
+                case IParameterReferenceOperation pc when IsPrimaryParameter(pc.Parameter) && !_p.IsCtor: return PrimaryRead(pc.Parameter);
                 case IParameterReferenceOperation p when p.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } &&
                                                          !SymbolEqualityComparer.Default.Equals(p.Parameter.ContainingSymbol, _m):
                     return new KVar("q$" + p.Parameter.Name); // (a quantifier's variable)

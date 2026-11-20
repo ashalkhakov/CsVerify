@@ -8,20 +8,28 @@ operation at a time. Nothing needs to be written for this: the model comes from 
 ## The model
 
 Read from the sources, as EF reads them:
-- **Entity types:** a context's `DbSet<T>` properties, the types its configuration names (`modelBuilder.Entity<T>()`),
-  and what their navigations lead to. A derived type has its base classes' properties, and its root's key, query
+- **Entity types:** a context's `DbSet<T>` properties, the types its configuration names (`modelBuilder.Entity<T>()`,
+  an `IEntityTypeConfiguration<T>`), and what their navigations lead to, in the program or in an assembly it references
+  (a domain project's). A referenced entity's auto-properties (the compiler's backing field beside them, read from the
+  assembly) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
+  internal members are seen where `InternalsVisibleTo` grants them. A property with code of its own is neither. A derived type has its base classes' properties, and its root's key, query
   filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy.
 - **Owned and complex types** (`OwnsOne`, `OwnsMany`, `[Owned]`, `ComplexProperty`, `[ComplexType]`): columns of their
   owner, which EF always loads with it. They are neither entities nor navigations here, and nothing is said of them.
-- **Keys:** `[Key]`, `HasKey(x => x.P)` or `HasKey(x => new { x.A, x.B })`, or EF's convention (`Id`, or the type's
-  name and `Id`).
+- **Keys:** `[Key]`, `HasKey(x => x.P)`, `HasKey(x => new { x.A, x.B })`, `HasKey("P")` or `HasKey(nameof(T.P))`, or EF's
+  convention (`Id`, or the type's name and `Id`).
 - **Unique values:** `[Index(..., IsUnique = true)]`, `HasIndex(...).IsUnique()`, `HasAlternateKey(...)`.
 - **Concurrency tokens:** `[ConcurrencyCheck]`, `IsConcurrencyToken()`; row versions: `[Timestamp]`, `IsRowVersion()`.
 - **Query filters:** `HasQueryFilter(x => ...)`.
 - **Navigations:** properties of an entity type, or of a collection of one, and their foreign keys
   ([Tracking](#queries)).
 
-Fluent configuration is read in `OnModelCreating` and in `IEntityTypeConfiguration<T>.Configure`.
+Fluent configuration is read in `OnModelCreating` and in `IEntityTypeConfiguration<T>.Configure`, whether `ApplyConfiguration`
+or `ApplyConfigurationsFromAssembly` applies it. A `Configure` that a configuration class inherits from a generic base
+(`KeyedConfiguration<T>`) is read for the class's entity, with the base's abstract members as the class overrides them,
+where each override is an expression-bodied lambda (`protected override Expression<Func<Transfer, long>> Key => x =>
+x.RowId;`); a key named by the member that lambda selects (`HasKey(((MemberExpression)Key.Body).Member.Name)`) is read
+too. `OnModelCreating` itself is not verified where it calls `ApplyConfiguration`, which runs the program's code.
 
 ## Queries
 
@@ -155,8 +163,8 @@ A context isn't thread safe, and EF throws when two of its operations overlap.
 
 - **CSV1036:**
   - an asynchronous operation on a context (a query, `SaveChangesAsync`, `BeginTransactionAsync`...) not awaited where
-    it starts, or returned by a method that isn't async (which leaves it to the caller): `Task.WhenAll` of two queries
-    on one context is reported.
+    it starts: `Task.WhenAll` of two queries on one context is reported. One returned by a method that isn't async is
+    not: it is the caller's to await.
   - a context from outside used in code that runs alongside (`Task.Run`, `Task.Factory.StartNew`, `Parallel`,
     `ThreadPool`, a `Thread`). Each such task makes its own (`IDbContextFactory`).
 

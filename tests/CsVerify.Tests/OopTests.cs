@@ -177,5 +177,34 @@ public static class U
             Assert.True(r.Methods.Where(m => m.Name.StartsWith("U.Inc.")).All(m => m.Verified));
             Assert.Contains(r.Methods, m => m.Name.StartsWith("U.IncBad.") && m.Diagnostics.Any(d => d.Id == "CSV1002"));
         }
+
+        // (#83: a class's primary constructor parameters, as its members and lambdas read them: what the constructor was
+        // given; one assigned after construction isn't translated, saying so)
+        [Fact]
+        public void PrimaryConstructorParameters_AreWhatTheConstructorWasGiven()
+        {
+            var r = Harness.Verify(@"
+public sealed class Pair(int[] a, string name)
+{
+    public int Len() { Spec.Ensures(Spec.Result<int>() == a.Length); return a.Length; }
+    public int NameLen() => name.Length;
+    public System.Func<int> Later() => () => a.Length;
+    public static int Use() { var p = new Pair(new int[3], ""ab""); var n = p.Len(); Spec.Assert(n == 3); return n; }
+    public static int Wrong() { var p = new Pair(new int[3], ""ab""); var n = p.Len(); Spec.Assert(n == 4); return n; }
+    public static int Null() { var p = new Pair(null!, ""ab""); return p.Len(); }
+}
+public sealed class Counter(int x)
+{
+    public int Get() => x;
+    public void Set(int y) { x = y; }
+}");
+            foreach (var ok in new[] { "Pair.Len", "Pair.NameLen", "Pair.Later", "Pair.Use" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Pair.Wrong"));
+            Assert.NotEmpty(r.Errors("Pair.Null"));
+            Assert.Contains(r.Methods.Single(m => m.Name == "Counter.Set").Diagnostics, d => d.Message.Contains("assigned after construction"));
+        }
     }
 }

@@ -28,6 +28,7 @@ An **object invariant** is a `[Pure]` parameterless `bool` method marked `[Invar
 - **Constructors.**
   - Verifying one: the new object's fields start at their defaults and the field initializers run.
   - At `new C(...)`: the constructor's preconditions are checked and its postconditions assumed about the new object. That object is distinct from every reference in scope, and its fields are their defaults unless the constructor or an initializer sets them.
+  - A class's primary constructor (`class Store(Db db)`) is called by its contract: its parameters' types (a non-nullable one is checked not null at each call), and what it may write, the effects analysis's; its initializers aren't verified. A parameter its members read is a function of the object, what the constructor was given, as C# keeps it in a hidden field. One assigned after construction (`x = y` in a member) is not translated, which the methods that use it say (CSV1902).
 - **Nullability.** A field of non-nullable type is never null once its object is built. Every write proves it (CSV1014); a constructor must set it before returning, except a `required` one, which every object initializer sets; and `this` may not escape a constructor of such a class (CSV1015). A static field is not null when its initializer makes an object.
 
 **Owned objects (ATS style).** A class marked `[Owned]` is written only through its object's **view**, `Own<C>`. That is a zero-size `[Linear]` token, so the linearity analyzer ensures at most one exists per object. Views erase like the other proof types.

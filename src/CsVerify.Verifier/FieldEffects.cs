@@ -55,6 +55,11 @@ namespace CsVerify.Verifier
             {
                 return false;
             }
+            // (an auto-property of an entity class of a referenced assembly)
+            if (s is IPropertySymbol mp && MetadataEntities.Current?.Fields.Contains(mp.OriginalDefinition) == true)
+            {
+                return true;
+            }
             if (t.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace || s.DeclaringSyntaxReferences.Length == 0)
             {
                 return false;
@@ -92,7 +97,8 @@ namespace CsVerify.Verifier
 
         /// <summary>Every heap field in the sources, and the [Model] functions (ghost fields of external objects).</summary>
         public IReadOnlyList<ISymbol> AllFields() => _allFields ??= _engine.SourceTypes
-            .SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key).Concat(_engine.Models).Distinct(SymbolEqualityComparer.Default).ToList();
+            .SelectMany(t => t.GetMembers()).Where(IsHeapField).Select(Key).Concat(_engine.Models)
+            .Concat(MetadataEntities.Current?.Fields ?? Enumerable.Empty<ISymbol>()).Distinct(SymbolEqualityComparer.Default).ToList();
 
         /// <summary>
         /// The [Model] functions a call of a library member may change: all of them (within its Spec.Modifies, if its

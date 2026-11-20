@@ -87,6 +87,10 @@ namespace CsVerify.Analyzers
             private readonly Dictionary<IMethodSymbol, string> _returns = new Dictionary<IMethodSymbol, string>(SymbolEqualityComparer.Default);
             /// <summary>Parameters of a type that hides its members (object, an interface, a T) some caller passes an object a serializer would write a [Sensitive] member of, and why.</summary>
             private readonly Dictionary<IParameterSymbol, string> _shapes = new Dictionary<IParameterSymbol, string>(SymbolEqualityComparer.Default);
+            /// <summary>The parameters (by ordinal) whose values a method of the program may return.</summary>
+            private readonly Dictionary<IMethodSymbol, HashSet<int>> _passes = new Dictionary<IMethodSymbol, HashSet<int>>(SymbolEqualityComparer.Default);
+            /// <summary>The methods whose bodies the analysis sees.</summary>
+            private readonly HashSet<IMethodSymbol> _seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             private bool _changed;
 
             public Flow(Compilation compilation)
@@ -97,6 +101,13 @@ namespace CsVerify.Analyzers
             public void Run(System.Action<Diagnostic> report)
             {
                 var bodies = Bodies().ToList();
+                foreach (var (_, owner) in bodies)
+                {
+                    if (owner is IMethodSymbol m)
+                    {
+                        _seen.Add(m.OriginalDefinition);
+                    }
+                }
                 for (int round = 0; round < 50; round++)
                 {
                     _changed = false;
@@ -104,6 +115,11 @@ namespace CsVerify.Analyzers
                     {
                         new Method(this, body, owner, callers: false, report: null).Run();
                         new Method(this, body, owner, callers: true, report: null).Run();
+                        // (which parameters it may return: each on its own)
+                        for (int i = 0; owner is IMethodSymbol om && i < om.Parameters.Length; i++)
+                        {
+                            new Method(this, body, owner, callers: false, report: null, probe: i).Run();
+                        }
                     }
                     if (!_changed)
                     {
@@ -213,6 +229,22 @@ namespace CsVerify.Analyzers
             internal static bool Hides(ITypeSymbol t) =>
                 t != null && (t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.TypeParameter);
 
+            /// <summary>A type of the program's, whose code the analysis sees.</summary>
+            internal static bool InSource(ITypeSymbol t) =>
+                t != null && t.DeclaringSyntaxReferences.Length > 0 && t.ContainingNamespace?.ToDisplayString() != SpecSymbols.Namespace;
+
+            /// <summary>
+            /// An HTTP exchange (HttpClient's Send, Get, Post, Put, Patch, Delete, and the JSON extensions'): what it gives
+            /// is the server's answer, not the request it was given, whatever the request held.
+            /// </summary>
+            internal static bool IsHttpExchange(IMethodSymbol m)
+            {
+                var type = (m.ReducedFrom ?? m).ContainingType?.ToDisplayString() ?? "";
+                return (type is "System.Net.Http.HttpClient" or "System.Net.Http.HttpMessageInvoker" or "System.Net.Http.Json.HttpClientJsonExtensions") &&
+                       (m.Name.StartsWith("Send") || m.Name.StartsWith("Get") || m.Name.StartsWith("Post") || m.Name.StartsWith("Put") ||
+                        m.Name.StartsWith("Patch") || m.Name.StartsWith("Delete"));
+            }
+
             /// <summary>A JSON serializer: its result (text, bytes, a document, an HTTP body) is made of the members of what it is given.</summary>
             internal static bool IsSerializer(IMethodSymbol m)
             {
@@ -279,6 +311,29 @@ namespace CsVerify.Analyzers
             }
 
             internal string Stored(ISymbol member) => _members.TryGetValue(member.OriginalDefinition, out var why) ? why : null;
+
+            internal void Passes(IMethodSymbol m, int ordinal)
+            {
+                if (!_passes.TryGetValue(m.OriginalDefinition, out var set))
+                {
+                    _passes[m.OriginalDefinition] = set = new HashSet<int>();
+                }
+                _changed |= set.Add(ordinal);
+            }
+
+            /// <summary>
+            /// Does a call of this method give a sensitive value given one at this parameter? For a method of the program's
+            /// that isn't dispatched (not virtual, abstract or an override), only if its body may return it; otherwise yes.
+            /// </summary>
+            internal bool PassesOn(IMethodSymbol m, IParameterSymbol p)
+            {
+                var d = m.ReducedFrom ?? m;
+                if (p == null || !_seen.Contains(d.OriginalDefinition) || d.IsVirtual || d.IsAbstract || d.IsOverride)
+                {
+                    return true;
+                }
+                return _passes.TryGetValue(d.OriginalDefinition, out var set) && set.Contains(p.Ordinal);
+            }
 
             internal void Returns(IMethodSymbol m, string why)
             {
@@ -420,11 +475,15 @@ namespace CsVerify.Analyzers
             private readonly ISymbol _owner;
             private readonly bool _callers;
             private readonly System.Action<Diagnostic> _report;
+            /// <summary>The parameter followed alone, to see if the method may return it; -1 for none.</summary>
+            private readonly int _probe;
+            private const string Probed = "\u0001the parameter probed";
             private readonly Dictionary<ISymbol, string> _locals = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
             private bool _grew;
 
-            public Method(Flow flow, IOperation body, ISymbol owner, bool callers, System.Action<Diagnostic> report)
+            public Method(Flow flow, IOperation body, ISymbol owner, bool callers, System.Action<Diagnostic> report, int probe = -1)
             {
+                _probe = probe;
                 _flow = flow;
                 _body = body;
                 _owner = owner;
@@ -479,13 +538,13 @@ namespace CsVerify.Analyzers
                     case IFieldReferenceOperation f:
                         if (_callers)
                         {
-                            _flow.StoredIn(f.Field, why);
+                            _flow.StoredIn(f.Field, Stored(why, f.Field, target.Syntax));
                         }
                         break;
                     case IPropertyReferenceOperation pr when pr.Arguments.Length == 0:
                         if (_callers)
                         {
-                            _flow.StoredIn(pr.Property, why);
+                            _flow.StoredIn(pr.Property, Stored(why, pr.Property, target.Syntax));
                         }
                         break;
                     case IPropertyReferenceOperation ix:
@@ -508,6 +567,16 @@ namespace CsVerify.Analyzers
                         break;
                 }
             }
+
+            private static string Where(SyntaxNode at)
+            {
+                var span = at.GetLocation().GetLineSpan();
+                return $"{System.IO.Path.GetFileName(span.Path)}({span.StartLinePosition.Line + 1},{span.StartLinePosition.Character + 1})";
+            }
+
+            /// <summary>Why a member is a source: what was stored in it, and where (the first place).</summary>
+            private static string Stored(string why, ISymbol member, SyntaxNode at) =>
+                why.Contains(", stored in '") ? why : $"{why}, stored in '{member.Name}' at {Where(at)}";
 
             private IMethodSymbol Function(IOperation op)
             {
@@ -546,8 +615,27 @@ namespace CsVerify.Analyzers
                         }
                         Into(fe.LoopControlVariable, few);
                         break;
+                    case IFieldInitializerOperation fi when _callers && Why(fi.Value) is string fiw:
+                        foreach (var f in fi.InitializedFields)
+                        {
+                            _flow.StoredIn(f, Stored(fiw, f, fi.Value.Syntax));
+                        }
+                        break;
+                    case IPropertyInitializerOperation pi when _callers && Why(pi.Value) is string piw:
+                        foreach (var p in pi.InitializedProperties)
+                        {
+                            _flow.StoredIn(p, Stored(piw, p, pi.Value.Syntax));
+                        }
+                        break;
                     case IReturnOperation r when r.ReturnedValue != null && !_callers && Why(r.ReturnedValue) is string rw:
-                        _flow.Returns(Function(op), rw);
+                        if (_probe < 0)
+                        {
+                            _flow.Returns(Function(op), rw);
+                        }
+                        else if (rw == Probed && SymbolEqualityComparer.Default.Equals(Function(op), _owner))
+                        {
+                            _flow.Passes((IMethodSymbol)_owner, _probe);
+                        }
                         break;
                     case IInvocationOperation i:
                         Call(i.TargetMethod, i.Instance, i.Arguments, i, report);
@@ -585,7 +673,7 @@ namespace CsVerify.Analyzers
                 if (given != null && !IsDeclassify(m))
                 {
                     // (a collection given one holds it; so do ref and out arguments; a lambda given alongside it gets it)
-                    if (instance != null && !(m.MethodKind == MethodKind.PropertyGet))
+                    if (instance != null && m.MethodKind != MethodKind.PropertyGet && !Flow.InSource(m.ContainingType) && !Flow.IsHttpExchange(m))
                     {
                         Into(instance, given);
                     }
@@ -608,7 +696,14 @@ namespace CsVerify.Analyzers
                 {
                     foreach (var (a, why) in whys.Where(x => x.why != null && x.a.Parameter != null))
                     {
-                        _flow.GivenTo(a.Parameter, why);
+                        var passed = why.Contains(", passed to '") ? why : $"{why}, passed to '{a.Parameter.Name}' of '{m.ContainingType?.Name}.{m.Name}' at {Where(a.Syntax)}";
+                        _flow.GivenTo(a.Parameter, passed);
+                        // (a record's primary constructor stores its parameters in the properties of their names, in code no body shows)
+                        if (m.MethodKind == MethodKind.Constructor && m.ContainingType is { IsRecord: true } rt &&
+                            rt.GetMembers(a.Parameter.Name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol positional && positional.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ParameterSyntax))
+                        {
+                            _flow.StoredIn(positional, Stored(passed, positional, a.Syntax));
+                        }
                     }
                     // (an object, an interface or a T: what a serializer would write of the value given is the caller's to say)
                     foreach (var a in args.Where(x => x.Parameter != null && Flow.Hides(x.Parameter.OriginalDefinition.Type)))
@@ -720,7 +815,15 @@ namespace CsVerify.Analyzers
                     case ILocalReferenceOperation l:
                         return _locals.TryGetValue(l.Local, out var lw) ? lw : null;
                     case IParameterReferenceOperation pr:
-                        return _locals.TryGetValue(pr.Parameter, out var pw) ? pw : _flow.Param(pr.Parameter) ?? (_callers ? _flow.CallerParam(pr.Parameter) : null);
+                        if (_locals.TryGetValue(pr.Parameter, out var pw))
+                        {
+                            return pw;
+                        }
+                        if (_probe >= 0 && pr.Parameter.Ordinal == _probe && SymbolEqualityComparer.Default.Equals(pr.Parameter.ContainingSymbol, _owner))
+                        {
+                            return Probed;
+                        }
+                        return _flow.Param(pr.Parameter) ?? (_callers ? _flow.CallerParam(pr.Parameter) : null);
                     case IInstanceReferenceOperation ir:
                         return Flow.SensitiveType(ir.Type);
                     case IFieldReferenceOperation f:
@@ -743,14 +846,24 @@ namespace CsVerify.Analyzers
                         {
                             return text;
                         }
+                        if (Flow.IsHttpExchange(m))
+                        {
+                            return null;
+                        }
                         if (Flow.IsSerializer(m) && i.Arguments.Select(a => Serialized(a.Value)).FirstOrDefault(w => w != null) is string sz)
                         {
                             return sz;
                         }
-                        return _flow.Returned(m) ?? Flow.SensitiveType(i.Type) ?? Why(i.Instance) ?? i.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null);
+                        return _flow.Returned(m) ?? Flow.SensitiveType(i.Type) ?? Why(i.Instance) ??
+                               i.Arguments.Where(a => _flow.PassesOn(m, a.Parameter)).Select(a => Why(a.Value)).FirstOrDefault(w => w != null);
                     }
                     case IObjectCreationOperation o:
-                        return Flow.SensitiveType(o.Type) ?? o.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null) ?? Why(o.Initializer);
+                        // (a type of the program's: its constructor and initializer store what they're given in members,
+                        // which are sources where they're read; a library's is assumed to hold it)
+                        return Flow.SensitiveType(o.Type) ?? (Flow.InSource(o.Type) ? null
+                            : o.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null) ?? Why(o.Initializer));
+                    case IWithOperation w:
+                        return Why(w.Operand) ?? (Flow.InSource(w.Type) ? null : Why(w.Initializer));
                     case IConditionalOperation c:
                         return Why(c.WhenTrue) ?? Why(c.WhenFalse);
                     case IInterpolationOperation io:
