@@ -56,6 +56,8 @@ namespace CsVerify.Verifier
         public string CachePath;
         /// <summary>Where to write the Boogie program the engine verifies (to read the translation), if anywhere.</summary>
         public string BoogieOut;
+        /// <summary>The program's assembly name (the project's), so that what InternalsVisibleTo grants it is visible.</summary>
+        public string AssemblyName = "CsVerifyTarget";
         public List<string> Defines = new List<string>();
         public List<string> References = new List<string>();
         /// <summary>Analyzer assemblies whose source generators run on the program (the project's @(Analyzer)), and the analyzer config they read.</summary>
@@ -903,7 +905,7 @@ namespace CsVerify.Verifier
             var userTrees = trees.Except(generatedTrees).ToList();
             var references = References(options).ToList();
             var specTrees = SpecTrees(parse, ReferencesEfCore(references));
-            var compilation = CSharpCompilation.Create("CsVerifyTarget", trees.Concat(specTrees), references,
+            var compilation = CSharpCompilation.Create(options.AssemblyName, trees.Concat(specTrees), references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: options.Nullable));
             if (options.Analyzers.Count > 0)
             {

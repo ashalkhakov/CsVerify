@@ -94,4 +94,23 @@ grep -F "c1 total >= 100: NOT shown, missing false" report.txt
 dotnet build
 grep -a -q "CsVerify.Spec" Shop.Core/bin/Debug/net10.0/Shop.Core.dll
 
+# a project that uses Shop.Core's internals (InternalsVisibleTo) and ASP.NET Core's logging: the verifier compiles it
+# under its assembly name, with the shared frameworks' references other than Microsoft.NETCore.App's
+printf '[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Shop.Rows")]\nnamespace Shop.Core;\npublic sealed class Row\n{\n    internal long Id { get; set; }\n}\n' > Shop.Core/Row.cs
+mkdir Shop.Rows
+cat > Shop.Rows/Shop.Rows.csproj <<'PROJECT'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../Shop.Core/Shop.Core.csproj" />
+    <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" />
+  </ItemGroup>
+</Project>
+PROJECT
+printf 'using Microsoft.Extensions.Logging;\nusing Shop.Core;\nnamespace Shop.Rows;\npublic static class Rows\n{\n    public static long RowOf(Row r) => r.Id;\n    public static bool Loud(LogLevel level) => level >= LogLevel.Warning;\n}\n' > Shop.Rows/Rows.cs
+dotnet build Shop.Rows -p:CsVerifyEnabled=true | tee rows.txt
+grep -F "csverify: 2 of 2 methods verified" rows.txt
+dotnet build Shop.Rows -p:CsVerifyErase=true
+
 echo "e2e: OK"

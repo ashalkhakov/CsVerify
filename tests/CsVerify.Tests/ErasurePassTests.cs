@@ -147,5 +147,32 @@ namespace CsVerify.Tests
             }
             finally { try { File.Delete(libPath); } catch (IOException) { } }
         }
+
+        [Fact]
+        public void InternalsVisibleTo_GrantsTheProjectsAssemblyName()
+        {
+            // (#74: a library whose internals are visible to App; the verifier and erasure compile App under its name)
+            const string lib = "[assembly: System.Runtime.CompilerServices.InternalsVisibleTo(\"App\")]\n" +
+                "namespace Lib { public sealed class Account { internal long RowId { get; set; } } }";
+            var libPath = Path.Combine(Path.GetTempPath(), "CsVerifyFriendLib" + Guid.NewGuid().ToString("N") + ".dll");
+            var emit = CSharpCompilation.Create(Path.GetFileNameWithoutExtension(libPath), new[] { CSharpSyntaxTree.ParseText(lib) },
+                Engine.FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)).Emit(libPath);
+            try
+            {
+                Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
+                const string app = "namespace App { public static class Rows { public static long RowOf(Lib.Account a) => a.RowId; } }";
+                var options = new VerifierOptions { AssemblyName = "App" };
+                options.AddReference(libPath);
+                var verified = Engine.VerifySources(new[] { ("Rows.cs", app) }, options);
+                Assert.True(verified.CompilationErrors.Count == 0, string.Join("\n", verified.CompilationErrors));
+                Assert.Contains(verified.Methods, m => m.Name.Contains("RowOf") && m.Diagnostics.All(d => !d.IsError));
+                var erased = Erasure.Erase(new[] { ("Rows.cs", app) }, Engine.FrameworkReferences().OfType<PortableExecutableReference>()
+                    .Select(r => r.FilePath).Append(libPath).ToList(), Array.Empty<string>(), assemblyName: "App");
+                Assert.True(erased.Success, string.Join("\n", erased.Errors));
+                // (under another name, the internal member is not there)
+                Assert.NotEmpty(Engine.VerifySources(new[] { ("Rows.cs", app) }, new VerifierOptions { References = { libPath } }).CompilationErrors);
+            }
+            finally { try { File.Delete(libPath); } catch (IOException) { } }
+        }
     }
 }

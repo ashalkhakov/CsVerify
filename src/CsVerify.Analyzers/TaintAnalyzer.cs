@@ -85,6 +85,8 @@ namespace CsVerify.Analyzers
             private readonly Dictionary<ISymbol, string> _members = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
             /// <summary>Methods that return a sensitive value given none, and why.</summary>
             private readonly Dictionary<IMethodSymbol, string> _returns = new Dictionary<IMethodSymbol, string>(SymbolEqualityComparer.Default);
+            /// <summary>Parameters of a type that hides its members (object, an interface, a T) some caller passes an object a serializer would write a [Sensitive] member of, and why.</summary>
+            private readonly Dictionary<IParameterSymbol, string> _shapes = new Dictionary<IParameterSymbol, string>(SymbolEqualityComparer.Default);
             private bool _changed;
 
             public Flow(Compilation compilation)
@@ -196,6 +198,77 @@ namespace CsVerify.Analyzers
                 }
             }
 
+            internal void ShapeGiven(IParameterSymbol p, string why)
+            {
+                if (p != null && !_shapes.ContainsKey(p.OriginalDefinition))
+                {
+                    _shapes[p.OriginalDefinition] = why;
+                    _changed = true;
+                }
+            }
+
+            internal string CallerShape(IParameterSymbol p) => Corresponding(p).Select(q => _shapes.TryGetValue(q, out var why) ? why : null).FirstOrDefault(w => w != null);
+
+            /// <summary>A type whose static members don't say what its values hold: object, an interface, a type parameter.</summary>
+            internal static bool Hides(ITypeSymbol t) =>
+                t != null && (t.SpecialType == SpecialType.System_Object || t.TypeKind == TypeKind.Interface || t.TypeKind == TypeKind.TypeParameter);
+
+            /// <summary>A JSON serializer: its result (text, bytes, a document, an HTTP body) is made of the members of what it is given.</summary>
+            internal static bool IsSerializer(IMethodSymbol m)
+            {
+                var type = m.ContainingType?.ToDisplayString() ?? "";
+                return type == "Newtonsoft.Json.JsonConvert" && m.Name == "SerializeObject" ||
+                       type is "Newtonsoft.Json.Linq.JToken" or "Newtonsoft.Json.Linq.JObject" or "Newtonsoft.Json.Linq.JArray" && m.Name == "FromObject" ||
+                       type == "System.Text.Json.JsonSerializer" && m.Name.StartsWith("Serialize") ||
+                       type == "System.Net.Http.Json.JsonContent" && m.Name == "Create";
+            }
+
+            /// <summary>
+            /// Why a serializer's text of a value of this type shows a [Sensitive] member: one of its fields or properties,
+            /// public or not (a serializer may be told to write private ones), not [JsonIgnore]d, or one of the members' own.
+            /// </summary>
+            internal static string Serializes(ITypeSymbol t) => Serializes(t, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default));
+
+            private static string Serializes(ITypeSymbol t, HashSet<ITypeSymbol> seen)
+            {
+                if (t is IArrayTypeSymbol at)
+                {
+                    return Serializes(at.ElementType, seen);
+                }
+                if (!(t is INamedTypeSymbol n) || n.SpecialType != SpecialType.None || !seen.Add(n))
+                {
+                    return null;
+                }
+                foreach (var arg in n.TypeArguments)
+                {
+                    if (Serializes(arg, seen) is string inner)
+                    {
+                        return inner;
+                    }
+                }
+                if (n.DeclaringSyntaxReferences.Length == 0)
+                {
+                    return null;
+                }
+                for (var c = n; c != null && c.SpecialType == SpecialType.None; c = c.BaseType)
+                {
+                    foreach (var m in c.GetMembers().Where(x => (x is IFieldSymbol || x is IPropertySymbol) && !x.IsStatic && !(x is IFieldSymbol { AssociatedSymbol: not null }) &&
+                                                                !x.GetAttributes().Any(a => a.AttributeClass?.Name == "JsonIgnoreAttribute")))
+                    {
+                        var type = m is IFieldSymbol f ? f.Type : ((IPropertySymbol)m).Type;
+                        if (SpecSymbols.HasAttribute(m, "SensitiveAttribute") || SensitiveType(type) != null)
+                        {
+                            return $"serialized, it writes {Describe(m)} of '{n.Name}'";
+                        }
+                        if (Serializes(type, seen) is string inner)
+                        {
+                            return inner;
+                        }
+                    }
+                }
+                return null;
+            }
+
             internal void StoredIn(ISymbol member, string why)
             {
                 if (member != null && !_members.ContainsKey(member.OriginalDefinition) && member.Locations.Any(l => l.IsInSource))
@@ -249,6 +322,10 @@ namespace CsVerify.Analyzers
             /// <summary>A [Sensitive] type (or one derived from it): all its values are.</summary>
             internal static string SensitiveType(ITypeSymbol t)
             {
+                if (t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nt)
+                {
+                    t = nt.TypeArguments[0];
+                }
                 for (var c = t; c != null; c = c.BaseType)
                 {
                     if (SpecSymbols.HasAttribute(c, "SensitiveAttribute"))
@@ -273,7 +350,8 @@ namespace CsVerify.Analyzers
                 var members = new List<ISymbol>();
                 for (var c = t; c != null && c.SpecialType == SpecialType.None; c = c.BaseType)
                 {
-                    members.AddRange(c.GetMembers().Where(m => (m is IFieldSymbol || m is IPropertySymbol) && SpecSymbols.HasAttribute(m, "SensitiveAttribute")));
+                    members.AddRange(c.GetMembers().Where(m => m is IFieldSymbol || m is IPropertySymbol)
+                        .Where(m => SpecSymbols.HasAttribute(m, "SensitiveAttribute") || !(m is IFieldSymbol { AssociatedSymbol: not null }) && SensitiveType(m is IFieldSymbol f ? f.Type : ((IPropertySymbol)m).Type) != null));
                 }
                 if (members.Count == 0)
                 {
@@ -283,15 +361,19 @@ namespace CsVerify.Analyzers
                     .FirstOrDefault(m => m.Parameters.Length == 0 && !m.IsStatic);
                 if (t.IsRecord && (toString == null || toString.IsImplicitlyDeclared))
                 {
-                    return $"its ToString, a record's, prints [Sensitive] '{members[0].Name}'";
+                    return $"its ToString, a record's, prints {Describe(members[0])}";
                 }
                 if (toString != null && !toString.IsImplicitlyDeclared && Returned(toString) is string why)
                 {
                     return $"its ToString returns what's {why}";
                 }
                 var shown = members.FirstOrDefault(m => m.DeclaredAccessibility == Accessibility.Public);
-                return logger && shown != null ? $"a logger may write its public [Sensitive] '{shown.Name}' ({{@...}})" : null;
+                return logger && shown != null ? $"a logger may write its public {Describe(shown)} ({{@...}})" : null;
             }
+
+            /// <summary>A member that holds a sensitive value: [Sensitive] itself, or of a [Sensitive] type.</summary>
+            private static string Describe(ISymbol m) =>
+                SpecSymbols.HasAttribute(m, "SensitiveAttribute") ? $"[Sensitive] '{m.Name}'" : $"'{m.Name}', {SensitiveType(m is IFieldSymbol f ? f.Type : ((IPropertySymbol)m).Type)}";
 
             private static IEnumerable<ITypeSymbol> BaseTypes(ITypeSymbol t)
             {
@@ -528,17 +610,33 @@ namespace CsVerify.Analyzers
                     {
                         _flow.GivenTo(a.Parameter, why);
                     }
+                    // (an object, an interface or a T: what a serializer would write of the value given is the caller's to say)
+                    foreach (var a in args.Where(x => x.Parameter != null && Flow.Hides(x.Parameter.OriginalDefinition.Type)))
+                    {
+                        var u = Unconverted(a.Value);
+                        if (u is IParameterReferenceOperation passed && _flow.CallerShape(passed.Parameter) is string on)
+                        {
+                            _flow.ShapeGiven(a.Parameter, on);
+                        }
+                        else if (Flow.Serializes(u.Type) is string shape)
+                        {
+                            _flow.ShapeGiven(a.Parameter, $"{shape}, a '{u.Type.Name}' passed as '{a.Parameter.Name}' of '{m.Name}'");
+                        }
+                    }
                 }
                 if (!report || !(Flow.Sink(m) is var (sink, logger)))
                 {
                     return;
                 }
-                foreach (var (a, why) in whys)
+                // (a params array's elements each, at their own syntax: the array's is the call's)
+                var values = args.SelectMany(a => a.ArgumentKind == ArgumentKind.ParamArray && a.Value is IArrayCreationOperation { Initializer: { } init }
+                    ? init.ElementValues.AsEnumerable() : new[] { a.Value });
+                foreach (var v in values)
                 {
-                    var shown = why ?? Shown(a.Value, logger);
+                    var shown = Why(v) ?? Shown(v, logger);
                     if (shown != null)
                     {
-                        Report(a.Value.Syntax, $"'{a.Value.Syntax}'", shown, sink);
+                        Report(v.Syntax, $"'{v.Syntax}'", shown, sink);
                     }
                 }
             }
@@ -565,6 +663,20 @@ namespace CsVerify.Analyzers
             private static IAnonymousFunctionOperation Lambda(IOperation op) =>
                 Unconverted(op) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation : Unconverted(op) as IAnonymousFunctionOperation;
 
+            /// <summary>Why the text of a value (its ToString, as interpolation and concatenation take it) shows a [Sensitive] member.</summary>
+            private string Text(IOperation value) => value == null ? null : _flow.TextShows(Unconverted(value).Type, logger: false);
+
+            /// <summary>Why a serializer's text of a value shows a [Sensitive] member: of its static type, or of what callers pass a parameter of a type that hides it.</summary>
+            private string Serialized(IOperation value)
+            {
+                var u = Unconverted(value);
+                if (_callers && u is IParameterReferenceOperation pr && _flow.CallerShape(pr.Parameter) is string shape)
+                {
+                    return shape;
+                }
+                return Flow.Serializes(u?.Type);
+            }
+
             private static bool IsDeclassify(IMethodSymbol m) => SpecSymbols.HasAttribute(m, "DeclassifyAttribute");
 
             private void Report(SyntaxNode at, string what, string why, string sink)
@@ -583,6 +695,11 @@ namespace CsVerify.Analyzers
                 if (op.Type != null && SpecSymbols.IsCsVerifyType(op.Type, "Sealed`1"))
                 {
                     return null;
+                }
+                // (a parameter, a local, a member or a result of a [Sensitive] type)
+                if (!(op is ILiteralOperation) && Flow.SensitiveType(op.Type) is string tw)
+                {
+                    return tw;
                 }
                 switch (op)
                 {
@@ -622,14 +739,26 @@ namespace CsVerify.Analyzers
                         {
                             return "unsealed";
                         }
+                        if (m.Name == "ToString" && m.Parameters.Length == 0 && Text(i.Instance) is string text)
+                        {
+                            return text;
+                        }
+                        if (Flow.IsSerializer(m) && i.Arguments.Select(a => Serialized(a.Value)).FirstOrDefault(w => w != null) is string sz)
+                        {
+                            return sz;
+                        }
                         return _flow.Returned(m) ?? Flow.SensitiveType(i.Type) ?? Why(i.Instance) ?? i.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null);
                     }
                     case IObjectCreationOperation o:
                         return Flow.SensitiveType(o.Type) ?? o.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null) ?? Why(o.Initializer);
                     case IConditionalOperation c:
                         return Why(c.WhenTrue) ?? Why(c.WhenFalse);
+                    case IInterpolationOperation io:
+                        return Why(io.Expression) ?? Text(io.Expression);
+                    case IBinaryOperation b when b.Type?.SpecialType == SpecialType.System_String:
+                        return Why(b.LeftOperand) ?? Why(b.RightOperand) ?? Text(b.LeftOperand) ?? Text(b.RightOperand);
                     case IConditionalAccessInstanceOperation ci:
-                        return Ancestors(ci).OfType<IConditionalAccessOperation>().Select(a => Why(a.Operation)).FirstOrDefault();
+                        return Why(Receiver(ci));
                     case IArrayElementReferenceOperation ae:
                         return Why(ae.ArrayReference);
                     case IAwaitOperation aw:
@@ -637,6 +766,24 @@ namespace CsVerify.Analyzers
                     default:
                         return op.Descendants().Where(d => d.Parent == op).Select(Why).FirstOrDefault(w => w != null);
                 }
+            }
+
+            /// <summary>
+            /// What a ?. instance stands for: the receiver of the nearest conditional access whose WhenNotNull holds it (in
+            /// a?.b?.c, the inner access's receiver a?.b has an instance of its own, a's).
+            /// </summary>
+            private static IOperation Receiver(IConditionalAccessInstanceOperation ci)
+            {
+                IOperation child = ci;
+                foreach (var a in Ancestors(ci))
+                {
+                    if (a is IConditionalAccessOperation ca && ca.WhenNotNull == child)
+                    {
+                        return ca.Operation;
+                    }
+                    child = a;
+                }
+                return null;
             }
 
             private string Member(ISymbol member, ITypeSymbol type)
