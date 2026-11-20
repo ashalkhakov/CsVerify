@@ -21,6 +21,11 @@ namespace Microsoft.Extensions.Logging
         public static void LogError(this ILogger logger, System.Exception e, string message, params object[] args) { }
     }
 }
+namespace Newtonsoft.Json
+{
+    public static class JsonConvert { public static string SerializeObject(object value) => """"; }
+    public sealed class JsonIgnoreAttribute : System.Attribute { }
+}
 ";
 
         /// <summary>The lines (of the test's body, from 1) with CSV0030, as "line: message".</summary>
@@ -126,6 +131,86 @@ public static class Use
             // (a record's ToString prints every property; one of the program's that returns a secret too; a class's
             // own that doesn't, not; a logger may destructure a public one; an exception's message is logged)
             Assert.Equal(new[] { 16, 17, 19, 20 }, lines);
+        }
+
+        [Fact]
+        public void ConditionalAccessChains_AreFollowed()
+        {
+            // (#77: a?.b?.c's inner instance is a?.b's receiver, not the access it is in)
+            var lines = Lines(@"public sealed class Order { public Customer? Customer { get; set; } }
+public sealed class Customer { public string? Name { get; set; } [Sensitive] public string? Pin { get; set; } }
+public static class Use
+{
+    public static void Logs(ILogger log, Order? o)
+    {
+        log.LogInformation(""name {N}"", o?.Customer?.Name);
+        log.LogInformation(""name {N}"", o?.Customer?.Name?.Trim());
+        log.LogInformation(""pin {P}"", o?.Customer?.Pin?.Trim());
+    }
+}");
+            Assert.Equal(new[] { 9 }, lines);
+        }
+
+        [Fact]
+        public void ASensitiveType_IsFollowedWhereverItsValuesGo()
+        {
+            // (#78: parameters of the type, what's read from them, records holding one, exceptions made of those)
+            var lines = Lines(@"[Sensitive]
+public sealed class Pin
+{
+    public Pin(string digits) => Digits = digits;
+    public string Digits { get; }
+}
+[Sensitive]
+public readonly record struct Card(string Number);
+public sealed record Details(Pin Pin, string Name);
+public sealed record Named(string Name);
+public static class Use
+{
+    public static void A1(ILogger log, Pin p) => log.LogInformation(""pin {P}"", p);
+    public static void A2(ILogger log) => log.LogInformation(""pin {P}"", new Pin(""1234""));
+    public static void A3(ILogger log, Pin p) => log.LogInformation(""pin {P}"", p.Digits);
+    public static void A4(ILogger log, Card c) => log.LogInformation(""card {C}"", c);
+    public static void A5(ILogger log, Pin p) => log.LogInformation($""pin {p.Digits}"");
+    public static void B(ILogger log, Details d) => log.LogInformation(""d {D}"", d);
+    public static void F(Details d) => throw new InvalidOperationException($""bad {d}"");
+    public static void G(Details d, Named n) { Console.WriteLine(""d="" + d.Name + n); Console.WriteLine(n.ToString()); }
+}");
+            // (a record without one, and a clean member of one that holds one, are not)
+            Assert.Equal(new[] { 13, 14, 15, 16, 17, 18, 19 }, lines);
+        }
+
+        [Fact]
+        public void Serializers_WriteWhatTheyAreGiven()
+        {
+            // (#79: a serializer writes the members, public or not, but ignored ones; through a client that takes object or T)
+            var lines = Lines(@"public sealed class CreateClientRequest
+{
+    public string Name { get; set; } = """";
+    [Sensitive] public string DateOfBirth { get; set; } = """";
+}
+public sealed class Wrapper { public CreateClientRequest Inner = new CreateClientRequest(); }
+public sealed class Quiet { public string Name = """"; [Sensitive, Newtonsoft.Json.JsonIgnore] public string Secret = """"; }
+public sealed class Client
+{
+    private readonly ILogger _log;
+    public Client(ILogger log) { _log = log; }
+    public void Direct(CreateClientRequest request, Wrapper w, Quiet q)
+    {
+        _log.LogInformation(""body {B}"", Newtonsoft.Json.JsonConvert.SerializeObject(request));
+        _log.LogInformation(""body {B}"", Newtonsoft.Json.JsonConvert.SerializeObject(w));
+        _log.LogInformation(""body {B}"", Newtonsoft.Json.JsonConvert.SerializeObject(q));
+    }
+    public async System.Threading.Tasks.Task<T> Send<T>(object body)
+    {
+        var content = new System.Net.Http.StringContent(Newtonsoft.Json.JsonConvert.SerializeObject(body));
+        _log.LogInformation(""Request body: {Body}"", await content.ReadAsStringAsync());
+        return default!;
+    }
+    public System.Threading.Tasks.Task<int> Create(CreateClientRequest r) => Send<int>(r);
+    public System.Threading.Tasks.Task<int> Rename(Quiet q) => Send<int>(q);
+}");
+            Assert.Equal(new[] { 14, 15, 21 }, lines);
         }
 
         [Fact]
