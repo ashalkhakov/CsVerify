@@ -30,9 +30,11 @@
     </ItemGroup>
     <ItemGroup>
       <_CsVerifyGenerator Include="@(Analyzer)" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />
-      <!-- the project's references, but the shared framework's (the verifier has its own) and CsVerify's (its sources
-           come with the verifier) -->
-      <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(ReferencePathWithRefAssemblies.FrameworkReferenceName)' == '' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
+      <!-- the project's references, but Microsoft.NETCore.App's (the verifier has its own) and CsVerify's (its sources
+           come with the verifier); the other shared frameworks' (ASP.NET Core's) are passed as a package's are -->
+      <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(ReferencePathWithRefAssemblies.FrameworkReferenceName)' != 'Microsoft.NETCore.App' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
+      <!-- the project's assembly name, so that what InternalsVisibleTo grants the project is visible -->
+      <_CsVerifyArgs Include="--assembly-name $(AssemblyName)" />
       <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
@@ -91,6 +93,7 @@
       <CsVerifyErasedDir>$(ProjectDir)$(BaseIntermediateOutputPath)csverify-erased/$(Configuration)/$(TargetFramework)/</CsVerifyErasedDir>
     </PropertyGroup>
     <ItemGroup>
+      <_CsVerifyEraseArgs Include="--assembly-name $(AssemblyName)" />
       <_CsVerifyEraseArgs Include="@(Compile->'%(FullPath)')" />
       <_CsVerifyEraseArgs Include="@(ReferencePathWithRefAssemblies->'-r %(FullPath)')" />
       <_CsVerifyEraseArgs Include="@(Analyzer->'-a %(FullPath)')" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />

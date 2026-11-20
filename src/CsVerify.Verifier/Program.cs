@@ -25,6 +25,8 @@ options:
   --cache <file>      keep the methods proved in this file, and don't prove one again while nothing its proof
                       depends on has changed (the MSBuild target keeps it in obj/)
   --boogie-out <file> write the Boogie program it verifies
+  --assembly-name <name>  the program's assembly name (the project's, which the MSBuild target passes), so
+                      that the internals InternalsVisibleTo grants it are visible
   -d <SYMBOL>         extra preprocessor symbol (CSVERIFY_SPEC is always defined)
   -r <assembly.dll>   extra metadata reference
   -a <analyzer.dll>   run the source generators of this analyzer assembly on the program (generated
@@ -92,6 +94,9 @@ options:
                             break;
                         case "--boogie-out":
                             options.BoogieOut = args[++i];
+                            break;
+                        case "--assembly-name":
+                            options.AssemblyName = args[++i];
                             break;
                         case "-d":
                             options.AddDefine(args[++i]);
@@ -217,7 +222,7 @@ options:
             }
         }
 
-        private const string EraseUsage = @"usage: csverify erase --out <dir> [--checked] [-r <reference.dll>]... [-a <analyzer.dll>]... [--analyzer-config <file>]... [-d <symbol>]... <file.cs | directory | @paths.rsp>...
+        private const string EraseUsage = @"usage: csverify erase --out <dir> [--checked] [--assembly-name <name>] [-r <reference.dll>]... [-a <analyzer.dll>]... [--analyzer-config <file>]... [-d <symbol>]... <file.cs | directory | @paths.rsp>...
 
 Writes the program with all proofs erased (specifications, lemmas, ghost parameters, views) to <dir>, plus the
 erased CsVerify runtime under <dir>/CsVerify.Runtime, and checks that it compiles without CsVerify: if it does
@@ -227,7 +232,9 @@ run on the program and on the erased one (what they generate is not written: the
 
 --checked   a checked build: the specifications that can run are kept as run-time checks (preconditions,
             postconditions, assertions, loop invariants, lock invariants, [Atomic] steps, lock levels), which
-            throw SpecificationFailedException, or do what CsVerify.Checked.Failed says (docs/erasure.md).";
+            throw SpecificationFailedException, or do what CsVerify.Checked.Failed says (docs/erasure.md).
+--assembly-name <name>  the program's assembly name (the project's), so that the internals InternalsVisibleTo
+            grants it are visible";
 
         private static int Erase(List<string> args)
         {
@@ -238,6 +245,7 @@ run on the program and on the erased one (what they generate is not written: the
             var analyzerConfigs = new List<string>();
             var inputs = new List<string>();
             bool checkedBuild = false;
+            string assemblyName = null;
             try
             {
                 for (int i = 0; i < args.Count; i++)
@@ -249,6 +257,9 @@ run on the program and on the erased one (what they generate is not written: the
                             break;
                         case "--checked":
                             checkedBuild = true;
+                            break;
+                        case "--assembly-name":
+                            assemblyName = args[++i];
                             break;
                         case "-r":
                             references.Add(args[++i]);
@@ -280,7 +291,7 @@ run on the program and on the erased one (what they generate is not written: the
                     return 2;
                 }
                 var files = inputs.SelectMany(Expand).Distinct().ToList();
-                var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines, checkedBuild, analyzers, analyzerConfigs);
+                var result = Erasure.Erase(files.Select(f => (f, File.ReadAllText(f))), references, defines, checkedBuild, analyzers, analyzerConfigs, assemblyName);
                 if (Directory.Exists(outDir))
                 {
                     Directory.Delete(outDir, recursive: true);
