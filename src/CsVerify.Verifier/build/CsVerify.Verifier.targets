@@ -31,8 +31,10 @@
     <ItemGroup>
       <_CsVerifyGenerator Include="@(Analyzer)" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />
       <!-- the project's references, but Microsoft.NETCore.App's (the verifier has its own) and CsVerify's (its sources
-           come with the verifier); the other shared frameworks' (ASP.NET Core's) are passed as a package's are -->
-      <_CsVerifyReference Include="@(ReferencePathWithRefAssemblies)" Condition="'%(ReferencePathWithRefAssemblies.FrameworkReferenceName)' != 'Microsoft.NETCore.App' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
+           come with the verifier); the other shared frameworks' (ASP.NET Core's) are passed as a package's are. A
+           project reference's implementation assembly, not its reference assembly: that has no private members, so
+           no backing fields, by which the verifier knows a referenced entity's auto-properties (its columns) -->
+      <_CsVerifyReference Include="@(ReferencePath)" Condition="'%(ReferencePath.FrameworkReferenceName)' != 'Microsoft.NETCore.App' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
       <!-- the project's assembly name, so that what InternalsVisibleTo grants the project is visible -->
       <_CsVerifyArgs Include="--assembly-name $(AssemblyName)" />
       <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
