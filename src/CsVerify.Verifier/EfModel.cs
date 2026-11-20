@@ -116,7 +116,9 @@ namespace CsVerify.Verifier
                 }
             }
             // configured types are entity types too: modelBuilder.Entity<T>(), and what is called on its builder
-            foreach (var (tree, inv, builder) in Configuration(compilation, userTrees))
+            var configuration = Configuration(compilation, userTrees).Select(c => (c.tree, c.inv, c.builder, configuration: (INamedTypeSymbol)null))
+                .Concat(GenericConfiguration(compilation, sourceTypes)).ToList();
+            foreach (var (tree, inv, builder, _) in configuration)
             {
                 if (builder.TypeArguments[0] is INamedTypeSymbol e)
                 {
@@ -156,9 +158,9 @@ namespace CsVerify.Verifier
             {
                 ReadAttributes(e);
             }
-            foreach (var (tree, inv, builder) in Configuration(compilation, userTrees))
+            foreach (var (tree, inv, builder, of) in configuration)
             {
-                ReadFluent(compilation, tree, inv, builder);
+                ReadFluent(compilation, tree, inv, builder, of);
             }
             foreach (var e in _entities.Values)
             {
@@ -409,7 +411,7 @@ namespace CsVerify.Verifier
         internal static IEnumerable<IPropertySymbol> PropertiesOf(INamedTypeSymbol t)
         {
             var seen = new HashSet<string>();
-            for (var b = t; b != null && b.Locations.Any(l => l.IsInSource); b = b.BaseType)
+            for (var b = t; b != null && (b.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(b)); b = b.BaseType)
             {
                 foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
                 {
@@ -513,8 +515,9 @@ namespace CsVerify.Verifier
             }
         }
 
+        /// <summary>A class of the program's, or of a referenced assembly of its own (a domain project's), that may be an entity.</summary>
         private static bool IsSourceClass(INamedTypeSymbol t, IReadOnlyList<INamedTypeSymbol> sourceTypes) =>
-            t.TypeKind == TypeKind.Class && sourceTypes.Contains(t.OriginalDefinition, SymbolEqualityComparer.Default);
+            t.TypeKind == TypeKind.Class && (sourceTypes.Contains(t.OriginalDefinition, SymbolEqualityComparer.Default) || MetadataEntities.IsUserClass(t));
 
         /// <summary>The entity a navigation of this type leads to: the type itself, or the element of a collection of it.</summary>
         internal static INamedTypeSymbol NavigationTarget(ITypeSymbol t, out bool many)
@@ -611,8 +614,104 @@ namespace CsVerify.Verifier
             }
         }
 
+        /// <summary>
+        /// The Configure of an IEntityTypeConfiguration&lt;E&gt; that a class of the program's inherits from a generic base
+        /// (KeyedConfiguration&lt;T&gt;): the calls on its builder, as on E's, with the members the class overrides.
+        /// </summary>
+        private IEnumerable<(SyntaxTree tree, InvocationExpressionSyntax inv, INamedTypeSymbol builder, INamedTypeSymbol configuration)> GenericConfiguration(
+            Compilation compilation, IReadOnlyList<INamedTypeSymbol> sourceTypes)
+        {
+            foreach (var c in sourceTypes.Where(t => t.TypeKind == TypeKind.Class && !t.IsAbstract))
+            {
+                foreach (var i in c.AllInterfaces.Where(i => i.Name == "IEntityTypeConfiguration" && i.TypeArguments.Length == 1 && i.TypeArguments[0] is INamedTypeSymbol))
+                {
+                    if (!(i.GetMembers("Configure").OfType<IMethodSymbol>().FirstOrDefault() is IMethodSymbol configure) ||
+                        !(c.FindImplementationForInterfaceMember(configure) is IMethodSymbol impl) || !impl.ContainingType.IsGenericType ||
+                        !(impl.OriginalDefinition.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is MethodDeclarationSyntax decl) ||
+                        !(impl.Parameters.FirstOrDefault()?.Type is INamedTypeSymbol { Name: "EntityTypeBuilder" } builder))
+                    {
+                        continue;
+                    }
+                    var model = compilation.GetSemanticModel(decl.SyntaxTree);
+                    foreach (var inv in decl.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                    {
+                        if (inv.Expression is MemberAccessExpressionSyntax ma && model.GetTypeInfo(ma.Expression).Type is INamedTypeSymbol { Name: "EntityTypeBuilder", TypeArguments.Length: 1 })
+                        {
+                            yield return (decl.SyntaxTree, inv, builder, c);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// What an argument stands for: itself, or, a member a configuration class overrides (a generic base's abstract
+        /// Key), the lambda its override's expression body is, with that body's model.
+        /// </summary>
+        private static (SemanticModel model, ExpressionSyntax arg) Resolve(Compilation compilation, SemanticModel model, ExpressionSyntax arg, INamedTypeSymbol configuration)
+        {
+            if (configuration == null || arg == null || arg is LambdaExpressionSyntax || !(model.GetSymbolInfo(arg).Symbol is IPropertySymbol member) || !(member.IsAbstract || member.IsVirtual))
+            {
+                return (model, arg);
+            }
+            for (var k = configuration; k != null; k = k.BaseType)
+            {
+                foreach (var p in k.GetMembers(member.Name).OfType<IPropertySymbol>().Where(p => p.IsOverride))
+                {
+                    for (var o = p.OverriddenProperty; o != null; o = o.OverriddenProperty)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(o.OriginalDefinition, member.OriginalDefinition) &&
+                            p.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is PropertyDeclarationSyntax { ExpressionBody.Expression: LambdaExpressionSyntax lambda })
+                        {
+                            return (compilation.GetSemanticModel(lambda.SyntaxTree), lambda);
+                        }
+                    }
+                }
+            }
+            return (model, arg);
+        }
+
+        /// <summary>
+        /// The properties HasKey names by string: a constant (nameof(T.P), "P"), or the name of the member a key lambda
+        /// selects (((MemberExpression)Key.Body).Member.Name).
+        /// </summary>
+        private static List<IPropertySymbol> Named(Compilation compilation, SemanticModel model, InvocationExpressionSyntax inv, Entity e, INamedTypeSymbol configuration)
+        {
+            var props = PropertiesOf(e.Type).ToList();
+            var named = new List<IPropertySymbol>();
+            foreach (var a in inv.ArgumentList.Arguments.Select(x => x.Expression))
+            {
+                IPropertySymbol p = null;
+                if (model.GetConstantValue(a) is { HasValue: true, Value: string name })
+                {
+                    p = props.FirstOrDefault(x => x.Name == name);
+                }
+                else if (a is MemberAccessExpressionSyntax { Name.Identifier.Text: "Name", Expression: MemberAccessExpressionSyntax { Name.Identifier.Text: "Member" } member } &&
+                         Unparenthesized(member.Expression) is CastExpressionSyntax cast && Unparenthesized(cast.Expression) is MemberAccessExpressionSyntax { Name.Identifier.Text: "Body" } body)
+                {
+                    var (km, key) = Resolve(compilation, model, body.Expression, configuration);
+                    p = Properties(km, key, e) is List<IPropertySymbol> { Count: 1 } one ? one[0] : null;
+                }
+                if (p == null)
+                {
+                    return null;
+                }
+                named.Add(p);
+            }
+            return named.Count > 0 ? named : null;
+        }
+
+        private static ExpressionSyntax Unparenthesized(ExpressionSyntax x)
+        {
+            while (x is ParenthesizedExpressionSyntax p)
+            {
+                x = p.Expression;
+            }
+            return x;
+        }
+
         /// <summary>One call on an entity type's builder, and what is called on its result.</summary>
-        private void ReadFluent(Compilation compilation, SyntaxTree tree, InvocationExpressionSyntax inv, INamedTypeSymbol builder)
+        private void ReadFluent(Compilation compilation, SyntaxTree tree, InvocationExpressionSyntax inv, INamedTypeSymbol builder, INamedTypeSymbol configuration = null)
         {
             var model = compilation.GetSemanticModel(tree);
             var e = EntityOf(builder.TypeArguments[0]);
@@ -621,7 +720,7 @@ namespace CsVerify.Verifier
                 return;
             }
             var name = ((MemberAccessExpressionSyntax)inv.Expression).Name.Identifier.Text;
-            var arg = inv.ArgumentList.Arguments.FirstOrDefault()?.Expression;
+            var (argModel, arg) = Resolve(compilation, model, inv.ArgumentList.Arguments.FirstOrDefault()?.Expression, configuration);
             // what is called on the result: .IsUnique(), .IsConcurrencyToken(), .IsRowVersion()
             var next = new List<(string name, InvocationExpressionSyntax call)>();
             for (SyntaxNode n = inv; n.Parent is MemberAccessExpressionSyntax up && up.Parent is InvocationExpressionSyntax call; n = call)
@@ -631,7 +730,7 @@ namespace CsVerify.Verifier
             switch (name)
             {
                 case "HasKey":
-                    if (Properties(model, arg, e) is List<IPropertySymbol> key)
+                    if ((Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> key)
                     {
                         e.Key = key;
                     }
@@ -641,20 +740,20 @@ namespace CsVerify.Verifier
                     }
                     break;
                 case "HasAlternateKey":
-                    if (Properties(model, arg, e) is List<IPropertySymbol> alt)
+                    if (Properties(argModel, arg, e) is List<IPropertySymbol> alt)
                     {
                         e.AddUnique(alt);
                     }
                     break;
                 case "HasIndex":
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
-                        && Properties(model, arg, e) is List<IPropertySymbol> index)
+                        && Properties(argModel, arg, e) is List<IPropertySymbol> index)
                     {
                         e.AddUnique(index);
                     }
                     break;
                 case "Property":
-                    if (Properties(model, arg, e) is List<IPropertySymbol> p && p.Count == 1)
+                    if (Properties(argModel, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
                         if (Called("IsRowVersion", out _, next))
                         {

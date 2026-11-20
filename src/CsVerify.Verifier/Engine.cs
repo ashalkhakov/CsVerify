@@ -289,6 +289,7 @@ namespace CsVerify.Verifier
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
             Ef = EfModel.For(compilation, UserTrees, SourceTypes);
+            MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type).Where(MetadataEntities.IsUserClass));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;
@@ -1051,6 +1052,21 @@ namespace CsVerify.Verifier
                     RunNested(engine, decl, model, mr.Name, result, declarations, options, forBoogie);
                 }
             }
+            // a class's primary constructor: a procedure of its contract (what it sets its parameters to, its writes the
+            // effects analysis's), so new calls it; its initializers aren't verified
+            foreach (var tree in userTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                foreach (var td in tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().Where(c => c.ParameterList != null))
+                {
+                    if (model.GetDeclaredSymbol(td) is INamedTypeSymbol ct &&
+                        ct.InstanceConstructors.FirstOrDefault(c => c.DeclaringSyntaxReferences.Any(r => r.GetSyntax() == td)) is IMethodSymbol pc &&
+                        !SpecSymbols.IsContractsClass(ct) && Boogie.BoogieTranslator.Candidate(pc, engine.ContractOf(pc), asContract: true))
+                    {
+                        forBoogie.Add((pc, engine.ContractOf(pc), td, new MethodResult { Name = null }));
+                    }
+                }
+            }
             // accessors with code: properties are methods too (Boogie's, where they are in its subset; an abstract or an
             // interface one is a procedure of its contract, which has nothing of its own to verify)
             foreach (var tree in userTrees)
@@ -1379,7 +1395,7 @@ namespace CsVerify.Verifier
             var included = reached ?? whole;
             // (those whose bodies don't translate but whose contracts do: procedures of their contracts alone, which
             // their callers call; their bodies are verified as always)
-            var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected).Select(x => x.result));
+            var opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected || x.decl is TypeDeclarationSyntax).Select(x => x.result));
             var why = new Dictionary<MethodResult, string>();
             Boogie.BoogieTranslator translator;
             // (a method that doesn't translate leaves out those that call it: until none is left out)
@@ -1457,7 +1473,7 @@ namespace CsVerify.Verifier
                     reached = null;
                     included = whole;
                     why.Clear();
-                    opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected).Select(x => x.result));
+                    opaque = new HashSet<MethodResult>(held.Where(x => SpecSymbols.IsTrusted(x.method) || x.result.Unselected || x.decl is TypeDeclarationSyntax).Select(x => x.result));
                     continue;
                 }
                 if (errors.Count == 0 || errors.Any(e => e.result == null))

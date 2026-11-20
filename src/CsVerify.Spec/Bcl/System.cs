@@ -195,4 +195,48 @@ namespace CsVerify.Bcl
             throw null!;
         }
     }
+
+    /// <summary>Contracts for <see cref="Random"/>: a number in the range asked for (its sequence is not modeled).</summary>
+    [ContractsFor(typeof(Random))]
+    public static class RandomContracts
+    {
+        public static int Next(Random @this)
+        {
+            Spec.Ensures<int>(r => 0 <= r && r < int.MaxValue);
+            throw null!;
+        }
+
+        public static int Next(Random @this, int maxValue)
+        {
+            Spec.Requires(0 <= maxValue);
+            Spec.Ensures<int>(r => maxValue == 0 ? r == 0 : 0 <= r && r < maxValue);
+            throw null!;
+        }
+
+        public static int Next(Random @this, int minValue, int maxValue)
+        {
+            Spec.Requires(minValue <= maxValue);
+            Spec.Ensures<int>(r => minValue == maxValue ? r == minValue : minValue <= r && r < maxValue);
+            throw null!;
+        }
+    }
+
+    /// <summary>Contracts for <see cref="System.Security.Cryptography.RandomNumberGenerator"/>: a number in the range asked for.</summary>
+    [ContractsFor(typeof(System.Security.Cryptography.RandomNumberGenerator))]
+    public static class RandomNumberGeneratorContracts
+    {
+        public static int GetInt32(int toExclusive)
+        {
+            Spec.Requires(0 < toExclusive);
+            Spec.Ensures<int>(r => 0 <= r && r < toExclusive);
+            throw null!;
+        }
+
+        public static int GetInt32(int fromInclusive, int toExclusive)
+        {
+            Spec.Requires(fromInclusive < toExclusive);
+            Spec.Ensures<int>(r => fromInclusive <= r && r < toExclusive);
+            throw null!;
+        }
+    }
 }

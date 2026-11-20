@@ -729,6 +729,100 @@ public sealed class Shop : DbContext
             "db.Customers.GroupJoin(db.Orders, c => c.Id, o => o.CustomerId, (c, os) => new { c.Id, N = os.Count() }).Count(); } }", overflow: false));
 
         [Fact]
+        public void AContextOfAPrimaryConstructor_IsTranslated()
+        {
+            // (#83: the captured context in a query that isn't awaited, and in Add)
+            var r = VerifyEf(@"public class Payee { public long Id { get; set; } public string Name { get; set; } = """"; }
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Payee>();
+}
+public sealed class Store(Db db)
+{
+    public async Task<Payee?> FindPayee(long id) => await db.Set<Payee>().AsNoTracking().SingleOrDefaultAsync(p => p.Id == id);
+    public Task<Payee?> ByName(string name) => db.Set<Payee>().AsNoTracking().FirstOrDefaultAsync(p => p.Name == name);
+    public async Task Add(string name)
+    {
+        db.Set<Payee>().Add(new Payee { Name = name });
+        await db.SaveChangesAsync();
+    }
+}");
+            Assert.True(r.Errors("FindPayee").Length == 0, r.Explain("FindPayee"));
+            Assert.True(r.Errors("Add").Length == 0, r.Explain("Add"));
+            // (a query's task returned by a method that isn't async: the caller's to await, as ReturningTheTask_LeavesItToTheCaller)
+            Assert.True(r.Errors("ByName").Length == 0, r.Explain("ByName"));
+        }
+
+        [Fact]
+        public void EntitiesOfAReferencedAssembly_AndConfigurationsOfAGenericBase_AreRead()
+        {
+            // (#82: the entities in a domain assembly; a configuration from a generic base whose key is named by the
+            // derived class's lambda, a string computed from it)
+            var r = VerifyEfWithLibrary(@"namespace EfLib
+{
+    public class Payee
+    {
+        public long Id { get; set; }
+        public string Name { get; set; } = """";
+        public string Display => Name + ""!"";
+    }
+    public class Transfer
+    {
+        internal long RowId { get; private set; }
+        public string Reference { get; set; } = """";
+    }
+}", @"using System.Linq.Expressions;
+using EfLib;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Payee>();
+    }
+}
+public abstract class KeyedConfiguration<T> : IEntityTypeConfiguration<T> where T : class
+{
+    protected abstract Expression<Func<T, long>> Key { get; }
+    public void Configure(EntityTypeBuilder<T> builder)
+    {
+        builder.Property(Key).HasColumnName(""Id"");
+        builder.HasKey(((MemberExpression)Key.Body).Member.Name);
+    }
+}
+public sealed class TransferConfiguration : KeyedConfiguration<Transfer>
+{
+    protected override Expression<Func<Transfer, long>> Key => x => x.RowId;
+}
+public sealed class Store(Db db)
+{
+    public async Task<Payee?> FindPayee(long id) =>
+        await db.Set<Payee>().AsNoTracking().SingleOrDefaultAsync(p => p.Id == id);
+    public async Task<Transfer?> Find(long row) =>
+        await db.Set<Transfer>().AsNoTracking().SingleOrDefaultAsync(t => t.RowId == row);
+    public async Task<string> Named(long id)
+    {
+        var p = await db.Set<Payee>().AsNoTracking().SingleOrDefaultAsync(p => p.Id == id);
+        if (p == null) return """";
+        Spec.Assert(p.Id == id);
+        return p.Name;
+    }
+    public async Task<int> ByDisplay(string d) => await db.Set<Payee>().CountAsync(p => p.Display == d);
+    public async Task AddTransfer(string reference)
+    {
+        db.Set<Transfer>().Add(new Transfer { Reference = reference });
+        await db.SaveChangesAsync();
+    }
+}");
+            foreach (var ok in new[] { "FindPayee", "Find", "Named", "AddTransfer" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a computed property of a referenced entity isn't a column)
+            Assert.Equal(new[] { "CSV1032" }, r.Errors("ByDisplay"));
+        }
+
+        [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
             "public static class C { public static int M(Shop db) { return db.Orders.Where(o => o.Total > 0).Count(); } }").Methods);
     }

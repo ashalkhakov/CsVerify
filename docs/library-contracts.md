@@ -148,6 +148,8 @@ normal build, and the analyzers, see the model functions), and the verifier comp
 | `string` | its `Length` and characters (built in) | exact on characters: `IsNullOrEmpty`, `Substring`, `Concat(string, string)`, `StartsWith` and `EndsWith` (`char`, or `StringComparison.Ordinal`), `Contains`, `IndexOf(char)`, `LastIndexOf(char)`; nothing about characters: `StartsWith(string)`, `EndsWith(string)` (culture), `Trim`, `ToUpperInvariant`, `ToLowerInvariant` |
 | `int` | | `Parse(string)`, `TryParse(string, out int)` |
 | `Math` | | `Clamp` and `Sign` for `int` and `long` |
+| `Random` | | `Next()`, `Next(max)`, `Next(min, max)`: in the range asked for (an argument out of range, the precondition `Next` throws for) |
+| `RandomNumberGenerator` | | `GetInt32(to)`, `GetInt32(from, to)`: in `[from, to)`, an empty range a precondition |
 
 `Seq.Contents(a)` is an array's elements whatever its type, for contracts over `System.Array`, whose elements C# cannot
 index. Compare them with each other, not with typed values. `Array.Copy` says nothing of the elements it copies,

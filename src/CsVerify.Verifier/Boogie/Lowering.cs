@@ -346,6 +346,10 @@ namespace CsVerify.Verifier.Boogie
             // (a parameter of the enclosing method's this lambda writes: a local of its own, from its input)
             foreach (var ap in AssignedParameters(cfg))
             {
+                if (IsPrimaryParameter(ap) && !_p.IsCtor)
+                {
+                    throw new NotTranslated($"'{ap.Name}', a primary constructor's parameter assigned after construction");
+                }
                 var v = Declare(_assigned[ap] = Local(ap) + "$v", ap.Type);
                 if (!_capturedParams.Contains(ap))
                 {

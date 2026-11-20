@@ -1125,6 +1125,8 @@ namespace CsVerify.Verifier.Boogie
         public HashSet<string> DelegateKeys = new HashSet<string>();
         /// <summary>Uninterpreted functions it names: their declarations.</summary>
         public HashSet<string> Functions = new HashSet<string>();
+        /// <summary>The primary constructor parameters it reads (each a function of this), or, a primary constructor, sets.</summary>
+        public HashSet<IParameterSymbol> PrimaryParameters = new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default);
 
         // ---- for reporting: by Lowering (warnings, causes)
 
