@@ -14,7 +14,7 @@ CsVerify brings the ideas of ATS (Hongwei Xi's *Applied Type System*) to C#. In 
 It adds **no syntax**. There is no preprocessor, desugaring step or compiler fork. Every file you write is ordinary C#: it compiles with the normal compiler and gets full IDE support. The extensions are:
 
 - a small specification library (`CsVerify.Spec`). Its statements are erased from normal builds.
-- Roslyn analyzers that check linearity and ghost hygiene as you type.
+- Roslyn analyzers that check linearity, ghost hygiene, disposal and taint as you type.
 - a verifier that translates each method and its specifications to Boogie, which proves them with Z3.
 - an optional proof-erasure pass (`dotnet csverify erase`, or `-p:CsVerifyErase=true`). It builds the program with every proof removed and checks that what is left compiles. This is not a language layer: the sources stay plain C#, and a normal build of them is the reference meaning, which erasure must and does preserve.
 
@@ -57,16 +57,39 @@ public static int BinarySearch(int[] a, int key)
 - **Linear views of memory and objects, as in ATS.** Pointers with `PointsTo` views, array views that split and join,
   owned objects, predicates over linked structures, fractional permissions. Roslyn analyzers check that linear values
   are used exactly once, in the IDE as you type.
-- **Locks.** What a lock guards, by `[GuardedBy]`, is used only under it, so it can't race. Even in code with no
-  specifications, a field written under a lock, or under a `SemaphoreSlim` of count 1, and used elsewhere without it is
-  reported. Lock invariants hold whenever a lock is free. Algorithms can
-  also be modeled and proved over every interleaving: a ticket lock's mutual exclusion and progress, and dining
-  philosophers without deadlock. See [Async and concurrency](docs/semantics.md#async-and-concurrency).
+- **Async code.** `async` methods have contracts on what their tasks give, and an `await` of one is a call. At each
+  `await` the verifier forgets only what other code could change: what the method holds stays (views, permissions, and
+  objects in locals nothing else can reach). Tasks and threads with `Spec.Acc` contracts are proved to stay apart.
+- **Locks and threads.** What a lock guards, by `[GuardedBy]`, is used only under it, so it can't race. Even in code
+  with no specifications, a field written under a lock, or under a `SemaphoreSlim` of count 1, and used elsewhere
+  without it is reported. Lock invariants hold whenever a lock is free, lock levels (`[LockLevel]`) rule out deadlock
+  through calls and callbacks, and `[Atomic]` fields keep a step relation every thread's change respects. Algorithms
+  can also be modeled and proved over every interleaving: a ticket lock's mutual exclusion and progress, and dining
+  philosophers without deadlock. See [Async and concurrency](docs/semantics.md#async-and-concurrency), and
+  [CsVerify and Coyote](docs/coyote.md) for the same code run under a systematic scheduler.
 - **Objects too.** Data types with closed hierarchies, object invariants, heap fields with inferred frames, dynamic
   frames (`Spec.Modifies`, for fields and arrays, and `Spec.Reads`), virtual members with contracts, exceptions, floating point as IEEE 754.
+  Records compare by their fields, as C#'s synthesized `==` does; structs nest and may be generic; a type parameter's
+  `Equals`, `GetHashCode` and `CompareTo` keep their laws; `decimal` (rounding as .NET's), `DateTime` and `TimeSpan` arithmetic is modeled.
+- **The libraries you use.** `List`, `Dictionary`, `HashSet`, `Stack`, `Queue`, `StringBuilder`, `string` and the
+  collection interfaces have contracts, and LINQ to Objects is read from its definitions, so code over them is proved,
+  not assumed. For any other library, a `[ContractsFor]` stub says what its members do
+  ([Contracts for code without sources](docs/library-contracts.md)). Disposables are checked to be disposed on every normal path.
+- **Entity Framework Core.** Queries on a `DbContext` are read as the database runs them: unique indexes, query filters,
+  joins and `Include`s, rows in no order unless ordered (`First` of an unordered query is reported). The change
+  tracker, transactions, concurrency tokens and one operation at a time are checked: the mistakes EF throws for, or
+  silently writes the wrong rows for. See [Entity Framework Core](docs/entity-framework.md).
+- **Secrets stay out of the logs.** `[Sensitive]` values, and what is computed from them, are followed across the
+  program to loggers, the console, `Debug` and `Trace`, records that print them and exceptions that carry them. A
+  `Sealed<T>` can't be looked inside at all until an `[Unseals]` method's access check, which the verifier proves at
+  every call (after DiskSec's sealed blocks, OSDI '18). See [Secrets and logs](docs/taint.md).
 - **Proofs erased, and checked to be.** `-p:CsVerifyErase=true` builds the program with every proof removed, and
   checks that what runs never depended on one. `-p:CsVerifyChecked=true` keeps the specifications that can run as
   run-time checks instead ([the checked build](docs/erasure.md#the-checked-build)).
+- **Adopted a step at a time.** A check profile (`--checks null`) proves one kind of obligation first and assumes the
+  rest; `--library-report` ranks the library members, contracts and loop invariants that would unblock the most
+  proofs. `--only` verifies a few methods and translates only what they reach, and the build keeps the methods it
+  proved, so a rerun proves again only what changed ([Faster runs](docs/running.md#faster-runs)).
 - **Static proof, then dynamic coverage.** With [Tarp](https://github.com/ashalkhakov/Tarp): verify, erase, and run
   the tests under Tarp's MC/DC instrumentation, on the program that runs.
 - **Used on real code.** [CsLemon](#cslemon), SQLite's parser generator ported to C#, verifies completely (and the
@@ -132,12 +155,16 @@ bash bench/linters.sh        # the linter benchmark: which bugs CsVerify, C# lin
 ```
 
 ```
-src/CsVerify.Spec        Spec, Ghost<T>, attributes, Ptr<T>/PointsTo<T>/Mem    (net10.0, package "CsVerify")
-src/CsVerify.Analyzers   LinearityAnalyzer, GhostAnalyzer, PurityAnalyzer      (netstandard2.0)
+src/CsVerify.Spec        Spec, Ghost<T>, attributes, Ptr<T>/PointsTo<T>/Mem, Sealed<T>, the BCL's contracts (Bcl/),
+                         EF Core's model (Ef/)                                 (net10.0, package "CsVerify")
+src/CsVerify.Analyzers   LinearityAnalyzer, GhostAnalyzer, PurityAnalyzer, DisposalAnalyzer, TaintAnalyzer
+                                                                               (netstandard2.0)
 src/CsVerify.Verifier    the verifier: contracts, CFG to Boogie (Boogie/), static checks, erasure, MSBuild targets
                          (net10.0, tool "dotnet-csverify")
 tests/CsVerify.Tests     xUnit: analyzer rules, erasure, verifier proved/refuted per feature, samples
-samples/Good, samples/Buggy, samples/Shop
+tests/CsVerify.EfTests   EF Core's model checked against EF on SQLite and SQL Server
+tests/CsVerify.CoyoteTests  the concurrent samples' checked builds under Coyote's scheduler
+samples/Good, samples/Buggy, samples/Shop, samples/EntityFramework
 docs                     the documentation
 lemon/CsLemon            cslemon: Lemon ported to C# and verified
 lemon/CsLemon.Runtime    the verified LR interpreter and validators, the run time of its C# parsers
@@ -154,11 +181,12 @@ in [CI](docs/ci.md#building-and-releasing-csverify).
 - **`samples/Good`** verifies completely, with no analyzer diagnostics: arrays and searches with full functional
   specifications, lemmas by induction, ghost indices, data types and their proofs, mutable and owned objects, dynamic
   frames, views of memory and arrays, exceptions, floating point, null references, strings and bits (UTF-8, Base64,
-  Knuth-Morris-Pratt, number conversions, escaping). Many are ports: from ATS (the
+  Knuth-Morris-Pratt, number conversions, escaping), and secrets kept out of the logs. Many are ports: from ATS (the
   INT2PROGINATS book, libatsc, ATS-playground, rtrace), Dafny's tutorial, test suite and standard library,
   *ACSL by Example*, and dafny-lemon.
 - **`samples/Buggy`** has a planted bug in each method, which the verifier or the analyzers must report: off-by-one
   indexes, wrong invariants, leaks and double frees, unsound proofs.
+- **`samples/EntityFramework`** has a program over EF Core that verifies, and one with a bug in each method.
 - **`samples/Shop`** is a small solution using CsVerify from its package, as you would: `samples/e2e.sh` verifies
   it, erases it and runs its tests through Tarp.
 - **`lemon/`** is CsLemon (below).
