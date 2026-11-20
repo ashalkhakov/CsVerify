@@ -214,6 +214,75 @@ public sealed class Client
         }
 
         [Fact]
+        public void AnObjectMadeWithASensitiveValue_HoldsItInTheMembersItIsStoredIn()
+        {
+            // (#80: a constructor of the program's stores its arguments; members it doesn't store them in are clean, and
+            // the message names where the value was passed and stored)
+            var leaks = Leaks(@"[Sensitive]
+public sealed record SortCode(string Value);
+public sealed class Holder
+{
+    public Holder(SortCode sortCode, string currency) { SortCode = sortCode; Currency = currency; }
+    public SortCode SortCode { get; }
+    public string Currency { get; }
+    public string Label { get; } = """";
+}
+public sealed record Pair(string Left, string Right);
+public sealed class Kept { private readonly string _note; public Kept(string note) { _note = note; } public string Note => _note; public string Other => ""x""; }
+public static class Built
+{
+    public static void E1(ILogger log, SortCode s) => log.LogInformation(""currency {C}"", new Holder(s, ""GBP"").Currency);
+    public static void E2(ILogger log, Holder h) => log.LogInformation(""currency {C}"", h.Currency);
+    public static void CallsE2(ILogger log, SortCode s) => E2(log, new Holder(s, ""GBP""));
+    public static void E3(ILogger log, [Sensitive] string secret)
+    {
+        var pair = new Pair(secret, ""clean"");
+        log.LogInformation(""{L} {R}"", pair.Right, pair.Left);
+        var kept = new Kept(secret);
+        log.LogInformation(""{O} {N}"", kept.Other, kept.Note);
+        log.LogInformation(""{H}"", (pair with { Left = """" }).Right);
+    }
+}");
+            Assert.Equal(new[] { "20", "22" }, leaks.Select(l => l.Substring(0, l.IndexOf(':'))).ToArray());
+            Assert.Contains("'pair.Left' is sensitive ([Sensitive] parameter 'secret', passed to 'Left' of 'Pair..ctor' at ", leaks[0]);
+            Assert.Contains(", stored in '_note' at ", leaks[1]);
+        }
+
+        [Fact]
+        public void AnHttpResponse_IsTheServersNotTheRequests()
+        {
+            // (#81: the response to a sensitive request, what's read from it and what's made of it are clean; the body isn't)
+            var lines = Lines(@"[Sensitive]
+public sealed class PartyRequest { public string Name { get; set; } = """"; }
+public sealed class OrderRequest { public string Fund { get; set; } = """"; }
+public sealed class OrderReply { public string Id { get; set; } = """"; }
+public sealed record Answer<T>(T? Value, string? Error);
+public sealed class Client(System.Net.Http.HttpClient http, ILogger log)
+{
+    private async System.Threading.Tasks.Task<Answer<T>> Send<T>(string url, object body)
+    {
+        var content = System.Net.Http.Json.JsonContent.Create(body);
+        log.LogInformation(""sending {B}"", await content.ReadAsStringAsync());
+        using var response = await http.PostAsync(url, content);
+        return response.IsSuccessStatusCode
+            ? new Answer<T>(await System.Net.Http.Json.HttpContentJsonExtensions.ReadFromJsonAsync<T>(response.Content), null)
+            : new Answer<T>(default, $""{url} answered {(int)response.StatusCode}"");
+    }
+    public System.Threading.Tasks.Task<Answer<string>> AddParty(PartyRequest party) => Send<string>(""parties"", party);
+    public async System.Threading.Tasks.Task Run(PartyRequest party)
+    {
+        var added = await AddParty(party);
+        log.LogInformation(""party {Id}"", added.Value);
+        var bank = await Send<OrderReply>($""parties/{added.Value}/bank"", new OrderRequest());
+        log.LogError(new System.Exception(), ""bank details failed: {Error}"", bank.Error);
+        var answer = await http.GetStringAsync(""parties/"" + party.Name);
+        log.LogInformation(""{A}"", answer);
+    }
+}");
+            Assert.Equal(new[] { 11 }, lines);
+        }
+
+        [Fact]
         public void SealedValues_AreUnsealedOnlyWhereTheAccessCheckIs()
         {
             var ids = Harness.Analyze(@"public sealed class Account

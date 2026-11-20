@@ -34,13 +34,18 @@ a length. It is trusted.
 
 **What is followed** (CSV0030, at the sink, saying where the value came from):
 - through assignments, operators, string concatenation and interpolation, conversions, `?:` and `??`, tuples, arrays,
-  `await`, members of a sensitive value, and calls: a call given a sensitive value gives one (a library method too),
-  unless it is `[Declassify]`;
+  `await`, members of a sensitive value, and calls: a call of the program's method given a sensitive value gives one
+  if the method may return it (a summary of each method's parameters), a library call given one always does, unless
+  it is `[Declassify]`;
+- into objects: a constructor, an initializer or a `with` of the program's stores what it is given in members (a
+  record's primary constructor in its properties), and those members are sources; the object itself is sensitive only
+  where its text is made (below). A library object made with a sensitive value holds it;
 - across the program's methods: a parameter that some caller passes a sensitive value is sensitive in the method (and in
   the members it overrides or implements), a method that returns one given clean arguments gives one at every call, and
-  a field or property a sensitive value is stored in is a source wherever it is read;
-- into what holds it: a collection a sensitive value is added to (`list.Add(token)`: any call given one taints its
-  receiver), `ref` and `out` arguments, and a lambda passed alongside it (`passwords.Select(p => p.Length)`);
+  a field or property a sensitive value is stored in is a source wherever it is read. The message says where the
+  value was first passed and stored (`passed to 'body' of 'Client.Send' at Client.cs(41,9)`);
+- into what holds it: a collection a sensitive value is added to (`list.Add(token)`: a library call given one taints
+  its receiver), `ref` and `out` arguments, and a lambda passed alongside it (`passwords.Select(p => p.Length)`);
 - whole objects: a value whose text shows a `[Sensitive]` member (or one of a `[Sensitive]` type) is reported where it
   is logged, or made into text (`$"{order}"`, `"x" + order`, `order.ToString()`): a record (its synthesized `ToString`
   prints every property), a type whose own `ToString` returns a sensitive value, and, given to a logger, which may
@@ -50,7 +55,9 @@ a length. It is trusted.
   `JsonContent.Create` make of an object with a `[Sensitive]` member, public or not and not `[JsonIgnore]`, its own or
   a member's, is sensitive, and so is an HTTP body made of it (`new StringContent(json)`). A client that takes the
   object as `object`, an interface or a `T` (`Send<T>(object body)`) is reported where it logs the body, naming the
-  caller that passed it;
+  caller that passed it. What an HTTP exchange gives (`HttpClient`'s `Send`, `Get`, `Post`, `Put`, `Patch` and `Delete`
+  methods, and the JSON extensions') is the server's answer, clean whatever the request held: its status, headers and
+  content, and what is deserialized from it, but members of its type that are `[Sensitive]`;
 - exceptions: an exception made with a sensitive value (`new ArgumentException("bad card " + card.Number)`) is reported
   where it is made, since exceptions' messages are logged.
 
