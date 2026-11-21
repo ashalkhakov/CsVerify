@@ -27,6 +27,8 @@ namespace CsVerify.Verifier
             /// <summary>Concurrency tokens: [ConcurrencyCheck] or IsConcurrencyToken, and row versions ([Timestamp], IsRowVersion).</summary>
             public List<IPropertySymbol> Tokens = new List<IPropertySymbol>();
             public HashSet<IPropertySymbol> RowVersions = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>The properties the configuration names (Property, HasKey, HasAlternateKey): columns, a get-only one too.</summary>
+            public HashSet<IPropertySymbol> Configured = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The query filters (HasQueryFilter), each a lambda over the entity.</summary>
             public List<IAnonymousFunctionOperation> Filters = new List<IAnonymousFunctionOperation>();
             /// <summary>Navigations to one entity.</summary>
@@ -733,6 +735,7 @@ namespace CsVerify.Verifier
                     if ((Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> key)
                     {
                         e.Key = key;
+                        e.Configured.UnionWith(key.Select(x => x.OriginalDefinition));
                     }
                     else
                     {
@@ -743,6 +746,7 @@ namespace CsVerify.Verifier
                     if (Properties(argModel, arg, e) is List<IPropertySymbol> alt)
                     {
                         e.AddUnique(alt);
+                        e.Configured.UnionWith(alt.Select(x => x.OriginalDefinition));
                     }
                     break;
                 case "HasIndex":
@@ -755,6 +759,7 @@ namespace CsVerify.Verifier
                 case "Property":
                     if (Properties(argModel, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
+                        e.Configured.Add(p[0].OriginalDefinition);
                         if (Called("IsRowVersion", out _, next))
                         {
                             if (!e.Tokens.Contains(p[0]))

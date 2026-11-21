@@ -6,6 +6,7 @@ using CsVerify.Analyzers;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
 using static CsVerify.Verifier.Boogie.KOp;
 
 namespace CsVerify.Verifier.Boogie
@@ -1225,9 +1226,73 @@ namespace CsVerify.Verifier.Boogie
             Ident(m.ContainingType.ToDisplayString() + "." + (IsNested(m) ? "nested$" + m.Locations.FirstOrDefault()?.SourceSpan.Start : m.Name) + "$" + string.Join("$", m.Parameters.Select(p => p.Type.ToDisplayString())));
 
         /// <summary>A query clause's own parameter: the object its previous clause made, or the group of group ... into g (never null).</summary>
+        /// <summary>A parameter of a value converter's lambda (HasConversion): EF never gives it null.</summary>
+        public static bool IsConverterParameter(IParameterSymbol p) =>
+            p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn && fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax syntax && Compilation != null &&
+            Compilation.GetSemanticModel(syntax.SyntaxTree).GetOperation(syntax) is IAnonymousFunctionOperation op && Lowering.ConvertsForEf(op);
+
         public static bool IsQueryParameter(IParameterSymbol p) =>
             p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn && !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax) &&
             (p.Type.IsAnonymousType || p.Type.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IFieldSymbol, object> _initializedLengths =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<IFieldSymbol, object>();
+
+        /// <summary>
+        /// The length of the array a readonly instance field holds, where only its initializer sets it, to an array whose
+        /// length the initializer says: new T[n], an array initializer, a collection expression of elements, a string
+        /// literal's ToCharArray(). Field initializers run before any code sees the object, so every built object's holds it.
+        /// </summary>
+        public static int? InitializedLength(ISymbol field)
+        {
+            // (a class's: a struct's default value has none of its initializers)
+            if (!(field is IFieldSymbol { IsStatic: false, IsReadOnly: true, Type: IArrayTypeSymbol { Rank: 1 }, ContainingType.TypeKind: TypeKind.Class } f) || Compilation == null)
+            {
+                return null;
+            }
+            f = f.OriginalDefinition;
+            if (_initializedLengths.TryGetValue(f, out var known))
+            {
+                return (int?)known;
+            }
+            int? length = null;
+            if (f.DeclaringSyntaxReferences.Length == 1 && f.DeclaringSyntaxReferences[0].GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: var value } &&
+                f.ContainingType.DeclaringSyntaxReferences.All(r => !Written(f, r.GetSyntax())))
+            {
+                length = value switch
+                {
+                    InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Name.Identifier.Text: "ToCharArray", Expression: LiteralExpressionSyntax lit }, ArgumentList.Arguments.Count: 0 }
+                        when lit.IsKind(SyntaxKind.StringLiteralExpression) => lit.Token.ValueText.Length,
+                    ArrayCreationExpressionSyntax { Initializer: { } init } => init.Expressions.Count,
+                    ArrayCreationExpressionSyntax { Type.RankSpecifiers: [{ Sizes: [LiteralExpressionSyntax size] }] } when size.Token.Value is int n => n,
+                    ImplicitArrayCreationExpressionSyntax implicitArray => implicitArray.Initializer.Expressions.Count,
+                    InitializerExpressionSyntax arrayInit when arrayInit.IsKind(SyntaxKind.ArrayInitializerExpression) => arrayInit.Expressions.Count,
+                    CollectionExpressionSyntax c when c.Elements.All(e => e is ExpressionElementSyntax) => c.Elements.Count,
+                    _ => null,
+                };
+            }
+            _initializedLengths.AddOrUpdate(f, length);
+            return length;
+        }
+
+        /// <summary>Is the field assigned, or passed by reference, in this code (its type's)?</summary>
+        private static bool Written(IFieldSymbol f, SyntaxNode code)
+        {
+            var model = Compilation.GetSemanticModel(code.SyntaxTree);
+            foreach (var name in code.DescendantNodes().OfType<IdentifierNameSyntax>().Where(n => n.Identifier.Text == f.Name))
+            {
+                SyntaxNode use = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : name;
+                bool written = use.Parent is AssignmentExpressionSyntax a && a.Left == use ||
+                               use.Parent is ArgumentSyntax arg && !arg.RefKindKeyword.IsKind(SyntaxKind.None) ||
+                               use.Parent is PrefixUnaryExpressionSyntax or PostfixUnaryExpressionSyntax ||
+                               use.Parent is RefExpressionSyntax;
+                if (written && SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol?.OriginalDefinition, f))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         /// <summary>
         /// A static field whose initializer makes an object, is a string literal, or calls a method whose return type

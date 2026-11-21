@@ -480,6 +480,78 @@ public static class Copies
         }
 
         [Fact]
+        public void AnotherProjectsGenericValue_HoldsWhatItIsGivenAsAT_OnlyInItsMembersOfT()
+        {
+            // (#92: a T given to another project's generic code can be kept only where a T can be: Message, a string, is
+            // the failure's text. What's given as a string, and what a non-generic type is given, is still everywhere)
+            var lines = LinesWith(@"namespace Lib
+{
+    public readonly struct Result<T>
+    {
+        private readonly T _value;
+        internal Result(bool isSuccess, T value) { IsSuccess = isSuccess; _value = value; Message = """"; }
+        internal Result(bool isSuccess, string message) { IsSuccess = isSuccess; _value = default!; Message = message; }
+        public bool IsSuccess { get; }
+        public bool IsFailure => !IsSuccess;
+        public string Message { get; }
+        public T Value => IsSuccess ? _value : throw new System.InvalidOperationException(""failed"");
+    }
+    public static class Result
+    {
+        public static Result<T> Success<T>(T value) => new(true, value);
+        public static Result<T> Failure<T>(string message) => new(false, message);
+        public static System.Threading.Tasks.Task<Result<T>> SuccessAsync<T>(T value) => System.Threading.Tasks.Task.FromResult(Success(value));
+    }
+    public sealed class Box { public Box(string text) { Text = text; } public string Text { get; } }
+}", @"namespace App
+{
+using System.Threading.Tasks;
+using CsVerify;
+using Lib;
+using Microsoft.Extensions.Logging;
+public sealed class TokenResponse { [Sensitive] public string AccessToken { get; set; } = """"; }
+public sealed class Tokens
+{
+    private TokenResponse? cached;
+    public Result<string> Get()
+    {
+        if (cached is { } current) { return Result.Success(current.AccessToken); }
+        return Result.Failure<string>(""No token yet"");
+    }
+    public static Result<string> Wrap(string token) => Result.Success(token);
+    public string Secret() => cached!.AccessToken;
+}
+public sealed class Caller(Tokens tokens, ILogger logger)
+{
+    public string Send()
+    {
+        var token = tokens.Get();
+        if (token.IsFailure)
+        {
+            logger.LogInformation(""No token: {Cause}"", token.Message);
+            throw new System.InvalidOperationException($""No token: {token.Message}"");
+        }
+        return token.Value;
+    }
+    public async Task Leaks()
+    {
+        var token = tokens.Get();
+        logger.LogInformation(""{V}"", token.Value);
+        var wrapped = Tokens.Wrap(tokens.Secret());
+        logger.LogInformation(""{M} {V}"", wrapped.Message, wrapped.Value);
+        var awaited = await Result.SuccessAsync(tokens.Secret());
+        logger.LogInformation(""{M} {V}"", awaited.Message, awaited.Value);
+        var failed = Result.Failure<string>(tokens.Secret());
+        logger.LogInformation(""{M}"", failed.Message);
+        logger.LogInformation(""{T}"", new Box(tokens.Secret()).Text);
+    }
+}
+}");
+            // (the values, a string given as the failure's text, a non-generic type's member)
+            Assert.Equal(new[] { 34, 36, 38, 40, 41 }, lines);
+        }
+
+        [Fact]
         public void SealedValues_AreUnsealedOnlyWhereTheAccessCheckIs()
         {
             var ids = Harness.Analyze(@"public sealed class Account
