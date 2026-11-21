@@ -881,7 +881,7 @@ namespace CsVerify.Verifier.Boogie
         /// A write of an entity's column: for every context tracking the entity unchanged, it is now modified, with changes
         /// to save. (A row version's write is checked in Lowering.Ef, CSV1034.)
         /// </summary>
-        private void TrackerFieldWrite(ISymbol field, KExpr o, SyntaxNode at)
+        private void TrackerFieldWrite(ISymbol field, KExpr o, SyntaxNode at, bool building = false)
         {
             if (_failed == null || o == null || !(field is IPropertySymbol p) || KernelTypes.Ef.EntityOf(p.ContainingType) is not EfModel.Entity entity)
             {
@@ -897,6 +897,14 @@ namespace CsVerify.Verifier.Boogie
                     notAssumedAfter: true,
                     message: $"'{at}' writes {p.Name}, a row version: the database sets it on every write, and EF checks the row against the value read"));
             }
+            // (a key's, or an alternate key's: EF throws at the next DetectChanges where a context tracks it, unless added.
+            // A constructor's object isn't tracked yet)
+            if (entity.IsKeyProperty(p) && !building)
+            {
+                var t = new KVar("c$");
+                TrackerCheck(KQuant.ForAll("c$", "Ref", OrElse(Eq(State(t, o), I(EfDetached)), Eq(State(t, o), I(Added)))), "CSV1033", at,
+                    $"'{at}' changes {p.Name}, part of a key of {entity.Type.Name}, of an entity a context may track: EF throws where it detects the change. Make a new entity, or delete and add");
+            }
             var c = new KVar("c$");
             Emit(KRow.Of(UnsavedMap, null, MapLambda("c$", "Ref", OrElse(Ne(Sel(StateMap, c, o), I(EfDetached)), Unsaved(c)))));
             Emit(KRow.Of(
@@ -904,6 +912,15 @@ namespace CsVerify.Verifier.Boogie
                 null,
                 MapLambda("c$", "Ref",
         Store(States(c), o, Ite(Eq(Sel(StateMap, c, o), I(Unchanged)), I(Modified), Sel(StateMap, c, o))))));
+        }
+
+        /// <summary>A new entity: no context tracks it yet.</summary>
+        private void NewEntity(ITypeSymbol type, KExpr o, SyntaxNode at)
+        {
+            if (_failed != null && KernelTypes.Ef?.EntityOf(type) != null)
+            {
+                Emit(KSpecStmt.AssumedFree(KQuant.ForAll("c$", "Ref", Eq(State(new KVar("c$"), o), I(EfDetached))), at, argumentAt: at));
+            }
         }
 
         /// <summary>Rows read with tracking: tracked from here on (unchanged, those it didn't track).</summary>

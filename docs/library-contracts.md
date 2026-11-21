@@ -270,6 +270,8 @@ These make views too, read the same way:
   the source's with that key, in order. A group can be enumerated, counted and read like a view, and a `foreach`
   over the groups may contain one over each group. With an element selector, a group's elements are its values;
   with a result selector, `(k, g) => ...` is applied to each key and group, and may read the group (`g.Count()`).
+  Where a group comes from elsewhere (a lambda's `IGrouping<TKey, T>` parameter), its `Key` is some value, not null
+  where `TKey` isn't nullable: the key selector's return is checked against it.
 - `GroupJoin(inner, x => key, y => key, (x, ys) => ...)`: for each outer element in order, the selector applied to it
   and its matches, the inner elements with an equal key (not null), in order.
 - A `HashSet<T>` as a source (and in a `foreach` that changes nothing): its `Count` elements, each a member and none

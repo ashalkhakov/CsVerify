@@ -63,8 +63,11 @@ parameter isn't: an `IQueryable<T>` passed in may be a list's `AsQueryable()`, w
 null navigation's entity is a materialized null: a non-nullable column of it makes EF throw.) A value converter's
 lambdas (`HasConversion`) aren't given null, which EF doesn't convert. The rows a query gives aren't null, tracked or
 not, so `await ctx.Members.SingleAsync(m => m.RowId == row)` gives one; that there is one is `Single`'s
-precondition. A query by key without tracking, `SingleOrDefaultAsync(m => m.RowId == row) ?? throw ...`, says it
-fails where there is none, and verifies. A property the configuration names (`Property`, `HasKey`, `HasAlternateKey`)
+precondition, which no code shows: the database decides. A query by key, `SingleOrDefaultAsync(m => m.RowId == row) ??
+throw ...`, says it fails where there is none, and verifies, tracked or not. (A tracked query gives the instances the
+context tracks, as the program left them; what the database matched is known of them only where the context tracked
+none of the type before, or where the predicate reads only key or alternate key columns, which a tracked entity's are
+its row's.) A property the configuration names (`Property`, `HasKey`, `HasAlternateKey`)
 is a column, a get-only one too.
 
 **Joins, groups and sets.** `Join`, `LeftJoin`, `GroupJoin` and `GroupBy` on a key that the database and .NET compare
@@ -152,6 +155,8 @@ after `Remove(o)` of an added `o`, it is empty.
   - `Attach`, `Update`, `Add` (of a key that is set), `Remove` or `Entry(e).State = ...` where the context may track
     another instance with the same key: EF throws. A key EF generates (an integer key still 0) never clashes; of an entity passed in, the caller says so
     (`Spec.Requires(posting.Id == 0)`).
+  - a write of a key's or an alternate key's property of an entity a context may track (unless added): EF throws where
+    it detects the change. A new entity's, and a constructor's, are not tracked.
   - `Update` of an entity whose navigations hold something: EF marks what they hold as modified too, and writes every
     column of each. Update the one entity (`Entry(e).State = EntityState.Modified`), or load the graph tracked.
   - a context used after `SaveChanges` failed on it, or after its transaction rolled back (or was disposed

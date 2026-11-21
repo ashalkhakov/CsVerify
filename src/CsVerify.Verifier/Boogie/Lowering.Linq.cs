@@ -564,7 +564,7 @@ namespace CsVerify.Verifier.Boogie
                         return _inDatabase > 0 ? throw new NotTranslated("Where with an index, in a database") : FilterAt(src, KAbs.Of(j, Apply(f, src.Elem.At(j), j)), q.Syntax);
                     }
                     var x = Atom();
-                    return Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax);
+                    return ByKey(q, () => Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax));
                 }
                 // (each first occurrence of the first source's elements that the second has, or hasn't)
                 case "Intersect" or "Except" when args.Count == 2 && _inDatabase == 0:
@@ -1674,7 +1674,7 @@ namespace CsVerify.Verifier.Boogie
                 case "First" or "Last" or "FirstOrDefault" or "LastOrDefault" when args.Count <= 2:
                 {
                     var s = FilteredSequence(true, args, call, at);
-                    AtMostOneHint(s, at);
+                    ByKey(call, () => { AtMostOneHint(s, at); return 0; });
                     DatabaseOrder(call, args[0].Value, s.Length);
                     var pos = name.StartsWith("First") ? KLit.Zero : (KExpr)Minus(s.Length, KLit.One);
                     if (!name.EndsWith("OrDefault"))
@@ -1692,7 +1692,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     // (one, or with OrDefault none, else InvalidOperationException: its precondition)
                     var s = FilteredSequence(true, args, call, at);
-                    AtMostOneHint(s, at);
+                    ByKey(call, () => { AtMostOneHint(s, at); return 0; });
                     var src = args.Count == 1 ? "Q.Count(source)" : "Q.Count(Where(source, predicate))";
                     if (name == "Single")
                     {
@@ -1864,7 +1864,41 @@ namespace CsVerify.Verifier.Boogie
             }
             var f = LambdaArg(call, 1);
             var x = Atom();
-            return Filter(src, KAbs.Of(x, Apply(f, x)), at);
+            return ByKey(call, () => Filter(src, KAbs.Of(x, Apply(f, x)), at));
+        }
+
+        /// <summary>
+        /// A filter's facts, of a tracked query whose predicate reads its row only by key columns compared alike: known
+        /// whatever the context tracked. A tracked entity's key is its row's (EF throws where one changes, CSV1033), so
+        /// the database and the tracked objects match the same rows.
+        /// </summary>
+        private T ByKey<T>(IInvocationOperation call, System.Func<T> facts)
+        {
+            var known = _known;
+            if (known != null && KeyPredicate(call))
+            {
+                _known = null;
+            }
+            try
+            {
+                return facts();
+            }
+            finally
+            {
+                _known = known;
+            }
+        }
+
+        /// <summary>A database query's predicate (its second argument) that reads its row only by key properties of a type the database and .NET compare alike.</summary>
+        private bool KeyPredicate(IInvocationOperation call)
+        {
+            if (KernelTypes.Ef == null || DatabaseRoot(call, out _) == null || call.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is not IOperation arg ||
+                PureLambda(arg) is not var (body, p, _) || p == null || KernelTypes.Ef.EntityOf(p.Type) is not EfModel.Entity e)
+            {
+                return false;
+            }
+            return body.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Where(r => SymbolEqualityComparer.Default.Equals(r.Parameter, p))
+                .All(r => r.Parent is IPropertyReferenceOperation pr && pr.Instance == r && e.IsKeyProperty(pr.Property) && ComparedAlike(pr.Property.Type));
         }
 
         private KExpr LinqValue(KExpr v, ITypeSymbol callType, SyntaxNode at)
