@@ -823,6 +823,42 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AnAwait_KeepsOnlyTheColumnsTheMethodReaches()
+        {
+            // (#90: a method of one entity awaits and keeps that entity's columns only, not the whole model's)
+            var boogie = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "csverify-await-" + System.Guid.NewGuid().ToString("N") + ".bpl");
+            var options = Options();
+            options.BoogieOut = boogie;
+            var r = CsVerify.Verifier.Engine.VerifySources(new[] { ("Test.cs", "using System; using CsVerify; using System.Linq; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore;\n" + @"
+public sealed class Payee { public long Id { get; set; } public string Name { get; set; } = """"; }
+public sealed class Ledger { public long Id { get; set; } public int Total { get; set; } }
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) { b.Entity<Payee>(); b.Entity<Ledger>(); }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Payee?> Find(long id) => await db.Set<Payee>().AsNoTracking().SingleOrDefaultAsync(p => p.Id == id);
+}") }, options);
+            try
+            {
+                Assert.True(r.Errors("Find").Length == 0, r.Explain("Find"));
+                var text = System.IO.File.ReadAllText(boogie);
+                var find = text.Substring(text.IndexOf("procedure Store.Find"));
+                find = find.Substring(0, find.IndexOf("\n}\n"));
+                var awaited = System.Text.RegularExpressions.Regex.Match(find, @"call (\$await\$\d+)\(").Groups[1].Value;
+                Assert.NotEqual("", awaited);
+                var declaration = text.Substring(text.IndexOf("procedure " + awaited + "("));
+                declaration = declaration.Substring(0, declaration.IndexOf("\nprocedure "));
+                Assert.Contains("$F.Payee.Name", declaration);
+                Assert.DoesNotContain("$F.Ledger.Total", declaration);
+                // (its body keeps no column of the other entity across the await)
+                Assert.DoesNotContain("$F.Ledger.Total", find.Substring(find.IndexOf("{")));
+            }
+            finally { try { System.IO.File.Delete(boogie); } catch (System.IO.IOException) { } }
+        }
+
+        [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
             "public static class C { public static int M(Shop db) { return db.Orders.Where(o => o.Total > 0).Count(); } }").Methods);
     }

@@ -395,12 +395,59 @@ namespace CsVerify.Analyzers
             }
 
             /// <summary>
-            /// A library object that holds what a call gives it: one of the framework's, or a collection, a builder or a
-            /// writer of any library's. Not the program's (a service, an entity), whose [Sensitive] members say what it holds.
+            /// An object that holds what a call gives it: a collection, a builder, a writer, a stream, a buffer, a cache or
+            /// a session, a task's source, a lazy or a box, the framework's or any library's. Not a service that processes
+            /// the value (UserManager, HttpClient, a PropertyInfo), nor the program's (an entity), whose [Sensitive]
+            /// members say what it holds.
             /// </summary>
             internal static bool Holds(ITypeSymbol t) =>
-                t != null && (!IsProgramType(t) || t.SpecialType != SpecialType.System_String && t.AllInterfaces.Any(i => i.ToDisplayString() == "System.Collections.IEnumerable") ||
-                              t.Name.EndsWith("Builder") || t.Name.EndsWith("Writer") || t.Name.EndsWith("Stream"));
+                t != null && (t.SpecialType != SpecialType.System_String && t.AllInterfaces.Concat(new[] { t }).Any(i => i.ToDisplayString() == "System.Collections.IEnumerable") ||
+                              t.Name.EndsWith("Builder") || t.Name.EndsWith("Writer") || t.Name.EndsWith("Stream") || t.Name.EndsWith("Buffer") ||
+                              t.Name.EndsWith("Cache") || t.Name.EndsWith("Session") ||
+                              t.Name is "TaskCompletionSource" or "Lazy" or "StrongBox" or "ThreadLocal" or "AsyncLocal" or "Channel");
+
+            /// <summary>Identity's verdict on what it was given (IdentityResult, SignInResult): its own codes and text, not the value.</summary>
+            internal static bool IsVerdict(ITypeSymbol t)
+            {
+                if (t is INamedTypeSymbol { IsGenericType: true, TypeArguments.Length: 1 } task && task.Name is "Task" or "ValueTask")
+                {
+                    t = task.TypeArguments[0];
+                }
+                return t?.ContainingNamespace?.ToDisplayString() == "Microsoft.AspNetCore.Identity" && t.Name is "IdentityResult" or "SignInResult";
+            }
+
+            /// <summary>
+            /// The members a [ContractsFor(typeof(X))] class of the program declassifies: a method of it marked [Declassify]
+            /// says X's members of its name give a value that may be logged (a library's the program can't mark).
+            /// </summary>
+            private Dictionary<ITypeSymbol, HashSet<string>> _declassified;
+
+            internal bool Declassifies(IMethodSymbol m)
+            {
+                if (_declassified == null)
+                {
+                    _declassified = new Dictionary<ITypeSymbol, HashSet<string>>(SymbolEqualityComparer.Default);
+                    foreach (var t in _compilation.SyntaxTrees.SelectMany(tree => tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                                 .Select(c => _compilation.GetSemanticModel(tree).GetDeclaredSymbol(c))).OfType<INamedTypeSymbol>())
+                    {
+                        var of = t.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "ContractsForAttribute")?.ConstructorArguments.FirstOrDefault().Value as INamedTypeSymbol;
+                        if (of == null)
+                        {
+                            continue;
+                        }
+                        foreach (var d in t.GetMembers().OfType<IMethodSymbol>().Where(x => SpecSymbols.HasAttribute(x, "DeclassifyAttribute")))
+                        {
+                            if (!_declassified.TryGetValue(of.OriginalDefinition, out var names))
+                            {
+                                _declassified[of.OriginalDefinition] = names = new HashSet<string>();
+                            }
+                            names.Add(d.Name);
+                        }
+                    }
+                }
+                var type = (m.ReducedFrom ?? m).ContainingType?.OriginalDefinition;
+                return type != null && _declassified.TryGetValue(type, out var ns) && ns.Contains(m.Name);
+            }
 
             internal void Returns(IMethodSymbol m, string why)
             {
@@ -839,7 +886,7 @@ namespace CsVerify.Analyzers
                 return Flow.Serializes(u?.Type);
             }
 
-            private static bool IsDeclassify(IMethodSymbol m) => SpecSymbols.HasAttribute(m, "DeclassifyAttribute");
+            private bool IsDeclassify(IMethodSymbol m) => SpecSymbols.HasAttribute(m, "DeclassifyAttribute") || _flow.Declassifies(m);
 
             private void Report(SyntaxNode at, string what, string why, string sink)
             {
@@ -914,7 +961,7 @@ namespace CsVerify.Analyzers
                             return text;
                         }
                         // (the server's answer; a value's type, its metadata, not the value)
-                        if (Flow.IsHttpExchange(m) || m.Name == "GetType" && m.Parameters.Length == 0 && m.ContainingType?.SpecialType == SpecialType.System_Object)
+                        if (Flow.IsHttpExchange(m) || Flow.IsVerdict(m.ReturnType) || m.Name == "GetType" && m.Parameters.Length == 0 && m.ContainingType?.SpecialType == SpecialType.System_Object)
                         {
                             return null;
                         }

@@ -542,7 +542,8 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   An included reference is the row its foreign key names (or null, where the key can be), an included `List` (or
   `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that comes
   back to a type on it is CSV1032. An await leaves their columns as they were where no other code reaches them (the
-  method lets none out: `EntitiesStayHere`).
+  method lets none out: `EntitiesStayHere`): the columns of the entities the method's code can reach, those of its
+  expressions' types and what their navigations lead to, not the whole model's.
 - Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of
   them (a filter's predicate, an order) holds only where the context tracked no entity of the type before
   (`Known`), and the count's bounds and the results' definitions whatever they hold. Their
@@ -1053,7 +1054,10 @@ reference's are not known (a string's or a record's `Equals` is of its contents)
 and `Task.CompletedTask` give nothing; `ConfigureAwait` is seen through. At every await other code may run: `call
 $await(k)` may change every map but at the objects in `k`, the method's confined locals (each starts null, and only ever
 holds a new object or array whose construction doesn't let it out, used only by its fields, cells, null tests,
-specifications and `return`); and the locals lambdas write are forgotten. Where
+specifications and `return`); and the locals lambdas write are forgotten. Each method awaits through an `$await$`*n* of
+its own, which changes every map but the class fields its proof can't tell apart: the fields its code and contract, its
+callees' contracts and the functions it calls don't name, whose values it never reads (a method that invokes a
+delegate, or names a predicate, has the whole frame). Its callers still see every field changed. Where
 exceptions are seen, a library's await may throw (a fork, as a call's). A call of an async method keeps the caller's
 confined objects as they were (no code can reach them).
 - **Tasks awaited later.** `var t = F(...)` checks `F`'s precondition there; its result is the task's, given by `await

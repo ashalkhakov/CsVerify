@@ -406,6 +406,80 @@ public sealed class Fields
         }
 
         [Fact]
+        public void FrameworkServices_ProcessWhatTheyAreGiven_AndDontHoldIt()
+        {
+            // (#89: Identity's UserManager given a password: it, the user and its verdict stay clean; a PropertyInfo
+            // read with GetValue too; a stub may declassify a library's member; what holds a value still holds it)
+            var lines = Lines(@"}
+namespace Microsoft.AspNetCore.Identity
+{
+    public class IdentityUser { public string Id { get; set; } = """"; }
+    public sealed class IdentityError { public string Code { get; set; } = """"; }
+    public sealed class IdentityResult { public bool Succeeded { get; set; } public System.Collections.Generic.IEnumerable<IdentityError> Errors { get; } = new IdentityError[0]; }
+    public class UserManager<T> where T : class
+    {
+        public System.Threading.Tasks.Task<T?> FindByIdAsync(string id) => null!;
+        public System.Threading.Tasks.Task<IdentityResult> ChangePasswordAsync(T user, string current, string next) => null!;
+        public string HashPassword(T user, string password) => """";
+    }
+}
+namespace T
+{
+using System.Linq;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Logging;
+public sealed class ChangePassword
+{
+    public string UserId { get; set; } = """";
+    [Sensitive] public string CurrentPassword { get; set; } = """";
+    [Sensitive] public string NewPassword { get; set; } = """";
+}
+[ContractsFor(typeof(UserManager<>))]
+public static class UserManagerContracts { [Declassify] public static string HashPassword<T>(UserManager<T> @this, T user, string password) where T : class => """"; }
+public sealed class Passwords(UserManager<IdentityUser> userManager, ILogger logger)
+{
+    public async System.Threading.Tasks.Task Change(ChangePassword request)
+    {
+        var user = await userManager.FindByIdAsync(request.UserId);
+        if (user is null) return;
+        var result = await userManager.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword);
+        if (!result.Succeeded)
+        {
+            logger.LogInformation(""Refused for {UserId}: {Errors}"", user.Id, string.Join("";"", result.Errors.Select(e => e.Code)));
+        }
+        logger.LogInformation(""{H}"", userManager.HashPassword(user, request.NewPassword));
+        var done = new System.Threading.Tasks.TaskCompletionSource<string>();
+        done.SetResult(request.NewPassword);
+        logger.LogInformation(""{D}"", await done.Task);
+    }
+}
+[Sensitive] public sealed record SortCode(string Value);
+public static class Copies
+{
+    public static TE With<TE>(TE entity, object members) where TE : class
+    {
+        foreach (var member in members.GetType().GetProperties())
+        {
+            if (typeof(TE).GetProperty(member.Name) is { } property)
+            {
+                var value = member.GetValue(members);
+                property.SetValue(entity, value);
+                System.Console.WriteLine(value);
+            }
+            else
+            {
+                throw new System.InvalidOperationException($""{typeof(TE).Name} has no member {member.Name}."");
+            }
+        }
+        return entity;
+    }
+    public static object Call(SortCode sortCode) => With(new object(), new { SortCode = sortCode });
+}");
+            // (the task's source holds it; GetValue gives it)
+            Assert.Equal(new[] { 41, 55 }, lines);
+        }
+
+        [Fact]
         public void SealedValues_AreUnsealedOnlyWhereTheAccessCheckIs()
         {
             var ids = Harness.Analyze(@"public sealed class Account

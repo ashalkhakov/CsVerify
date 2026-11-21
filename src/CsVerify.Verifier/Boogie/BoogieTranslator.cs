@@ -661,6 +661,22 @@ namespace CsVerify.Verifier.Boogie
             if (_pending.Any(p => p.Source.Awaits))
             {
                 _printer.Await(_allMaps);
+                // (each method's own, of the fields it can tell apart: #90)
+                var awaits = new Dictionary<string, string>();
+                foreach (var p in _pending.Where(p => p.Source.Awaits))
+                {
+                    if (!(AwaitMaps(p, writes) is HashSet<string> maps))
+                    {
+                        continue;
+                    }
+                    var key = string.Join(",", maps.OrderBy(x => x, StringComparer.Ordinal));
+                    if (!awaits.TryGetValue(key, out var suffix))
+                    {
+                        awaits[key] = suffix = "$" + awaits.Count;
+                        _printer.Await(maps, suffix);
+                    }
+                    p.Source.AwaitSuffix = suffix;
+                }
             }
             // around each call that exchanges permissions: the [Owned] maps it may write, kept where the caller holds them
             foreach (var p in _pending)
@@ -1028,6 +1044,50 @@ namespace CsVerify.Verifier.Boogie
                 n is InvocationExpressionSyntax inv && !(inv.Expression.ToString().StartsWith("Spec.") || inv.Expression.ToString().StartsWith("Math."))));
 
         private HashSet<string> _allMaps = new HashSet<string>();
+
+        /// <summary>
+        /// What an await in this procedure may change, as far as its proof can tell (#90): every map but the class fields,
+        /// and the fields its code and contract name, the contracts of what it calls, the functions it calls read. A
+        /// field none of them names is never read here, so its value after the await can't matter. Null (all of them)
+        /// where it can't be told: delegates, predicates.
+        /// </summary>
+        private HashSet<string> AwaitMaps(HProcedure p, Dictionary<IMethodSymbol, HashSet<string>> writes)
+        {
+            // (a delegate it invokes may read anything; one only made, a query's lambda, runs nothing here)
+            if (p.Blocks.SelectMany(b => b.Stmts).Any(st => st is MInvoke) || p.Source.Preds.Count > 0 || p.Source.DelegateKeys.Count > 0)
+            {
+                return null;
+            }
+            if (_byMethod == null)
+            {
+                _byMethod = new Dictionary<IMethodSymbol, KProcedure>(SymbolEqualityComparer.Default);
+                foreach (var q in _pending)
+                {
+                    _byMethod.TryAdd(q.Source.Method.OriginalDefinition, q.Source);
+                }
+                _classFields = _pending.SelectMany(q => q.Source.Fields).Select(FieldMap).ToHashSet();
+            }
+            var fields = new HashSet<ISymbol>(p.Source.Fields, SymbolEqualityComparer.Default);
+            foreach (var c in p.Source.Calls.Concat(p.Source.LibCalls).Select(c => c.OriginalDefinition))
+            {
+                var callee = _byMethod.TryGetValue(c, out var own) ? own : _signatures.TryGetValue(c, out var sig) ? sig : null;
+                // (one without a procedure isn't a Boogie call: lowered here, EF's and LINQ's, its fields this procedure's own)
+                if (callee != null)
+                {
+                    fields.UnionWith(callee.Fields);
+                }
+                if (IsFunction(c))
+                {
+                    fields.UnionWith(FieldsOf(c));
+                }
+            }
+            var named = fields.Select(FieldMap).ToHashSet();
+            var mine = writes.TryGetValue(p.Source.Method, out var w) ? w : _allMaps;
+            return _allMaps.Where(m => mine.Contains(m) && (!_classFields.Contains(m) || named.Contains(m))).ToHashSet();
+        }
+
+        private Dictionary<IMethodSymbol, KProcedure> _byMethod;
+        private HashSet<string> _classFields;
 
         public bool AddDisabled(int disabled) => Disabled.Add(disabled);
 

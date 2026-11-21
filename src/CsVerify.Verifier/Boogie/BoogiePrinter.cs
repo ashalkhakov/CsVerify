@@ -913,14 +913,14 @@ namespace CsVerify.Verifier.Boogie
         /// An await: other code runs, which may change anything but the objects the method alone has (its confined
         /// locals'); what's allocated stays so.
         /// </summary>
-        public void Await(ISet<string> maps)
+        public void Await(ISet<string> maps, string suffix = "")
         {
             var modifies = Heap.Globals.Where(maps.Contains).Concat(maps.Where(x => x.StartsWith("$F.")).OrderBy(x => x, System.StringComparer.Ordinal)).ToList();
             // (each: always, or where a task the method started may be running alongside, changing nothing if none is;
             // and, for a method of permissions, keeping what they cover)
             foreach (var (name, when, held) in new[] { ("$await", false, false), ("$awaitIf", true, false), ("$awaitHeld", false, true), ("$awaitIfHeld", true, true) })
             {
-                Line($"procedure {name}({(when ? "w: bool, " : "")}k: [Ref]bool{(held ? ", c: [Ref][int]real, p: [Ref]bool" : "")});");
+                Line($"procedure {name}{suffix}({(when ? "w: bool, " : "")}k: [Ref]bool{(held ? ", c: [Ref][int]real, p: [Ref]bool" : "")});");
                 if (modifies.Count > 0)
                 {
                     Line($"  modifies {string.Join(", ", modifies)};");
@@ -1395,9 +1395,13 @@ namespace CsVerify.Verifier.Boogie
         // ------------------------------------------------------------------ procedures
 
         /// <summary>A procedure: its header (what it modifies: <paramref name="modifies"/>, closed over calls), its locals, its blocks.</summary>
+        /// <summary>The await of the procedure being printed (BoogieTranslator.AwaitMaps).</summary>
+        private string _awaitSuffix = "";
+
         public void Procedure(HProcedure p, ISet<string> modifies, ISet<string> anyWrites, List<string> functionFields)
         {
             var m = p.Source.Method;
+            _awaitSuffix = p.Source.AwaitSuffix;
             var ins = m.Parameters.Where(x => x.RefKind == RefKind.Ref).Select(Local).ToHashSet();
             if (p.Source.StructRefThis)
             {
@@ -1951,7 +1955,7 @@ namespace CsVerify.Verifier.Boogie
                     // (what its permissions cover, kept too: cells it holds, objects whose views it holds)
                     var held = aw.Cells || aw.Perm ? $", {(aw.Cells ? "cells" : "(lambda a: Ref :: (lambda i: int :: 0.0))")}, {(aw.Perm ? "perm" : "(lambda o: Ref :: false)")}" : "";
                     var suffix = held.Length > 0 ? "Held" : "";
-                    Line(aw.When == null ? $"    call $await{suffix}({k}{held});" : $"    call $awaitIf{suffix}({E(aw.When, cx)}, {k}{held});");
+                    Line(aw.When == null ? $"    call $await{suffix}{_awaitSuffix}({k}{held});" : $"    call $awaitIf{suffix}{_awaitSuffix}({E(aw.When, cx)}, {k}{held});");
                     return;
                 }
                 case MInvoke iv:
