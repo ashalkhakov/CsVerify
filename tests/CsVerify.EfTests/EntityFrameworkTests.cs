@@ -1041,6 +1041,58 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void ATrackedQueryByKey_MatchesTheRowsTheDatabaseDoes_AndAKeyIsNotChanged()
+        {
+            // (a tracked entity's key, or alternate key, is its row's: EF throws where one changes. So a tracked filter by
+            // key matches the rows the database does, whatever the context tracked; one by another column may not)
+            var r = VerifyEf(@"public sealed class Member
+{
+    public long RowId { get; set; }
+    public Guid Code { get; set; }
+    public int Badge { get; set; }
+    public string Name { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Member>().HasKey(m => m.RowId);
+        b.Entity<Member>().HasAlternateKey(m => m.Code);
+        b.Entity<Member>().HasIndex(m => m.Badge).IsUnique();
+    }
+}
+public static class C
+{
+    public static async Task<string> ByKey(Db db, long row) =>
+        (await db.Set<Member>().SingleOrDefaultAsync(m => m.RowId == row) ?? throw new InvalidOperationException()).Name;
+    public static async Task<string> ByCode(Db db, Guid code) =>
+        (await db.Set<Member>().SingleOrDefaultAsync(m => m.Code == code) ?? throw new InvalidOperationException()).Name;
+    public static async Task<string> WhereByKey(Db db, long row) =>
+        (await db.Set<Member>().Where(m => m.RowId == row).SingleOrDefaultAsync() ?? throw new InvalidOperationException()).Name;
+    public static async Task<string> ByBadge(Db db, int badge) =>
+        (await db.Set<Member>().SingleOrDefaultAsync(m => m.Badge == badge) ?? throw new InvalidOperationException()).Name;
+    public static async Task Rekey(Db db, long row)
+    {
+        var m = await db.Set<Member>().FirstOrDefaultAsync(x => x.RowId == row) ?? throw new InvalidOperationException();
+        m.Code = Guid.NewGuid();
+    }
+    public static void Added(Db db)
+    {
+        var m = new Member { Code = Guid.NewGuid() };
+        db.Set<Member>().Add(m);
+        m.Code = Guid.NewGuid();
+    }
+}");
+            foreach (var ok in new[] { "ByKey", "ByCode", "WhereByKey", "Added" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (a unique index's column may differ from its row's in a tracked entity; a tracked entity's key mustn't change)
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("ByBadge"));
+            Assert.Equal(new[] { "CSV1033" }, r.Errors("Rekey"));
+        }
+
+        [Fact]
         public void AGetOnlyPropertyTheConfigurationNames_IsAColumn()
         {
             // (#93: EF maps a property without a setter where Property(...) names it)

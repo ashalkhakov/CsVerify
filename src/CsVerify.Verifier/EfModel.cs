@@ -24,6 +24,8 @@ namespace CsVerify.Verifier
             public List<IPropertySymbol> Key = new List<IPropertySymbol>();
             /// <summary>Other sets of properties no two rows share: unique indexes and alternate keys.</summary>
             public List<List<IPropertySymbol>> Unique = new List<List<IPropertySymbol>>();
+            /// <summary>The alternate keys (HasAlternateKey), among Unique: like the key, EF never lets a tracked entity's change.</summary>
+            public List<List<IPropertySymbol>> Alternate = new List<List<IPropertySymbol>>();
             /// <summary>Concurrency tokens: [ConcurrencyCheck] or IsConcurrencyToken, and row versions ([Timestamp], IsRowVersion).</summary>
             public List<IPropertySymbol> Tokens = new List<IPropertySymbol>();
             public HashSet<IPropertySymbol> RowVersions = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
@@ -49,6 +51,10 @@ namespace CsVerify.Verifier
             public void AddToken(IPropertySymbol token) => Tokens.Add(token);
 
             public void AddUnique(List<IPropertySymbol> unique) => Unique.Add(unique);
+
+            /// <summary>A property of the key or of an alternate key: a tracked entity's is its row's (EF throws where one changes).</summary>
+            public bool IsKeyProperty(IPropertySymbol p) =>
+                Key.Concat(Alternate.SelectMany(k => k)).Any(k => SymbolEqualityComparer.Default.Equals(k.OriginalDefinition, p.OriginalDefinition));
 
             /// <summary>Every set of properties that identifies a row: the key, then the unique ones.</summary>
             public IEnumerable<List<IPropertySymbol>> Identifying => (Key.Count > 0 ? new[] { Key } : Array.Empty<List<IPropertySymbol>>()).Concat(Unique);
@@ -457,6 +463,7 @@ namespace CsVerify.Verifier
                 {
                     e.AddUnique(u);
                 }
+                e.Alternate.AddRange(b.Alternate);
                 foreach (var token in b.Tokens)
                 {
                     if (!e.Tokens.Contains(token))
@@ -746,6 +753,7 @@ namespace CsVerify.Verifier
                     if (Properties(argModel, arg, e) is List<IPropertySymbol> alt)
                     {
                         e.AddUnique(alt);
+                        e.Alternate.Add(alt);
                         e.Configured.UnionWith(alt.Select(x => x.OriginalDefinition));
                     }
                     break;

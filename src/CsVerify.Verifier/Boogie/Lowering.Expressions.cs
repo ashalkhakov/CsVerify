@@ -1336,6 +1336,7 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             {
                 NewContext(new KVar(t));
             }
+            NewEntity(oc.Type, new KVar(t), oc.Syntax);
             return new KVar(t);
         }
 
@@ -1406,7 +1407,8 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             }
             var lv = Declare("t$" + _temps++, lp.Type);
             Emit(KHavoc.Of(lv));
-            if (IsNullable(lp.Type) && NotNullable(prop.OriginalDefinition.Type))
+            // (a group's Key: what the key selector gave its elements, of TKey's nullability, which its return is checked against)
+            if (IsNullable(lp.Type) && (NotNullable(prop.OriginalDefinition.Type) || prop.Name == "Key" && IsLinqGroup(prop.ContainingType) && NotNullable(lp.Type)))
             {
                 Emit(KAssume.Of(NotNull(new KVar(lv))));
             }

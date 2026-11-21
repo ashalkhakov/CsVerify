@@ -1070,7 +1070,7 @@ namespace CsVerify.Verifier.Boogie
                         InstanceAt = instanceAt,
                     });
                     // (an entity's column written: modified, for a context tracking it unchanged)
-                    TrackerFieldWrite(field, instance, target.Syntax);
+                    TrackerFieldWrite(field, instance, target.Syntax, onThis && _p.IsCtor);
                     return;
                 }
                 case IArrayElementReferenceOperation me when IsMultiArray(me.ArrayReference.Type) && me.Indices.Length == ((IArrayTypeSymbol)me.ArrayReference.Type).Rank:

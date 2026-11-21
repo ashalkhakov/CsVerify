@@ -338,6 +338,27 @@ public static class P
         }
 
         [Fact]
+        public void AGroupsKey_IsAsNullableAsItsType()
+        {
+            // (#98: a group's Key is what the key selector gave, whose return is checked against TKey)
+            var r = Harness.Verify(@"
+#nullable enable
+using System.Collections.Generic;
+using System.Linq;
+public sealed record MemberId(Guid Value);
+public static class P
+{
+    public static Dictionary<MemberId, long> FirstRowOf(Dictionary<long, MemberId> byRow) =>
+        byRow.GroupBy(r => r.Value).ToDictionary(g => g.Key, g => g.Min(r => r.Key));
+    public static Func<IGrouping<string?, int>, string> Maybe() => g => g.Key;
+}");
+            // (its other lambdas read a KeyValuePair, which isn't modelled: CSV1902)
+            Assert.All(r.Methods.Where(m => m.Name.StartsWith("P.FirstRowOf.")).SelectMany(m => m.Diagnostics).Where(d => d.IsError), d => Assert.Equal("CSV1902", d.Id));
+            // (a key of a nullable type may be null)
+            Assert.Contains(r.Methods.Where(m => m.Name.StartsWith("P.Maybe.")).SelectMany(m => m.Diagnostics), d => d.Id == "CSV1014");
+        }
+
+        [Fact]
         public void Views_ConcatReverse_ResultSelectors_GroupJoin_Tuples()
         {
             var r = Harness.Verify(@"
