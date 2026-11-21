@@ -70,6 +70,8 @@ namespace CsVerify.Verifier.Boogie
                             foreach (var field in InstanceFields(n.Type))
                             {
                                 var map = FieldMap(field);
+                                // (declared, though nothing else names it: a field only an initializer writes)
+                                p.Source.AddField(field);
                                 p.Source.AddModifies(map);
                                 // (a generic class's field of T: the default of a T the class doesn't know, a box nothing is known of)
                                 if (!IsTypeParameter(FieldType(field)))
