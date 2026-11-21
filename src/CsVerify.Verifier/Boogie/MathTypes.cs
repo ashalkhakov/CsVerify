@@ -40,6 +40,23 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>A tuple's or an anonymous object's members of a non-nullable reference type.</summary>
+        public static IEnumerable<MExpr> NotNullParts(MExpr v, ITypeSymbol t)
+        {
+            if (!IsTuple(t))
+            {
+                yield break;
+            }
+            var parts = PartsOf(t);
+            for (int k = 0; k < parts.Count; k++)
+            {
+                if (IsNullable(parts[k]) && NotNullable(parts[k]))
+                {
+                    yield return TupleItem(v, t, k);
+                }
+            }
+        }
+
         public static MExpr StructDefault(ITypeSymbol t) =>
             new MOp(TupleMaker(t), StructFields(t).Select((f, k) => Box(Default(f.Type), LayoutOf(t)[k], f.Type)).ToArray());
 

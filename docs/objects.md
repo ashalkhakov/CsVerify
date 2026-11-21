@@ -164,6 +164,7 @@ Verification is modular, with behavioural subtyping (Liskov), as in Dafny, Spec#
   - **Tests and casts.** `is`, `as`, patterns and casts use this. A downcast is assumed in ordinary code (a failed cast throws) and must be proved in proofs (CSV1011).
   - **Generics.** Generic types are not modelled.
 - **Constructors.** `base(...)` and `this(...)` are checked calls on the object being built: preconditions checked, postconditions assumed. Field initializers run before `base(...)`, and not with `this(...)`.
+- **Tuples and anonymous objects.** Their members of a non-nullable reference type aren't null where one is a parameter (a lambda's over a `List<(long Row, MemberId Id)>` too); a call given a tuple that might hold null there is CSV1014.
 - **Readonly arrays.** A `readonly` instance field of a class that only its initializer sets, to an array whose length it says (`new T[n]`, an array initializer, a collection expression of elements, a string literal's `ToCharArray()`), is that long in every built object: `digits.Length == 10` after `readonly char[] digits = "0123456789".ToCharArray()`.
 - **Properties with code** are methods. A getter or setter with a body is verified and called with its contract, and so is an abstract, virtual or interface accessor. A `[Pure]` property is a function usable in specifications.
 - **Invariants of immutable classes.** In a class whose instance fields are all `readonly`, an `[Invariant]`:

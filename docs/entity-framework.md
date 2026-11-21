@@ -56,7 +56,10 @@ row when `Email` has a unique index, and a row a query gives passes its predicat
 
 A query's lambdas are SQL, not C#: a null navigation or column there is a null, not a `NullReferenceException`. So
 `m.Card!.Provider`, `m.StartedAt!.Value` and `m.Email!.Equals(email)` in them aren't checked for null: they aren't
-verified as C#, and CSV1032 checks what EF translates. (In a final `Select` that EF runs on the client, a member of a
+verified as C#, and CSV1032 checks what EF translates. That holds in query syntax (`from m in ctx.Members join c in
+ctx.Cards on ...`), and for a query started from a local that only its declaration sets, to a table's query or a
+`?:` of two of the same table (`var members = all ? ctx.Members.IgnoreQueryFilters() : ctx.Members`). A query from a
+parameter isn't: an `IQueryable<T>` passed in may be a list's `AsQueryable()`, where a null member throws. (In a final `Select` that EF runs on the client, a member of a
 null navigation's entity is a materialized null: a non-nullable column of it makes EF throw.) A value converter's
 lambdas (`HasConversion`) aren't given null, which EF doesn't convert. The rows a query gives aren't null, tracked or
 not, so `await ctx.Members.SingleAsync(m => m.RowId == row)` gives one; that there is one is `Single`'s

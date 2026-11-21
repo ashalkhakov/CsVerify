@@ -552,6 +552,65 @@ public sealed class Caller(Tokens tokens, ILogger logger)
         }
 
         [Fact]
+        public void AnotherProjectsGenericValue_ReturnedThroughAnInterface_IsHeldOnlyInItsMembersOfT()
+        {
+            // (#95: the implementations in sight say what an interface call returns; one that returns a result whole makes
+            // all its members sensitive)
+            var lines = LinesWith(@"namespace Lib
+{
+    public readonly struct Result<T>
+    {
+        private readonly T _value;
+        internal Result(bool isSuccess, T value) { IsSuccess = isSuccess; _value = value; Message = """"; }
+        internal Result(bool isSuccess, string message) { IsSuccess = isSuccess; _value = default!; Message = message; }
+        public bool IsSuccess { get; }
+        public bool IsFailure => !IsSuccess;
+        public string Message { get; }
+        public T Value => IsSuccess ? _value : throw new System.InvalidOperationException(""failed"");
+    }
+    public static class Result
+    {
+        public static Result<T> Success<T>(T value) => new(true, value);
+        public static Result<T> Failure<T>(string message) => new(false, message);
+    }
+}", @"namespace App
+{
+using CsVerify;
+using Lib;
+using Microsoft.Extensions.Logging;
+public sealed class TokenResponse { [Sensitive] public string AccessToken { get; set; } = """"; }
+public interface ITokens { Result<string> Get(); }
+public interface IErrors { Result<string> Get(); }
+public sealed class Tokens : ITokens
+{
+    private TokenResponse? fetched;
+    public Result<string> Get() => fetched is { } token ? Result.Success(token.AccessToken) : Result.Failure<string>(""No token yet"");
+}
+public sealed class Errors : IErrors
+{
+    private TokenResponse? fetched;
+    public Result<string> Get() => Result.Failure<string>(fetched!.AccessToken);
+}
+public sealed class Caller(ITokens tokens, IErrors errors, ILogger logger)
+{
+    public string Send()
+    {
+        var token = tokens.Get();
+        if (token.IsFailure)
+        {
+            throw new System.InvalidOperationException($""No token: {token.Message}"");
+        }
+        logger.LogInformation(""{V}"", token.Value);
+        return token.Value;
+    }
+    public void Fails() => logger.LogInformation(""{M}"", errors.Get().Message);
+}
+}");
+            // (the value read through ITokens; the failure's text, which IErrors' implementation was given)
+            Assert.Equal(new[] { 28, 31 }, lines);
+        }
+
+        [Fact]
         public void SealedValues_AreUnsealedOnlyWhereTheAccessCheckIs()
         {
             var ids = Harness.Analyze(@"public sealed class Account

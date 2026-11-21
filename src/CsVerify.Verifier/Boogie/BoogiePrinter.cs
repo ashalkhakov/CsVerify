@@ -1854,6 +1854,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 yield return $"{name} != null";
             }
+            // (a tuple's or an anonymous object's non-nullable members: as their types say, checked where a call is given one)
+            foreach (var part in MathTypes.NotNullParts(new MVar(local), type))
+            {
+                yield return E(NotNull(part), cx);
+            }
             // (a view's object is its tree's root)
             if (KernelTypes.Trees && x != null && HoldsView(x))
             {
