@@ -30,7 +30,10 @@ and the others: the message and its arguments); `Console.Write`/`WriteLine`; `De
 `Print`, `Fail`, `Assert`, `TraceError`/`Warning`/`Information`.
 
 **Sanitizers.** A method marked `[Declassify]` gives a value that may be logged whatever it was given: a hash, a mask,
-a length. It is trusted.
+a length. It is trusted. A library's member, which the program can't mark, is declassified by a method of its name
+marked `[Declassify]` in a `[ContractsFor(typeof(X))]` class of the program (every overload of that name). Identity's
+verdicts (`IdentityResult`, `SignInResult`: `Succeeded`, the errors' `Code` and `Description`) are the framework's
+own, clean whatever they were given, as an HTTP response is.
 
 **What is followed** (CSV0030, at the sink, saying where the value came from):
 - through assignments, operators, string concatenation and interpolation, conversions, `?:` and `??`, tuples, arrays,
@@ -49,10 +52,13 @@ a length. It is trusted.
   a field or property a sensitive value is stored in is a source wherever it is read. The message says where the
   value was first passed and stored (`passed to 'body' of 'Client.Send' at Client.cs(41,9)`);
 - into what holds it: a collection a sensitive value is added to (`list.Add(token)`: a library call given one taints
-  its receiver, where it is the framework's object, or a collection, a builder or a writer of any library's), `ref`
-  and `out` arguments, and a lambda passed alongside it (`passwords.Select(p => p.Length)`). An object of the program's,
-  of this project or another (a service, an entity), says what it holds by its `[Sensitive]` members: a call given a
-  sensitive value doesn't make it, or a field that holds it, sensitive;
+  its receiver where the receiver holds what it's given: a collection, a builder, a writer, a stream, a buffer, a cache
+  or a session, a `TaskCompletionSource`, a `Lazy`, a `StrongBox`, a `ThreadLocal`, an `AsyncLocal`, a `Channel`),
+  `ref` and `out` arguments, and a lambda passed alongside it (`passwords.Select(p => p.Length)`). A service that
+  processes the value (`UserManager`, `HttpClient`, a `PropertyInfo` read with `GetValue`) doesn't hold it, nor do the
+  other arguments it's given (the user whose password changes). An object of the program's, of this project or
+  another (a service, an entity), says what it holds by its `[Sensitive]` members: a call given a sensitive value
+  doesn't make it, or a field that holds it, sensitive;
 - whole objects: a value whose text shows a `[Sensitive]` member (or one of a `[Sensitive]` type) is reported where it
   is logged, or made into text (`$"{order}"`, `"x" + order`, `order.ToString()`): a record (its synthesized `ToString`
   prints every property), a type whose own `ToString` returns a sensitive value, and, given to a logger, which may

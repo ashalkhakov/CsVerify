@@ -1089,6 +1089,8 @@ namespace CsVerify.Verifier.Boogie
         public bool CallsDelegates;
         /// <summary>It awaits ($await).</summary>
         public bool Awaits;
+        /// <summary>The name of the await of its own (BoogieTranslator: of the maps it can tell apart).</summary>
+        public string AwaitSuffix = "";
         /// <summary>It reads a collection through an interface: values of the state ($st), declared then.</summary>
         public bool UsesState;
         /// <summary>After Heap: the globals it writes (what it calls is the program's to add).</summary>

@@ -505,7 +505,9 @@ namespace CsVerify.Verifier.Boogie
             if (_unshared != null)
             {
                 Emit(KAssign.Of(_unshared, MapLambda("r$", "Ref", OrElse(Sel(_unshared, new KVar("r$")), IsNew(new KVar("r$"), before)))));
-                foreach (var p in KernelTypes.Ef.Entities.SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField))
+                // (the columns of the entities this method reaches, as UnsharedBefore keeps them)
+                var reached = ReachedEntities();
+                foreach (var p in KernelTypes.Ef.Entities.Where(x => reached.Contains(x.Type.OriginalDefinition)).SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField))
                 {
                     _p.AddField(p.OriginalDefinition);
                 }
@@ -798,8 +800,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 return kept;
             }
-            var columns = KernelTypes.Ef.Entities.SelectMany(x => EfModel.PropertiesOf(x.Type)).Where(IsField).Select(p => p.OriginalDefinition)
-                .Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).ToList();
+            // (of the entities this method's code can reach: a column of another isn't read here, and keeping it is a fact of
+            // no use, one per column of the model at every await, #90)
+            var reached = ReachedEntities();
+            var columns = KernelTypes.Ef.Entities.Where(x => reached.Contains(x.Type.OriginalDefinition)).SelectMany(x => EfModel.PropertiesOf(x.Type))
+                .Where(IsField).Select(p => p.OriginalDefinition).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default).ToList();
             foreach (var p in columns)
             {
                 _p.AddField(p);
@@ -819,6 +824,66 @@ namespace CsVerify.Verifier.Boogie
                 KeepMap(map, type, false, kept);
             }
             return kept;
+        }
+
+        private HashSet<ITypeSymbol> _reachedEntities;
+
+        /// <summary>
+        /// The entity types this method's code can reach: those of its expressions (and their type arguments: a query's,
+        /// a list's), and what their navigations lead to.
+        /// </summary>
+        private HashSet<ITypeSymbol> ReachedEntities()
+        {
+            if (_reachedEntities != null)
+            {
+                return _reachedEntities;
+            }
+            _reachedEntities = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+            var model = _model ?? (_decl == null ? null : KernelTypes.Compilation?.GetSemanticModel(_decl.SyntaxTree));
+            if (model == null)
+            {
+                foreach (var e in KernelTypes.Ef.Entities)
+                {
+                    _reachedEntities.Add(e.Type.OriginalDefinition);
+                }
+                return _reachedEntities;
+            }
+            var work = new Stack<ITypeSymbol>();
+            foreach (var x in _decl.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax>())
+            {
+                if (model.GetTypeInfo(x).Type is ITypeSymbol t)
+                {
+                    work.Push(t);
+                }
+            }
+            var seen = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+            while (work.Count > 0)
+            {
+                var t = work.Pop();
+                if (t == null || !seen.Add(t))
+                {
+                    continue;
+                }
+                if (t is IArrayTypeSymbol a)
+                {
+                    work.Push(a.ElementType);
+                }
+                if (t is INamedTypeSymbol n)
+                {
+                    foreach (var arg in n.TypeArguments)
+                    {
+                        work.Push(arg);
+                    }
+                }
+                if (KernelTypes.Ef.EntityOf(t) is EfModel.Entity e && _reachedEntities.Add(e.Type.OriginalDefinition))
+                {
+                    foreach (var nav in e.References.Concat(e.Collections))
+                    {
+                        work.Push(nav.Type);
+                    }
+                }
+            }
+            return _reachedEntities;
         }
 
         private void KeepMap(string map, string type, bool whole, List<(string, string, bool)> kept)
