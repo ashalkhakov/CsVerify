@@ -196,9 +196,10 @@ namespace CsVerify.Verifier.Boogie
             var n = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
             Emit(KHavoc.Of(n));
             var len = new KVar(n);
-            LinqFact(Le(KLit.Zero, len), at);
+            // (some rows, none null: tracked or not)
+            ShapeFact(Le(KLit.Zero, len), at);
             var i2 = Atom();
-            LinqFact(Over(KLit.Zero, len, i2, NotNull(Sel(rows, i2))), at);
+            ShapeFact(Over(KLit.Zero, len, i2, NotNull(Sel(rows, i2))), at);
             // (a different object at each index)
             var i3 = Atom();
             var j2 = Atom();
@@ -1278,9 +1279,9 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The database queries' operators with a lambda EF can't translate (CSV1032): what they give isn't known.</summary>
         private readonly HashSet<SyntaxNode> _untranslatable = new HashSet<SyntaxNode>();
 
-        /// <summary>A column or a navigation: an auto-property with a setter, not [NotMapped].</summary>
+        /// <summary>A column or a navigation: an auto-property with a setter, or one the configuration names, not [NotMapped].</summary>
         private static bool Mapped(IPropertySymbol p, EfModel.Entity e) =>
-            e.References.Contains(p) || e.Collections.Contains(p) ||
+            e.References.Contains(p) || e.Collections.Contains(p) || e.Configured.Contains(p.OriginalDefinition) ||
             IsField(p) && (p.SetMethod != null || MetadataEntities.Current?.Columns.Contains(p.OriginalDefinition) == true) &&
             !p.GetAttributes().Any(a => a.AttributeClass?.Name == "NotMappedAttribute");
 
@@ -1429,7 +1430,36 @@ namespace CsVerify.Verifier.Boogie
                           t is INamedTypeSymbol n && n.TypeArguments.Any(a => Mentions(a, entity)) || t is IArrayTypeSymbol a && Mentions(a.ElementType, entity));
 
         /// <summary>The entity of the table a query reads (through its first sources), or null; whether it's read without tracking.</summary>
-        private EfModel.Entity DatabaseRoot(IOperation op, out bool noTracking)
+        /// <summary>
+        /// A lambda EF translates to SQL: an expression tree given to a Queryable or EF operator of a database query, or
+        /// a lambda in one. It isn't run as C#: a null member there is a null, not a throw. Its translation is checked at
+        /// its query (CSV1032).
+        /// </summary>
+        internal static bool TranslatedToSql(IAnonymousFunctionOperation fn)
+        {
+            for (IOperation op = fn; op != null; op = op.Parent)
+            {
+                if (op is IArgumentOperation { Parameter.Type: INamedTypeSymbol { Name: "Expression" } } a && a.Parent is IInvocationOperation inv &&
+                    (IsQueryableMethod(inv.TargetMethod) || IsEfMethod(inv.TargetMethod)) && DatabaseRoot(inv, out _) != null)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>A lambda of a value converter (HasConversion): EF calls it with a value, never null (unless the converter says ConvertsNulls).</summary>
+        internal static bool ConvertsForEf(IAnonymousFunctionOperation fn)
+        {
+            IOperation op = fn;
+            while (op.Parent is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+            {
+                op = op.Parent;
+            }
+            return op.Parent is IArgumentOperation { Parent: IInvocationOperation { TargetMethod.Name: "HasConversion" } inv } && IsEfMethod(inv.TargetMethod);
+        }
+
+        private static EfModel.Entity DatabaseRoot(IOperation op, out bool noTracking)
         {
             noTracking = false;
             for (int depth = 0; depth < 64 && op != null; depth++)

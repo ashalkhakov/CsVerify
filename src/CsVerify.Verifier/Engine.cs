@@ -1273,6 +1273,11 @@ namespace CsVerify.Verifier
                 {
                     continue;
                 }
+                // (a lambda EF translates to SQL isn't run as C#: its translation is checked at its query, CSV1032)
+                if (syntax is AnonymousFunctionExpressionSyntax translated && model.GetOperation(translated) is IAnonymousFunctionOperation sql && Boogie.Lowering.TranslatedToSql(sql))
+                {
+                    continue;
+                }
                 var where = nested.Locations[0].GetLineSpan();
                 if (Boogie.KernelTypes.NestedGraphs != null)
                 {

@@ -302,6 +302,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(MAssume.Of(Implies(NotNull(o), NotNull(v)), always: true));
             }
+            // (a readonly array only its initializer sets: of the initializer's length, in a built object)
+            if (InitializedLength(fd.Field) is int length && !(_p.IsCtor && fd.OnThis))
+            {
+                Emit(MAssume.Of(Implies(NotNull(o), AndAlso(NotNull(v), Eq(Length(v), new MLit(length.ToString())))), always: true));
+            }
             // (a field of an allocated object refers to an allocated object)
             if (IsRef(FieldType(fd.Field)))
             {

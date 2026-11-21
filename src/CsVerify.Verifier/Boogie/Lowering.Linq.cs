@@ -1445,6 +1445,13 @@ namespace CsVerify.Verifier.Boogie
             LinqFact(Over(KLit.Zero, n, j, Implies(keep.At(j), Eq(Sel(ix, Sel(c, j)), j))), at);
             var i2 = Atom();
             LinqFact(Over(KLit.Zero, Sel(c, n), i2, AndAlso(AndAlso(Between(KLit.Zero, Sel(ix, i2), n), keep.At(Sel(ix, i2))), Eq(Sel(c, Sel(ix, i2)), i2))), at);
+            // (of a tracked query's, known only where the context tracked none: each match is one of the source's
+            // elements, whatever the rows hold)
+            if (_known != null)
+            {
+                var i5 = Atom();
+                ShapeFact(Over(KLit.Zero, Sel(c, n), i5, Between(KLit.Zero, Sel(ix, i5), n)), at);
+            }
             // (of two indices there are: one alone would make the next, and so on without end)
             var i3 = Atom();
             var pattern = new KOp("$pattern", Sel(ix, i3), Sel(ix, Plus(i3, KLit.One)));

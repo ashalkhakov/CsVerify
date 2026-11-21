@@ -89,6 +89,12 @@ namespace CsVerify.Analyzers
             private readonly Dictionary<IParameterSymbol, string> _shapes = new Dictionary<IParameterSymbol, string>(SymbolEqualityComparer.Default);
             /// <summary>The parameters (by ordinal) whose values a method of the program may return.</summary>
             private readonly Dictionary<IMethodSymbol, HashSet<int>> _passes = new Dictionary<IMethodSymbol, HashSet<int>>(SymbolEqualityComparer.Default);
+            /// <summary>
+            /// The methods that may return a sensitive value held anywhere in their result, and the parameters a method may
+            /// return so; the others' (in _returns, _passes) is held only in their result's members of a type parameter.
+            /// </summary>
+            private readonly HashSet<IMethodSymbol> _wholeReturns = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+            private readonly Dictionary<IMethodSymbol, HashSet<int>> _wholePasses = new Dictionary<IMethodSymbol, HashSet<int>>(SymbolEqualityComparer.Default);
             /// <summary>The methods whose bodies the analysis sees.</summary>
             private readonly HashSet<IMethodSymbol> _seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
             private bool _changed;
@@ -312,14 +318,61 @@ namespace CsVerify.Analyzers
 
             internal string Stored(ISymbol member) => _members.TryGetValue(member.OriginalDefinition, out var why) ? why : null;
 
-            internal void Passes(IMethodSymbol m, int ordinal)
+            internal void Passes(IMethodSymbol m, int ordinal, bool confined)
             {
-                if (!_passes.TryGetValue(m.OriginalDefinition, out var set))
+                Add(_passes, m, ordinal);
+                if (!confined)
                 {
-                    _passes[m.OriginalDefinition] = set = new HashSet<int>();
+                    Add(_wholePasses, m, ordinal);
+                }
+            }
+
+            private void Add(Dictionary<IMethodSymbol, HashSet<int>> map, IMethodSymbol m, int ordinal)
+            {
+                if (!map.TryGetValue(m.OriginalDefinition, out var set))
+                {
+                    map[m.OriginalDefinition] = set = new HashSet<int>();
                 }
                 _changed |= set.Add(ordinal);
             }
+
+            /// <summary>Is what a call of this method gives, given a sensitive value at this parameter, held only in members of a type parameter?</summary>
+            internal bool PassesConfined(IMethodSymbol m, IParameterSymbol p)
+            {
+                var d = (m.ReducedFrom ?? m).OriginalDefinition;
+                if (p == null)
+                {
+                    return false;
+                }
+                if (_seen.Contains(d))
+                {
+                    return !d.IsVirtual && !d.IsAbstract && !d.IsOverride && Returns(d, p.Ordinal) &&
+                           !(_wholePasses.TryGetValue(d, out var whole) && whole.Contains(p.Ordinal));
+                }
+                return Parametric(d, p);
+            }
+
+            /// <summary>
+            /// Another project's generic code, given a value at a parameter of a type parameter: by parametricity, it can keep
+            /// the value only where a value of that type parameter can be (a T, a T[], an object), not in a string.
+            /// </summary>
+            internal static bool Parametric(IMethodSymbol d, IParameterSymbol p) => Parametric(d, d.ReturnType, p);
+
+            /// <summary>The same, of a method or constructor whose result is of this type.</summary>
+            internal static bool Parametric(IMethodSymbol d, ITypeSymbol type, IParameterSymbol p)
+            {
+                if (type is INamedTypeSymbol { IsGenericType: true, TypeArguments.Length: 1 } task && task.Name is "Task" or "ValueTask")
+                {
+                    type = task.TypeArguments[0];
+                }
+                return !InSource(d.ContainingType) && IsProgramType(d.ContainingType) && p.OriginalDefinition.Type is ITypeParameterSymbol &&
+                       type is INamedTypeSymbol { IsGenericType: true } result && IsProgramType(result) && !Holds(result);
+            }
+
+            /// <summary>Could a member of this type (as declared) hold a value of a type parameter?</summary>
+            internal static bool MayHoldT(ITypeSymbol t) =>
+                t is ITypeParameterSymbol || t is IArrayTypeSymbol a && MayHoldT(a.ElementType) || Hides(t) || t?.TypeKind == TypeKind.Dynamic ||
+                t is INamedTypeSymbol n && n.TypeArguments.Any(MayHoldT);
 
             /// <summary>
             /// Does a call of this method give a sensitive value given one at this parameter? For a method of the program's
@@ -449,13 +502,29 @@ namespace CsVerify.Analyzers
                 return type != null && _declassified.TryGetValue(type, out var ns) && ns.Contains(m.Name);
             }
 
-            internal void Returns(IMethodSymbol m, string why)
+            internal void Returns(IMethodSymbol m, string why, bool confined)
             {
-                if (m != null && !_returns.ContainsKey(m.OriginalDefinition))
+                if (m == null)
+                {
+                    return;
+                }
+                if (!_returns.ContainsKey(m.OriginalDefinition))
                 {
                     _returns[m.OriginalDefinition] = why;
                     _changed = true;
                 }
+                if (!confined)
+                {
+                    _changed |= _wholeReturns.Add(m.OriginalDefinition);
+                }
+            }
+
+            /// <summary>Is what this method returns given no sensitive value held only in its result's members of a type parameter?</summary>
+            internal bool ReturnsConfined(IMethodSymbol m)
+            {
+                var d = (m.ReducedFrom ?? m).OriginalDefinition;
+                return _returns.ContainsKey(d) && !_wholeReturns.Contains(d) && !d.IsVirtual && !d.IsAbstract && !d.IsOverride &&
+                       !SpecSymbols.HasAttribute(m, "SensitiveAttribute") && !m.GetReturnTypeAttributes().Any(a => a.AttributeClass?.Name == "SensitiveAttribute");
             }
 
             /// <summary>Why a call of this method gives a sensitive value whatever its arguments: its own result, or an override's.</summary>
@@ -593,6 +662,8 @@ namespace CsVerify.Analyzers
             private readonly int _probe;
             private const string Probed = "\u0001the parameter probed";
             private readonly Dictionary<ISymbol, string> _locals = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
+            /// <summary>The locals whose sensitive value may be held anywhere in them; the others' only in members of a type parameter.</summary>
+            private readonly HashSet<ISymbol> _whole = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             private bool _grew;
 
             public Method(Flow flow, IOperation body, ISymbol owner, bool callers, System.Action<Diagnostic> report, int probe = -1)
@@ -629,25 +700,33 @@ namespace CsVerify.Analyzers
                 }
             }
 
-            private void Taint(ISymbol s, string why)
+            private void Taint(ISymbol s, string why, bool confined = false)
             {
-                if (s != null && why != null && !_locals.ContainsKey(s))
+                if (s == null || why == null)
+                {
+                    return;
+                }
+                if (!_locals.ContainsKey(s))
                 {
                     _locals[s] = why;
                     _grew = true;
                 }
+                if (!confined)
+                {
+                    _grew |= _whole.Add(s);
+                }
             }
 
             /// <summary>Where a sensitive value written to this target goes: a local, a parameter, a field or property (the program's), an element of one.</summary>
-            private void Into(IOperation target, string why)
+            private void Into(IOperation target, string why, bool confined = false)
             {
                 switch (target)
                 {
                     case ILocalReferenceOperation l:
-                        Taint(l.Local, why);
+                        Taint(l.Local, why, confined);
                         break;
                     case IParameterReferenceOperation p:
-                        Taint(p.Parameter, why);
+                        Taint(p.Parameter, why, confined);
                         break;
                     case IFieldReferenceOperation f:
                         if (_callers)
@@ -668,10 +747,10 @@ namespace CsVerify.Analyzers
                         Into(a.ArrayReference, why);
                         break;
                     case IConversionOperation c:
-                        Into(c.Operand, why);
+                        Into(c.Operand, why, confined);
                         break;
                     case IDeclarationExpressionOperation d:
-                        Into(d.Expression, why);
+                        Into(d.Expression, why, confined);
                         break;
                     case ITupleOperation t:
                         foreach (var e in t.Elements)
@@ -713,12 +792,13 @@ namespace CsVerify.Analyzers
                 switch (op)
                 {
                     case IVariableDeclaratorOperation d:
-                        Taint(d.Symbol, Why(d.Initializer?.Value ?? d.GetVariableInitializer()?.Value));
+                        var value = d.Initializer?.Value ?? d.GetVariableInitializer()?.Value;
+                        Taint(d.Symbol, Why(value), Confined(value));
                         break;
                     case IAssignmentOperation a:
                         if (Why(a.Value) is string aw)
                         {
-                            Into(a.Target, aw);
+                            Into(a.Target, aw, Confined(a.Value));
                         }
                         // (x += secret: what x holds after is sensitive too, as is a.Value)
                         break;
@@ -744,11 +824,11 @@ namespace CsVerify.Analyzers
                     case IReturnOperation r when r.ReturnedValue != null && !_callers && Why(r.ReturnedValue) is string rw:
                         if (_probe < 0)
                         {
-                            _flow.Returns(Function(op), rw);
+                            _flow.Returns(Function(op), rw, Confined(r.ReturnedValue));
                         }
                         else if (rw == Probed && SymbolEqualityComparer.Default.Equals(Function(op), _owner))
                         {
-                            _flow.Passes((IMethodSymbol)_owner, _probe);
+                            _flow.Passes((IMethodSymbol)_owner, _probe, Confined(r.ReturnedValue));
                         }
                         break;
                     case IInvocationOperation i:
@@ -941,10 +1021,10 @@ namespace CsVerify.Analyzers
                     case IInstanceReferenceOperation ir:
                         return Flow.SensitiveType(ir.Type);
                     case IFieldReferenceOperation f:
-                        return Member(f.Field, f.Type) ?? Why(f.Instance);
+                        return Member(f.Field, f.Type) ?? Through(f.Instance, f.Field.OriginalDefinition.Type);
                     case IPropertyReferenceOperation p:
                         return Member(p.Property, p.Type) ?? (p.Property.GetMethod != null ? _flow.Returned(p.Property.GetMethod) : null) ??
-                               Why(p.Instance) ?? p.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null);
+                               Through(p.Instance, p.Property.OriginalDefinition.Type) ?? p.Arguments.Select(a => Why(a.Value)).FirstOrDefault(w => w != null);
                     case IInvocationOperation i:
                     {
                         var m = i.TargetMethod;
@@ -993,6 +1073,55 @@ namespace CsVerify.Analyzers
                         return Why(aw.Operation);
                     default:
                         return op.Descendants().Where(d => d.Parent == op).Select(Why).FirstOrDefault(w => w != null);
+                }
+            }
+
+            /// <summary>Why a member (of this declared type) read of a value is sensitive: the value's, unless it is held only in members of a type parameter and this isn't one.</summary>
+            private string Through(IOperation instance, ITypeSymbol declared) =>
+                Why(instance) is string why && (Flow.MayHoldT(declared) || !Confined(instance)) ? why : null;
+
+            /// <summary>
+            /// Is the sensitive value this gives held only in its members of a type parameter: given only as a T to another
+            /// project's generic code (a Result&lt;T&gt;'s factory), or returned by a method whose results are such?
+            /// </summary>
+            private bool Confined(IOperation op)
+            {
+                switch (op)
+                {
+                    case IConversionOperation c when c.Conversion.IsIdentity:
+                        return Confined(c.Operand);
+                    case IParenthesizedOperation p:
+                        return Confined(p.Operand);
+                    case IAwaitOperation aw:
+                        return Confined(aw.Operation);
+                    case IConditionalAccessInstanceOperation ci:
+                        return Confined(Receiver(ci));
+                    case ILocalReferenceOperation l:
+                        return _locals.ContainsKey(l.Local) && !_whole.Contains(l.Local);
+                    case IConditionalOperation c:
+                        return (Why(c.WhenTrue) == null || Confined(c.WhenTrue)) && (Why(c.WhenFalse) == null || Confined(c.WhenFalse));
+                    case IInvocationOperation i:
+                    {
+                        var m = i.TargetMethod;
+                        if (IsUnseal(m) || m.Name == "ToString" || Flow.IsSerializer(m) || Flow.SensitiveType(i.Type) != null || Why(i.Instance) != null)
+                        {
+                            return false;
+                        }
+                        var returned = _flow.Returned(m) != null;
+                        if (returned && !_flow.ReturnsConfined(m))
+                        {
+                            return false;
+                        }
+                        var given = i.Arguments.Where(a => _flow.PassesOn(m, a.Parameter) && Why(a.Value) != null).ToList();
+                        return (returned || given.Count > 0) && given.All(a => _flow.PassesConfined(m, a.Parameter));
+                    }
+                    case IObjectCreationOperation o when o.Constructor != null && o.Initializer == null && Flow.SensitiveType(o.Type) == null:
+                    {
+                        var given = o.Arguments.Where(a => Why(a.Value) != null).ToList();
+                        return given.Count > 0 && given.All(a => a.Parameter != null && Flow.Parametric(o.Constructor.OriginalDefinition, o.Type, a.Parameter));
+                    }
+                    default:
+                        return false;
                 }
             }
 

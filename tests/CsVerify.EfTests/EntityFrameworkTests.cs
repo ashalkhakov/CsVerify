@@ -859,6 +859,129 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void TranslatedLambdas_Converters_AndSingle_AreReadAsEfRunsThem()
+        {
+            // (#93: a query's lambdas are SQL, where a null member is a null, not a throw; a converter isn't given null;
+            // SingleAsync gives its row or throws; a readonly array field's initializer says its length)
+            var r = VerifyEfWithLibrary(@"namespace Lib
+{
+    using System;
+    public sealed record MemberId(Guid Value);
+    public sealed record ProviderRef(string Value)
+    {
+        public static ProviderRef? ParseOptional(string? value) => string.IsNullOrEmpty(value) ? null : new ProviderRef(value);
+    }
+    public class Card
+    {
+        public long Id { get; set; }
+        public string Provider { get; set; } = """";
+    }
+    public class Member
+    {
+        public Member(MemberId id) => Id = id;
+        private Member() { Id = new MemberId(Guid.Empty); }
+        public long RowId { get; private set; }
+        public MemberId Id { get; }
+        public string? Email { get; set; }
+        public Card? Card { get; set; }
+        public long? CardId { get; set; }
+        public DateTime? StartedAt { get; set; }
+        public ProviderRef? Portfolio { get; set; }
+        public void Touch(DateTime at) => StartedAt = at;
+    }
+}", @"using Lib;
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Card>();
+        modelBuilder.Entity<Member>(b =>
+        {
+            b.HasKey(m => m.RowId);
+            b.Property(m => m.Id).HasColumnName(""ExternalId"").HasConversion(id => id.Value, value => new MemberId(value));
+            b.HasAlternateKey(m => m.Id);
+            b.HasOne(m => m.Card).WithMany().HasForeignKey(m => m.CardId);
+            b.Property(m => m.Portfolio).HasConversion(reference => reference!.Value, value => ProviderRef.ParseOptional(value)!);
+        });
+    }
+}
+public sealed record HeldCard(long CardId, long MemberRow);
+public sealed class Store(Db db)
+{
+    private readonly char[] digits = ""0123456789"".ToCharArray();
+    public async Task<HeldCard?> Held(string provider) =>
+        await db.Set<Member>().AsNoTracking()
+            .Where(m => m.Card!.Provider == provider)
+            .Select(m => new HeldCard(m.Card!.Id, m.RowId))
+            .FirstOrDefaultAsync();
+    public async Task<List<DateTime>> Started(DateTime before) =>
+        await db.Set<Member>().AsNoTracking()
+            .Where(m => m.StartedAt != null && m.StartedAt <= before)
+            .Select(m => m.StartedAt!.Value)
+            .ToListAsync();
+    public async Task<Member?> ById(Guid id) =>
+        await db.Set<Member>().AsNoTracking().SingleOrDefaultAsync(m => m.Id == new MemberId(id));
+    public async Task Touch(long row, DateTime at)
+    {
+        var member = await db.Set<Member>().SingleAsync(m => m.RowId == row);
+        member.Touch(at);
+    }
+    public async Task<long> Read(long row)
+    {
+        var member = await db.Set<Member>().AsNoTracking().SingleOrDefaultAsync(m => m.RowId == row) ?? throw new InvalidOperationException($""no member {row}"");
+        return member.RowId;
+    }
+    public void AddCard(Card card) => db.Set<Card>().Add(card);
+    public void AddNewCard(Card card)
+    {
+        Spec.Requires(card.Id == 0);
+        db.Set<Card>().Add(card);
+    }
+    public string Code(int length) =>
+        string.Concat(Enumerable.Range(1, length).Select(_ => digits[System.Security.Cryptography.RandomNumberGenerator.GetInt32(digits.Length)]));
+    public async Task<Member?> ByEmail(string email) =>
+        await db.Set<Member>().AsNoTracking().FirstOrDefaultAsync(m => m.Email!.Equals(email));
+}");
+            // (the converter's lambdas: EF gives them no null)
+            Assert.DoesNotContain(r.Methods.Where(m => m.Name == "Db.OnModelCreating.<lambda:14>").SelectMany(m => m.Diagnostics), d => d.IsError);
+            foreach (var ok in new[] { "ByEmail", "Read", "AddNewCard" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            // (and these report nothing but what isn't verified yet: a projection's object, a list's task, LINQ's Select)
+            foreach (var ok in new[] { "Held", "Started", "ById", "Code" })
+            {
+                Assert.True(r.Errors(ok).All(id => id == "CSV1902"), r.Explain(ok));
+            }
+            // (no lambda of a query is verified as C#; Code's, LINQ to Objects', is, and knows digits' length)
+            Assert.Equal(new[] { "Store.Code.<lambda:51>" }, r.Methods.Where(m => m.Name.StartsWith("Store.") && m.Name.Contains("<lambda:")).Select(m => m.Name));
+            Assert.True(r.Errors("Store.Code.<lambda:51>").Length == 0, r.Explain("Store.Code.<lambda:51>"));
+            // (SingleAsync's row isn't null; that there is one is still its precondition. Add of an entity passed in may
+            // meet a tracked one with its key, unless the caller says it is new: a store-generated key's default)
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("Touch"));
+            Assert.Equal(new[] { "CSV1033" }, r.Errors("AddCard"));
+        }
+
+        [Fact]
+        public void AGetOnlyPropertyTheConfigurationNames_IsAColumn()
+        {
+            // (#93: EF maps a property without a setter where Property(...) names it)
+            var r = VerifyEf(@"public sealed class Account
+{
+    public Account(string code) { Code = code; }
+    private Account() { Code = """"; }
+    public long Id { get; set; }
+    public string Code { get; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) { b.Entity<Account>().Property(a => a.Code).HasColumnName(""AccountCode""); }
+}
+public static class C { public static async Task<int> M(Db db, string code) => await db.Set<Account>().AsNoTracking().CountAsync(a => a.Code == code); }");
+            Assert.True(r.Errors("M").Length == 0, r.Explain("M"));
+        }
+
+        [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
             "public static class C { public static int M(Shop db) { return db.Orders.Where(o => o.Total > 0).Count(); } }").Methods);
     }

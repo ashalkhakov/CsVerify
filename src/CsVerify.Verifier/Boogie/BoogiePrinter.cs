@@ -1850,7 +1850,7 @@ namespace CsVerify.Verifier.Boogie
                 yield return $"{name} == null || $arr({name})";
             }
             // (not null: checked at each call's argument)
-            if (IsNullable(type) && (NotNullable(type) || x != null && IsQueryParameter(x)))
+            if (IsNullable(type) && (NotNullable(type) || x != null && (IsQueryParameter(x) || IsConverterParameter(x))))
             {
                 yield return $"{name} != null";
             }

@@ -54,6 +54,16 @@ operators, and EF's `...Async` forms awaited where they are called, are read fro
 So `Where`, `Count`, `Any` and `All` are exact, `SingleOrDefault(c => c.Email == email)` is proved to find at most one
 row when `Email` has a unique index, and a row a query gives passes its predicate.
 
+A query's lambdas are SQL, not C#: a null navigation or column there is a null, not a `NullReferenceException`. So
+`m.Card!.Provider`, `m.StartedAt!.Value` and `m.Email!.Equals(email)` in them aren't checked for null: they aren't
+verified as C#, and CSV1032 checks what EF translates. (In a final `Select` that EF runs on the client, a member of a
+null navigation's entity is a materialized null: a non-nullable column of it makes EF throw.) A value converter's
+lambdas (`HasConversion`) aren't given null, which EF doesn't convert. The rows a query gives aren't null, tracked or
+not, so `await ctx.Members.SingleAsync(m => m.RowId == row)` gives one; that there is one is `Single`'s
+precondition. A query by key without tracking, `SingleOrDefaultAsync(m => m.RowId == row) ?? throw ...`, says it
+fails where there is none, and verifies. A property the configuration names (`Property`, `HasKey`, `HasAlternateKey`)
+is a column, a get-only one too.
+
 **Joins, groups and sets.** `Join`, `LeftJoin`, `GroupJoin` and `GroupBy` on a key that the database and .NET compare
 alike (an integer, `bool`, an enum or a `Guid`, or one of those nullable; a string, where strings compare exactly; or a
 tuple or anonymous type of them), and `Distinct`, `Union`, `Intersect`, `Except` and `Contains` of such values, are read
@@ -137,7 +147,8 @@ after `Remove(o)` of an added `o`, it is empty.
 **Reported:**
 - **CSV1033**, the tracker misused:
   - `Attach`, `Update`, `Add` (of a key that is set), `Remove` or `Entry(e).State = ...` where the context may track
-    another instance with the same key: EF throws. A key EF generates (an integer key still 0) never clashes.
+    another instance with the same key: EF throws. A key EF generates (an integer key still 0) never clashes; of an entity passed in, the caller says so
+    (`Spec.Requires(posting.Id == 0)`).
   - `Update` of an entity whose navigations hold something: EF marks what they hold as modified too, and writes every
     column of each. Update the one entity (`Entry(e).State = EntityState.Modified`), or load the graph tracked.
   - a context used after `SaveChanges` failed on it, or after its transaction rolled back (or was disposed
