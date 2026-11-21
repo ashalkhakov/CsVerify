@@ -60,8 +60,9 @@ own, clean whatever they were given, as an HTTP response is.
   another (a service, an entity), says what it holds by its `[Sensitive]` members: a call given a sensitive value
   doesn't make it, or a field that holds it, sensitive. Another project's generic code given a value only as a `T`
   keeps it only where a `T` can be (parametricity): `Result.Success(token)` gives a `Result<string>` whose `Value`
-  is the token, but whose `Message`, a `string`, isn't. So is what a method returns that returns such a value. Given
-  it as a `string` (`Result.Failure<string>(token)`), any member may hold it;
+  is the token, but whose `Message`, a `string`, isn't. So is what a method returns that returns such a value, and
+  what an interface or virtual call returns where every implementation in sight that returns one does. Given it as a
+  `string` (`Result.Failure<string>(token)`), any member may hold it;
 - whole objects: a value whose text shows a `[Sensitive]` member (or one of a `[Sensitive]` type) is reported where it
   is logged, or made into text (`$"{order}"`, `"x" + order`, `order.ToString()`): a record (its synthesized `ToString`
   prints every property), a type whose own `ToString` returns a sensitive value, and, given to a logger, which may

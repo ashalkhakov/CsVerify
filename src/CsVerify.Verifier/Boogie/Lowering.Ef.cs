@@ -1478,11 +1478,44 @@ namespace CsVerify.Verifier.Boogie
                         }
                         op = c.Instance ?? c.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value;
                         continue;
+                    // (either branch's table, where both read the same)
+                    case IConditionalOperation cond:
+                    {
+                        var e = DatabaseRoot(cond.WhenTrue, out bool t);
+                        var f = DatabaseRoot(cond.WhenFalse, out bool u);
+                        noTracking |= t && u;
+                        return e != null && e == f ? e : null;
+                    }
+                    // (a local only its declaration sets: its initializer's)
+                    case ILocalReferenceOperation l when Initializer(l) is IOperation init:
+                        op = init;
+                        continue;
                     default:
                         return null;
                 }
             }
             return null;
+        }
+
+        /// <summary>The value a local is declared with, where nothing else writes it (no assignment, no ref or out); else null.</summary>
+        private static IOperation Initializer(ILocalReferenceOperation l)
+        {
+            if (l.Local.IsRef || l.Local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax declarator ||
+                l.SemanticModel?.GetOperation(declarator) is not IVariableDeclaratorOperation { Initializer.Value: { } value })
+            {
+                return null;
+            }
+            // (the method's, lambdas in it included)
+            if (l.Local.ContainingSymbol?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not SyntaxNode body ||
+                body.SyntaxTree != declarator.SyntaxTree || l.SemanticModel.GetOperation(body) is not IOperation root)
+            {
+                return null;
+            }
+            bool written = root.Descendants().Any(o =>
+                o is IAssignmentOperation { Target: ILocalReferenceOperation t } && SymbolEqualityComparer.Default.Equals(t.Local, l.Local) ||
+                o is IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out, Value: ILocalReferenceOperation r } && SymbolEqualityComparer.Default.Equals(r.Local, l.Local) ||
+                o is IDeconstructionAssignmentOperation d && d.Target.Descendants().OfType<ILocalReferenceOperation>().Any(r2 => SymbolEqualityComparer.Default.Equals(r2.Local, l.Local)));
+            return written ? null : value;
         }
 
         /// <summary>Why a lambda the database runs isn't translated yet: CSV1032's check, strings, SQL's nulls.</summary>

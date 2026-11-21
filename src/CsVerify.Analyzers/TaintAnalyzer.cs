@@ -523,8 +523,17 @@ namespace CsVerify.Analyzers
             internal bool ReturnsConfined(IMethodSymbol m)
             {
                 var d = (m.ReducedFrom ?? m).OriginalDefinition;
-                return _returns.ContainsKey(d) && !_wholeReturns.Contains(d) && !d.IsVirtual && !d.IsAbstract && !d.IsOverride &&
-                       !SpecSymbols.HasAttribute(m, "SensitiveAttribute") && !m.GetReturnTypeAttributes().Any(a => a.AttributeClass?.Name == "SensitiveAttribute");
+                if (SpecSymbols.HasAttribute(m, "SensitiveAttribute") || m.GetReturnTypeAttributes().Any(a => a.AttributeClass?.Name == "SensitiveAttribute"))
+                {
+                    return false;
+                }
+                if (!d.IsVirtual && !d.IsAbstract && !d.IsOverride && d.ContainingType?.TypeKind != TypeKind.Interface)
+                {
+                    return _returns.ContainsKey(d) && !_wholeReturns.Contains(d);
+                }
+                // (a dispatched call: the member and the overrides or implementations in sight that return one)
+                var impls = _returns.Keys.Where(s => s.Parameters.Length == d.Parameters.Length && Implements(s, d)).ToList();
+                return impls.Count > 0 && impls.All(s => !_wholeReturns.Contains(s));
             }
 
             /// <summary>Why a call of this method gives a sensitive value whatever its arguments: its own result, or an override's.</summary>

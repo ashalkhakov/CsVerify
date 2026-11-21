@@ -860,6 +860,16 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void ATuplesNonNullableMembers_AreNotNull_AndCheckedWhereACallIsGivenOne()
+        {
+            // (#96: a tuple parameter's members are as its type says; a call giving one that might hold null is reported)
+            const string Length = "static int Length((long Row, string Name) t) => t.Name.Length; ";
+            Assert.Empty(Errors("Length", Length));
+            Assert.Empty(Errors("M", Length + "static int M(string s) => Length((1, s));"));
+            Assert.Equal(new[] { "CSV1014" }, Errors("M", Length + "static int M(string? s) => Length((1, s!));"));
+        }
+
+        [Fact]
         public void DatesAndSpans_CompareByTheirTicks()
         {
             Assert.Empty(Errors("M", "static System.DateTime M(System.DateTime a, System.DateTime b) { Spec.Ensures((System.DateTime r) => r >= a && r >= b); return a > b ? a : b; }"));

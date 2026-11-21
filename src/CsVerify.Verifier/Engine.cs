@@ -1273,8 +1273,10 @@ namespace CsVerify.Verifier
                 {
                     continue;
                 }
-                // (a lambda EF translates to SQL isn't run as C#: its translation is checked at its query, CSV1032)
-                if (syntax is AnonymousFunctionExpressionSyntax translated && model.GetOperation(translated) is IAnonymousFunctionOperation sql && Boogie.Lowering.TranslatedToSql(sql))
+                // (a lambda EF translates to SQL isn't run as C#: its translation is checked at its query, CSV1032. A query
+                // clause's has no syntax of its own; its graph's is it)
+                if ((graph.OriginalOperation as IAnonymousFunctionOperation ?? (syntax is AnonymousFunctionExpressionSyntax translated ? model.GetOperation(translated) as IAnonymousFunctionOperation : null)) is { } sql &&
+                    Boogie.Lowering.TranslatedToSql(sql))
                 {
                     continue;
                 }

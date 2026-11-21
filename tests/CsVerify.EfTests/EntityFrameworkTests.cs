@@ -963,6 +963,84 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void QueriesFromALocal_QuerySyntax_AndMembersOfTuplesAndAnonymousTypes_AreNotNull()
+        {
+            // (#96: a query is SQL whatever local holds it, and in query syntax too; a lambda returning a tuple's or an
+            // anonymous type's non-nullable member returns no null)
+            var r = VerifyEfWithLibrary(@"namespace Lib
+{
+    using System;
+    public sealed record MemberId(Guid Value);
+    public class Card
+    {
+        public long Id { get; set; }
+        public string Provider { get; set; } = """";
+    }
+    public class Member
+    {
+        public Member(MemberId id) => Id = id;
+        private Member() { Id = new MemberId(Guid.Empty); }
+        public long RowId { get; private set; }
+        public MemberId Id { get; }
+        public Card? Card { get; set; }
+        public long? CardId { get; set; }
+    }
+}", @"using Lib;
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Card>();
+        modelBuilder.Entity<Member>(b =>
+        {
+            b.HasKey(m => m.RowId);
+            b.Property(m => m.Id).HasColumnName(""ExternalId"").HasConversion(id => id.Value, value => new MemberId(value));
+            b.HasOne(m => m.Card).WithMany().HasForeignKey(m => m.CardId);
+        });
+    }
+}
+public sealed record HeldCard(long CardId, long MemberRow);
+public sealed class Store(Db db)
+{
+    public async Task<HeldCard?> Held(string provider, bool includeDeleted)
+    {
+        var members = includeDeleted ? db.Set<Member>().IgnoreQueryFilters() : db.Set<Member>();
+        return await members.AsNoTracking()
+            .Where(m => m.Card!.Provider == provider)
+            .Select(m => new HeldCard(m.Card!.Id, m.RowId))
+            .FirstOrDefaultAsync();
+    }
+    public static async Task<HeldCard?> From(IQueryable<Member> members, string provider) =>
+        await members.Where(m => m.Card!.Provider == provider).Select(m => new HeldCard(m.Card!.Id, m.RowId)).FirstOrDefaultAsync();
+    public async Task<List<long>> CardsOf(string provider) =>
+        await (
+                from member in db.Set<Member>().AsNoTracking()
+                join card in db.Set<Card>() on member.Card!.Id equals card.Id
+                where card.Provider == provider
+                select card.Id)
+            .ToListAsync();
+    public static Dictionary<long, MemberId> ById(IEnumerable<(long Row, MemberId Id)> members) =>
+        members.ToDictionary(m => m.Row, m => m.Id);
+    public async Task<List<Member>> WithCards()
+    {
+        var rows = await db.Set<Member>().Select(m => new { Member = m, Provider = m.Card!.Provider }).ToListAsync();
+        return rows.Select(r => r.Member).ToList();
+    }
+}");
+            // (an IQueryable parameter may be a list's AsQueryable(), where a null member throws: its lambdas are C#)
+            Assert.Equal(new[] { "CSV1013", "CSV1013" }, r.Methods.Where(m => m.Name == "Store.From.<lambda:28>").SelectMany(m => m.Diagnostics).Where(d => d.IsError).Select(d => d.Id));
+            foreach (var ok in new[] { "Held", "From", "CardsOf", "ById", "WithCards" })
+            {
+                Assert.True(r.Errors(ok).All(id => id == "CSV1902"), r.Explain(ok));
+            }
+            // (no lambda of a query is verified as C#, in query syntax either; LINQ to Objects' are, and return no null)
+            var lambdas = r.Methods.Where(m => m.Name.StartsWith("Store.") && m.Name.Contains("<lambda:")).ToList();
+            Assert.Equal(new[] { "Store.ById.<lambda:37>", "Store.ById.<lambda:37>", "Store.From.<lambda:28>", "Store.From.<lambda:28>", "Store.WithCards.<lambda:41>" },
+                lambdas.Select(m => m.Name).OrderBy(n => n, System.StringComparer.Ordinal));
+            Assert.DoesNotContain(lambdas.Where(m => m.Name != "Store.From.<lambda:28>").SelectMany(m => m.Diagnostics), d => d.IsError);
+        }
+
+        [Fact]
         public void AGetOnlyPropertyTheConfigurationNames_IsAColumn()
         {
             // (#93: EF maps a property without a setter where Property(...) names it)

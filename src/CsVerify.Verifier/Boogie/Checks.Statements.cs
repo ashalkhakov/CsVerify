@@ -89,7 +89,7 @@ namespace CsVerify.Verifier.Boogie
             }
             if (Returns(m) != null && IsNullable(Returns(m)) && NotNullable(Returns(m)))
             {
-                Assert(NotNull(new MVar("result")), At("CSV1014", ret.At, $"'{m.Name}' might return null, but its return type '{m.ReturnType}' is not nullable" +
+                Assert(NotNull(new MVar("result")), At("CSV1014", ret.At, $"'{(m.MethodKind == MethodKind.AnonymousFunction ? "the lambda" : m.Name)}' might return null, but its return type '{m.ReturnType}' is not nullable" +
                     NullReasons(ret.At is Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax rs ? rs.Expression : ret.At is Microsoft.CodeAnalysis.CSharp.Syntax.ArrowExpressionClauseSyntax ar ? ar.Expression : ret.At)));
             }
         }

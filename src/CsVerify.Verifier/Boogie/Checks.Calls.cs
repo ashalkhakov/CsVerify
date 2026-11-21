@@ -440,6 +440,13 @@ namespace CsVerify.Verifier.Boogie
                 {
                     Assert(NotNull(args[k]), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
                 }
+                if (param != null && param.RefKind != RefKind.Out)
+                {
+                    foreach (var part in MathTypes.NotNullParts(args[k], param.Type))
+                    {
+                        Assert(NotNull(part), At("CSV1014", at[k], $"'{at[k]}' might hold null, but its members of parameter '{param.Name}' of '{callee.Name}' are not nullable"));
+                    }
+                }
             }
             return args;
         }
