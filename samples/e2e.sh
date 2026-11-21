@@ -111,6 +111,14 @@ PROJECT
 printf 'using Microsoft.Extensions.Logging;\nusing Shop.Core;\nnamespace Shop.Rows;\npublic static class Rows\n{\n    public static long RowOf(Row r) => r.Id;\n    public static bool Loud(LogLevel level) => level >= LogLevel.Warning;\n}\n' > Shop.Rows/Rows.cs
 dotnet build Shop.Rows -p:CsVerifyEnabled=true | tee rows.txt
 grep -F "csverify: 2 of 2 methods verified" rows.txt
+# (Shop.Core's implementation assembly, not its reference assembly, which has no backing fields: #86)
+# (Windows' paths have backslashes: as slashes)
+tr '\\' '/' < Shop.Rows/obj/Debug/net10.0/csverify.rsp > rsp.txt
+grep -E "Shop\.Core/bin/Debug/net10\.0/Shop\.Core\.dll" rsp.txt
+if grep -E "/ref/Shop\.Core\.dll" rsp.txt; then
+    echo "error: the verifier was given Shop.Core's reference assembly" >&2
+    exit 1
+fi
 dotnet build Shop.Rows -p:CsVerifyErase=true
 
 echo "e2e: OK"

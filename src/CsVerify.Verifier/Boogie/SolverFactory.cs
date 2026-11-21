@@ -22,6 +22,10 @@ namespace CsVerify.Verifier.Boogie
     /// Once every slot is lost, the run's threads and remaining solvers are idle and it waits for ever. Here a check
     /// or reset whose solver's output ends throws an IOException (Boogie: the procedure is skipped, so not verified),
     /// and a failed ping is a TimeoutException, on which Boogie closes the checker and releases its slot.
+    ///
+    /// A prover whose check or reset failed is never used again (#87): its abandoned check may still be running (it
+    /// adds the axioms of its condition), and the next procedure's would enumerate the same list ("Collection was
+    /// modified" in FlushAxioms). Its ping is a TimeoutException, so Boogie closes its checker, and makes another.
     /// </remarks>
     internal sealed class SolverFactory : Factory
     {
@@ -69,18 +73,37 @@ namespace CsVerify.Verifier.Boogie
             {
             }
 
+            /// <summary>A check or reset of it failed: it isn't used again.</summary>
+            private volatile bool _broken;
+
             public override async Task<SolverOutcome> Check(string descriptiveName, VCExpr vc, ErrorHandler handler, int errorLimit, CancellationToken cancellationToken)
             {
-                var check = base.Check(descriptiveName, vc, handler, errorLimit, cancellationToken);
-                await UnlessDied(check, "the check of " + descriptiveName);
-                return await check;
+                try
+                {
+                    var check = base.Check(descriptiveName, vc, handler, errorLimit, cancellationToken);
+                    await UnlessDied(check, "the check of " + descriptiveName);
+                    return await check;
+                }
+                catch (Exception e) when (!(e is OperationCanceledException))
+                {
+                    _broken = true;
+                    throw;
+                }
             }
 
             public override async Task Reset(VCExpressionGenerator generator)
             {
-                var reset = base.Reset(generator);
-                await UnlessDied(reset, "a reset");
-                await reset;
+                try
+                {
+                    var reset = base.Reset(generator);
+                    await UnlessDied(reset, "a reset");
+                    await reset;
+                }
+                catch (Exception e) when (!(e is OperationCanceledException))
+                {
+                    _broken = true;
+                    throw;
+                }
             }
 
             /// <summary>Once the work is done, or an IOException once its solver's output ends first.</summary>
@@ -104,6 +127,10 @@ namespace CsVerify.Verifier.Boogie
 
             public override async Task GoBackToIdle()
             {
+                if (_broken)
+                {
+                    throw new TimeoutException("its last check failed: not used again");
+                }
                 try
                 {
                     await base.GoBackToIdle();
