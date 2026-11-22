@@ -592,6 +592,69 @@ public static class Uses
         }
 
         [Fact]
+        public void AClassImplementingAReferencedInterface_IsOfTheSubset()
+        {
+            // (#106: its members are the class's own methods; a call through the interface may run any implementation)
+            var r = Harness.VerifyWithLibrary(@"namespace Lib { public interface IMarker { } public interface IRepo { int Get(int x); } }", @"using Lib;
+public sealed class Counter { public int N; }
+public sealed class Marked : IMarker
+{
+    public int Plain(int x) => x + 0;
+}
+public sealed class Repo : IRepo
+{
+    private readonly Counter c;
+    public Repo(Counter c) { this.c = c; }
+    public int Get(int x) { c.N = 5; return 1; }
+}
+public sealed class Strict : IRepo
+{
+    public int Get(int x) { Spec.Requires(x < 10); return x + 1; }
+}
+public static class Uses
+{
+    public static void Forgets(IRepo r, Counter c) { c.N = 1; r.Get(0); Spec.Assert(c.N == 1); }
+    public static void Unknown(IRepo r) { var v = r.Get(0); Spec.Assert(v == 1); }
+    public static int Direct(Repo r) => r.Get(1);
+}");
+            Assert.True(r.Errors("Plain").Length == 0, r.Explain("Plain"));
+            Assert.True(r.Errors("Repo.Get").Length == 0, r.Explain("Repo.Get"));
+            Assert.True(r.Errors("Direct").Length == 0, r.Explain("Direct"));
+            // (the library's interface promises nothing of its arguments: an implementation may not require more)
+            Assert.Equal(new[] { "CSV1018" }, r.Errors("Strict.Get"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Forgets"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Unknown"));
+        }
+
+        [Fact]
+        public void AClassOutsideTheSubset_SaysWhichInterface()
+        {
+            var r = Harness.Verify(@"public sealed class Ordered : IComparable<Ordered>
+{
+    public int Key;
+    public int CompareTo(Ordered? other) => 0;
+}");
+            Assert.Contains(r["CompareTo"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("implements System.IComparable<Ordered>"));
+        }
+
+        [Fact]
+        public void ALibraryInterfaceParameter_IsAReference()
+        {
+            // (#107: stored, it is a reference; a call through it is a library call, which may run the program's code)
+            var r = Harness.Verify(@"public sealed class Counter { public int N; }
+public sealed class Scoped
+{
+    private readonly IServiceProvider services;
+    public Scoped(IServiceProvider services) => this.services = services;
+    public object? Service(Type t, Counter c) { c.N = 1; var s = services.GetService(t); Spec.Assert(c.N == 1); return s; }
+    public static void Null(IServiceProvider? p, Type t) { p!.GetService(t); }
+}");
+            Assert.True(r.Errors("Scoped..ctor").Length == 0, r.Explain("Scoped..ctor"));
+            Assert.Equal(new[] { "CSV1004" }, r.Errors("Service"));
+            Assert.Equal(new[] { "CSV1013" }, r.Errors("Null"));
+        }
+
+        [Fact]
         public void AnArrayAsAList_HasItsLengthAndCells()
         {
             var r = Harness.Verify(@"using System.Collections.Generic;

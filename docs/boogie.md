@@ -273,7 +273,9 @@ index is checked within its dimension (CSV1003, `index d in ...`), `Length` is t
 checks its sizes aren't negative (CSV1003) and fills its initializer's cells.
 
 **Objects.** A class of the program whose objects are plain mutable state (not generic, not a record, derived from
-`object`, with no virtual members or interfaces but `IEquatable<C>` of itself or a base, and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
+`object`, with no virtual members or interfaces but `IEquatable<C>` of itself or a base and a library's outside
+`System` (a referenced project's: its members are the class's own methods, checked against the interface's contract,
+which for a library's is none), and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
 no locks or atomics) is a `Ref`, as an array is. Each of its fields and auto-properties is a map `$F.C.f: [Ref]T`
 (Dafny's heap encoding); a static field is the map's value at `null`, the one object no reference aliases. An integer
 field's map has a `where` clause keeping every value in range.
@@ -622,6 +624,8 @@ it may change changes. A lambda of the library's own delegate type that it runs 
 (CSV1027); a `Func` or an `Action` run alongside (`Task.Run`, a continuation) is a task's (see Tasks). Its `ref` and `out` arguments and its
 result are values not known, not null where they're declared so; its receiver mustn't be null (CSV1013). A library
 object (`Random`) is a reference, its `new` a new one; an argument boxed to `object` for it is evaluated as what it is.
+So is a library interface, not generic, of none of the kernel's models (`IServiceProvider`, `IServiceScopeFactory`, a
+referenced project's): a call through it may run any implementation, the program's too, so it may change anything.
 Where exceptions are seen it may throw, once it has done what it does (a fork to the handlers). A collection's element
 written with a value that branches (`d[k] = c ? a : b`) is its setter's call, of its receiver and index as they are
 then. Under cell permissions (`Spec.Acc`), where it's handed only arrays, scalars and strings, all the cells of each

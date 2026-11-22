@@ -212,9 +212,9 @@ namespace CsVerify.Verifier.Boogie
         private static bool IsSpecType(ITypeSymbol t) =>
             IsView(t) || IsShare(t) || IsGhost(t) && InSubset(GhostOf(t)) || IsObjSet(t) || IsMemValue(t) || IsSeqValue(t) || IsSealedValue(t);
 
-        /// <summary>The library's the kernel models by what they do: cancellation tokens, tasks one is given, library objects, EF's transactions and factories, semaphores.</summary>
+        /// <summary>The library's the kernel models by what they do: cancellation tokens, tasks one is given, library objects and interfaces, EF's transactions and factories, semaphores.</summary>
         private static bool IsModeledLibraryType(ITypeSymbol t) =>
-            IsToken(t) || IsGivenTask(t) || IsLibraryObject(t) || IsEfTransaction(t) || IsEfFactory(t) || IsSemaphore(t);
+            IsToken(t) || IsGivenTask(t) || IsLibraryObject(t) || IsLibraryInterface(t) || IsEfTransaction(t) || IsEfFactory(t) || IsSemaphore(t);
 
         /// <summary>A GroupBy's group (IGrouping): the index in its source of its key's first element.</summary>
         public static bool IsLinqGroup(ITypeSymbol t) => t is INamedTypeSymbol { Name: "IGrouping", Arity: 2 } g && g.ContainingNamespace?.ToDisplayString() == "System.Linq";
@@ -755,6 +755,15 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { TypeKind: TypeKind.Class } n && n.DeclaringSyntaxReferences.Length == 0 && n.SpecialType == SpecialType.None &&
             n.ContainingNamespace?.ToDisplayString() is string ns && ns != SpecSymbols.Namespace && !ns.StartsWith("CsVerify") && !ModeledOtherwise(n);
 
+        /// <summary>
+        /// A library's interface, not generic, the kernel has no model of (IServiceProvider, an interface of a referenced
+        /// project): a reference, whose members are library calls that may run the program's code (its implementations).
+        /// </summary>
+        public static bool IsLibraryInterface(ITypeSymbol t) =>
+            t is INamedTypeSymbol { TypeKind: TypeKind.Interface, IsGenericType: false } n && n.DeclaringSyntaxReferences.Length == 0 &&
+            n.ContainingNamespace?.ToDisplayString() is string ns && !ns.StartsWith("CsVerify") && !ns.StartsWith("System.Collections") && !ns.StartsWith("System.Linq") &&
+            !IsEfTransaction(n);
+
         /// <summary>A library class the kernel models another way: a collection (or a generic one of System.Collections.Generic), an exception, a delegate, a string, a task, a semaphore.</summary>
         private static bool ModeledOtherwise(INamedTypeSymbol n) =>
             IsCollection(n) || IsException(n) || IsDelegate(n) || IsString(n) || IsGivenTask(n) || IsTaskLike(n) || IsSemaphore(n) || CollectionKind(n) != null ||
@@ -766,7 +775,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>The locks of the program (LockGuards: what guards what, the locks' invariants), for the run this thread is in.</summary>
         [System.ThreadStatic] public static LockGuards Locks;
 
-        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsSealedValue(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsSequence(t) || IsGenericCollection(t) || t?.SpecialType == SpecialType.System_Object;
+        public static bool IsRef(ITypeSymbol t) => IsArray(t) || IsMultiArray(t) || IsClass(t) || IsSealedValue(t) || IsInterface(t) || IsRefParameter(t) || IsCollection(t) || IsCollectionInterface(t) || IsLibraryObject(t) || IsLibraryInterface(t) || IsSequence(t) || IsGenericCollection(t) || t?.SpecialType == SpecialType.System_Object;
 
         /// <summary>
         /// An array, a sequence or a collection interface of a type parameter (a params T[], an IReadOnlyList&lt;T&gt;
@@ -1074,10 +1083,41 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsRecord: true, IsSealed: true } n && !IsData(n) && n.BaseType?.SpecialType == SpecialType.System_Object &&
             n.DeclaringSyntaxReferences.Length > 0;
 
-        /// <summary>Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's, an IEquatable of itself or a base; any, of an EF context.</summary>
-        private static bool InterfacesOfTheSubset(INamedTypeSymbol n) =>
-            n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i) ||
-                                     EquatableOf(n, i)) || IsContext(n);
+        /// <summary>
+        /// Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's, an IEquatable
+        /// of itself or a base, one of a library outside System (a referenced project's); any, of an EF context.
+        /// </summary>
+        private static bool InterfacesOfTheSubset(INamedTypeSymbol n) => IsContext(n) || n.AllInterfaces.All(i => InterfaceOfTheSubset(n, i));
+
+        private static bool InterfaceOfTheSubset(INamedTypeSymbol n, INamedTypeSymbol i) =>
+            IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i) ||
+            EquatableOf(n, i) || ImplementableLibraryInterface(i);
+
+        /// <summary>
+        /// A library's interface outside System (a referenced project's, say): its members are the class's own methods,
+        /// of their own contracts, which a call through it doesn't see (it may run any implementation). Not System's,
+        /// whose collections and comparers would call them (IComparable, IEqualityComparer).
+        /// </summary>
+        private static bool ImplementableLibraryInterface(INamedTypeSymbol i) =>
+            i.DeclaringSyntaxReferences.Length == 0 && i.ContainingNamespace?.ToDisplayString() is string ns && ns != "System" && !ns.StartsWith("System.") && !ns.StartsWith("CsVerify");
+
+        /// <summary>What puts a class of the program outside the subset, where it is one of its interfaces or its base (for CSV1902's message).</summary>
+        public static string WhyNotClass(ITypeSymbol t)
+        {
+            if (t is not INamedTypeSymbol n || !PlainClassOfTheProgram(n))
+            {
+                return null;
+            }
+            if (!InterfacesOfTheSubset(n) && n.AllInterfaces.FirstOrDefault(i => !InterfaceOfTheSubset(n, i)) is INamedTypeSymbol bad)
+            {
+                return "implements " + bad.ToDisplayString();
+            }
+            if (!BaseOfTheSubset(n))
+            {
+                return "derives from " + n.BaseType?.ToDisplayString();
+            }
+            return null;
+        }
 
         /// <summary>IEquatable&lt;C&gt; of the class or one of its bases: its Equals(C), what EqualityComparer&lt;C&gt;.Default calls (as an override of Equals(object)).</summary>
         private static bool EquatableOf(INamedTypeSymbol n, INamedTypeSymbol i)
