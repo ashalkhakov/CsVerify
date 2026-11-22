@@ -19,10 +19,35 @@
     <CsVerifyCommand Condition="'$(CsVerifyCommand)' == ''">dotnet csverify</CsVerifyCommand>
   </PropertyGroup>
 
+  <!--
+    A project's sources, for a project that references it: the verifier reads what they declare that the assembly
+    doesn't say (an Entity Framework context's configuration). The project's own, and those of the projects it
+    references (that have this target: that use CsVerify too), each tagged with its assembly's name.
+  -->
+  <PropertyGroup>
+    <_CsVerifySourcesDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings</_CsVerifySourcesDependsOn>
+  </PropertyGroup>
+  <Target Name="CsVerifyGetSources" DependsOnTargets="$(_CsVerifySourcesDependsOn);_CsVerifyReferenceSources" Returns="@(_CsVerifyOwnSource)">
+    <ItemGroup>
+      <_CsVerifyOwnSource Include="@(Compile->'%(FullPath)')" CsVerifyAssembly="$(AssemblyName)" />
+      <_CsVerifyOwnSource Include="@(_CsVerifyReferenceSource)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- the sources of the projects this one references, by the same properties their build was given (as ResolveProjectReferences does) -->
+  <Target Name="_CsVerifyReferenceSources" DependsOnTargets="PrepareProjectReferences">
+    <MSBuild Projects="@(_MSBuildProjectReferenceExistent)" Targets="CsVerifyGetSources" SkipNonexistentTargets="true" BuildInParallel="$(BuildInParallel)"
+             Properties="%(_MSBuildProjectReferenceExistent.SetConfiguration); %(_MSBuildProjectReferenceExistent.SetPlatform); %(_MSBuildProjectReferenceExistent.SetTargetFramework)"
+             RemoveProperties="%(_MSBuildProjectReferenceExistent.GlobalPropertiesToRemove)$(_GlobalPropertiesToRemoveFromProjectReferences)"
+             Condition="'@(_MSBuildProjectReferenceExistent)' != ''">
+      <Output TaskParameter="TargetOutputs" ItemName="_CsVerifyReferenceSource" />
+    </MSBuild>
+  </Target>
+
   <!-- (not test projects, which are not written to be proved, nor projects that set CsVerifyExclude) -->
-  <Target Name="CsVerify" AfterTargets="Build"
+  <Target Name="CsVerify" AfterTargets="Build" DependsOnTargets="_CsVerifyReferenceSources"
           Condition="'$(CsVerifyEnabled)' == 'true' and '$(IsTestProject)' != 'true' and '$(CsVerifyExclude)' != 'true'"
-          Inputs="@(Compile)" Outputs="$(IntermediateOutputPath)csverify.stamp">
+          Inputs="@(Compile);@(_CsVerifyReferenceSource)" Outputs="$(IntermediateOutputPath)csverify.stamp">
     <ItemGroup>
       <!-- the project's sources, the SDK's under obj/ too (global usings, assembly attributes); its source generators
            run in the verifier, whose generated code is compiled with the program, not verified -->
@@ -40,6 +65,7 @@
       <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
       <_CsVerifyArgs Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
+      <_CsVerifyArgs Include="@(_CsVerifyReferenceSource->'--reference-source %(CsVerifyAssembly)=%(Identity)')" />
       <_CsVerifyArgs Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
     </ItemGroup>
     <PropertyGroup>

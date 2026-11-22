@@ -545,6 +545,53 @@ public static class Cards
         }
 
         [Fact]
+        public void APropertyPattern_ReadsAComputedProperty()
+        {
+            // (#104: its getter called where the pattern so far matched; in a contract, a [Pure] one's function)
+            var r = Harness.Verify(@"public sealed class Account
+{
+    public string? Portfolio { get; private set; }
+    public bool IsOpen => Portfolio is not null;
+    [Pure] public bool Funded => Portfolio != null;
+}
+public static class Uses
+{
+    public static bool Pattern(Account? a) { Spec.Ensures<bool>(r => !r || a != null); return a is { IsOpen: true }; }
+    public static bool Two(Account? a) { Spec.Ensures<bool>(r => !r || a != null && a.Portfolio != null); return a is { IsOpen: true, Portfolio: { } }; }
+    public static bool Pure(Account? a) { Spec.Ensures<bool>(r => r == (a != null && a.Funded)); return a is { Funded: true }; }
+    public static bool InContract(Account? a) { Spec.Ensures<bool>(r => r == a is { Funded: true }); return a != null && a.Funded; }
+    public static int Switch(Account? a) { Spec.Ensures<int>(r => r == 0 || a != null && a.Portfolio != null); return a switch { { IsOpen: true } x when x.Portfolio != null => 1, _ => 0 }; }
+    public static bool Wrong(Account? a) { Spec.Ensures<bool>(r => r); return a is { IsOpen: true }; }
+}");
+            foreach (var ok in new[] { "Pattern", "Two", "Pure", "InContract", "Switch" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+            Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+        }
+
+        [Fact]
+        public void AClassEquatableToItself_IsOfTheSubset()
+        {
+            // (#104: its Equals(C) is what EqualityComparer<C>.Default calls, as an override of Equals(object) would be)
+            var r = Harness.Verify(@"using System.Collections.Generic;
+public enum Item { Opened, Funded }
+public sealed class Checklist : IEquatable<Checklist>
+{
+    private readonly Dictionary<Item, bool> done = new();
+    public bool this[Item item] => done[item];
+    public bool Equals(Checklist? other) => other is not null && done.Count == other.done.Count;
+}
+public static class Uses
+{
+    public static bool Opened(Checklist c) => c[Item.Opened];
+}");
+            Assert.True(r.Errors("Equals").Length == 0, r.Explain("Equals"));
+            Assert.True(r.Errors("Opened").Length == 0, r.Explain("Opened"));
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("get_Item"));
+        }
+
+        [Fact]
         public void AnArrayAsAList_HasItsLengthAndCells()
         {
             var r = Harness.Verify(@"using System.Collections.Generic;

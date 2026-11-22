@@ -24,6 +24,11 @@ Read from the sources, as EF reads them:
 - **Navigations:** properties of an entity type, or of a collection of one, and their foreign keys
   ([Tracking](#queries)).
 
+A context in a referenced project (the context and its configuration in one project, the queries in another) is read
+from that project's sources, which the MSBuild target passes (`--reference-source`) for each referenced project that
+uses CsVerify too: they are compiled on their own, and their model is the referenced assembly's types. Its query
+filters are left out, which only leaves less known of the rows.
+
 Fluent configuration is read in `OnModelCreating` and in `IEntityTypeConfiguration<T>.Configure`, whether `ApplyConfiguration`
 or `ApplyConfigurationsFromAssembly` applies it. A `Configure` that a configuration class inherits from a generic base
 (`KeyedConfiguration<T>`) is read for the class's entity, with the base's abstract members as the class overrides them,

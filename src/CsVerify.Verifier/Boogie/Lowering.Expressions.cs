@@ -764,6 +764,9 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             }
         }
 
+        /// <summary>What a property pattern matches, while its getter's call is lowered (the call's receiver).</summary>
+        private KExpr _patternInput;
+
         /// <summary>Expr of a instance reference: its forms, in order; any other as ExprOther.</summary>
         private KExpr ExprOfInstanceReference(IOperation e)
         {
@@ -775,6 +778,9 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
                 // non-nullable fields, CSV1015; the object goes on, as it is)
                 case IInstanceReferenceOperation ti when _p.IsCtor && ti.ReferenceKind == InstanceReferenceKind.ContainingTypeInstance:
                     return ThisInConstructor(ti);
+                // (a property pattern's receiver: what it matches)
+                case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.PatternInput } when _patternInput != null:
+                    return _patternInput;
                 case IInstanceReferenceOperation _:
                     throw new NotTranslated(_p.IsCtor ? "this, escaping its constructor" : "an instance reference");
                 default: return ExprOther(e);

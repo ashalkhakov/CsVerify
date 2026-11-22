@@ -273,7 +273,7 @@ index is checked within its dimension (CSV1003, `index d in ...`), `Length` is t
 checks its sizes aren't negative (CSV1003) and fills its initializer's cells.
 
 **Objects.** A class of the program whose objects are plain mutable state (not generic, not a record, derived from
-`object`, with no virtual members or interfaces, and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
+`object`, with no virtual members or interfaces but `IEquatable<C>` of itself or a base, and none of CsVerify's attributes: not `[Owned]`, no `[Invariant]`,
 no locks or atomics) is a `Ref`, as an array is. Each of its fields and auto-properties is a map `$F.C.f: [Ref]T`
 (Dafny's heap encoding); a static field is the map's value at `null`, the one object no reference aliases. An integer
 field's map has a `where` clause keeping every value in range.
@@ -753,7 +753,8 @@ called on another object is its function, which each `[Pure]` override defines f
 (`dtype(this) == T#D ==> f$B(..) == f$D(..)`).
 
 **Patterns.** Besides the null patterns: a class's property pattern (`p is { Age: >= 18 }`: not null, each field
-read unchecked); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`, `[>= 9, ..]`: not null, of the length,
+read unchecked; a computed property's getter, in code, called only where what is before it matched, and in a contract
+a `[Pure]` one's function); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`, `[>= 9, ..]`: not null, of the length,
 each element as its pattern says, those after a slice counted from the end; in code, a slice with a pattern of its own
 (`.. var rest`) matches a new array of the elements between, as C#'s `GetSubArray` makes; in a specification, which
 makes nothing, `rest` is the slice itself: its `Length` the count between, `rest[i]` `a[start + i]`, defined where
@@ -1270,7 +1271,8 @@ and reading collections through their interfaces.
 Also: delegates handed to library members (each element's precondition where the member calls it with the
 elements, Parallel.For's indices, totality otherwise), ref locals, `await foreach` over library streams, library
 awaits with and without stubs, tasks started inline in `Task.WhenAll` and in batches, library objects and tasks in
-fields, classes with an `Equals` of their own (an unknown equivalence), collections' `[Pure]` members and stubs'
+fields, classes with an `Equals` of their own (an override of `Equals(object)`, or `IEquatable<C>.Equals(C)`, which
+`EqualityComparer<C>.Default` calls: an unknown equivalence), collections' `[Pure]` members and stubs'
 `[Model]`s as functions of the models, `Zip`, `GroupJoin`, `RightJoin`, lazy queries kept in a local, explicit
 enumerators, the Spec library's trusted lemmas.
 

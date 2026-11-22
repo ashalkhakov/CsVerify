@@ -53,6 +53,36 @@ namespace CsVerify.Tests
             finally { try { File.Delete(path); } catch (IOException) { } }
         }
 
+        /// <summary>
+        /// A library of its own that uses EF Core (a project with the context and its configuration), compiled to an
+        /// assembly the program references, its sources passed as the MSBuild target passes them (--reference-source).
+        /// </summary>
+        public static VerificationResult VerifyEfWithContextLibrary(string library, string source)
+        {
+            var name = "CsVerifyEfContext" + Guid.NewGuid().ToString("N");
+            var dir = Path.Combine(Path.GetTempPath(), name);
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, "Context.cs");
+            File.WriteAllText(file, Usings.Replace("using CsVerify; ", "") + library);
+            var lib = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(name,
+                new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(file), path: file) },
+                Engine.FrameworkReferences().Concat(EfReferences().Select(r => MetadataReference.CreateFromFile(r))),
+                new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+            var path = Path.Combine(dir, name + ".dll");
+            var emit = lib.Emit(path);
+            Xunit.Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
+            try
+            {
+                var options = Options();
+                options.References.Add(path);
+                options.AddReferenceSource(name + "=" + file);
+                var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
+                Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
+                return result;
+            }
+            finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+        }
+
         public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));

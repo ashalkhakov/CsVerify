@@ -32,6 +32,8 @@ options:
   -a <analyzer.dll>   run the source generators of this analyzer assembly on the program (generated
                       code is compiled, not verified)
   --analyzer-config <file>  an .editorconfig or .globalconfig the generators read
+  --reference-source <assembly>=<file>  a source of a referenced project (repeatable; the MSBuild target passes
+                      them), read for its Entity Framework model: a context configured in that project
   --only <text>       verify only the methods whose name (Type.Method, or Outer.Type.Method) contains the
                       text (repeatable); the others are called by their contracts, not verified
   -v                  list every method with its proved obligations, and the library contracts
@@ -106,6 +108,9 @@ options:
                             break;
                         case "-a":
                             options.Analyzers.Add(args[++i]);
+                            break;
+                        case "--reference-source":
+                            options.AddReferenceSource(args[++i]);
                             break;
                         case "--analyzer-config":
                             options.AnalyzerConfigs.Add(args[++i]);

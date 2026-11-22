@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -144,15 +145,61 @@ namespace CsVerify.Verifier.Boogie
                         Bind(cl, v, mode);
                     }
                     KExpr cond = NotNull(v);
+                    // (a computed property: in a contract, its getter's function, where it is one; in code, its getter called where the
+                    // pattern so far matched, the whole pattern's value then in matched)
+                    string matched = null;
+                    var ifs = new List<IfBlocks>();
                     foreach (var sp in cp.PropertySubpatterns)
                     {
                         var member = sp.Member switch { IFieldReferenceOperation f => (ISymbol)f.Field, IPropertyReferenceOperation pr => pr.Property, _ => null };
+                        if (member is IPropertySymbol { IsStatic: false, GetMethod: IMethodSymbol getter } computed && IsComputed(computed) && !IsField(computed.OriginalDefinition) &&
+                            sp.Member is IPropertyReferenceOperation { Arguments.Length: 0 } read)
+                        {
+                            KExpr value;
+                            if (mode.InSpec && _isFunction(getter))
+                            {
+                                value = new KFnCall { Callee = getter, Receiver = v, ReceiverAt = sp.Syntax, Args = new KExpr[0], At = sp.Syntax };
+                            }
+                            else if (!mode.InSpec)
+                            {
+                                if (matched == null)
+                                {
+                                    matched = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Boolean));
+                                    Emit(KAssign.Of(matched, KLit.False));
+                                    // (what it matches as it is now: a getter may change what it was read from)
+                                    if (!(v is KVar))
+                                    {
+                                        var input = Declare("t$" + _temps++, type);
+                                        Emit(KAssign.Of(input, v));
+                                        v = new KVar(input);
+                                    }
+                                }
+                                ifs.Add(If(cond));
+                                cond = KLit.True;
+                                var outer = _patternInput;
+                                _patternInput = v;
+                                try
+                                {
+                                    value = Invoke(getter, read.Instance, read.Arguments, sp.Syntax, null);
+                                }
+                                finally
+                                {
+                                    _patternInput = outer;
+                                }
+                            }
+                            else
+                            {
+                                throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
+                            }
+                            cond = AndAlso(cond, PartPattern(sp.Pattern, value, computed.Type, mode));
+                            continue;
+                        }
                         if (member == null || member.IsStatic || !IsField(member.OriginalDefinition))
                         {
                             throw new NotTranslated("a property pattern of " + sp.Member.Syntax);
                         }
                         _p.AddField(member.OriginalDefinition);
-                        var read = new KField
+                        var field = new KField
                         {
                             Field = member.OriginalDefinition,
                             Instance = v,
@@ -160,9 +207,19 @@ namespace CsVerify.Verifier.Boogie
                             At = sp.Syntax,
                             InstanceAt = sp.Syntax,
                         };
-                        cond = AndAlso(cond, PartPattern(sp.Pattern, read, FieldType(member), mode));
+                        cond = AndAlso(cond, PartPattern(sp.Pattern, field, FieldType(member), mode));
                     }
-                    return cond;
+                    if (matched == null)
+                    {
+                        return cond;
+                    }
+                    Emit(KAssign.Of(matched, cond));
+                    for (int k = ifs.Count - 1; k >= 0; k--)
+                    {
+                        Else(ifs[k]);
+                        EndIf(ifs[k]);
+                    }
+                    return new KVar(matched);
                 }
                 // (a struct's property pattern, s is { F.G: 3 }, or a record struct's positional one, (3, var y): each member as
                 // its pattern says; a struct is never null)
