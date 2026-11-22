@@ -52,6 +52,28 @@ namespace CsVerify.Tests
             return result;
         }
 
+        /// <summary>Verifies the source against a library compiled from another source (a referenced project's assembly).</summary>
+        public static VerificationResult VerifyWithLibrary(string library, string source)
+        {
+            var name = "CsVerifyLibrary" + Guid.NewGuid().ToString("N");
+            var dir = Path.Combine(Path.GetTempPath(), name);
+            Directory.CreateDirectory(dir);
+            var lib = CSharpCompilation.Create(name, new[] { CSharpSyntaxTree.ParseText(library) }, Engine.FrameworkReferences(),
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+            var path = Path.Combine(dir, name + ".dll");
+            var emit = lib.Emit(path);
+            Xunit.Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
+            try
+            {
+                var options = new VerifierOptions { CheckOverflow = true };
+                options.References.Add(path);
+                var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
+                Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
+                return result;
+            }
+            finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+        }
+
         /// <summary>Error ids reported for one method (warnings excluded). The name must match one method only: which of
         /// several came first would depend on the order of the files, which differs between platforms.</summary>
         public static string[] Errors(this VerificationResult r, string method)

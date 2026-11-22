@@ -63,12 +63,13 @@ namespace CsVerify.Verifier
         public static string Render(VerificationResult result)
         {
             var sb = new StringBuilder();
-            var failures = result.Methods.SelectMany(m => m.Diagnostics).Where(d => d.IsError && d.Id != "CSV1901").ToList();
-            var unsupported = result.Methods.Where(m => m.Diagnostics.Any(d => d.Id == "CSV1901")).ToList();
+            // (an unsupported construct, or a method not translated or not decided: not verified, no obligation failed)
+            var failures = result.Methods.SelectMany(m => m.Diagnostics).Where(d => d.IsError && d.Id is not ("CSV1901" or "CSV1902")).ToList();
+            var unsupported = result.Methods.Where(m => m.Diagnostics.Any(d => d.Id is "CSV1901" or "CSV1902")).ToList();
             sb.AppendLine("library report");
             sb.AppendLine($"  {result.Methods.Count} methods: {result.Methods.Count(m => m.Verified)} verified, " +
                           $"{result.Methods.Count(m => !m.Verified && !unsupported.Contains(m))} with failed obligations, " +
-                          $"{unsupported.Count} not verified (unsupported constructs)");
+                          $"{unsupported.Count} not verified (CSV1901, CSV1902)");
             sb.AppendLine($"  {failures.Count} failed obligations");
 
             // library members: every one called without a contract, by the failures it causes, then by its calls
@@ -130,6 +131,8 @@ namespace CsVerify.Verifier
 
             Grouped(sb, "unsupported constructs (CSV1901): each leaves its method not verified",
                 result.Methods.SelectMany(m => m.Diagnostics).Where(d => d.Id == "CSV1901"));
+            Grouped(sb, "not verified (CSV1902): not translated, or not decided in time",
+                result.Methods.SelectMany(m => m.Diagnostics).Where(d => d.Id == "CSV1902"));
             Grouped(sb, "unknown values (CSV1900)",
                 result.Methods.SelectMany(m => m.Diagnostics).Where(d => d.Id == "CSV1900"));
             return sb.ToString();

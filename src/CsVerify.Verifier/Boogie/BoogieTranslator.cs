@@ -228,7 +228,7 @@ namespace CsVerify.Verifier.Boogie
             var t = m.ContainingType;
             if (!StaticContext(m) && !IsClass(t) && !IsInterface(t) && !EmptyDataConstructor(m))
             {
-                return "a member of " + t.Name + ", a type outside the subset";
+                return "a member of " + t.Name + ", a type outside the subset" + (WhyNotClass(t) is string why ? ": it " + why : "");
             }
             if (m.IsAsync && !IsTaskLike(m.ReturnType))
             {

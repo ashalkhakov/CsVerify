@@ -118,7 +118,7 @@ dotnet csverify --library-report corpus
 
 ```
 library report
-  21 methods: 7 verified, 13 with failed obligations, 1 not verified (unsupported constructs)
+  21 methods: 7 verified, 13 with failed obligations, 1 not verified (CSV1901, CSV1902)
   95 failed obligations
 
 library members without contracts, by the failures they cause
@@ -146,7 +146,8 @@ A failed obligation is charged to where the unknown values its condition mention
 A failure may have several causes, or none: the code's own arithmetic and checks over values it knows. The charge is
 a guide, not a proof: a fact can also go missing through a path condition (an `if` on a library result) that the
 failed condition does not mention. Below that come the failures by kind (diagnostic id), the unsupported constructs
-(CSV1901, each leaving its method unverified), and the unknown values (CSV1900), each grouped by message.
+(CSV1901) and the methods not translated or not decided (CSV1902), each leaving its method unverified, and the unknown values
+(CSV1900), each grouped by message.
 `corpus/report.sh` runs it on the [corpus](../corpus/README.md).
 
 **From MSBuild:** the `CsVerify` package brings the targets (`build/CsVerify.targets`), so a project referencing it is verified when built with:

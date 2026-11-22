@@ -62,6 +62,16 @@ public static class P
         }
 
         [Fact]
+        public void AMethodNotTranslated_IsNotVerified_NotAFailure()
+        {
+            var r = Harness.Verify("public static class N { public static Type T() => typeof(int); public static int F(int[] a) => a[0]; }");
+            var report = LibraryReport.Render(r).Replace("\r", "");
+            Assert.Contains("2 methods: 0 verified, 1 with failed obligations, 1 not verified", report);
+            Assert.Contains("  1 failed obligations", report);
+            Assert.Matches(@"not verified \(CSV1902\)[^\n]*\n\s+1\s+'…' is not verified: ", report);
+        }
+
+        [Fact]
         public void Results_OfSeparatePrograms_Combine()
         {
             var a = Harness.Verify("public static class A { public static int F(int[] a) => a[0]; }");

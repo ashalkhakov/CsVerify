@@ -504,13 +504,13 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>
         /// A library member called as a procedure: a plain one (not a [Pure] stub's, which is a function), of a stub's
         /// contract or none (its result unknown), where the effects analysis says what it may write, of the subset's
-        /// types, static or of a string, a library object or a token.
+        /// types, static or of a string, a library object or interface or a token.
         /// </summary>
         private bool LibraryStub(IMethodSymbol m) =>
             PlainLibraryMember(m) && _contractOf?.Invoke(m) is Contract c && (c.IsStub && c.Stub != null && (c.Modifies == null || c.Stub.IsAsync) || !c.IsStub && !c.HasSource) && !c.IsTrusted &&
             KernelTypes.MayWriteHeap != null && KernelTypes.RunsUserCode != null &&
             m.Parameters.All(x => (x.RefKind == RefKind.None || x.RefKind == RefKind.Out && c.IsStub) && InSubset(x.Type)) && (m.ReturnsVoid || InSubset(m.ReturnType)) &&
-            (m.IsStatic || IsString(m.ContainingType) || IsLibraryObject(m.ContainingType) || IsToken(m.ContainingType));
+            (m.IsStatic || IsString(m.ContainingType) || IsLibraryObject(m.ContainingType) || IsLibraryInterface(m.ContainingType) || IsToken(m.ContainingType));
 
         /// <summary>A library's method or getter, not a collection's, not a [Pure] stub's, not generic, not async.</summary>
         private bool PlainLibraryMember(IMethodSymbol m) =>
