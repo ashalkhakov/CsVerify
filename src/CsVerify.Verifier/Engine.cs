@@ -71,6 +71,31 @@ namespace CsVerify.Verifier
         public void AddOnly(string only) => Only.Add(only);
 
         public void AddReference(string reference) => References.Add(reference);
+
+        /// <summary>
+        /// The sources of referenced projects, by assembly name (--reference-source Assembly=file): read for what they declare
+        /// that the assembly doesn't say, their Entity Framework model (a context and its configuration in another project).
+        /// </summary>
+        public Dictionary<string, List<string>> ReferenceSources = new Dictionary<string, List<string>>();
+
+        /// <summary>Assembly=file, a source of a referenced project.</summary>
+        public void AddReferenceSource(string spec)
+        {
+            int at = spec.IndexOf('=');
+            if (at <= 0 || at == spec.Length - 1)
+            {
+                throw new ArgumentException("--reference-source takes Assembly=file: " + spec);
+            }
+            var (assembly, file) = (spec.Substring(0, at), spec.Substring(at + 1));
+            if (!ReferenceSources.TryGetValue(assembly, out var files))
+            {
+                ReferenceSources[assembly] = files = new List<string>();
+            }
+            if (!files.Contains(file))
+            {
+                files.Add(file);
+            }
+        }
         /// <summary>Is an obligation (or a diagnostic) with this id checked in the profile?</summary>
         internal bool Checked(string id) => CheckKinds == null || !(Verifier.Checks.KindOf(id) is string kind) || CheckKinds.Contains(kind);
     }
@@ -267,7 +292,7 @@ namespace CsVerify.Verifier
 
         internal IReadOnlyList<SyntaxTree> UserTrees { get; }
 
-        private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees)
+        private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees, IReadOnlyList<(Compilation, List<SyntaxTree>)> referenced = null)
         {
             UserTrees = userTrees.ToList();
             _compilation = compilation;
@@ -289,6 +314,16 @@ namespace CsVerify.Verifier
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
             Ef = EfModel.For(compilation, UserTrees, SourceTypes);
+            foreach (var (r, sources) in referenced ?? new List<(Compilation, List<SyntaxTree>)>())
+            {
+                var trees = sources.Where(t => !IsGenerated(t)).ToList();
+                var types = trees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
+                    .Select(d => r.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
+                if (Ef != null && EfModel.For(r, trees, types) is EfModel model)
+                {
+                    Ef.Include(model, compilation);
+                }
+            }
             MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type).Where(MetadataEntities.IsUserClass));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
@@ -930,7 +965,7 @@ namespace CsVerify.Verifier
             }
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
-            using var engine = new Engine(compilation, options, userTrees);
+            using var engine = new Engine(compilation, options, userTrees, ReferencedCompilations(compilation, options, parse, specTrees));
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
@@ -1942,6 +1977,26 @@ namespace CsVerify.Verifier
         /// <summary>Does the program reference Entity Framework Core (so its model is compiled in)?</summary>
         private static bool ReferencesEfCore(IEnumerable<MetadataReference> references) =>
             references.OfType<PortableExecutableReference>().Any(r => Path.GetFileName(r.FilePath ?? "") == "Microsoft.EntityFrameworkCore.dll");
+
+        /// <summary>
+        /// Each referenced project's sources (--reference-source), compiled on their own as that assembly, against this
+        /// program's references but the assembly itself (what isn't found there, a source generator's, is left unbound).
+        /// </summary>
+        private static List<(Compilation, List<SyntaxTree>)> ReferencedCompilations(CSharpCompilation compilation, VerifierOptions options, CSharpParseOptions parse, IEnumerable<SyntaxTree> specTrees)
+        {
+            var result = new List<(Compilation, List<SyntaxTree>)>();
+            foreach (var (assembly, files) in options.ReferenceSources)
+            {
+                var trees = files.Where(File.Exists).Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), parse, f)).ToList();
+                if (trees.Count == 0)
+                {
+                    continue;
+                }
+                var references = compilation.References.Where(r => !(compilation.GetAssemblyOrModuleSymbol(r) is IAssemblySymbol a && a.Identity.Name == assembly));
+                result.Add((CSharpCompilation.Create(assembly, trees.Concat(specTrees), references, compilation.Options), trees));
+            }
+            return result;
+        }
 
         private static IEnumerable<MetadataReference> References(VerifierOptions options)
         {

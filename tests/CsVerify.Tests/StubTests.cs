@@ -73,6 +73,9 @@ namespace CsVerify.Tests
             Assert.Empty(Errors("M", "static void M() { var l = new List<int>(); l.Add(5); l.Add(6); l.Reverse(); Spec.Assert(l[0] == 6 && l[1] == 5); }"));
             Assert.Equal(new[] { "CSV1001" }, Errors("M", "static void M(List<int> l) { Spec.Modifies(ObjSet.Of(l)); l.Insert(1, 0); }"));
             Assert.Equal(new[] { "CSV1004" }, Errors("M", "static void M(List<int> l) { Spec.Requires(l.Count == 2); Spec.Modifies(ObjSet.Of(l)); l.Sort(); Spec.Assert(l[0] <= l[1]); }"));
+            // (#103: a copy is a new object, which allocates: the path after it goes on)
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static int[] M() { Spec.Ensures<int[]>(r => false); var l = new List<int>(); l.Add(1); return l.ToArray(); }"));
+            Assert.Equal(new[] { "CSV1002" }, Errors("M", "static List<int> M() { Spec.Ensures<List<int>>(r => false); var l = new List<int>(); l.Add(1); return l.GetRange(0, 1); }"));
         }
 
         [Fact]

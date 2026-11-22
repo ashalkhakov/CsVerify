@@ -823,6 +823,34 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AContextOfAReferencedProject_IsReadFromItsSources()
+        {
+            // (#102: the context and its configuration in one project, the queries in another)
+            var r = EfHarness.VerifyEfWithContextLibrary(@"
+namespace Lib;
+public class Payee { public long Id { get; set; } public string Name { get; set; } = """"; }
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder) { modelBuilder.Entity<Payee>().HasIndex(p => p.Name).IsUnique(); }
+}", @"
+using Lib;
+public sealed class Store(Db db)
+{
+    public async Task<Payee?> ByName(string name) => await db.Set<Payee>().FirstOrDefaultAsync(p => p.Name == name);
+    public async Task<Payee?> After(long id) => await db.Set<Payee>().FirstOrDefaultAsync(p => p.Id > id);
+    public async Task<string> Named(long id)
+    {
+        var p = await db.Set<Payee>().AsNoTracking().SingleOrDefaultAsync(p => p.Id == id);
+        return p == null ? """" : p.Name;
+    }
+}");
+            Assert.True(r.Errors("ByName").Length == 0, r.Explain("ByName"));
+            Assert.True(r.Errors("Named").Length == 0, r.Explain("Named"));
+            Assert.Equal(new[] { "CSV1031" }, r.Errors("After"));
+            Assert.DoesNotContain(r.Diagnostics, d => d.Id is "CSV1900" or "CSV1902");
+        }
+
+        [Fact]
         public void AnAwait_KeepsOnlyTheColumnsTheMethodReaches()
         {
             // (#90: a method of one entity awaits and keeps that entity's columns only, not the whole model's)

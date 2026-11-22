@@ -242,7 +242,8 @@ namespace CsVerify.Verifier.Boogie
                 _p.Opaque = true;
                 return _p;
             }
-            // (a collection's member: its stub's contract alone; what it may change is its own collection's models, a new one's for a constructor)
+            // (a collection's member: its stub's contract alone; what it may change is its own collection's models, and $Alloc where it makes
+            // a new object: a constructor, or a stub whose result is fresh)
             if (IsCollection(_m.ContainingType))
             {
                 if (!_contract.IsStub)
@@ -259,7 +260,7 @@ namespace CsVerify.Verifier.Boogie
                         _p.AddAnyWrite(model.Name);
                     }
                 }
-                if (_p.ListCtor)
+                if (_p.ListCtor || _contract.StubFreshResult)
                 {
                     _p.AddModifies("$Alloc");
                     _p.AddAnyWrite("$Alloc");

@@ -881,7 +881,8 @@ namespace CsVerify.Verifier.Boogie
             }
             for (var s = n; s != null && s.SpecialType != SpecialType.System_Object; s = s.BaseType)
             {
-                if (s.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => m.IsOverride && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Object))
+                if (s.GetMembers("Equals").OfType<IMethodSymbol>().Any(m => m.IsOverride && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Object) ||
+                    s.Interfaces.Any(i => EquatableOf(s, i)))
                 {
                     return true;
                 }
@@ -1016,7 +1017,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>
         /// A library's collection interface a class of the program's may implement (IEnumerable, IReadOnlyList, ...): read
         /// through, it is unknown at each read (Lowering's Ifc), and its members are the class's own methods. Not those
-        /// that change what equality or order is (IEquatable, IComparer, ...), which collections would call.
+        /// that change what order is (IComparable, IComparer, ...), which collections would call; IEquatable is EquatableOf.
         /// </summary>
         public static bool IsLibraryCollectionInterface(INamedTypeSymbol i) =>
             i.DeclaringSyntaxReferences.Length == 0 && i.ContainingNamespace?.ToDisplayString() is "System.Collections" or "System.Collections.Generic" &&
@@ -1073,10 +1074,27 @@ namespace CsVerify.Verifier.Boogie
             t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsRecord: true, IsSealed: true } n && !IsData(n) && n.BaseType?.SpecialType == SpecialType.System_Object &&
             n.DeclaringSyntaxReferences.Length > 0;
 
-        /// <summary>Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's, a record's IEquatable of itself; any, of an EF context.</summary>
+        /// <summary>Its interfaces: the program's, IDisposable, an exception's ISerializable, a library collection's, an IEquatable of itself or a base; any, of an EF context.</summary>
         private static bool InterfacesOfTheSubset(INamedTypeSymbol n) =>
             n.AllInterfaces.All(i => IsInterface(i) || i.ToDisplayString() == "System.IDisposable" || i.ToDisplayString() == "System.Runtime.Serialization.ISerializable" && IsException(n) || IsLibraryCollectionInterface(i) ||
-                                     n.IsRecord && i.OriginalDefinition.ToDisplayString() == "System.IEquatable<T>" && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], n)) || IsContext(n);
+                                     EquatableOf(n, i)) || IsContext(n);
+
+        /// <summary>IEquatable&lt;C&gt; of the class or one of its bases: its Equals(C), what EqualityComparer&lt;C&gt;.Default calls (as an override of Equals(object)).</summary>
+        private static bool EquatableOf(INamedTypeSymbol n, INamedTypeSymbol i)
+        {
+            if (i.OriginalDefinition.ToDisplayString() != "System.IEquatable<T>")
+            {
+                return false;
+            }
+            for (var s = n; s != null; s = s.BaseType)
+            {
+                if (SymbolEqualityComparer.Default.Equals(i.TypeArguments[0].WithNullableAnnotation(NullableAnnotation.None), s))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         /// <summary>One of CsVerify's attributes on the class but [Owned], [RunsConcurrently] and the lock order's.</summary>
         private static bool HasSpecAttributes(INamedTypeSymbol n) =>

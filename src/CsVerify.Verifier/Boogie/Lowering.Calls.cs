@@ -1390,7 +1390,7 @@ namespace CsVerify.Verifier.Boogie
                 throw new NotTranslated("a call of " + callee.Name + " without its receiver");
             }
             var call = (Instance: instance, Syntax: at);
-            bool onThis = call.Instance is IInstanceReferenceOperation || localThis;
+            bool onThis = call.Instance is IInstanceReferenceOperation { ReferenceKind: not InstanceReferenceKind.PatternInput } || localThis;
             // (a ref or out argument is a variable, which gets what the callee gives back; an out one isn't read)
             var refOuts = ordered.Where(a => a.Parameter.RefKind is RefKind.Ref or RefKind.Out).Select(a => (a.Parameter.Ordinal, RefVariable(a))).ToList();
             // (two arguments by reference, one written, must not be the same: the callee's parameters are variables of their
