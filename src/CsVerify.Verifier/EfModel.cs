@@ -821,14 +821,18 @@ namespace CsVerify.Verifier
             switch (lambda.Body)
             {
                 case MemberAccessExpressionSyntax m:
-                    return One(m, lambda, model) is IPropertySymbol p ? new List<IPropertySymbol> { p } : null;
+                    return Of(e, One(m, lambda, model)) is IPropertySymbol p ? new List<IPropertySymbol> { p } : null;
                 case AnonymousObjectCreationExpressionSyntax a:
-                    var ps = a.Initializers.Select(i => One(i.Expression, lambda, model)).ToList();
+                    var ps = a.Initializers.Select(i => Of(e, One(i.Expression, lambda, model))).ToList();
                     return ps.All(p => p != null) && ps.Count > 0 ? ps : null;
                 default:
                     return null;
             }
         }
+
+        /// <summary>The entity's property a lambda names: an interface's (a generic configuration's, over T : IHasId) is its implementation.</summary>
+        private static IPropertySymbol Of(Entity e, IPropertySymbol p) =>
+            p?.ContainingType?.TypeKind == TypeKind.Interface && e?.Type != null ? e.Type.FindImplementationForInterfaceMember(p) as IPropertySymbol : p;
 
         private static IPropertySymbol One(ExpressionSyntax x, SimpleLambdaExpressionSyntax lambda, SemanticModel model) =>
             x is MemberAccessExpressionSyntax m && m.Expression is IdentifierNameSyntax id && id.Identifier.Text == lambda.Parameter.Identifier.Text

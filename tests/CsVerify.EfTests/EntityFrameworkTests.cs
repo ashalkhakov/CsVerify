@@ -1093,6 +1093,65 @@ public static class C
         }
 
         [Fact]
+        public void AKeyAGenericBaseConfigurationSets_IsTheEntitysKey_AndAColumnOnlyWrittenIsDeclared()
+        {
+            // (#100: HasKey(c => c.Id) over T : IHasId names the entity's Id, which implements IHasId.Id; Provider is
+            // only written)
+            var r = VerifyEfWithLibrary(@"namespace Lib
+{
+    public interface IHasId { long Id { get; set; } }
+    public class Card : IHasId
+    {
+        public long Id { get; set; }
+        public string Provider { get; set; } = """";
+    }
+    public class Wallet
+    {
+        public long Id { get; set; }
+        public string Provider { get; set; } = """";
+    }
+}", @"using Lib;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfiguration(new CardConfiguration());
+        modelBuilder.Entity<Wallet>(b => b.HasKey(w => w.Id));
+    }
+}
+public abstract class BaseConfiguration<T> : IEntityTypeConfiguration<T> where T : class, IHasId
+{
+    public virtual void Configure(EntityTypeBuilder<T> builder) => builder.HasKey(c => c.Id);
+}
+public sealed class CardConfiguration : BaseConfiguration<Card> { }
+public sealed class Store(Db db)
+{
+    public long AddCard(string provider)
+    {
+        var card = new Card { Provider = provider };
+        db.Set<Card>().Add(card);
+        return card.Id;
+    }
+    public long AddWallet(string provider)
+    {
+        var wallet = new Wallet { Provider = provider };
+        db.Set<Wallet>().Add(wallet);
+        return wallet.Id;
+    }
+    public void AddGiven(Card card)
+    {
+        Spec.Requires(card.Id == 0);
+        db.Set<Card>().Add(card);
+    }
+}");
+            foreach (var ok in new[] { "AddCard", "AddWallet", "AddGiven" })
+            {
+                Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
+            }
+        }
+
+        [Fact]
         public void AGetOnlyPropertyTheConfigurationNames_IsAColumn()
         {
             // (#93: EF maps a property without a setter where Property(...) names it)

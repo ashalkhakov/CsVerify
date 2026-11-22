@@ -29,7 +29,8 @@ or `ApplyConfigurationsFromAssembly` applies it. A `Configure` that a configurat
 (`KeyedConfiguration<T>`) is read for the class's entity, with the base's abstract members as the class overrides them,
 where each override is an expression-bodied lambda (`protected override Expression<Func<Transfer, long>> Key => x =>
 x.RowId;`); a key named by the member that lambda selects (`HasKey(((MemberExpression)Key.Body).Member.Name)`) is read
-too. `OnModelCreating` itself is not verified where it calls `ApplyConfiguration`, which runs the program's code.
+too, and so is one an interface's member names in a base over `T : IHasId` (`HasKey(c => c.Id)`): the entity's property
+that implements it. `OnModelCreating` itself is not verified where it calls `ApplyConfiguration`, which runs the program's code.
 
 ## Queries
 
