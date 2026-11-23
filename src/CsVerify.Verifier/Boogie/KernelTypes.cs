@@ -50,7 +50,7 @@ namespace CsVerify.Verifier.Boogie
             var found = new HashSet<SpecialType> { SpecialType.System_Int32 };
             foreach (var t in userTrees)
             {
-                var model = c.GetSemanticModel(t);
+                var model = c.ModelOf(t);
                 foreach (var n in t.GetRoot().DescendantNodes())
                 {
                     if (n is Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.TypeSyntax)
@@ -112,9 +112,9 @@ namespace CsVerify.Verifier.Boogie
 
         /// <summary>Does the program name an array of references (a type, or an array it makes)?</summary>
         public static bool NamesFloatArrays(Compilation c) =>
-            c.SyntaxTrees.Any(t =>
+            c.ProgramTrees().Any(t =>
             {
-                var model = c.GetSemanticModel(t);
+                var model = c.ModelOf(t);
                 return t.GetRoot().DescendantNodes().Any(n =>
                     (n is Microsoft.CodeAnalysis.CSharp.Syntax.ArrayTypeSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.ImplicitArrayCreationExpressionSyntax ||
                      n is Microsoft.CodeAnalysis.CSharp.Syntax.CollectionExpressionSyntax) &&
@@ -122,9 +122,9 @@ namespace CsVerify.Verifier.Boogie
             });
 
         public static bool NamesRefArrays(Compilation c) =>
-            c.SyntaxTrees.Any(t =>
+            c.ProgramTrees().Any(t =>
             {
-                var model = c.GetSemanticModel(t);
+                var model = c.ModelOf(t);
                 return t.GetRoot().DescendantNodes().Any(n =>
                     (n is Microsoft.CodeAnalysis.CSharp.Syntax.ArrayTypeSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.ImplicitArrayCreationExpressionSyntax ||
                      n is Microsoft.CodeAnalysis.CSharp.Syntax.CollectionExpressionSyntax || n is Microsoft.CodeAnalysis.CSharp.Syntax.AwaitExpressionSyntax) &&
@@ -248,7 +248,7 @@ namespace CsVerify.Verifier.Boogie
                 foreach (var r in m.DeclaringSyntaxReferences)
                 {
                     var node = r.GetSyntax();
-                    var model = Compilation.GetSemanticModel(node.SyntaxTree);
+                    var model = Compilation.ModelOf(node.SyntaxTree);
                     foreach (var n in node.DescendantNodes())
                     {
                         switch (n)
@@ -1074,9 +1074,13 @@ namespace CsVerify.Verifier.Boogie
             n.TypeKind == TypeKind.Class && !n.IsStatic && (!n.IsRecord || IsValueObject(n)) && !n.IsAnonymousType && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0;
 
-        /// <summary>Derived from object, or from a class of the subset, a library base or a library exception (an [Owned] one from object); or an EF context.</summary>
+        /// <summary>
+        /// Derived from object, or from a class of the subset, a library base or a library exception (an [Owned] one from
+        /// object); or an EF context; or an entity's library base (IdentityUser&lt;TKey&gt;: its auto-properties columns).
+        /// </summary>
         private static bool BaseOfTheSubset(INamedTypeSymbol n) =>
-            n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n);
+            n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n) ||
+            !SpecSymbols.IsOwned(n) && n.BaseType?.DeclaringSyntaxReferences.Length == 0 && MetadataEntities.IsEntity(n.BaseType);
 
         /// <summary>A sealed record class that isn't data (its state not positional): a class whose == compares its fields.</summary>
         public static bool IsValueObject(ITypeSymbol t) =>
@@ -1185,10 +1189,12 @@ namespace CsVerify.Verifier.Boogie
             s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) && !IsLockObject(s) && // (a lock's object: no state of the kernel's)
             (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && (!CsVerifyAttributes(s) || OnlyGuardedBy(s)) : IsClass(s.ContainingType) || MetadataEntities.IsEntity(s.ContainingType));
 
-        public static ITypeSymbol FieldType(ISymbol s) => s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
+        public static ITypeSymbol FieldType(ISymbol s) =>
+            MetadataEntities.Instantiated(s) is var i && !SymbolEqualityComparer.Default.Equals(i, s) ? (i is IFieldSymbol fi ? fi.Type : ((IPropertySymbol)i).Type)
+            : s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
 
         /// <summary>A field's map: object (null for a static field's one object) to value.</summary>
-        public static string FieldMap(ISymbol s) => "$F." + Ident(s.ContainingType.ToDisplayString() + "." + s.Name);
+        public static string FieldMap(ISymbol s) => "$F." + Ident(MetadataEntities.Instantiated(s).ContainingType.ToDisplayString() + "." + s.Name);
 
         /// <summary>The fields of a class an object of it has (the static ones aren't its).</summary>
         public static IEnumerable<ISymbol> InstanceFields(ITypeSymbol t)
@@ -1227,7 +1233,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var r in p.ContainingType.DeclaringSyntaxReferences)
             {
                 var node = r.GetSyntax();
-                var model = Compilation?.GetSemanticModel(node.SyntaxTree);
+                var model = Compilation?.ModelOf(node.SyntaxTree);
                 var targets = node.DescendantNodes().Select(n => n switch
                 {
                     AssignmentExpressionSyntax a => a.Left,
@@ -1287,7 +1293,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A parameter of a value converter's lambda (HasConversion): EF never gives it null.</summary>
         public static bool IsConverterParameter(IParameterSymbol p) =>
             p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn && fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax syntax && Compilation != null &&
-            Compilation.GetSemanticModel(syntax.SyntaxTree).GetOperation(syntax) is IAnonymousFunctionOperation op && Lowering.ConvertsForEf(op);
+            Compilation.ModelOf(syntax.SyntaxTree).GetOperation(syntax) is IAnonymousFunctionOperation op && Lowering.ConvertsForEf(op);
 
         public static bool IsQueryParameter(IParameterSymbol p) =>
             p.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } fn && !(fn.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is AnonymousFunctionExpressionSyntax) &&
@@ -1336,7 +1342,7 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Is the field assigned, or passed by reference, in this code (its type's)?</summary>
         private static bool Written(IFieldSymbol f, SyntaxNode code)
         {
-            var model = Compilation.GetSemanticModel(code.SyntaxTree);
+            var model = Compilation.ModelOf(code.SyntaxTree);
             foreach (var name in code.DescendantNodes().OfType<IdentifierNameSyntax>().Where(n => n.Identifier.Text == f.Name))
             {
                 SyntaxNode use = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma : name;
@@ -1362,7 +1368,7 @@ namespace CsVerify.Verifier.Boogie
                 v.Initializer?.Value is ImplicitArrayCreationExpressionSyntax || v.Initializer?.Value is CollectionExpressionSyntax ||
                 v.Initializer?.Value is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.StringLiteralExpression) ||
                 v.Initializer?.Value is InvocationExpressionSyntax call && Compilation != null &&
-                Compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol m && StaticChecks.IsNonNullableReturn(m));
+                Compilation.ModelOf(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol m && StaticChecks.IsNonNullableReturn(m));
 
         /// <summary>
         /// A class or interface whose objects have dynamic types (dtype, sub): not generic (its instantiations would share

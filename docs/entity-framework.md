@@ -13,7 +13,21 @@ Read from the sources, as EF reads them:
   (a domain project's). A referenced entity's auto-properties (the compiler's backing field beside them, read from the
   assembly) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
   internal members are seen where `InternalsVisibleTo` grants them. A property with code of its own is neither. A derived type has its base classes' properties, and its root's key, query
-  filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy.
+  filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy. An entity of the
+  program's may derive from a library's class (ASP.NET Core Identity's `IdentityUser<TKey>`): that class's
+  auto-properties are its columns, read from the assembly, of the instantiation it derives from (`Id`, a `long` of
+  `IdentityUser<long>`, the key by EF's convention), and a library context's `DbSet<T>` (`IdentityDbContext`'s
+  `Users`) is a table as the program's are.
+- **A library context's own configuration:** its `OnModelCreating` is the library's compiled code, which the verifier
+  doesn't read. The Spec library has it written out for ASP.NET Core Identity (`CsVerify.Ef.Identity`, a `[ModelOf]`
+  class for each of Identity's contexts that configures a model, read as the program's configuration is, with the
+  program's context's type arguments): the users' and roles' keys, their unique `NormalizedUserName` and
+  `NormalizedName`, their `ConcurrencyStamp` tokens, and the claims', logins', tokens' and user roles' keys. It is
+  trusted, as stubs are, and `IdentityModelTests` compares it with the model EF builds. An entity a library context
+  configures that no such model describes (a passkey's, which Identity maps by a schema version the program sets at
+  run time; any of another library's context) is read no further: no key is taken by convention, and `Attach`,
+  `Update` and a write of a column its library base declares aren't translated (CSV1902), as its concurrency tokens
+  and row versions aren't known.
 - **Owned and complex types** (`OwnsOne`, `OwnsMany`, `[Owned]`, `ComplexProperty`, `[ComplexType]`): columns of their
   owner, which EF always loads with it. They are neither entities nor navigations here, and nothing is said of them.
 - **Keys:** `[Key]`, `HasKey(x => x.P)`, `HasKey(x => new { x.A, x.B })`, `HasKey("P")` or `HasKey(nameof(T.P))`, or EF's
@@ -24,10 +38,10 @@ Read from the sources, as EF reads them:
 - **Navigations:** properties of an entity type, or of a collection of one, and their foreign keys
   ([Tracking](#queries)).
 
-A context in a referenced project (the context and its configuration in one project, the queries in another) is read
-from that project's sources, which the MSBuild target passes (`--reference-source`) for each referenced project that
-uses CsVerify too: they are compiled on their own, and their model is the referenced assembly's types. Its query
-filters are left out, which only leaves less known of the rows.
+A context in a referenced project (the context and its configuration in one project or two, the queries in another)
+is read as one of the program's: the MSBuild target describes each referenced project that uses CsVerify too
+(`--project-reference`), and the verifier compiles it as a project the program's compilation references
+([Running](running.md)).
 
 Fluent configuration is read in `OnModelCreating` and in `IEntityTypeConfiguration<T>.Configure`, whether `ApplyConfiguration`
 or `ApplyConfigurationsFromAssembly` applies it. A `Configure` that a configuration class inherits from a generic base
@@ -135,7 +149,8 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
 **Reported:**
 - **CSV1031**, keeping rows by their place in an order the database doesn't fix: `First`, `Last`, `ElementAt`, `Take`
   and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`), or at most
-  one row that matches (`FirstOrDefault(o => o.Id == id)`, proved).
+  one row that matches (`FirstOrDefault(o => o.Id == id)`, proved; a `Select` of the rows keeps their count, so
+  `Where(o => o.Id == id).Select(o => o.Number).FirstOrDefault()` too).
 - **CSV1032**, what EF can't translate to SQL: in a query's lambda, what depends on the row may read columns and
   navigations and call what EF translates (operators, string, `Math` and date members, LINQ over navigations and over
   lists passed in); a method of the program, or a property computed in C# or `[NotMapped]`, makes EF throw when the

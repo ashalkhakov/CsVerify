@@ -6,9 +6,10 @@ using Microsoft.CodeAnalysis;
 namespace CsVerify.Verifier
 {
     /// <summary>
-    /// Entity classes from referenced assemblies (a domain project's), as EF reads them: their auto-properties, which
-    /// the compiler gives a backing field (&lt;P&gt;k__BackingField) beside them, are heap fields, as a source class's
-    /// are; those with a setter (of any accessibility) are columns. A property with code of its own is neither.
+    /// Entity classes from referenced assemblies (a domain project's), and the library bases of the program's (Identity's
+    /// IdentityUser&lt;TKey&gt;), as EF reads them: their auto-properties, which the compiler gives a backing field
+    /// (&lt;P&gt;k__BackingField) beside them, are heap fields, as a source class's are; those with a setter (of any
+    /// accessibility) are columns. A property with code of its own is neither.
     /// </summary>
     internal sealed class MetadataEntities
     {
@@ -18,6 +19,12 @@ namespace CsVerify.Verifier
         public readonly HashSet<ISymbol> Fields = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public readonly HashSet<ISymbol> Columns = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         public readonly HashSet<ITypeSymbol> Types = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// A generic library base's instantiation the program's entities derive from (IdentityUser&lt;long&gt; of
+        /// IdentityUser&lt;TKey&gt;), where they derive from one only: its fields are that one's, of its types.
+        /// </summary>
+        public readonly Dictionary<ITypeSymbol, INamedTypeSymbol> Instantiations = new Dictionary<ITypeSymbol, INamedTypeSymbol>(SymbolEqualityComparer.Default);
 
         /// <summary>A class of a referenced assembly that could be an entity: not the framework's, nor a library's of Microsoft or System.</summary>
         public static bool IsUserClass(ITypeSymbol t) =>
@@ -31,7 +38,13 @@ namespace CsVerify.Verifier
             var m = new MetadataEntities();
             foreach (var e in entities)
             {
-                for (var b = e.OriginalDefinition; b != null && IsUserClass(b); b = b.BaseType?.OriginalDefinition)
+                // (a referenced assembly's entity, and its bases there; a library base, of an entity of the program's)
+                var first = IsUserClass(e) ? e.OriginalDefinition : e.Locations.Any(l => l.IsInSource) ? LibraryBase(e) : null;
+                if (first != null && first != e.OriginalDefinition)
+                {
+                    m.Instantiate(e);
+                }
+                for (var b = first; b != null && (IsUserClass(b) || first != e.OriginalDefinition && b.SpecialType == SpecialType.None); b = b.BaseType?.OriginalDefinition)
                 {
                     if (m.Types.Add(b))
                     {
@@ -40,6 +53,42 @@ namespace CsVerify.Verifier
                 }
             }
             return m;
+        }
+
+        private readonly HashSet<ITypeSymbol> _ambiguous = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+
+        private void Instantiate(INamedTypeSymbol e)
+        {
+            for (var b = e.BaseType; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
+            {
+                if (!b.IsGenericType || b.Locations.Any(l => l.IsInSource) || _ambiguous.Contains(b.OriginalDefinition))
+                {
+                    continue;
+                }
+                if (Instantiations.TryGetValue(b.OriginalDefinition, out var had) && !SymbolEqualityComparer.Default.Equals(had, b))
+                {
+                    Instantiations.Remove(b.OriginalDefinition);
+                    _ambiguous.Add(b.OriginalDefinition);
+                    continue;
+                }
+                Instantiations[b.OriginalDefinition] = b;
+            }
+        }
+
+        /// <summary>A member of a generic library base as its instantiation's (IdentityUser&lt;long&gt;.Id, of type long), where there is one.</summary>
+        public static ISymbol Instantiated(ISymbol s) =>
+            Current != null && s?.ContainingType is INamedTypeSymbol { IsGenericType: true } t && Current.Instantiations.TryGetValue(t.OriginalDefinition, out var c)
+                ? c.GetMembers(s.Name).FirstOrDefault(m => m.Kind == s.Kind) ?? s : s;
+
+        /// <summary>The first base of an entity of the program's that is a library's (Identity's IdentityUser&lt;TKey&gt;), or null.</summary>
+        private static INamedTypeSymbol LibraryBase(INamedTypeSymbol e)
+        {
+            var b = e.BaseType;
+            while (b != null && b.Locations.Any(l => l.IsInSource))
+            {
+                b = b.BaseType;
+            }
+            return b == null || b.SpecialType == SpecialType.System_Object ? null : b.OriginalDefinition;
         }
 
         private void Read(Compilation compilation, INamedTypeSymbol t)

@@ -498,7 +498,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return false;
             }
-            var model = (_model?.Compilation ?? KernelTypes.Compilation).GetSemanticModel(owner.SyntaxTree);
+            var model = (_model?.Compilation ?? KernelTypes.Compilation).ModelOf(owner.SyntaxTree);
             foreach (var id in owner.DescendantNodes().OfType<IdentifierNameSyntax>())
             {
                 if (id.Identifier.Text != s.Name || !SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, s))

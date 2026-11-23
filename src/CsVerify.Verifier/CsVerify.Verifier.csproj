@@ -31,6 +31,12 @@
     <EmbeddedResource Include="..\CsVerify.Spec\Bcl\*.cs" LogicalName="CsVerify.Spec.Bcl.%(Filename)%(Extension)" />
     <!-- and Entity Framework Core's model (CsVerify.Ef), compiled in only for programs that reference EF Core -->
     <EmbeddedResource Include="..\CsVerify.Spec\Ef\*.cs" LogicalName="CsVerify.Ef.%(Filename)%(Extension)" />
+    <!-- and ASP.NET Core Identity's model (CsVerify.EfIdentity), only for programs that reference its EF Core stores -->
+    <EmbeddedResource Include="..\CsVerify.Spec\Ef\Identity\*.cs" LogicalName="CsVerify.EfIdentity.%(Filename)%(Extension)" />
     <None Include="build\CsVerify.Verifier.targets" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- (the EF tests compare the model the verifier reads with the one EF builds: EfModelOf) -->
+    <InternalsVisibleTo Include="CsVerify.EfTests" />
   </ItemGroup>
 </Project>

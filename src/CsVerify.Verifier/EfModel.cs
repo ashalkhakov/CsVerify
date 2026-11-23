@@ -31,6 +31,12 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> RowVersions = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The properties the configuration names (Property, HasKey, HasAlternateKey): columns, a get-only one too.</summary>
             public HashSet<IPropertySymbol> Configured = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>
+            /// Configured by a library context's OnModelCreating that no model of the Spec library's describes: its key,
+            /// tokens and row versions there aren't known, so none is taken by convention, and what depends on its tokens
+            /// (Attach, Update, a write of a column of its library base) isn't translated.
+            /// </summary>
+            public bool Unread;
             /// <summary>The query filters (HasQueryFilter), each a lambda over the entity.</summary>
             public List<IAnonymousFunctionOperation> Filters = new List<IAnonymousFunctionOperation>();
             /// <summary>Navigations to one entity.</summary>
@@ -125,10 +131,19 @@ namespace CsVerify.Verifier
                         Add(e);
                     }
                 }
+                // (a library base's, of the program's classes: IdentityDbContext's Users)
+                foreach (var b in LibraryContexts(t))
+                {
+                    foreach (var e in DbSetsOf(b).Where(e => IsSourceClass(e, sourceTypes)))
+                    {
+                        Add(e);
+                    }
+                }
             }
-            // configured types are entity types too: modelBuilder.Entity<T>(), and what is called on its builder
+            // configured types are entity types too: modelBuilder.Entity<T>(), and what is called on its builder; and a
+            // library context's, as the Spec library's model of it has it
             var configuration = Configuration(compilation, userTrees).Select(c => (c.tree, c.inv, c.builder, configuration: (INamedTypeSymbol)null))
-                .Concat(GenericConfiguration(compilation, sourceTypes)).ToList();
+                .Concat(GenericConfiguration(compilation, sourceTypes)).Concat(LibraryModels(compilation, sourceTypes)).ToList();
             foreach (var (tree, inv, builder, _) in configuration)
             {
                 if (builder.TypeArguments[0] is INamedTypeSymbol e)
@@ -138,7 +153,7 @@ namespace CsVerify.Verifier
             }
             foreach (var tree in userTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     if (inv.Expression is MemberAccessExpressionSyntax { Name: GenericNameSyntax { Identifier.Text: "Entity" } } &&
@@ -169,13 +184,14 @@ namespace CsVerify.Verifier
             {
                 ReadAttributes(e);
             }
+            MarkUnread(compilation);
             foreach (var (tree, inv, builder, of) in configuration)
             {
                 ReadFluent(compilation, tree, inv, builder, of);
             }
             foreach (var e in _entities.Values)
             {
-                if (e.Key.Count == 0)
+                if (e.Key.Count == 0 && !e.Unread)
                 {
                     e.AddKey(ConventionKey(e.Type));
                 }
@@ -190,88 +206,6 @@ namespace CsVerify.Verifier
             Inherit();
             ReadRelationships();
         }
-
-        // ------------------------------------------------------------------ a referenced project's model
-
-        /// <summary>
-        /// The model a referenced project's sources declare (its contexts and their configuration, read in a compilation
-        /// of their own), in this compilation's symbols: the referenced assembly's types and properties of the same names.
-        /// An entity whose types or properties aren't all found there is left out (its queries aren't verified), as is
-        /// one this program's own configuration reads; query filters are left out (they only add what is known of rows).
-        /// </summary>
-        public void Include(EfModel referenced, Compilation compilation)
-        {
-            RelationalNulls |= referenced.RelationalNulls;
-            _providers.UnionWith(referenced._providers);
-            _collation |= referenced._collation;
-            var assemblies = compilation.SourceModule.ReferencedAssemblySymbols.GroupBy(a => a.Identity.Name).ToDictionary(g => g.Key, g => g.First());
-            INamedTypeSymbol Type(ITypeSymbol t) =>
-                t is INamedTypeSymbol { IsGenericType: false } n && n.ContainingAssembly != null && assemblies.TryGetValue(n.ContainingAssembly.Identity.Name, out var a)
-                    ? a.GetTypeByMetadataName(MetadataName(n)) : null;
-            IPropertySymbol Property(IPropertySymbol p) =>
-                Type(p.ContainingType)?.GetMembers(p.Name).OfType<IPropertySymbol>().FirstOrDefault(x => !x.IsIndexer && x.IsStatic == p.IsStatic);
-            foreach (var c in referenced.Contexts.Select(Type).Where(c => c != null))
-            {
-                Contexts.Add(c);
-            }
-            foreach (var o in referenced._owned.Select(Type).Where(o => o != null))
-            {
-                _owned.Add(o);
-            }
-            foreach (var r in referenced._entities.Values)
-            {
-                var type = Type(r.Type);
-                if (type == null || _entities.ContainsKey(type) || _owned.Contains(type))
-                {
-                    continue;
-                }
-                bool all = true;
-                List<IPropertySymbol> Map(IEnumerable<IPropertySymbol> ps)
-                {
-                    var mapped = ps.Select(Property).ToList();
-                    all &= !mapped.Contains(null);
-                    return mapped;
-                }
-                var e = new Entity
-                {
-                    Type = type,
-                    Key = Map(r.Key),
-                    Unique = r.Unique.Select(Map).ToList(),
-                    Alternate = r.Alternate.Select(Map).ToList(),
-                    Tokens = Map(r.Tokens),
-                    References = Map(r.References),
-                    Collections = Map(r.Collections),
-                };
-                e.RowVersions.UnionWith(Map(r.RowVersions));
-                e.Configured.UnionWith(Map(r.Configured));
-                foreach (var (nav, fk) in r.ForeignKeys)
-                {
-                    var (n, k) = (Property(nav), Property(fk));
-                    all &= n != null && k != null;
-                    if (n != null && k != null)
-                    {
-                        e.ForeignKeys[n] = k;
-                    }
-                }
-                foreach (var (nav, fk) in r.CollectionKeys)
-                {
-                    var (n, k) = (Property(nav), Property(fk));
-                    all &= n != null && k != null;
-                    if (n != null && k != null)
-                    {
-                        e.CollectionKeys[n] = k;
-                    }
-                }
-                if (all)
-                {
-                    _entities[type] = e;
-                }
-            }
-        }
-
-        private static string MetadataName(INamedTypeSymbol t) =>
-            t.ContainingType != null ? MetadataName(t.ContainingType) + "+" + t.MetadataName
-            : t.ContainingNamespace == null || t.ContainingNamespace.IsGlobalNamespace ? t.MetadataName : t.ContainingNamespace.ToDisplayString() + "." + t.MetadataName;
 
         // ------------------------------------------------------------------ relationships
 
@@ -463,7 +397,7 @@ namespace CsVerify.Verifier
         {
             foreach (var tree in trees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>())
                 {
                     if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (Has(t, "OwnedAttribute") || Has(t, "ComplexTypeAttribute")))
@@ -504,7 +438,9 @@ namespace CsVerify.Verifier
         internal static IEnumerable<IPropertySymbol> PropertiesOf(INamedTypeSymbol t)
         {
             var seen = new HashSet<string>();
-            for (var b = t; b != null && (b.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(b)); b = b.BaseType)
+            // (and a library base's, as EF maps them: Identity's IdentityUser<TKey>)
+            bool entity = t.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(t);
+            for (var b = t; b != null && b.SpecialType != SpecialType.System_Object && entity; b = b.BaseType)
             {
                 foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
                 {
@@ -598,6 +534,94 @@ namespace CsVerify.Verifier
             }
         }
 
+        /// <summary>A context's library bases but DbContext (IdentityDbContext&lt;AppUser, ...&gt;), as the context instantiates them.</summary>
+        private IEnumerable<INamedTypeSymbol> LibraryContexts(INamedTypeSymbol t)
+        {
+            for (var b = t.BaseType; b != null && !SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, DbContextType); b = b.BaseType)
+            {
+                if (!b.Locations.Any(l => l.IsInSource))
+                {
+                    yield return b;
+                }
+            }
+        }
+
+        /// <summary>The entity types a class's own DbSet&lt;T&gt; properties name.</summary>
+        private static IEnumerable<INamedTypeSymbol> DbSetsOf(INamedTypeSymbol t) =>
+            t.GetMembers().OfType<IPropertySymbol>().Select(p => p.Type).OfType<INamedTypeSymbol>()
+                .Where(set => set.Name == "DbSet" && set.TypeArguments.Length == 1).Select(set => set.TypeArguments[0]).OfType<INamedTypeSymbol>();
+
+        /// <summary>Does the library context configure a model of its own (declare OnModelCreating)?</summary>
+        private static bool ConfiguresModel(INamedTypeSymbol b) => b.GetMembers("OnModelCreating").OfType<IMethodSymbol>().Any(m => !m.IsAbstract);
+
+        /// <summary>The Spec library's model of a library context (a [ModelOf] class), or null.</summary>
+        private static INamedTypeSymbol ModelOf(Compilation compilation, INamedTypeSymbol context)
+        {
+            var attribute = compilation.GetTypeByMetadataName("CsVerify.Ef.ModelOfAttribute");
+            if (attribute == null)
+            {
+                return null;
+            }
+            return Types(attribute.ContainingAssembly.GlobalNamespace).FirstOrDefault(m => m.Arity == context.Arity && m.GetAttributes().Any(a =>
+                SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute) && a.ConstructorArguments.FirstOrDefault().Value is INamedTypeSymbol of &&
+                SymbolEqualityComparer.Default.Equals(of.OriginalDefinition, context.OriginalDefinition)));
+        }
+
+        private static IEnumerable<INamedTypeSymbol> Types(INamespaceSymbol ns) =>
+            ns.GetTypeMembers().Concat(ns.GetNamespaceMembers().SelectMany(Types));
+
+        /// <summary>
+        /// The calls on an entity's builder in the Spec library's models of the contexts' library bases, each builder as
+        /// the context instantiates the base (EntityTypeBuilder&lt;TUser&gt; as EntityTypeBuilder&lt;AppUser&gt;).
+        /// </summary>
+        private IEnumerable<(SyntaxTree tree, InvocationExpressionSyntax inv, INamedTypeSymbol builder, INamedTypeSymbol configuration)> LibraryModels(
+            Compilation compilation, IReadOnlyList<INamedTypeSymbol> sourceTypes)
+        {
+            foreach (var b in sourceTypes.Where(t => IsContextType(t)).SelectMany(LibraryContexts).Where(ConfiguresModel).Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default))
+            {
+                if (!(ModelOf(compilation, b) is INamedTypeSymbol m) ||
+                    !(m.GetMembers("OnModelCreating").OfType<IMethodSymbol>().FirstOrDefault()?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is MethodDeclarationSyntax decl))
+                {
+                    continue;
+                }
+                _modeled.Add(b);
+                var model = compilation.ModelOf(decl.SyntaxTree);
+                foreach (var inv in decl.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                {
+                    if (inv.Expression is MemberAccessExpressionSyntax ma && model.GetTypeInfo(ma.Expression).Type is INamedTypeSymbol { Name: "EntityTypeBuilder", TypeArguments.Length: 1 } builder &&
+                        builder.TypeArguments[0] is ITypeParameterSymbol tp && tp.Ordinal < b.TypeArguments.Length && b.TypeArguments[tp.Ordinal] is INamedTypeSymbol entity &&
+                        IsSourceClass(entity, sourceTypes))
+                    {
+                        Add(entity);
+                        _stubbed.Add(entity);
+                        yield return (decl.SyntaxTree, inv, builder.OriginalDefinition.Construct(entity), null);
+                    }
+                }
+            }
+        }
+
+        /// <summary>The library contexts the Spec library has a model of, and the entities those models configure.</summary>
+        private readonly HashSet<INamedTypeSymbol> _modeled = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        private readonly HashSet<INamedTypeSymbol> _stubbed = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>
+        /// The entities a library context's OnModelCreating may configure that no model describes: its type arguments and
+        /// its own DbSets' (where it declares OnModelCreating), but those a model of the Spec library's configures.
+        /// </summary>
+        private void MarkUnread(Compilation compilation)
+        {
+            foreach (var b in Contexts.SelectMany(LibraryContexts).Where(ConfiguresModel))
+            {
+                foreach (var t in b.TypeArguments.OfType<INamedTypeSymbol>().Concat(DbSetsOf(b)))
+                {
+                    if (EntityOf(t) is Entity e && !(_modeled.Contains(b) && _stubbed.Contains(e.Type)))
+                    {
+                        e.Unread = true;
+                    }
+                }
+            }
+        }
+
         private static IEnumerable<ISymbol> AllMembers(INamedTypeSymbol t)
         {
             for (var b = t; b != null && b.Locations.Any(l => l.IsInSource); b = b.BaseType)
@@ -686,7 +710,7 @@ namespace CsVerify.Verifier
         {
             foreach (var tree in trees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var method in tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
                 {
                     if (!(method.Identifier.Text == "OnModelCreating" || method.Identifier.Text == "Configure"))
@@ -726,7 +750,7 @@ namespace CsVerify.Verifier
                     {
                         continue;
                     }
-                    var model = compilation.GetSemanticModel(decl.SyntaxTree);
+                    var model = compilation.ModelOf(decl.SyntaxTree);
                     foreach (var inv in decl.DescendantNodes().OfType<InvocationExpressionSyntax>())
                     {
                         if (inv.Expression is MemberAccessExpressionSyntax ma && model.GetTypeInfo(ma.Expression).Type is INamedTypeSymbol { Name: "EntityTypeBuilder", TypeArguments.Length: 1 })
@@ -757,7 +781,7 @@ namespace CsVerify.Verifier
                         if (SymbolEqualityComparer.Default.Equals(o.OriginalDefinition, member.OriginalDefinition) &&
                             p.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is PropertyDeclarationSyntax { ExpressionBody.Expression: LambdaExpressionSyntax lambda })
                         {
-                            return (compilation.GetSemanticModel(lambda.SyntaxTree), lambda);
+                            return (compilation.ModelOf(lambda.SyntaxTree), lambda);
                         }
                     }
                 }
@@ -807,7 +831,7 @@ namespace CsVerify.Verifier
         /// <summary>One call on an entity type's builder, and what is called on its result.</summary>
         private void ReadFluent(Compilation compilation, SyntaxTree tree, InvocationExpressionSyntax inv, INamedTypeSymbol builder, INamedTypeSymbol configuration = null)
         {
-            var model = compilation.GetSemanticModel(tree);
+            var model = compilation.ModelOf(tree);
             var e = EntityOf(builder.TypeArguments[0]);
             if (e == null)
             {
@@ -915,9 +939,23 @@ namespace CsVerify.Verifier
             }
         }
 
-        /// <summary>The entity's property a lambda names: an interface's (a generic configuration's, over T : IHasId) is its implementation.</summary>
-        private static IPropertySymbol Of(Entity e, IPropertySymbol p) =>
-            p?.ContainingType?.TypeKind == TypeKind.Interface && e?.Type != null ? e.Type.FindImplementationForInterfaceMember(p) as IPropertySymbol : p;
+        /// <summary>
+        /// The entity's property a lambda names: an interface's (a generic configuration's, over T : IHasId) is its
+        /// implementation; a base class's of another instantiation (a library model's, over TUser : IdentityUser&lt;TKey&gt;)
+        /// is the entity's own of the same definition.
+        /// </summary>
+        private static IPropertySymbol Of(Entity e, IPropertySymbol p)
+        {
+            if (p?.ContainingType?.TypeKind == TypeKind.Interface && e?.Type != null)
+            {
+                return e.Type.FindImplementationForInterfaceMember(p) as IPropertySymbol;
+            }
+            if (p != null && e?.Type != null && p.ContainingType?.IsGenericType == true)
+            {
+                return PropertiesOf(e.Type).FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.OriginalDefinition, p.OriginalDefinition)) ?? p;
+            }
+            return p;
+        }
 
         private static IPropertySymbol One(ExpressionSyntax x, SimpleLambdaExpressionSyntax lambda, SemanticModel model) =>
             x is MemberAccessExpressionSyntax m && m.Expression is IdentifierNameSyntax id && id.Identifier.Text == lambda.Parameter.Identifier.Text

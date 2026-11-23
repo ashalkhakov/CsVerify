@@ -30,7 +30,7 @@ namespace CsVerify.Verifier
             var candidates = new List<INamedTypeSymbol>();
             foreach (var tree in userTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<RecordDeclarationSyntax>())
                 {
                     if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (t.TypeKind == TypeKind.Class || SpecSymbols.IsLinearPackage(t)))

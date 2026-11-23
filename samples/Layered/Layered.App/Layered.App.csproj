@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- the application's code: verified, every method of it -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <CsVerifyVersion Condition="'$(CsVerifyVersion)' == ''">0.5.21</CsVerifyVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" />
+    <ProjectReference Include="../Layered.Data/Layered.Data.csproj" />
+  </ItemGroup>
+</Project>

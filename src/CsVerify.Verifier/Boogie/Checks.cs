@@ -95,11 +95,11 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         internal static string NullReasons(SyntaxNode what)
         {
-            if (what == null || KernelTypes.Compilation == null || what.SyntaxTree == null || !KernelTypes.Compilation.SyntaxTrees.Contains(what.SyntaxTree))
+            if (what == null || KernelTypes.Compilation == null || what.SyntaxTree == null || !KernelTypes.Compilation.HoldsTree(what.SyntaxTree))
             {
                 return "";
             }
-            var model = KernelTypes.Compilation.GetSemanticModel(what.SyntaxTree);
+            var model = KernelTypes.Compilation.ModelOf(what.SyntaxTree);
             while (what is Microsoft.CodeAnalysis.CSharp.Syntax.ParenthesizedExpressionSyntax pe)
             {
                 what = pe.Expression;

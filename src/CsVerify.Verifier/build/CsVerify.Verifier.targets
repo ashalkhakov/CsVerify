@@ -20,53 +20,73 @@
   </PropertyGroup>
 
   <!--
-    A project's sources, for a project that references it: the verifier reads what they declare that the assembly
-    doesn't say (an Entity Framework context's configuration). The project's own, and those of the projects it
-    references (that have this target: that use CsVerify too), each tagged with its assembly's name.
+    What the verifier compiles of a project: its sources (the SDK's under obj/ too: global usings, assembly attributes;
+    its source generators run in the verifier, whose code is compiled with the program, not verified), its references,
+    its generators and their configuration, its assembly name and its nullable context: what the compiler is given.
   -->
   <PropertyGroup>
-    <_CsVerifySourcesDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings</_CsVerifySourcesDependsOn>
+    <_CsVerifyProjectDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings</_CsVerifyProjectDependsOn>
   </PropertyGroup>
-  <Target Name="CsVerifyGetSources" DependsOnTargets="$(_CsVerifySourcesDependsOn);_CsVerifyReferenceSources" Returns="@(_CsVerifyOwnSource)">
-    <ItemGroup>
-      <_CsVerifyOwnSource Include="@(Compile->'%(FullPath)')" CsVerifyAssembly="$(AssemblyName)" />
-      <_CsVerifyOwnSource Include="@(_CsVerifyReferenceSource)" />
-    </ItemGroup>
-  </Target>
-
-  <!-- the sources of the projects this one references, by the same properties their build was given (as ResolveProjectReferences does) -->
-  <Target Name="_CsVerifyReferenceSources" DependsOnTargets="PrepareProjectReferences">
-    <MSBuild Projects="@(_MSBuildProjectReferenceExistent)" Targets="CsVerifyGetSources" SkipNonexistentTargets="true" BuildInParallel="$(BuildInParallel)"
-             Properties="%(_MSBuildProjectReferenceExistent.SetConfiguration); %(_MSBuildProjectReferenceExistent.SetPlatform); %(_MSBuildProjectReferenceExistent.SetTargetFramework)"
-             RemoveProperties="%(_MSBuildProjectReferenceExistent.GlobalPropertiesToRemove)$(_GlobalPropertiesToRemoveFromProjectReferences)"
-             Condition="'@(_MSBuildProjectReferenceExistent)' != ''">
-      <Output TaskParameter="TargetOutputs" ItemName="_CsVerifyReferenceSource" />
-    </MSBuild>
-  </Target>
-
-  <!-- (not test projects, which are not written to be proved, nor projects that set CsVerifyExclude) -->
-  <Target Name="CsVerify" AfterTargets="Build" DependsOnTargets="_CsVerifyReferenceSources"
-          Condition="'$(CsVerifyEnabled)' == 'true' and '$(IsTestProject)' != 'true' and '$(CsVerifyExclude)' != 'true'"
-          Inputs="@(Compile);@(_CsVerifyReferenceSource)" Outputs="$(IntermediateOutputPath)csverify.stamp">
-    <ItemGroup>
-      <!-- the project's sources, the SDK's under obj/ too (global usings, assembly attributes); its source generators
-           run in the verifier, whose generated code is compiled with the program, not verified -->
-      <_CsVerifySource Include="@(Compile)" />
-    </ItemGroup>
+  <Target Name="_CsVerifyProjectArgs" DependsOnTargets="ResolveReferences;$(_CsVerifyProjectDependsOn)">
     <ItemGroup>
       <_CsVerifyGenerator Include="@(Analyzer)" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />
       <!-- the project's references, but Microsoft.NETCore.App's (the verifier has its own) and CsVerify's (its sources
            come with the verifier); the other shared frameworks' (ASP.NET Core's) are passed as a package's are. A
            project reference's implementation assembly, not its reference assembly: that has no private members, so
-           no backing fields, by which the verifier knows a referenced entity's auto-properties (its columns) -->
+           no backing fields, by which the verifier knows an entity's auto-properties (its columns) of a project that
+           isn't described to it -->
       <_CsVerifyReference Include="@(ReferencePath)" Condition="'%(ReferencePath.FrameworkReferenceName)' != 'Microsoft.NETCore.App' And '%(Filename)' != 'CsVerify.Spec' And '%(Filename)' != 'CsVerify'" />
       <!-- the project's assembly name, so that what InternalsVisibleTo grants the project is visible -->
-      <_CsVerifyArgs Include="--assembly-name $(AssemblyName)" />
-      <_CsVerifyArgs Include="@(_CsVerifySource->'%(FullPath)')" />
-      <_CsVerifyArgs Include="@(_CsVerifyReference->'-r %(FullPath)')" />
-      <_CsVerifyArgs Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
-      <_CsVerifyArgs Include="@(_CsVerifyReferenceSource->'--reference-source %(CsVerifyAssembly)=%(Identity)')" />
-      <_CsVerifyArgs Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
+      <_CsVerifyProjectArg Include="--assembly-name $(AssemblyName)" />
+      <_CsVerifyProjectArg Include="@(Compile->'%(FullPath)')" />
+      <_CsVerifyProjectArg Include="@(_CsVerifyReference->'-r %(FullPath)')" />
+      <_CsVerifyProjectArg Include="@(_CsVerifyGenerator->'-a %(FullPath)')" />
+      <_CsVerifyProjectArg Include="@(EditorConfigFiles->'--analyzer-config %(FullPath)')" Condition="Exists('%(FullPath)')" />
+    </ItemGroup>
+    <PropertyGroup>
+      <!-- the project's nullable context: its non-nullable reference types are contracts (unset means disabled) -->
+      <_CsVerifyNullable>$(Nullable)</_CsVerifyNullable>
+      <_CsVerifyNullable Condition="'$(_CsVerifyNullable)' == ''">disable</_CsVerifyNullable>
+    </PropertyGroup>
+  </Target>
+
+  <!--
+    A project as a project that references it gives it to the verifier (its option project-reference): a file of the
+    arguments above, which the verifier compiles as a project of its own, referenced by the other's compilation. It
+    and the projects it references (that have this target: that use CsVerify too), each with its sources, which the
+    verifier's run depends on.
+  -->
+  <Target Name="CsVerifyGetProject" DependsOnTargets="_CsVerifyProjectArgs;_CsVerifyReferencedProjects" Returns="@(_CsVerifyProject)">
+    <ItemGroup>
+      <_CsVerifyDescription Include="@(_CsVerifyProjectArg)" />
+      <_CsVerifyDescription Include="--nullable $(_CsVerifyNullable)" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)csverify.project.rsp" Lines="@(_CsVerifyDescription)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <_CsVerifyProject Include="$(ProjectDir)$(IntermediateOutputPath)csverify.project.rsp" CsVerifyKind="project" />
+      <_CsVerifyProject Include="@(Compile->'%(FullPath)')" CsVerifyKind="source" />
+      <_CsVerifyProject Include="@(_CsVerifyReferencedProject)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- the projects this one references, by the same properties their build was given (as ResolveProjectReferences does) -->
+  <Target Name="_CsVerifyReferencedProjects" DependsOnTargets="PrepareProjectReferences">
+    <MSBuild Projects="@(_MSBuildProjectReferenceExistent)" Targets="CsVerifyGetProject" SkipNonexistentTargets="true" BuildInParallel="$(BuildInParallel)"
+             Properties="%(_MSBuildProjectReferenceExistent.SetConfiguration); %(_MSBuildProjectReferenceExistent.SetPlatform); %(_MSBuildProjectReferenceExistent.SetTargetFramework)"
+             RemoveProperties="%(_MSBuildProjectReferenceExistent.GlobalPropertiesToRemove)$(_GlobalPropertiesToRemoveFromProjectReferences)"
+             Condition="'@(_MSBuildProjectReferenceExistent)' != ''">
+      <Output TaskParameter="TargetOutputs" ItemName="_CsVerifyReferencedProject" />
+    </MSBuild>
+  </Target>
+
+  <!-- (not test projects, which are not written to be proved, nor projects that set CsVerifyExclude) -->
+  <Target Name="CsVerify" AfterTargets="Build" DependsOnTargets="_CsVerifyProjectArgs;_CsVerifyReferencedProjects"
+          Condition="'$(CsVerifyEnabled)' == 'true' and '$(IsTestProject)' != 'true' and '$(CsVerifyExclude)' != 'true'"
+          Inputs="@(Compile);@(_CsVerifyReferencedProject)" Outputs="$(IntermediateOutputPath)csverify.stamp">
+    <ItemGroup>
+      <_CsVerifyArgs Include="@(_CsVerifyProjectArg)" />
+      <_CsVerifyProjectFile Include="@(_CsVerifyReferencedProject)" Condition="'%(CsVerifyKind)' == 'project'" />
+      <_CsVerifyArgs Include="@(_CsVerifyProjectFile->Distinct()->'--project-reference %(Identity)')" />
     </ItemGroup>
     <PropertyGroup>
       <CsVerifyCacheFile Condition="'$(CsVerifyCacheFile)' == ''">$(ProjectDir)$(IntermediateOutputPath)csverify.cache</CsVerifyCacheFile>
@@ -75,11 +95,6 @@
       <_CsVerifyArgs Include="--cache $(CsVerifyCacheFile)" />
     </ItemGroup>
     <WriteLinesToFile File="$(IntermediateOutputPath)csverify.rsp" Lines="@(_CsVerifyArgs)" Overwrite="true" />
-    <PropertyGroup>
-      <!-- the project's nullable context: its non-nullable reference types are contracts (unset means disabled) -->
-      <_CsVerifyNullable>$(Nullable)</_CsVerifyNullable>
-      <_CsVerifyNullable Condition="'$(_CsVerifyNullable)' == ''">disable</_CsVerifyNullable>
-    </PropertyGroup>
     <Exec Command="$(CsVerifyCommand) --nullable $(_CsVerifyNullable) $(CsVerifyArgs) @&quot;$(IntermediateOutputPath)csverify.rsp&quot;" />
     <Touch Files="$(IntermediateOutputPath)csverify.stamp" AlwaysCreate="true" />
   </Target>

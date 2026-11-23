@@ -199,6 +199,28 @@ public static class P
                 new VerifierOptions { CheckKinds = checks == null ? null : Checks.Parse(checks) });
 
         [Fact]
+        public void Checks_CountAMethodNotVerified_AsAWarning()
+        {
+            // (#112: a profile gates a build on what it checks; a method outside the subset is counted, not a failure)
+            const string source = @"
+public static class P
+{
+    public static Type T() => typeof(int);
+    public static int F(int[] a) => a.Length;
+}";
+            var all = VerifyWith(source, null);
+            Assert.Equal(new[] { "CSV1902" }, all.Errors("T"));
+            Assert.False(all.Success);
+            var contracts = VerifyWith(source, "contracts");
+            Assert.Empty(contracts.Errors("T"));
+            Assert.Contains(contracts["T"].Diagnostics, d => d.Id == "CSV1902" && !d.IsError);
+            Assert.True(contracts["T"].NotVerified);
+            Assert.False(contracts["T"].Verified);
+            Assert.True(contracts["F"].Verified);
+            Assert.True(contracts.Success);
+        }
+
+        [Fact]
         public void Checks_ProveOnlyTheirKinds_AndAssumeTheRest()
         {
             const string source = @"

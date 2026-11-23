@@ -52,13 +52,18 @@ namespace CsVerify.Tests
             return result;
         }
 
-        /// <summary>Verifies the source against a library compiled from another source (a referenced project's assembly).</summary>
-        public static VerificationResult VerifyWithLibrary(string library, string source)
+        /// <summary>
+        /// Verifies the source against a library compiled from another source (a referenced project's assembly); with
+        /// sources, given that project too (--project-reference), as the build targets give it.
+        /// </summary>
+        public static VerificationResult VerifyWithLibrary(string library, string source, bool sources = false)
         {
             var name = "CsVerifyLibrary" + Guid.NewGuid().ToString("N");
             var dir = Path.Combine(Path.GetTempPath(), name);
             Directory.CreateDirectory(dir);
-            var lib = CSharpCompilation.Create(name, new[] { CSharpSyntaxTree.ParseText(library) }, Engine.FrameworkReferences(),
+            var file = Path.Combine(dir, "Library.cs");
+            File.WriteAllText(file, library);
+            var lib = CSharpCompilation.Create(name, new[] { CSharpSyntaxTree.ParseText(library, path: file) }, Engine.FrameworkReferences().Append(MetadataReference.CreateFromFile(typeof(CsVerify.Spec).Assembly.Location)),
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
             var path = Path.Combine(dir, name + ".dll");
             var emit = lib.Emit(path);
@@ -67,6 +72,12 @@ namespace CsVerify.Tests
             {
                 var options = new VerifierOptions { CheckOverflow = true };
                 options.References.Add(path);
+                if (sources)
+                {
+                    var project = new ProjectReference { AssemblyName = name, Nullable = NullableContextOptions.Enable };
+                    project.Sources.Add(file);
+                    options.ProjectReferences.Add(project);
+                }
                 var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
                 Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
                 return result;

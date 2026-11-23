@@ -218,12 +218,12 @@ namespace CsVerify.Verifier
                 case SyntaxNode clause when method.MethodKind == MethodKind.AnonymousFunction:
                     // a query clause's lambda (select x + y, where p, let y = ...): its expression, without a specification
                     c.Declaration = clause;
-                    c.Model = compilation.GetSemanticModel(clause.SyntaxTree);
+                    c.Model = compilation.ModelOf(clause.SyntaxTree);
                     return c;
                 default: return c;
             }
             c.Declaration = syntax;
-            c.Model = compilation.GetSemanticModel(syntax.SyntaxTree);
+            c.Model = compilation.ModelOf(syntax.SyntaxTree);
             if (exprBody != null)
             {
                 if (isStub)

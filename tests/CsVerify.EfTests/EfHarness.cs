@@ -13,9 +13,10 @@ namespace CsVerify.Tests
         private const string Usings = "using System; using System.Diagnostics; using CsVerify; using System.Collections.Generic; using System.Linq; " +
                                       "using System.Threading; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore;\n";
 
-        /// <summary>EF Core's assemblies, and what they build on (not a provider's).</summary>
+        /// <summary>EF Core's assemblies, and what they build on (not a provider's), and ASP.NET Core Identity's stores.</summary>
         public static List<string> EfReferences(bool sqlite = false) => Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
             .Where(p => Path.GetFileName(p).StartsWith("Microsoft.EntityFrameworkCore") || Path.GetFileName(p).StartsWith("Microsoft.Extensions.") ||
+                        Path.GetFileName(p).StartsWith("Microsoft.AspNetCore.Identity") ||
                         sqlite && Path.GetFileName(p).StartsWith("Microsoft.Data.Sqlite"))
             .Where(p => sqlite || !Path.GetFileName(p).Contains("Sqlite"))
             .Where(p => !Path.GetFileName(p).Contains("SqlServer") && !Path.GetFileName(p).Contains("Design")).ToList();
@@ -55,9 +56,9 @@ namespace CsVerify.Tests
 
         /// <summary>
         /// A library of its own that uses EF Core (a project with the context and its configuration), compiled to an
-        /// assembly the program references, its sources passed as the MSBuild target passes them (--reference-source).
+        /// assembly the program references, and described as the MSBuild target describes it (--project-reference).
         /// </summary>
-        public static VerificationResult VerifyEfWithContextLibrary(string library, string source)
+        public static VerificationResult VerifyEfWithContextLibrary(string library, string source, bool sources = true)
         {
             var name = "CsVerifyEfContext" + Guid.NewGuid().ToString("N");
             var dir = Path.Combine(Path.GetTempPath(), name);
@@ -75,7 +76,14 @@ namespace CsVerify.Tests
             {
                 var options = Options();
                 options.References.Add(path);
-                options.AddReferenceSource(name + "=" + file);
+                // (without: a library's, read from its assembly alone)
+                if (sources)
+                {
+                    var project = new ProjectReference { AssemblyName = name, Nullable = NullableContextOptions.Enable };
+                    project.Sources.Add(file);
+                    project.References.AddRange(EfReferences());
+                    options.ProjectReferences.Add(project);
+                }
                 var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
                 Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
                 return result;
