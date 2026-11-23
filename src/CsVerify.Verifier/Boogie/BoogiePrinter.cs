@@ -777,14 +777,22 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             Line("function $nochange(d: Ref): bool;");
-            // (a state: the memory, a datatype of one constructor, each map of it a selector; a steady delegate is the
-            // same in all of them)
-            var ms = string.Join(", ", _stateMaps.Select(m => $"{m.name}: {m.type}"));
-            Line($"datatype St {{ $st({ms}) }}");
+            // (a state: the memory, each map of it given back by its projection, in one axiom whose let names the state
+            // once, so linear in the maps (#123); not a datatype, whose theory slows queries that never use it; a steady
+            // delegate is the same in all of them)
+            Line("type St;");
             Line("function $steady(d: Ref): bool;");
+            var ms = string.Join(", ", _stateMaps.Select(m => $"{m.name}: {m.type}"));
+            var mns = string.Join(", ", _stateMaps.Select(m => m.name));
+            Line($"function $st({ms}): St;");
             foreach (var m in _stateMaps)
             {
-                Line($"function {{:inline}} $st.{m.name}(s: St): {m.type} {{ s->{m.name} }}");
+                Line($"function $st.{m.name}(s: St): {m.type};");
+            }
+            if (_stateMaps.Count > 0)
+            {
+                var projections = string.Join(" && ", _stateMaps.Select(m => $"$st.{m.name}($s) == {m.name}"));
+                Line($"axiom (forall {ms} :: {{ $st({mns}) }} (var $s := $st({mns}); {projections}));");
             }
             if (UsesState)
             {
