@@ -287,7 +287,9 @@ namespace CsVerify.Verifier.Boogie
             }
             if (engine.ResolveAndTypecheck(parsed, "csverify.bpl", out _) != PipelineOutcome.ResolvedAndTypeChecked)
             {
-                throw new InvalidOperationException("the translated program doesn't type check:\n" + output);
+                // (Boogie's engine prints its errors elsewhere: its first, read again)
+                var first = TypeErrors(program.Text).FirstOrDefault();
+                throw new InvalidOperationException(($"the translated program doesn't type check: {first.message} (line {first.line})\n" + output).TrimEnd());
             }
             var failures = new List<(MethodResult, VerificationDiagnostic)>();
             var lines = new Dictionary<VerificationDiagnostic, int>();

@@ -762,7 +762,9 @@ a `[Pure]` one's function); an array's list pattern (`a is [1, .., 9]`, `[_, 0]`
 each element as its pattern says, those after a slice counted from the end; in code, a slice with a pattern of its own
 (`.. var rest`) matches a new array of the elements between, as C#'s `GetSubArray` makes; in a specification, which
 makes nothing, `rest` is the slice itself: its `Length` the count between, `rest[i]` `a[start + i]`, defined where
-`0 <= i < rest.Length` (CSV1012), nothing else of it; `a is [1, ..] b` binds `b` to the array); a string's constant pattern (`s is "a"`, a string's value).
+`0 <= i < rest.Length` (CSV1012), nothing else of it; `a is [1, ..] b` binds `b` to the array); a string's constant pattern (`s is "a"`, a string's value). A boxed value is an object of
+its own, its value not modeled: a pattern that tests an `object` (or an interface) as a value type unboxes it (`o is
+2601`, `o is int n`, `o is > 0`), and its method is not verified (CSV1902, unboxing).
 
 **Frames.** `Spec.Modifies(W)`, Dafny's dynamic frames: `W` is an `ObjSet` (`ObjSet.Empty`, `ObjSet.Of(x)`, `.Add(x)`,
 `.Union(s)`, `.Contains(x)`), a `[Ref]bool`. Its procedure writes a field or an array's cell only of an object in `W`

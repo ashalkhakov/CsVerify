@@ -99,6 +99,11 @@ namespace CsVerify.Verifier.Boogie
 
         private KExpr Pattern(IPatternOperation p, KExpr v, ITypeSymbol type, LowerMode mode)
         {
+            // (a boxed value is an object of its own, its value not modeled: a test of it as a value type unboxes)
+            if (Unboxes(p, type))
+            {
+                throw new NotTranslated("unboxing: the pattern " + p.Syntax + " of a value of type " + type);
+            }
             switch (p)
             {
                 case IDiscardPatternOperation _: return KLit.True;
@@ -359,6 +364,16 @@ namespace CsVerify.Verifier.Boogie
                 default: throw new NotTranslated("the pattern " + p.Kind);
             }
         }
+
+        private static bool Unboxes(IPatternOperation p, ITypeSymbol type) => type is { IsReferenceType: true } && p switch
+        {
+            IConstantPatternOperation c => c.Value.ConstantValue is { HasValue: true, Value: not null and not string },
+            IRelationalPatternOperation _ => true,
+            IDeclarationPatternOperation d => d.MatchedType is { IsValueType: true },
+            ITypePatternOperation t => t.MatchedType is { IsValueType: true },
+            IRecursivePatternOperation r => r.MatchedType is { IsValueType: true },
+            _ => false,
+        };
 
         private KExpr TypeTest(ITypeSymbol t, ITypeSymbol type, KExpr v)
         {

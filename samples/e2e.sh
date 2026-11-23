@@ -126,7 +126,12 @@ dotnet build Shop.Rows -p:CsVerifyErase=true
 # Shop, for its NuGet.config, its CsVerify version and its tools)
 cp -R "$repo/samples/Layered" Layered
 dotnet build Layered/Layered.App -p:CsVerifyEnabled=true 2>&1 | tee layered.txt
-grep -F "csverify: 17 of 17 methods verified" layered.txt
+grep -F "csverify: 18 of 18 methods verified" layered.txt
+# (App alone, the others built before: their descriptions as complete, Model's InternalsVisibleTo among them, #116)
+rm Layered/Layered.App/obj/Debug/net10.0/csverify.stamp
+dotnet build Layered/Layered.App --no-restore --no-dependencies -p:CsVerifyEnabled=true -p:CsVerifyCache=false 2>&1 | tee layered-alone.txt
+grep -F "csverify: 18 of 18 methods verified" layered-alone.txt
+grep -F "AssemblyInfo.cs" Layered/Layered.Model/obj/Debug/net10.0/csverify.project.rsp
 tr '\\' '/' < Layered/Layered.App/obj/Debug/net10.0/csverify.rsp > layered-rsp.txt
 grep -E -- "--project-reference .*Layered\.Model/obj/Debug/net10\.0/csverify\.project\.rsp" layered-rsp.txt
 grep -E -- "--project-reference .*Layered\.Data/obj/Debug/net10\.0/csverify\.project\.rsp" layered-rsp.txt

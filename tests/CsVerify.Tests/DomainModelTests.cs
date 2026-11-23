@@ -627,6 +627,37 @@ public static class Uses
         }
 
         [Fact]
+        public void APatternOverABoxedValue_IsNotVerified_Unboxing()
+        {
+            // (#118: a boxed value's value isn't modeled; the other methods verify as they would without it)
+            var r = Harness.Verify(@"public sealed class Account { public long Balance { get; set; } }
+public static class Failures
+{
+    public static bool IsDuplicate(Exception exception)
+    {
+        var number = exception.InnerException?.GetType().GetProperty(""Number"")?.GetValue(exception.InnerException);
+        return number is 2601 or 2627;
+    }
+    public static bool IsDuplicateTyped(object number) => number is int n && n is 2601 or 2627;
+    public static bool IsSmall(object number) => number is < 10;
+    public static bool IsNotOne(object number) => number is not 1;
+    public static bool IsText(object o) => o is ""text"";
+    public static void Credit(Account a, long amount)
+    {
+        Spec.Requires(amount > 0 && a.Balance >= 0 && a.Balance <= long.MaxValue - amount);
+        a.Balance += amount;
+        Spec.Assert(a.Balance > 0);
+    }
+}");
+            foreach (var m in new[] { "IsDuplicate", "IsDuplicateTyped", "IsSmall", "IsNotOne" })
+            {
+                Assert.Contains(r[m].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("unboxing"));
+            }
+            Assert.True(r.Errors("IsText").Length == 0, r.Explain("IsText"));
+            Assert.True(r.Errors("Credit").Length == 0, r.Explain("Credit"));
+        }
+
+        [Fact]
         public void AClassOutsideTheSubset_SaysWhichInterface()
         {
             var r = Harness.Verify(@"public sealed class Ordered : IComparable<Ordered>
