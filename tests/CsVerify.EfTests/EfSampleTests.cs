@@ -26,6 +26,24 @@ namespace CsVerify.Tests
         }
 
         [Fact]
+        public void GoodSample_VerifiesAlongsideOtherRuns()
+        {
+            // (runs at once, as parallel tests are: each program's compilations bind the same symbols, the Spec library's
+            // not retargeted by another's)
+            var bad = new System.Collections.Concurrent.ConcurrentBag<string>();
+            System.Threading.Tasks.Parallel.For(0, 16, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = 8 }, i =>
+            {
+                var r = VerifySamples("Good");
+                if (!r.Success)
+                {
+                    bad.Add(string.Join(" | ", r.Diagnostics.Select(d => d.Message)));
+                }
+                System.GC.Collect();
+            });
+            Assert.True(bad.IsEmpty, bad.Count + ": " + bad.FirstOrDefault());
+        }
+
+        [Fact]
         public void BuggySample_IsFlagged()
         {
             var r = VerifySamples("Buggy");

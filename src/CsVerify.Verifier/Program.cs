@@ -41,7 +41,8 @@ options:
                       ([ContractsFor] stubs, trusted) the proofs assumed
   --checks <kinds>    prove only these kinds of obligation, a comma-separated list of null, linear,
                       bounds, overflow, contracts (or all); the others are assumed, and counted.
-                      Within a profile an unsupported construct is a warning, its value unknown
+                      Within a profile an unsupported construct is a warning, its value unknown, and
+                      a method not verified (CSV1902) a warning too, counted
   --each              verify each argument as a program of its own (a comma joins paths into one), and
                       combine the results: for programs that cannot be compiled together
   --library-report    after the results, rank what the failures come from: library members without
@@ -187,7 +188,8 @@ options:
                       "" +
                       (options.CheckKinds != null ? $"; checks: {string.Join(",", Checks.All.Where(options.CheckKinds.Contains))}" +
                                                     $", {result.Methods.Sum(m => m.AssumedObligations)} obligation(s) outside them assumed" +
-                                                    $", {result.Methods.Sum(m => m.Unmodeled)} construct(s) not modeled" : ""));
+                                                    $", {result.Methods.Sum(m => m.Unmodeled)} construct(s) not modeled" +
+                                                    $", {result.Methods.Count(m => m.NotVerified)} method(s) not verified" : ""));
                 if (libraryReport && result.CompilationErrors.Count == 0)
                 {
                     Console.WriteLine();

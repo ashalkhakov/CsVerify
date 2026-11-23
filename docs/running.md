@@ -87,7 +87,7 @@ dotnet csverify --checks null corpus
 ```
 
 ```
-csverify: 21 of 21 methods verified, 1004/1004 obligations proved; checks: null, 1213 obligation(s) outside them assumed, 2 construct(s) not modeled
+csverify: 21 of 21 methods verified, 1004/1004 obligations proved; checks: null, 1213 obligation(s) outside them assumed, 2 construct(s) not modeled, 0 method(s) not verified
 ```
 
 | kind | what it proves |
@@ -105,7 +105,10 @@ analyzer (CSV0010–CSV0014), aliased by-reference arguments (CSV1020), and ill-
 Within a profile, a construct the verifier does not model is a warning (CSV1901, "not modeled: treated as unknown")
 instead of an error. Its value is unknown (not null, if its type is not nullable), and the method is verified around
 it. What the construct does (a write, say) is not checked. The summary counts these constructs, and the library report
-lists them. Without `--checks`, everything is proved, and an unsupported construct leaves its method unverified.
+lists them. A method that isn't verified at all (CSV1902: its body isn't translated, or Boogie couldn't decide it) is a
+warning too, so that a profile can gate a build on what it checks; the summary counts these methods ("method(s) not
+verified"), and they aren't among those verified. Without `--checks`, everything is proved, and an unsupported
+construct leaves its method unverified, an error.
 
 ## The library report
 
@@ -206,7 +209,7 @@ The verifier runs after `Build` on the project's `Compile` items, with the proje
 | CSV1025 | verifier | could deadlock: a lock taken, a call, or a wait while a lock is held might take a lock that isn't of a higher level (`[LockLevel]`), or wait for what only another thread can end; a lock taken out of its form; a `Monitor.Wait` holding another lock; blocking on async code that resumes on its context; one object leveled twice |
 | CSV1026 | verifier | a task an async method started in a local might not be awaited on every path, so a failure in it would be lost; or its `Result` is read before it is awaited |
 | CSV1901 | verifier | error: a construct the verifier cannot model soundly; the method is not verified |
-| CSV1902 | verifier | error: the method is not verified: its body isn't translated to Boogie (the message says what), or Boogie couldn't decide it in time |
+| CSV1902 | verifier | error (a warning within a [check profile](#check-profiles)): the method is not verified: its body isn't translated to Boogie (the message says what), or Boogie couldn't decide it in time |
 | CSV1027 | verifier | a field or array cell used by code that runs alongside other code, with no lock or permission for it |
 | CSV1028 | verifier | a method of the program that runs concurrently (started and not awaited in the same method, handed to a thread, or called by concurrent code), or a delegate type called by concurrent code, but isn't marked `[RunsConcurrently]` |
 | CSV1029 | verifier | a delegate handed to a library that may call it with any arguments (not just a list's elements, `Parallel.For`'s indices, or what a stub says), but that isn't known to accept them all (`Spec.Total`); a lambda's precondition that reads state without a `Spec.Reads` frame, or outside it; or a method group made a delegate whose type has a contract |

@@ -132,7 +132,9 @@ namespace CsVerify.Verifier
         public int AssumedObligations;
         /// <summary>Constructs the verifier does not model, treated as unknown values (only within a check profile).</summary>
         public int Unmodeled;
-        public bool Verified => Diagnostics.All(d => !d.IsError);
+        /// <summary>The method isn't verified (CSV1902: its body isn't translated, or Boogie couldn't decide it).</summary>
+        public bool NotVerified;
+        public bool Verified => !NotVerified && Diagnostics.All(d => !d.IsError);
         /// <summary>A lambda's or a local function's flow graph (its enclosing method's gives it).</summary>
         internal Microsoft.CodeAnalysis.FlowAnalysis.ControlFlowGraph Graph;
 
@@ -154,6 +156,7 @@ namespace CsVerify.Verifier
         internal void Clear()
         {
             Obligations = Proved = AssumedObligations = Unmodeled = 0;
+            NotVerified = false;
             Diagnostics.Clear();
             Assumptions.Clear();
             LibraryCalls.Clear();
@@ -1622,7 +1625,7 @@ namespace CsVerify.Verifier
                 x.result.AddDiagnostics(mine);
                 if (undecided != null)
                 {
-                    x.result.AddDiagnostic(new VerificationDiagnostic("CSV1902", true, $"'{x.result.Name}' is not verified: Boogie couldn't decide it in time ({undecided.Message})", x.decl.GetLocation().GetLineSpan()));
+                    NotVerifiedDiagnostic(engine, x.result, $"Boogie couldn't decide it in time ({undecided.Message})", x.decl.GetLocation());
                 }
                 // (what's checked from the syntax and the declarations, as for any method: locking, concurrency marks, ...)
                 if (x.result.Name != null)
@@ -1885,7 +1888,7 @@ namespace CsVerify.Verifier
 
         /// <summary>
         /// A method Boogie doesn't verify (its body isn't translated, or Boogie couldn't decide it): what's checked from
-        /// the syntax and the declarations, and CSV1902, an error, saying why.
+        /// the syntax and the declarations, and CSV1902 saying why.
         /// </summary>
         private static void NotVerified(Engine engine, Contract contract, MethodResult mr, Location at, ControlFlowGraph nested, string reason)
         {
@@ -1901,8 +1904,15 @@ namespace CsVerify.Verifier
                 staticResult.AddDiagnostic(new VerificationDiagnostic("CSV1999", true, "internal verifier error: " + e.Message, at.GetLineSpan()));
             }
             mr.AddDiagnostics(staticResult.Diagnostics);
-            mr.AddDiagnostic(new VerificationDiagnostic("CSV1902", true, $"'{mr.Name}' is not verified: {reason}", at.GetLineSpan()));
+            NotVerifiedDiagnostic(engine, mr, reason, at);
             Trace($"not verified: {mr.Name}: {reason}");
+        }
+
+        /// <summary>CSV1902, saying why: an error, but within a check profile, which proves what it can and counts the rest.</summary>
+        private static void NotVerifiedDiagnostic(Engine engine, MethodResult mr, string reason, Location at)
+        {
+            mr.NotVerified = true;
+            mr.AddDiagnostic(new VerificationDiagnostic("CSV1902", engine.Options.CheckKinds == null, $"'{mr.Name}' is not verified: {reason}", at.GetLineSpan()));
         }
 
         private static void AddAnalyzerErrors(Compilation compilation, List<SyntaxTree> userTrees,
@@ -1959,7 +1969,7 @@ namespace CsVerify.Verifier
         /// The program's compilations: the Spec library's, each referenced project's (--project-reference) with its own
         /// sources, nullable context and source generators, and the program's. Each references the projects it references
         /// as compilations (CompilationReference) in place of their assemblies, as the IDE's workspace does, and the Spec
-        /// library's. A file's reference is one object for all of them, and the program's has its projects' too, so that a
+        /// library's. They share one set of references (ReferenceSet), and the program's has its projects' too, so that a
         /// symbol is the same seen from each.
         /// </summary>
         private sealed class ProgramCompilations
@@ -1968,10 +1978,9 @@ namespace CsVerify.Verifier
             private readonly CSharpParseOptions _parse;
             private readonly Dictionary<string, ProjectReference> _projects;
             private readonly Dictionary<string, CSharpCompilation> _compiled = new Dictionary<string, CSharpCompilation>();
-            private readonly Dictionary<string, MetadataReference> _files = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
+            private readonly ReferenceSet _set;
             private readonly Dictionary<string, string> _names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             private readonly HashSet<string> _compiling = new HashSet<string>();
-            private MetadataReference _spec;
 
             public readonly List<string> Warnings = new List<string>();
 
@@ -1983,13 +1992,15 @@ namespace CsVerify.Verifier
                 _options = options;
                 _parse = parse;
                 _projects = options.ProjectReferences.GroupBy(p => p.AssemblyName).ToDictionary(g => g.Key, g => g.First());
+                _set = ReferenceSet.For(Files(options.References.Concat(options.ProjectReferences.SelectMany(p => p.References)))
+                    .Where(f => !_projects.ContainsKey(NameOf(f))), parse, options.Nullable);
             }
 
             public CSharpCompilation Compile(string assembly, IEnumerable<SyntaxTree> trees, IEnumerable<string> references, NullableContextOptions nullable,
                 IReadOnlyList<string> analyzers, IReadOnlyList<string> configs, out List<SyntaxTree> added)
             {
                 var files = Files(references).ToList();
-                var refs = FrameworkReferences().ToList();
+                var refs = _set.Framework.ToList();
                 var projects = new HashSet<string>();
                 foreach (var f in files)
                 {
@@ -2013,7 +2024,7 @@ namespace CsVerify.Verifier
                 {
                     refs.Add(File(f));
                 }
-                refs.Add(Spec());
+                refs.Add(_set.Spec);
                 var compilation = CSharpCompilation.Create(assembly, trees, refs,
                     new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: nullable));
                 added = new List<SyntaxTree>();
@@ -2038,19 +2049,6 @@ namespace CsVerify.Verifier
                 var c = Compile(p.AssemblyName, trees, p.References, p.Nullable, p.Analyzers, p.AnalyzerConfigs, out _);
                 _compiling.Remove(p.AssemblyName);
                 return _compiled[p.AssemblyName] = c;
-            }
-
-            /// <summary>The Spec library, compiled from its sources (with Entity Framework's stubs, where the program references it).</summary>
-            private MetadataReference Spec()
-            {
-                if (_spec == null)
-                {
-                    var all = FrameworkReferences().Concat(_options.References.Concat(_options.ProjectReferences.SelectMany(p => p.References)).Distinct(StringComparer.OrdinalIgnoreCase)
-                        .Where(f => !_projects.ContainsKey(NameOf(f)) && FrameworkFile(f) == null).Select(File)).ToList();
-                    _spec = CSharpCompilation.Create("CsVerify.Spec", SpecTrees(_parse, ReferencesEfCore(all)), all,
-                        new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: _options.Nullable)).ToMetadataReference();
-                }
-                return _spec;
             }
 
             /// <summary>The files a project's own references and its referenced projects' reference.</summary>
@@ -2085,7 +2083,7 @@ namespace CsVerify.Verifier
             // (a reference assembly of the framework's, from a project's references, would make its types ambiguous)
             private static string FrameworkFile(string f) => _frameworkFiles.Value.Contains(Path.GetFileName(f)) ? f : null;
 
-            private MetadataReference File(string path) => _files.TryGetValue(path, out var r) ? r : _files[path] = MetadataReference.CreateFromFile(path);
+            private MetadataReference File(string path) => _set.File(path);
 
             /// <summary>The assembly a reference file is (the project it is the output of, where it is one).</summary>
             private string NameOf(string path)
@@ -2103,6 +2101,59 @@ namespace CsVerify.Verifier
                     _names[path] = name;
                 }
                 return name;
+            }
+        }
+
+        /// <summary>
+        /// One program's references: the shared framework's and its files', each of its own metadata, and the Spec library
+        /// compiled against them. Roslyn reuses an assembly's symbols where its metadata is the
+        /// same object and retargets a referenced compilation whose references are bound to others: with a set of their
+        /// own, the compilations of a program bind each assembly to the same symbols, whatever other programs (a parallel
+        /// test's) are compiled meanwhile. Sets are kept by what they are made of, and a program of the same references
+        /// reuses one (and its Spec library).
+        /// </summary>
+        private sealed class ReferenceSet
+        {
+            private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<ReferenceSet>> _sets =
+                new System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<ReferenceSet>>();
+
+            public readonly IReadOnlyList<MetadataReference> Framework;
+            public readonly MetadataReference Spec;
+            private readonly Dictionary<string, MetadataReference> _files = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
+
+            private ReferenceSet(IReadOnlyList<string> files, CSharpParseOptions parse, NullableContextOptions nullable)
+            {
+                Framework = FrameworkReferences().OfType<PortableExecutableReference>().Select(r => Own(r.FilePath)).ToList();
+                foreach (var f in files)
+                {
+                    _files[f] = Own(f);
+                }
+                var all = Framework.Concat(_files.Values).ToList();
+                Spec = CSharpCompilation.Create("CsVerify.Spec", SpecTrees(parse, ReferencesEfCore(all)), all,
+                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: nullable)).ToMetadataReference();
+            }
+
+            private static MetadataReference Own(string path) => MetadataReference.CreateFromFile(path);
+
+            public static ReferenceSet For(IEnumerable<string> files, CSharpParseOptions parse, NullableContextOptions nullable)
+            {
+                var list = files.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+                var key = nullable + "|" + string.Join(",", parse.PreprocessorSymbolNames.OrderBy(x => x)) + "|" + string.Join("|", list);
+                // (a few at a time: those of a run's temporary files would pile up)
+                if (_sets.Count > 16)
+                {
+                    _sets.Clear();
+                }
+                return _sets.GetOrAdd(key, _ => new Lazy<ReferenceSet>(() => new ReferenceSet(list, parse, nullable))).Value;
+            }
+
+            /// <summary>A file's reference (one of the set's; one of its own, for a file not in it).</summary>
+            public MetadataReference File(string path)
+            {
+                lock (_files)
+                {
+                    return _files.TryGetValue(path, out var r) ? r : _files[path] = Own(path);
+                }
             }
         }
 
