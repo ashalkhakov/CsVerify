@@ -23,11 +23,13 @@
     What the verifier compiles of a project: its sources (the SDK's under obj/ too: global usings, assembly attributes;
     its source generators run in the verifier, whose code is compiled with the program, not verified), its references,
     its generators and their configuration, its assembly name and its nullable context: what the compiler is given.
+    The targets that generate those sources run first, as before the compile: a project described to another without
+    being built (dotnet build with no-dependencies) has them too, its InternalsVisibleTo among them.
   -->
   <PropertyGroup>
-    <_CsVerifyProjectDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings</_CsVerifyProjectDependsOn>
+    <_CsVerifyProjectDependsOn Condition="'$(UsingMicrosoftNETSdk)' == 'true'">GenerateGlobalUsings;GenerateAssemblyInfo</_CsVerifyProjectDependsOn>
   </PropertyGroup>
-  <Target Name="_CsVerifyProjectArgs" DependsOnTargets="ResolveReferences;$(_CsVerifyProjectDependsOn)">
+  <Target Name="_CsVerifyProjectArgs" DependsOnTargets="ResolveReferences;GenerateTargetFrameworkMonikerAttribute;$(_CsVerifyProjectDependsOn)">
     <ItemGroup>
       <_CsVerifyGenerator Include="@(Analyzer)" Condition="'%(Filename)' != 'CsVerify.Analyzers'" />
       <!-- the project's references, but Microsoft.NETCore.App's (the verifier has its own) and CsVerify's (its sources

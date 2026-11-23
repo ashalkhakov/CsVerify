@@ -11,5 +11,6 @@
     <PackageReference Include="CsVerify" Version="$(CsVerifyVersion)" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.12" />
+    <InternalsVisibleTo Include="Layered.App" />
   </ItemGroup>
 </Project>

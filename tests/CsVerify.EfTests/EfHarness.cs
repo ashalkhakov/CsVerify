@@ -91,6 +91,55 @@ namespace CsVerify.Tests
             finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
         }
 
+        /// <summary>A project the program references: its name, its source, the projects it references, and whether it references EF Core.</summary>
+        public sealed record Project(string Name, string Source, string[] Projects, bool Ef = true);
+
+        /// <summary>
+        /// Projects the program references, each compiled to an assembly of its own (in order: a project's references
+        /// first) and described as the MSBuild target describes it; the program references them all and EF Core.
+        /// </summary>
+        public static VerificationResult VerifyEfWithProjects(string source, params Project[] projects) => VerifyEfWithProjects(source, _ => { }, projects);
+
+        public static VerificationResult VerifyEfWithProjects(string source, Action<VerifierOptions> set, params Project[] projects)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "CsVerifyEfProjects" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var options = Options();
+                options.AssemblyName = "App";
+                var dlls = new Dictionary<string, string>();
+                var described = new Dictionary<string, ProjectReference>();
+                foreach (var p in projects)
+                {
+                    var file = Path.Combine(dir, p.Name + ".cs");
+                    File.WriteAllText(file, (p.Ef ? Usings.Replace("using CsVerify; ", "") : "using System; using System.Collections.Generic;\n") + p.Source);
+                    var files = (p.Ef ? EfReferences() : new List<string>()).Concat(p.Projects.Select(r => dlls[r])).ToList();
+                    var lib = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(p.Name,
+                        new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(file), path: file) },
+                        Engine.FrameworkReferences().Concat(files.Select(r => MetadataReference.CreateFromFile(r))),
+                        new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+                    var path = Path.Combine(dir, p.Name + ".dll");
+                    var emit = lib.Emit(path);
+                    Xunit.Assert.True(emit.Success, string.Join("\n", emit.Diagnostics));
+                    dlls[p.Name] = path;
+                    var project = new ProjectReference { AssemblyName = p.Name, Nullable = NullableContextOptions.Enable };
+                    project.Sources.Add(file);
+                    project.References.AddRange(files);
+                    // (a project's references include what the projects it references reference, as the build's do)
+                    project.References.AddRange(p.Projects.SelectMany(r => described[r].References));
+                    described[p.Name] = project;
+                    options.ProjectReferences.Add(project);
+                    options.References.Add(path);
+                }
+                set(options);
+                var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
+                Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
+                return result;
+            }
+            finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+        }
+
         public static VerificationResult VerifyEf(string source, bool overflow = true, bool sqlite = false)
         {
             var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, Options(overflow, sqlite));

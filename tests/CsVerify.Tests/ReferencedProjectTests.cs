@@ -1,4 +1,6 @@
 using System.Linq;
+using CsVerify.Verifier;
+using Microsoft.CodeAnalysis;
 using Xunit;
 
 namespace CsVerify.Tests
@@ -125,6 +127,46 @@ public static class Uses
             var r = CsVerify.Verifier.Engine.VerifySources(new[] { ("Test.cs", "public static class P { public static int F() => 1; }") }, options);
             Assert.Contains(r.CompilationErrors, d => d.Id == "CS0103");
             System.IO.Directory.Delete(dir, true);
+        }
+
+        [Fact]
+        public void AnAssemblyTwoProjectsReference_IsTheProgramsVersion()
+        {
+            // (#117: a project's older version of a package beside the program's; the build resolves the program's)
+            var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "CsVerifyVersions" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                string Package(string version)
+                {
+                    var folder = System.IO.Path.Combine(dir, version);
+                    System.IO.Directory.CreateDirectory(folder);
+                    var path = System.IO.Path.Combine(folder, "Pkg.dll");
+                    var c = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("Pkg",
+                        new[] { Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText($"[assembly: System.Reflection.AssemblyVersion(\"{version}\")] namespace Pkg {{ public sealed class Money {{ public long Cents {{ get; set; }} }} public static class Moneys {{ public static long Of(this Money m) => m.Cents; }} }}") },
+                        Engine.FrameworkReferences(), new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+                    Assert.True(c.Emit(path).Success);
+                    return path;
+                }
+                var older = Package("1.0.0.0");
+                var newer = Package("2.0.0.0");
+                var lib = System.IO.Path.Combine(dir, "Lib.cs");
+                System.IO.File.WriteAllText(lib, "namespace Lib { public sealed class Marker { public Pkg.Money Price { get; set; } = new Pkg.Money(); } }");
+                var options = new VerifierOptions { AssemblyName = "App" };
+                options.References.Add(newer);
+                var project = new ProjectReference { AssemblyName = "Lib", Nullable = Microsoft.CodeAnalysis.NullableContextOptions.Enable };
+                project.Sources.Add(lib);
+                project.References.Add(older);
+                options.ProjectReferences.Add(project);
+                var r = Engine.VerifySources(new[] { ("Test.cs", @"using CsVerify; using Pkg;
+public static class Prices
+{
+    public static long Of(Lib.Marker m) { Spec.Requires(m.Price != null); return m.Price.Of(); }
+    public static Money Make() => new Money();
+}") }, options);
+                Assert.True(r.CompilationErrors.Count == 0, string.Join("\n", r.CompilationErrors));
+                Assert.Empty(r.Warnings);
+            }
+            finally { try { System.IO.Directory.Delete(dir, true); } catch (System.IO.IOException) { } }
         }
     }
 }

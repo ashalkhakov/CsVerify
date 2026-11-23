@@ -173,6 +173,8 @@ namespace CsVerify.Verifier
         public readonly List<VerificationDiagnostic> AnalyzerErrors = new List<VerificationDiagnostic>();
         /// <summary>The external members whose (trusted) stub contracts some proof assumed.</summary>
         public readonly SortedSet<string> Assumptions = new SortedSet<string>(StringComparer.Ordinal);
+        /// <summary>What the run warns of (printed as it runs): a source generator that failed, a project a compilation retargets.</summary>
+        public readonly List<string> Warnings = new List<string>();
         /// <summary>How long each phase of the run took (milliseconds), in order: compiling, translating, solving...</summary>
         public readonly List<(string phase, long ms)> Phases = new List<(string, long)>();
 
@@ -209,6 +211,7 @@ namespace CsVerify.Verifier
                 all.CompilationErrors.AddRange(r.CompilationErrors);
                 all.AnalyzerErrors.AddRange(r.AnalyzerErrors);
                 all.Assumptions.UnionWith(r.Assumptions);
+                all.Warnings.AddRange(r.Warnings);
                 foreach (var (phase, ms) in r.Phases)
                 {
                     var k = all.Phases.FindIndex(p => p.phase == phase);
@@ -940,8 +943,9 @@ namespace CsVerify.Verifier
             var program = new ProgramCompilations(options, parse);
             var compilation = program.Compile(options.AssemblyName, trees, options.References, options.Nullable, options.Analyzers, options.AnalyzerConfigs, out var added);
             generatedTrees.AddRange(added);
-            foreach (var w in program.Warnings)
+            foreach (var w in program.Warnings.Concat(program.Retargeted(compilation)))
             {
+                result.Warnings.Add(w);
                 Console.Error.WriteLine("csverify: warning: " + w);
             }
             // (the program's errors, and its referenced projects')
@@ -1999,7 +2003,7 @@ namespace CsVerify.Verifier
             private readonly Dictionary<string, ProjectReference> _projects;
             private readonly Dictionary<string, CSharpCompilation> _compiled = new Dictionary<string, CSharpCompilation>();
             private readonly ReferenceSet _set;
-            private readonly Dictionary<string, string> _names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, System.Reflection.AssemblyName> _names = new Dictionary<string, System.Reflection.AssemblyName>(StringComparer.OrdinalIgnoreCase);
             private readonly HashSet<string> _compiling = new HashSet<string>();
 
             public readonly List<string> Warnings = new List<string>();
@@ -2012,38 +2016,32 @@ namespace CsVerify.Verifier
                 _options = options;
                 _parse = parse;
                 _projects = options.ProjectReferences.GroupBy(p => p.AssemblyName).ToDictionary(g => g.Key, g => g.First());
-                _set = ReferenceSet.For(Files(options.References.Concat(options.ProjectReferences.SelectMany(p => p.References)))
-                    .Where(f => !_projects.ContainsKey(NameOf(f))), parse, options.Nullable);
+                // (one file per assembly, as the build resolves them: the program's, else the highest version a project references)
+                var unified = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in Files(options.References))
+                {
+                    unified.TryAdd(NameOf(f), f);
+                }
+                var programs = new HashSet<string>(unified.Keys, StringComparer.OrdinalIgnoreCase);
+                foreach (var f in Files(options.ProjectReferences.SelectMany(p => p.References)))
+                {
+                    var name = NameOf(f);
+                    if (!programs.Contains(name) && (!unified.TryGetValue(name, out var other) || VersionOf(f) > VersionOf(other)))
+                    {
+                        unified[name] = f;
+                    }
+                }
+                _set = ReferenceSet.For(unified.Where(u => !_projects.ContainsKey(u.Key)).Select(u => u.Value), parse, options.Nullable);
             }
 
             public CSharpCompilation Compile(string assembly, IEnumerable<SyntaxTree> trees, IEnumerable<string> references, NullableContextOptions nullable,
                 IReadOnlyList<string> analyzers, IReadOnlyList<string> configs, out List<SyntaxTree> added)
             {
-                var files = Files(references).ToList();
-                var refs = _set.Framework.ToList();
-                var projects = new HashSet<string>();
-                foreach (var f in files)
-                {
-                    if (_projects.TryGetValue(NameOf(f), out var p) && p.AssemblyName != assembly)
-                    {
-                        projects.Add(p.AssemblyName);
-                        refs.Add(Project(p).ToMetadataReference());
-                    }
-                    else
-                    {
-                        refs.Add(File(f));
-                    }
-                }
-                // (the program's: each project described to it, its assembly among its references or not)
-                foreach (var p in _projects.Values.Where(p => assembly == _options.AssemblyName && !projects.Contains(p.AssemblyName) && p.AssemblyName != assembly))
-                {
-                    refs.Add(Project(p).ToMetadataReference());
-                }
-                // (what the projects it references reference, which their symbols name)
-                foreach (var f in Closure(files).Where(f => !files.Contains(f, StringComparer.OrdinalIgnoreCase) && !_projects.ContainsKey(NameOf(f))))
-                {
-                    refs.Add(File(f));
-                }
+                // (every compilation of the program binds the same references, the program's: a project bound to others
+                // than a compilation that references it would be retargeted, and its types two types)
+                var refs = _set.Framework.Concat(_set.Files).ToList();
+                var projects = assembly == _options.AssemblyName ? _projects.Values.Where(p => p.AssemblyName != assembly) : ProjectsOf(references);
+                refs.AddRange(projects.Select(p => Project(p).ToMetadataReference()));
                 refs.Add(_set.Spec);
                 var compilation = CSharpCompilation.Create(assembly, trees, refs,
                     new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: nullable));
@@ -2071,27 +2069,41 @@ namespace CsVerify.Verifier
                 return _compiled[p.AssemblyName] = c;
             }
 
-            /// <summary>The files a project's own references and its referenced projects' reference.</summary>
-            private IEnumerable<string> Closure(IEnumerable<string> files)
+            /// <summary>
+            /// The compilations of the program that see a project (or the Spec library) as another assembly than its own
+            /// compilation is: Roslyn retargets a referenced compilation whose references bind to other symbols, and its
+            /// types are then two types.
+            /// </summary>
+            public IEnumerable<string> Retargeted(CSharpCompilation program)
+            {
+                var own = _compiled.Values.Select(c => c.Assembly).Append(((CompilationReference)_set.Spec).Compilation.Assembly)
+                    .ToDictionary(a => a.Name, a => (IAssemblySymbol)a);
+                foreach (var c in _compiled.Values.Append(program))
+                {
+                    foreach (var a in c.SourceModule.ReferencedAssemblySymbols)
+                    {
+                        if (own.TryGetValue(a.Name, out var o) && !SymbolEqualityComparer.Default.Equals(a, o))
+                        {
+                            yield return c.AssemblyName + "'s compilation binds " + a.Name + " to other references than its own: its types are two types to the verifier";
+                        }
+                    }
+                }
+            }
+
+            /// <summary>The projects a project references, and those they reference, whose symbols theirs name.</summary>
+            private IEnumerable<ProjectReference> ProjectsOf(IEnumerable<string> references)
             {
                 var seen = new HashSet<string>(StringComparer.Ordinal);
-                var work = new Stack<string>(files.Select(NameOf).Where(_projects.ContainsKey));
+                var work = new Stack<string>(references.Select(NameOf).Where(_projects.ContainsKey));
                 while (work.Count > 0)
                 {
                     var name = work.Pop();
-                    if (!seen.Add(name))
+                    if (seen.Add(name))
                     {
-                        continue;
-                    }
-                    foreach (var f in Files(_projects[name].References))
-                    {
-                        if (_projects.ContainsKey(NameOf(f)))
+                        yield return _projects[name];
+                        foreach (var r in _projects[name].References.Select(NameOf).Where(_projects.ContainsKey))
                         {
-                            work.Push(NameOf(f));
-                        }
-                        else
-                        {
-                            yield return f;
+                            work.Push(r);
                         }
                     }
                 }
@@ -2103,20 +2115,22 @@ namespace CsVerify.Verifier
             // (a reference assembly of the framework's, from a project's references, would make its types ambiguous)
             private static string FrameworkFile(string f) => _frameworkFiles.Value.Contains(Path.GetFileName(f)) ? f : null;
 
-            private MetadataReference File(string path) => _set.File(path);
-
             /// <summary>The assembly a reference file is (the project it is the output of, where it is one).</summary>
-            private string NameOf(string path)
+            private string NameOf(string path) => AssemblyOf(path).Name;
+
+            private Version VersionOf(string path) => AssemblyOf(path).Version ?? new Version();
+
+            private System.Reflection.AssemblyName AssemblyOf(string path)
             {
                 if (!_names.TryGetValue(path, out var name))
                 {
                     try
                     {
-                        name = System.Reflection.AssemblyName.GetAssemblyName(path).Name;
+                        name = System.Reflection.AssemblyName.GetAssemblyName(path);
                     }
                     catch (Exception e) when (e is IOException || e is BadImageFormatException || e is UnauthorizedAccessException)
                     {
-                        name = Path.GetFileNameWithoutExtension(path);
+                        name = new System.Reflection.AssemblyName(Path.GetFileNameWithoutExtension(path));
                     }
                     _names[path] = name;
                 }
@@ -2139,16 +2153,13 @@ namespace CsVerify.Verifier
 
             public readonly IReadOnlyList<MetadataReference> Framework;
             public readonly MetadataReference Spec;
-            private readonly Dictionary<string, MetadataReference> _files = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
+            public readonly IReadOnlyList<MetadataReference> Files;
 
             private ReferenceSet(IReadOnlyList<string> files, CSharpParseOptions parse, NullableContextOptions nullable)
             {
                 Framework = FrameworkReferences().OfType<PortableExecutableReference>().Select(r => Own(r.FilePath)).ToList();
-                foreach (var f in files)
-                {
-                    _files[f] = Own(f);
-                }
-                var all = Framework.Concat(_files.Values).ToList();
+                Files = files.Select(Own).ToList();
+                var all = Framework.Concat(Files).ToList();
                 Spec = CSharpCompilation.Create("CsVerify.Spec", SpecTrees(parse, ReferencesEfCore(all), ReferencesIdentity(all)), all,
                     new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: nullable)).ToMetadataReference();
             }
@@ -2165,15 +2176,6 @@ namespace CsVerify.Verifier
                     _sets.Clear();
                 }
                 return _sets.GetOrAdd(key, _ => new Lazy<ReferenceSet>(() => new ReferenceSet(list, parse, nullable))).Value;
-            }
-
-            /// <summary>A file's reference (one of the set's; one of its own, for a file not in it).</summary>
-            public MetadataReference File(string path)
-            {
-                lock (_files)
-                {
-                    return _files.TryGetValue(path, out var r) ? r : _files[path] = Own(path);
-                }
             }
         }
 
