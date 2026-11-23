@@ -777,16 +777,14 @@ namespace CsVerify.Verifier.Boogie
                 return;
             }
             Line("function $nochange(d: Ref): bool;");
-            // (a state: the memory, each map of it given back; a steady delegate is the same in all of them)
-            Line("type St;");
-            Line("function $steady(d: Ref): bool;");
+            // (a state: the memory, a datatype of one constructor, each map of it a selector; a steady delegate is the
+            // same in all of them)
             var ms = string.Join(", ", _stateMaps.Select(m => $"{m.name}: {m.type}"));
-            var mns = string.Join(", ", _stateMaps.Select(m => m.name));
-            Line($"function $st({ms}): St;");
+            Line($"datatype St {{ $st({ms}) }}");
+            Line("function $steady(d: Ref): bool;");
             foreach (var m in _stateMaps)
             {
-                Line($"function $st.{m.name}(s: St): {m.type};");
-                Line($"axiom (forall {ms} :: {{ $st({mns}) }} $st.{m.name}($st({mns})) == {m.name});");
+                Line($"function {{:inline}} $st.{m.name}(s: St): {m.type} {{ s->{m.name} }}");
             }
             if (UsesState)
             {
