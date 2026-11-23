@@ -43,6 +43,8 @@ public sealed class Shop : DbContext
 
         private static string[] Errors(string method, string source, bool overflow = true) => VerifyEf(Model + source, overflow).Errors(method);
 
+        private static void AssertNone(int which, string[] errors) => Assert.True(errors.Length == 0, $"case {which}: " + string.Join(", ", errors));
+
         // ---- queries ----------------------------------------------------------------------------------------
 
         [Fact]
@@ -85,6 +87,58 @@ public sealed class Shop : DbContext
         [Fact]
         public void Single_ByUniqueIndex_MatchesAtMostOne() => Assert.Empty(Errors("M",
             "public static class C { public static async Task<Customer?> M(Shop db, string email) { return await db.Customers.AsNoTracking().SingleOrDefaultAsync(c => c.Email == email); } }"));
+
+        [Fact]
+        public void First_OfAProjection_ByUniqueIndex_MatchesAtMostOne()
+        {
+            // (#110: Select gives one value per row, so a filter that keeps at most one row keeps at most one value)
+            AssertNone(1, Errors("M",
+                "public static class C { public static async Task<string?> M(Shop db, string email) => " +
+                "await db.Customers.AsNoTracking().Where(c => c.Email == email).Select(c => c.Name).FirstOrDefaultAsync(); }"));
+            AssertNone(2, Errors("M",
+                "public static class C { public static async Task<int> M(Shop db, string email) => " +
+                "await db.Customers.AsNoTracking().Where(c => c.Email == email).Select(c => c.Id).SingleOrDefaultAsync(); }"));
+            AssertNone(3, Errors("M",
+                "public static class C { public static async Task<int?> M(Shop db, string email) => " +
+                "(await db.Customers.AsNoTracking().Where(c => c.Email == email).Select(c => new { c.Id }).FirstOrDefaultAsync())?.Id; }"));
+            Assert.Equal(new[] { "CSV1031" }, Errors("M",
+                "public static class C { public static async Task<string?> M(Shop db, string name) => " +
+                "await db.Customers.AsNoTracking().Where(c => c.Name == name).Select(c => c.Email).FirstOrDefaultAsync(); }"));
+        }
+
+        private const string Identity = @"using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+public class AppUser : IdentityUser<long>
+{
+    public Guid ExternalId { get; set; }
+}
+public sealed class Users : IdentityDbContext<AppUser, IdentityRole<long>, long>
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<AppUser>().HasAlternateKey(u => u.ExternalId);
+    }
+}
+";
+
+        [Fact]
+        public void AnIdentityUser_IsAnEntity_KeyedByItsId()
+        {
+            // (#113: what it inherits from Identity's IdentityUser<TKey> is read from its metadata; Users is its table)
+            var r = VerifyEf(Identity + @"public static class Store
+{
+    public static async Task<AppUser?> ByKey(Users db, long id) => await db.Set<AppUser>().AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
+    public static async Task<AppUser?> ByExternalId(Users db, Guid g) => await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.ExternalId == g);
+    public static async Task<string?> NameOf(Users db, long id) => await db.Users.AsNoTracking().Where(u => u.Id == id).Select(u => u.UserName).FirstOrDefaultAsync();
+    public static async Task<AppUser?> ByName(Users db, string name) => await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == name);
+}");
+            foreach (var m in new[] { "ByKey", "ByExternalId", "NameOf" })
+            {
+                Assert.True(r.Errors(m).Length == 0, r.Explain(m));
+            }
+            Assert.Equal(new[] { "CSV1031" }, r.Errors("ByName"));
+        }
 
         [Fact]
         public void Single_ByAnotherColumn_MayMatchMore() => Assert.Equal(new[] { "CSV1001" }, Errors("M",

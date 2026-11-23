@@ -422,7 +422,9 @@ namespace CsVerify.Verifier
         internal static IEnumerable<IPropertySymbol> PropertiesOf(INamedTypeSymbol t)
         {
             var seen = new HashSet<string>();
-            for (var b = t; b != null && (b.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(b)); b = b.BaseType)
+            // (and a library base's, as EF maps them: Identity's IdentityUser<TKey>)
+            bool entity = t.Locations.Any(l => l.IsInSource) || MetadataEntities.IsUserClass(t);
+            for (var b = t; b != null && b.SpecialType != SpecialType.System_Object && entity; b = b.BaseType)
             {
                 foreach (var p in b.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
                 {

@@ -28,7 +28,7 @@ namespace CsVerify.Verifier.Boogie
             public KExpr Length;
             public KAbs Elem;
             public ITypeSymbol Type;
-            /// <summary>A filter's: the source index of its element i (a term over i).</summary>
+            /// <summary>A filter's (and a projection of one): the source index of its element i (a term over i).</summary>
             public KAbs Index;
             /// <summary>A GroupBy's groups: the call (its source, key and counts in _groupsOf).</summary>
             public IInvocationOperation Groups;
@@ -519,11 +519,13 @@ namespace CsVerify.Verifier.Boogie
                         _groupParams[f.p1] = (gi.src, gi.key, gi.count);
                     }
                     var i = Atom();
+                    // (element i is the source's element i: of a filter, at the filter's source index, for AtMostOneHint)
                     return new LSeq
                     {
                         Length = src.Length,
                         Elem = KAbs.Of(i, Apply(f, src.Elem.At(i), i)),
                         Type = resultElem,
+                        Index = src.Index,
                     };
                 }
                 // (the first n, or all but them: n clamped to [0, Count], as their definitions have it)

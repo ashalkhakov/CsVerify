@@ -13,7 +13,12 @@ Read from the sources, as EF reads them:
   (a domain project's). A referenced entity's auto-properties (the compiler's backing field beside them, read from the
   assembly) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
   internal members are seen where `InternalsVisibleTo` grants them. A property with code of its own is neither. A derived type has its base classes' properties, and its root's key, query
-  filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy.
+  filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy. An entity of the
+  program's may derive from a library's class (ASP.NET Core Identity's `IdentityUser<TKey>`): that class's
+  auto-properties are its columns, read from the assembly, of the instantiation it derives from (`Id`, a `long` of
+  `IdentityUser<long>`, the key by EF's convention), and a library context's `DbSet<T>` (`IdentityDbContext`'s
+  `Users`) is a table as the program's are. The library's own configuration of it, in its `OnModelCreating` (Identity's
+  index of `NormalizedUserName`, its `ConcurrencyStamp` token), is code the verifier doesn't read.
 - **Owned and complex types** (`OwnsOne`, `OwnsMany`, `[Owned]`, `ComplexProperty`, `[ComplexType]`): columns of their
   owner, which EF always loads with it. They are neither entities nor navigations here, and nothing is said of them.
 - **Keys:** `[Key]`, `HasKey(x => x.P)`, `HasKey(x => new { x.A, x.B })`, `HasKey("P")` or `HasKey(nameof(T.P))`, or EF's
@@ -135,7 +140,8 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
 **Reported:**
 - **CSV1031**, keeping rows by their place in an order the database doesn't fix: `First`, `Last`, `ElementAt`, `Take`
   and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`), or at most
-  one row that matches (`FirstOrDefault(o => o.Id == id)`, proved).
+  one row that matches (`FirstOrDefault(o => o.Id == id)`, proved; a `Select` of the rows keeps their count, so
+  `Where(o => o.Id == id).Select(o => o.Number).FirstOrDefault()` too).
 - **CSV1032**, what EF can't translate to SQL: in a query's lambda, what depends on the row may read columns and
   navigations and call what EF translates (operators, string, `Math` and date members, LINQ over navigations and over
   lists passed in); a method of the program, or a property computed in C# or `[NotMapped]`, makes EF throw when the

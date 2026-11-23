@@ -13,9 +13,10 @@ namespace CsVerify.Tests
         private const string Usings = "using System; using System.Diagnostics; using CsVerify; using System.Collections.Generic; using System.Linq; " +
                                       "using System.Threading; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore;\n";
 
-        /// <summary>EF Core's assemblies, and what they build on (not a provider's).</summary>
+        /// <summary>EF Core's assemblies, and what they build on (not a provider's), and ASP.NET Core Identity's stores.</summary>
         public static List<string> EfReferences(bool sqlite = false) => Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll")
             .Where(p => Path.GetFileName(p).StartsWith("Microsoft.EntityFrameworkCore") || Path.GetFileName(p).StartsWith("Microsoft.Extensions.") ||
+                        Path.GetFileName(p).StartsWith("Microsoft.AspNetCore.Identity") ||
                         sqlite && Path.GetFileName(p).StartsWith("Microsoft.Data.Sqlite"))
             .Where(p => sqlite || !Path.GetFileName(p).Contains("Sqlite"))
             .Where(p => !Path.GetFileName(p).Contains("SqlServer") && !Path.GetFileName(p).Contains("Design")).ToList();

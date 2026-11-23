@@ -1074,9 +1074,13 @@ namespace CsVerify.Verifier.Boogie
             n.TypeKind == TypeKind.Class && !n.IsStatic && (!n.IsRecord || IsValueObject(n)) && !n.IsAnonymousType && GenericClassArguments(n) &&
             (n.ContainingType == null || !n.ContainingType.IsGenericType) && n.DeclaringSyntaxReferences.Length > 0;
 
-        /// <summary>Derived from object, or from a class of the subset, a library base or a library exception (an [Owned] one from object); or an EF context.</summary>
+        /// <summary>
+        /// Derived from object, or from a class of the subset, a library base or a library exception (an [Owned] one from
+        /// object); or an EF context; or an entity's library base (IdentityUser&lt;TKey&gt;: its auto-properties columns).
+        /// </summary>
         private static bool BaseOfTheSubset(INamedTypeSymbol n) =>
-            n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n);
+            n.BaseType?.SpecialType == SpecialType.System_Object || !SpecSymbols.IsOwned(n) && (IsClass(n.BaseType) || IsLibraryBase(n.BaseType) || IsLibraryException(n.BaseType)) || IsContext(n) ||
+            !SpecSymbols.IsOwned(n) && n.BaseType?.DeclaringSyntaxReferences.Length == 0 && MetadataEntities.IsEntity(n.BaseType);
 
         /// <summary>A sealed record class that isn't data (its state not positional): a class whose == compares its fields.</summary>
         public static bool IsValueObject(ITypeSymbol t) =>
@@ -1185,10 +1189,12 @@ namespace CsVerify.Verifier.Boogie
             s != null && FieldEffects.IsHeapField(s) && InSubset(FieldType(s)) && !IsLockObject(s) && // (a lock's object: no state of the kernel's)
             (s.IsStatic ? s.ContainingType.Arity == 0 && s.ContainingType.ContainingType == null && (!CsVerifyAttributes(s) || OnlyGuardedBy(s)) : IsClass(s.ContainingType) || MetadataEntities.IsEntity(s.ContainingType));
 
-        public static ITypeSymbol FieldType(ISymbol s) => s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
+        public static ITypeSymbol FieldType(ISymbol s) =>
+            MetadataEntities.Instantiated(s) is var i && !SymbolEqualityComparer.Default.Equals(i, s) ? (i is IFieldSymbol fi ? fi.Type : ((IPropertySymbol)i).Type)
+            : s.OriginalDefinition is IFieldSymbol f ? f.Type : ((IPropertySymbol)s.OriginalDefinition).Type;
 
         /// <summary>A field's map: object (null for a static field's one object) to value.</summary>
-        public static string FieldMap(ISymbol s) => "$F." + Ident(s.ContainingType.ToDisplayString() + "." + s.Name);
+        public static string FieldMap(ISymbol s) => "$F." + Ident(MetadataEntities.Instantiated(s).ContainingType.ToDisplayString() + "." + s.Name);
 
         /// <summary>The fields of a class an object of it has (the static ones aren't its).</summary>
         public static IEnumerable<ISymbol> InstanceFields(ITypeSymbol t)

@@ -310,7 +310,7 @@ namespace CsVerify.Verifier
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
             Ef = EfModel.For(compilation, UserTrees, SourceTypes);
-            MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type).Where(MetadataEntities.IsUserClass));
+            MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
             UsesOwnership = SourceTypes.Any(SpecSymbols.IsOwned) || Predicates.Count > 0;
