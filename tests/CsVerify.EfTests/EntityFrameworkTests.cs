@@ -141,6 +141,50 @@ public sealed class Users : IdentityDbContext<AppUser, IdentityRole<long>, long>
         }
 
         [Fact]
+        public void AnIdentityUser_HasIdentitysIndexAndToken()
+        {
+            // (the Spec library's model of Identity's OnModelCreating: NormalizedUserName unique, ConcurrencyStamp a token)
+            var r = VerifyEf(Identity + @"public static class Store
+{
+    public static async Task<AppUser?> ByName(Users db, string name) => await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.NormalizedUserName == name);
+    public static async Task Stamp(long id)
+    {
+        using var db = new Users();
+        var u = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+        if (u == null) return;
+        u.ConcurrencyStamp = ""new"";
+        db.Update(u);
+        await db.SaveChangesAsync();
+    }
+}");
+            Assert.True(r.Errors("ByName").Length == 0, r.Explain("ByName"));
+            Assert.Equal(new[] { "CSV1034" }, r.Errors("Stamp"));
+        }
+
+        [Fact]
+        public void AnEntityALibrarysContextConfigures_WithoutAModel_IsReadNoFurther()
+        {
+            // (a library context's OnModelCreating, of no model of the Spec library's: its key and tokens unknown)
+            var r = EfHarness.VerifyEfWithContextLibrary(@"namespace Lib
+{
+    public class Member { public long Id { get; set; } public string Name { get; set; } = """"; }
+    public class Members<TMember> : DbContext where TMember : Member
+    {
+        public DbSet<TMember> All { get; set; } = null!;
+        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<TMember>().HasKey(m => m.Name);
+    }
+}", @"public sealed class Mine : Lib.Member { }
+public sealed class Club : Lib.Members<Mine> { }
+public static class Store
+{
+    public static async Task<Mine?> ById(Club db, long id) => await db.All.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id);
+    public static async Task Attach(Mine m) { using var db = new Club(); db.Attach(m); await db.SaveChangesAsync(); }
+}", sources: false);
+            Assert.Equal(new[] { "CSV1031" }, r.Errors("ById"));
+            Assert.Contains(r["Attach"].Diagnostics, d => d.Id == "CSV1902" && d.Message.Contains("a library's OnModelCreating configures it"));
+        }
+
+        [Fact]
         public void Single_ByAnotherColumn_MayMatchMore() => Assert.Equal(new[] { "CSV1001" }, Errors("M",
             "public static class C { public static Customer? M(Shop db, string name) { return db.Customers.AsNoTracking().SingleOrDefault(c => c.Name == name); } }"));
 

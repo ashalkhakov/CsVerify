@@ -125,6 +125,15 @@ it has (trusted). Model functions are ghost: calls to them are specification onl
 Without model functions, a library property was a new unknown value at each read in code, and could not appear in a
 specification (CSV1900, CSV1901). With a `[Pure]` stub defined by a model, `l.Count` is a function of the list's state.
 
+## Library models of EF contexts: `[ModelOf]`
+
+A library's `DbContext` (ASP.NET Core Identity's `IdentityDbContext`) configures its entities in its own
+`OnModelCreating`, compiled code the verifier doesn't read. A class marked `[ModelOf(typeof(C<,>))]` is that method
+written out in EF's fluent API, generic in the library context's type parameters, in the same order: the verifier reads
+its calls as it reads the program's configuration, with the type arguments of the program's context. CsVerify ships
+one for Identity (`src/CsVerify.Spec/Ef/Identity`), compiled in when the program references Identity's EF Core
+stores; [Entity Framework Core](entity-framework.md#the-model) says what an entity no model describes is.
+
 ## CsVerify's BCL contracts (`CsVerify.Bcl`)
 
 The stubs are in [`src/CsVerify.Spec/Bcl`](../src/CsVerify.Spec/Bcl). They are part of the `CsVerify` package (so a

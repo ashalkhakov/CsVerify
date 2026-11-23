@@ -17,8 +17,17 @@ Read from the sources, as EF reads them:
   program's may derive from a library's class (ASP.NET Core Identity's `IdentityUser<TKey>`): that class's
   auto-properties are its columns, read from the assembly, of the instantiation it derives from (`Id`, a `long` of
   `IdentityUser<long>`, the key by EF's convention), and a library context's `DbSet<T>` (`IdentityDbContext`'s
-  `Users`) is a table as the program's are. The library's own configuration of it, in its `OnModelCreating` (Identity's
-  index of `NormalizedUserName`, its `ConcurrencyStamp` token), is code the verifier doesn't read.
+  `Users`) is a table as the program's are.
+- **A library context's own configuration:** its `OnModelCreating` is the library's compiled code, which the verifier
+  doesn't read. The Spec library has it written out for ASP.NET Core Identity (`CsVerify.Ef.Identity`, a `[ModelOf]`
+  class for each of Identity's contexts that configures a model, read as the program's configuration is, with the
+  program's context's type arguments): the users' and roles' keys, their unique `NormalizedUserName` and
+  `NormalizedName`, their `ConcurrencyStamp` tokens, and the claims', logins', tokens' and user roles' keys. It is
+  trusted, as stubs are, and `IdentityModelTests` compares it with the model EF builds. An entity a library context
+  configures that no such model describes (a passkey's, which Identity maps by a schema version the program sets at
+  run time; any of another library's context) is read no further: no key is taken by convention, and `Attach`,
+  `Update` and a write of a column its library base declares aren't translated (CSV1902), as its concurrency tokens
+  and row versions aren't known.
 - **Owned and complex types** (`OwnsOne`, `OwnsMany`, `[Owned]`, `ComplexProperty`, `[ComplexType]`): columns of their
   owner, which EF always loads with it. They are neither entities nor navigations here, and nothing is said of them.
 - **Keys:** `[Key]`, `HasKey(x => x.P)`, `HasKey(x => new { x.A, x.B })`, `HasKey("P")` or `HasKey(nameof(T.P))`, or EF's

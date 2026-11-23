@@ -596,6 +596,10 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>Every concurrency token of o is the value the context read (where it read o) (CSV1034).</summary>
         private void TokensAsRead(KExpr c, KExpr o, EfModel.Entity e, SyntaxNode at, string then)
         {
+            if (e.Unread)
+            {
+                throw new NotTranslated($"{e.Type.Name}'s concurrency tokens: a library's OnModelCreating configures it, which the verifier doesn't read");
+            }
             for (int j = 0; j < e.Tokens.Count; j++)
             {
                 var token = e.Tokens[j];
@@ -883,12 +887,24 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void TrackerFieldWrite(ISymbol field, KExpr o, SyntaxNode at, bool building = false)
         {
-            if (_failed == null || o == null || !(field is IPropertySymbol p) || KernelTypes.Ef.EntityOf(p.ContainingType) is not EfModel.Entity entity)
+            if (_failed == null || o == null || !(field is IPropertySymbol p))
             {
                 return;
             }
+            // (the entity it is a column of, or those that inherit it: of a base that isn't one, IdentityUser<TKey>)
+            var entities = KernelTypes.Ef.EntityOf(p.ContainingType) is EfModel.Entity own ? new List<EfModel.Entity> { own }
+                : KernelTypes.Ef.Entities.Where(x => Inherits(x.Type, p.ContainingType)).ToList();
+            if (entities.Count == 0)
+            {
+                return;
+            }
+            // (a library base's column, of an entity a library's OnModelCreating configures unread: a row version, maybe)
+            if (p.DeclaringSyntaxReferences.Length == 0 && entities.FirstOrDefault(x => x.Unread) is EfModel.Entity unread)
+            {
+                throw new NotTranslated($"a write of {p.Name}, of {unread.Type.Name}, which a library's OnModelCreating configures (its row versions aren't known)");
+            }
             // (a row version is the database's to set, CSV1034)
-            if (entity.RowVersions.Contains(p.OriginalDefinition) || entity.RowVersions.Contains(p))
+            if (entities.Any(x => x.RowVersions.Contains(p.OriginalDefinition) || x.RowVersions.Contains(p)))
             {
                 Emit(KCheck.Of(
                     KLit.False,
@@ -899,11 +915,11 @@ namespace CsVerify.Verifier.Boogie
             }
             // (a key's, or an alternate key's: EF throws at the next DetectChanges where a context tracks it, unless added.
             // A constructor's object isn't tracked yet)
-            if (entity.IsKeyProperty(p) && !building)
+            if (entities.FirstOrDefault(x => x.IsKeyProperty(p)) is EfModel.Entity keyed && !building)
             {
                 var t = new KVar("c$");
                 TrackerCheck(KQuant.ForAll("c$", "Ref", OrElse(Eq(State(t, o), I(EfDetached)), Eq(State(t, o), I(Added)))), "CSV1033", at,
-                    $"'{at}' changes {p.Name}, part of a key of {entity.Type.Name}, of an entity a context may track: EF throws where it detects the change. Make a new entity, or delete and add");
+                    $"'{at}' changes {p.Name}, part of a key of {keyed.Type.Name}, of an entity a context may track: EF throws where it detects the change. Make a new entity, or delete and add");
             }
             var c = new KVar("c$");
             Emit(KRow.Of(UnsavedMap, null, MapLambda("c$", "Ref", OrElse(Ne(Sel(StateMap, c, o), I(EfDetached)), Unsaved(c)))));
@@ -912,6 +928,19 @@ namespace CsVerify.Verifier.Boogie
                 null,
                 MapLambda("c$", "Ref",
         Store(States(c), o, Ite(Eq(Sel(StateMap, c, o), I(Unchanged)), I(Modified), Sel(StateMap, c, o))))));
+        }
+
+        /// <summary>Is the type, or one of its bases, of this definition?</summary>
+        private static bool Inherits(ITypeSymbol t, ITypeSymbol of)
+        {
+            for (var b = t; b != null; b = b.BaseType)
+            {
+                if (SymbolEqualityComparer.Default.Equals(b.OriginalDefinition, of.OriginalDefinition))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>A new entity: no context tracks it yet.</summary>
