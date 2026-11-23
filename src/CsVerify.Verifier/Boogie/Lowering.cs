@@ -135,7 +135,7 @@ namespace CsVerify.Verifier.Boogie
         private void Captures(ControlFlowGraph cfg)
         {
             var decl = _decl ?? _m.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
-            var model = _model ?? (decl == null ? null : KernelTypes.Compilation?.GetSemanticModel(decl.SyntaxTree));
+            var model = _model ?? (decl == null ? null : KernelTypes.Compilation?.ModelOf(decl.SyntaxTree));
             var ops = cfg.Blocks.SelectMany(b => b.Operations.Concat(b.BranchValue == null ? new IOperation[0] : new[] { b.BranchValue })).SelectMany(o => o.DescendantsAndSelf()).ToList();
             // (and what its contract names)
             var named = _contract.Requires.Concat(_contract.Ensures.Select(e => e.Expr)).Concat(new[] { _contract.Reads, _contract.Modifies }).Where(x => x != null).SelectMany(x => x.DescendantsAndSelf());

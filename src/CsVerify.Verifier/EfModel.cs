@@ -138,7 +138,7 @@ namespace CsVerify.Verifier
             }
             foreach (var tree in userTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     if (inv.Expression is MemberAccessExpressionSyntax { Name: GenericNameSyntax { Identifier.Text: "Entity" } } &&
@@ -190,88 +190,6 @@ namespace CsVerify.Verifier
             Inherit();
             ReadRelationships();
         }
-
-        // ------------------------------------------------------------------ a referenced project's model
-
-        /// <summary>
-        /// The model a referenced project's sources declare (its contexts and their configuration, read in a compilation
-        /// of their own), in this compilation's symbols: the referenced assembly's types and properties of the same names.
-        /// An entity whose types or properties aren't all found there is left out (its queries aren't verified), as is
-        /// one this program's own configuration reads; query filters are left out (they only add what is known of rows).
-        /// </summary>
-        public void Include(EfModel referenced, Compilation compilation)
-        {
-            RelationalNulls |= referenced.RelationalNulls;
-            _providers.UnionWith(referenced._providers);
-            _collation |= referenced._collation;
-            var assemblies = compilation.SourceModule.ReferencedAssemblySymbols.GroupBy(a => a.Identity.Name).ToDictionary(g => g.Key, g => g.First());
-            INamedTypeSymbol Type(ITypeSymbol t) =>
-                t is INamedTypeSymbol { IsGenericType: false } n && n.ContainingAssembly != null && assemblies.TryGetValue(n.ContainingAssembly.Identity.Name, out var a)
-                    ? a.GetTypeByMetadataName(MetadataName(n)) : null;
-            IPropertySymbol Property(IPropertySymbol p) =>
-                Type(p.ContainingType)?.GetMembers(p.Name).OfType<IPropertySymbol>().FirstOrDefault(x => !x.IsIndexer && x.IsStatic == p.IsStatic);
-            foreach (var c in referenced.Contexts.Select(Type).Where(c => c != null))
-            {
-                Contexts.Add(c);
-            }
-            foreach (var o in referenced._owned.Select(Type).Where(o => o != null))
-            {
-                _owned.Add(o);
-            }
-            foreach (var r in referenced._entities.Values)
-            {
-                var type = Type(r.Type);
-                if (type == null || _entities.ContainsKey(type) || _owned.Contains(type))
-                {
-                    continue;
-                }
-                bool all = true;
-                List<IPropertySymbol> Map(IEnumerable<IPropertySymbol> ps)
-                {
-                    var mapped = ps.Select(Property).ToList();
-                    all &= !mapped.Contains(null);
-                    return mapped;
-                }
-                var e = new Entity
-                {
-                    Type = type,
-                    Key = Map(r.Key),
-                    Unique = r.Unique.Select(Map).ToList(),
-                    Alternate = r.Alternate.Select(Map).ToList(),
-                    Tokens = Map(r.Tokens),
-                    References = Map(r.References),
-                    Collections = Map(r.Collections),
-                };
-                e.RowVersions.UnionWith(Map(r.RowVersions));
-                e.Configured.UnionWith(Map(r.Configured));
-                foreach (var (nav, fk) in r.ForeignKeys)
-                {
-                    var (n, k) = (Property(nav), Property(fk));
-                    all &= n != null && k != null;
-                    if (n != null && k != null)
-                    {
-                        e.ForeignKeys[n] = k;
-                    }
-                }
-                foreach (var (nav, fk) in r.CollectionKeys)
-                {
-                    var (n, k) = (Property(nav), Property(fk));
-                    all &= n != null && k != null;
-                    if (n != null && k != null)
-                    {
-                        e.CollectionKeys[n] = k;
-                    }
-                }
-                if (all)
-                {
-                    _entities[type] = e;
-                }
-            }
-        }
-
-        private static string MetadataName(INamedTypeSymbol t) =>
-            t.ContainingType != null ? MetadataName(t.ContainingType) + "+" + t.MetadataName
-            : t.ContainingNamespace == null || t.ContainingNamespace.IsGlobalNamespace ? t.MetadataName : t.ContainingNamespace.ToDisplayString() + "." + t.MetadataName;
 
         // ------------------------------------------------------------------ relationships
 
@@ -463,7 +381,7 @@ namespace CsVerify.Verifier
         {
             foreach (var tree in trees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var decl in tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>())
                 {
                     if (model.GetDeclaredSymbol(decl) is INamedTypeSymbol t && (Has(t, "OwnedAttribute") || Has(t, "ComplexTypeAttribute")))
@@ -686,7 +604,7 @@ namespace CsVerify.Verifier
         {
             foreach (var tree in trees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var method in tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
                 {
                     if (!(method.Identifier.Text == "OnModelCreating" || method.Identifier.Text == "Configure"))
@@ -726,7 +644,7 @@ namespace CsVerify.Verifier
                     {
                         continue;
                     }
-                    var model = compilation.GetSemanticModel(decl.SyntaxTree);
+                    var model = compilation.ModelOf(decl.SyntaxTree);
                     foreach (var inv in decl.DescendantNodes().OfType<InvocationExpressionSyntax>())
                     {
                         if (inv.Expression is MemberAccessExpressionSyntax ma && model.GetTypeInfo(ma.Expression).Type is INamedTypeSymbol { Name: "EntityTypeBuilder", TypeArguments.Length: 1 })
@@ -757,7 +675,7 @@ namespace CsVerify.Verifier
                         if (SymbolEqualityComparer.Default.Equals(o.OriginalDefinition, member.OriginalDefinition) &&
                             p.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is PropertyDeclarationSyntax { ExpressionBody.Expression: LambdaExpressionSyntax lambda })
                         {
-                            return (compilation.GetSemanticModel(lambda.SyntaxTree), lambda);
+                            return (compilation.ModelOf(lambda.SyntaxTree), lambda);
                         }
                     }
                 }
@@ -807,7 +725,7 @@ namespace CsVerify.Verifier
         /// <summary>One call on an entity type's builder, and what is called on its result.</summary>
         private void ReadFluent(Compilation compilation, SyntaxTree tree, InvocationExpressionSyntax inv, INamedTypeSymbol builder, INamedTypeSymbol configuration = null)
         {
-            var model = compilation.GetSemanticModel(tree);
+            var model = compilation.ModelOf(tree);
             var e = EntityOf(builder.TypeArguments[0]);
             if (e == null)
             {

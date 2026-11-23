@@ -206,7 +206,7 @@ namespace CsVerify.Verifier
                         _misdeclared.Add((v, $"'{f.Name}' has a lock level, but isn't readonly: threads could lock different objects by it"));
                         continue;
                     }
-                    var model = _compilation.GetSemanticModel(v.SyntaxTree);
+                    var model = _compilation.ModelOf(v.SyntaxTree);
                     var given = new List<ExpressionSyntax>();
                     if (v.Initializer != null)
                     {
@@ -216,7 +216,7 @@ namespace CsVerify.Verifier
                     {
                         foreach (var a in r.GetSyntax().DescendantNodes().OfType<AssignmentExpressionSyntax>())
                         {
-                            if (SymbolEqualityComparer.Default.Equals(model.SyntaxTree == a.SyntaxTree ? model.GetSymbolInfo(a.Left).Symbol : _compilation.GetSemanticModel(a.SyntaxTree).GetSymbolInfo(a.Left).Symbol, f))
+                            if (SymbolEqualityComparer.Default.Equals(model.SyntaxTree == a.SyntaxTree ? model.GetSymbolInfo(a.Left).Symbol : _compilation.ModelOf(a.SyntaxTree).GetSymbolInfo(a.Left).Symbol, f))
                             {
                                 given.Add(a.Right);
                             }
@@ -790,7 +790,7 @@ namespace CsVerify.Verifier
                 var x = work.Pop();
                 foreach (var r in x.DeclaringSyntaxReferences)
                 {
-                    var model = _compilation.GetSemanticModel(r.SyntaxTree);
+                    var model = _compilation.ModelOf(r.SyntaxTree);
                     var body = r.GetSyntax();
                     foreach (var n in body.DescendantNodes(y => KeepsContextOwn(y, body)))
                     {
@@ -885,7 +885,7 @@ namespace CsVerify.Verifier
                     }
                     foreach (var r in m.DeclaringSyntaxReferences)
                     {
-                        Scan(r.GetSyntax(), _owner._compilation.GetSemanticModel(r.SyntaxTree), map, m);
+                        Scan(r.GetSyntax(), _owner._compilation.ModelOf(r.SyntaxTree), map, m);
                     }
                 }
             }

@@ -73,29 +73,11 @@ namespace CsVerify.Verifier
         public void AddReference(string reference) => References.Add(reference);
 
         /// <summary>
-        /// The sources of referenced projects, by assembly name (--reference-source Assembly=file): read for what they declare
-        /// that the assembly doesn't say, their Entity Framework model (a context and its configuration in another project).
+        /// The projects the program references (--project-reference), as their builds describe them: each compiled as a
+        /// project of its own, which the program's compilation references in place of its assembly.
         /// </summary>
-        public Dictionary<string, List<string>> ReferenceSources = new Dictionary<string, List<string>>();
+        public List<ProjectReference> ProjectReferences = new List<ProjectReference>();
 
-        /// <summary>Assembly=file, a source of a referenced project.</summary>
-        public void AddReferenceSource(string spec)
-        {
-            int at = spec.IndexOf('=');
-            if (at <= 0 || at == spec.Length - 1)
-            {
-                throw new ArgumentException("--reference-source takes Assembly=file: " + spec);
-            }
-            var (assembly, file) = (spec.Substring(0, at), spec.Substring(at + 1));
-            if (!ReferenceSources.TryGetValue(assembly, out var files))
-            {
-                ReferenceSources[assembly] = files = new List<string>();
-            }
-            if (!files.Contains(file))
-            {
-                files.Add(file);
-            }
-        }
         /// <summary>Is an obligation (or a diagnostic) with this id checked in the profile?</summary>
         internal bool Checked(string id) => CheckKinds == null || !(Verifier.Checks.KindOf(id) is string kind) || CheckKinds.Contains(kind);
     }
@@ -290,40 +272,41 @@ namespace CsVerify.Verifier
         /// </summary>
         internal readonly IReadOnlyList<IMethodSymbol> Models;
 
+        /// <summary>The program's sources: the project's own and its referenced projects'.</summary>
         internal IReadOnlyList<SyntaxTree> UserTrees { get; }
 
-        private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees, IReadOnlyList<(Compilation, List<SyntaxTree>)> referenced = null)
+        /// <summary>The referenced projects' sources: their code is called by its contracts, not verified.</summary>
+        private readonly HashSet<SyntaxTree> _referencedTrees;
+
+        /// <summary>Is the code of this source verified (the project's own), or only called (a referenced project's)?</summary>
+        internal bool Verifies(SyntaxTree tree) => !_referencedTrees.Contains(tree);
+
+        /// <summary>Are some of the program's methods there only for their callers (--only, a referenced project's)?</summary>
+        internal bool Partial => Options.Only.Count > 0 || _referencedTrees.Count > 0;
+
+        private Engine(Compilation compilation, VerifierOptions options, IEnumerable<SyntaxTree> userTrees, IEnumerable<SyntaxTree> referencedTrees)
         {
-            UserTrees = userTrees.ToList();
+            _referencedTrees = new HashSet<SyntaxTree>(referencedTrees);
+            UserTrees = userTrees.Concat(_referencedTrees).ToList();
             _compilation = compilation;
             Stubs = ContractStubs.For(compilation);
             // (and the list interfaces, which read a List's models: StaticChecks.Interfaces)
             var names = new HashSet<string>(Stubs.Models.Select(m => m.Name)
                 .Concat(Stubs.Models.Select(m => m.Parameters[0].Type.Name))
                 .Concat(new[] { "IReadOnlyList", "IList", "IReadOnlyCollection", "ICollection" }));
-            Models = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Any(n => names.Contains(n.Identifier.Text)))
+            Models = UserTrees.Any(t => t.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Any(n => names.Contains(n.Identifier.Text)))
                 ? Stubs.Models : new List<IMethodSymbol>();
-            Data = new DataTypes(compilation, userTrees);
+            Data = new DataTypes(compilation, UserTrees);
             Fields = new FieldEffects(this);
-            Locks = new LockGuards(compilation, userTrees);
-            UsesDynamicFrames = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+            Locks = new LockGuards(compilation, UserTrees);
+            UsesDynamicFrames = UserTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                 .Any(n => n.Identifier.Text == "Modifies" || n.Identifier.Text == "Reads" || n.Identifier.Text == "Fresh" || n.Identifier.Text == "ObjSet"))
                 || Models.Count > 0; // (stubs frame model state with Spec.Modifies)
-            SourceTypes = userTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
-                .Select(d => compilation.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
+            SourceTypes = UserTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
+                .Select(d => compilation.ModelOf(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
             Levels = new LockLevels(compilation, Locks, SourceTypes);
             Atomics = new Atomics(SourceTypes);
             Ef = EfModel.For(compilation, UserTrees, SourceTypes);
-            foreach (var (r, sources) in referenced ?? new List<(Compilation, List<SyntaxTree>)>())
-            {
-                var trees = sources.Where(t => !IsGenerated(t)).ToList();
-                var types = trees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
-                    .Select(d => r.GetSemanticModel(t).GetDeclaredSymbol(d)).OfType<INamedTypeSymbol>()).ToList();
-                if (Ef != null && EfModel.For(r, trees, types) is EfModel model)
-                {
-                    Ef.Include(model, compilation);
-                }
-            }
             MetadataEntities.Current = Ef == null ? null : MetadataEntities.For(compilation, Ef.Entities.Select(e => e.Type).Where(MetadataEntities.IsUserClass));
             Predicates = SourceTypes.SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()).Where(SpecSymbols.IsPredicate).ToList();
             // (a predicate needs the permission state even with no [Owned] class: over arrays alone, say)
@@ -674,7 +657,7 @@ namespace CsVerify.Verifier
             return result;
         }
 
-        internal SemanticModel ModelOf(SyntaxTree tree) => _compilation.GetSemanticModel(tree);
+        internal SemanticModel ModelOf(SyntaxTree tree) => _compilation.ModelOf(tree);
 
         private HashSet<IMethodSymbol> _underInvariants;
 
@@ -689,9 +672,9 @@ namespace CsVerify.Verifier
             {
                 _underInvariants = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
                 var work = new Stack<IMethodSymbol>();
-                foreach (var tree in _compilation.SyntaxTrees)
+                foreach (var tree in _compilation.ProgramTrees())
                 {
-                    var model = _compilation.GetSemanticModel(tree);
+                    var model = _compilation.ModelOf(tree);
                     foreach (var decl in tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
                     {
                         if (model.GetDeclaredSymbol(decl) is IMethodSymbol im && SpecSymbols.IsInvariant(im))
@@ -783,7 +766,7 @@ namespace CsVerify.Verifier
             {
                 return null;
             }
-            var op = _compilation.GetSemanticModel(syntax.SyntaxTree).GetOperation(syntax);
+            var op = _compilation.ModelOf(syntax.SyntaxTree).GetOperation(syntax);
             while (op?.Parent is IConversionOperation || op?.Parent is IParenthesizedOperation)
             {
                 op = op.Parent;
@@ -939,22 +922,15 @@ namespace CsVerify.Verifier
             // (generated code, a source generator's or the SDK's global usings: compiled with the program, not verified)
             var generatedTrees = trees.Where(IsGenerated).ToList();
             var userTrees = trees.Except(generatedTrees).ToList();
-            var references = References(options).ToList();
-            var specTrees = SpecTrees(parse, ReferencesEfCore(references));
-            var compilation = CSharpCompilation.Create(options.AssemblyName, trees.Concat(specTrees), references,
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: options.Nullable));
-            if (options.Analyzers.Count > 0)
+            var program = new ProgramCompilations(options, parse);
+            var compilation = program.Compile(options.AssemblyName, trees, options.References, options.Nullable, options.Analyzers, options.AnalyzerConfigs, out var added);
+            generatedTrees.AddRange(added);
+            foreach (var w in program.Warnings)
             {
-                var warnings = new List<string>();
-                (compilation, var added) = Generators.Run(compilation, parse, options.Analyzers, options.AnalyzerConfigs, warnings);
-                generatedTrees.AddRange(added);
-                foreach (var w in warnings)
-                {
-                    Console.Error.WriteLine("csverify: warning: " + w);
-                }
+                Console.Error.WriteLine("csverify: warning: " + w);
             }
-
-            foreach (var d in compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))
+            // (the program's errors, and its referenced projects')
+            foreach (var d in compilation.Referenced().SelectMany(c => c.GetDiagnostics()).Where(d => d.Severity == DiagnosticSeverity.Error))
             {
                 result.AddCompilationError(new VerificationDiagnostic(d.Id, true, d.GetMessage(), d.Location.GetLineSpan()));
             }
@@ -965,12 +941,12 @@ namespace CsVerify.Verifier
             }
 
             var declarations = new List<(SyntaxNode decl, MethodResult result)>();
-            using var engine = new Engine(compilation, options, userTrees, ReferencedCompilations(compilation, options, parse, specTrees));
+            using var engine = new Engine(compilation, options, userTrees, program.ProjectTrees.Where(t => !IsGenerated(t)));
             Boogie.KernelTypes.Data = engine.Data;
             Boogie.KernelTypes.Compilation = compilation;
             Boogie.KernelTypes.RefArrays = Boogie.KernelTypes.NamesRefArrays(compilation);
             Boogie.KernelTypes.FloatArrays = Boogie.KernelTypes.NamesFloatArrays(compilation);
-            Boogie.KernelTypes.ScalarArrays = Boogie.KernelTypes.NamesScalarArrays(compilation, userTrees);
+            Boogie.KernelTypes.ScalarArrays = Boogie.KernelTypes.NamesScalarArrays(compilation, engine.UserTrees);
             Boogie.KernelTypes.StaticReadonlyIds = new Dictionary<string, int>();
             Boogie.KernelTypes.StaticReadonlyNonNull = new HashSet<int>();
             Boogie.KernelTypes.Locks = engine.Locks;
@@ -992,21 +968,21 @@ namespace CsVerify.Verifier
                 return (f, all);
             };
             Boogie.KernelTypes.MayTouchArrays = engine.MayTouchArrays;
-            Boogie.KernelTypes.Trees = userTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
+            Boogie.KernelTypes.Trees = engine.UserTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FieldDeclarationSyntax>()
                 .Any(f => f.AttributeLists.SelectMany(l => l.Attributes).Any(a => a.Name.ToString() is "Owns" or "OwnsAttribute")));
             result.Lap("analyze", clock);
             var forBoogie = new List<(IMethodSymbol method, Contract contract, SyntaxNode decl, MethodResult result)>();
             var boogieAccessors = new HashSet<SyntaxNode>();
             // (the Spec library's trusted lemmas the program calls, Ieee's: procedures of their contracts, as a trusted method of its own is)
             var libraryLemmas = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var inv in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol lm && lm.ContainingNamespace?.ToDisplayString() == SpecSymbols.Namespace && SpecSymbols.IsTrusted(lm) &&
                         !SpecSymbols.IsCsVerifyType(lm.ContainingType, "Sealed") &&
-                        lm.DeclaringSyntaxReferences.Length == 1 && !userTrees.Contains(lm.DeclaringSyntaxReferences[0].SyntaxTree) && libraryLemmas.Add(lm.OriginalDefinition) &&
+                        lm.DeclaringSyntaxReferences.Length == 1 && !engine.UserTrees.Contains(lm.DeclaringSyntaxReferences[0].SyntaxTree) && libraryLemmas.Add(lm.OriginalDefinition) &&
                         Boogie.BoogieTranslator.Candidate(lm.OriginalDefinition, engine.ContractOf(lm.OriginalDefinition), asContract: true))
                     {
                         forBoogie.Add((lm.OriginalDefinition, engine.ContractOf(lm.OriginalDefinition), lm.DeclaringSyntaxReferences[0].GetSyntax(), new MethodResult { Name = null }));
@@ -1018,9 +994,9 @@ namespace CsVerify.Verifier
                     }
                 }
             }
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 // a delegate type with a contract: for Boogie, its Invoke is a procedure of it alone, as an abstract member is
                 foreach (var dd in tree.GetRoot().DescendantNodes().OfType<DelegateDeclarationSyntax>())
                 {
@@ -1066,8 +1042,9 @@ namespace CsVerify.Verifier
                         Name = method.ContainingType.Name + "." + method.Name,
                         Declared = span.Path + ":" + (span.StartLinePosition.Line + 1),
                     };
-                    // (its lambdas and local functions, each a unit of its own: selected or not, as it is)
-                    if (!options.Selects(mr.Name, method))
+                    // (its lambdas and local functions, each a unit of its own: selected or not, as it is; a referenced
+                    // project's, called by its contract)
+                    if (!engine.Verifies(tree) || !options.Selects(mr.Name, method))
                     {
                         Unselected(method, contract, decl, forBoogie);
                         RunNested(engine, decl, model, mr.Name, result, declarations, options, forBoogie);
@@ -1089,9 +1066,9 @@ namespace CsVerify.Verifier
             }
             // a class's primary constructor: a procedure of its contract (what it sets its parameters to, its writes the
             // effects analysis's), so new calls it; its initializers aren't verified
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var td in tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().Where(c => c.ParameterList != null))
                 {
                     if (model.GetDeclaredSymbol(td) is INamedTypeSymbol ct &&
@@ -1104,9 +1081,9 @@ namespace CsVerify.Verifier
             }
             // accessors with code: properties are methods too (Boogie's, where they are in its subset; an abstract or an
             // interface one is a procedure of its contract, which has nothing of its own to verify)
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var node in tree.GetRoot().DescendantNodes())
                 {
                     IMethodSymbol accessor = node switch
@@ -1137,7 +1114,7 @@ namespace CsVerify.Verifier
                         Name = hasCode ? accessor.ContainingType.Name + "." + accessor.Name : null,
                         Declared = span.Path + ":" + (span.StartLinePosition.Line + 1),
                     };
-                    if (hasCode && !options.Selects(mr.Name, accessor))
+                    if (hasCode && (!engine.Verifies(tree) || !options.Selects(mr.Name, accessor)))
                     {
                         Unselected(accessor, contract, node, forBoogie);
                         continue;
@@ -1152,9 +1129,9 @@ namespace CsVerify.Verifier
                 }
             }
             // the lambdas and local functions in properties' code
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var node in tree.GetRoot().DescendantNodes())
                 {
                     IMethodSymbol accessor = node switch
@@ -1172,9 +1149,9 @@ namespace CsVerify.Verifier
                 }
             }
             // the lambdas in field and property initializers (static readonly Pricing Flat = q => 100 * q): no method has them
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var init in tree.GetRoot().DescendantNodes().OfType<EqualsValueClauseSyntax>())
                 {
                     if (!(init.Parent is VariableDeclaratorSyntax && init.Parent.Parent?.Parent is FieldDeclarationSyntax || init.Parent is PropertyDeclarationSyntax))
@@ -1200,9 +1177,9 @@ namespace CsVerify.Verifier
             }
             clock.Restart();
             // accessors with code: properties are methods too
-            foreach (var tree in userTrees)
+            foreach (var tree in engine.UserTrees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var node in tree.GetRoot().DescendantNodes())
                 {
                     IMethodSymbol accessor = node switch
@@ -1227,7 +1204,7 @@ namespace CsVerify.Verifier
                         Name = accessor.ContainingType.Name + "." + accessor.Name,
                         Declared = where.Path + ":" + (where.StartLinePosition.Line + 1),
                     };
-                    if (!options.Selects(mr.Name))
+                    if (!engine.Verifies(tree) || !options.Selects(mr.Name))
                     {
                         continue;
                     }
@@ -1242,14 +1219,14 @@ namespace CsVerify.Verifier
             {
                 foreach (var tree in userTrees)
                 {
-                    var model = compilation.GetSemanticModel(tree);
+                    var model = compilation.ModelOf(tree);
                     foreach (var cd in tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>())
                     {
                         if (!(model.GetDeclaredSymbol(cd) is INamedTypeSymbol type) || SpecSymbols.IsContractsClass(type))
                         {
                             continue;
                         }
-                        var nulls = StaticChecks.ImplicitConstructorNulls(type, t => compilation.GetSemanticModel(t)).ToList();
+                        var nulls = StaticChecks.ImplicitConstructorNulls(type, t => compilation.ModelOf(t)).ToList();
                         var mr = new MethodResult { Name = type.Name + "..ctor" };
                         if (nulls.Count == 0 || !options.Selects(mr.Name))
                         {
@@ -1326,7 +1303,7 @@ namespace CsVerify.Verifier
                     Graph = graph,
                     Declared = where.Path + ":" + (where.StartLinePosition.Line + 1) + ":" + (where.StartLinePosition.Character + 1),
                 };
-                if (!options.Selects(nmr.Name))
+                if (!engine.Verifies(code.SyntaxTree) || !options.Selects(nmr.Name))
                 {
                     continue;
                 }
@@ -1433,7 +1410,7 @@ namespace CsVerify.Verifier
             long typeCheck = 0;
             // (with --only, what the selected methods reach; the whole program again if that doesn't type check)
             var whole = held.ToList();
-            var reached = engine.Options.Only.Count > 0 ? Reached(engine, compilation, held) : null;
+            var reached = engine.Partial ? Reached(engine, compilation, held) : null;
             var included = reached ?? whole;
             // (those whose bodies don't translate but whose contracts do: procedures of their contracts alone, which
             // their callers call; their bodies are verified as always)
@@ -1447,17 +1424,17 @@ namespace CsVerify.Verifier
                 translator.Prelude();
                 translator.ContractOf = engine.ContractOf;
                 // (and memory views hold cells, as Spec.Acc of an array's does)
-                translator.UsesPermissions = engine.UsesPermissions || compilation.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                translator.UsesPermissions = engine.UsesPermissions || compilation.ProgramTrees().Any(t => t.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
                     .Any(n => n.Identifier.Text is "PointsTo" or "ArrayView" or "ArrayHole"));
                 translator.ExceptionType = compilation.GetTypeByMetadataName("System.Exception");
                 translator.OverridesOf = m => engine.Fields.Overrides(m);
-                translator.UsesFieldPermissions = engine.UsesPermissions && compilation.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
+                translator.UsesFieldPermissions = engine.UsesPermissions && compilation.ProgramTrees().Any(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>()
                     .Any(i => i.Expression.ToString().EndsWith("Acc") && i.ArgumentList.Arguments.Count == 2 && i.ArgumentList.Arguments[1].Expression.ToString().StartsWith("nameof")));
-                translator.Declare(included.Select(x => (x.method, x.decl, (SemanticModel)compilation.GetSemanticModel(x.decl.SyntaxTree))));
+                translator.Declare(included.Select(x => (x.method, x.decl, (SemanticModel)compilation.ModelOf(x.decl.SyntaxTree))));
                 var refused = new List<(IMethodSymbol, Contract, SyntaxNode, MethodResult)>();
                 foreach (var x in included)
                 {
-                    var model = compilation.GetSemanticModel(x.decl.SyntaxTree);
+                    var model = compilation.ModelOf(x.decl.SyntaxTree);
                     if (!opaque.Contains(x.result))
                     {
                         try
@@ -1550,7 +1527,7 @@ namespace CsVerify.Verifier
             List<(MethodResult method, VerificationDiagnostic diagnostic)> failures;
             var times = new Dictionary<MethodResult, long>();
             // (with --only, the selected methods' procedures: the others are there for their callers, not to be verified)
-            var only = engine.Options.Only.Count == 0 ? null
+            var only = !engine.Partial ? null
                 : included.Where(x => x.result.Name != null).SelectMany(x => translator.Procedures.TryGetValue(x.result, out var p) ? p : new List<string>()).Distinct().ToList();
             included = included.Where(x => only == null || x.result.Name != null).ToList();
             // (--cache: a method proved before, what its proof depends on unchanged, is proved; it isn't given to the solver)
@@ -1865,7 +1842,7 @@ namespace CsVerify.Verifier
                     var c = code.Pop();
                     if (scanned.Add(c) && compilation.ContainsSyntaxTree(c.SyntaxTree))
                     {
-                        Scan(c, compilation.GetSemanticModel(c.SyntaxTree));
+                        Scan(c, compilation.ModelOf(c.SyntaxTree));
                     }
                     continue;
                 }
@@ -1979,43 +1956,158 @@ namespace CsVerify.Verifier
             references.OfType<PortableExecutableReference>().Any(r => Path.GetFileName(r.FilePath ?? "") == "Microsoft.EntityFrameworkCore.dll");
 
         /// <summary>
-        /// Each referenced project's sources (--reference-source), compiled on their own as that assembly, against this
-        /// program's references but the assembly itself (what isn't found there, a source generator's, is left unbound).
+        /// The program's compilations: the Spec library's, each referenced project's (--project-reference) with its own
+        /// sources, nullable context and source generators, and the program's. Each references the projects it references
+        /// as compilations (CompilationReference) in place of their assemblies, as the IDE's workspace does, and the Spec
+        /// library's. A file's reference is one object for all of them, and the program's has its projects' too, so that a
+        /// symbol is the same seen from each.
         /// </summary>
-        private static List<(Compilation, List<SyntaxTree>)> ReferencedCompilations(CSharpCompilation compilation, VerifierOptions options, CSharpParseOptions parse, IEnumerable<SyntaxTree> specTrees)
+        private sealed class ProgramCompilations
         {
-            var result = new List<(Compilation, List<SyntaxTree>)>();
-            foreach (var (assembly, files) in options.ReferenceSources)
+            private readonly VerifierOptions _options;
+            private readonly CSharpParseOptions _parse;
+            private readonly Dictionary<string, ProjectReference> _projects;
+            private readonly Dictionary<string, CSharpCompilation> _compiled = new Dictionary<string, CSharpCompilation>();
+            private readonly Dictionary<string, MetadataReference> _files = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, string> _names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            private readonly HashSet<string> _compiling = new HashSet<string>();
+            private MetadataReference _spec;
+
+            public readonly List<string> Warnings = new List<string>();
+
+            /// <summary>The referenced projects' sources (and what their generators add).</summary>
+            public IEnumerable<SyntaxTree> ProjectTrees => _compiled.Values.SelectMany(c => c.SyntaxTrees);
+
+            public ProgramCompilations(VerifierOptions options, CSharpParseOptions parse)
             {
-                var trees = files.Where(File.Exists).Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), parse, f)).ToList();
-                if (trees.Count == 0)
-                {
-                    continue;
-                }
-                var references = compilation.References.Where(r => !(compilation.GetAssemblyOrModuleSymbol(r) is IAssemblySymbol a && a.Identity.Name == assembly));
-                result.Add((CSharpCompilation.Create(assembly, trees.Concat(specTrees), references, compilation.Options), trees));
+                _options = options;
+                _parse = parse;
+                _projects = options.ProjectReferences.GroupBy(p => p.AssemblyName).ToDictionary(g => g.Key, g => g.First());
             }
-            return result;
+
+            public CSharpCompilation Compile(string assembly, IEnumerable<SyntaxTree> trees, IEnumerable<string> references, NullableContextOptions nullable,
+                IReadOnlyList<string> analyzers, IReadOnlyList<string> configs, out List<SyntaxTree> added)
+            {
+                var files = Files(references).ToList();
+                var refs = FrameworkReferences().ToList();
+                var projects = new HashSet<string>();
+                foreach (var f in files)
+                {
+                    if (_projects.TryGetValue(NameOf(f), out var p) && p.AssemblyName != assembly)
+                    {
+                        projects.Add(p.AssemblyName);
+                        refs.Add(Project(p).ToMetadataReference());
+                    }
+                    else
+                    {
+                        refs.Add(File(f));
+                    }
+                }
+                // (the program's: each project described to it, its assembly among its references or not)
+                foreach (var p in _projects.Values.Where(p => assembly == _options.AssemblyName && !projects.Contains(p.AssemblyName) && p.AssemblyName != assembly))
+                {
+                    refs.Add(Project(p).ToMetadataReference());
+                }
+                // (what the projects it references reference, which their symbols name)
+                foreach (var f in Closure(files).Where(f => !files.Contains(f, StringComparer.OrdinalIgnoreCase) && !_projects.ContainsKey(NameOf(f))))
+                {
+                    refs.Add(File(f));
+                }
+                refs.Add(Spec());
+                var compilation = CSharpCompilation.Create(assembly, trees, refs,
+                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: nullable));
+                added = new List<SyntaxTree>();
+                if (analyzers.Count > 0)
+                {
+                    (compilation, added) = Generators.Run(compilation, _parse, analyzers, configs, Warnings);
+                }
+                return compilation;
+            }
+
+            private CSharpCompilation Project(ProjectReference p)
+            {
+                if (_compiled.TryGetValue(p.AssemblyName, out var done))
+                {
+                    return done;
+                }
+                if (!_compiling.Add(p.AssemblyName))
+                {
+                    throw new ArgumentException("project references in a cycle: " + p.AssemblyName);
+                }
+                var trees = p.Sources.Where(System.IO.File.Exists).Select(f => CSharpSyntaxTree.ParseText(System.IO.File.ReadAllText(f), _parse, f)).ToList();
+                var c = Compile(p.AssemblyName, trees, p.References, p.Nullable, p.Analyzers, p.AnalyzerConfigs, out _);
+                _compiling.Remove(p.AssemblyName);
+                return _compiled[p.AssemblyName] = c;
+            }
+
+            /// <summary>The Spec library, compiled from its sources (with Entity Framework's stubs, where the program references it).</summary>
+            private MetadataReference Spec()
+            {
+                if (_spec == null)
+                {
+                    var all = FrameworkReferences().Concat(_options.References.Concat(_options.ProjectReferences.SelectMany(p => p.References)).Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Where(f => !_projects.ContainsKey(NameOf(f)) && FrameworkFile(f) == null).Select(File)).ToList();
+                    _spec = CSharpCompilation.Create("CsVerify.Spec", SpecTrees(_parse, ReferencesEfCore(all)), all,
+                        new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: _options.Nullable)).ToMetadataReference();
+                }
+                return _spec;
+            }
+
+            /// <summary>The files a project's own references and its referenced projects' reference.</summary>
+            private IEnumerable<string> Closure(IEnumerable<string> files)
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                var work = new Stack<string>(files.Select(NameOf).Where(_projects.ContainsKey));
+                while (work.Count > 0)
+                {
+                    var name = work.Pop();
+                    if (!seen.Add(name))
+                    {
+                        continue;
+                    }
+                    foreach (var f in Files(_projects[name].References))
+                    {
+                        if (_projects.ContainsKey(NameOf(f)))
+                        {
+                            work.Push(NameOf(f));
+                        }
+                        else
+                        {
+                            yield return f;
+                        }
+                    }
+                }
+            }
+
+            /// <summary>A project's reference files but the shared framework's, which the verifier has a copy of.</summary>
+            private static IEnumerable<string> Files(IEnumerable<string> references) => references.Where(f => FrameworkFile(f) == null);
+
+            // (a reference assembly of the framework's, from a project's references, would make its types ambiguous)
+            private static string FrameworkFile(string f) => _frameworkFiles.Value.Contains(Path.GetFileName(f)) ? f : null;
+
+            private MetadataReference File(string path) => _files.TryGetValue(path, out var r) ? r : _files[path] = MetadataReference.CreateFromFile(path);
+
+            /// <summary>The assembly a reference file is (the project it is the output of, where it is one).</summary>
+            private string NameOf(string path)
+            {
+                if (!_names.TryGetValue(path, out var name))
+                {
+                    try
+                    {
+                        name = System.Reflection.AssemblyName.GetAssemblyName(path).Name;
+                    }
+                    catch (Exception e) when (e is IOException || e is BadImageFormatException || e is UnauthorizedAccessException)
+                    {
+                        name = Path.GetFileNameWithoutExtension(path);
+                    }
+                    _names[path] = name;
+                }
+                return name;
+            }
         }
 
-        private static IEnumerable<MetadataReference> References(VerifierOptions options)
-        {
-            // Only the shared framework: the Spec library comes in as source (see SpecSources).
-            var framework = FrameworkReferences().ToList();
-            foreach (var r in framework)
-            {
-                yield return r;
-            }
-            // (a reference assembly of the framework's, from a project's references, would make its types ambiguous)
-            var have = new HashSet<string>(framework.OfType<PortableExecutableReference>().Select(r => Path.GetFileName(r.FilePath ?? "")), StringComparer.OrdinalIgnoreCase);
-            foreach (var r in options.References)
-            {
-                if (!have.Contains(Path.GetFileName(r)))
-                {
-                    yield return MetadataReference.CreateFromFile(r);
-                }
-            }
-        }
+        private static readonly Lazy<HashSet<string>> _frameworkFiles = new Lazy<HashSet<string>>(() =>
+            new HashSet<string>(FrameworkReferences().OfType<PortableExecutableReference>().Select(r => Path.GetFileName(r.FilePath ?? "")), StringComparer.OrdinalIgnoreCase));
 
         public static IEnumerable<MetadataReference> FrameworkReferences() => _framework.Value;
 

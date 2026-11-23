@@ -976,7 +976,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var r in m.DeclaringSyntaxReferences)
             {
                 var node = r.GetSyntax();
-                var model = KernelTypes.Compilation.GetSemanticModel(node.SyntaxTree);
+                var model = KernelTypes.Compilation.ModelOf(node.SyntaxTree);
                 foreach (var inv in node.DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol called))

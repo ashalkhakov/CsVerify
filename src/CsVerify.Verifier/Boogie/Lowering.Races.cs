@@ -187,7 +187,7 @@ namespace CsVerify.Verifier.Boogie
             }
             foreach (var r in refs)
             {
-                AddEffects(r.GetSyntax(), KernelTypes.Compilation.GetSemanticModel(r.SyntaxTree), e, seen, null, scope);
+                AddEffects(r.GetSyntax(), KernelTypes.Compilation.ModelOf(r.SyntaxTree), e, seen, null, scope);
             }
         }
 
@@ -215,7 +215,7 @@ namespace CsVerify.Verifier.Boogie
                 {
                     if (a.Parameter != null && a.Syntax is ArgumentSyntax arg && a.Parameter.RefKind == RefKind.None &&
                         definition.Parameters.ElementAtOrDefault(a.Parameter.Ordinal) is IParameterSymbol p && ObjectOf(arg.Expression, model, scope) is KExpr t &&
-                        definition.DeclaringSyntaxReferences.All(r => StartedDelegates.StaysTheSame(p, r.GetSyntax(), KernelTypes.Compilation.GetSemanticModel(r.SyntaxTree))))
+                        definition.DeclaringSyntaxReferences.All(r => StartedDelegates.StaysTheSame(p, r.GetSyntax(), KernelTypes.Compilation.ModelOf(r.SyntaxTree))))
                     {
                         given[p] = t;
                     }

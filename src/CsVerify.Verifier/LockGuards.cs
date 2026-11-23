@@ -29,14 +29,14 @@ namespace CsVerify.Verifier
             {
                 foreach (var c in tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>())
                 {
-                    ReadStub(c, compilation.GetSemanticModel(tree));
+                    ReadStub(c, compilation.ModelOf(tree));
                 }
             }
             var inferred = new Dictionary<ISymbol, HashSet<ISymbol>>(SymbolEqualityComparer.Default);
             var explicitly = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
             foreach (var tree in trees)
             {
-                var model = compilation.GetSemanticModel(tree);
+                var model = compilation.ModelOf(tree);
                 foreach (var n in tree.GetRoot().DescendantNodes())
                 {
                     switch (n)
@@ -492,7 +492,7 @@ namespace CsVerify.Verifier
             foreach (var r in gate.DeclaringSyntaxReferences)
             {
                 var d = r.GetSyntax();
-                var model = _compilation.GetSemanticModel(d.SyntaxTree);
+                var model = _compilation.ModelOf(d.SyntaxTree);
                 if (d is VariableDeclaratorSyntax v && v.Initializer != null)
                 {
                     made.Add((v.Initializer.Value, model));
@@ -531,7 +531,7 @@ namespace CsVerify.Verifier
             }
             foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
             {
-                var model = _compilation.GetSemanticModel(r.SyntaxTree);
+                var model = _compilation.ModelOf(r.SyntaxTree);
                 foreach (var inv in r.GetSyntax().DescendantNodes().OfType<InvocationExpressionSyntax>())
                 {
                     if (!(model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee))

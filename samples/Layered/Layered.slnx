@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Layered.Model/Layered.Model.csproj" />
+  <Project Path="Layered.Data/Layered.Data.csproj" />
+  <Project Path="Layered.App/Layered.App.csproj" />
+</Solution>

@@ -2,7 +2,7 @@
 # End-to-end check of CsVerify as users get it: packs the CsVerify package and the dotnet-csverify tool, uses them
 # in a copy of samples/Shop (the package by PackageReference, the tool as a local tool), verifies it, checks that a
 # planted bug fails the build, erases the proofs, and runs the tests through Tarp (dotnet-tarp, from nuget.org) on
-# the erased program.
+# the erased program; then verifies samples/Layered, a solution of several projects.
 #
 #   samples/e2e.sh [nupkg directory]   (default: pack the working tree)
 set -euo pipefail
@@ -120,5 +120,16 @@ if grep -E "/ref/Shop\.Core\.dll" rsp.txt; then
     exit 1
 fi
 dotnet build Shop.Rows -p:CsVerifyErase=true
+
+# a layered solution (samples/Layered): a domain project and a data project, excluded, and the application, verified,
+# with the others as projects of their own that its compilation references. Every method of it verifies. (Under
+# Shop, for its NuGet.config, its CsVerify version and its tools)
+cp -R "$repo/samples/Layered" Layered
+dotnet build Layered/Layered.App -p:CsVerifyEnabled=true 2>&1 | tee layered.txt
+grep -F "csverify: 13 of 13 methods verified" layered.txt
+tr '\\' '/' < Layered/Layered.App/obj/Debug/net10.0/csverify.rsp > layered-rsp.txt
+grep -E -- "--project-reference .*Layered\.Model/obj/Debug/net10\.0/csverify\.project\.rsp" layered-rsp.txt
+grep -E -- "--project-reference .*Layered\.Data/obj/Debug/net10\.0/csverify\.project\.rsp" layered-rsp.txt
+grep -F -- "--nullable enable" Layered/Layered.Model/obj/Debug/net10.0/csverify.project.rsp
 
 echo "e2e: OK"

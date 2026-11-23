@@ -840,7 +840,7 @@ namespace CsVerify.Verifier.Boogie
                 return _reachedEntities;
             }
             _reachedEntities = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-            var model = _model ?? (_decl == null ? null : KernelTypes.Compilation?.GetSemanticModel(_decl.SyntaxTree));
+            var model = _model ?? (_decl == null ? null : KernelTypes.Compilation?.ModelOf(_decl.SyntaxTree));
             if (model == null)
             {
                 foreach (var e in KernelTypes.Ef.Entities)
@@ -1068,7 +1068,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            var made = _model.Compilation.GetSemanticModel(init.SyntaxTree).GetTypeInfo(init).Type;
+            var made = _model.Compilation.ModelOf(init.SyntaxTree).GetTypeInfo(init).Type;
             return made != null && IsList(made) ? (INamedTypeSymbol)made : null;
         }
 
@@ -1630,7 +1630,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var declarator = fr.Field.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax;
             if (declarator?.Initializer?.Value is not Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax init ||
-                !(_model.Compilation.GetSemanticModel(init.SyntaxTree).GetOperation(init) is IInvocationOperation compile) ||
+                !(_model.Compilation.ModelOf(init.SyntaxTree).GetOperation(init) is IInvocationOperation compile) ||
                 compile.TargetMethod.Name != "CompileQuery" || compile.TargetMethod.ContainingType?.Name != "EF" || !IsEfMethod(compile.TargetMethod))
             {
                 return null;

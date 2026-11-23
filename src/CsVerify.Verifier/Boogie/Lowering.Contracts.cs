@@ -51,7 +51,7 @@ namespace CsVerify.Verifier.Boogie
             var decl = def.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<RecordDeclarationSyntax>().FirstOrDefault();
             var baseType = decl?.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() ?? throw new NotTranslated("a base field without its argument: " + prop.Name);
             var ctor = DataTypes.PrimaryConstructor(def);
-            var model = KernelTypes.Compilation.GetSemanticModel(decl.SyntaxTree);
+            var model = KernelTypes.Compilation.ModelOf(decl.SyntaxTree);
             var call = model.GetOperation(baseType)?.DescendantsAndSelf().OfType<IInvocationOperation>().FirstOrDefault(i => i.TargetMethod.MethodKind == MethodKind.Constructor)
                        ?? throw new NotTranslated("a base constructor call not found: " + c.Name);
             var arg = call.Arguments.FirstOrDefault(a => a.Parameter?.Name == prop.Name) ?? throw new NotTranslated("a base field not given by name: " + prop.Name);

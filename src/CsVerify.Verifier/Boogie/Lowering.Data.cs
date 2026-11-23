@@ -801,7 +801,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 return Default(ip.Type);
             }
-            var model = KernelTypes.Compilation.GetSemanticModel(syn.SyntaxTree);
+            var model = KernelTypes.Compilation.ModelOf(syn.SyntaxTree);
             var op = model.GetOperation(syn) ?? throw new NotTranslated("the initializer of " + ip.Name);
             var l = new Lowering(ctor, _contractOf(ctor), syn, model, null, _ => false, _isFunction, _literal, _contractOf);
             return l.Spec(op, null);

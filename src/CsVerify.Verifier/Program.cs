@@ -32,8 +32,9 @@ options:
   -a <analyzer.dll>   run the source generators of this analyzer assembly on the program (generated
                       code is compiled, not verified)
   --analyzer-config <file>  an .editorconfig or .globalconfig the generators read
-  --reference-source <assembly>=<file>  a source of a referenced project (repeatable; the MSBuild target passes
-                      them), read for its Entity Framework model: a context configured in that project
+  --project-reference <file>  a referenced project, as its build describes it (repeatable; the MSBuild target
+                      passes them): compiled as a project of its own, which the program's references, so
+                      that its code is the program's; called by its contracts, not verified
   --only <text>       verify only the methods whose name (Type.Method, or Outer.Type.Method) contains the
                       text (repeatable); the others are called by their contracts, not verified
   -v                  list every method with its proved obligations, and the library contracts
@@ -55,10 +56,10 @@ options:
         {
             if (args.Length > 0 && args[0] == "erase")
             {
-                return Erase(ExpandResponseFiles(args.Skip(1)).ToList());
+                return Erase(ResponseFile.Expand(args.Skip(1)).ToList());
             }
             // @file.rsp: a path, or an option and its value, per line (what the MSBuild target passes)
-            args = ExpandResponseFiles(args).ToArray();
+            args = ResponseFile.Expand(args).ToArray();
             var options = new VerifierOptions();
             var inputs = new List<string>();
             bool verbose = false;
@@ -109,8 +110,8 @@ options:
                         case "-a":
                             options.Analyzers.Add(args[++i]);
                             break;
-                        case "--reference-source":
-                            options.AddReferenceSource(args[++i]);
+                        case "--project-reference":
+                            options.ProjectReferences.Add(ProjectReference.Read(args[++i]));
                             break;
                         case "--analyzer-config":
                             options.AnalyzerConfigs.Add(args[++i]);
@@ -198,32 +199,6 @@ options:
             {
                 Console.Error.WriteLine("csverify: " + (Environment.GetEnvironmentVariable("CSVERIFY_TRACE") != null ? e.ToString() : e.Message));
                 return 2;
-            }
-        }
-
-        /// <summary>@file.rsp: one argument per line; a line "-r path" is an option and its value.</summary>
-        private static IEnumerable<string> ExpandResponseFiles(IEnumerable<string> args)
-        {
-            foreach (var a in args)
-            {
-                if (!a.StartsWith("@"))
-                {
-                    yield return a;
-                    continue;
-                }
-                foreach (var line in File.ReadAllLines(a.Substring(1)).Select(l => l.Trim()).Where(l => l.Length > 0))
-                {
-                    int space = line.IndexOf(' ');
-                    if (line.StartsWith("-") && space > 0)
-                    {
-                        yield return line.Substring(0, space);
-                        yield return line.Substring(space + 1).Trim();
-                    }
-                    else
-                    {
-                        yield return line;
-                    }
-                }
             }
         }
 

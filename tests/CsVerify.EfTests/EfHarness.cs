@@ -55,7 +55,7 @@ namespace CsVerify.Tests
 
         /// <summary>
         /// A library of its own that uses EF Core (a project with the context and its configuration), compiled to an
-        /// assembly the program references, its sources passed as the MSBuild target passes them (--reference-source).
+        /// assembly the program references, and described as the MSBuild target describes it (--project-reference).
         /// </summary>
         public static VerificationResult VerifyEfWithContextLibrary(string library, string source)
         {
@@ -75,7 +75,10 @@ namespace CsVerify.Tests
             {
                 var options = Options();
                 options.References.Add(path);
-                options.AddReferenceSource(name + "=" + file);
+                var project = new ProjectReference { AssemblyName = name, Nullable = NullableContextOptions.Enable };
+                project.Sources.Add(file);
+                project.References.AddRange(EfReferences());
+                options.ProjectReferences.Add(project);
                 var result = Engine.VerifySources(new[] { ("Test.cs", Usings + source) }, options);
                 Xunit.Assert.True(result.CompilationErrors.Count == 0, string.Join("\n", result.CompilationErrors));
                 return result;

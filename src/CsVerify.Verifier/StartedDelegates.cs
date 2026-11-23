@@ -35,7 +35,7 @@ namespace CsVerify.Verifier
             {
                 return known;
             }
-            return _calls[lambda] = Find(lambda, _compilation.GetSemanticModel(lambda.SyntaxTree));
+            return _calls[lambda] = Find(lambda, _compilation.ModelOf(lambda.SyntaxTree));
         }
 
         private InvocationExpressionSyntax Find(AnonymousFunctionExpressionSyntax lambda, SemanticModel model)
@@ -216,7 +216,7 @@ namespace CsVerify.Verifier
                 var needed = _needed = new List<(SyntaxNode, IMethodSymbol, string)>();
                 foreach (var tree in _engine.UserTrees)
                 {
-                    var model = _compilation.GetSemanticModel(tree);
+                    var model = _compilation.ModelOf(tree);
                     foreach (var n in tree.GetRoot().DescendantNodes())
                     {
                         if (!SpecSymbols.IsInGhostContext(n, model))
@@ -345,7 +345,7 @@ namespace CsVerify.Verifier
         {
             foreach (var r in m.OriginalDefinition.DeclaringSyntaxReferences)
             {
-                AddCode(r.GetSyntax(), _compilation.GetSemanticModel(r.SyntaxTree));
+                AddCode(r.GetSyntax(), _compilation.ModelOf(r.SyntaxTree));
             }
         }
 

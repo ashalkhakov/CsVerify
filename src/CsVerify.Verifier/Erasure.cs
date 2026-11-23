@@ -87,7 +87,7 @@ namespace CsVerify.Verifier
                 {
                     OriginalPath = tree.FilePath,
                     OutputName = $"{n++:D3}_{Path.GetFileName(tree.FilePath)}",
-                    Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: false, checkedBuild).Run(),
+                    Text = new FileEraser(tree, compilation.ModelOf(tree), library: false, checkedBuild).Run(),
                 });
             }
             // A project referencing another erased project gets the runtime from it: a copy of its own would be a
@@ -100,7 +100,7 @@ namespace CsVerify.Verifier
                     {
                         OriginalPath = tree.FilePath,
                         OutputName = Path.Combine(RuntimeFolder, Path.GetFileName(tree.FilePath)),
-                        Text = new FileEraser(tree, compilation.GetSemanticModel(tree), library: true).Run(),
+                        Text = new FileEraser(tree, compilation.ModelOf(tree), library: true).Run(),
                     });
                 }
             }
