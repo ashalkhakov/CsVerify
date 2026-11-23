@@ -1,4 +1,5 @@
 using CsVerify.Verifier;
+using Microsoft.CodeAnalysis;
 using System.Linq;
 using Xunit;
 
@@ -624,6 +625,36 @@ public static class Uses
             Assert.Equal(new[] { "CSV1018" }, r.Errors("Strict.Get"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Forgets"));
             Assert.Equal(new[] { "CSV1004" }, r.Errors("Unknown"));
+        }
+
+        [Fact]
+        public void AnInheritedPrecondition_IsWellDefined_InTheInterfacesNullableContext()
+        {
+            // (#121: a nullable-disabled project, its interface and contract class in an enabled region)
+            const string source = @"public sealed class Row { public long Id { get; set; } }
+#nullable enable
+public interface IStore { void Add(Row row); }
+[ContractClassFor(typeof(IStore))]
+internal abstract class StoreContract : IStore
+{
+    public void Add(Row row) { Spec.Requires(row.Id == 0); }
+}
+#nullable restore
+public sealed class Store : IStore
+{
+    public void Add(Row row) { }
+}
+public static class Uses
+{
+    public static void Adds(Store s) { Spec.Requires(s != null); s.Add(new Row()); }
+    public static void AddsNull(Store s) { Spec.Requires(s != null); s.Add(null); }
+}";
+            var r = Engine.VerifySources(new[] { ("Test.cs", Harness.Usings + source) }, new VerifierOptions { Nullable = NullableContextOptions.Disable });
+            Assert.True(r.CompilationErrors.Count == 0, string.Join("\n", r.CompilationErrors));
+            Assert.True(r.Errors("Store.Add").Length == 0, r.Explain("Store.Add"));
+            Assert.True(r.Errors("Uses.Adds").Length == 0, r.Explain("Uses.Adds"));
+            // (the interface's parameter is not null: a caller of the implementation gives one)
+            Assert.Contains("CSV1014", r.Errors("Uses.AddsNull"));
         }
 
         [Fact]

@@ -953,7 +953,8 @@ functions of it and the arguments, per signature (`Int32.Int32` for `Func<int, i
 - A method whose specifications speak of a parameter's `Spec.Pre`, `Spec.Post` or `Spec.Total` (and not of what it
   reads) takes it to be the same in every state: `$steady(p)` at entry, and each call of it asserts `$steady` of the
   argument (CSV1001). A lambda or method group that reads no state is steady.
-- A state is `$st(`*every element and field map*`)`, of type `St`, with each map given back (`$st.$F.C.f(s)`). In a
+- A state is `$st(`*every element and field map*`)`, of the datatype `St`, with each map given back by its selector
+  (`$st.$F.C.f(s)`, `s->$F.C.f`), which the solver knows as a datatype: no axioms, linear in the maps. In a
   state, a delegate accepts `$preS.K(d, s, x)`, gives `$postS.K(d, s, x, r)` and reads `$readsS.K(d, s, x)` (a
   `[Ref]bool`); a steady one's are its `$pre` and `$post` and it reads nothing. Dafny's frame axiom: two states that
   agree on every field and cell of the objects it reads in the first give it the same `$preS`, `$postS` and reads

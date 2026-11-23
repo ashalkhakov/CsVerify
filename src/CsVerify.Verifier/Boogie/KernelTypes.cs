@@ -1216,6 +1216,38 @@ namespace CsVerify.Verifier.Boogie
         public static bool NotNullable(ITypeSymbol t) => IsGhost(t) ? NotNullable(GhostOf(t)) : t.IsReferenceType && t.NullableAnnotation == NullableAnnotation.NotAnnotated && !(t is ITypeParameterSymbol);
 
         /// <summary>
+        /// A parameter not null: of a non-nullable type, or oblivious (a nullable-disabled context's) where a method it
+        /// implements or overrides, whose contract it inherits, says its parameter isn't null.
+        /// </summary>
+        public static bool NotNullParameter(IParameterSymbol x) =>
+            NotNullable(x.Type) || x.Type.IsReferenceType && x.Type.NullableAnnotation == NullableAnnotation.None && x.ContainingSymbol is IMethodSymbol m &&
+            Inherited(m).Any(b => x.Ordinal < b.Parameters.Length && NotNullParameter(b.Parameters[x.Ordinal]));
+
+        /// <summary>The methods a method overrides and the interface members it implements.</summary>
+        private static IEnumerable<IMethodSymbol> Inherited(IMethodSymbol m)
+        {
+            if (m.OverriddenMethod != null)
+            {
+                yield return m.OverriddenMethod;
+            }
+            foreach (var i in m.ExplicitInterfaceImplementations)
+            {
+                yield return i;
+            }
+            if (m.ContainingType == null || m.MethodKind != MethodKind.Ordinary)
+            {
+                yield break;
+            }
+            foreach (var i in m.ContainingType.AllInterfaces.SelectMany(t => t.GetMembers(m.Name)).OfType<IMethodSymbol>())
+            {
+                if (SymbolEqualityComparer.Default.Equals(m.ContainingType.FindImplementationForInterfaceMember(i), m))
+                {
+                    yield return i;
+                }
+            }
+        }
+
+        /// <summary>
         /// A class's primary constructor parameter, as its members see it (C# keeps it in a hidden field): a function of the
         /// object, set by the constructor, while nothing assigns it after construction.
         /// </summary>

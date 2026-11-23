@@ -74,6 +74,45 @@ public static class Lonely
         }
 
         [Fact]
+        public void TheState_IsADatatype_LinearInTheMaps()
+        {
+            // (#123: a count of an interface's collection takes the state, every map; declared as n projection axioms of
+            // n binders each, the program was quadratic in the fields)
+            var fields = string.Concat(Enumerable.Range(0, 40).Select(i => $"    public int F{i};\n"));
+            var bpl = Path.GetTempFileName();
+            try
+            {
+                var r = Run("public sealed class Row\n{\n" + fields + "}\n" + @"
+public static class Counts
+{
+    public static int N(System.Collections.Generic.IReadOnlyCollection<int> xs) { Spec.Requires(xs != null); Spec.Ensures<int>(r => r >= 0); return xs.Count; }
+    public static int Wrong(System.Collections.Generic.IReadOnlyCollection<int> xs) { Spec.Requires(xs != null); Spec.Ensures<int>(r => r > 0); return xs.Count; }
+    public static int Same(System.Collections.Generic.IReadOnlyCollection<int> xs, Row row)
+    {
+        Spec.Requires(xs != null && row != null);
+        Spec.Ensures<int>(r => r == 0);
+        var a = xs.Count;
+        row.F7 = 1;
+        var b = xs.Count;
+        return 0;
+    }
+}", boogie: bpl);
+                Assert.True(r.Errors("N").Length == 0, r.Explain("N"));
+                Assert.Equal(new[] { "CSV1002" }, r.Errors("Wrong"));
+                Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
+                var text = File.ReadAllText(bpl);
+                Assert.Contains("$ocount(", text);
+                Assert.Contains("datatype St {", text);
+                Assert.DoesNotContain("axiom (forall $E.", text);
+                Assert.True(text.Length < 2_000_000, $"{text.Length} characters of Boogie");
+            }
+            finally
+            {
+                File.Delete(bpl);
+            }
+        }
+
+        [Fact]
         public void Only_AConstructorLeftOutSetsTheNewObjectsFields()
         {
             // (a constructor not selected is its contract alone: it still sets the new object's fields, so its
