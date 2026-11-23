@@ -436,7 +436,7 @@ namespace CsVerify.Verifier.Boogie
             {
                 args[k] = Code(given[k]);
                 var param = callee != null && k < callee.Parameters.Length ? callee.Parameters[k] : null;
-                if (param != null && param.RefKind != RefKind.Out && IsNullable(param.Type) && NotNullable(param.Type))
+                if (param != null && param.RefKind != RefKind.Out && IsNullable(param.Type) && NotNullParameter(param))
                 {
                     Assert(NotNull(args[k]), At("CSV1014", at[k], $"'{at[k]}' might be null, but parameter '{param.Name}' of '{callee.Name}' is not nullable"));
                 }
