@@ -74,10 +74,10 @@ public static class Lonely
         }
 
         [Fact]
-        public void TheState_IsADatatype_LinearInTheMaps()
+        public void TheState_IsLinearInTheMaps()
         {
             // (#123: a count of an interface's collection takes the state, every map; declared as n projection axioms of
-            // n binders each, the program was quadratic in the fields)
+            // n binders each, the program was quadratic in the fields; one axiom with a let is linear)
             var fields = string.Concat(Enumerable.Range(0, 40).Select(i => $"    public int F{i};\n"));
             var bpl = Path.GetTempFileName();
             try
@@ -102,8 +102,8 @@ public static class Counts
                 Assert.True(r.Errors("Same").Length == 0, r.Explain("Same"));
                 var text = File.ReadAllText(bpl);
                 Assert.Contains("$ocount(", text);
-                Assert.Contains("datatype St {", text);
-                Assert.DoesNotContain("axiom (forall $E.", text);
+                Assert.DoesNotContain("datatype St", text);
+                Assert.Single(System.Text.RegularExpressions.Regex.Matches(text, @"\{ \$st\("));
                 Assert.True(text.Length < 2_000_000, $"{text.Length} characters of Boogie");
             }
             finally
