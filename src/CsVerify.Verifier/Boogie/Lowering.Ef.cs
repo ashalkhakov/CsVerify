@@ -1474,7 +1474,7 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private void DatabaseOrder(IInvocationOperation call, IOperation source, KExpr count)
         {
-            if (KernelTypes.Ef == null || DatabaseRoot(call, out _) == null || OrderedByKey(source))
+            if (KernelTypes.Ef == null || DatabaseRoot(call, out _) == null || RelOf(source) is { Ordered: true })
             {
                 return;
             }
@@ -1485,38 +1485,6 @@ namespace CsVerify.Verifier.Boogie
                 notAssumedAfter: true,
                 message: $"'{call.Syntax}' keeps rows by their place in an order the database doesn't fix: order the query by a key " +
                                        "(OrderBy, or ThenBy, ending in the key or a unique index), or show that at most one row matches"));
-        }
-
-        /// <summary>Is the query (as written here) sorted by a set of columns that identifies a row?</summary>
-        private bool OrderedByKey(IOperation op)
-        {
-            var keys = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
-            EfModel.Entity entity = null;
-            for (op = Unconverted(op); op is IInvocationOperation c; op = Unconverted(c.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value ?? c.Instance))
-            {
-                var name = c.TargetMethod.Name;
-                if (name is "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending")
-                {
-                    var key = c.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value;
-                    if (key != null && PureLambda(key) is var (body, p1, _) && Unconverted(body) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation pr } prop &&
-                        SymbolEqualityComparer.Default.Equals(pr.Parameter, p1))
-                    {
-                        keys.Add(prop.Property.OriginalDefinition);
-                        entity ??= KernelTypes.Ef.EntityOf(prop.Property.ContainingType);
-                    }
-                    if (name.StartsWith("OrderBy"))
-                    {
-                        break;
-                    }
-                    continue;
-                }
-                // (a Select keeps the order of the rows it maps, one to one, #130)
-                if (name is "SelectMany" or "GroupBy" || name.StartsWith("Join"))
-                {
-                    return false;
-                }
-            }
-            return entity != null && entity.Identifying.Any(set => set.All(p => keys.Contains(p.OriginalDefinition)));
         }
 
         /// <summary>
@@ -1705,10 +1673,9 @@ namespace CsVerify.Verifier.Boogie
                            pr.Parent is IPropertyReferenceOperation { Property.Name: "CurrentTransaction" };
                 case "CurrentTransaction":
                     return Unconverted(pr.Instance) is IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } && KernelTypes.Ef.IsContextType(db.Type);
-                case "State":
-                    return Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry && EfTrackerOp(entry) == null;
-                case "CurrentValue" or "OriginalValue":
-                    return EntryValue(pr) is var (valueOf, _) && EfTrackerOp(valueOf) == null;
+                // (an entry's: Lowering.EfEntries')
+                case "State" or "CurrentValue" or "OriginalValue":
+                    return IsEntryType(pr.Instance.Type);
                 // (a local view, read by LINQ or for its Count)
                 case "Local" when DbSetEntity(pr.Instance.Type) != null:
                 {
@@ -1879,7 +1846,7 @@ namespace CsVerify.Verifier.Boogie
             public readonly Dictionary<ILocalSymbol, int> Adds = new Dictionary<ILocalSymbol, int>(SymbolEqualityComparer.Default);
         }
 
-        private LoopEffects LoopWrites(IForEachLoopOperation f)
+        private static LoopEffects LoopWrites(IForEachLoopOperation f)
         {
             var effects = new LoopEffects();
             return Statements(f.Body) ? effects : null;
@@ -1910,11 +1877,13 @@ namespace CsVerify.Verifier.Boogie
                 return true;
             }
 
-            // (an entry's property's value, read: it runs nothing of the program's, and changes nothing, #130)
-            bool QuietAll(IOperation x) => x is IPropertyReferenceOperation pr && EntryValue(pr) != null || Quiet(x) && x.ChildOperations.All(QuietAll);
+            // (the lambda naming an entry's column is an expression tree EF reads: nothing in it runs)
+            static bool QuietAll(IOperation x) => x is IAnonymousFunctionOperation fn && ColumnLambda(fn) || Quiet(x) && x.ChildOperations.All(QuietAll);
 
             static bool Quiet(IOperation x) => x switch
             {
+                // (an entry read: Entry, Property and the lambda naming its column run nothing of the program's)
+                _ when EntryReadOnly(x) => true,
                 IInvocationOperation inv => inv.TargetMethod.DeclaringSyntaxReferences.Length == 0 && inv.Instance?.Type is ITypeSymbol it && it.SpecialType != SpecialType.None &&
                                             inv.Arguments.All(a => a.Value.Type is ITypeSymbol at && (at.IsValueType || at.SpecialType == SpecialType.System_String)),
                 // (a positional record made: its properties set)
@@ -1996,7 +1965,7 @@ namespace CsVerify.Verifier.Boogie
                         foreach (var w in writes.Distinct(SymbolEqualityComparer.Default))
                         {
                             _p.AddField(w);
-                            Emit(KRow.Of(FieldMap(w), null, new KVar(LinqMap("[Ref]" + TypeOf(FieldType(w))))));
+                            Emit(KRow.Of(FieldMap(w), null, new KVar(ValueMap(FieldType(w)))));
                         }
                         if (columns)
                         {
@@ -2201,15 +2170,10 @@ namespace CsVerify.Verifier.Boogie
                 case "SaveChanges" when onContext && (given == 0 || given == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Boolean):
                 case "Find" when onContext && receiver is INamedTypeSymbol { Name: "DbSet" } && !m.Name.EndsWith("Async"):
                     return null;
-                case "Entry" when KernelTypes.Ef.IsContextType(receiver) && given == 1 &&
-                                  (inv.Parent is IPropertyReferenceOperation { Property.Name: "State" } ||
-                                   inv.Parent is IInvocationOperation { TargetMethod.Name: "Reload" or "ReloadAsync" } rl && rl.Instance == inv && Discarded(rl)):
-                case "Reload" when r is IInvocationOperation { TargetMethod.Name: "Entry" } && Discarded(inv):
-                    return null;
-                // (an entry's property's value, read, #130)
-                case "Entry" when KernelTypes.Ef.IsContextType(receiver) && given == 1 && inv.Parent is IInvocationOperation { TargetMethod.Name: "Property" } vp && vp.Instance == inv &&
-                                  vp.Parent is IPropertyReferenceOperation ev && EntryValue(ev) != null:
-                case "Property" when r is IInvocationOperation { TargetMethod.Name: "Entry" } && inv.Parent is IPropertyReferenceOperation pv && EntryValue(pv) != null:
+                // (entries: Lowering.EfEntries' values, which say where one is used another way)
+                case "Entry" when KernelTypes.Ef.IsContextType(receiver) && given == 1:
+                case "Property" when IsEntryType(receiver) && given == 1:
+                case "Reload" when IsEntryType(receiver) && Discarded(inv):
                     return null;
                 case "BeginTransaction" when r is IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } && KernelTypes.Ef.IsContextType(db.Type) && given == 0:
                 case "Clear" when r is IPropertyReferenceOperation { Property.Name: "ChangeTracker", Instance: { } db2 } && KernelTypes.Ef.IsContextType(db2.Type) && given == 0:

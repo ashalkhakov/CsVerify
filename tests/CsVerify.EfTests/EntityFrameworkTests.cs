@@ -2334,13 +2334,28 @@ public sealed class Store(Db db)
             .OrderByDescending(c => c.Id)
             .Select(c => c.Collected)
             .FirstOrDefaultAsync();
+    public async Task<DateTime?> OrderedAfterByDate(long account) =>
+        await db.Set<Charge>().AsNoTracking()
+            .Where(c => c.AccountId == account)
+            .Select(c => new { c.Id, c.Collected })
+            .OrderByDescending(c => c.Collected)
+            .Select(c => c.Collected)
+            .FirstOrDefaultAsync();
+    public async Task<long> OrderedThenDistinct(long account) =>
+        await db.Set<Charge>().AsNoTracking()
+            .Where(c => c.AccountId == account)
+            .OrderByDescending(c => c.Id)
+            .Select(c => c.AccountId)
+            .Distinct()
+            .FirstOrDefaultAsync();
 }");
-            foreach (var ok in new[] { "LastCollected", "LastCollectedMember" })
+            // (an order by a projection's member is by the column it is)
+            foreach (var ok in new[] { "LastCollected", "LastCollectedMember", "OrderedAfter" })
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a column that isn't unique; a key of a projection, which isn't the entity's)
-            foreach (var bad in new[] { "LastCollectedByDate", "OrderedAfter" })
+            // (a column that isn't unique, the row's or a projection's; an order Distinct doesn't keep)
+            foreach (var bad in new[] { "LastCollectedByDate", "OrderedAfterByDate", "OrderedThenDistinct" })
             {
                 Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1031" }), bad + ": " + r.Explain("Store." + bad));
             }
@@ -2435,6 +2450,169 @@ public sealed class Store(Db db)
             // (the original value isn't the current one; a write of one isn't translated)
             Assert.NotEmpty(r.Errors("Store.Original"));
             Assert.Contains(r["Store.SetCurrent"].Diagnostics, d => d.Id == "CSV1902");
+        }
+
+        [Fact]
+        public void AConvertedRecordColumn_UnderAFilteredUniqueIndex()
+        {
+            // (PR #131: a column stored by a converter compares by its stored value, as a scalar's does)
+            var r = VerifyEf(@"public sealed record Ref
+{
+    private Ref(string value) => Value = value;
+    public string Value { get; }
+    public static Ref Parse(string value) => new(value);
+}
+public sealed class Holder
+{
+    public long Id { get; set; }
+    public Tag? Tag { get; set; }
+}
+public sealed class Tag
+{
+    public long Id { get; set; }
+    public Ref? Code { get; set; }
+    public Ref? Group { get; set; }
+}
+public class Login
+{
+    public long Id { get; set; }
+    public Holder Holder { get; set; } = null!;
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Login>();
+        b.Entity<Holder>().HasOne<Login>().WithOne(l => l.Holder).HasForeignKey<Holder>(""LoginId"");
+        b.Entity<Tag>().HasOne<Holder>().WithOne(h => h.Tag).HasForeignKey<Tag>(""HolderId"");
+        b.Entity<Tag>().Property(x => x.Code).HasConversion(r => r!.Value, v => Ref.Parse(v));
+        b.Entity<Tag>().Property(x => x.Group).HasConversion(r => r!.Value, v => Ref.Parse(v));
+        b.Entity<Tag>().HasIndex(x => x.Code).IsUnique().HasFilter(""[Code] IS NOT NULL"");
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Login?> LoginOfTag(Ref code) =>
+        await db.Set<Login>().Where(l => l.Holder.Tag!.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> TagOfCode(Ref code) =>
+        await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> TagOfMaybeCode(Ref? code) =>
+        await db.Set<Tag>().Where(t => t.Code == code).SingleOrDefaultAsync();
+    public async Task<Tag?> TagOfGroup(Ref group) =>
+        await db.Set<Tag>().Where(t => t.Group == group).SingleOrDefaultAsync();
+}");
+            foreach (var ok in new[] { "LoginOfTag", "TagOfCode" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a value that may be null; a converted column no index makes unique)
+            foreach (var bad in new[] { "TagOfMaybeCode", "TagOfGroup" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
+        public void AOneToOne_ByConvention()
+        {
+            // (EF pairs two reference navigations to each other into a one-to-one)
+            var r = VerifyEf(@"public sealed class User
+{
+    public long Id { get; set; }
+    public Profile? Profile { get; set; }
+}
+public sealed class Profile
+{
+    public long Id { get; set; }
+    public long UserId { get; set; }
+    public User User { get; set; } = null!;
+    public string Handle { get; set; } = """";
+    public string Name { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<User>();
+        b.Entity<Profile>().HasIndex(x => x.Handle).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<User?> ByHandle(string handle) =>
+        await db.Set<User>().Where(u => u.Profile!.Handle == handle).SingleOrDefaultAsync();
+    public async Task<User?> ByName(string name) =>
+        await db.Set<User>().Where(u => u.Profile!.Name == name).SingleOrDefaultAsync();
+}");
+            Assert.True(r.Errors("Store.ByHandle").Length == 0, r.Explain("Store.ByHandle"));
+            Assert.True(r.Errors("Store.ByName").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.ByName"));
+        }
+
+        [Fact]
+        public void AnEntry_IsAValue()
+        {
+            // (PR #131: an entry in a local, a column by its name, a shadow one, and a method a Select calls that reads one)
+            var r = VerifyEf(@"public sealed class Invoice
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public string Note { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Invoice>().HasAlternateKey(x => x.ExternalId);
+        b.Entity<Invoice>().Property<DateTime>(""Created"");
+    }
+}
+public sealed record Stamped(Invoice Invoice, DateTime Created);
+public sealed class Store(Db db)
+{
+    public async Task<Stamped?> StampedInvoice(Guid invoice) =>
+        (await StampedAsync(db.Set<Invoice>().Where(i => i.ExternalId == invoice))).SingleOrDefault();
+    private async Task<List<Stamped>> StampedAsync(IQueryable<Invoice> query) =>
+        (await query.OrderBy(i => i.Id).ToListAsync()).Select(Stamp).ToList();
+    private Stamped Stamp(Invoice invoice)
+    {
+        var entry = db.Entry(invoice);
+        return new Stamped(invoice, entry.Property<DateTime>(""Created"").CurrentValue);
+    }
+    public DateTime CreatedOf(Invoice invoice) => db.Entry(invoice).Property<DateTime>(""Created"").CurrentValue;
+    public string NoteOf(Invoice invoice)
+    {
+        var entry = db.Entry(invoice);
+        var note = entry.Property(i => i.Note);
+        Spec.Assert(note.CurrentValue == invoice.Note);
+        Spec.Assert(entry.Property<string>(""Note"").CurrentValue == invoice.Note);
+        return note.CurrentValue;
+    }
+    public void Missing(Invoice invoice)
+    {
+        var at = db.Entry(invoice).Property<DateTime>(""Missing"").CurrentValue;
+    }
+    public void Handed(Invoice invoice) => Keep(db.Entry(invoice));
+    private static void Keep(object o) { }
+    public void Original(Invoice invoice)
+    {
+        var entry = db.Entry(invoice);
+        Spec.Assert(entry.Property(i => i.Note).OriginalValue == invoice.Note);
+    }
+    public List<string> OfMaybe(List<Invoice?> invoices) =>
+        invoices.Select(i => db.Entry(i!).Property(x => x.Note).OriginalValue).ToList();
+}");
+            foreach (var ok in new[] { "StampedInvoice", "StampedAsync", "Stamp", "CreatedOf", "NoteOf" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a column the model hasn't; an entry handed on, which the model doesn't follow)
+            foreach (var unread in new[] { "Missing", "Handed" })
+            {
+                Assert.Contains(r["Store." + unread].Diagnostics, d => d.Id == "CSV1902");
+            }
+            // (the original value isn't the current one; an entry of what may be null throws)
+            Assert.NotEmpty(r.Errors("Store.Original"));
+            Assert.Contains(r.Diagnostics, d => d.Id == "CSV1013" && d.Message.Contains("db.Entry(i!)"));
         }
 
         [Fact]

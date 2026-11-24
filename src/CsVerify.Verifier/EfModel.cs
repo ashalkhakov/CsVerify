@@ -33,6 +33,10 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> Configured = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The columns configured required (IsRequired(), [Required]): NOT NULL, whatever their nullable annotation.</summary>
             public HashSet<IPropertySymbol> Required = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>The columns stored by a value converter (HasConversion): compared by their stored values, as scalars are.</summary>
+            public HashSet<IPropertySymbol> Converted = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>Shadow columns (Property&lt;T&gt;("Name") of no property of the class): their names and types.</summary>
+            public Dictionary<string, ITypeSymbol> Shadow = new Dictionary<string, ITypeSymbol>();
             /// <summary>Is the column NOT NULL: of a value type not Nullable, annotated not null, or configured required.</summary>
             public bool NotNullColumn(IPropertySymbol p) =>
                 p.Type.IsValueType ? p.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T }
@@ -259,6 +263,24 @@ namespace CsVerify.Verifier
         /// </summary>
         private void ReadRelationships()
         {
+            // (EF's convention: two entities each with one reference navigation to the other, configured no other way,
+            // are the ends of a one-to-one)
+            foreach (var a in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
+            {
+                foreach (var nav in a.References)
+                {
+                    var b = EntityOf(nav.Type);
+                    var back = b?.References.Where(r => ReferenceEquals(EntityOf(r.Type), a)).ToList();
+                    if (b == null || ReferenceEquals(a, b) || back.Count != 1 || a.References.Count(r => ReferenceEquals(EntityOf(r.Type), b)) != 1 ||
+                        b.Collections.Any(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), a)) || a.Collections.Any(c => ReferenceEquals(EntityOf(NavigationTarget(c.Type, out _)), b)) ||
+                        new[] { nav, back[0] }.Any(x => _inverses.ContainsKey(x.OriginalDefinition) || _unreadNavigations.Contains(x) || Has(x, "InversePropertyAttribute")))
+                    {
+                        continue;
+                    }
+                    _oneToOne.Add(nav.OriginalDefinition);
+                    _oneToOne.Add(back[0].OriginalDefinition);
+                }
+            }
             foreach (var d in _entities.Values.Where(x => !_unreadEntities.Contains(x.Type)))
             {
                 foreach (var nav in d.References)
@@ -925,9 +947,20 @@ namespace CsVerify.Verifier
                     }
                     break;
                 case "Property":
-                    if (Properties(argModel, arg, e) is List<IPropertySymbol> p && p.Count == 1)
+                    // (a shadow column: Property<T>("Name") of a name the class has no property of)
+                    if (arg is LiteralExpressionSyntax { Token.Value: string shadow } && PropertiesOf(e.Type).All(x => x.Name != shadow) &&
+                        model.GetSymbolInfo(inv).Symbol is IMethodSymbol { TypeArguments: [var shadowType] })
+                    {
+                        e.Shadow[shadow] = shadowType;
+                        break;
+                    }
+                    if ((Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> p && p.Count == 1)
                     {
                         e.Configured.Add(p[0].OriginalDefinition);
+                        if (Called("HasConversion", out _, next))
+                        {
+                            e.Converted.Add(p[0].OriginalDefinition);
+                        }
                         if (Called("IsRequired", out var required, next) &&
                             !(required.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax r && r.IsKind(SyntaxKind.FalseLiteralExpression)))
                         {

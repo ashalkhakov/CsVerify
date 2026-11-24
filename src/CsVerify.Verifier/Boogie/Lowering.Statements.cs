@@ -450,6 +450,10 @@ namespace CsVerify.Verifier.Boogie
                     EnumeratorAssigned(en, enl, ec);
                     return;
                 }
+                // (an EF entry kept in a local: its parts, Lowering.EfEntries')
+                case ISimpleAssignmentOperation ea when ea.Target is ILocalReferenceOperation { Local: var eal } && IsEntryType(eal.Type):
+                    EntryAssign(eal, ea.Value);
+                    return;
                 // (a query kept in a local: read where it's enumerated)
                 case ISimpleAssignmentOperation lq when lq.Target is ILocalReferenceOperation { Local: var lql } && LazyQuery(lql, lq.Value):
                     return;
@@ -669,6 +673,11 @@ namespace CsVerify.Verifier.Boogie
 
         private void FlowCapture(IFlowCaptureOperation fc)
         {
+            if (IsEntryType(fc.Value.Type))
+            {
+                EntryCapture(fc);
+                return;
+            }
             _captured[fc.Id] = fc.Value;
             // (a field or an auto-property captured as what an assignment writes, x.f = c ? a : b, P = P with { ... }: its
             // object, kept)

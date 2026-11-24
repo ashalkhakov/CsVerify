@@ -137,17 +137,28 @@ that type before it. Then an included reference is the row its foreign key names
 the types the `Include` paths load either, every level is the database's, as without tracking; after the query, whether
 the context tracks an entity of those types it didn't before isn't known. Of what else a context tracks, which EF
 fixes navigations up from, nothing is said. `Count`, `Any` and the like, and projections of columns, return no entities and are always
-exact. How many rows a query keeps doesn't depend on tracking either: a filter that compares every column of the key or
-of a unique index to a value (`t.ExternalId == id`, whatever else it adds with `&&`) keeps one row at most, as the
-database's rows are distinct by each. That holds for a column of strings, or of a type with a value conversion (a
-record struct), too: the database finds the row as it keeps the index unique, by the column's collation or its stored
-value. A nullable column counts only compared to a value not null, since null may match many rows; one configured
-required (`IsRequired()`, `[Required]`) is not null whatever its annotation, an entity's without nullable annotations
-among them. Keys and indexes may be named by their properties or by their names (`HasAlternateKey("ExternalId")`). A
-filtered index (`HasFilter`) is unique only where its filter holds, so it counts only for a filter that a column of it
-`IS NOT NULL`. The columns may be reached through one-to-one navigations (`HasOne(...).WithOne(...)`), whose foreign
-key is unique: a row of either end has one row of the other at most, so `p.Invoice!.ExternalId == id` keeps one
-payment at most where each invoice has one payment at most.
+exact. How many rows a query keeps doesn't depend on tracking either. Each query of one table's rows has a relational
+type, from its operators down to the table (filters, orders, projections, pages, `Distinct` and EF's own): the
+columns that identify a row (its keys), the columns a filter fixes, and the order its rows are in. Keys follow the
+standard derivation of unique keys:
+
+- a table's are its key and unique indexes, named by their properties or their names (`HasAlternateKey("ExternalId")`),
+  and the keys of what a one-to-one navigation leads to (`HasOne(...).WithOne(...)`, or two reference navigations to
+  each other): a row of either end has one row of the other at most, as its foreign key is unique;
+- a filter that compares a column to a value not of the row (`t.ExternalId == id`, in a conjunct of `&&`) fixes it; a
+  query that fixes every column of a key keeps one row at most;
+- a projection (`Select`) keeps the rows, one to one, in their order; a filter or an order on its members is read as
+  on the columns they are (`.Select(c => new { c.Id, c.At }).OrderBy(x => x.Id)` is ordered by the key);
+- `Distinct` keeps the rows' keys but not their order; a page (`Skip`, `Take`) keeps both.
+
+A column counts when the database and .NET compare it alike as a stored value: of a value type, a string, or one a
+value converter stores (`HasConversion`), compared to a value of its type (the database finds the row as it keeps the
+index unique, by the column's collation or its stored value). A nullable column, or one reached through a navigation
+(null where the navigation is), is fixed only by a value not null, since null matches each row whose column is; one
+configured required (`IsRequired()`, `[Required]`) is not null whatever its annotation, an entity's without nullable
+annotations among them. A filtered index (`HasFilter`) is unique only where its filter holds, so it counts only for a
+filter that a column of it `IS NOT NULL`. An order fixes the rows' places where its columns hold a key of columns NOT
+NULL of the row itself (CSV1031).
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
 collation, elsewhere than SQLite; dates and floating point, by the column's precision; entities, rows compared by every
@@ -208,8 +219,8 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
 
 **Reported:**
 - **CSV1031**, keeping rows by their place in an order the database doesn't fix: `First`, `Last`, `ElementAt`, `Take`
-  and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`; a `Select`
-  after it keeps the order), or at most
+  and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`, as its
+  relational type says), or at most
   one row that matches (`FirstOrDefault(o => o.Id == id)`, proved; a `Select` of the rows keeps their count, so
   `Where(o => o.Id == id).Select(o => o.Number).FirstOrDefault()` too).
 - **CSV1032**, what EF can't translate to SQL: in a query's lambda, what depends on the row may read columns and
@@ -227,8 +238,17 @@ A context's tracked entities, their states (`EntityState`), its unsaved changes 
 the verifier follows from call to call: `Add`, `Attach`, `Update`, `Remove`, `Entry(e).State = ...`, `Find`,
 `SaveChanges`, `Entry(e).Reload()`, `ChangeTracker.Clear()`, and a write of a tracked entity's field (which makes it
 modified). Their `...Async` forms are the same, read where they're awaited; an entity made for one before the await
-(`await set.AddAsync(new T { ... })`) is no other code's while it runs. `Entry(e).Property(x => x.P).CurrentValue` is
-`e.P`, and its `OriginalValue` a value of `P`'s type: reading them changes nothing. A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
+(`await set.AddAsync(new T { ... })`) is no other code's while it runs.
+
+An entry is a value: `ctx.Entry(o)` is its context and its entity, and `entry.Property(x => x.P)`, `Property("P")` or
+`Property<T>("Shadow")` of one is that and a column (a property of the class, or a shadow column the model declares
+with `Property<T>("Name")`). Entries may be kept in locals, read in LINQ's lambdas and in the methods those call. Their
+`State` is read and set as the tracker has it; a property entry's `CurrentValue` is `o.P` (a shadow column's, a value
+of its type), and its `OriginalValue` a value of its type; reading them changes nothing. `Entry` of a null entity
+throws, as EF does. An entry handed to other code, a column the model hasn't, or a value set through one, isn't
+translated. A method of the program that a LINQ lambda calls (`list.Select(Stamp)`), static or of this object, whose
+body declares locals and returns a value, is read as that body where it's called.
+A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
 anything.
 
 Queries read the database, not the changes a context holds. `ctx.Orders.Local` is what it holds: each entity of the

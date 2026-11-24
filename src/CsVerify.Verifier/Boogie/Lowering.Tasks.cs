@@ -165,6 +165,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 Emit(KAssume.Of(NotNull(new KVar(r))));
             }
+            if (ValueOfType(new KVar(r), type) is KExpr ofType)
+            {
+                Emit(KAssume.Of(ofType));
+            }
             return new KVar(r);
         }
 

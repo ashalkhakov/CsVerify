@@ -395,6 +395,11 @@ namespace CsVerify.Verifier.Boogie
             }
             var name = Plain(m);
             var at = inv.Syntax;
+            // (an entry made or taken a column of where it isn't read, set or reloaded: a value the model doesn't follow)
+            if (EntryReadOnly(inv))
+            {
+                throw new NotTranslated("EF's entry, used as a value");
+            }
             var args = inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Where(a => !IsToken(a.Parameter.Type)).ToList();
             if (name is "ExecuteUpdate" or "ExecuteDelete" && IsEfMethod(m))
             {
@@ -408,8 +413,9 @@ namespace CsVerify.Verifier.Boogie
                 return (true, null);
             }
             // (an entry: Entry(o).Reload())
-            if (receiver is IInvocationOperation { TargetMethod.Name: "Entry" } entry && name == "Reload" && EntryOf(entry) is var (ec, eo, ee))
+            if (name == "Reload" && inv.Instance != null && IsEntryType(inv.Instance.Type) && EntryAt(inv.Instance) is { IsColumn: false } reloaded)
             {
+                var (ec, eo, ee) = (reloaded.C, reloaded.O, reloaded.E);
                 UsableContext(ec, at);
                 foreach (var p in EfModel.PropertiesOf(ee.Type).Where(IsField))
                 {
@@ -741,7 +747,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var p in KernelTypes.Ef.Entities.SelectMany(e => e.RowVersions).Where(IsField).Select(p => p.OriginalDefinition).Distinct<IPropertySymbol>(SymbolEqualityComparer.Default))
             {
                 _p.AddField(p);
-                var fresh = new KVar(LinqMap("[Ref]" + TypeOf(p.Type)));
+                var fresh = new KVar(ValueMap(p.Type));
                 Emit(KRow.Of(
                     FieldMap(p),
                     null,
@@ -915,26 +921,10 @@ namespace CsVerify.Verifier.Boogie
                 Emit(KAssume.Of(Eq(Ne(new KVar(t), Null), InTx(c))));
                 return new KVar(t);
             }
-            if (pr.Property.Name == "State" && Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry && EntryOf(entry) is var (c2, o, _))
+            // (an entry's State, a property entry's values: EntryRead's)
+            if (EntryRead(pr) is KExpr entryValue)
             {
-                return State(c2, o);
-            }
-            // (an entry's property's value: the current one the entity's, the original one a value of its type, #130)
-            if (EntryValue(pr) is var (valueOf, p) && EntryOf(valueOf) is var (_, vo, _))
-            {
-                if (pr.Property.Name == "OriginalValue")
-                {
-                    return Unknown(null, p.Type, notNull: true);
-                }
-                _p.AddField(p.OriginalDefinition);
-                return new KField
-                {
-                    Field = p.OriginalDefinition,
-                    Instance = vo,
-                    OnThis = false,
-                    At = pr.Syntax,
-                    InstanceAt = pr.Syntax,
-                };
+                return entryValue;
             }
             // (a local view's Count)
             if (pr.Property.Name == "Count" && IsLocalView(pr.Instance))
@@ -944,33 +934,18 @@ namespace CsVerify.Verifier.Boogie
             return null;
         }
 
-        /// <summary>Entry(o).Property(x => x.P).CurrentValue or OriginalValue, read: Entry(o) and P (null for another).</summary>
-        private (IInvocationOperation entry, IPropertySymbol p)? EntryValue(IPropertyReferenceOperation pr)
-        {
-            if (pr.Property.Name is not ("CurrentValue" or "OriginalValue") || pr.Parent is IAssignmentOperation a && a.Target == pr ||
-                Unconverted(pr.Instance) is not IInvocationOperation { TargetMethod.Name: "Property", Arguments.Length: 1 } prop ||
-                Unconverted(prop.Instance) is not IInvocationOperation { TargetMethod.Name: "Entry" } entry ||
-                PureLambda(prop.Arguments[0].Value) is not var (body, p1, _) ||
-                Unconverted(body) is not IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } p ||
-                !SymbolEqualityComparer.Default.Equals(r.Parameter, p1) || !IsField(p.Property))
-            {
-                return null;
-            }
-            return (entry, p.Property);
-        }
-
         /// <summary>Entry(o).State = s: as Add, Attach, Update or Remove, by the state (Detached stops tracking). False for another assignment.</summary>
         private bool TrackerAssign(IOperation target, KExpr value)
         {
-            if (_failed == null || !(target is IPropertyReferenceOperation { Property.Name: "State" } pr) ||
-                !(Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry))
+            if (_failed == null || target is not IPropertyReferenceOperation { Instance: { } held } pr || !IsEntryType(held.Type))
             {
                 return false;
             }
-            if (!(EntryOf(entry) is var (c, o, e)))
+            if (pr.Property.Name != "State" || EntryAt(held) is not { IsColumn: false } en)
             {
-                return false;
+                throw new NotTranslated("EF's " + pr.Property.Name + " of an entry, set");
             }
+            var (c, o, e) = (en.C, en.O, en.E);
             var at = target.Parent?.Syntax ?? target.Syntax;
             if (target.Parent is ISimpleAssignmentOperation a && a.Value.ConstantValue.HasValue && a.Value.ConstantValue.Value is int s)
             {
