@@ -184,6 +184,13 @@ or a primary constructor's parameter its code doesn't assign), its other argumen
 parameter, a local, a constant), begins knowing what such a list is: its rows are different objects, each tracked by
 that context, as nothing runs between the query and the call. Its `foreach` may call EF's tracker too, as above.
 
+**A list built of a query's rows.** A `foreach` over a list may `Add` to a list it builds (a local made a new `List`
+before the loop, used in it only to `Add` to, and after it) and make positional records, and still read its
+elements: those change no other list. Each list it builds has at most k more than where it began for each round, k
+its `Add`s in a round, and the collection is as long as it was (inferred invariants, kept where they hold); a query
+helper's loop of that kind is read so at its call. So a list of one entry a row, or at most one, of a filter that
+fixes a key has one entry at most.
+
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.
 One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another file are library calls.

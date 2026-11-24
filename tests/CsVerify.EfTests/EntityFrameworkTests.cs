@@ -1676,6 +1676,91 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AListBuiltOfAQuerysRows_HasNoMoreThanItsRows()
+        {
+            // (#129's review: a list a loop builds, Add by Add, of a query's rows has at most as many as the rows times the
+            // Adds of a round, inline or in a helper read at its call)
+            var r = VerifyEf(@"public sealed class Account
+{
+    public long RowId { get; private set; }
+    public bool Open { get; set; }
+    public int Rank { get; set; }
+}
+public sealed record Held(long Row, Account Account);
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Account>().HasKey(x => x.RowId);
+}
+public sealed class Store(Db db)
+{
+    public async Task<Account?> FindListed(long row) =>
+        (await Listed(db.Set<Account>().Where(a => a.RowId == row))).SingleOrDefault();
+    public async Task<Held?> FindAll(long row) =>
+        (await HeldAll(db.Set<Account>().Where(a => a.RowId == row))).SingleOrDefault();
+    public async Task<Held?> FindSome(long row) =>
+        (await HeldSome(db.Set<Account>().Where(a => a.RowId == row))).SingleOrDefault();
+    public async Task<Held?> FindInline(long row)
+    {
+        var accounts = await db.Set<Account>().Where(a => a.RowId == row).ToListAsync();
+        var held = new List<Held>();
+        foreach (var account in accounts)
+        {
+            held.Add(new Held(account.RowId, account));
+        }
+        return held.SingleOrDefault();
+    }
+    public async Task<Held?> FindTwice(long row)
+    {
+        var accounts = await db.Set<Account>().Where(a => a.RowId == row).ToListAsync();
+        var held = new List<Held>();
+        foreach (var account in accounts)
+        {
+            held.Add(new Held(account.RowId, account));
+            held.Add(new Held(account.RowId, account));
+        }
+        return held.SingleOrDefault();
+    }
+    public async Task<Held?> FindByRank(int rank) =>
+        (await HeldAll(db.Set<Account>().Where(a => a.Rank == rank))).SingleOrDefault();
+    private static async Task<IReadOnlyList<Account>> Listed(IQueryable<Account> query) =>
+        await query.OrderBy(a => a.RowId).ToListAsync();
+    private static async Task<IReadOnlyList<Held>> HeldAll(IQueryable<Account> query)
+    {
+        var accounts = await query.OrderBy(a => a.RowId).ToListAsync();
+        var held = new List<Held>();
+        foreach (var account in accounts)
+        {
+            held.Add(new Held(account.RowId, account));
+        }
+        return held;
+    }
+    private static async Task<IReadOnlyList<Held>> HeldSome(IQueryable<Account> query)
+    {
+        var accounts = await query.OrderBy(a => a.RowId).ToListAsync();
+        var held = new List<Held>();
+        foreach (var account in accounts)
+        {
+            if (account.Open)
+            {
+                held.Add(new Held(account.RowId, account));
+            }
+        }
+        return held;
+    }
+}");
+            foreach (var ok in new[] { "FindListed", "FindAll", "FindSome", "FindInline", "HeldAll", "HeldSome" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (two a row; a column no index makes unique)
+            foreach (var bad in new[] { "FindTwice", "FindByRank" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+            Assert.DoesNotContain(r.Warnings, w => w.Contains("'Current'"));
+        }
+
+        [Fact]
         public void QueryFilters_OfShadowColumnsAndBaseConfigurations()
         {
             // (#129's review: EF.Property(x, name) is the column of the name, a shadow one's a value of the row not known;

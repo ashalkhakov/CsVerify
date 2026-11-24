@@ -100,7 +100,7 @@ namespace CsVerify.Verifier.Boogie
                 }
                 // (a list: over its model, where the loop changes no list; any other collection, or a list it may change,
                 // through its enumerator, whose MoveNext checks the collection's version)
-                bool enumerated = isCollection && !(IsList(collection.Type) && ChangesNoList(fs.Statement, QueryList(collection)));
+                bool enumerated = isCollection && !(IsList(collection.Type) && ChangesNoList(fs.Statement, QueryList(collection), fs));
                 bool pairs = CollectionKind(collection.Type) == "Dictionary" && view == null;
                 var element = view != null ? ((INamedTypeSymbol)collection.Type).TypeArguments[view == "Keys" ? 0 : 1]
                             : isString ? _model.Compilation.GetSpecialType(SpecialType.System_Char)
@@ -408,18 +408,100 @@ namespace CsVerify.Verifier.Boogie
         /// A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs;
         /// and, over a list a database query made (trackerToo), EF's tracker calls, which change no list but navigations.
         /// </summary>
-        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
+        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false, CommonForEachStatementSyntax loop = null) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
         {
             IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma) ||
                                         trackerToo && TracksOnly(inv) ||
+                                        // (an Add to a list the loop builds, not its collection, #129)
+                                        loop != null && inv.TargetMethod.Name == "Add" && inv.Instance is ILocalReferenceOperation { Local: var built } && BuiltList(built, loop, _decl) ||
                                         // (a library member of a number, a bool, a char or a string, of such arguments: it reaches no list, #129)
                                         inv.TargetMethod.DeclaringSyntaxReferences.Length == 0 && inv.Instance?.Type is ITypeSymbol it && it.SpecialType != SpecialType.None &&
                                         inv.Arguments.All(a => a.Value.Type is ITypeSymbol at && (Scalar(at) || IsString(at))),
-            IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure),
+            IObjectCreationOperation oc => !IsCollection(oc.Type) && (oc.Constructor == null || oc.Constructor.DeclaringSyntaxReferences.Length > 0 && _contractOf?.Invoke(oc.Constructor) is Contract cc && cc.IsPure || PositionalRecord(oc.Constructor)),
             IPropertyReferenceOperation pr => !IsCollection(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
             IAnonymousFunctionOperation _ => false,
             _ => true,
         });
+
+        /// <summary>
+        /// A list a loop builds: a local made a new List where it's declared (before the loop), used only as Add's
+        /// receiver in the loop, and after it: not the loop's collection, nor anything another name reaches (#129).
+        /// </summary>
+        private bool BuiltList(ILocalSymbol l, CommonForEachStatementSyntax loop, SyntaxNode root)
+        {
+            if (!IsList(l.Type) || l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not VariableDeclaratorSyntax d ||
+                d.Initializer?.Value is not BaseObjectCreationExpressionSyntax { Initializer: null } made || made.ArgumentList?.Arguments.Count > 0 ||
+                d.SpanStart > loop.SpanStart || !root.Span.Contains(d.Span))
+            {
+                return false;
+            }
+            foreach (var id in root.DescendantNodes().OfType<IdentifierNameSyntax>().Where(i => i.Identifier.Text == l.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(i).Symbol, l)))
+            {
+                bool inLoop = loop.Statement.Span.Contains(id.Span);
+                bool after = id.SpanStart >= loop.Span.End;
+                if (inLoop && !(id.Parent is MemberAccessExpressionSyntax { Name.Identifier.Text: "Add" } ma && ma.Expression == id && ma.Parent is InvocationExpressionSyntax) || !inLoop && !after)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>The Adds to a list a loop builds, in its body: as many at most as it adds in a round.</summary>
+        private static int AddsTo(ILocalSymbol l, SyntaxNode body, SemanticModel model) =>
+            body.DescendantNodes().OfType<InvocationExpressionSyntax>().Count(i => i.Expression is MemberAccessExpressionSyntax { Name.Identifier.Text: "Add", Expression: IdentifierNameSyntax id } &&
+                                                                                    SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, l));
+
+        /// <summary>A positional record's constructor (it sets its properties, and nothing else, where nothing else is declared with a value).</summary>
+        private static bool PositionalRecord(IMethodSymbol ctor) =>
+            ctor?.ContainingType is { IsRecord: true } r && ctor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is RecordDeclarationSyntax { ParameterList: not null } rd &&
+            !rd.Members.OfType<PropertyDeclarationSyntax>().Any(p => p.Initializer != null || p.ExpressionBody != null) && !rd.Members.OfType<FieldDeclarationSyntax>().Any() &&
+            !rd.Members.OfType<ConstructorDeclarationSyntax>().Any();
+
+        /// <summary>
+        /// A foreach over a list by its model: each list it builds (BuiltList) has at most k more where it is, k its
+        /// Adds in a round, than where it began, as Houdini's candidate (#129: a list made of a query's rows, one a row).
+        /// </summary>
+        private void BuiltListFacts()
+        {
+            foreach (var fe in _forEachAt.Values.Where(f => f.Collection != null && f.Version == null && f.Mat == null && !f.Opaque && f.View == null))
+            {
+                if (fe.At.Parent is not CommonForEachStatementSyntax loop)
+                {
+                    continue;
+                }
+                var built = loop.Statement.DescendantNodes().OfType<IdentifierNameSyntax>().Select(i => _model.GetSymbolInfo(i).Symbol).OfType<ILocalSymbol>()
+                    .Distinct<ILocalSymbol>(SymbolEqualityComparer.Default).Where(l => BuiltList(l, loop, _decl)).ToList();
+                // (and the collection, which they aren't, as many as where it began)
+                if (built.Count > 0)
+                {
+                    var was = Declare($"lf${fe.Head}${_entryValues.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    _entryValues.Add((fe.Head, was, LengthOf(fe, true)));
+                    if (!_p.Candidates.TryGetValue(fe.Head, out var same))
+                    {
+                        _p.Candidates[fe.Head] = same = new List<KSpec>();
+                    }
+                    same.Add(KSpec.Of(Eq(LengthOf(fe, true), new KVar(was)), fe.At));
+                }
+                foreach (var l in built)
+                {
+                    var list = new KVar(Declare(Local(l), l.Type));
+                    var entry = Declare($"lf${fe.Head}${_entryValues.Count}", _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                    _entryValues.Add((fe.Head, entry, Sel(SizeMap, list)));
+                    foreach (var m in ModelsOf((INamedTypeSymbol)l.Type))
+                    {
+                        _p.Models[m.Name] = m;
+                    }
+                    var k = AddsTo(l, loop.Statement, _model);
+                    var fact = Le(Sel(SizeMap, list), Plus(new KVar(entry), k == 1 ? new KVar(fe.Index) : Times(new KLit(k.ToString()), new KVar(fe.Index))));
+                    if (!_p.Candidates.TryGetValue(fe.Head, out var cands))
+                    {
+                        _p.Candidates[fe.Head] = cands = new List<KSpec>();
+                    }
+                    cands.Add(KSpec.Of(fact, fe.At));
+                }
+            }
+        }
 
         /// <summary>A context's or a set's Add, Attach, Update, Remove (and their Range forms) or Entry.</summary>
         private static bool TracksOnly(IInvocationOperation inv) =>

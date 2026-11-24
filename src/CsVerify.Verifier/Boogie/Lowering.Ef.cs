@@ -1745,7 +1745,7 @@ namespace CsVerify.Verifier.Boogie
         /// Statements a query helper may be read of where it's called: declarations, expression statements, blocks and
         /// ifs, each way ending in a return or neither, and a return last.
         /// </summary>
-        private static bool Inlinable(IEnumerable<IOperation> statements)
+        private bool Inlinable(IEnumerable<IOperation> statements)
         {
             var list = statements.ToList();
             for (int k = 0; k < list.Count; k++)
@@ -1758,7 +1758,8 @@ namespace CsVerify.Verifier.Boogie
                                                                  g.Syntax is not Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0 }:
                     case IExpressionStatementOperation:
                         continue;
-                    case IForEachLoopOperation f when !f.IsAsynchronous && LoopWrites(f) != null:
+                    case IForEachLoopOperation f when !f.IsAsynchronous && LoopWrites(f) is LoopEffects le && (le.Adds.Count == 0 || IsList(f.Collection is IConversionOperation fc ? fc.Operand.Type : f.Collection.Type)) &&
+                                                      f.Syntax is Microsoft.CodeAnalysis.CSharp.Syntax.CommonForEachStatementSyntax fs && le.Adds.Keys.All(l => BuiltList(l, fs, fs.Ancestors().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>().First())):
                         continue;
                     case IBlockOperation b when Inlinable(b.Operations.Append(null)):
                         continue;
@@ -1773,7 +1774,7 @@ namespace CsVerify.Verifier.Boogie
             return false;
 
             // (a branch: whether it ends in a return, or null where it isn't one of those)
-            static bool? Ends(IOperation s)
+            bool? Ends(IOperation s)
             {
                 var ops = s is IBlockOperation b ? b.Operations.ToList() : new List<IOperation> { s };
                 if (ops.Count > 0 && ops[^1] is IReturnOperation)
@@ -1851,26 +1852,52 @@ namespace CsVerify.Verifier.Boogie
         /// A query helper's foreach whose body only sets fields, of values that run nothing (a number's ToString aside):
         /// those fields. Else null. (Its obligations are the helper's, proved where it's verified; here, what it changes.)
         /// </summary>
-        private static List<ISymbol> LoopWrites(IForEachLoopOperation f)
+        private sealed class LoopEffects
         {
-            var writes = new List<ISymbol>();
-            foreach (var s in f.Body is IBlockOperation b ? b.Operations : ImmutableArrayOf(f.Body))
+            /// <summary>The fields it sets.</summary>
+            public readonly List<ISymbol> Fields = new List<ISymbol>();
+            /// <summary>The lists it builds (Lowering.ForEach's BuiltList), with how many Adds of each a round has at most.</summary>
+            public readonly Dictionary<ILocalSymbol, int> Adds = new Dictionary<ILocalSymbol, int>(SymbolEqualityComparer.Default);
+        }
+
+        private static LoopEffects LoopWrites(IForEachLoopOperation f)
+        {
+            var effects = new LoopEffects();
+            return Statements(f.Body) ? effects : null;
+
+            bool Statements(IOperation body)
             {
-                if (s is not IExpressionStatementOperation { Operation: ISimpleAssignmentOperation { Target: IMemberReferenceOperation { Member: var member } target, Value: var value } } ||
-                    !IsField(member) || member.IsStatic ||
-                    !new IOperation[] { ((IMemberReferenceOperation)target).Instance, value }.All(x => x != null && x.DescendantsAndSelf().All(Quiet)))
+                foreach (var s in body is IBlockOperation b ? b.Operations : ImmutableArrayOf(body))
                 {
-                    return null;
+                    switch (s)
+                    {
+                        case IExpressionStatementOperation { Operation: ISimpleAssignmentOperation { Target: IMemberReferenceOperation { Member: var member } target, Value: var value } }
+                            when IsField(member) && !member.IsStatic && new IOperation[] { target.Instance, value }.All(x => x != null && x.DescendantsAndSelf().All(Quiet)):
+                            effects.Fields.Add(member.OriginalDefinition);
+                            continue;
+                        // (an Add to a list the loop builds, of a value that runs nothing)
+                        case IExpressionStatementOperation { Operation: IInvocationOperation { TargetMethod.Name: "Add", Instance: ILocalReferenceOperation { Local: var list }, Arguments: [var item] } }
+                            when IsList(list.Type) && item.Value.DescendantsAndSelf().All(Quiet):
+                            effects.Adds[list] = effects.Adds.TryGetValue(list, out var n) ? n + 1 : 1;
+                            continue;
+                        case IConditionalOperation c when c.Condition.DescendantsAndSelf().All(Quiet) && Statements(c.WhenTrue) && (c.WhenFalse == null || Statements(c.WhenFalse)):
+                            continue;
+                        case IBlockOperation inner when Statements(inner):
+                            continue;
+                        default:
+                            return false;
+                    }
                 }
-                writes.Add(member.OriginalDefinition);
+                return true;
             }
-            return writes;
 
             static bool Quiet(IOperation x) => x switch
             {
                 IInvocationOperation inv => inv.TargetMethod.DeclaringSyntaxReferences.Length == 0 && inv.Instance?.Type is ITypeSymbol it && it.SpecialType != SpecialType.None &&
                                             inv.Arguments.All(a => a.Value.Type is ITypeSymbol at && (at.IsValueType || at.SpecialType == SpecialType.System_String)),
-                IObjectCreationOperation or IAssignmentOperation or IIncrementOrDecrementOperation or IAwaitOperation or IAnonymousFunctionOperation or IDelegateCreationOperation => false,
+                // (a positional record made: its properties set)
+                IObjectCreationOperation oc => PositionalRecord(oc.Constructor),
+                IAssignmentOperation or IIncrementOrDecrementOperation or IAwaitOperation or IAnonymousFunctionOperation or IDelegateCreationOperation => false,
                 _ => true,
             };
         }
@@ -1921,8 +1948,24 @@ namespace CsVerify.Verifier.Boogie
                                 Exception = null,
                             });
                         }
-                        var writes = LoopWrites(f);
+                        var effects = LoopWrites(f);
+                        var writes = effects.Fields;
                         bool columns = _failed != null && writes.Any(w => KernelTypes.Ef.EntityOf(w.ContainingType) != null);
+                        // (a list it builds: k more at most for each of the collection's, k its Adds in a round; what it holds, not known)
+                        foreach (var (built, adds) in effects.Adds)
+                        {
+                            var listType = (INamedTypeSymbol)built.Type;
+                            foreach (var m in ModelsOf(listType))
+                            {
+                                _p.Models[m.Name] = m;
+                            }
+                            var builtList = new KVar(Local(built));
+                            var size = Declare("t$" + _temps++, _model.Compilation.GetSpecialType(SpecialType.System_Int32));
+                            Emit(KHavoc.Of(size));
+                            ShapeFact(AndAlso(Le(Sel(SizeMap, builtList), new KVar(size)), Le(new KVar(size), Plus(Sel(SizeMap, builtList), Times(new KLit(adds.ToString()), Sel(SizeMap, collection))))), f.Syntax);
+                            Emit(KRow.Of(ModelOf("Items", listType).Name, builtList, new KVar(LinqMap("[int]" + TypeOf(ElementOf(listType))))));
+                            Emit(KRow.Of(SizeMap, builtList, new KVar(size)));
+                        }
                         var states = columns ? new KVar(LinqMap("[Ref][Ref]int")) : null;
                         if (columns)
                         {
