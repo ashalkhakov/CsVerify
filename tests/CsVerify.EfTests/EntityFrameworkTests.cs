@@ -1646,7 +1646,9 @@ public sealed class Store(Db db)
         await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Reference == reference);
     public async Task<Purchase?> ByNote(string note) =>
         await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Note == note);
-    public async Task<Purchase?> ByNullableCode(string code) =>
+    public async Task<Purchase?> ByCode(string code) =>
+        await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Code == code);
+    public async Task<Purchase?> ByNullableCode(string? code) =>
         await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Code == code);
     public async Task DeleteAsync(Guid id, bool permanent) =>
         await Delete(await db.Set<Code>().Where(c => c.ExternalId == id).ToListAsync(), permanent);
@@ -1666,11 +1668,12 @@ public sealed class Store(Db db)
         await db.SaveChangesAsync();
     }
 }");
-            foreach (var ok in new[] { "ByNamedAlternateKey", "ByConvertedAlternateKey", "ByReference", "DeleteAsync", "Delete" })
+            // (a nullable column compared to a value not null: its null rows don't match, #130)
+            foreach (var ok in new[] { "ByNamedAlternateKey", "ByConvertedAlternateKey", "ByReference", "ByCode", "DeleteAsync", "Delete" })
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a string column no index makes unique; a nullable one, where null matches every null)
+            // (a string column no index makes unique; a nullable one compared to a value that may be null, which matches every null)
             foreach (var bad in new[] { "ByNote", "ByNullableCode" })
             {
                 Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
