@@ -139,7 +139,10 @@ the context tracks an entity of those types it didn't before isn't known. Of wha
 fixes navigations up from, nothing is said. `Count`, `Any` and the like, and projections of columns, return no entities and are always
 exact. How many rows a query keeps doesn't depend on tracking either: a filter that compares every column of the key or
 of a unique index to a value (`t.ExternalId == id`, whatever else it adds with `&&`) keeps one row at most, as the
-database's rows are distinct by each. A nullable column doesn't count, since null may match many rows.
+database's rows are distinct by each. That holds for a column of strings, or of a type with a value conversion (a
+record struct), too: the database finds the row as it keeps the index unique, by the column's collation or its stored
+value. A nullable column doesn't count, since null may match many rows. Keys and indexes may be named by their
+properties or by their names (`HasAlternateKey("ExternalId")`).
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
 collation, elsewhere than SQLite; dates and floating point, by the column's precision; entities, rows compared by every
@@ -175,11 +178,11 @@ yet keeps its tracking (an inferred invariant, kept where it holds), so `Remove`
 finds the instance its context tracks. `Remove` of an entity the context tracks, whose navigations all lead to its
 principals (a reference with its foreign key on it), changes only that entity's state.
 
-A private method of one parameter, a list, that each of its calls passes the rows a tracked query gives, awaited
+A private method with a list parameter that each of its calls passes the rows a tracked query gives, awaited
 there (`await Remove(await db.Items.Where(...).ToListAsync())`), on a context of this object's (a `readonly` field,
-or a primary constructor's parameter its code doesn't assign), begins knowing what such a list is: its rows are
-different objects, each tracked by that context, as nothing runs between the query and the call. Its `foreach` may
-call EF's tracker too, as above.
+or a primary constructor's parameter its code doesn't assign), its other arguments values that run nothing (a
+parameter, a local, a constant), begins knowing what such a list is: its rows are different objects, each tracked by
+that context, as nothing runs between the query and the call. Its `foreach` may call EF's tracker too, as above.
 
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.

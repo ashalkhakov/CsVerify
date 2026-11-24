@@ -1555,6 +1555,95 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void KeysByName_ConvertedAndStringColumns_AndListsPassedWithOthers()
+        {
+            // (#129's review: an alternate key named by a string; a unique column of a converted record struct, or of
+            // strings, keeps one row at most, as the database keeps it unique; a tracked list passed with a flag)
+            var r = VerifyEf(@"public sealed class Account
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+}
+public readonly record struct OwnerId(Guid Value);
+public sealed class Owner { public long RowId { get; set; } }
+public sealed class Holder
+{
+    public long RowId { get; set; }
+    public OwnerId Id { get; set; }
+    public Owner? Owner { get; set; }
+}
+public sealed class Purchase
+{
+    public long Id { get; set; }
+    public string Reference { get; set; } = """";
+    public string Note { get; set; } = """";
+    public string? Code { get; set; }
+}
+public sealed class Code
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public bool IsDeleted { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Owner>().HasKey(x => x.RowId);
+        b.Entity<Account>().HasAlternateKey(""ExternalId"");
+        b.Entity<Holder>().HasKey(x => x.RowId);
+        b.Entity<Holder>().Property(x => x.Id).HasConversion(id => id.Value, value => new OwnerId(value));
+        b.Entity<Holder>().HasAlternateKey(x => x.Id);
+        b.Entity<Purchase>().HasIndex(x => x.Reference).IsUnique();
+        b.Entity<Purchase>().HasIndex(""Code"").IsUnique();
+        b.Entity<Code>();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<long?> ByNamedAlternateKey(Guid id) =>
+        await db.Set<Account>().AsNoTracking().Where(a => a.ExternalId == id).Select(a => (long?)a.Id).SingleOrDefaultAsync();
+    public async Task<long?> ByConvertedAlternateKey(Guid id)
+    {
+        var holder = new OwnerId(id);
+        return await db.Set<Holder>().AsNoTracking().Where(h => h.Id == holder && h.Owner != null).Select(h => (long?)h.Owner!.RowId).FirstOrDefaultAsync();
+    }
+    public async Task<Purchase?> ByReference(string reference) =>
+        await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Reference == reference);
+    public async Task<Purchase?> ByNote(string note) =>
+        await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Note == note);
+    public async Task<Purchase?> ByNullableCode(string code) =>
+        await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Code == code);
+    public async Task DeleteAsync(Guid id, bool permanent) =>
+        await Delete(await db.Set<Code>().Where(c => c.ExternalId == id).ToListAsync(), permanent);
+    private async Task Delete(List<Code> codes, bool permanent)
+    {
+        foreach (var code in codes)
+        {
+            if (permanent)
+            {
+                db.Remove(code);
+            }
+            else
+            {
+                code.IsDeleted = true;
+            }
+        }
+        await db.SaveChangesAsync();
+    }
+}");
+            foreach (var ok in new[] { "ByNamedAlternateKey", "ByConvertedAlternateKey", "ByReference", "DeleteAsync", "Delete" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a string column no index makes unique; a nullable one, where null matches every null)
+            foreach (var bad in new[] { "ByNote", "ByNullableCode" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
         public void QueryFilters_OfShadowColumnsAndBaseConfigurations()
         {
             // (#129's review: EF.Property(x, name) is the column of the name, a shadow one's a value of the row not known;

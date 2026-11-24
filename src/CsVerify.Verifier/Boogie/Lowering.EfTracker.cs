@@ -84,18 +84,26 @@ namespace CsVerify.Verifier.Boogie
         }
 
         /// <summary>
-        /// A private method of one parameter, a list, that each of its calls (in its type, on this) passes the rows a
-        /// tracked query of the same context gives, awaited there (await q.ToListAsync()): at entry, its rows are
-        /// different objects, each tracked by that context, as nothing runs between the query and the call (#129).
+        /// A private method with a list parameter that each of its calls (in its type, on this) passes the rows a tracked
+        /// query of the same context gives, awaited there (await q.ToListAsync()), its other arguments values that run
+        /// nothing (a parameter, a local, a constant): at entry, its rows are different objects, each tracked by that
+        /// context, as nothing runs between the query and the call (#129).
         /// </summary>
         private void TrackedListEntry()
         {
             if (_failed == null || _m.DeclaredAccessibility != Accessibility.Private || _m.MethodKind != MethodKind.Ordinary || _m.IsVirtual || _m.IsAbstract || _m.IsOverride ||
-                _m.Parameters is not [{ RefKind: RefKind.None } p] || !IsList(p.Type) || KernelTypes.Ef.EntityOf(ElementOf(p.Type)) == null ||
-                p.Type is not INamedTypeSymbol listType)
+                _m.Parameters.Any(x => x.RefKind != RefKind.None))
             {
                 return;
             }
+            foreach (var p in _m.Parameters.Where(x => IsList(x.Type) && KernelTypes.Ef.EntityOf(ElementOf(x.Type)) != null))
+            {
+                TrackedListEntry(p, (INamedTypeSymbol)p.Type);
+            }
+        }
+
+        private void TrackedListEntry(IParameterSymbol p, INamedTypeSymbol listType)
+        {
             ISymbol context = null;
             IOperation contextOp = null;
             int calls = 0;
@@ -115,7 +123,10 @@ namespace CsVerify.Verifier.Boogie
                     }
                     var at = name.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax ma && ma.Name == name ? ma.Parent : name.Parent;
                     if (at is not Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax || model.GetOperation(at) is not IInvocationOperation call ||
-                        !(call.Instance is null or IInstanceReferenceOperation) || call.Arguments is not [{ ArgumentKind: ArgumentKind.Explicit } arg] ||
+                        !(call.Instance is null or IInstanceReferenceOperation) ||
+                        call.Arguments.FirstOrDefault(a => SymbolEqualityComparer.Default.Equals(a.Parameter?.OriginalDefinition, p.OriginalDefinition)) is not { ArgumentKind: ArgumentKind.Explicit } arg ||
+                        call.Arguments.Any(a => a != arg && !(Unconverted(a.Value) is IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation { Instance: null or IInstanceReferenceOperation } ||
+                                                              a.Value.ConstantValue.HasValue)) ||
                         Unconverted(arg.Value) is not IAwaitOperation { Operation: IInvocationOperation to } || to.TargetMethod.Name is not ("ToListAsync" or "ToArrayAsync") ||
                         !IsEfMethod(to.TargetMethod) || DatabaseRootIn(to, out bool noTracking, null) == null || noTracking ||
                         QueryContext(to) is not (ISymbol c, IOperation cop) || context != null && !SymbolEqualityComparer.Default.Equals(context, c))

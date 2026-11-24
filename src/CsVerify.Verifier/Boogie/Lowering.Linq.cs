@@ -2080,12 +2080,15 @@ namespace CsVerify.Verifier.Boogie
                 : new[] { op };
 
         /// <summary>
-        /// The row's column a value not of the row is compared to: a non-nullable one the database and .NET compare
-        /// alike (a null would match every row whose column is null, which a unique index may allow).
+        /// The row's column a value not of the row is compared to: a non-nullable one of a value type or a string (a null
+        /// would match every row whose column is null, which a unique index may allow). How .NET compares them doesn't
+        /// matter here: the database finds the row as it keeps the index unique, by the column's collation or its
+        /// converted value (#129).
         /// </summary>
         private static IPropertySymbol Fixed(IOperation column, IOperation value, IParameterSymbol p) =>
             Unconverted(column) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } pr && SymbolEqualityComparer.Default.Equals(r.Parameter, p) &&
-            ComparedAlike(pr.Property.Type) && pr.Property.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } &&
+            (pr.Property.Type.IsValueType || pr.Property.Type.SpecialType == SpecialType.System_String) &&
+            pr.Property.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } &&
             !(pr.Property.Type.IsReferenceType && pr.Property.NullableAnnotation != NullableAnnotation.NotAnnotated) &&
             !value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p))
                 ? pr.Property

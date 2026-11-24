@@ -859,7 +859,8 @@ namespace CsVerify.Verifier
                     }
                     break;
                 case "HasAlternateKey":
-                    if (Properties(argModel, arg, e) is List<IPropertySymbol> alt)
+                    // (by the properties, or their names: HasAlternateKey("ExternalId"), #129)
+                    if ((Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> alt)
                     {
                         e.AddUnique(alt);
                         e.Alternate.Add(alt);
@@ -868,7 +869,7 @@ namespace CsVerify.Verifier
                     break;
                 case "HasIndex":
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
-                        && Properties(argModel, arg, e) is List<IPropertySymbol> index)
+                        && (Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> index)
                     {
                         e.AddUnique(index);
                     }

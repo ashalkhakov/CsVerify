@@ -49,6 +49,31 @@ public sealed class Parcels
 }";
 
         [Fact]
+        public void AnIdentityUsersId_FromAReferencedProject_IsItsColumn()
+        {
+            // (#129's review: User : IdentityUser<long>, IRow in a domain project, IRow.Id the library's Id)
+            var r = VerifyEfWithProjects(@"public sealed class Users
+{
+    private readonly Shop _shop;
+    public Users(Shop shop) { _shop = shop; }
+    public async Task<long?> IdOf(string name) =>
+        await _shop.Set<User>().AsNoTracking().Where(u => u.UserName == name).Select(u => (long?)u.Id).FirstOrDefaultAsync();
+    public async Task<List<long>> Ids() =>
+        await _shop.Set<User>().AsNoTracking().Select(u => u.Id).ToListAsync();
+}",
+                new Project("Domain", @"using Microsoft.AspNetCore.Identity;
+public interface IRow { long Id { get; set; } }
+public class User : IdentityUser<long>, IRow { }", new string[0]),
+                new Project("Data", @"using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+public sealed class Shop : IdentityDbContext<User, IdentityRole<long>, long>
+{
+    public Shop(DbContextOptions<Shop> o) : base(o) { }
+}", new[] { "Domain" }));
+            Assert.True(r.Errors("Ids").Length == 0, r.Explain("Ids"));
+        }
+
+        [Fact]
         public void AnEntityOfOneProject_ConfiguredInAnother_IsOneType()
         {
             // (#119: each type, field and procedure declared once)
