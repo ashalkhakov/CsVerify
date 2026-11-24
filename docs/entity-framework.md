@@ -211,8 +211,10 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
   navigations and call what EF translates (operators, string, `Math` and date members, LINQ over navigations and over
   lists passed in); a method of the program, or a property computed in C# or `[NotMapped]`, makes EF throw when the
   query runs. What doesn't depend on the row is evaluated before the query is sent, so it may call anything, and so
-  may the final `Select`, which runs on the client. And an `Include` path that comes back to a type on it
-  (`Include(o => o.Customer).ThenInclude(c => c.Orders)`) in a query without tracking: EF refuses it.
+  may the final `Select`, which runs on the client. And an `Include` path that follows a navigation and then its
+  inverse (`Include(o => o.Customer).ThenInclude(c => c.Orders)`) in a query without tracking: EF refuses it. A
+  navigation back to its own type with no inverse (`Include(p => p.Offset)`) is no cycle; where the model doesn't say
+  what a navigation's inverse is, one back to the type it left may be it.
 
 ## The change tracker
 

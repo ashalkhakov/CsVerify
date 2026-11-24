@@ -542,8 +542,8 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
 - Rows read without tracking are new objects (allocated where read); a reference navigation not included is null, a
   collection one as its initializer made it (a new empty `List`, or null), but where an Include path loads its type.
   An included reference is the row its foreign key names (or null, where the key can be), an included `List` (or
-  `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that comes
-  back to a type on it is CSV1032. An await leaves their columns as they were where no other code reaches them (the
+  `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that follows
+  a navigation back by its inverse (or one the model doesn't pair, back to the type it left) is CSV1032. An await leaves their columns as they were where no other code reaches them (the
   method lets none out: `EntitiesStayHere`): the columns of the entities the method's code can reach, those of its
   expressions' types and what their navigations lead to, not the whole model's.
 - Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of

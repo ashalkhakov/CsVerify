@@ -29,7 +29,7 @@ namespace CsVerify.Verifier.Boogie
             /// <summary>What Include and ThenInclude load: each path's navigations, in order; the first ones, Include's.</summary>
             public List<List<IPropertySymbol>> IncludePaths = new List<List<IPropertySymbol>>();
             public HashSet<IPropertySymbol> Includes = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
-            /// <summary>The types on the last path, to find one that comes back to a type on it (CSV1032 without tracking).</summary>
+            /// <summary>The types on the last path, to find a navigation that goes back by its inverse (CSV1032 without tracking).</summary>
             public List<ITypeSymbol> IncludePath = new List<ITypeSymbol>();
             public SyntaxNode Cycle;
 
@@ -159,9 +159,18 @@ namespace CsVerify.Verifier.Boogie
                         src.ClearIncludePath();
                         return src;
                     }
-                    if (src.IncludePath.Count > 0 && src.IncludePath.Contains(to, SymbolEqualityComparer.Default))
+                    // (a cycle, which a query without tracking refuses: a navigation followed by its inverse, back to the type it
+                    // left; where the model doesn't say the two aren't each other's, it may be one, #129)
+                    var path = src.IncludePaths[src.IncludePaths.Count - 1];
+                    if (path.Count >= 2 && src.IncludePath.Count >= 2 && SymbolEqualityComparer.Default.Equals(to, src.IncludePath[src.IncludePath.Count - 2]))
                     {
-                        src.Cycle ??= ef.Syntax;
+                        var prev = path[path.Count - 2];
+                        bool other = KernelTypes.Ef.KnownInverse(prev, out var prevInverse) && !SymbolEqualityComparer.Default.Equals(prevInverse, nav) ||
+                                     KernelTypes.Ef.KnownInverse(nav, out var navInverse) && !SymbolEqualityComparer.Default.Equals(navInverse, prev);
+                        if (!other)
+                        {
+                            src.Cycle ??= ef.Syntax;
+                        }
                     }
                     src.AddToIncludePath(to);
                     return src;
@@ -193,7 +202,7 @@ namespace CsVerify.Verifier.Boogie
             }
             var e = t.Entity;
             var at = t.At;
-            // (a path that comes back to a type on it: a query without tracking refuses it, CSV1032)
+            // (a path that goes back by a navigation's inverse: a query without tracking refuses it, CSV1032)
             if (t.Cycle != null && t.NoTracking && !t.IdentityResolution)
             {
                 Emit(KCheck.Of(
@@ -201,7 +210,7 @@ namespace CsVerify.Verifier.Boogie
                     "CSV1032",
                     t.Cycle,
                     notAssumedAfter: true,
-                    message: $"'{t.Cycle}' makes an Include path that comes back to a type on it, which a query without tracking refuses " +
+                    message: $"'{t.Cycle}' makes an Include path that follows a navigation back by its inverse, which a query without tracking refuses " +
                                            "(EF throws when it runs): track the query, or use AsNoTrackingWithIdentityResolution"));
             }
             var rows = new KVar(LinqMap("[int]Ref"));

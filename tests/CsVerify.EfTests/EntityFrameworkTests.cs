@@ -1678,6 +1678,48 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void AnIncludeCycle_IsANavigationThenItsInverse()
+        {
+            // (#129's review: EF refuses, without tracking, a path that follows a navigation and then its inverse; a
+            // navigation back to its own type with none, or one whose inverse isn't on the path, it runs)
+            var r = VerifyEf(@"public sealed class Posting
+{
+    public long Id { get; set; }
+    public long? OffsetPostingId { get; set; }
+    public Posting? OffsetPosting { get; set; }
+    public long? ParentPostingId { get; set; }
+    public Posting? ParentPosting { get; set; }
+    public List<Posting> ChildPostings { get; set; } = [];
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Posting>().HasOne(x => x.ParentPosting).WithMany(x => x.ChildPostings).HasForeignKey(x => x.ParentPostingId).IsRequired(false);
+        b.Entity<Posting>().HasOne(x => x.OffsetPosting).WithMany().HasForeignKey(x => x.OffsetPostingId);
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<List<Posting>> WithOffset() =>
+        await db.Set<Posting>().AsNoTracking().Include(p => p.OffsetPosting).ToListAsync();
+    public async Task<List<Posting>> WithParent() =>
+        await db.Set<Posting>().AsNoTracking().Include(p => p.ParentPosting).ToListAsync();
+    public async Task<List<Posting>> OffsetOfOffset() =>
+        await db.Set<Posting>().AsNoTracking().Include(p => p.OffsetPosting).ThenInclude(p => p!.OffsetPosting).ToListAsync();
+    public async Task<List<Posting>> Cycle() =>
+        await db.Set<Posting>().AsNoTracking().Include(p => p.ParentPosting).ThenInclude(p => p!.ChildPostings).ToListAsync();
+    public async Task<List<Posting>> TrackedCycle() =>
+        await db.Set<Posting>().Include(p => p.ParentPosting).ThenInclude(p => p!.ChildPostings).ToListAsync();
+}");
+            foreach (var ok in new[] { "WithOffset", "WithParent", "OffsetOfOffset", "TrackedCycle" })
+            {
+                Assert.DoesNotContain("CSV1032", r.Errors("Store." + ok));
+            }
+            Assert.Contains("CSV1032", r.Errors("Store.Cycle"));
+        }
+
+        [Fact]
         public void AHelpersShapes_VirtualNavigationsInitializersContainsRecordsIncludesAndRequiredColumns()
         {
             // (#129's review: a virtual navigation nothing overrides; a projection into an initializer of auto-properties, or

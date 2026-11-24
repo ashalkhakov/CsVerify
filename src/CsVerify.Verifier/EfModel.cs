@@ -226,6 +226,24 @@ namespace CsVerify.Verifier
         private readonly Dictionary<IPropertySymbol, IPropertySymbol> _fluentKeys = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
         private readonly Dictionary<IPropertySymbol, IPropertySymbol> _fluentInverse = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
 
+        /// <summary>Each navigation's inverse, where the model says: the one paired with it, or null where it has none (WithMany(), WithOne()).</summary>
+        private readonly Dictionary<IPropertySymbol, IPropertySymbol> _inverses = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Does the model say what a navigation's inverse is (null: it has none)?</summary>
+        public bool KnownInverse(IPropertySymbol nav, out IPropertySymbol inverse) => _inverses.TryGetValue(nav.OriginalDefinition, out inverse);
+
+        private void Pair(IPropertySymbol a, IPropertySymbol b)
+        {
+            if (a != null)
+            {
+                _inverses.TryAdd(a.OriginalDefinition, b?.OriginalDefinition);
+            }
+            if (b != null)
+            {
+                _inverses.TryAdd(b.OriginalDefinition, a?.OriginalDefinition);
+            }
+        }
+
         /// <summary>
         /// The foreign keys of navigations, as EF finds them: the fluent HasOne/HasMany ... HasForeignKey, [ForeignKey] on
         /// the navigation or on the key, or EF's convention (the navigation's name, or the principal's, then the key's
@@ -306,6 +324,10 @@ namespace CsVerify.Verifier
                             inverse = back[0];
                         }
                     }
+                    if (inverse != null)
+                    {
+                        Pair(nav, inverse);
+                    }
                     if (inverse != null && d.ForeignKeys.TryGetValue(inverse, out var fk))
                     {
                         p.CollectionKeys[nav] = fk;
@@ -351,6 +373,11 @@ namespace CsVerify.Verifier
             var second = with.call == null ? null : Nav(with.call.ArgumentList.Arguments.FirstOrDefault()?.Expression, model);
             var reference = name == "HasOne" ? first : second;
             var collection = name == "HasMany" ? first : with.name == "WithMany" ? second : null;
+            // (the two ends, each the other's inverse; WithMany() and WithOne() say the first has none)
+            if (with.call != null && first != null)
+            {
+                Pair(first, second);
+            }
             var key = next.FirstOrDefault(x => x.name == "HasForeignKey").call;
             bool unread = first == null && arg != null || next.Any(x => x.name == "HasPrincipalKey") || name == "HasOne" && with.name == "WithOne" ||
                           name == "HasMany" && with.name == "WithMany";
