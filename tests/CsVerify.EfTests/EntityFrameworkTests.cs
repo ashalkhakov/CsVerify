@@ -1525,8 +1525,18 @@ public sealed class Store(Db db)
     }
     private async Task Remove(List<Item> items)
     {
-        Spec.Requires(Spec.Forall(0, items.Count, i => CsVerify.Ef.Tracker.State(db, items[i]) != CsVerify.Ef.Tracker.Detached));
-        Spec.Requires(Spec.Forall(0, items.Count, i => Spec.Forall(0, i, j => items[j] != items[i])));
+        foreach (var item in items)
+        {
+            db.Remove(item);
+        }
+        await db.SaveChangesAsync();
+    }
+    public async Task RemoveUntracked(Guid id) =>
+        await Detach(await db.Set<Item>().AsNoTracking().Where(t => t.ExternalId == id).ToListAsync());
+    public async Task RemoveTracked(Guid id) =>
+        await Detach(await db.Set<Item>().Where(t => t.ExternalId == id).ToListAsync());
+    private async Task Detach(List<Item> items)
+    {
         foreach (var item in items)
         {
             db.Remove(item);
@@ -1538,9 +1548,67 @@ public sealed class Store(Db db)
             {
                 Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
             }
-            // (a column no index makes unique; a list of rows not known tracked)
+            // (a column no index makes unique; a list of rows not known tracked; one a call passes rows read without tracking)
             Assert.True(r.Errors("Store.FromSourceByColumn").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.FromSourceByColumn"));
             Assert.True(r.Errors("Store.RemoveGiven").SequenceEqual(new[] { "CSV1033" }), r.Explain("Store.RemoveGiven"));
+            Assert.True(r.Errors("Store.Detach").SequenceEqual(new[] { "CSV1033" }), r.Explain("Store.Detach"));
+        }
+
+        [Fact]
+        public void QueryFilters_OfShadowColumnsAndBaseConfigurations()
+        {
+            // (#129's review: EF.Property(x, name) is the column of the name, a shadow one's a value of the row not known;
+            // a filter's lambda isn't run as C#; a filter the kernel doesn't read says nothing, the query still read)
+            var r = VerifyEf(@"public abstract class Base
+{
+    public long Id { get; set; }
+    public bool IsDeleted { get; set; }
+}
+public sealed class Item : Base { public Guid ExternalId { get; set; } }
+public sealed class Other
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public int Rank { get; set; }
+}
+public abstract class BaseConfiguration<T> : IEntityTypeConfiguration<T> where T : Base
+{
+    public virtual void Configure(Microsoft.EntityFrameworkCore.Metadata.Builders.EntityTypeBuilder<T> builder) => builder.HasQueryFilter(x => x.IsDeleted == false);
+}
+public sealed class ItemConfiguration : BaseConfiguration<Item>
+{
+    public override void Configure(Microsoft.EntityFrameworkCore.Metadata.Builders.EntityTypeBuilder<Item> builder)
+    {
+        base.Configure(builder);
+        builder.HasIndex(x => x.ExternalId).IsUnique();
+    }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        new ItemConfiguration().Configure(b.Entity<Item>());
+        b.Entity<Other>().Property<bool>(""IsDeleted"");
+        b.Entity<Other>().HasQueryFilter(x => !EF.Property<bool>(x, ""IsDeleted"") && EF.Property<int>(x, ""Rank"") > 0);
+        b.Entity<Other>().HasIndex(x => x.ExternalId).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> GenericFilter(Guid id) =>
+        await db.Set<Item>().Where(t => t.ExternalId == id).SingleOrDefaultAsync();
+    public async Task<Other?> ShadowFilter(Guid id) =>
+        await db.Set<Other>().Where(t => t.ExternalId == id).SingleOrDefaultAsync();
+    public async Task<List<Other>> Ranked() =>
+        await db.Set<Other>().AsNoTracking().ToListAsync();
+    public async Task<List<Other>> Shadowed() =>
+        await db.Set<Other>().AsNoTracking().IgnoreQueryFilters().Where(t => EF.Property<bool>(t, ""IsDeleted"")).ToListAsync();
+}");
+            foreach (var ok in new[] { "GenericFilter", "ShadowFilter", "Ranked", "Shadowed" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            Assert.DoesNotContain(r.Methods, m => m.Name.Contains("<lambda") && m.Name.Contains("Configure") || m.Name.Contains("OnModelCreating.<lambda"));
         }
 
         [Fact]

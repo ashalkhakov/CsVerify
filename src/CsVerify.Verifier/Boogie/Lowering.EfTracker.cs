@@ -83,6 +83,97 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>
+        /// A private method of one parameter, a list, that each of its calls (in its type, on this) passes the rows a
+        /// tracked query of the same context gives, awaited there (await q.ToListAsync()): at entry, its rows are
+        /// different objects, each tracked by that context, as nothing runs between the query and the call (#129).
+        /// </summary>
+        private void TrackedListEntry()
+        {
+            if (_failed == null || _m.DeclaredAccessibility != Accessibility.Private || _m.MethodKind != MethodKind.Ordinary || _m.IsVirtual || _m.IsAbstract || _m.IsOverride ||
+                _m.Parameters is not [{ RefKind: RefKind.None } p] || !IsList(p.Type) || KernelTypes.Ef.EntityOf(ElementOf(p.Type)) == null ||
+                p.Type is not INamedTypeSymbol listType)
+            {
+                return;
+            }
+            ISymbol context = null;
+            IOperation contextOp = null;
+            int calls = 0;
+            foreach (var r in _m.ContainingType.DeclaringSyntaxReferences)
+            {
+                var node = r.GetSyntax();
+                var model = _model.Compilation.ModelOf(node.SyntaxTree);
+                if (node.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>().Any(a => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(a.Left).Symbol, p)))
+                {
+                    return;
+                }
+                foreach (var name in node.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>().Where(n => n.Identifier.Text == _m.Name))
+                {
+                    if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol?.OriginalDefinition, _m.OriginalDefinition))
+                    {
+                        continue;
+                    }
+                    var at = name.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax ma && ma.Name == name ? ma.Parent : name.Parent;
+                    if (at is not Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax || model.GetOperation(at) is not IInvocationOperation call ||
+                        !(call.Instance is null or IInstanceReferenceOperation) || call.Arguments is not [{ ArgumentKind: ArgumentKind.Explicit } arg] ||
+                        Unconverted(arg.Value) is not IAwaitOperation { Operation: IInvocationOperation to } || to.TargetMethod.Name is not ("ToListAsync" or "ToArrayAsync") ||
+                        !IsEfMethod(to.TargetMethod) || DatabaseRootIn(to, out bool noTracking, null) == null || noTracking ||
+                        QueryContext(to) is not (ISymbol c, IOperation cop) || context != null && !SymbolEqualityComparer.Default.Equals(context, c))
+                    {
+                        return;
+                    }
+                    context = c;
+                    contextOp = cop;
+                    calls++;
+                }
+            }
+            // (a primary constructor's parameter its type's code doesn't assign: the same context here)
+            if (calls == 0 || context is IParameterSymbol && _m.ContainingType.DeclaringSyntaxReferences.Any(r =>
+                    r.GetSyntax().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>()
+                     .Any(a => SymbolEqualityComparer.Default.Equals(_model.Compilation.ModelOf(r.SyntaxTree).GetSymbolInfo(a.Left).Symbol, context))))
+            {
+                return;
+            }
+            foreach (var m in ModelsOf(listType))
+            {
+                _p.Models[m.Name] = m;
+            }
+            var list = new KVar(Local(p));
+            var items = ModelOf("Items", listType).Name;
+            var n = Sel(SizeMap, list);
+            var ctx = Spec(contextOp, null);
+            var i = Atom();
+            var j = Atom();
+            ShapeFact(Over(KLit.Zero, n, i, AndAlso(Ne(State(ctx, Sel(items, list, i)), I(EfDetached)),
+                Over(KLit.Zero, i, j, Ne(Sel(items, list, j), Sel(items, list, i))))), _decl);
+        }
+
+        /// <summary>The context a query's table is read through, where it is this object's (a field, or a primary constructor's parameter).</summary>
+        private static (ISymbol, IOperation)? QueryContext(IInvocationOperation q)
+        {
+            IOperation op = q;
+            for (int depth = 0; depth < 64 && op is IInvocationOperation c; depth++)
+            {
+                if (c.TargetMethod.Name == "Set" && DbSetEntity(c.Type) != null)
+                {
+                    op = c.Instance;
+                    break;
+                }
+                op = Unconverted(c.Instance ?? c.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value);
+                if (op is IPropertyReferenceOperation pr && DbSetEntity(pr.Type) != null)
+                {
+                    op = pr.Instance;
+                    break;
+                }
+            }
+            return Unconverted(op) switch
+            {
+                IParameterReferenceOperation { Parameter.ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor } } pp => (pp.Parameter, pp),
+                IFieldReferenceOperation { Instance: IInstanceReferenceOperation, Field.IsReadOnly: true } fr => (fr.Field, fr),
+                _ => null,
+            };
+        }
+
         private string TokenRead(EfModel.Entity e, int j)
         {
             if (_tokenRead.TryGetValue((e, j), out var name))

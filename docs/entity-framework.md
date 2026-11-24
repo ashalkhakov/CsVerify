@@ -159,6 +159,10 @@ operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...
 order or a page as before them. A private method of the type without parameters that returns a query in one
 expression (`IQueryable<Item> Items() => db.Items.Include(i => i.Owner)`, a table written once with its includes) is
 read where a query is built on it. A query as a value is an object, not null; what it reads is read where it runs.
+`EF.Property<T>(x, "Name")` is the column of that name: the class's property, or a shadow column's value, not known.
+A query filter the verifier doesn't read (of a type it doesn't have, say) says nothing of the rows, as one left
+out; the query is read all the same. The lambdas the model's builders take (`HasQueryFilter(x => ...)`,
+`HasIndex(x => ...)`) are EF's to read, not run, and aren't verified as C#.
 In a query's lambda, a subquery of a scalar correlated by the row
 (`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known.
 `LoadAsync` of a query reads it, tracked: its rows are tracked from there on. A list `ToListAsync` (or LINQ's `ToList`)
@@ -171,11 +175,11 @@ yet keeps its tracking (an inferred invariant, kept where it holds), so `Remove`
 finds the instance its context tracks. `Remove` of an entity the context tracks, whose navigations all lead to its
 principals (a reference with its foreign key on it), changes only that entity's state.
 
-A private method that a list is passed to may say what it needs of the rows, which its callers prove:
-`Spec.Requires(Spec.Forall(0, items.Count, i => CsVerify.Ef.Tracker.State(db, items[i]) != CsVerify.Ef.Tracker.Detached))`
-(each is tracked) and `Spec.Requires(Spec.Forall(0, items.Count, i => Spec.Forall(0, i, j => items[j] != items[i])))`
-(no two the same). Where every call of the method passes a list a query made, its `foreach` may call EF's tracker
-too, as above.
+A private method of one parameter, a list, that each of its calls passes the rows a tracked query gives, awaited
+there (`await Remove(await db.Items.Where(...).ToListAsync())`), on a context of this object's (a `readonly` field,
+or a primary constructor's parameter its code doesn't assign), begins knowing what such a list is: its rows are
+different objects, each tracked by that context, as nothing runs between the query and the call. Its `foreach` may
+call EF's tracker too, as above.
 
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.

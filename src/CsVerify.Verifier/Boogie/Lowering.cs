@@ -413,6 +413,7 @@ namespace CsVerify.Verifier.Boogie
                         Emit(KAssign.Of(_unshared, MapLambda("r$", "Ref", KLit.False)));
                     }
                     TrackerEntry();
+                    TrackedListEntry();
                     MemLiveEntry();
                     // (a struct's constructor: its value begins as the default)
                     if (_p.StructThis && !_p.StructRefThis)

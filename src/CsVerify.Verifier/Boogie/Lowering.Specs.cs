@@ -19,6 +19,11 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification: mathematics, its array reads, lengths, divisions and functions' calls kept for Checks' well-definedness.</summary>
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
+            // (EF.Property(row, "Name"): a column's value by its name, #129)
+            if (e is IInvocationOperation ep && EfProperty(ep) is string column)
+            {
+                return EfPropertyValue(ep, column, result);
+            }
             // (in a database query's lambda, a correlated subquery of a scalar: a value of its row not known, #129)
             if (e is IInvocationOperation sq && (sq.Type?.IsValueType == true || IsString(sq.Type)) && (IsQueryableMethod(sq.TargetMethod) || IsEfMethod(sq.TargetMethod)) &&
                 DatabaseRoot(sq, out _) != null && SubqueryLambda(sq) != null)

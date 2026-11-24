@@ -233,10 +233,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var filter in e.Filters)
                 {
-                    if (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body })
+                    var i = Atom();
+                    if (FilterOf(filter, Sel(rows, i)) is KExpr passes)
                     {
-                        var i = Atom();
-                        LinqFact(Over(KLit.Zero, len, i, Apply((body, filter.Symbol.Parameters[0], null), Sel(rows, i))), at);
+                        LinqFact(Over(KLit.Zero, len, i, passes), at);
                     }
                 }
             }
@@ -765,6 +765,26 @@ namespace CsVerify.Verifier.Boogie
             AndAlso(AndAlso(Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))), Filtered(t, p, Column(nav, x))));
 
         /// <summary>The entity passes its type's query filters (true where the query ignores them), as the database evaluates them.</summary>
+        /// <summary>
+        /// What a query filter says of a row, where the kernel reads it; else null: a filter it doesn't read says nothing
+        /// of the rows, as one left out (#129: a shadow column's, a base configuration's of another assembly).
+        /// </summary>
+        private KExpr FilterOf(IAnonymousFunctionOperation filter, KExpr row)
+        {
+            if (filter.Body.Operations.Length != 1 || filter.Body.Operations[0] is not IReturnOperation { ReturnedValue: { } body } || DatabaseLambdaNotYet(filter, false) != null)
+            {
+                return null;
+            }
+            try
+            {
+                return Apply((body, filter.Symbol.Parameters[0], null), row);
+            }
+            catch (NotTranslated)
+            {
+                return null;
+            }
+        }
+
         private KExpr Filtered(DbTable t, EfModel.Entity of, KExpr o)
         {
             if (t.IgnoreFilters)
@@ -777,9 +797,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 foreach (var filter in of.Filters)
                 {
-                    if (filter.Body.Operations.Length == 1 && filter.Body.Operations[0] is IReturnOperation { ReturnedValue: { } body })
+                    if (FilterOf(filter, o) is KExpr passes)
                     {
-                        all = AndAlso(all, Apply((body, filter.Symbol.Parameters[0], null), o));
+                        all = AndAlso(all, passes);
                     }
                 }
             }
@@ -1292,13 +1312,6 @@ namespace CsVerify.Verifier.Boogie
                         return why;
                     }
                 }
-                foreach (var filter in root.Filters)
-                {
-                    if (DatabaseLambdaNotYet(filter, false) is string why)
-                    {
-                        return "a query filter's " + why;
-                    }
-                }
             }
             // (what the query gives, at its last operator: rows of an entity, of which more is known than their columns)
             IOperation up = inv.Parent;
@@ -1542,6 +1555,12 @@ namespace CsVerify.Verifier.Boogie
             {
                 if (op is IArgumentOperation { Parameter.Type: INamedTypeSymbol { Name: "Expression" } } a && a.Parent is IInvocationOperation inv &&
                     (IsQueryableMethod(inv.TargetMethod) || IsEfMethod(inv.TargetMethod)) && DatabaseRootIn(inv, out _, null) != null)
+                {
+                    return true;
+                }
+                // (and the model's, a builder's HasQueryFilter(x => ...), HasIndex(x => ...): EF reads them, never runs them, #129)
+                if (op is IArgumentOperation { Parameter.Type: INamedTypeSymbol { Name: "Expression" } } ma && ma.Parent is IInvocationOperation builder &&
+                    IsEfMethod(builder.TargetMethod) && builder.TargetMethod.ContainingNamespace?.ToDisplayString() == "Microsoft.EntityFrameworkCore.Metadata.Builders")
                 {
                     return true;
                 }

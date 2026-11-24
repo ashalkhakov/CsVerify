@@ -146,12 +146,41 @@ namespace CsVerify.Verifier.Boogie
                                                         AsciiTest(inv.TargetMethod) ||
                                                         SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) ||
                                                         // (a string's [Pure] member with a stub, a list's Contains: as a specification reads them)
-                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) ||
+                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) || EfProperty(inv) != null ||
                                                         inv.Instance != null && CollectionKind(CollectionOf(inv.Instance.Type)) == "List" && inv.TargetMethod.Name == "Contains" && inv.Arguments.Length == 1):
                         return null;
                 }
             }
             return (body, fn.Symbol.Parameters.ElementAtOrDefault(0), fn.Symbol.Parameters.ElementAtOrDefault(1));
+        }
+
+        /// <summary>
+        /// EF.Property&lt;T&gt;(row, "Name") of a constant name, a column's value by name (a shadow column's, that the class
+        /// hasn't): the name; else null.
+        /// </summary>
+        private static string EfProperty(IInvocationOperation inv) =>
+            KernelTypes.Ef != null && inv.TargetMethod is { Name: "Property", IsStatic: true, IsGenericMethod: true } m && m.ContainingType?.ToDisplayString() == "Microsoft.EntityFrameworkCore.EF" &&
+            inv.Arguments.Length == 2 && inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Last().Value.ConstantValue is { HasValue: true, Value: string name } ? name : null;
+
+        /// <summary>
+        /// EF.Property's value (EfProperty): the class's property of the name, where it maps one; a shadow column's, a
+        /// value of the row not known (a map fresh at each application).
+        /// </summary>
+        private KExpr EfPropertyValue(IInvocationOperation inv, string name, IParameterSymbol result)
+        {
+            var row = Unconverted(inv.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+            var x = Spec(row, result);
+            if (KernelTypes.Ef.EntityOf(row.Type) is EfModel.Entity e &&
+                EfModel.PropertiesOf(e.Type).FirstOrDefault(p => p.Name == name) is IPropertySymbol p && IsField(p) && SymbolEqualityComparer.Default.Equals(p.Type, inv.Type))
+            {
+                _p.AddField(p.OriginalDefinition);
+                return Column(p, x);
+            }
+            if (!InSubset(inv.Type))
+            {
+                throw new NotTranslated("EF.Property of " + inv.Type);
+            }
+            return Sel(LinqMap("[Ref]" + TypeOf(inv.Type)), x);
         }
 
         /// <summary>
