@@ -133,7 +133,9 @@ that type before it. Then an included reference is the row its foreign key names
 the types the `Include` paths load either, every level is the database's, as without tracking; after the query, whether
 the context tracks an entity of those types it didn't before isn't known. Of what else a context tracks, which EF
 fixes navigations up from, nothing is said. `Count`, `Any` and the like, and projections of columns, return no entities and are always
-exact.
+exact. How many rows a query keeps doesn't depend on tracking either: a filter that compares every column of the key or
+of a unique index to a value (`t.ExternalId == id`, whatever else it adds with `&&`) keeps one row at most, as the
+database's rows are distinct by each. A nullable column doesn't count, since null may match many rows.
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
 collation, elsewhere than SQLite; dates and floating point, by the column's precision; entities, rows compared by every

@@ -566,7 +566,9 @@ namespace CsVerify.Verifier.Boogie
                         return _inDatabase > 0 ? throw new NotTranslated("Where with an index, in a database") : FilterAt(src, KAbs.Of(j, Apply(f, src.Elem.At(j), j)), q.Syntax);
                     }
                     var x = Atom();
-                    return ByKey(q, () => Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax));
+                    var w = ByKey(q, () => Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax));
+                    AtMostOneRow(q, w, q.Syntax);
+                    return w;
                 }
                 // (each first occurrence of the first source's elements that the second has, or hasn't)
                 case "Intersect" or "Except" when args.Count == 2 && _inDatabase == 0:
@@ -1866,7 +1868,9 @@ namespace CsVerify.Verifier.Boogie
             }
             var f = LambdaArg(call, 1);
             var x = Atom();
-            return ByKey(call, () => Filter(src, KAbs.Of(x, Apply(f, x)), at));
+            var s = ByKey(call, () => Filter(src, KAbs.Of(x, Apply(f, x)), at));
+            AtMostOneRow(call, s, at);
+            return s;
         }
 
         /// <summary>
@@ -1889,6 +1893,81 @@ namespace CsVerify.Verifier.Boogie
             {
                 _known = known;
             }
+        }
+
+        /// <summary>
+        /// A database filter whose predicate fixes the key or a unique index (an equality of each of its columns to a
+        /// value not of the row): at most one row, tracked or not. The database's rows are distinct by each, and
+        /// tracking changes which instance a row is, not how many rows there are (#125).
+        /// </summary>
+        private void AtMostOneRow(IInvocationOperation call, LSeq s, SyntaxNode at)
+        {
+            if (KernelTypes.Ef == null || call.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is not IOperation arg ||
+                PureLambda(arg) is not var (body, p, _) || p == null || KernelTypes.Ef.EntityOf(p.Type) is not EfModel.Entity e ||
+                TableRows(call.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value ?? call.Instance) != e)
+            {
+                return;
+            }
+            var fixedColumns = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            foreach (var c in Conjuncts(Unconverted(body)))
+            {
+                if (c is IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals } eq &&
+                    (Fixed(eq.LeftOperand, eq.RightOperand, p) ?? Fixed(eq.RightOperand, eq.LeftOperand, p)) is IPropertySymbol col)
+                {
+                    fixedColumns.Add(col.OriginalDefinition);
+                }
+            }
+            if (e.Identifying.Any(set => set.Count > 0 && set.All(c => fixedColumns.Contains(c.OriginalDefinition))))
+            {
+                ShapeFact(Le(s.Length, KLit.One), at);
+            }
+        }
+
+        private static IEnumerable<IOperation> Conjuncts(IOperation op) =>
+            op is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } and
+                ? Conjuncts(Unconverted(and.LeftOperand)).Concat(Conjuncts(Unconverted(and.RightOperand)))
+                : new[] { op };
+
+        /// <summary>
+        /// The row's column a value not of the row is compared to: a non-nullable one the database and .NET compare
+        /// alike (a null would match every row whose column is null, which a unique index may allow).
+        /// </summary>
+        private static IPropertySymbol Fixed(IOperation column, IOperation value, IParameterSymbol p) =>
+            Unconverted(column) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } pr && SymbolEqualityComparer.Default.Equals(r.Parameter, p) &&
+            ComparedAlike(pr.Property.Type) && pr.Property.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } &&
+            !(pr.Property.Type.IsReferenceType && pr.Property.NullableAnnotation != NullableAnnotation.NotAnnotated) &&
+            !value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p))
+                ? pr.Property
+                : null;
+
+        /// <summary>
+        /// The table a query's source reads, each row of it once: the set, through operators that keep or drop rows
+        /// (a filter, an order, a page, tracking, includes); else null.
+        /// </summary>
+        private static EfModel.Entity TableRows(IOperation op)
+        {
+            for (int depth = 0; depth < 64 && op != null; depth++)
+            {
+                op = Unconverted(op);
+                switch (op)
+                {
+                    case IPropertyReferenceOperation pr when DbSetEntity(pr.Type) is EfModel.Entity e:
+                        return e;
+                    case IInvocationOperation set when set.TargetMethod.Name == "Set" && DbSetEntity(set.Type) is EfModel.Entity se:
+                        return se;
+                    case IInvocationOperation c when c.TargetMethod.Name is "Where" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or
+                        "AsNoTracking" or "AsNoTrackingWithIdentityResolution" or "AsTracking" or "Include" or "ThenInclude" or "AsSplitQuery" or
+                        "AsSingleQuery" or "IgnoreQueryFilters" or "IgnoreAutoIncludes" or "TagWith" or "Skip" or "Take":
+                        op = c.Instance ?? c.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value;
+                        continue;
+                    case ILocalReferenceOperation l when Initializer(l) is IOperation init:
+                        op = init;
+                        continue;
+                    default:
+                        return null;
+                }
+            }
+            return null;
         }
 
         /// <summary>A database query's predicate (its second argument) that reads its row only by key properties of a type the database and .NET compare alike.</summary>

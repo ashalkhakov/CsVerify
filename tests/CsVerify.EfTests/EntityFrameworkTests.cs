@@ -1197,6 +1197,8 @@ public static class C
         (await db.Set<Member>().Where(m => m.RowId == row).SingleOrDefaultAsync() ?? throw new InvalidOperationException()).Name;
     public static async Task<string> ByBadge(Db db, int badge) =>
         (await db.Set<Member>().SingleOrDefaultAsync(m => m.Badge == badge) ?? throw new InvalidOperationException()).Name;
+    public static async Task<string> ByName(Db db, string name) =>
+        (await db.Set<Member>().SingleOrDefaultAsync(m => m.Name == name) ?? throw new InvalidOperationException()).Name;
     public static async Task Rekey(Db db, long row)
     {
         var m = await db.Set<Member>().FirstOrDefaultAsync(x => x.RowId == row) ?? throw new InvalidOperationException();
@@ -1209,13 +1211,66 @@ public static class C
         m.Code = Guid.NewGuid();
     }
 }");
-            foreach (var ok in new[] { "ByKey", "ByCode", "WhereByKey", "Added" })
+            // (#125: a unique index's column may differ from its row's in a tracked entity, but not how many rows match)
+            foreach (var ok in new[] { "ByKey", "ByCode", "WhereByKey", "ByBadge", "Added" })
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
-            // (a unique index's column may differ from its row's in a tracked entity; a tracked entity's key mustn't change)
-            Assert.Equal(new[] { "CSV1001" }, r.Errors("ByBadge"));
+            // (a column no index makes unique; a tracked entity's key mustn't change)
+            Assert.Equal(new[] { "CSV1001" }, r.Errors("ByName"));
             Assert.Equal(new[] { "CSV1033" }, r.Errors("Rekey"));
+        }
+
+        [Fact]
+        public void ATrackedQueryOnAUniqueIndex_MatchesOneRowAtMost()
+        {
+            // (#125: the database's rows are distinct by key and by each unique index; tracking changes which instance a
+            // row is, not how many there are. A filter fixing one, whatever else it adds, keeps one row at most)
+            var r = VerifyEf(@"public sealed class Item
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public Guid? Other { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Item>().HasIndex(x => x.ExternalId).IsUnique();
+        b.Entity<Item>().HasIndex(x => x.Other).IsUnique();
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> UntrackedQuery(Guid id) =>
+        await db.Set<Item>().AsNoTracking().Where(t => t.ExternalId == id).SingleOrDefaultAsync();
+    public async Task<Item?> TrackedByKey(long id) =>
+        await db.Set<Item>().Where(t => t.Id == id).SingleOrDefaultAsync();
+    public async Task<Item?> TrackedQuery(Guid id) =>
+        await db.Set<Item>().Where(t => t.ExternalId == id).SingleOrDefaultAsync();
+    public async Task<Item?> TrackedList(Guid id) =>
+        (await db.Set<Item>().Where(t => t.ExternalId == id).ToListAsync()).SingleOrDefault();
+    public async Task<Item?> TrackedByKeyAndColumn(long id, DateTime at) =>
+        await db.Set<Item>().SingleOrDefaultAsync(t => t.Id == id && t.CreatedAt == at);
+    public async Task<Item?> TrackedOrdered(Guid id) =>
+        await db.Set<Item>().Where(t => t.CreatedAt > DateTime.MinValue).OrderBy(t => t.Id).Where(t => id == t.ExternalId).SingleOrDefaultAsync();
+    public async Task<Item?> ByColumn(DateTime at) =>
+        await db.Set<Item>().SingleOrDefaultAsync(t => t.CreatedAt == at);
+    public async Task<Item?> EitherIndex(Guid id, long key) =>
+        await db.Set<Item>().SingleOrDefaultAsync(t => t.ExternalId == id || t.Id == key);
+    public async Task<Item?> NullableIndex(Guid? other) =>
+        await db.Set<Item>().SingleOrDefaultAsync(t => t.Other == other);
+}");
+            foreach (var ok in new[] { "UntrackedQuery", "TrackedByKey", "TrackedQuery", "TrackedList", "TrackedByKeyAndColumn", "TrackedOrdered" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, r.Explain("Store." + ok));
+            }
+            // (a column no index makes unique; either of two; a nullable one, where null matches every null)
+            foreach (var bad in new[] { "ByColumn", "EitherIndex", "NullableIndex" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
         }
 
         [Fact]

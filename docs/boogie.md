@@ -548,7 +548,8 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
   expressions' types and what their navigations lead to, not the whole model's.
 - Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of
   them (a filter's predicate, an order) holds only where the context tracked no entity of the type before
-  (`Known`), and the count's bounds and the results' definitions whatever they hold. Their
+  (`Known`), and the count's bounds and the results' definitions whatever they hold, one row at most among them
+  where a filter fixes the key or a non-nullable unique index (`AtMostOneRow`). Their
   includes are as without tracking where the context tracked none of the types the paths load either. They are
   tracked from here on. `DbSet.Local` is what the context tracks of a type and doesn't delete, once each.
 - The change tracker is state of the program's (`$F.$ef.State`: how each context tracks each object, `$F.$ef.Unsaved`,
