@@ -1510,7 +1510,8 @@ namespace CsVerify.Verifier.Boogie
                     }
                     continue;
                 }
-                if (name is "Select" or "SelectMany" or "GroupBy" || name.StartsWith("Join"))
+                // (a Select keeps the order of the rows it maps, one to one, #130)
+                if (name is "SelectMany" or "GroupBy" || name.StartsWith("Join"))
                 {
                     return false;
                 }
@@ -1706,6 +1707,8 @@ namespace CsVerify.Verifier.Boogie
                     return Unconverted(pr.Instance) is IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } && KernelTypes.Ef.IsContextType(db.Type);
                 case "State":
                     return Unconverted(pr.Instance) is IInvocationOperation { TargetMethod.Name: "Entry" } entry && EfTrackerOp(entry) == null;
+                case "CurrentValue" or "OriginalValue":
+                    return EntryValue(pr) is var (valueOf, _) && EfTrackerOp(valueOf) == null;
                 // (a local view, read by LINQ or for its Count)
                 case "Local" when DbSetEntity(pr.Instance.Type) != null:
                 {
@@ -1876,7 +1879,7 @@ namespace CsVerify.Verifier.Boogie
             public readonly Dictionary<ILocalSymbol, int> Adds = new Dictionary<ILocalSymbol, int>(SymbolEqualityComparer.Default);
         }
 
-        private static LoopEffects LoopWrites(IForEachLoopOperation f)
+        private LoopEffects LoopWrites(IForEachLoopOperation f)
         {
             var effects = new LoopEffects();
             return Statements(f.Body) ? effects : null;
@@ -1888,15 +1891,15 @@ namespace CsVerify.Verifier.Boogie
                     switch (s)
                     {
                         case IExpressionStatementOperation { Operation: ISimpleAssignmentOperation { Target: IMemberReferenceOperation { Member: var member } target, Value: var value } }
-                            when IsField(member) && !member.IsStatic && new IOperation[] { target.Instance, value }.All(x => x != null && x.DescendantsAndSelf().All(Quiet)):
+                            when IsField(member) && !member.IsStatic && new IOperation[] { target.Instance, value }.All(x => x != null && QuietAll(x)):
                             effects.Fields.Add(member.OriginalDefinition);
                             continue;
                         // (an Add to a list the loop builds, of a value that runs nothing)
                         case IExpressionStatementOperation { Operation: IInvocationOperation { TargetMethod.Name: "Add", Instance: ILocalReferenceOperation { Local: var list }, Arguments: [var item] } }
-                            when IsList(list.Type) && item.Value.DescendantsAndSelf().All(Quiet):
+                            when IsList(list.Type) && QuietAll(item.Value):
                             effects.Adds[list] = effects.Adds.TryGetValue(list, out var n) ? n + 1 : 1;
                             continue;
-                        case IConditionalOperation c when c.Condition.DescendantsAndSelf().All(Quiet) && Statements(c.WhenTrue) && (c.WhenFalse == null || Statements(c.WhenFalse)):
+                        case IConditionalOperation c when QuietAll(c.Condition) && Statements(c.WhenTrue) && (c.WhenFalse == null || Statements(c.WhenFalse)):
                             continue;
                         case IBlockOperation inner when Statements(inner):
                             continue;
@@ -1906,6 +1909,9 @@ namespace CsVerify.Verifier.Boogie
                 }
                 return true;
             }
+
+            // (an entry's property's value, read: it runs nothing of the program's, and changes nothing, #130)
+            bool QuietAll(IOperation x) => x is IPropertyReferenceOperation pr && EntryValue(pr) != null || Quiet(x) && x.ChildOperations.All(QuietAll);
 
             static bool Quiet(IOperation x) => x switch
             {
@@ -2199,6 +2205,11 @@ namespace CsVerify.Verifier.Boogie
                                   (inv.Parent is IPropertyReferenceOperation { Property.Name: "State" } ||
                                    inv.Parent is IInvocationOperation { TargetMethod.Name: "Reload" or "ReloadAsync" } rl && rl.Instance == inv && Discarded(rl)):
                 case "Reload" when r is IInvocationOperation { TargetMethod.Name: "Entry" } && Discarded(inv):
+                    return null;
+                // (an entry's property's value, read, #130)
+                case "Entry" when KernelTypes.Ef.IsContextType(receiver) && given == 1 && inv.Parent is IInvocationOperation { TargetMethod.Name: "Property" } vp && vp.Instance == inv &&
+                                  vp.Parent is IPropertyReferenceOperation ev && EntryValue(ev) != null:
+                case "Property" when r is IInvocationOperation { TargetMethod.Name: "Entry" } && inv.Parent is IPropertyReferenceOperation pv && EntryValue(pv) != null:
                     return null;
                 case "BeginTransaction" when r is IPropertyReferenceOperation { Property.Name: "Database", Instance: { } db } && KernelTypes.Ef.IsContextType(db.Type) && given == 0:
                 case "Clear" when r is IPropertyReferenceOperation { Property.Name: "ChangeTracker", Instance: { } db2 } && KernelTypes.Ef.IsContextType(db2.Type) && given == 0:

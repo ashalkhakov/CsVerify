@@ -673,7 +673,11 @@ namespace CsVerify.Verifier.Boogie
             // (a field or an auto-property captured as what an assignment writes, x.f = c ? a : b, P = P with { ... }: its
             // object, kept)
             if ((fc.Value is IFieldReferenceOperation { Field.IsStatic: false } || fc.Value is IPropertyReferenceOperation { Property: { IsStatic: false, IsIndexer: false } fp } && IsField(fp)) &&
-                ((IMemberReferenceOperation)fc.Value).Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation)
+                (((IMemberReferenceOperation)fc.Value).Instance is ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation ||
+                 // (or of fields of them, x.y.f = a ?? b, where the value writes and calls nothing: the same object after it, #130)
+                 FieldsOf(((IMemberReferenceOperation)fc.Value).Instance, 3) && fc.Value.Syntax.Parent is AssignmentExpressionSyntax asg && asg.Left == fc.Value.Syntax &&
+                 !asg.Right.DescendantNodesAndSelf().Any(n => n is InvocationExpressionSyntax or AssignmentExpressionSyntax or BaseObjectCreationExpressionSyntax or AwaitExpressionSyntax or
+                     PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PreIncrementExpression or (int)SyntaxKind.PreDecrementExpression } or PostfixUnaryExpressionSyntax)))
             {
                 _lvalues[fc.Id] = fc.Value;
             }
@@ -681,6 +685,15 @@ namespace CsVerify.Verifier.Boogie
             Emit(KAssign.Of(Capture(fc.Id, fc.Value.Type), value));
             return;
         }
+
+        /// <summary>Fields (or auto-properties) of a local, a parameter or this, depth deep at most.</summary>
+        private static bool FieldsOf(IOperation op, int depth) => Unconverted(op) switch
+        {
+            ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation => true,
+            IFieldReferenceOperation { Field.IsStatic: false } f => depth > 0 && FieldsOf(f.Instance, depth - 1),
+            IPropertyReferenceOperation { Property: { IsStatic: false, IsIndexer: false } p } pr => depth > 0 && (IsField(p) || p.ContainingType.IsAnonymousType) && FieldsOf(pr.Instance, depth - 1),
+            _ => false,
+        };
 
         /// <summary>Statement of a object creation: its forms, in order; any other as StatementOther.</summary>
         private void StatementOfObjectCreation(IOperation op)

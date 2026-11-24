@@ -2191,19 +2191,34 @@ namespace CsVerify.Verifier.Boogie
             {
                 return;
             }
-            var fixedColumns = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            var fixedColumns = new List<(List<IPropertySymbol> path, IPropertySymbol column)>();
             foreach (var c in Conjuncts(Unconverted(body)))
             {
                 if (c is IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals } eq &&
-                    (Fixed(eq.LeftOperand, eq.RightOperand, p, e) ?? Fixed(eq.RightOperand, eq.LeftOperand, p, e)) is IPropertySymbol col)
+                    (Fixed(eq.LeftOperand, eq.RightOperand, p, e) ?? Fixed(eq.RightOperand, eq.LeftOperand, p, e)) is var (path, col))
                 {
-                    fixedColumns.Add(col.OriginalDefinition);
+                    fixedColumns.Add((path, col));
                 }
             }
-            if (e.Identifying.Any(set => set.Count > 0 && set.All(c => fixedColumns.Contains(c.OriginalDefinition))))
+            if (Identified(e, new List<IPropertySymbol>(), fixedColumns))
             {
                 ShapeFact(Le(s.Length, KLit.One), at);
             }
+        }
+
+        /// <summary>
+        /// Do the fixed columns identify one row of the entity reached by the path: its key or a unique index's, or those
+        /// of one a one-to-one navigation of it leads to (a row of either end has one row of the other at most, #130)?
+        /// </summary>
+        private static bool Identified(EfModel.Entity e, List<IPropertySymbol> path, List<(List<IPropertySymbol> path, IPropertySymbol column)> fixedColumns)
+        {
+            var here = fixedColumns.Where(f => f.path.SequenceEqual(path, SymbolEqualityComparer.Default)).Select(f => f.column.OriginalDefinition).ToHashSet(SymbolEqualityComparer.Default);
+            if (e.Identifying.Any(set => set.Count > 0 && set.All(c => here.Contains(c.OriginalDefinition))))
+            {
+                return true;
+            }
+            return path.Count < 4 && e.References.Where(KernelTypes.Ef.OneToOne).Any(nav =>
+                KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity t && Identified(t, path.Append(nav.OriginalDefinition).ToList(), fixedColumns));
         }
 
         private static IEnumerable<IOperation> Conjuncts(IOperation op) =>
@@ -2212,17 +2227,39 @@ namespace CsVerify.Verifier.Boogie
                 : new[] { op };
 
         /// <summary>
-        /// The row's column a value not of the row is compared to: a non-nullable one of a value type or a string (a null
-        /// would match every row whose column is null, which a unique index may allow). How .NET compares them doesn't
-        /// matter here: the database finds the row as it keeps the index unique, by the column's collation or its
-        /// converted value (#129).
+        /// The row's column a value not of the row is compared to, and the navigations from the row it's reached by: one
+        /// of a value type or a string, not null or compared to a value not null (a null would match every row whose
+        /// column is null, which a unique index may allow). How .NET compares them doesn't matter here: the database
+        /// finds the row as it keeps the index unique, by the column's collation or its converted value (#129).
         /// </summary>
-        private static IPropertySymbol Fixed(IOperation column, IOperation value, IParameterSymbol p, EfModel.Entity e) =>
-            Unconverted(column) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } pr && SymbolEqualityComparer.Default.Equals(r.Parameter, p) &&
-            (pr.Property.Type.IsValueType || pr.Property.Type.SpecialType == SpecialType.System_String) && e.NotNullColumn(pr.Property) &&
-            !value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p))
-                ? pr.Property
-                : null;
+        private (List<IPropertySymbol> path, IPropertySymbol column)? Fixed(IOperation column, IOperation value, IParameterSymbol p, EfModel.Entity e)
+        {
+            if (Unconverted(column) is not IPropertyReferenceOperation pr || !(pr.Property.Type.IsValueType || pr.Property.Type.SpecialType == SpecialType.System_String) ||
+                value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p)))
+            {
+                return null;
+            }
+            var path = new List<IPropertySymbol>();
+            var at = Unconverted(pr.Instance);
+            while (at is IPropertyReferenceOperation nav)
+            {
+                path.Insert(0, nav.Property.OriginalDefinition);
+                at = Unconverted(nav.Instance);
+            }
+            if (at is not IParameterReferenceOperation r || !SymbolEqualityComparer.Default.Equals(r.Parameter, p))
+            {
+                return null;
+            }
+            var owner = e;
+            foreach (var nav in path)
+            {
+                owner = owner == null ? null : KernelTypes.Ef.EntityOf(nav.Type);
+            }
+            var v = Unconverted(value);
+            bool valueNotNull = v.Type is { IsValueType: true } vt && vt.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T ||
+                                v.Type is { IsReferenceType: true } && v.Syntax != null && v.Syntax.SyntaxTree == _model.SyntaxTree && _model.GetTypeInfo(v.Syntax).Nullability.FlowState == NullableFlowState.NotNull;
+            return owner != null && (owner.NotNullColumn(pr.Property) || valueNotNull) ? (path, pr.Property) : null;
+        }
 
         /// <summary>
         /// A query that keeps each row of its table once gives a different object at each index, tracked or not: EF

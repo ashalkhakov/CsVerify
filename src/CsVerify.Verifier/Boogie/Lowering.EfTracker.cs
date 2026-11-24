@@ -919,12 +919,44 @@ namespace CsVerify.Verifier.Boogie
             {
                 return State(c2, o);
             }
+            // (an entry's property's value: the current one the entity's, the original one a value of its type, #130)
+            if (EntryValue(pr) is var (valueOf, p) && EntryOf(valueOf) is var (_, vo, _))
+            {
+                if (pr.Property.Name == "OriginalValue")
+                {
+                    return Unknown(null, p.Type, notNull: true);
+                }
+                _p.AddField(p.OriginalDefinition);
+                return new KField
+                {
+                    Field = p.OriginalDefinition,
+                    Instance = vo,
+                    OnThis = false,
+                    At = pr.Syntax,
+                    InstanceAt = pr.Syntax,
+                };
+            }
             // (a local view's Count)
             if (pr.Property.Name == "Count" && IsLocalView(pr.Instance))
             {
                 return LocalView((IPropertyReferenceOperation)Unconverted(pr.Instance)).Length;
             }
             return null;
+        }
+
+        /// <summary>Entry(o).Property(x => x.P).CurrentValue or OriginalValue, read: Entry(o) and P (null for another).</summary>
+        private (IInvocationOperation entry, IPropertySymbol p)? EntryValue(IPropertyReferenceOperation pr)
+        {
+            if (pr.Property.Name is not ("CurrentValue" or "OriginalValue") || pr.Parent is IAssignmentOperation a && a.Target == pr ||
+                Unconverted(pr.Instance) is not IInvocationOperation { TargetMethod.Name: "Property", Arguments.Length: 1 } prop ||
+                Unconverted(prop.Instance) is not IInvocationOperation { TargetMethod.Name: "Entry" } entry ||
+                PureLambda(prop.Arguments[0].Value) is not var (body, p1, _) ||
+                Unconverted(body) is not IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } p ||
+                !SymbolEqualityComparer.Default.Equals(r.Parameter, p1) || !IsField(p.Property))
+            {
+                return null;
+            }
+            return (entry, p.Property);
         }
 
         /// <summary>Entry(o).State = s: as Add, Attach, Update or Remove, by the state (Detached stops tracking). False for another assignment.</summary>

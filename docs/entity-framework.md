@@ -141,9 +141,13 @@ exact. How many rows a query keeps doesn't depend on tracking either: a filter t
 of a unique index to a value (`t.ExternalId == id`, whatever else it adds with `&&`) keeps one row at most, as the
 database's rows are distinct by each. That holds for a column of strings, or of a type with a value conversion (a
 record struct), too: the database finds the row as it keeps the index unique, by the column's collation or its stored
-value. A nullable column doesn't count, since null may match many rows; one configured required (`IsRequired()`,
-`[Required]`) is not null whatever its annotation, an entity's without nullable annotations among them. Keys and indexes may be named by their
-properties or by their names (`HasAlternateKey("ExternalId")`).
+value. A nullable column counts only compared to a value not null, since null may match many rows; one configured
+required (`IsRequired()`, `[Required]`) is not null whatever its annotation, an entity's without nullable annotations
+among them. Keys and indexes may be named by their properties or by their names (`HasAlternateKey("ExternalId")`). A
+filtered index (`HasFilter`) is unique only where its filter holds, so it counts only for a filter that a column of it
+`IS NOT NULL`. The columns may be reached through one-to-one navigations (`HasOne(...).WithOne(...)`), whose foreign
+key is unique: a row of either end has one row of the other at most, so `p.Invoice!.ExternalId == id` keeps one
+payment at most where each invoice has one payment at most.
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
 collation, elsewhere than SQLite; dates and floating point, by the column's precision; entities, rows compared by every
@@ -204,7 +208,8 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
 
 **Reported:**
 - **CSV1031**, keeping rows by their place in an order the database doesn't fix: `First`, `Last`, `ElementAt`, `Take`
-  and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`), or at most
+  and `Skip` need the query ordered by a key or a unique index (`OrderBy(o => o.Placed).ThenBy(o => o.Id)`; a `Select`
+  after it keeps the order), or at most
   one row that matches (`FirstOrDefault(o => o.Id == id)`, proved; a `Select` of the rows keeps their count, so
   `Where(o => o.Id == id).Select(o => o.Number).FirstOrDefault()` too).
 - **CSV1032**, what EF can't translate to SQL: in a query's lambda, what depends on the row may read columns and
@@ -221,7 +226,9 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
 A context's tracked entities, their states (`EntityState`), its unsaved changes and its transaction are ghost state
 the verifier follows from call to call: `Add`, `Attach`, `Update`, `Remove`, `Entry(e).State = ...`, `Find`,
 `SaveChanges`, `Entry(e).Reload()`, `ChangeTracker.Clear()`, and a write of a tracked entity's field (which makes it
-modified). A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
+modified). Their `...Async` forms are the same, read where they're awaited; an entity made for one before the await
+(`await set.AddAsync(new T { ... })`) is no other code's while it runs. `Entry(e).Property(x => x.P).CurrentValue` is
+`e.P`, and its `OriginalValue` a value of `P`'s type: reading them changes nothing. A context made here (`new`, or `IDbContextFactory.CreateDbContext`) tracks nothing; one passed in may track
 anything.
 
 Queries read the database, not the changes a context holds. `ctx.Orders.Local` is what it holds: each entity of the

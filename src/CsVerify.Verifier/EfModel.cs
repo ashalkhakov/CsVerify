@@ -229,6 +229,11 @@ namespace CsVerify.Verifier
         /// <summary>Each navigation's inverse, where the model says: the one paired with it, or null where it has none (WithMany(), WithOne()).</summary>
         private readonly Dictionary<IPropertySymbol, IPropertySymbol> _inverses = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
 
+        private readonly HashSet<IPropertySymbol> _oneToOne = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Is the navigation an end of a one-to-one (HasOne ... WithOne)?</summary>
+        public bool OneToOne(IPropertySymbol nav) => _oneToOne.Contains(nav.OriginalDefinition);
+
         /// <summary>Does the model say what a navigation's inverse is (null: it has none)?</summary>
         public bool KnownInverse(IPropertySymbol nav, out IPropertySymbol inverse) => _inverses.TryGetValue(nav.OriginalDefinition, out inverse);
 
@@ -377,6 +382,14 @@ namespace CsVerify.Verifier
             if (with.call != null && first != null)
             {
                 Pair(first, second);
+            }
+            // (a one-to-one's ends: a row of either has one row of the other at most, by its unique foreign key, #130)
+            if (name == "HasOne" && with.name == "WithOne")
+            {
+                foreach (var end in new[] { first, second }.Where(x => x != null))
+                {
+                    _oneToOne.Add(end.OriginalDefinition);
+                }
             }
             var key = next.FirstOrDefault(x => x.name == "HasForeignKey").call;
             bool unread = first == null && arg != null || next.Any(x => x.name == "HasPrincipalKey") || name == "HasOne" && with.name == "WithOne" ||
@@ -902,8 +915,11 @@ namespace CsVerify.Verifier
                     }
                     break;
                 case "HasIndex":
+                    // (a filtered one, unique among the rows the filter keeps: only a column's IS NOT NULL, which a row a
+                    // value not null fixes meets, #130)
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
-                        && (Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> index)
+                        && (Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> index &&
+                        (!Called("HasFilter", out var indexFilter, next) || NotNullFilter(indexFilter, index)))
                     {
                         e.AddUnique(index);
                     }
@@ -953,6 +969,12 @@ namespace CsVerify.Verifier
                     break;
             }
         }
+
+        /// <summary>HasFilter("[C] IS NOT NULL") of one of the index's columns (bracketed, quoted or bare).</summary>
+        private static bool NotNullFilter(InvocationExpressionSyntax filter, List<IPropertySymbol> index) =>
+            filter.ArgumentList.Arguments.Count == 1 && filter.ArgumentList.Arguments[0].Expression is LiteralExpressionSyntax { Token.Value: string sql } &&
+            System.Text.RegularExpressions.Regex.Match(sql, @"^\s*[\[""`]?(\w+)[\]""`]?\s+IS\s+NOT\s+NULL\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) is { Success: true } m &&
+            index.Any(c => c.Name == m.Groups[1].Value);
 
         private bool Called(string m, out InvocationExpressionSyntax call, List<(string name, InvocationExpressionSyntax call)> next)
         {

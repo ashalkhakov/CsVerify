@@ -2162,6 +2162,279 @@ public static class C { public static async Task<int> M(Db db, string code) => a
         }
 
         [Fact]
+        public void AUniqueFilter_ThroughOneToOneNavigations()
+        {
+            // #130: a one-to-one's foreign key is unique, so a row a one-to-one end of it leads to fixes it too
+            var r = VerifyEf(@"public sealed class Invoice
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public string Note { get; set; } = """";
+}
+public sealed class Payment
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public Invoice? Invoice { get; set; }
+    public decimal Amount { get; set; }
+}
+public sealed class Line
+{
+    public long Id { get; set; }
+    public Invoice? Invoice { get; set; }
+}
+public sealed class Account
+{
+    public long Id { get; set; }
+    public Member Member { get; set; } = null!;
+}
+public sealed class Member
+{
+    public long Id { get; set; }
+    public Badge? Badge { get; set; }
+}
+public sealed class Badge
+{
+    public long Id { get; set; }
+    public string? Code { get; set; }
+    public string Serial { get; set; } = """";
+    public bool Revoked { get; set; }
+}
+public sealed class Ledger
+{
+    public long RowId { get; set; }
+    public Guid ExternalId { get; set; }
+}
+public sealed class Entry
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public Ledger? Ledger { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Invoice>().HasAlternateKey(x => x.ExternalId);
+        b.Entity<Payment>().HasAlternateKey(x => x.ExternalId);
+        b.Entity<Payment>().HasOne(x => x.Invoice).WithOne().HasForeignKey<Payment>(""InvoiceId"");
+        b.Entity<Line>().HasOne(x => x.Invoice).WithMany();
+        b.Entity<Account>();
+        b.Entity<Ledger>().HasKey(x => x.RowId);
+        b.Entity<Entry>().HasOne(x => x.Ledger).WithOne().HasForeignKey<Entry>(""LedgerRowId"");
+        b.Entity<Member>().HasOne<Account>().WithOne(a => a.Member).HasForeignKey<Member>(""AccountId"");
+        b.Entity<Badge>().HasOne<Member>().WithOne(m => m.Badge).HasForeignKey<Badge>(""MemberId"");
+        b.Entity<Badge>().HasIndex(x => x.Code).IsUnique().HasFilter(""[Code] IS NOT NULL"");
+        b.Entity<Badge>().HasIndex(x => x.Serial).IsUnique().HasFilter(""[Revoked] = 0"");
+    }
+}
+public sealed record Paid(Guid Payment, decimal Amount);
+public sealed record InvoicePaid(Guid Invoice, Guid Payment);
+public sealed class Store(Db db)
+{
+    public async Task<Paid?> PaymentOf(Guid invoice) =>
+        (await db.Set<Payment>().AsNoTracking()
+            .Where(p => p.Invoice!.ExternalId == invoice)
+            .Select(p => new { p.ExternalId, p.Amount })
+            .ToListAsync())
+        .Select(p => new Paid(p.ExternalId, p.Amount))
+        .SingleOrDefault();
+    public async Task<List<InvoicePaid>> PaymentsOfInvoices() =>
+        (await db.Set<Invoice>().AsNoTracking()
+            .Select(i => new
+            {
+                i.ExternalId,
+                Payment = db.Set<Payment>().Where(p => p.Invoice!.Id == i.Id).Select(p => p.ExternalId).SingleOrDefault(),
+            })
+            .ToListAsync())
+        .Select(r => new InvoicePaid(r.ExternalId, r.Payment))
+        .ToList();
+    public async Task<IReadOnlyList<Ledger>> OpenLedgers() => await WithEntries(db.Set<Ledger>());
+    private async Task<IReadOnlyList<Ledger>> WithEntries(IQueryable<Ledger> query)
+    {
+        var rows = await query
+            .Select(l => new
+            {
+                Ledger = l,
+                Entry = db.Set<Entry>().Where(e => e.Ledger!.RowId == l.RowId).Select(e => (Guid?)e.ExternalId).SingleOrDefault(),
+            })
+            .ToListAsync();
+        foreach (var row in rows)
+        {
+            row.Ledger.ExternalId = row.Entry ?? row.Ledger.ExternalId;
+        }
+        return rows.Select(r => r.Ledger).ToList();
+    }
+    public async Task<Account?> AccountOfBadge(string code) =>
+        await db.Set<Account>().Where(a => a.Member.Badge!.Code == code).SingleOrDefaultAsync();
+    public async Task<Payment?> PaymentOfAmount(decimal amount) =>
+        await db.Set<Payment>().Where(p => p.Amount == amount).SingleOrDefaultAsync();
+    public async Task<Payment?> PaymentOfNote(string note) =>
+        await db.Set<Payment>().Where(p => p.Invoice!.Note == note).SingleOrDefaultAsync();
+    public async Task<Line?> LineOf(Guid invoice) =>
+        await db.Set<Line>().Where(l => l.Invoice!.ExternalId == invoice).SingleOrDefaultAsync();
+    public async Task<Badge?> BadgeOfSerial(string serial) =>
+        await db.Set<Badge>().Where(b => b.Serial == serial).SingleOrDefaultAsync();
+    public async Task<Badge?> BadgeOfCode(string? code) =>
+        await db.Set<Badge>().Where(b => b.Code == code).SingleOrDefaultAsync();
+}");
+            foreach (var ok in new[] { "PaymentOf", "PaymentsOfInvoices", "OpenLedgers", "WithEntries", "AccountOfBadge" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a column no index makes unique; a navigation of a one-to-many; an index unique only where a filter of
+            // another column holds; a value that may be null, which matches each row whose column is)
+            foreach (var bad in new[] { "PaymentOfAmount", "PaymentOfNote", "LineOf", "BadgeOfSerial", "BadgeOfCode" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
+        public void AnOrderByTheKey_IsKeptAcrossASelect()
+        {
+            // #130: a Select maps the rows one to one, in their order
+            var r = VerifyEf(@"public sealed class Charge
+{
+    public long Id { get; set; }
+    public long AccountId { get; set; }
+    public DateTime? Collected { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Charge>();
+}
+public sealed class Store(Db db)
+{
+    public async Task<DateTime?> LastCollected(long account) =>
+        (await db.Set<Charge>().AsNoTracking()
+            .Where(c => c.AccountId == account)
+            .OrderByDescending(c => c.Id)
+            .Select(c => new { c.Collected })
+            .FirstOrDefaultAsync())?.Collected;
+    public async Task<DateTime?> LastCollectedMember(long account) =>
+        await db.Set<Charge>().AsNoTracking()
+            .Where(c => c.AccountId == account)
+            .OrderByDescending(c => c.Id)
+            .Select(c => c.Collected)
+            .FirstOrDefaultAsync();
+    public async Task<DateTime?> LastCollectedByDate(long account) =>
+        (await db.Set<Charge>().AsNoTracking()
+            .Where(c => c.AccountId == account)
+            .OrderByDescending(c => c.Collected)
+            .Select(c => new { c.Collected })
+            .FirstOrDefaultAsync())?.Collected;
+    public async Task<DateTime?> OrderedAfter(long account) =>
+        await db.Set<Charge>().AsNoTracking()
+            .Where(c => c.AccountId == account)
+            .Select(c => new { c.Id, c.Collected })
+            .OrderByDescending(c => c.Id)
+            .Select(c => c.Collected)
+            .FirstOrDefaultAsync();
+}");
+            foreach (var ok in new[] { "LastCollected", "LastCollectedMember" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a column that isn't unique; a key of a projection, which isn't the entity's)
+            foreach (var bad in new[] { "LastCollectedByDate", "OrderedAfter" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1031" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
+        public void AddAsyncOfANewRow_IsAsAdd()
+        {
+            // #130: the row made before the await is no one else's while it runs
+            var r = VerifyEf(@"public sealed class Charge
+{
+    public long Id { get; set; }
+    public long AccountId { get; set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Charge>();
+}
+public sealed class Store(Db db)
+{
+    public void AddCharge()
+    {
+        db.Set<Charge>().Add(new Charge { AccountId = 1 });
+        db.SaveChanges();
+    }
+    public async Task AddChargeAsync()
+    {
+        await db.Set<Charge>().AddAsync(new Charge { AccountId = 1 });
+        await db.SaveChangesAsync();
+    }
+    public async Task AddKeyedAsync(long id)
+    {
+        await db.Set<Charge>().AddAsync(new Charge { Id = id, AccountId = 1 });
+        await db.SaveChangesAsync();
+    }
+}");
+            foreach (var ok in new[] { "AddCharge", "AddChargeAsync" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a key given: another the context tracks may have it)
+            Assert.True(r.Errors("Store.AddKeyedAsync").SequenceEqual(new[] { "CSV1033" }), r.Explain("Store.AddKeyedAsync"));
+        }
+
+        [Fact]
+        public void AnEntrysValues_AreRead()
+        {
+            // #130: Entry(o).Property(x => x.P).CurrentValue is o.P; OriginalValue, a value of its type; neither writes anything
+            var r = VerifyEf(@"public sealed class Invoice
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public string Note { get; set; } = """";
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b) => b.Entity<Invoice>().HasAlternateKey(x => x.ExternalId);
+}
+public sealed record Held(Invoice Invoice, string OriginalNote);
+public sealed class Store(Db db)
+{
+    public async Task<Held?> HeldInvoice(Guid invoice) =>
+        (await HeldAsync(db.Set<Invoice>().Where(i => i.ExternalId == invoice))).SingleOrDefault();
+    private async Task<List<Held>> HeldAsync(IQueryable<Invoice> query)
+    {
+        var held = new List<Held>();
+        foreach (var invoice in await query.OrderBy(i => i.Id).ToListAsync())
+        {
+            held.Add(new Held(invoice, db.Entry(invoice).Property(i => i.Note).OriginalValue));
+        }
+        return held;
+    }
+    public void Current(Invoice invoice)
+    {
+        var note = db.Entry(invoice).Property(i => i.Note).CurrentValue;
+        Spec.Assert(note == invoice.Note);
+    }
+    public void Original(Invoice invoice)
+    {
+        var note = db.Entry(invoice).Property(i => i.Note).OriginalValue;
+        Spec.Assert(note == invoice.Note);
+    }
+    public void SetCurrent(Invoice invoice)
+    {
+        db.Entry(invoice).Property(i => i.Note).CurrentValue = ""x"";
+    }
+}");
+            foreach (var ok in new[] { "HeldInvoice", "HeldAsync", "Current" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (the original value isn't the current one; a write of one isn't translated)
+            Assert.NotEmpty(r.Errors("Store.Original"));
+            Assert.Contains(r["Store.SetCurrent"].Diagnostics, d => d.Id == "CSV1902");
+        }
+
+        [Fact]
         public void Smoke_CompilesAndRuns() => Assert.NotNull(VerifyEf(Model +
             "public static class C { public static int M(Shop db) { return db.Orders.Where(o => o.Total > 0).Count(); } }").Methods);
     }

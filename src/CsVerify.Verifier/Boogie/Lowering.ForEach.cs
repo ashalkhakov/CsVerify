@@ -408,7 +408,15 @@ namespace CsVerify.Verifier.Boogie
         /// A loop body that calls nothing that may change a list: only specifications, [Pure] members and lists' [Pure] stubs;
         /// and, over a list a database query made (trackerToo), EF's tracker calls, which change no list but navigations.
         /// </summary>
-        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false, CommonForEachStatementSyntax loop = null) => body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).All(o => o switch
+        private bool ChangesNoList(SyntaxNode body, bool trackerToo = false, CommonForEachStatementSyntax loop = null)
+        {
+            var ops = body.DescendantNodesAndSelf().Select(n => _model.GetOperation(n)).Where(o => o != null && !InSpec(o.Syntax)).ToList();
+            // (an entry's property's value, read: it changes nothing, #130)
+            var reads = trackerToo ? ops.OfType<IPropertyReferenceOperation>().Where(p => EntryValue(p) != null).Select(p => p.Syntax.Span).ToList() : new List<Microsoft.CodeAnalysis.Text.TextSpan>();
+            return ops.Where(o => !reads.Any(r => r.Contains(o.Syntax.Span))).All(o => ChangesNoList(o, trackerToo, loop));
+        }
+
+        private bool ChangesNoList(IOperation o, bool trackerToo, CommonForEachStatementSyntax loop) => o switch
         {
             IInvocationOperation inv => SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) || _contractOf?.Invoke(inv.TargetMethod) is Contract c && (c.IsPure || c.IsLemma) ||
                                         trackerToo && TracksOnly(inv) ||
@@ -421,7 +429,7 @@ namespace CsVerify.Verifier.Boogie
             IPropertyReferenceOperation pr => !IsCollection(pr.Instance?.Type) || !(pr.Parent is IAssignmentOperation a && a.Target == pr),
             IAnonymousFunctionOperation _ => false,
             _ => true,
-        });
+        };
 
         /// <summary>
         /// A list a loop builds: a local made a new List where it's declared (before the loop), used only as Add's
@@ -556,7 +564,10 @@ namespace CsVerify.Verifier.Boogie
             {
                 op = Unconverted(aw.Operation);
             }
-            return op is IInvocationOperation to && to.TargetMethod.Name is "ToList" or "ToListAsync" or "ToArray" or "ToArrayAsync" && DatabaseRoot(to, out _) != null;
+            // (of a query, a helper's parameter's too: a new list, #130)
+            return op is IInvocationOperation to && to.TargetMethod.Name is "ToList" or "ToListAsync" or "ToArray" or "ToArrayAsync" &&
+                   (DatabaseRoot(to, out _) != null || (to.Instance ?? to.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value) is IOperation src &&
+                    Unconverted(src).Type is ITypeSymbol st && (st.Name == "IQueryable" || st.AllInterfaces.Any(i => i.Name == "IQueryable")));
         }
 
         /// <summary>The collection's length: an array's or a string's, or a list's Size.</summary>
