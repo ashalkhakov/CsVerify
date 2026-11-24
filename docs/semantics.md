@@ -342,7 +342,8 @@ C#'s nullable reference types are only warnings, and deliberately unsound ones: 
   does or throws. Neither has to be set by a constructor, and both are not null on read. So a DTO can say
   `[JsonRequired] public string Owner { get; set; } = null!;`. Code that builds one with `new` and leaves `Owner` out is
   not checked for it.
-- **Guard clauses** say what they check: `ArgumentNullException.ThrowIfNull(x)` (its `[NotNull]`),
+- **Guard clauses** say what they check, and change nothing: `ArgumentNullException.ThrowIfNull(x)` (built in: it runs
+  nothing of x's),
   `ArgumentException.ThrowIfNullOrEmpty(s)` and `ThrowIfNullOrWhiteSpace(s)` (not null, not empty: stubs), and
   `ArgumentOutOfRangeException.ThrowIfNegative`, `ThrowIfNegativeOrZero`, `ThrowIfZero`, `ThrowIfGreaterThan`,
   `ThrowIfGreaterThanOrEqual`, `ThrowIfLessThan`, `ThrowIfLessThanOrEqual`, `ThrowIfEqual`, `ThrowIfNotEqual` for

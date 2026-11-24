@@ -83,6 +83,108 @@ namespace CsVerify.Verifier.Boogie
             }
         }
 
+        /// <summary>
+        /// A private method with a list parameter that each of its calls (in its type, on this) passes the rows a tracked
+        /// query of the same context gives, awaited there (await q.ToListAsync()), its other arguments values that run
+        /// nothing (a parameter, a local, a constant): at entry, its rows are different objects, each tracked by that
+        /// context, as nothing runs between the query and the call (#129).
+        /// </summary>
+        private void TrackedListEntry()
+        {
+            if (_failed == null || _m.DeclaredAccessibility != Accessibility.Private || _m.MethodKind != MethodKind.Ordinary || _m.IsVirtual || _m.IsAbstract || _m.IsOverride ||
+                _m.Parameters.Any(x => x.RefKind != RefKind.None))
+            {
+                return;
+            }
+            foreach (var p in _m.Parameters.Where(x => IsList(x.Type) && KernelTypes.Ef.EntityOf(ElementOf(x.Type)) != null))
+            {
+                TrackedListEntry(p, (INamedTypeSymbol)p.Type);
+            }
+        }
+
+        private void TrackedListEntry(IParameterSymbol p, INamedTypeSymbol listType)
+        {
+            ISymbol context = null;
+            IOperation contextOp = null;
+            int calls = 0;
+            foreach (var r in _m.ContainingType.DeclaringSyntaxReferences)
+            {
+                var node = r.GetSyntax();
+                var model = _model.Compilation.ModelOf(node.SyntaxTree);
+                if (node.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>().Any(a => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(a.Left).Symbol, p)))
+                {
+                    return;
+                }
+                foreach (var name in node.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>().Where(n => n.Identifier.Text == _m.Name))
+                {
+                    if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol?.OriginalDefinition, _m.OriginalDefinition))
+                    {
+                        continue;
+                    }
+                    var at = name.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax ma && ma.Name == name ? ma.Parent : name.Parent;
+                    if (at is not Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax || model.GetOperation(at) is not IInvocationOperation call ||
+                        !(call.Instance is null or IInstanceReferenceOperation) ||
+                        call.Arguments.FirstOrDefault(a => SymbolEqualityComparer.Default.Equals(a.Parameter?.OriginalDefinition, p.OriginalDefinition)) is not { ArgumentKind: ArgumentKind.Explicit } arg ||
+                        call.Arguments.Any(a => a != arg && !(Unconverted(a.Value) is IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation { Instance: null or IInstanceReferenceOperation } ||
+                                                              a.Value.ConstantValue.HasValue)) ||
+                        Unconverted(arg.Value) is not IAwaitOperation { Operation: IInvocationOperation to } || to.TargetMethod.Name is not ("ToListAsync" or "ToArrayAsync") ||
+                        !IsEfMethod(to.TargetMethod) || DatabaseRootIn(to, out bool noTracking, null) == null || noTracking ||
+                        QueryContext(to) is not (ISymbol c, IOperation cop) || context != null && !SymbolEqualityComparer.Default.Equals(context, c))
+                    {
+                        return;
+                    }
+                    context = c;
+                    contextOp = cop;
+                    calls++;
+                }
+            }
+            // (a primary constructor's parameter its type's code doesn't assign: the same context here)
+            if (calls == 0 || context is IParameterSymbol && _m.ContainingType.DeclaringSyntaxReferences.Any(r =>
+                    r.GetSyntax().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>()
+                     .Any(a => SymbolEqualityComparer.Default.Equals(_model.Compilation.ModelOf(r.SyntaxTree).GetSymbolInfo(a.Left).Symbol, context))))
+            {
+                return;
+            }
+            foreach (var m in ModelsOf(listType))
+            {
+                _p.Models[m.Name] = m;
+            }
+            var list = new KVar(Local(p));
+            var items = ModelOf("Items", listType).Name;
+            var n = Sel(SizeMap, list);
+            var ctx = Spec(contextOp, null);
+            var i = Atom();
+            var j = Atom();
+            ShapeFact(Over(KLit.Zero, n, i, AndAlso(Ne(State(ctx, Sel(items, list, i)), I(EfDetached)),
+                Over(KLit.Zero, i, j, Ne(Sel(items, list, j), Sel(items, list, i))))), _decl);
+        }
+
+        /// <summary>The context a query's table is read through, where it is this object's (a field, or a primary constructor's parameter).</summary>
+        private static (ISymbol, IOperation)? QueryContext(IInvocationOperation q)
+        {
+            IOperation op = q;
+            for (int depth = 0; depth < 64 && op is IInvocationOperation c; depth++)
+            {
+                if (c.TargetMethod.Name == "Set" && DbSetEntity(c.Type) != null)
+                {
+                    op = c.Instance;
+                    break;
+                }
+                op = Unconverted(c.Instance ?? c.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value);
+                if (op is IPropertyReferenceOperation pr && DbSetEntity(pr.Type) != null)
+                {
+                    op = pr.Instance;
+                    break;
+                }
+            }
+            return Unconverted(op) switch
+            {
+                IParameterReferenceOperation { Parameter.ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor } } pp => (pp.Parameter, pp),
+                IFieldReferenceOperation { Instance: IInstanceReferenceOperation, Field.IsReadOnly: true } fr => (fr.Field, fr),
+                _ => null,
+            };
+        }
+
         private string TokenRead(EfModel.Entity e, int j)
         {
             if (_tokenRead.TryGetValue((e, j), out var name))
@@ -100,6 +202,7 @@ namespace CsVerify.Verifier.Boogie
         private static KExpr States(KExpr c) => Sel(StateMap, c);
         private static KExpr State(KExpr c, KExpr o) => Sel(StateMap, c, o);
         private void SetStates(KExpr c, KExpr row) => Emit(KRow.Of(StateMap, c, row));
+        private void SetStatesWhole(KExpr all) => Emit(KRow.Of(StateMap, null, all));
         private static KExpr Unsaved(KExpr c) => Sel(UnsavedMap, c);
         private void SetUnsaved(KExpr c, KExpr v) => Emit(KRow.Of(UnsavedMap, c, v));
         private static KExpr InTx(KExpr c) => Sel(InTxMap, c);
@@ -584,7 +687,10 @@ namespace CsVerify.Verifier.Boogie
                 _ => state,
             };
             var empty = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(KAssign.Of(empty, NavigationsEmpty(o, e)));
+            // (Remove of an entity tracked already attaches nothing; where its navigations all lead to its principals (a
+            // reference with its foreign key here), nothing cascades to them, and the others are as they were, #129)
+            bool toPrincipals = how == "Remove" && e.Collections.Count == 0 && e.References.All(r => e.ForeignKeys.ContainsKey(r));
+            Emit(KAssign.Of(empty, toPrincipals ? OrElse(Ne(state, I(EfDetached)), NavigationsEmpty(o, e)) : NavigationsEmpty(o, e)));
             var unsetNow = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
             Emit(KAssign.Of(unsetNow, unset));
             // what o's navigations lead to may be tracked now too (unless they hold nothing)

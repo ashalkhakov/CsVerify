@@ -542,13 +542,14 @@ query filters, navigations, tokens; Lowering.Ef, Lowering.EfTracker):
 - Rows read without tracking are new objects (allocated where read); a reference navigation not included is null, a
   collection one as its initializer made it (a new empty `List`, or null), but where an Include path loads its type.
   An included reference is the row its foreign key names (or null, where the key can be), an included `List` (or
-  `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that comes
-  back to a type on it is CSV1032. An await leaves their columns as they were where no other code reaches them (the
+  `HashSet`) holds the rows whose foreign key is this row's key, each through its type's filters, new objects each, and so on down a `ThenInclude` path; a path that follows
+  a navigation back by its inverse (or one the model doesn't pair, back to the type it left) is CSV1032. An await leaves their columns as they were where no other code reaches them (the
   method lets none out: `EntitiesStayHere`): the columns of the entities the method's code can reach, those of its
   expressions' types and what their navigations lead to, not the whole model's.
 - Rows read with tracking may be instances the context tracked already, as the program left them: what LINQ says of
   them (a filter's predicate, an order) holds only where the context tracked no entity of the type before
-  (`Known`), and the count's bounds and the results' definitions whatever they hold. Their
+  (`Known`), and the count's bounds and the results' definitions whatever they hold, one row at most among them
+  where a filter fixes the key or a non-nullable unique index (`AtMostOneRow`). Their
   includes are as without tracking where the context tracked none of the types the paths load either. They are
   tracked from here on. `DbSet.Local` is what the context tracks of a type and doesn't delete, once each.
 - The change tracker is state of the program's (`$F.$ef.State`: how each context tracks each object, `$F.$ef.Unsaved`,

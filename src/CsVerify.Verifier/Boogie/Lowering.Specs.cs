@@ -19,6 +19,22 @@ namespace CsVerify.Verifier.Boogie
         /// <summary>A specification: mathematics, its array reads, lengths, divisions and functions' calls kept for Checks' well-definedness.</summary>
         private KExpr Spec(IOperation e, IParameterSymbol result)
         {
+            // (EF.Property(row, "Name"): a column's value by its name, #129)
+            if (e is IInvocationOperation ep && EfProperty(ep) is string column)
+            {
+                return EfPropertyValue(ep, column, result);
+            }
+            // (in a database query's lambda, Contains of a list it captures through an interface: IN, a value of its row not known)
+            if (e is IInvocationOperation gc && GivenContainsLambda(gc) is IAnonymousFunctionOperation gcf)
+            {
+                return Sel(LinqMap("[Ref]bool"), new KVar("q$" + gcf.Symbol.Parameters[0].Name));
+            }
+            // (in a database query's lambda, a correlated subquery of a scalar: a value of its row not known, #129)
+            if (e is IInvocationOperation sq && (sq.Type?.IsValueType == true || IsString(sq.Type)) && (IsQueryableMethod(sq.TargetMethod) || IsEfMethod(sq.TargetMethod)) &&
+                DatabaseRoot(sq, out _) != null && SubqueryLambda(sq) != null)
+            {
+                return SubqueryValue(sq);
+            }
             // (ObjSet.Empty: no objects)
             if ((e is IFieldReferenceOperation { Field.Name: "Empty", Instance: null } || e is IPropertyReferenceOperation { Property.Name: "Empty", Instance: null }) && IsObjSet(e.Type))
             {
@@ -126,8 +142,9 @@ namespace CsVerify.Verifier.Boogie
                 case IParameterReferenceOperation p when result != null && SymbolEqualityComparer.Default.Equals(p.Parameter, result): return new KVar("result");
                 case IParameterReferenceOperation cp when _capturedIn.ContainsKey(cp.Parameter): return CapturedInSpec(cp.Parameter);
                 case IParameterReferenceOperation pc when IsPrimaryParameter(pc.Parameter) && !_p.IsCtor: return PrimaryRead(pc.Parameter);
-                case IParameterReferenceOperation p when p.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } &&
-                                                         !SymbolEqualityComparer.Default.Equals(p.Parameter.ContainingSymbol, _m):
+                case IParameterReferenceOperation p when p.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } qm &&
+                                                         !SymbolEqualityComparer.Default.Equals(qm, _m) &&
+                                                         !_contract.Aliases.Any(a => SymbolEqualityComparer.Default.Equals(a.OriginalDefinition, qm.OriginalDefinition)):
                     return new KVar("q$" + p.Parameter.Name); // (a quantifier's variable)
                 // (a base's contract, inherited: its parameters are this method's, by position)
                 case IParameterReferenceOperation p when InSubset(p.Parameter.Type) && !_contract.IsStub && p.Parameter.ContainingSymbol is IMethodSymbol pm &&
@@ -432,6 +449,14 @@ namespace CsVerify.Verifier.Boogie
                         Assumed(st.TargetMethod.OriginalDefinition);
                     }
                     return StubCall(st, LowerMode.Spec(result));
+                // (how a context tracks an entity, CsVerify.Ef.Tracker.State(c, o): the tracker's map, #129)
+                case IInvocationOperation ts when KernelTypes.Ef != null && ts.TargetMethod.Name == "State" && ts.Arguments.Length == 2 &&
+                                                  ts.TargetMethod.ContainingType?.ToDisplayString() == "CsVerify.Ef.Tracker":
+                {
+                    var args = ts.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+                    _p.Models[StateMap] = new ModelMap { Name = StateMap, Type = "[Ref][Ref]int" };
+                    return State(Spec(Unconverted(args[0].Value), result), Spec(Unconverted(args[1].Value), result));
+                }
                 // (a list's model: its size, its version, its elements; Count and the indexer as their contracts say)
                 case IInvocationOperation mo when SpecSymbols.IsModel(mo.TargetMethod.OriginalDefinition) && mo.Arguments.Length == 1 &&
                                                   CollectionOf(Unconverted(mo.Arguments[0].Value).Type) is INamedTypeSymbol mc && ModelOf(mo.TargetMethod.Name, mc) != null:

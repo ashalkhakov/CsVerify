@@ -73,7 +73,7 @@ namespace CsVerify.Verifier
                 case IFieldSymbol f:
                     return !f.IsConst && !f.IsImplicitlyDeclared;
                 case IPropertySymbol p:
-                    if (p.IsIndexer || p.IsAbstract || p.IsVirtual || p.IsOverride)
+                    if (p.IsIndexer || p.IsAbstract || p.IsVirtual && !EntityVirtual(p) || p.IsOverride)
                     {
                         return false;
                     }
@@ -83,6 +83,40 @@ namespace CsVerify.Verifier
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// A virtual property of an entity class nothing overrides: a source class, and EF's proxies, where the program
+        /// references them (UseLazyLoadingProxies' would load it where it's read). As a property not virtual (#129).
+        /// </summary>
+        private static bool EntityVirtual(IPropertySymbol p)
+        {
+            var c = Boogie.KernelTypes.Compilation;
+            if (Boogie.KernelTypes.Ef?.EntityOf(p.ContainingType) == null || c == null ||
+                c.ReferencedAssemblyNames.Any(a => a.Name == "Microsoft.EntityFrameworkCore.Proxies"))
+            {
+                return false;
+            }
+            if (_entityVirtualOf != c)
+            {
+                _entityVirtualOf = c;
+                _entityVirtual = new Dictionary<ISymbol, bool>(SymbolEqualityComparer.Default);
+            }
+            if (!_entityVirtual.TryGetValue(p.OriginalDefinition, out var known))
+            {
+                _entityVirtual[p.OriginalDefinition] = known = NotOverridden(c, p);
+            }
+            return known;
+        }
+
+        [System.ThreadStatic] private static Compilation _entityVirtualOf;
+        [System.ThreadStatic] private static Dictionary<ISymbol, bool> _entityVirtual;
+
+        private static bool NotOverridden(Compilation c, IPropertySymbol p)
+        {
+            return !c.SyntaxTrees.SelectMany(t => t.GetRoot().DescendantNodes().OfType<PropertyDeclarationSyntax>())
+                .Any(d => d.Identifier.Text == p.Name && d.Modifiers.Any(m => m.Text == "override") &&
+                          c.GetSemanticModel(d.SyntaxTree).GetDeclaredSymbol(d) is IPropertySymbol o && SymbolEqualityComparer.Default.Equals(o.OverriddenProperty?.OriginalDefinition, p.OriginalDefinition));
         }
 
         /// <summary>
@@ -139,7 +173,8 @@ namespace CsVerify.Verifier
             {
                 return t.SpecialType != SpecialType.System_String;
             }
-            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(x => x != null);
+            // (a model of any object, Tracker.Unshared(object): of no type in particular, #129)
+            var modeled = _engine.Models.Select(x => (x.Parameters[0].Type as INamedTypeSymbol)?.OriginalDefinition).Where(x => x != null && x.SpecialType != SpecialType.System_Object);
             if (modeled.Any(x => DataTypes.Derives(t, x) || DataTypes.Derives(x, t)))
             {
                 return true;

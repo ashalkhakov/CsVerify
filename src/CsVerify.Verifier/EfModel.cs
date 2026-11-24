@@ -31,6 +31,13 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> RowVersions = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The properties the configuration names (Property, HasKey, HasAlternateKey): columns, a get-only one too.</summary>
             public HashSet<IPropertySymbol> Configured = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>The columns configured required (IsRequired(), [Required]): NOT NULL, whatever their nullable annotation.</summary>
+            public HashSet<IPropertySymbol> Required = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>Is the column NOT NULL: of a value type not Nullable, annotated not null, or configured required.</summary>
+            public bool NotNullColumn(IPropertySymbol p) =>
+                p.Type.IsValueType ? p.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T }
+                : p.NullableAnnotation == NullableAnnotation.NotAnnotated || Required.Contains(p.OriginalDefinition) ||
+                  p.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.ComponentModel.DataAnnotations.RequiredAttribute");
             /// <summary>
             /// Configured by a library context's OnModelCreating that no model of the Spec library's describes: its key,
             /// tokens and row versions there aren't known, so none is taken by convention, and what depends on its tokens
@@ -219,6 +226,24 @@ namespace CsVerify.Verifier
         private readonly Dictionary<IPropertySymbol, IPropertySymbol> _fluentKeys = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
         private readonly Dictionary<IPropertySymbol, IPropertySymbol> _fluentInverse = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
 
+        /// <summary>Each navigation's inverse, where the model says: the one paired with it, or null where it has none (WithMany(), WithOne()).</summary>
+        private readonly Dictionary<IPropertySymbol, IPropertySymbol> _inverses = new Dictionary<IPropertySymbol, IPropertySymbol>(SymbolEqualityComparer.Default);
+
+        /// <summary>Does the model say what a navigation's inverse is (null: it has none)?</summary>
+        public bool KnownInverse(IPropertySymbol nav, out IPropertySymbol inverse) => _inverses.TryGetValue(nav.OriginalDefinition, out inverse);
+
+        private void Pair(IPropertySymbol a, IPropertySymbol b)
+        {
+            if (a != null)
+            {
+                _inverses.TryAdd(a.OriginalDefinition, b?.OriginalDefinition);
+            }
+            if (b != null)
+            {
+                _inverses.TryAdd(b.OriginalDefinition, a?.OriginalDefinition);
+            }
+        }
+
         /// <summary>
         /// The foreign keys of navigations, as EF finds them: the fluent HasOne/HasMany ... HasForeignKey, [ForeignKey] on
         /// the navigation or on the key, or EF's convention (the navigation's name, or the principal's, then the key's
@@ -299,6 +324,10 @@ namespace CsVerify.Verifier
                             inverse = back[0];
                         }
                     }
+                    if (inverse != null)
+                    {
+                        Pair(nav, inverse);
+                    }
                     if (inverse != null && d.ForeignKeys.TryGetValue(inverse, out var fk))
                     {
                         p.CollectionKeys[nav] = fk;
@@ -344,6 +373,11 @@ namespace CsVerify.Verifier
             var second = with.call == null ? null : Nav(with.call.ArgumentList.Arguments.FirstOrDefault()?.Expression, model);
             var reference = name == "HasOne" ? first : second;
             var collection = name == "HasMany" ? first : with.name == "WithMany" ? second : null;
+            // (the two ends, each the other's inverse; WithMany() and WithOne() say the first has none)
+            if (with.call != null && first != null)
+            {
+                Pair(first, second);
+            }
             var key = next.FirstOrDefault(x => x.name == "HasForeignKey").call;
             bool unread = first == null && arg != null || next.Any(x => x.name == "HasPrincipalKey") || name == "HasOne" && with.name == "WithOne" ||
                           name == "HasMany" && with.name == "WithMany";
@@ -859,7 +893,8 @@ namespace CsVerify.Verifier
                     }
                     break;
                 case "HasAlternateKey":
-                    if (Properties(argModel, arg, e) is List<IPropertySymbol> alt)
+                    // (by the properties, or their names: HasAlternateKey("ExternalId"), #129)
+                    if ((Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> alt)
                     {
                         e.AddUnique(alt);
                         e.Alternate.Add(alt);
@@ -868,7 +903,7 @@ namespace CsVerify.Verifier
                     break;
                 case "HasIndex":
                     if (Called("IsUnique", out var isUnique, next) && !(isUnique.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax l && l.IsKind(SyntaxKind.FalseLiteralExpression))
-                        && Properties(argModel, arg, e) is List<IPropertySymbol> index)
+                        && (Properties(argModel, arg, e) ?? Named(compilation, model, inv, e, configuration)) is List<IPropertySymbol> index)
                     {
                         e.AddUnique(index);
                     }
@@ -877,6 +912,11 @@ namespace CsVerify.Verifier
                     if (Properties(argModel, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
                         e.Configured.Add(p[0].OriginalDefinition);
+                        if (Called("IsRequired", out var required, next) &&
+                            !(required.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax r && r.IsKind(SyntaxKind.FalseLiteralExpression)))
+                        {
+                            e.Required.Add(p[0].OriginalDefinition);
+                        }
                         if (Called("IsRowVersion", out _, next))
                         {
                             if (!e.Tokens.Contains(p[0]))

@@ -11,7 +11,7 @@ Read from the sources, as EF reads them:
 - **Entity types:** a context's `DbSet<T>` properties, the types its configuration names (`modelBuilder.Entity<T>()`,
   an `IEntityTypeConfiguration<T>`), and what their navigations lead to, in the program or in an assembly it references
   (a domain project's). A referenced entity's auto-properties (the compiler's backing field beside them, read from the
-  assembly) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
+  assembly; in a reference assembly, a targeting pack's that has no private fields, accessors the compiler made) are its fields, as a source class's are, and those with a setter, of any accessibility, its columns; its
   internal members are seen where `InternalsVisibleTo` grants them. A property with code of its own is neither. A derived type has its base classes' properties, and its root's key, query
   filters, unique indexes and concurrency tokens, as EF reads them from the root of the hierarchy. An entity of the
   program's may derive from a library's class (ASP.NET Core Identity's `IdentityUser<TKey>`): that class's
@@ -124,6 +124,10 @@ var row = await db.Orders.AsNoTracking().Where(o => o.Id == id)
 - an `Include` by name, or a filtered one (`Include(c => c.Orders.Where(...))`), says nothing of navigations, nor does
   `AsNoTrackingWithIdentityResolution()`, whose navigations EF fixes up from the other rows it loads.
 
+A column that no code writes once its object is made (no setter, an `init` one, or a private one its type assigns only
+in its constructors) is as it was after an `await`, whatever the method lets out: only EF writes it after, when a
+context that tracks the entity saves or reloads it. This assumes no other code's context saves or reloads the same
+instance meanwhile.
 If the method lets none of its entities out (to a field, to a call of the program's or a constructor, to a library call on
 something not local, to a lambda other than a query's), no other code reaches them: an `await` leaves their columns,
 concurrency tokens among them, as they were. Read with
@@ -133,7 +137,13 @@ that type before it. Then an included reference is the row its foreign key names
 the types the `Include` paths load either, every level is the database's, as without tracking; after the query, whether
 the context tracks an entity of those types it didn't before isn't known. Of what else a context tracks, which EF
 fixes navigations up from, nothing is said. `Count`, `Any` and the like, and projections of columns, return no entities and are always
-exact.
+exact. How many rows a query keeps doesn't depend on tracking either: a filter that compares every column of the key or
+of a unique index to a value (`t.ExternalId == id`, whatever else it adds with `&&`) keeps one row at most, as the
+database's rows are distinct by each. That holds for a column of strings, or of a type with a value conversion (a
+record struct), too: the database finds the row as it keeps the index unique, by the column's collation or its stored
+value. A nullable column doesn't count, since null may match many rows; one configured required (`IsRequired()`,
+`[Required]`) is not null whatever its annotation, an entity's without nullable annotations among them. Keys and indexes may be named by their
+properties or by their names (`HasAlternateKey("ExternalId")`).
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
 collation, elsewhere than SQLite; dates and floating point, by the column's precision; entities, rows compared by every
@@ -141,6 +151,52 @@ column) compare as the database does: they are library calls, which say nothing 
 EF Core applies the left side's query filters to the joined rows, which drops the right side's rows that match none.
 And so are the `By` forms (`DistinctBy`...), `SequenceEqual`, `CountBy` and `AggregateBy`, which EF doesn't translate.
 In a query's lambda, `Contains` of a list passed in compares as the database does too: strings by its collation.
+
+**Query helpers.** A method that takes a query (`IQueryable<T>`) is translated: of the rows of the query passed in
+(not null, where their type isn't nullable), only what its specification says is known. A private one of the same
+file with no contract is read where it is awaited instead, on the query its caller passes (a table and Queryable's
+and EF's operators): `Load(db.Items.Where(t => t.ExternalId == id))` is that query, ordered and listed as `Load` does.
+Its body may declare locals, run statements (awaits among them), return early from an `if`, and set fields in a
+`foreach` (each field it sets is some value after; an entity tracked stays tracked); every way ends in a `return`.
+Its obligations are proved where it is verified. EF's
+operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...) mean the same after a filter, an
+order or a page as before them. A private method of the type without parameters that returns a query in one
+expression (`IQueryable<Item> Items() => db.Items.Include(i => i.Owner)`, a table written once with its includes) is
+read where a query is built on it. A query as a value is an object, not null; what it reads is read where it runs.
+A `virtual` property of an entity class that nothing overrides is as one that isn't virtual (a navigation, a
+column), unless the program references EF's proxies, whose lazy loading would load it where it's read. In a query's
+lambda, `Contains` of a list it captures through an interface (`IReadOnlyList<long>`) is SQL's `IN`, a value of the
+row not known. A selector that makes an object (an initializer of auto-properties, after a constructor that runs
+nothing) makes a new object of each row, its properties the row's values; one that makes a record's data value, that
+value. A tracked query's `Include` of a reference by a shadow foreign key loads null or one of the type's rows.
+`EF.Property<T>(x, "Name")` is the column of that name: the class's property, or a shadow column's value, not known.
+A query filter the verifier doesn't read (of a type it doesn't have, say) says nothing of the rows, as one left
+out; the query is read all the same. The lambdas the model's builders take (`HasQueryFilter(x => ...)`,
+`HasIndex(x => ...)`) are EF's to read, not run, and aren't verified as C#.
+In a query's lambda, a subquery of a scalar correlated by the row
+(`Owner = db.Owners.Where(o => o.Id == t.OwnerId).Select(o => o.Id).FirstOrDefault()`) is a value of the row not known.
+`LoadAsync` of a query reads it, tracked: its rows are tracked from there on. A list `ToListAsync` (or LINQ's `ToList`)
+made is the method's own: an `await` leaves its rows as they were, where the method gives it only to LINQ's operators.
+
+**Each row of a list.** A list a query that keeps each row once makes (a filter, an order, a page) holds a different
+object at each index, tracked or not. A `foreach` over such a list may call EF's `Add`, `Attach`, `Update`, `Remove` and
+`Entry` and still read its elements, since those change no list but navigations. Each element the loop hasn't reached
+yet keeps its tracking (an inferred invariant, kept where it holds), so `Remove` of each row a tracking query listed
+finds the instance its context tracks. `Remove` of an entity the context tracks, whose navigations all lead to its
+principals (a reference with its foreign key on it), changes only that entity's state.
+
+A private method with a list parameter that each of its calls passes the rows a tracked query gives, awaited
+there (`await Remove(await db.Items.Where(...).ToListAsync())`), on a context of this object's (a `readonly` field,
+or a primary constructor's parameter its code doesn't assign), its other arguments values that run nothing (a
+parameter, a local, a constant), begins knowing what such a list is: its rows are different objects, each tracked by
+that context, as nothing runs between the query and the call. Its `foreach` may call EF's tracker too, as above.
+
+**A list built of a query's rows.** A `foreach` over a list may `Add` to a list it builds (a local made a new `List`
+before the loop, used in it only to `Add` to, and after it) and make positional records, and still read its
+elements: those change no other list. Each list it builds has at most k more than where it began for each round, k
+its `Add`s in a round, and the collection is as long as it was (inferred invariants, kept where they hold); a query
+helper's loop of that kind is read so at its call. So a list of one entry a row, or at most one, of a filter that
+fixes a key has one entry at most.
 
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.
@@ -155,8 +211,10 @@ One that gives a sequence, `EF.CompileAsyncQuery`'s, and one declared in another
   navigations and call what EF translates (operators, string, `Math` and date members, LINQ over navigations and over
   lists passed in); a method of the program, or a property computed in C# or `[NotMapped]`, makes EF throw when the
   query runs. What doesn't depend on the row is evaluated before the query is sent, so it may call anything, and so
-  may the final `Select`, which runs on the client. And an `Include` path that comes back to a type on it
-  (`Include(o => o.Customer).ThenInclude(c => c.Orders)`) in a query without tracking: EF refuses it.
+  may the final `Select`, which runs on the client. And an `Include` path that follows a navigation and then its
+  inverse (`Include(o => o.Customer).ThenInclude(c => c.Orders)`) in a query without tracking: EF refuses it. A
+  navigation back to its own type with no inverse (`Include(p => p.Offset)`) is no cycle; where the model doesn't say
+  what a navigation's inverse is, one back to the type it left may be it.
 
 ## The change tracker
 

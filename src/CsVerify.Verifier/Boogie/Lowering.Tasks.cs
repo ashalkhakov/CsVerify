@@ -64,6 +64,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 op = nc.Operand;
             }
+            // (a query helper's, #126: its body, here; an async one's await is its own)
+            if (op is IInvocationOperation helper && helper.TargetMethod.IsAsync && QueryHelper(helper) is IBlockOperation helped)
+            {
+                return InlineQueryHelper(helper, helped);
+            }
             var awaited = Awaiting(op, aw);
             OthersRun(aw);
             var value = awaited.ValueAfter != null ? awaited.ValueAfter() : awaited.Value;
@@ -229,6 +234,17 @@ namespace CsVerify.Verifier.Boogie
                                 throw new NotTranslated("an await of " + eft.Syntax);
                             }
                             return tv;
+                        },
+                    };
+                // (EF's LoadAsync of a database query: the query read, tracked, its rows given to no one, #129)
+                case IInvocationOperation load when EfAsyncTwin(load.TargetMethod) == "Load" && DatabaseRoot(load, out _) != null:
+                    return new Awaited
+                    {
+                        ValueAfter = () =>
+                        {
+                            _tableReads = null;
+                            Sequence(load.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+                            return null;
                         },
                     };
                 // (an EF query operator's ...Async form, awaited where it's called: the operator's value, read after the others have run)
@@ -1337,7 +1353,9 @@ namespace CsVerify.Verifier.Boogie
             {
                 return _confined;
             }
-            var locals = _decl.DescendantNodes().OfType<VariableDeclaratorSyntax>().Select(d => _model.GetDeclaredSymbol(d) as ILocalSymbol).Where(l => l != null).ToList();
+            // (and those of the query helpers read here, #129)
+            var roots = new[] { _decl }.Concat(_inlinedBodies).ToList();
+            var locals = roots.SelectMany(r => r.DescendantNodes()).OfType<VariableDeclaratorSyntax>().Select(d => _model.GetDeclaredSymbol(d) as ILocalSymbol).Where(l => l != null).ToList();
             foreach (var l in locals.Where(l => IsClass(l.Type) || IsArray(l.Type) || IsCollection(l.Type)))
             {
                 bool ok = true;
@@ -1348,7 +1366,7 @@ namespace CsVerify.Verifier.Boogie
                         ok = false;
                     }
                 }
-                foreach (var id in _decl.DescendantNodes().OfType<IdentifierNameSyntax>().Where(i => i.Identifier.Text == l.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(i).Symbol, l)))
+                foreach (var id in roots.SelectMany(r => r.DescendantNodes()).OfType<IdentifierNameSyntax>().Where(i => i.Identifier.Text == l.Name && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(i).Symbol, l)))
                 {
                     if (id.Ancestors().Any(a => a is AnonymousFunctionExpressionSyntax || a is LocalFunctionStatementSyntax))
                     {
@@ -1363,6 +1381,9 @@ namespace CsVerify.Verifier.Boogie
                                                                  _model.GetSymbolInfo(ci).Symbol is IMethodSymbol cms && SymbolEqualityComparer.Default.Equals(cms.ContainingType.OriginalDefinition, l.Type.OriginalDefinition) &&
                                                                  ci.ArgumentList.Arguments.All(a => _model.GetTypeInfo(a.Expression).Type is ITypeSymbol at && (Scalar(at) || IsString(at))): continue;
                         case ElementAccessExpressionSyntax ea when ea.Expression == id: continue;
+                        // (LINQ's operators read it, and change nothing of it: those that may give it back aside, #129)
+                        case MemberAccessExpressionSyntax lq when lq.Expression == id && lq.Parent is InvocationExpressionSyntax li && _model.GetSymbolInfo(li).Symbol is IMethodSymbol lm &&
+                                                                 lm.ReducedFrom?.ContainingType?.ToDisplayString() == "System.Linq.Enumerable" && lm.Name is not ("AsEnumerable" or "Cast" or "OfType"): continue;
                         case BinaryExpressionSyntax be when (be.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.EqualsExpression) || be.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NotEqualsExpression)) &&
                                                           (be.Left.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression) || be.Right.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.NullLiteralExpression)): continue;
                         case AssignmentExpressionSyntax asg when asg.Left == id && Fresh(asg.Right): continue;
@@ -1389,6 +1410,13 @@ namespace CsVerify.Verifier.Boogie
         private bool Fresh(ExpressionSyntax e)
         {
             if (e is ArrayCreationExpressionSyntax || e is ImplicitArrayCreationExpressionSyntax)
+            {
+                return true;
+            }
+            // (a list or array LINQ's ToList or ToArray makes, or EF's, awaited: new, nobody else's, #129)
+            if ((e is AwaitExpressionSyntax aw ? aw.Expression : e) is InvocationExpressionSyntax made && _model.GetSymbolInfo(made).Symbol is IMethodSymbol to &&
+                (to.Name is "ToList" or "ToArray" && to.ContainingType?.ToDisplayString() == "System.Linq.Enumerable" ||
+                 e is AwaitExpressionSyntax && to.Name is "ToListAsync" or "ToArrayAsync" && IsEfMethod(to)))
             {
                 return true;
             }

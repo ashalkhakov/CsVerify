@@ -128,11 +128,15 @@ namespace CsVerify.Verifier.Boogie
             {
                 return null;
             }
-            foreach (var op in body.DescendantsAndSelf())
+            // (a database query's scalar in it, a correlated subquery: SQL's, not code that runs, #129)
+            var subqueries = body.DescendantsAndSelf().OfType<IInvocationOperation>().Where(s => Subquery(s, fn) || GivenContains(s, fn)).ToList();
+            foreach (var op in body.DescendantsAndSelf().Where(o => !subqueries.Any(s => s == o || s.Descendants().Contains(o))))
             {
                 switch (op)
                 {
                     case IAssignmentOperation a when a.Parent is IAnonymousObjectCreationOperation: break; // (new { x, y = e }: its members, not writes)
+                    // (a data value made, a record's: a value, as a specification makes it, #129)
+                    case IObjectCreationOperation dv when IsData(dv.Type) && dv.Constructor != null && dv.Initializer == null: break;
                     case IAssignmentOperation _: case IIncrementOrDecrementOperation _: case IObjectCreationOperation _: case IArrayCreationOperation _:
                     case IAnonymousFunctionOperation _: case IAwaitOperation _:
                         return null;
@@ -144,12 +148,202 @@ namespace CsVerify.Verifier.Boogie
                                                         AsciiTest(inv.TargetMethod) ||
                                                         SpecSymbols.IsSpecClass(inv.TargetMethod.ContainingType) ||
                                                         // (a string's [Pure] member with a stub, a list's Contains: as a specification reads them)
-                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) ||
+                                                        IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) || EfProperty(inv) != null ||
                                                         inv.Instance != null && CollectionKind(CollectionOf(inv.Instance.Type)) == "List" && inv.TargetMethod.Name == "Contains" && inv.Arguments.Length == 1):
                         return null;
                 }
             }
             return (body, fn.Symbol.Parameters.ElementAtOrDefault(0), fn.Symbol.Parameters.ElementAtOrDefault(1));
+        }
+
+        /// <summary>
+        /// EF.Property&lt;T&gt;(row, "Name") of a constant name, a column's value by name (a shadow column's, that the class
+        /// hasn't): the name; else null.
+        /// </summary>
+        private static string EfProperty(IInvocationOperation inv) =>
+            KernelTypes.Ef != null && inv.TargetMethod is { Name: "Property", IsStatic: true, IsGenericMethod: true } m && m.ContainingType?.ToDisplayString() == "Microsoft.EntityFrameworkCore.EF" &&
+            inv.Arguments.Length == 2 && inv.Arguments.OrderBy(a => a.Parameter.Ordinal).Last().Value.ConstantValue is { HasValue: true, Value: string name } ? name : null;
+
+        /// <summary>
+        /// EF.Property's value (EfProperty): the class's property of the name, where it maps one; a shadow column's, a
+        /// value of the row not known (a map fresh at each application).
+        /// </summary>
+        private KExpr EfPropertyValue(IInvocationOperation inv, string name, IParameterSymbol result)
+        {
+            var row = Unconverted(inv.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+            var x = Spec(row, result);
+            if (KernelTypes.Ef.EntityOf(row.Type) is EfModel.Entity e &&
+                EfModel.PropertiesOf(e.Type).FirstOrDefault(p => p.Name == name) is IPropertySymbol p && IsField(p) && SymbolEqualityComparer.Default.Equals(p.Type, inv.Type))
+            {
+                _p.AddField(p.OriginalDefinition);
+                return Column(p, x);
+            }
+            if (!InSubset(inv.Type))
+            {
+                throw new NotTranslated("EF.Property of " + inv.Type);
+            }
+            return Sel(LinqMap("[Ref]" + TypeOf(inv.Type)), x);
+        }
+
+        /// <summary>
+        /// A database query of a scalar in a database query's lambda, correlated by the lambda's row (its only parameter
+        /// of it): of a value type, or a string, and none of the lambda's other parameters.
+        /// </summary>
+        private bool Subquery(IInvocationOperation s, IAnonymousFunctionOperation fn) =>
+            KernelTypes.Ef != null && fn.Symbol.Parameters.Length == 1 && KernelTypes.Ef.EntityOf(fn.Symbol.Parameters[0].Type) != null &&
+            (s.Type?.IsValueType == true || IsString(s.Type)) && InSubset(s.Type) && (IsQueryableMethod(s.TargetMethod) || IsEfMethod(s.TargetMethod)) &&
+            DatabaseRoot(s, out _) != null &&
+            !s.Descendants().OfType<IParameterReferenceOperation>().Any(r => r.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction } pm &&
+                                                                           !SymbolEqualityComparer.Default.Equals(pm, fn.Symbol) && !s.Descendants().OfType<IAnonymousFunctionOperation>().Any(f => SymbolEqualityComparer.Default.Equals(f.Symbol, pm)));
+
+        /// <summary>
+        /// In a database query's lambda of a row, Contains of a list or sequence it captures through its interface
+        /// (IReadOnlyList's, Enumerable.Contains): SQL's IN, a value of the row not known here (#129).
+        /// </summary>
+        private bool GivenContains(IInvocationOperation s, IAnonymousFunctionOperation fn)
+        {
+            if (KernelTypes.Ef == null || s.TargetMethod.Name != "Contains" || fn.Symbol.Parameters.Length != 1 || KernelTypes.Ef.EntityOf(fn.Symbol.Parameters[0].Type) == null)
+            {
+                return false;
+            }
+            var args = s.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var source = IsEnumerableCall(s.TargetMethod) && args.Count == 2 ? Unconverted(args[0].Value) : s.Instance != null && args.Count == 1 ? Unconverted(s.Instance) : null;
+            IOperation arg = fn;
+            while (arg?.Parent is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+            {
+                arg = arg.Parent;
+            }
+            return source is IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation && (IsSequence(source.Type) || IsCollectionInterface(source.Type)) &&
+                   arg?.Parent is IArgumentOperation { Parent: IInvocationOperation q } && (IsQueryableMethod(q.TargetMethod) || IsEfMethod(q.TargetMethod));
+        }
+
+        /// <summary>
+        /// A correlated subquery's value (Subquery), where its lambda is applied: of its row, a value not known (a map
+        /// fresh at each application).
+        /// </summary>
+        private KExpr SubqueryValue(IInvocationOperation s) =>
+            Sel(LinqMap("[Ref]" + TypeOf(s.Type)), new KVar("q$" + (SubqueryLambda(s) ?? throw new NotTranslated("a subquery outside its lambda")).Symbol.Parameters[0].Name));
+
+        /// <summary>The lambda a captured list's Contains (GivenContains) is in, where it is one; else null.</summary>
+        private IAnonymousFunctionOperation GivenContainsLambda(IInvocationOperation s)
+        {
+            IAnonymousFunctionOperation fn = null;
+            for (var up = s.Parent; up != null && fn == null; up = up.Parent)
+            {
+                fn = up as IAnonymousFunctionOperation;
+            }
+            return fn != null && GivenContains(s, fn) ? fn : null;
+        }
+
+        /// <summary>The lambda of a Queryable or EF operator a subquery is in (an expression tree EF translates), where it is one (Subquery).</summary>
+        private IAnonymousFunctionOperation SubqueryLambda(IInvocationOperation s)
+        {
+            IAnonymousFunctionOperation fn = null;
+            for (var up = s.Parent; up != null && fn == null; up = up.Parent)
+            {
+                fn = up as IAnonymousFunctionOperation;
+            }
+            IOperation arg = fn;
+            while (arg?.Parent is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+            {
+                arg = arg.Parent;
+            }
+            return fn != null && Subquery(s, fn) && arg?.Parent is IArgumentOperation { Parent: IInvocationOperation q } && (IsQueryableMethod(q.TargetMethod) || IsEfMethod(q.TargetMethod)) ? fn : null;
+        }
+
+        /// <summary>
+        /// A selector that makes an object of a class: a positional record's constructor of values, or a constructor
+        /// that runs nothing with an initializer setting auto-properties to values; each value pure, of the lambda's
+        /// parameter. The creation, the parameter, and each property with its value; else null.
+        /// </summary>
+        private (IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members)? MadeSelector(IOperation arg)
+        {
+            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target)
+                   : Unconverted(arg) is IAnonymousFunctionOperation quoted ? quoted
+                   : Unconverted(arg) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null;
+            if (fn == null || fn.Symbol.Parameters.Length != 1 || fn.Body.Operations.Length != 1 || fn.Body.Operations[0] is not IReturnOperation { ReturnedValue: { } body } ||
+                Unconverted(body) is not IObjectCreationOperation { Constructor: { } ctor } oc || !IsClass(oc.Type) || IsCollection(oc.Type))
+            {
+                return null;
+            }
+            var members = new List<(IPropertySymbol, IOperation)>();
+            if (oc.Initializer == null && PositionalRecord(ctor))
+            {
+                // (a property the kernel keeps, its value; one it doesn't, a value of the record's own, nothing said of it)
+                foreach (var a in oc.Arguments)
+                {
+                    if (oc.Type.GetMembers(a.Parameter.Name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol rp && IsField(rp))
+                    {
+                        members.Add((rp, a.Value));
+                    }
+                }
+            }
+            else if (oc.Initializer != null && ctor.Parameters.Length == 0 && (ctor.IsImplicitlyDeclared ||
+                     ctor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax { Body.Statements.Count: 0, Initializer: null }) &&
+                     !oc.Type.GetMembers().Any(m => m.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax { Initializer: not null } or
+                                                                                           Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax { Initializer: not null })))
+            {
+                foreach (var init in oc.Initializer.Initializers)
+                {
+                    if (init is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation { Property: var ip, Instance: IInstanceReferenceOperation }, Value: var v } || !IsField(ip))
+                    {
+                        return null;
+                    }
+                    members.Add((ip, v));
+                }
+            }
+            else
+            {
+                return null;
+            }
+            // (each value pure, as a lambda's body is)
+            foreach (var (_, v) in members)
+            {
+                if (v.DescendantsAndSelf().Any(op => op is IAssignmentOperation or IIncrementOrDecrementOperation or IObjectCreationOperation or IArrayCreationOperation or IAnonymousFunctionOperation or IAwaitOperation ||
+                                                    op is IInvocationOperation inv && !(_isFunction(inv.TargetMethod.OriginalDefinition) || IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) || EfProperty(inv) != null)))
+                {
+                    return null;
+                }
+            }
+            return (oc, fn.Symbol.Parameters[0], members);
+        }
+
+        /// <summary>
+        /// Select's new objects (MadeSelector): one of each element, different, none allocated before and each allocated
+        /// now, its properties the values of its element.
+        /// </summary>
+        private LSeq MadeSequence(LSeq src, IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members, SyntaxNode at)
+        {
+            var objs = new KVar(LinqMap("[int]Ref"));
+            var index = new KVar(LinqMap("[Ref]int"));
+            var n = src.Length;
+            var i = Atom();
+            ShapeFact(Over(KLit.Zero, n, i, AndAlso(AndAlso(NotNull(Sel(objs, i)), Not(Sel("$Alloc", Sel(objs, i)))), Eq(Sel(index, Sel(objs, i)), i))), at);
+            if (KernelTypes.Ef?.EntityOf(made.Type) is EfModel.Entity me)
+            {
+                var k = Atom();
+                ShapeFact(Over(KLit.Zero, n, k, Isa(Sel(objs, k), me)), at);
+            }
+            foreach (var (m, v) in members)
+            {
+                _p.AddField(m.OriginalDefinition);
+                var j = Atom();
+                ShapeFact(Over(KLit.Zero, n, j, Eq(Column(m, Sel(objs, j)), Apply((v, p, null), src.Elem.At(j)))), at);
+            }
+            // (allocated: these, and no other)
+            _p.AddModifies("$Alloc");
+            _p.AddAnyWrite("$Alloc");
+            var r = new KVar("r$");
+            var after = new KVar(LinqMap("[Ref]bool"));
+            ShapeFact(KQuant.ForAll("r$", "Ref", Eq(Sel(after, r), OrElse(Sel("$Alloc", r), AndAlso(AndAlso(Ne(r, KLit.Null), Between(KLit.Zero, Sel(index, r), n)), Eq(Sel(objs, Sel(index, r)), r))))), at);
+            Emit(KRow.Of("$Alloc", null, after));
+            var e = Atom();
+            return new LSeq
+            {
+                Length = n,
+                Elem = KAbs.Of(e, Sel(objs, e)),
+                Type = made.Type,
+            };
         }
 
         /// <summary>
@@ -199,22 +393,98 @@ namespace CsVerify.Verifier.Boogie
         private static ITypeSymbol ElementOf(ITypeSymbol t) =>
             t is IArrayTypeSymbol a ? a.ElementType : t is INamedTypeSymbol { TypeArguments.Length: >= 1 } n ? n.TypeArguments[n.TypeArguments.Length - 1] : null;
 
+        /// <summary>EF's operators of the whole query met past others (Sequence), each with the table operation it applies to.</summary>
+        private readonly List<(IOperation root, IInvocationOperation mod)> _deferred = new List<(IOperation, IInvocationOperation)>();
+
+        /// <summary>
+        /// The table operation (TableOf's) an EF operator's query reads, through a filter, an order, a page and EF's
+        /// operators, as Sequence unwraps them; else null.
+        /// </summary>
+        private IOperation DeferredRoot(IInvocationOperation mod)
+        {
+            IOperation op = mod.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
+            for (int depth = 0; depth < 64 && op != null; depth++)
+            {
+                op = Unconverted(op);
+                while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                       SourceHelper(op) != null)
+                {
+                    op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : op is IFlowCaptureReferenceOperation fc ? _captured[fc.Id] : SourceHelper(op));
+                }
+                if (TableOf(op) != null)
+                {
+                    return op;
+                }
+                if (op is not IInvocationOperation c || !(c.TargetMethod.Name is "Where" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or "Skip" or "Take" ||
+                                                          IsEfMethod(c.TargetMethod)) || c.Arguments.Length == 0)
+                {
+                    return null;
+                }
+                op = c.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value;
+            }
+            return null;
+        }
+
+        /// <summary>A query on a query parameter (not an inlined helper's), through Queryable's and EF's operators.</summary>
+        private bool GivenQuery(IInvocationOperation q)
+        {
+            IOperation op = q;
+            for (int depth = 0; depth < 64 && op is IInvocationOperation c && (IsQueryableMethod(c.TargetMethod) || IsEfMethod(c.TargetMethod)) && c.Arguments.Length > 0; depth++)
+            {
+                op = Unconverted(c.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+            }
+            return op is IParameterReferenceOperation p && IsQueryHandle(p.Type) && !_queryArgs.ContainsKey(p.Parameter);
+        }
+
         /// <summary>A LINQ source as a sequence, read now: a query of the members here, or an array, a List, a list interface.</summary>
         private LSeq Sequence(IOperation op)
         {
             var src = Unconverted(op);
             // (a query the control flow graph captured: what it captured)
             // (and query syntax: the calls it is)
+            // (and an inlined helper's query parameter: the caller's argument)
             while (src is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || src is ITranslatedQueryOperation ||
-                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local))
+                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local) || src is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                   SourceHelper(src) != null)
             {
-                src = src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation)
+                src = SourceHelper(src) is IOperation helped ? helped
+                    : src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation)
                     : src is ILocalReferenceOperation lazy ? Unconverted(_lazyQueries[lazy.Local])
+                    : src is IParameterReferenceOperation bp ? Unconverted(_queryArgs[bp.Parameter])
                     : Unconverted(_captured[((IFlowCaptureReferenceOperation)src).Id]);
+            }
+            // (an EF operator of the whole query written past a filter, an order or a page, Include after Where: applied to
+            // the table its query reads, as EF does)
+            if (src is IInvocationOperation mod && IsEfMethod(mod.TargetMethod) && mod.Arguments.Length >= 1 && TableOf(src) == null &&
+                DeferredRoot(mod) is IOperation root)
+            {
+                _deferred.Add((root, mod));
+                try
+                {
+                    return Sequence(mod.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
+                }
+                finally
+                {
+                    _deferred.RemoveAt(_deferred.Count - 1);
+                }
+            }
+            // (and of a query passed in, whose rows nothing is known of: its source's)
+            if (src is IInvocationOperation onGiven && IsEfMethod(onGiven.TargetMethod) && onGiven.Arguments.Length >= 1 && TableOf(src) == null &&
+                onGiven.TargetMethod.Name is "AsNoTracking" or "AsNoTrackingWithIdentityResolution" or "AsTracking" or "IgnoreQueryFilters" or "AsSplitQuery" or
+                    "AsSingleQuery" or "TagWith" or "TagWithCallSite" or "Include" or "ThenInclude" && GivenQuery(onGiven))
+            {
+                return Sequence(onGiven.Arguments.OrderBy(a => a.Parameter.Ordinal).First().Value);
             }
             // (a table, as the query reads it; Queryable's operators, LINQ to Objects')
             if (TableOf(src) is DbTable table)
             {
+                for (int k = _deferred.Count - 1; k >= 0; k--)
+                {
+                    if (_deferred[k].root == src)
+                    {
+                        table = ModifiedTable(_deferred[k].mod, table) ?? throw new NotTranslated("'" + _deferred[k].mod.TargetMethod.Name + "' past a query's operators");
+                    }
+                }
                 return ReadTable(table);
             }
             // (a context's local view: what it tracks of a type)
@@ -263,10 +533,12 @@ namespace CsVerify.Verifier.Boogie
                 };
             }
             // (a sequence one is given, a lambda's group of a GroupJoin say: some elements, not known)
-            if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type)) && src is IParameterReferenceOperation or ILocalReferenceOperation)
+            // (and a query passed in, #126: rows of which only what the caller's specification says is known)
+            if (elem != null && InSubset(elem) && (IsSequence(type) || IsLinqGroup(type) || IsQueryHandle(type) && src is IParameterReferenceOperation) &&
+                src is IParameterReferenceOperation or ILocalReferenceOperation)
             {
                 var given = Expr(src);
-                if (IsSequence(type))
+                if (IsSequence(type) || IsQueryHandle(type))
                 {
                     Emit(KCheck.Of(NotNull(given), "CSV1013", src.Syntax, $"'{src.Syntax}' might be null: LINQ would throw ArgumentNullException"));
                 }
@@ -278,6 +550,12 @@ namespace CsVerify.Verifier.Boogie
                 if (IsLinqGroup(type))
                 {
                     ShapeFact(Lt(KLit.Zero, new KVar(n)), src.Syntax);
+                }
+                // (a query's rows of a non-nullable type aren't null, as C#'s nullable analysis has it, as a list's elements)
+                if (IsQueryHandle(type) && elem.IsReferenceType && NotNullable(elem))
+                {
+                    var j = Atom();
+                    ShapeFact(Over(KLit.Zero, new KVar(n), j, NotNull(Sel(items, j))), src.Syntax);
                 }
                 var i = Atom();
                 return new LSeq
@@ -509,6 +787,9 @@ namespace CsVerify.Verifier.Boogie
             }
             switch (m.Name)
             {
+                // (a selector that makes an object: a new object of each element, #129)
+                case "Select" when args.Count == 2 && MadeSelector(args[1].Value) is var (made, mp, members):
+                    return MadeSequence(Sequence(args[0].Value), made, mp, members, q.Syntax);
                 case "Select" when args.Count == 2:
                 {
                     var src = Sequence(args[0].Value);
@@ -566,7 +847,9 @@ namespace CsVerify.Verifier.Boogie
                         return _inDatabase > 0 ? throw new NotTranslated("Where with an index, in a database") : FilterAt(src, KAbs.Of(j, Apply(f, src.Elem.At(j), j)), q.Syntax);
                     }
                     var x = Atom();
-                    return ByKey(q, () => Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax));
+                    var w = ByKey(q, () => Filter(src, KAbs.Of(x, Apply(f, x)), q.Syntax));
+                    AtMostOneRow(q, w, q.Syntax);
+                    return w;
                 }
                 // (each first occurrence of the first source's elements that the second has, or hasn't)
                 case "Intersect" or "Except" when args.Count == 2 && _inDatabase == 0:
@@ -1613,6 +1896,7 @@ namespace CsVerify.Verifier.Boogie
                 case "ToArray" when args.Count == 1 && IsArray(callType):
                 {
                     var s = Sequence(args[0].Value);
+                    DistinctRows(args[0].Value, s, at);
                     var t = Declare("t$" + _temps++, callType);
                     Emit(KNew.Of(t, callType, s.Length));
                     Emit(KRow.Of(
@@ -1624,6 +1908,7 @@ namespace CsVerify.Verifier.Boogie
                 case "ToList" when args.Count == 1 && IsList(callType):
                 {
                     var s = Sequence(args[0].Value);
+                    DistinctRows(args[0].Value, s, at);
                     var ctor = ((INamedTypeSymbol)callType).Constructors.FirstOrDefault(c => c.Parameters.Length == 0) ?? throw new NotTranslated("a List without its constructor");
                     var list = Invoke(ctor, null, new IArgumentOperation[0], at, null);
                     var t = Declare("t$" + _temps++, callType);
@@ -1866,7 +2151,9 @@ namespace CsVerify.Verifier.Boogie
             }
             var f = LambdaArg(call, 1);
             var x = Atom();
-            return ByKey(call, () => Filter(src, KAbs.Of(x, Apply(f, x)), at));
+            var s = ByKey(call, () => Filter(src, KAbs.Of(x, Apply(f, x)), at));
+            AtMostOneRow(call, s, at);
+            return s;
         }
 
         /// <summary>
@@ -1889,6 +2176,103 @@ namespace CsVerify.Verifier.Boogie
             {
                 _known = known;
             }
+        }
+
+        /// <summary>
+        /// A database filter whose predicate fixes the key or a unique index (an equality of each of its columns to a
+        /// value not of the row): at most one row, tracked or not. The database's rows are distinct by each, and
+        /// tracking changes which instance a row is, not how many rows there are (#125).
+        /// </summary>
+        private void AtMostOneRow(IInvocationOperation call, LSeq s, SyntaxNode at)
+        {
+            if (KernelTypes.Ef == null || call.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is not IOperation arg ||
+                PureLambda(arg) is not var (body, p, _) || p == null || KernelTypes.Ef.EntityOf(p.Type) is not EfModel.Entity e ||
+                TableRows(call.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value ?? call.Instance) != e)
+            {
+                return;
+            }
+            var fixedColumns = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            foreach (var c in Conjuncts(Unconverted(body)))
+            {
+                if (c is IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals } eq &&
+                    (Fixed(eq.LeftOperand, eq.RightOperand, p, e) ?? Fixed(eq.RightOperand, eq.LeftOperand, p, e)) is IPropertySymbol col)
+                {
+                    fixedColumns.Add(col.OriginalDefinition);
+                }
+            }
+            if (e.Identifying.Any(set => set.Count > 0 && set.All(c => fixedColumns.Contains(c.OriginalDefinition))))
+            {
+                ShapeFact(Le(s.Length, KLit.One), at);
+            }
+        }
+
+        private static IEnumerable<IOperation> Conjuncts(IOperation op) =>
+            op is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } and
+                ? Conjuncts(Unconverted(and.LeftOperand)).Concat(Conjuncts(Unconverted(and.RightOperand)))
+                : new[] { op };
+
+        /// <summary>
+        /// The row's column a value not of the row is compared to: a non-nullable one of a value type or a string (a null
+        /// would match every row whose column is null, which a unique index may allow). How .NET compares them doesn't
+        /// matter here: the database finds the row as it keeps the index unique, by the column's collation or its
+        /// converted value (#129).
+        /// </summary>
+        private static IPropertySymbol Fixed(IOperation column, IOperation value, IParameterSymbol p, EfModel.Entity e) =>
+            Unconverted(column) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } pr && SymbolEqualityComparer.Default.Equals(r.Parameter, p) &&
+            (pr.Property.Type.IsValueType || pr.Property.Type.SpecialType == SpecialType.System_String) && e.NotNullColumn(pr.Property) &&
+            !value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p))
+                ? pr.Property
+                : null;
+
+        /// <summary>
+        /// A query that keeps each row of its table once gives a different object at each index, tracked or not: EF
+        /// gives one instance a key, and the database's rows are distinct by key (#128).
+        /// </summary>
+        private void DistinctRows(IOperation source, LSeq s, SyntaxNode at)
+        {
+            if (KernelTypes.Ef == null || TableRows(source) == null)
+            {
+                return;
+            }
+            var i = Atom();
+            var j = Atom();
+            ShapeFact(Over(KLit.Zero, s.Length, i, Over(KLit.Zero, s.Length, j, OrElse(Eq(i, j), Ne(s.Elem.At(i), s.Elem.At(j))))), at);
+        }
+
+        /// <summary>
+        /// The table a query's source reads, each row of it once: the set, through operators that keep or drop rows
+        /// (a filter, an order, a page, tracking, includes); else null.
+        /// </summary>
+        private EfModel.Entity TableRows(IOperation op)
+        {
+            for (int depth = 0; depth < 64 && op != null; depth++)
+            {
+                op = Unconverted(op);
+                switch (op)
+                {
+                    case IPropertyReferenceOperation pr when DbSetEntity(pr.Type) is EfModel.Entity e:
+                        return e;
+                    case IInvocationOperation set when set.TargetMethod.Name == "Set" && DbSetEntity(set.Type) is EfModel.Entity se:
+                        return se;
+                    case IInvocationOperation c when c.TargetMethod.Name is "Where" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or
+                        "AsNoTracking" or "AsNoTrackingWithIdentityResolution" or "AsTracking" or "Include" or "ThenInclude" or "AsSplitQuery" or
+                        "AsSingleQuery" or "IgnoreQueryFilters" or "IgnoreAutoIncludes" or "TagWith" or "Skip" or "Take":
+                        op = c.Instance ?? c.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value;
+                        continue;
+                    case ILocalReferenceOperation l when Initializer(l) is IOperation init:
+                        op = init;
+                        continue;
+                    case IParameterReferenceOperation qp when _queryArgs.TryGetValue(qp.Parameter, out var qa):
+                        op = qa;
+                        continue;
+                    case IInvocationOperation sh when SourceHelper(sh) is IOperation shv:
+                        op = shv;
+                        continue;
+                    default:
+                        return null;
+                }
+            }
+            return null;
         }
 
         /// <summary>A database query's predicate (its second argument) that reads its row only by key properties of a type the database and .NET compare alike.</summary>
