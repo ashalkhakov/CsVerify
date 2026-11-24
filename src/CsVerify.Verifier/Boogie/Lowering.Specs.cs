@@ -24,6 +24,11 @@ namespace CsVerify.Verifier.Boogie
             {
                 return EfPropertyValue(ep, column, result);
             }
+            // (in a database query's lambda, Contains of a list it captures through an interface: IN, a value of its row not known)
+            if (e is IInvocationOperation gc && GivenContainsLambda(gc) is IAnonymousFunctionOperation gcf)
+            {
+                return Sel(LinqMap("[Ref]bool"), new KVar("q$" + gcf.Symbol.Parameters[0].Name));
+            }
             // (in a database query's lambda, a correlated subquery of a scalar: a value of its row not known, #129)
             if (e is IInvocationOperation sq && (sq.Type?.IsValueType == true || IsString(sq.Type)) && (IsQueryableMethod(sq.TargetMethod) || IsEfMethod(sq.TargetMethod)) &&
                 DatabaseRoot(sq, out _) != null && SubqueryLambda(sq) != null)

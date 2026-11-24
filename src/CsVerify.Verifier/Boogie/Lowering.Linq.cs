@@ -129,12 +129,14 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             // (a database query's scalar in it, a correlated subquery: SQL's, not code that runs, #129)
-            var subqueries = body.DescendantsAndSelf().OfType<IInvocationOperation>().Where(s => Subquery(s, fn)).ToList();
+            var subqueries = body.DescendantsAndSelf().OfType<IInvocationOperation>().Where(s => Subquery(s, fn) || GivenContains(s, fn)).ToList();
             foreach (var op in body.DescendantsAndSelf().Where(o => !subqueries.Any(s => s == o || s.Descendants().Contains(o))))
             {
                 switch (op)
                 {
                     case IAssignmentOperation a when a.Parent is IAnonymousObjectCreationOperation: break; // (new { x, y = e }: its members, not writes)
+                    // (a data value made, a record's: a value, as a specification makes it, #129)
+                    case IObjectCreationOperation dv when IsData(dv.Type) && dv.Constructor != null && dv.Initializer == null: break;
                     case IAssignmentOperation _: case IIncrementOrDecrementOperation _: case IObjectCreationOperation _: case IArrayCreationOperation _:
                     case IAnonymousFunctionOperation _: case IAwaitOperation _:
                         return null;
@@ -195,11 +197,43 @@ namespace CsVerify.Verifier.Boogie
                                                                            !SymbolEqualityComparer.Default.Equals(pm, fn.Symbol) && !s.Descendants().OfType<IAnonymousFunctionOperation>().Any(f => SymbolEqualityComparer.Default.Equals(f.Symbol, pm)));
 
         /// <summary>
+        /// In a database query's lambda of a row, Contains of a list or sequence it captures through its interface
+        /// (IReadOnlyList's, Enumerable.Contains): SQL's IN, a value of the row not known here (#129).
+        /// </summary>
+        private bool GivenContains(IInvocationOperation s, IAnonymousFunctionOperation fn)
+        {
+            if (KernelTypes.Ef == null || s.TargetMethod.Name != "Contains" || fn.Symbol.Parameters.Length != 1 || KernelTypes.Ef.EntityOf(fn.Symbol.Parameters[0].Type) == null)
+            {
+                return false;
+            }
+            var args = s.Arguments.OrderBy(a => a.Parameter.Ordinal).ToList();
+            var source = IsEnumerableCall(s.TargetMethod) && args.Count == 2 ? Unconverted(args[0].Value) : s.Instance != null && args.Count == 1 ? Unconverted(s.Instance) : null;
+            IOperation arg = fn;
+            while (arg?.Parent is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+            {
+                arg = arg.Parent;
+            }
+            return source is IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation && (IsSequence(source.Type) || IsCollectionInterface(source.Type)) &&
+                   arg?.Parent is IArgumentOperation { Parent: IInvocationOperation q } && (IsQueryableMethod(q.TargetMethod) || IsEfMethod(q.TargetMethod));
+        }
+
+        /// <summary>
         /// A correlated subquery's value (Subquery), where its lambda is applied: of its row, a value not known (a map
         /// fresh at each application).
         /// </summary>
         private KExpr SubqueryValue(IInvocationOperation s) =>
             Sel(LinqMap("[Ref]" + TypeOf(s.Type)), new KVar("q$" + (SubqueryLambda(s) ?? throw new NotTranslated("a subquery outside its lambda")).Symbol.Parameters[0].Name));
+
+        /// <summary>The lambda a captured list's Contains (GivenContains) is in, where it is one; else null.</summary>
+        private IAnonymousFunctionOperation GivenContainsLambda(IInvocationOperation s)
+        {
+            IAnonymousFunctionOperation fn = null;
+            for (var up = s.Parent; up != null && fn == null; up = up.Parent)
+            {
+                fn = up as IAnonymousFunctionOperation;
+            }
+            return fn != null && GivenContains(s, fn) ? fn : null;
+        }
 
         /// <summary>The lambda of a Queryable or EF operator a subquery is in (an expression tree EF translates), where it is one (Subquery).</summary>
         private IAnonymousFunctionOperation SubqueryLambda(IInvocationOperation s)
@@ -215,6 +249,101 @@ namespace CsVerify.Verifier.Boogie
                 arg = arg.Parent;
             }
             return fn != null && Subquery(s, fn) && arg?.Parent is IArgumentOperation { Parent: IInvocationOperation q } && (IsQueryableMethod(q.TargetMethod) || IsEfMethod(q.TargetMethod)) ? fn : null;
+        }
+
+        /// <summary>
+        /// A selector that makes an object of a class: a positional record's constructor of values, or a constructor
+        /// that runs nothing with an initializer setting auto-properties to values; each value pure, of the lambda's
+        /// parameter. The creation, the parameter, and each property with its value; else null.
+        /// </summary>
+        private (IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members)? MadeSelector(IOperation arg)
+        {
+            var fn = Unconverted(arg) is IDelegateCreationOperation dc ? dc.Target as IAnonymousFunctionOperation ?? LambdaOf(dc.Target) ?? LambdaBySymbol(dc.Target)
+                   : Unconverted(arg) is IAnonymousFunctionOperation quoted ? quoted
+                   : Unconverted(arg) is IFlowAnonymousFunctionOperation fq ? LambdaBySymbol(fq) : null;
+            if (fn == null || fn.Symbol.Parameters.Length != 1 || fn.Body.Operations.Length != 1 || fn.Body.Operations[0] is not IReturnOperation { ReturnedValue: { } body } ||
+                Unconverted(body) is not IObjectCreationOperation { Constructor: { } ctor } oc || !IsClass(oc.Type) || IsCollection(oc.Type))
+            {
+                return null;
+            }
+            var members = new List<(IPropertySymbol, IOperation)>();
+            if (oc.Initializer == null && PositionalRecord(ctor))
+            {
+                // (a property the kernel keeps, its value; one it doesn't, a value of the record's own, nothing said of it)
+                foreach (var a in oc.Arguments)
+                {
+                    if (oc.Type.GetMembers(a.Parameter.Name).OfType<IPropertySymbol>().FirstOrDefault() is IPropertySymbol rp && IsField(rp))
+                    {
+                        members.Add((rp, a.Value));
+                    }
+                }
+            }
+            else if (oc.Initializer != null && ctor.Parameters.Length == 0 && (ctor.IsImplicitlyDeclared ||
+                     ctor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.ConstructorDeclarationSyntax { Body.Statements.Count: 0, Initializer: null }) &&
+                     !oc.Type.GetMembers().Any(m => m.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax { Initializer: not null } or
+                                                                                           Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax { Initializer: not null })))
+            {
+                foreach (var init in oc.Initializer.Initializers)
+                {
+                    if (init is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation { Property: var ip, Instance: IInstanceReferenceOperation }, Value: var v } || !IsField(ip))
+                    {
+                        return null;
+                    }
+                    members.Add((ip, v));
+                }
+            }
+            else
+            {
+                return null;
+            }
+            // (each value pure, as a lambda's body is)
+            foreach (var (_, v) in members)
+            {
+                if (v.DescendantsAndSelf().Any(op => op is IAssignmentOperation or IIncrementOrDecrementOperation or IObjectCreationOperation or IArrayCreationOperation or IAnonymousFunctionOperation or IAwaitOperation ||
+                                                    op is IInvocationOperation inv && !(_isFunction(inv.TargetMethod.OriginalDefinition) || IsStub(inv.TargetMethod.OriginalDefinition) || StringEquals(inv) != null || DatabaseFunction(inv) || EfProperty(inv) != null)))
+                {
+                    return null;
+                }
+            }
+            return (oc, fn.Symbol.Parameters[0], members);
+        }
+
+        /// <summary>
+        /// Select's new objects (MadeSelector): one of each element, different, none allocated before and each allocated
+        /// now, its properties the values of its element.
+        /// </summary>
+        private LSeq MadeSequence(LSeq src, IObjectCreationOperation made, IParameterSymbol p, List<(IPropertySymbol member, IOperation value)> members, SyntaxNode at)
+        {
+            var objs = new KVar(LinqMap("[int]Ref"));
+            var index = new KVar(LinqMap("[Ref]int"));
+            var n = src.Length;
+            var i = Atom();
+            ShapeFact(Over(KLit.Zero, n, i, AndAlso(AndAlso(NotNull(Sel(objs, i)), Not(Sel("$Alloc", Sel(objs, i)))), Eq(Sel(index, Sel(objs, i)), i))), at);
+            if (KernelTypes.Ef?.EntityOf(made.Type) is EfModel.Entity me)
+            {
+                var k = Atom();
+                ShapeFact(Over(KLit.Zero, n, k, Isa(Sel(objs, k), me)), at);
+            }
+            foreach (var (m, v) in members)
+            {
+                _p.AddField(m.OriginalDefinition);
+                var j = Atom();
+                ShapeFact(Over(KLit.Zero, n, j, Eq(Column(m, Sel(objs, j)), Apply((v, p, null), src.Elem.At(j)))), at);
+            }
+            // (allocated: these, and no other)
+            _p.AddModifies("$Alloc");
+            _p.AddAnyWrite("$Alloc");
+            var r = new KVar("r$");
+            var after = new KVar(LinqMap("[Ref]bool"));
+            ShapeFact(KQuant.ForAll("r$", "Ref", Eq(Sel(after, r), OrElse(Sel("$Alloc", r), AndAlso(AndAlso(Ne(r, KLit.Null), Between(KLit.Zero, Sel(index, r), n)), Eq(Sel(objs, Sel(index, r)), r))))), at);
+            Emit(KRow.Of("$Alloc", null, after));
+            var e = Atom();
+            return new LSeq
+            {
+                Length = n,
+                Elem = KAbs.Of(e, Sel(objs, e)),
+                Type = made.Type,
+            };
         }
 
         /// <summary>
@@ -658,6 +787,9 @@ namespace CsVerify.Verifier.Boogie
             }
             switch (m.Name)
             {
+                // (a selector that makes an object: a new object of each element, #129)
+                case "Select" when args.Count == 2 && MadeSelector(args[1].Value) is var (made, mp, members):
+                    return MadeSequence(Sequence(args[0].Value), made, mp, members, q.Syntax);
                 case "Select" when args.Count == 2:
                 {
                     var src = Sequence(args[0].Value);
@@ -2063,7 +2195,7 @@ namespace CsVerify.Verifier.Boogie
             foreach (var c in Conjuncts(Unconverted(body)))
             {
                 if (c is IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals } eq &&
-                    (Fixed(eq.LeftOperand, eq.RightOperand, p) ?? Fixed(eq.RightOperand, eq.LeftOperand, p)) is IPropertySymbol col)
+                    (Fixed(eq.LeftOperand, eq.RightOperand, p, e) ?? Fixed(eq.RightOperand, eq.LeftOperand, p, e)) is IPropertySymbol col)
                 {
                     fixedColumns.Add(col.OriginalDefinition);
                 }
@@ -2085,11 +2217,9 @@ namespace CsVerify.Verifier.Boogie
         /// matter here: the database finds the row as it keeps the index unique, by the column's collation or its
         /// converted value (#129).
         /// </summary>
-        private static IPropertySymbol Fixed(IOperation column, IOperation value, IParameterSymbol p) =>
+        private static IPropertySymbol Fixed(IOperation column, IOperation value, IParameterSymbol p, EfModel.Entity e) =>
             Unconverted(column) is IPropertyReferenceOperation { Instance: IParameterReferenceOperation r } pr && SymbolEqualityComparer.Default.Equals(r.Parameter, p) &&
-            (pr.Property.Type.IsValueType || pr.Property.Type.SpecialType == SpecialType.System_String) &&
-            pr.Property.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } &&
-            !(pr.Property.Type.IsReferenceType && pr.Property.NullableAnnotation != NullableAnnotation.NotAnnotated) &&
+            (pr.Property.Type.IsValueType || pr.Property.Type.SpecialType == SpecialType.System_String) && e.NotNullColumn(pr.Property) &&
             !value.DescendantsAndSelf().OfType<IParameterReferenceOperation>().Any(x => SymbolEqualityComparer.Default.Equals(x.Parameter, p))
                 ? pr.Property
                 : null;

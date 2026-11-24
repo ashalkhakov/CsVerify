@@ -141,7 +141,8 @@ exact. How many rows a query keeps doesn't depend on tracking either: a filter t
 of a unique index to a value (`t.ExternalId == id`, whatever else it adds with `&&`) keeps one row at most, as the
 database's rows are distinct by each. That holds for a column of strings, or of a type with a value conversion (a
 record struct), too: the database finds the row as it keeps the index unique, by the column's collation or its stored
-value. A nullable column doesn't count, since null may match many rows. Keys and indexes may be named by their
+value. A nullable column doesn't count, since null may match many rows; one configured required (`IsRequired()`,
+`[Required]`) is not null whatever its annotation, an entity's without nullable annotations among them. Keys and indexes may be named by their
 properties or by their names (`HasAlternateKey("ExternalId")`).
 
 **Not read from the definitions:** on a database, those operators on other values (strings by the database's
@@ -162,6 +163,12 @@ operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...
 order or a page as before them. A private method of the type without parameters that returns a query in one
 expression (`IQueryable<Item> Items() => db.Items.Include(i => i.Owner)`, a table written once with its includes) is
 read where a query is built on it. A query as a value is an object, not null; what it reads is read where it runs.
+A `virtual` property of an entity class that nothing overrides is as one that isn't virtual (a navigation, a
+column), unless the program references EF's proxies, whose lazy loading would load it where it's read. In a query's
+lambda, `Contains` of a list it captures through an interface (`IReadOnlyList<long>`) is SQL's `IN`, a value of the
+row not known. A selector that makes an object (an initializer of auto-properties, after a constructor that runs
+nothing) makes a new object of each row, its properties the row's values; one that makes a record's data value, that
+value. A tracked query's `Include` of a reference by a shadow foreign key loads null or one of the type's rows.
 `EF.Property<T>(x, "Name")` is the column of that name: the class's property, or a shadow column's value, not known.
 A query filter the verifier doesn't read (of a type it doesn't have, say) says nothing of the rows, as one left
 out; the query is read all the same. The lambdas the model's builders take (`HasQueryFilter(x => ...)`,

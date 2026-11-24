@@ -31,6 +31,13 @@ namespace CsVerify.Verifier
             public HashSet<IPropertySymbol> RowVersions = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
             /// <summary>The properties the configuration names (Property, HasKey, HasAlternateKey): columns, a get-only one too.</summary>
             public HashSet<IPropertySymbol> Configured = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>The columns configured required (IsRequired(), [Required]): NOT NULL, whatever their nullable annotation.</summary>
+            public HashSet<IPropertySymbol> Required = new HashSet<IPropertySymbol>(SymbolEqualityComparer.Default);
+            /// <summary>Is the column NOT NULL: of a value type not Nullable, annotated not null, or configured required.</summary>
+            public bool NotNullColumn(IPropertySymbol p) =>
+                p.Type.IsValueType ? p.Type is not INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T }
+                : p.NullableAnnotation == NullableAnnotation.NotAnnotated || Required.Contains(p.OriginalDefinition) ||
+                  p.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.ComponentModel.DataAnnotations.RequiredAttribute");
             /// <summary>
             /// Configured by a library context's OnModelCreating that no model of the Spec library's describes: its key,
             /// tokens and row versions there aren't known, so none is taken by convention, and what depends on its tokens
@@ -878,6 +885,11 @@ namespace CsVerify.Verifier
                     if (Properties(argModel, arg, e) is List<IPropertySymbol> p && p.Count == 1)
                     {
                         e.Configured.Add(p[0].OriginalDefinition);
+                        if (Called("IsRequired", out var required, next) &&
+                            !(required.ArgumentList.Arguments.FirstOrDefault()?.Expression is LiteralExpressionSyntax r && r.IsKind(SyntaxKind.FalseLiteralExpression)))
+                        {
+                            e.Required.Add(p[0].OriginalDefinition);
+                        }
                         if (Called("IsRowVersion", out _, next))
                         {
                             if (!e.Tokens.Contains(p[0]))

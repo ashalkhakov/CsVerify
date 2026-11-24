@@ -554,6 +554,13 @@ namespace CsVerify.Verifier.Boogie
                     var x = Atom();
                     LinqFact(All(top, x, OrElse(Eq(Column(nav, x), Null), AndAlso(Isa(Column(nav, x), p), ForeignKey(fk, x, p.Key[0], Column(nav, x))))), at);
                 }
+                // (a foreign key of the database's only, a shadow property: null or one of the type's rows, #129)
+                else if (KernelTypes.Ef.EntityOf(nav.Type) is EfModel.Entity shadowed && !e.ForeignKeys.ContainsKey(nav))
+                {
+                    _p.AddField(nav.OriginalDefinition);
+                    var x = Atom();
+                    LinqFact(All(top, x, OrElse(Eq(Column(nav, x), Null), Isa(Column(nav, x), shadowed))), at);
+                }
                 else
                 {
                     throw new NotTranslated("EF's Include of " + nav.Name + ", tracked");

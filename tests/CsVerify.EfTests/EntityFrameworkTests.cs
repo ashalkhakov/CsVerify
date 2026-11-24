@@ -1106,11 +1106,13 @@ public sealed class Store(Db db)
             {
                 Assert.True(r.Errors(ok).Length == 0, r.Explain(ok));
             }
-            // (and these report nothing but what isn't verified yet: a projection's object, a list's task, LINQ's Select)
-            foreach (var ok in new[] { "Held", "Started", "ById", "Code" })
+            // (and these report nothing but what isn't verified yet: a list's task, LINQ's Select)
+            foreach (var ok in new[] { "Started", "ById", "Code" })
             {
                 Assert.True(r.Errors(ok).All(id => id == "CSV1902"), r.Explain(ok));
             }
+            // (#129: a projection's record, a data value, is read: First of a filter no index makes unique, in no order)
+            Assert.Equal(new[] { "CSV1031" }, r.Errors("Held"));
             // (no lambda of a query is verified as C#; Code's, LINQ to Objects', is, and knows digits' length)
             Assert.Equal(new[] { "Store.Code.<lambda:51>" }, r.Methods.Where(m => m.Name.StartsWith("Store.") && m.Name.Contains("<lambda:")).Select(m => m.Name));
             Assert.True(r.Errors("Store.Code.<lambda:51>").Length == 0, r.Explain("Store.Code.<lambda:51>"));
@@ -1670,6 +1672,149 @@ public sealed class Store(Db db)
             }
             // (a string column no index makes unique; a nullable one, where null matches every null)
             foreach (var bad in new[] { "ByNote", "ByNullableCode" })
+            {
+                Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
+            }
+        }
+
+        [Fact]
+        public void AHelpersShapes_VirtualNavigationsInitializersContainsRecordsIncludesAndRequiredColumns()
+        {
+            // (#129's review: a virtual navigation nothing overrides; a projection into an initializer of auto-properties, or
+            // a record's data value; Contains of a captured list; a tracked Include by a shadow key; a required column of
+            // an entity without nullable annotations, unique)
+            var r = VerifyEf(@"public sealed class Profile
+{
+    public long RowId { get; private set; }
+}
+
+public sealed class Customer
+{
+    public long RowId { get; private set; }
+
+    public Profile? Profile { get; private set; }
+}
+public class User
+{
+    public long Id { get; set; }
+
+    public Guid ExternalId { get; set; }
+
+    public virtual Customer Customer { get; set; } = null!;
+}
+public class Member
+{
+    public long Id { get; set; }
+
+    public Guid ExternalId { get; set; }
+
+    public Customer Customer { get; set; } = null!;
+}
+
+public sealed class ProfileOfMember
+{
+    public required Profile Profile { get; init; }
+
+    public required long MemberId { get; init; }
+}
+
+public sealed record HeldProfile(long Row, Profile Profile);
+
+public sealed class Account
+{
+    public long RowId { get; private set; }
+
+    public Profile? Client { get; set; }
+}
+#nullable disable
+public sealed class Purchase
+{
+    public long Id { get; set; }
+
+    public string Reference { get; set; }
+    public string Label { get; set; }
+}
+#nullable enable
+public sealed class Note
+{
+    public long Id { get; set; }
+
+    public string Reference { get; set; } = """";
+}
+
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Profile>().HasKey(x => x.RowId);
+        b.Entity<Customer>().HasKey(x => x.RowId);
+        b.Entity<Customer>().HasOne(c => c.Profile).WithOne().HasForeignKey<Profile>(""CustomerId"");
+        b.Entity<User>().HasKey(x => x.Id);
+        b.Entity<User>().HasAlternateKey(x => x.ExternalId);
+        b.Entity<User>().HasOne(u => u.Customer).WithOne().HasForeignKey<Customer>(""UserId"");
+        b.Entity<Member>().HasKey(x => x.Id);
+        b.Entity<Member>().HasAlternateKey(x => x.ExternalId);
+        b.Entity<Member>().HasOne(u => u.Customer).WithOne().HasForeignKey<Customer>(""MemberId"");
+        b.Entity<Account>().HasKey(x => x.RowId);
+        b.Entity<Account>().HasOne(x => x.Client).WithMany().HasForeignKey(""ClientId"");
+        b.Entity<Purchase>().HasKey(x => x.Id);
+        b.Entity<Purchase>().HasIndex(x => x.Reference).IsUnique();
+        b.Entity<Purchase>().Property(x => x.Reference).HasMaxLength(128).IsRequired();
+        b.Entity<Purchase>().Property(x => x.Label).IsRequired();
+        b.Entity<Note>().HasKey(x => x.Id);
+        b.Entity<Note>().HasIndex(x => x.Reference).IsUnique();
+    }
+}
+
+public sealed class Store(Db db)
+{
+    public async Task<Profile?> ProfileOfUser(Guid user) =>
+        await db.Set<User>().AsNoTracking().Where(u => u.ExternalId == user).Select(u => u.Customer.Profile).SingleOrDefaultAsync();
+    public async Task<Profile?> ProfileOfMember(Guid member) =>
+        await db.Set<Member>().AsNoTracking().Where(u => u.ExternalId == member).Select(u => u.Customer.Profile).SingleOrDefaultAsync();
+    public async Task<ProfileOfMember?> Initialized(Guid member) =>
+        await db.Set<Member>().AsNoTracking()
+            .Where(u => u.ExternalId == member && u.Customer.Profile != null)
+            .Select(u => new ProfileOfMember { Profile = u.Customer.Profile!, MemberId = u.Id })
+            .SingleOrDefaultAsync();
+    public async Task<long?> Anonymous(Guid member) =>
+        (await db.Set<Member>().AsNoTracking()
+            .Where(u => u.ExternalId == member && u.Customer.Profile != null)
+            .Select(u => new { Profile = u.Customer.Profile!, MemberId = u.Id })
+            .SingleOrDefaultAsync())?.MemberId;
+    public async Task<List<Profile>> Filtered(IReadOnlyList<long> rows) =>
+        await db.Set<Profile>().AsNoTracking().Where(p => rows.Contains(p.RowId)).ToListAsync();
+    public async Task<List<Profile>> FilteredOne(long row) =>
+        await db.Set<Profile>().AsNoTracking().Where(p => p.RowId == row).ToListAsync();
+    public async Task<List<HeldProfile>> Listed(long row) =>
+        (await db.Set<Profile>().AsNoTracking().Where(p => p.RowId == row).ToListAsync())
+            .Select(p => new HeldProfile(p.RowId, p))
+            .ToList();
+    public async Task<Dictionary<long, Profile>> Keyed(long row) =>
+        (await db.Set<Profile>().AsNoTracking().Where(p => p.RowId == row).ToListAsync())
+            .ToDictionary(p => p.RowId);
+    public async Task<List<Account>> Tracked(long row) =>
+        await db.Set<Account>().Include(a => a.Client).Where(a => a.RowId == row).ToListAsync();
+    public async Task<List<Account>> Untracked(long row) =>
+        await db.Set<Account>().AsNoTracking().Include(a => a.Client).Where(a => a.RowId == row).ToListAsync();
+    public async Task<Purchase?> PurchaseOf(string reference) =>
+        await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Reference == reference);
+    public async Task<Note?> NoteOf(string reference) =>
+        await db.Set<Note>().SingleOrDefaultAsync(t => t.Reference == reference);
+    public async Task<Purchase?> PurchaseByLabel(string label) =>
+        await db.Set<Purchase>().SingleOrDefaultAsync(t => t.Label == label);
+    public async Task<ProfileOfMember?> InitializedById(long id) =>
+        await db.Set<Member>().AsNoTracking()
+            .Where(u => u.Id > id && u.Customer.Profile != null)
+            .Select(u => new ProfileOfMember { Profile = u.Customer.Profile!, MemberId = u.Id })
+            .SingleOrDefaultAsync();
+}");
+            foreach (var ok in new[] { "ProfileOfUser", "ProfileOfMember", "Initialized", "Anonymous", "Filtered", "FilteredOne", "Listed", "Keyed", "Tracked", "Untracked", "PurchaseOf", "NoteOf" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a required column no index makes unique; a projection of a filter that fixes no key)
+            foreach (var bad in new[] { "PurchaseByLabel", "InitializedById" })
             {
                 Assert.True(r.Errors("Store." + bad).SequenceEqual(new[] { "CSV1001" }), bad + ": " + r.Explain("Store." + bad));
             }
