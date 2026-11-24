@@ -427,9 +427,42 @@ namespace CsVerify.Verifier.Boogie
         /// A list a database query made, which nothing else holds: ToList or ToArray of one (awaited, for the Async
         /// forms), or a local only its declaration sets to one.
         /// </summary>
-        private bool QueryList(IOperation op)
+        private bool QueryList(IOperation op) => QueryListIn(op, 0);
+
+        private bool QueryListIn(IOperation op, int depth)
         {
             op = Unconverted(op);
+            // (a private method's parameter it doesn't assign, that each of its calls, in its type, passes one for, #129)
+            if (op is IParameterReferenceOperation pr && depth < 3 && pr.Parameter.RefKind == RefKind.None && pr.Parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.Ordinary } pm &&
+                pm.DeclaredAccessibility == Accessibility.Private && !pm.IsVirtual && !pm.IsAbstract && !pm.IsOverride)
+            {
+                var uses = new List<IInvocationOperation>();
+                foreach (var r in pm.ContainingType.DeclaringSyntaxReferences)
+                {
+                    var node = r.GetSyntax();
+                    var model = _model.Compilation.ModelOf(node.SyntaxTree);
+                    foreach (var name in node.DescendantNodes().OfType<SimpleNameSyntax>().Where(n => n.Identifier.Text == pm.Name))
+                    {
+                        if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol?.OriginalDefinition, pm.OriginalDefinition))
+                        {
+                            continue;
+                        }
+                        // (only called: not a method group, which could be called with anything)
+                        var call = name.Parent is MemberAccessExpressionSyntax ma && ma.Name == name ? ma.Parent : name.Parent;
+                        if (call is not InvocationExpressionSyntax || model.GetOperation(call) is not IInvocationOperation inv)
+                        {
+                            return false;
+                        }
+                        uses.Add(inv);
+                    }
+                    if (node.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(a.Left).Symbol, pr.Parameter)))
+                    {
+                        return false;
+                    }
+                }
+                return uses.Count > 0 && uses.All(u => u.Arguments.FirstOrDefault(a => SymbolEqualityComparer.Default.Equals(a.Parameter?.OriginalDefinition, pr.Parameter.OriginalDefinition)) is { ArgumentKind: ArgumentKind.Explicit } arg &&
+                                                       QueryListIn(arg.Value, depth + 1));
+            }
             if (op is ILocalReferenceOperation l && Initializer(l) is IOperation init)
             {
                 op = Unconverted(init);

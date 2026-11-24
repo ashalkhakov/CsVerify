@@ -584,7 +584,10 @@ namespace CsVerify.Verifier.Boogie
                 _ => state,
             };
             var empty = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
-            Emit(KAssign.Of(empty, NavigationsEmpty(o, e)));
+            // (Remove of an entity tracked already attaches nothing; where its navigations all lead to its principals (a
+            // reference with its foreign key here), nothing cascades to them, and the others are as they were, #129)
+            bool toPrincipals = how == "Remove" && e.Collections.Count == 0 && e.References.All(r => e.ForeignKeys.ContainsKey(r));
+            Emit(KAssign.Of(empty, toPrincipals ? OrElse(Ne(state, I(EfDetached)), NavigationsEmpty(o, e)) : NavigationsEmpty(o, e)));
             var unsetNow = Declare("t$" + _temps++, KernelTypes.Compilation.GetSpecialType(SpecialType.System_Boolean));
             Emit(KAssign.Of(unsetNow, unset));
             // what o's navigations lead to may be tracked now too (unless they hold nothing)

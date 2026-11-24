@@ -212,9 +212,10 @@ namespace CsVerify.Verifier.Boogie
             for (int depth = 0; depth < 64 && op != null; depth++)
             {
                 op = Unconverted(op);
-                while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter))
+                while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                       SourceHelper(op) != null)
                 {
-                    op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : _captured[((IFlowCaptureReferenceOperation)op).Id]);
+                    op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : op is IFlowCaptureReferenceOperation fc ? _captured[fc.Id] : SourceHelper(op));
                 }
                 if (TableOf(op) != null)
                 {
@@ -249,9 +250,11 @@ namespace CsVerify.Verifier.Boogie
             // (and query syntax: the calls it is)
             // (and an inlined helper's query parameter: the caller's argument)
             while (src is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || src is ITranslatedQueryOperation ||
-                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local) || src is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter))
+                   src is ILocalReferenceOperation lq && _lazyQueries.ContainsKey(lq.Local) || src is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                   SourceHelper(src) != null)
             {
-                src = src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation)
+                src = SourceHelper(src) is IOperation helped ? helped
+                    : src is ITranslatedQueryOperation tq ? Unconverted(tq.Operation)
                     : src is ILocalReferenceOperation lazy ? Unconverted(_lazyQueries[lazy.Local])
                     : src is IParameterReferenceOperation bp ? Unconverted(_queryArgs[bp.Parameter])
                     : Unconverted(_captured[((IFlowCaptureReferenceOperation)src).Id]);
@@ -2057,6 +2060,9 @@ namespace CsVerify.Verifier.Boogie
                         continue;
                     case IParameterReferenceOperation qp when _queryArgs.TryGetValue(qp.Parameter, out var qa):
                         op = qa;
+                        continue;
+                    case IInvocationOperation sh when SourceHelper(sh) is IOperation shv:
+                        op = shv;
                         continue;
                     default:
                         return null;

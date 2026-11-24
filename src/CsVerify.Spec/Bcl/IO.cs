@@ -7,8 +7,9 @@ namespace CsVerify.Bcl
 
     /// <summary>
     /// Contracts for the guard clauses of <see cref="ArgumentException"/>: each returns only if its argument passes.
-    /// (ArgumentNullException.ThrowIfNull needs none: its [NotNull] says it. ArgumentOutOfRangeException's generic
-    /// ThrowIf… are built into the verifier, since a stub cannot compare a T.)
+    /// (ArgumentNullException.ThrowIfNull is built into the verifier, as it runs nothing of its argument's, which a stub
+    /// of an object parameter can't say; so are ArgumentOutOfRangeException's generic ThrowIf…, since a stub cannot
+    /// compare a T.)
     /// </summary>
     [ContractsFor(typeof(ArgumentException))]
     public static class ArgumentExceptionContracts

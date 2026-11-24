@@ -758,7 +758,74 @@ namespace CsVerify.Verifier
                 bases = bases.Append(ContractOf(made));
             }
             c.Inherit(spec != null ? Contract.Read(spec, _compilation) : null, bases.ToList());
+            if (key.MethodKind == MethodKind.AnonymousFunction)
+            {
+                foreach (var (filter, body) in FilteredBefore(key))
+                {
+                    c.Aliases.Add(filter);
+                    c.Requires.Add(body);
+                }
+            }
             return c;
+        }
+
+        /// <summary>
+        /// A LINQ to Objects lambda given what passed a filter before it (Where(p).Select(f), through orders and pages): each
+        /// filter's predicate, its parameter this lambda's (an alias), that reads nothing but its parameter. LINQ applies the
+        /// lambda to those elements only (#129).
+        /// </summary>
+        private IEnumerable<(IMethodSymbol filter, IOperation body)> FilteredBefore(IMethodSymbol lambda)
+        {
+            if (lambda.Parameters.Length != 1 || lambda.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not AnonymousFunctionExpressionSyntax syntax)
+            {
+                yield break;
+            }
+            IOperation op = _compilation.ModelOf(syntax.SyntaxTree).GetOperation(syntax);
+            while (op?.Parent is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+            {
+                op = op.Parent;
+            }
+            if (op?.Parent is not IArgumentOperation { Parameter.Ordinal: 1, Parent: IInvocationOperation use } || !IsEnumerable(use.TargetMethod) ||
+                use.TargetMethod.Name is not ("Select" or "SelectMany" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or "Where" or
+                    "First" or "FirstOrDefault" or "Single" or "SingleOrDefault" or "Any" or "All" or "Count" or "Sum" or "Min" or "Max" or "ToDictionary"))
+            {
+                yield break;
+            }
+            var p = lambda.Parameters[0];
+            for (var src = Source(use); src is IInvocationOperation q && IsEnumerable(q.TargetMethod); src = Source(q))
+            {
+                if (q.TargetMethod.Name is "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or "Skip" or "Take" or "Distinct" or "AsEnumerable" or "ToList" or "ToArray")
+                {
+                    continue;
+                }
+                if (q.TargetMethod.Name != "Where" || q.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 1)?.Value is not IOperation arg)
+                {
+                    yield break;
+                }
+                var f = arg;
+                while (f is IConversionOperation or IDelegateCreationOperation or IParenthesizedOperation)
+                {
+                    f = f is IConversionOperation cv ? cv.Operand : f is IDelegateCreationOperation dc ? dc.Target : ((IParenthesizedOperation)f).Operand;
+                }
+                if (f is IAnonymousFunctionOperation { Symbol.Parameters: [var fp], Body.Operations: [IReturnOperation { ReturnedValue: { } body }] } &&
+                    SymbolEqualityComparer.Default.Equals(fp.Type, p.Type) &&
+                    body.DescendantsAndSelf().All(x => x is not (ILocalReferenceOperation or IInstanceReferenceOperation or IInvocationOperation or IAnonymousFunctionOperation) &&
+                                                       (x is not IParameterReferenceOperation r || SymbolEqualityComparer.Default.Equals(r.Parameter, fp))))
+                {
+                    yield return (((IAnonymousFunctionOperation)f).Symbol, body);
+                }
+            }
+
+            static bool IsEnumerable(IMethodSymbol m) => m.ContainingType?.ToDisplayString() == "System.Linq.Enumerable";
+            static IOperation Source(IInvocationOperation q)
+            {
+                var s = q.Arguments.FirstOrDefault(a => a.Parameter.Ordinal == 0)?.Value;
+                while (s is IConversionOperation cv)
+                {
+                    s = cv.Operand;
+                }
+                return s;
+            }
         }
 
         /// <summary>The Invoke of a delegate type's [ContractClassFor] class.</summary>

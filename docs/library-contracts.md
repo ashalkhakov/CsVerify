@@ -238,7 +238,9 @@ a throw exactly where its precondition fails, its Ensures holding. Adding a memb
 calling only `[Pure]` members: `x => x > k`, `s => s.Length == 3`) is inlined as a condition on each element, so
 `a.First(x => x > 5)` is the first element above 5 and `a.All(x => x > 0)` a quantifier. What would throw (`First` of a
 sequence with no match, `ElementAt` past the end) is reported (CSV1001). The lambda's own obligations are checked where
-it is verified, as a unit of its own. With another lambda, or another source, the call is a library call as before.
+it is verified, as a unit of its own, given what passed the filters before it: in `xs.Where(t => t.Owner != null)
+.Select(t => t.Owner!.Value)`, the selector's `t` passed the filter (a predicate that reads only its element, through
+orders and pages). With another lambda, or another source, the call is a library call as before.
 
 `Sum`, `Min`, `Max` and `Average` of `int`, `long` or `double` elements (or of a pure selector's values of those
 types), `LongCount` and `Aggregate` (with a seed, a result selector, or neither) are exact too: a running total,

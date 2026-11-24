@@ -1464,6 +1464,86 @@ public sealed class Store(Db db)
         }
 
         [Fact]
+        public void ARepositorysShapes_SourceHelpersGuardsAndListsPassedOn()
+        {
+            // (#129's review: a private source helper's query is read where it's used; ThrowIfNull changes nothing; a private
+            // method a tracked list is passed to says what it needs of its rows, and Remove of a tracked dependent leaves the
+            // other rows' tracking as it was)
+            var r = VerifyEf(@"public sealed class Owner { public long Id { get; set; } }
+public sealed class Item
+{
+    public long Id { get; set; }
+    public Guid ExternalId { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public long? OwnerId { get; set; }
+    public Owner? Owner { get; set; }
+}
+public sealed class Report
+{
+    public Report(string eventId) => EventId = eventId;
+    internal long RowId { get; private set; }
+    public string EventId { get; private set; }
+}
+public sealed class Db(DbContextOptions<Db> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Owner>();
+        b.Entity<Item>().HasIndex(x => x.ExternalId).IsUnique();
+        b.Entity<Report>().HasKey(x => x.RowId);
+    }
+}
+public sealed class Store(Db db)
+{
+    public async Task<Item?> FromSourceHelper(Guid id) =>
+        (await Load(Items().Where(t => t.ExternalId == id))).SingleOrDefault();
+    public async Task<Item?> FromSourceByColumn(DateTime at) =>
+        (await Load(Items().Where(t => t.CreatedAt == at))).SingleOrDefault();
+    private IQueryable<Item> Items() => db.Set<Item>().Include(t => t.Owner);
+    private async Task<IReadOnlyList<Item>> Load(IQueryable<Item> query) =>
+        await query.OrderBy(t => t.CreatedAt).ThenBy(t => t.Id).ToListAsync();
+    public async Task<bool> Guarded(Item item, Report report)
+    {
+        Spec.Requires(report.RowId == 0);
+        ArgumentNullException.ThrowIfNull(item);
+        ArgumentNullException.ThrowIfNull(report);
+        if (await db.Set<Report>().AsNoTracking().AnyAsync(r => r.EventId == report.EventId))
+        {
+            return false;
+        }
+        db.Set<Report>().Add(report);
+        return true;
+    }
+    public async Task RemoveFound(Guid id) =>
+        await Remove(await db.Set<Item>().Where(t => t.ExternalId == id).ToListAsync());
+    public void RemoveGiven(List<Item> items)
+    {
+        foreach (var item in items)
+        {
+            db.Remove(item);
+        }
+    }
+    private async Task Remove(List<Item> items)
+    {
+        Spec.Requires(Spec.Forall(0, items.Count, i => CsVerify.Ef.Tracker.State(db, items[i]) != CsVerify.Ef.Tracker.Detached));
+        Spec.Requires(Spec.Forall(0, items.Count, i => Spec.Forall(0, i, j => items[j] != items[i])));
+        foreach (var item in items)
+        {
+            db.Remove(item);
+        }
+        await db.SaveChangesAsync();
+    }
+}");
+            foreach (var ok in new[] { "FromSourceHelper", "Items", "Guarded", "RemoveFound", "Remove" })
+            {
+                Assert.True(r.Errors("Store." + ok).Length == 0, ok + ": " + r.Explain("Store." + ok));
+            }
+            // (a column no index makes unique; a list of rows not known tracked)
+            Assert.True(r.Errors("Store.FromSourceByColumn").SequenceEqual(new[] { "CSV1001" }), r.Explain("Store.FromSourceByColumn"));
+            Assert.True(r.Errors("Store.RemoveGiven").SequenceEqual(new[] { "CSV1033" }), r.Explain("Store.RemoveGiven"));
+        }
+
+        [Fact]
         public void AKeyAGenericBaseConfigurationSets_IsTheEntitysKey_AndAColumnOnlyWrittenIsDeclared()
         {
             // (#100: HasKey(c => c.Id) over T : IHasId names the entity's Id, which implements IHasId.Id; Provider is

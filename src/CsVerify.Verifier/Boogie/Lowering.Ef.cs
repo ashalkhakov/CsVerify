@@ -69,9 +69,10 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             op = Unconverted(op);
-            while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter))
+            while (op is IFlowCaptureReferenceOperation r && _captured.TryGetValue(r.Id, out var v) || op is IParameterReferenceOperation qp && _queryArgs.ContainsKey(qp.Parameter) ||
+                   SourceHelper(op) != null)
             {
-                op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : _captured[((IFlowCaptureReferenceOperation)op).Id]);
+                op = Unconverted(op is IParameterReferenceOperation bp ? _queryArgs[bp.Parameter] : op is IFlowCaptureReferenceOperation fc ? _captured[fc.Id] : SourceHelper(op));
             }
             switch (op)
             {
@@ -1566,6 +1567,25 @@ namespace CsVerify.Verifier.Boogie
         /// </summary>
         private readonly Dictionary<IParameterSymbol, IOperation> _queryArgs = new Dictionary<IParameterSymbol, IOperation>(SymbolEqualityComparer.Default);
 
+        /// <summary>
+        /// A private source helper's call (#129: a repository's table, written once with its includes): a method of the
+        /// same type, without parameters, returning a query in one expression made of Queryable's and EF's operators on a
+        /// context's set. What it returns; else null.
+        /// </summary>
+        private static IOperation SourceHelper(IOperation op)
+        {
+            if (op is not IInvocationOperation call || call.Arguments.Length != 0 || call.TargetMethod is not { } m || !IsQueryHandle(m.ReturnType) ||
+                m.DeclaredAccessibility != Accessibility.Private || m.MethodKind != MethodKind.Ordinary || m.IsVirtual || m.IsAbstract || m.IsOverride || m.IsGenericMethod ||
+                m.IsAsync || !(m.IsStatic || call.Instance is IInstanceReferenceOperation) || m.DeclaringSyntaxReferences.Length != 1 ||
+                m.DeclaringSyntaxReferences[0].GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax decl ||
+                KernelTypes.Compilation.ModelOf(decl.SyntaxTree).GetOperation(decl) is not IMethodBodyOperation body ||
+                (body.ExpressionBody ?? body.BlockBody) is not { Operations: [IReturnOperation { ReturnedValue: { } value }] } || !QueryChain(value))
+            {
+                return null;
+            }
+            return Unconverted(value);
+        }
+
         private static EfModel.Entity DatabaseRootIn(IOperation op, out bool noTracking, Dictionary<IParameterSymbol, IOperation> queryArgs)
         {
             noTracking = false;
@@ -1581,6 +1601,9 @@ namespace CsVerify.Verifier.Boogie
                     // (an inlined helper's query parameter: the caller's argument)
                     case IParameterReferenceOperation qp when queryArgs != null && queryArgs.TryGetValue(qp.Parameter, out var qa):
                         op = qa;
+                        continue;
+                    case IInvocationOperation sh when SourceHelper(sh) is IOperation shv:
+                        op = shv;
                         continue;
                     case IInvocationOperation c:
                         if (c.TargetMethod.Name is "AsNoTracking" or "AsNoTrackingWithIdentityResolution")
@@ -1702,6 +1725,8 @@ namespace CsVerify.Verifier.Boogie
             op = Unconverted(op);
             switch (op)
             {
+                case IInvocationOperation sh when SourceHelper(sh) != null:
+                    return true;
                 case IPropertyReferenceOperation pr when DbSetEntity(pr.Type) != null:
                     return pr.Instance is IInstanceReferenceOperation or IParameterReferenceOperation or ILocalReferenceOperation or IFieldReferenceOperation;
                 case IInvocationOperation set when set.TargetMethod.Name == "Set" && DbSetEntity(set.Type) != null:

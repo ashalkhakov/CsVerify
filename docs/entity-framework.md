@@ -153,13 +153,23 @@ only what its specification says is known. A private one of the same file whose 
 contract, is read where it is awaited instead, on the query its caller passes (a table and Queryable's and EF's
 operators): `Load(db.Items.Where(t => t.ExternalId == id))` is that query, ordered and listed as `Load` does. EF's
 operators of the whole query (`Include`, `AsNoTracking`, `IgnoreQueryFilters`...) mean the same after a filter, an
-order or a page as before them.
+order or a page as before them. A private method of the type without parameters that returns a query in one
+expression (`IQueryable<Item> Items() => db.Items.Include(i => i.Owner)`, a table written once with its includes) is
+read where a query is built on it. A query as a value is an object, not null; what it reads is read where it runs.
+A helper of more than one statement is read by its contract, which can't yet relate its rows to the query's.
 
 **Each row of a list.** A list a query that keeps each row once makes (a filter, an order, a page) holds a different
 object at each index, tracked or not. A `foreach` over such a list may call EF's `Add`, `Attach`, `Update`, `Remove` and
 `Entry` and still read its elements, since those change no list but navigations. Each element the loop hasn't reached
 yet keeps its tracking (an inferred invariant, kept where it holds), so `Remove` of each row a tracking query listed
-finds the instance its context tracks.
+finds the instance its context tracks. `Remove` of an entity the context tracks, whose navigations all lead to its
+principals (a reference with its foreign key on it), changes only that entity's state.
+
+A private method that a list is passed to may say what it needs of the rows, which its callers prove:
+`Spec.Requires(Spec.Forall(0, items.Count, i => CsVerify.Ef.Tracker.State(db, items[i]) != CsVerify.Ef.Tracker.Detached))`
+(each is tracked) and `Spec.Requires(Spec.Forall(0, items.Count, i => Spec.Forall(0, i, j => items[j] != items[i])))`
+(no two the same). Where every call of the method passes a list a query made, its `foreach` may call EF's tracker
+too, as above.
 
 **Compiled queries.** A `static readonly` field made by `EF.CompileQuery`, called in its own file, that gives a value
 (`FirstOrDefault`, `Single`, `Count`, `Any`...) is the query its lambda writes, read and checked as one written there.

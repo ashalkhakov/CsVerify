@@ -19,6 +19,22 @@ namespace CsVerify.Tests
 
         private const string C = "public static class C { ";
 
+        [Fact]
+        public void ALambdaAfterAFilter_IsGivenWhatPassedIt()
+        {
+            // (#129: LINQ applies Select's lambda only to what passed Where's, through an order; nothing else is given)
+            var r = Harness.Verify("using CsVerify; using System; using System.Collections.Generic; using System.Linq; " +
+                "public sealed class Row { public long? Owner { get; set; } public int N { get; set; } } " +
+                "public static class C { " +
+                "public static List<long> Owners(List<Row> rows) => rows.Where(t => t.Owner != null).Select(t => t.Owner!.Value).ToList(); " +
+                "public static List<long> Ordered(List<Row> rows) => rows.Where(x => x.Owner != null).OrderBy(x => x.N).Select(y => y.Owner!.Value).ToList(); " +
+                "public static List<long> Unfiltered(List<Row> rows) => rows.Select(t => t.Owner!.Value).ToList(); " +
+                "public static List<long> Other(List<Row> rows) => rows.Where(t => t.N > 0).Select(t => t.Owner!.Value).ToList(); }");
+            Assert.DoesNotContain(r.Methods, m => (m.Name.StartsWith("C.Owners") || m.Name.StartsWith("C.Ordered")) && !m.Verified);
+            Assert.Contains(r.Methods, m => m.Name.StartsWith("C.Unfiltered.<lambda") && m.Diagnostics.Any(d => d.Id == "CSV1013"));
+            Assert.Contains(r.Methods, m => m.Name.StartsWith("C.Other.<lambda") && m.Diagnostics.Any(d => d.Id == "CSV1013"));
+        }
+
         [Theory]
         // a call assumes the postcondition
         [InlineData(C + "static void M(Step g) { var z = g(1); Spec.Assert(z > 1); } }")]

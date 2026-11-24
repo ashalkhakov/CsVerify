@@ -1001,6 +1001,14 @@ AndAlso(Eq(Sel(r, new KVar(t)), Sel(r, instance)), Ne(Sel(r, new KVar(t)), new K
             {
                 return KLit.Null;
             }
+            // (a query on a context's set, as a value: an object, not null; what it reads is read where it runs, #129)
+            if (KernelTypes.Ef != null && IsQueryHandle(e.Type) && InSubset(e.Type) && QueryChain(e))
+            {
+                var q = Declare("t$" + _temps++, e.Type);
+                Emit(KHavoc.Of(q));
+                Emit(KAssume.Of(NotNull(new KVar(q))));
+                return new KVar(q);
+            }
             throw new NotTranslated(e.Kind + " '" + e.Syntax + "'");
         }
 

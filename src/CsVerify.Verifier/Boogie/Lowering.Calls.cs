@@ -1214,6 +1214,24 @@ namespace CsVerify.Verifier.Boogie
                 return null;
             }
             notGuard:
+            // (ArgumentNullException.ThrowIfNull(x): it may throw, and when it returns x isn't null; it changes nothing and
+            // runs nothing of x's, #129)
+            if (call.TargetMethod.ContainingType?.ToDisplayString() == "System.ArgumentNullException" && call.TargetMethod.IsStatic && call.TargetMethod.Name == "ThrowIfNull" &&
+                call.Arguments.OrderBy(a => a.Parameter.Ordinal).FirstOrDefault()?.Value is IOperation nullArg && Unconverted(nullArg).Type is { IsReferenceType: true } && InSubset(Unconverted(nullArg).Type))
+            {
+                var nv = Expr(Unconverted(nullArg));
+                if (_cfgBlock != null && ThrowTarget(_cfgBlock.EnclosingRegion) is string nt)
+                {
+                    Emit(new KFork
+                    {
+                        Overflow = KLit.False,
+                        Target = nt,
+                        Exception = null,
+                    });
+                }
+                Emit(KAssume.Of(NotNull(nv)));
+                return null;
+            }
             if (!_isProcedure(callee) && IsStub(callee))
             {
                 Assumed(callee);
